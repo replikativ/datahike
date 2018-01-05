@@ -14,6 +14,11 @@ happy if you join us.
 
 ## Usage
 
+Add to your leiningen dependencies:
+
+[![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
+
+
 In general all [datascript documentation](https://github.com/tonsky/datascript/wiki/Getting-started) applies.
 
 The code is currently a drop-in replacement for datascript on the JVM. If you

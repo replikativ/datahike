@@ -1,13 +1,13 @@
-(defproject datahike "0.16.3"
-  :description "An implementation of Datomic in-memory database and Datalog query engine in ClojureScript"
+(defproject io.replikativ/datahike "0.1.0-SNAPSHOT"
+  :description "A durable datalog implementation adaptable for distribution."
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
-  :url "https://github.com/tonsky/datahike"
+  :url "https://github.com/replikativ/datahike"
   
   :dependencies [
     [org.clojure/clojure "1.7.0" :scope "provided"]
     [org.clojure/clojurescript "1.7.228" :scope "provided"]
-                 [hitchhiker-tree "0.1.0-SNAPSHOT"]
+    [io.replikativ/hitchhiker-tree "0.1.0-SNAPSHOT"]
   ]
   
   :plugins [
