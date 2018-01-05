@@ -87,6 +87,7 @@ store and can also use batching.
 
 
 ## TODO
+- GC or eager deletion of fragments
 - use core.async in the future to provide durability also in a ClojureScript
 environment. core.async needs to be balanced with query performance though.
 - run comprehensive query suite and compare to datascript and datomic
