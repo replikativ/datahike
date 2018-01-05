@@ -6,7 +6,7 @@ global.performance = { now: function () {
 } }
 
 test = "bench_" + (process.argv[2] || "all");
-path = process.argv[3] || "./target/datascript.js";
+path = process.argv[3] || "./target/datahike.js";
 
 require(path);
-datascript.bench[test]();
+datahike.bench[test]();

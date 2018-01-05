@@ -8,12 +8,12 @@
     <h1>DataScript script tag load test</h1>
     <p id='output'>Check the browser console for errors and output.</p>
     
-    <script src="datascript.js"></script>
+    <script src="datahike.js"></script>
     <script>
-      if (datascript) {
+      if (datahike) {
         console.log("DataScript loaded using a script tag");
         
-        var d = datascript;
+        var d = datahike;
         var conn = d.create_conn();
         d.transact(conn, [[":db/add", -1, "name", "Ivan"]]);
         var res = d.q("[:find ?e ?v :where [?e \"name\" ?v]]", d.db(conn));

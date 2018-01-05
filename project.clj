@@ -1,12 +1,13 @@
-(defproject datascript "0.16.3"
+(defproject datahike "0.16.3"
   :description "An implementation of Datomic in-memory database and Datalog query engine in ClojureScript"
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
-  :url "https://github.com/tonsky/datascript"
+  :url "https://github.com/tonsky/datahike"
   
   :dependencies [
     [org.clojure/clojure "1.7.0" :scope "provided"]
     [org.clojure/clojurescript "1.7.228" :scope "provided"]
+                 [hitchhiker-tree "0.1.0-SNAPSHOT"]
   ]
   
   :plugins [
@@ -20,14 +21,14 @@
   
   :jvm-opts ["-Xmx2g" "-server"]
 
-  :aliases {"test-clj"     ["run" "-m" "datascript.test/test-most"]
-            "test-clj-all" ["run" "-m" "datascript.test/test-all"]
+  :aliases {"test-clj"     ["run" "-m" "datahike.test/test-most"]
+            "test-clj-all" ["run" "-m" "datahike.test/test-all"]
             "node-repl"    ["run" "-m" "user/node-repl"]
             "browser-repl" ["run" "-m" "user/browser-repl"]
             "test-all"     ["do" ["clean"]
                                  ["test-clj-all"]
                                  ["cljsbuild" "once" "release" "advanced"]
-                                 ["run" "-m" "datascript.test/test-node" "--all"]]
+                                 ["run" "-m" "datahike.test/test-node" "--all"]]
             "test-1.8"     ["with-profile" "dev,1.8" "test-all"]
             "test-1.9"     ["with-profile" "dev,1.9" "test-all"]}
   
@@ -37,7 +38,7 @@
         :source-paths ["src" "bench/src"]
         :assert false
         :compiler {
-          :output-to     "release-js/datascript.bare.js"
+          :output-to     "release-js/datahike.bare.js"
           :optimizations :advanced
           :pretty-print  false
           :elide-asserts true
@@ -50,9 +51,9 @@
       { :id "advanced"
         :source-paths ["src" "bench/src" "test"]
         :compiler {
-          :output-to     "target/datascript.js"
+          :output-to     "target/datahike.js"
           :optimizations :advanced
-          :source-map    "target/datascript.js.map"
+          :source-map    "target/datahike.js.map"
           :pretty-print  true
           :recompile-dependents false
           :parallel-build true
@@ -62,8 +63,8 @@
       { :id "none"
         :source-paths ["src" "bench/src" "test" "dev"]
         :compiler {
-          :main          datascript.test
-          :output-to     "target/datascript.js"
+          :main          datahike.test
+          :output-to     "target/datahike.js"
           :output-dir    "target/none"
           :optimizations :none
           :source-map    true
@@ -81,12 +82,14 @@
            ;; because we use printer in tests, and earlier versions don’t support it
            :global-vars  { *print-namespace-maps* false }}
     :dev { :source-paths ["bench/src" "test" "dev"]
-           :dependencies [[org.clojure/tools.nrepl "0.2.12"]] }
+          :dependencies [[org.clojure/tools.nrepl "0.2.12"]
+                         
+                         ] }
   }
   
   :clean-targets ^{:protect false} [
     "target"
-    "release-js/datascript.bare.js"
-    "release-js/datascript.js"
+    "release-js/datahike.bare.js"
+    "release-js/datahike.js"
   ]
 )

@@ -101,7 +101,7 @@ function test_fns(fns) {
 ///--------- TESTS ---------
 
 
-var d = require("../../release-js/datascript.js");
+var d = require("../../release-js/datahike.js");
 var tx0 = 0x20000000; // we just know it, alright?
 
 function test_db_with() {
@@ -484,7 +484,7 @@ function test_upsert() {
   assert_eq_set([["Charlie"]], names);
 }
 
-function test_datascript_js() {
+function test_datahike_js() {
   return test_fns([ test_db_with,
                     test_nested_maps,
                     test_init_db,
@@ -508,4 +508,4 @@ function test_datascript_js() {
                   ]);
 }
 
-module.exports = { "test_all": test_datascript_js };
+module.exports = { "test_all": test_datahike_js };

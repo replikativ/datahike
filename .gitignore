@@ -11,7 +11,7 @@ pom.xml.asc
 /.repl*
 web/out
 web/*.js
-release-js/datascript*.js
+release-js/datahike*.js
 release-js/npm-*
 web/target-cljs
 release.clj

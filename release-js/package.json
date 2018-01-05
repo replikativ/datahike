@@ -1,8 +1,8 @@
 {
-  "name": "datascript",
+  "name": "datahike",
   "version": "0.16.3",
   "description": "Immutable in-memory triplestore with Datalog queries",
-  "homepage": "https://github.com/tonsky/datascript",
+  "homepage": "https://github.com/tonsky/datahike",
   "author": "Nikita Prokopov (https://github.com/tonsky)",
   "keywords": [
     "data",
@@ -25,22 +25,22 @@
     "Bobby Calderwood (https://github.com/bobby)"
   ],
   "bugs": {
-    "url": "https://github.com/tonsky/datascript/issues"
+    "url": "https://github.com/tonsky/datahike/issues"
   },
   "licenses": [
     {
       "type": "EPL",
-      "url": "https://github.com/tonsky/datascript/blob/master/LICENSE"
+      "url": "https://github.com/tonsky/datahike/blob/master/LICENSE"
     }
   ],
-  "main": "./datascript.js",
+  "main": "./datahike.js",
   "repository": {
     "type": "git",
-    "url": "git://github.com/tonsky/datascript.git"
+    "url": "git://github.com/tonsky/datahike.git"
   },
   "engines": {
       "node": ">=0.8.22"
   },
   "dependencies": {},
-  "files": ["datascript.js"]
+  "files": ["datahike.js"]
 }

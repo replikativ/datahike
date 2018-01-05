@@ -9,7 +9,7 @@
     
     <script src="http://requirejs.org/docs/release/2.1.15/minified/require.js"></script>
     <script>
-      require(['datascript'], function(d) {
+      require(['datahike'], function(d) {
         console.log("DataScript loaded using a require.js");
         var conn = d.create_conn();
         d.transact(conn, [[":db/add", -1, "name", "Ivan"]]);

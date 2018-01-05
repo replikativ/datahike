@@ -1,8 +1,8 @@
-(ns datascript.query-v3
+(ns datahike.query-v3
   (:require
-    [datascript.core :as d]
-    [datascript.query-v3 :as q]
-     datascript.perf))
+    [datahike.core :as d]
+    [datahike.query-v3 :as q]
+     datahike.perf))
 
 (comment
 
@@ -26,8 +26,8 @@
      (repeatedly 10 (fn [] [(rand-int 10) (rand-nth [:a :b :c :d]) ]))
      1))
 
-(require 'datascript.perf :reload-all)
-(require '[datascript.query-v3 :as q] :reload)
+(require 'datahike.perf :reload-all)
+(require '[datahike.query-v3 :as q] :reload)
 
 (perf/with-debug
   (let [entities [{:db/id 1 :name "Ivan" :age 10}
@@ -62,7 +62,7 @@
          db)))
                   
 
-(require '[datascript.query-v3 :as q] :reload-all)
+(require '[datahike.query-v3 :as q] :reload-all)
 
 (defn bench [name q & args]
   (println "\n---\n")
@@ -72,11 +72,11 @@
 
 (def db (d/db-with (d/empty-db) (repeatedly 2000 random-man)))
 
-(require 'datascript.perf :reload-all)
-(require '[datascript.query-v3 :as q] :reload)
+(require 'datahike.perf :reload-all)
+(require '[datahike.query-v3 :as q] :reload)
 
-;; (require 'datascript.test.query-not :reload)
-;; (clojure.test/test-ns 'datascript.test.query-not)
+;; (require 'datahike.test.query-not :reload)
+;; (clojure.test/test-ns 'datahike.test.query-not)
 
 (bench "pred"
   '[:find ?e ?a

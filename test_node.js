@@ -22,10 +22,10 @@ function nodeGlobalRequire(file) {
 if (fs.existsSync("./target/none")) {
   nodeGlobalRequire('./target/none/goog/base.js');
   nodeGlobalRequire('./target/none/cljs_deps.js');
-  goog.require('datascript.test');
-  goog.require('datascript.js');
+  goog.require('datahike.test');
+  goog.require('datahike.js');
 } else {
-  nodeGlobalRequire('./target/datascript.js');
+  nodeGlobalRequire('./target/datahike.js');
 }
 
 function merge(m1, m2) {
@@ -40,13 +40,13 @@ if ("--all" === process.argv[2] || "--js" === process.argv[2]) {
 }
 
 if ("--all" === process.argv[2])
-  var res = merge(datascript.test.test_all(), tests_js.test_all());
+  var res = merge(datahike.test.test_all(), tests_js.test_all());
 else if ("--btset" === process.argv[2])
-  var res = datascript.test.test_btset();
+  var res = datahike.test.test_btset();
 else if ("--js" === process.argv[2])
   var res = tests_js.test_all();
 else
-  var res = datascript.test.test_most();
+  var res = datahike.test.test_most();
 
 if (res.fail + res.error > 0)
   process.exit(1);

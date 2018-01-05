@@ -21,7 +21,7 @@
 (defn repl [main env & dirs]
   (cljs.build.api/build (Dirs. (concat ["src" "test"] dirs))
     {:main       main
-     :output-to  "target/datascript.js"
+     :output-to  "target/datahike.js"
      :output-dir "target/none"
      :warnings   {:single-segment-namespace false}
      :verbose    true})
@@ -34,4 +34,4 @@
   (repl 'browser-repl (cljs.repl.browser/repl-env) "dev"))
 
 (defn node-repl []
-  (repl 'datascript (cljs.repl.node/repl-env)))
+  (repl 'datahike (cljs.repl.node/repl-env)))

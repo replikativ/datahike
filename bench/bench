@@ -78,8 +78,8 @@ exec java -cp "$HOME/.m2/repository/org/clojure/clojure/1.7.0/clojure-1.7.0.jar"
 
 (def clean? (:clean opts))
 (def skip-build? (:fast opts))
-(def project (get {"jvm"     "datascript-jvm"
-                   "js"      "datascript-v8"
+(def project (get {"jvm"     "datahike-jvm"
+                   "js"      "datahike-v8"
                    "datomic" "datomic-mem"}
                   (:project opts)))
 (def datomic? (= "datomic-mem" project))
@@ -105,17 +105,17 @@ exec java -cp "$HOME/.m2/repository/org/clojure/clojure/1.7.0/clojure-1.7.0.jar"
 
 (defn run-bench []
   (case project
-    "datascript-jvm"
-    (run "lein" "trampoline" "run" "-m" (str "datascript.bench/bench-" bench))
+    "datahike-jvm"
+    (run "lein" "trampoline" "run" "-m" (str "datahike.bench/bench-" bench))
 
-    "datascript-v8"
+    "datahike-v8"
     (do
       (when-not skip-build?
         (run "lein" "cljsbuild" "once" "advanced"))
-      (run "node" (str rdir "/run_v8.js") bench (str dir "/target/datascript.js")))
+      (run "node" (str rdir "/run_v8.js") bench (str dir "/target/datahike.js")))
 
     "datomic-mem"
-    (run "lein" "trampoline" "run" "-m" (str "datascript.bench-datomic/bench-" bench))))
+    (run "lein" "trampoline" "run" "-m" (str "datahike.bench-datomic/bench-" bench))))
 
 (defn read-all [reader]
   (loop [acc []]

@@ -1,7 +1,7 @@
 (ns browser-repl
   (:require
     [clojure.browser.repl :as repl]
-     datascript.core))
+     datahike.core))
 
 (defonce conn
   (repl/connect "http://localhost:9000/repl"))
