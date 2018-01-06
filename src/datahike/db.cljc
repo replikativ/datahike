@@ -316,6 +316,32 @@
     (cmp-val (.-v d1) (.-v d2))
     (cmp-num (.-tx d1) (.-tx d2))))
 
+(extend-protocol hc/IKeyCompare
+  clojure.lang.PersistentVector
+  (compare [key1 key2]
+    (if-not (= (class key2) clojure.lang.PersistentVector)
+      -1 ;; HACK
+      (let [[a b c d] key1
+            [e f g h] key2]
+        (combine-cmp
+         (hc/compare a e)
+         (hc/compare b f)
+         (hc/compare c g)
+         (hc/compare d h)))))
+  java.lang.String
+  (compare [key1 key2]
+    (compare key1 key2))
+  clojure.lang.Keyword
+  (compare [key1 key2]
+    (compare key1 key2))
+  nil
+  (compare [key1 key2]
+    (if (nil? key2)
+      0 -1)))
+
+
+
+
 (defrecord EAVTKey [datom]
   hc/IKeyCompare
   (compare [this other]

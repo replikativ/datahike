@@ -13,7 +13,7 @@
 
 
 (def db (d/db-with
-         (d/empty-db {:name {:db/index true}})
+         (d/empty-db #_{:name {:db/index true}})
          [{ :db/id 1, :name  "Ivan", :age   15 }
           { :db/id 2, :name  "Petr", :age   37 }
           { :db/id 3, :name  "Ivan", :age   37 }
@@ -63,7 +63,7 @@
     (time
      (d/db-with
       db
-      (for [i (shuffle (range 5 10000))]
+      (for [i (range 5 100000)]
         {:db/id i :name (str "Bot" i) :age i}))))
 
   ;; TODO why is logarithmic query scaling so bad?
@@ -74,10 +74,11 @@
   (time
    (doseq [i (range 100)]
      (d/q '[:find ?e
-            :where [?e :name "Bot42"]] new-db)))
+            :where [?e :name "Bot4200"]] new-db)))
+  
 
   (time (d/q '[:find ?e
-               :where [?e :name "Ivan"]] db))
+               :where [?e :name "Ivan"]] new-db))
 
   )
 
