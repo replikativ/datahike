@@ -30,7 +30,7 @@
           data (last fragments)]
       `(throw (ex-info (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data)))))
 
-(defn #?@(:clj  [^Boolean seqable?]  
+(defn #?@(:clj  [^Boolean seqable?]
           :cljs [^boolean seqable?])
   [x]
   (and (not (string? x))
@@ -147,7 +147,7 @@
         IIndexed
         (-nth [this i] (nth-datom this i))
         (-nth [this i not-found] (nth-datom this i not-found))
-        
+
         IAssociative
         (-assoc [d k v] (assoc-datom d k v))
 
@@ -172,7 +172,7 @@
         (empty [d] (throw (UnsupportedOperationException. "empty is not supported on Datom")))
         (count [d] 5)
         (cons [d [k v]] (assoc-datom d k v))
-        
+
         clojure.lang.Indexed
         (nth [this i]           (nth-datom this i))
         (nth [this i not-found] (nth-datom this i not-found))
@@ -191,7 +191,7 @@
   ([e a v]          (Datom. e a v tx0 true))
   ([e a v tx]       (Datom. e a v tx true))
   ([e a v tx added] (Datom. e a v tx added)))
-  
+
 (defn datom? [x] (instance? Datom x))
 
 (defn- hash-datom [^Datom d]
@@ -442,7 +442,7 @@
                                             (or (> (hc/compare i e) 0)
                                                 (> (hc/compare j f) 0)
                                                 (> (hc/compare k g) 0)
-                                                (> (hc/compare l h) 0)) 
+                                                (> (hc/compare l h) 0))
 
                                             (and e f g)
                                             (or (> (hc/compare i e) 0)
@@ -749,10 +749,10 @@
 
 (defn ^DB init-db
   ([datoms] (init-db datoms default-schema))
-  ([datoms schema]
+  ([datoms schema & {:as options :keys [validate?] :or {validate? true}}]
    (if (empty? datoms)
      (empty-db schema)
-     (let [_ (validate-schema schema)
+     (let [_ (when validate? (validate-schema schema))
            rschema (rschema schema)
            indexed (:db/index rschema)
            #?@(:cljs
@@ -919,25 +919,37 @@
 (defn entid [db eid]
   {:pre [(db? db)]}
   (cond
-    (number? eid) eid
+    (number? eid)
+    eid
+
     (sequential? eid)
-      (cond
-        (not= (count eid) 2)
-          (raise "Lookup ref should contain 2 elements: " eid
-                 {:error :lookup-ref/syntax, :entity-id eid})
-        (not (is-attr? db (first eid) :db/unique))
-          (raise "Lookup ref attribute should be marked as :db/unique: " eid
-                 {:error :lookup-ref/unique
-                  :entity-id eid})
-        (nil? (second eid))
-          nil
-        :else
-          (:e (first (-datoms db :avet eid))))
-    #?@(:cljs [(array? eid) (recur db (array-seq eid))])
+    (cond
+      (not= (count eid) 2)
+      (raise "Lookup ref should contain 2 elements: " eid
+             {:error :lookup-ref/syntax, :entity-id eid})
+      (not (is-attr? db (first eid) :db/unique))
+      (if (= :db/ident (first eid))
+        (raise "You must have :db/ident marked as :db/unique in your schema to use keyword refs" {:error :lookup-ref/db-ident
+                              :entity-id eid})
+        (raise "Lookup ref attribute should be marked as :db/unique: " eid
+               {:error :lookup-ref/unique
+                :entity-id eid}))
+      (nil? (second eid))
+      nil
+      :else
+      (:e (first (-datoms db :avet eid))))
+
+    #?@(:cljs
+         [(array? eid)
+          (recur db (array-seq eid))])
+
+    (keyword? eid)
+    (recur db [:db/ident eid])
+
     :else
-      (raise "Expected number or lookup ref for entity id, got " eid
-              {:error :entity-id/syntax
-               :entity-id eid})))
+    (raise "Expected number or lookup ref for entity id, got " eid
+           {:error :entity-id/syntax
+            :entity-id eid})))
 
 (defn entid-strict [db eid]
   (or (entid db eid)
@@ -1064,10 +1076,10 @@
   (cond
     (keyword? attr)
     (= \_ (nth (name attr) 0))
-    
+
     (string? attr)
     (boolean (re-matches #"(?:([^/]+)/)?_([^/]+)" attr))
-   
+
     :else
     (raise "Bad attribute type: " attr ", expected keyword or string"
            {:error :transact/syntax, :attribute attr})))
@@ -1084,7 +1096,7 @@
      (if (= \_ (nth name 0))
        (if ns (str ns "/" (subs name 1)) (subs name 1))
        (if ns (str ns "/_" name) (str "_" name))))
-   
+
    :else
     (raise "Bad attribute type: " attr ", expected keyword or string"
            {:error :transact/syntax, :attribute attr})))
@@ -1143,12 +1155,12 @@
     (not (or (da/array? vs)
              (and (coll? vs) (not (map? vs)))))
     [vs]
-    
+
     ;; probably lookup ref
     (and (= (count vs) 2)
          (is-attr? db (first vs) :db.unique/identity))
     [vs]
-    
+
     :else vs))
 
 
@@ -1225,7 +1237,7 @@
     (transact-tx-data (assoc-in report [:tempids tempid] upserted-eid)
                       es)))
 
-(defn transact-tx-data [initial-report initial-es]
+(defn transact-tx-data* [initial-report initial-es]
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
     (raise "Bad transaction data " initial-es ", expected sequential collection"
@@ -1251,13 +1263,13 @@
               (let [id (current-tx report)]
                 (recur (allocate-eid report old-eid id)
                        (cons (assoc entity :db/id id) entities)))
-             
+
               ;; lookup-ref => resolved | error
               (sequential? old-eid)
               (let [id (entid-strict db old-eid)]
                 (recur report
                        (cons (assoc entity :db/id id) entities)))
-             
+
               ;; upserted => explode | error
               [upserted-eid (upsert-eid db entity)]
               (if (and (neg-number? old-eid)
@@ -1266,7 +1278,7 @@
                 (retry-with-tempid initial-report initial-es old-eid upserted-eid)
                 (recur (allocate-eid report old-eid upserted-eid)
                        (concat (explode db (assoc entity :db/id upserted-eid)) entities)))
-             
+
               ;; resolved | allocated-tempid | tempid | nil => explode
               (or (number? old-eid)
                   (nil?    old-eid))
@@ -1275,10 +1287,10 @@
                               (neg? old-eid) (or (get (:tempids report) old-eid)
                                                  (next-eid db))
                               :else          old-eid)
-                    new-entity (assoc entity :db/id new-eid)]                
+                    new-entity (assoc entity :db/id new-eid)]
                 (recur (allocate-eid report old-eid new-eid)
                        (concat (explode db new-entity) entities)))
-             
+
               ;; trash => error
               :else
               (raise "Expected number or lookup ref for :db/id, got " old-eid
@@ -1366,7 +1378,7 @@
              :else
                (raise "Unknown operation at " entity ", expected :db/add, :db/retract, :db.fn/call, :db.fn/retractAttribute or :db.fn/retractEntity"
                       {:error :transact/syntax, :operation op, :tx-data entity})))
-       
+
        (datom? entity)
          (let [[e a v tx added] entity]
            (if added
@@ -1377,6 +1389,15 @@
          (raise "Bad entity type at " entity ", expected map or vector"
                 {:error :transact/syntax, :tx-data entity})
        ))))
+
+(defn transact-tx-data [{:as initial-report :keys [tx-meta]} initial-es]
+  (let [middleware (or
+                     (when (map? tx-meta)
+                       (::tx-middleware tx-meta))
+                     identity)]
+    ((middleware transact-tx-data*)
+     initial-report
+     initial-es)))
 
 
 
