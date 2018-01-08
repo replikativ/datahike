@@ -75,9 +75,11 @@
                                :tempids   {}
                                :tx-meta   tx-meta}) tx-data))))
 
-(defn db-with [db tx-data]
-  {:pre [(db/db? db)]}
-  (:db-after (with db tx-data)))
+(defn db-with
+  ([db tx-data] (db-with db tx-data nil))
+  ([db tx-data tx-meta]
+   {:pre [(db/db? db)]}
+   (:db-after (with db tx-data tx-meta))))
 
 (defn datoms
   ([db index]             {:pre [(db/db? db)]} (db/-datoms db index []))
