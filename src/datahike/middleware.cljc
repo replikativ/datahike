@@ -87,9 +87,7 @@
    {:db/ident :db.alter/attribute
     :db/valueType :db.type/ref}
    {:db/ident :db.install/partition
-    :db/valueType :db.type/ref}
-
-   ])
+    :db/valueType :db.type/ref}])
 
 
 (defn validate-schema-change [db-before db-after]
@@ -159,12 +157,15 @@
 
 (def schema-meta {:datahike.db/tx-middleware schema-middleware})
 
+(defn schema-db []
+  (-> (d/empty-db bare-bones-schema)
+      (d/db-with enum-idents schema-meta)
+      (d/db-with schema-idents schema-meta)))
+
 (defn create-schema-conn
   "Creates a conn that has all the necessary base schema to be used with transactional schema. You should also use schema-meta whenever you use any of d/transact! d/with d/db-with"
   []
-  (-> (d/conn-from-db (d/empty-db bare-bones-schema))
-      (d/db-with enum-idents schema-meta)
-      (d/db-with schema-idents schema-meta)))
+  (-> (d/conn-from-db schema-db)))
 
 ;;;
 ;;; Combined Meta
