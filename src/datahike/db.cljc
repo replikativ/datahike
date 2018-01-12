@@ -445,7 +445,7 @@
          [a b c d] key
          [e f g h] key-to
          xf (comp
-             (filter (fn [^AMapEntry kv]
+             (take-while (fn [^AMapEntry kv]
                        ;; prefix scan
                        (let [key (.key kv)
                              #_new #_(cond (and e f g h)
