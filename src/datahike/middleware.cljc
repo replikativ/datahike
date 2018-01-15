@@ -165,7 +165,7 @@
 (defn create-schema-conn
   "Creates a conn that has all the necessary base schema to be used with transactional schema. You should also use schema-meta whenever you use any of d/transact! d/with d/db-with"
   []
-  (-> (d/conn-from-db schema-db)))
+  (-> (d/conn-from-db (schema-db))))
 
 ;;;
 ;;; Combined Meta
