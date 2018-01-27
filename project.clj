@@ -4,11 +4,9 @@
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :url "https://github.com/replikativ/datahike"
   
-  :dependencies [
-    [org.clojure/clojure "1.7.0" :scope "provided"]
-    [org.clojure/clojurescript "1.7.228" :scope "provided"]
-    [io.replikativ/hitchhiker-tree "0.1.0-SNAPSHOT"]
-  ]
+  :dependencies [[org.clojure/clojure "1.7.0" :scope "provided"]
+                 [org.clojure/clojurescript "1.7.228" :scope "provided"]
+                 [io.replikativ/hitchhiker-tree "0.1.0-SNAPSHOT"]]
   
   :plugins [
     [lein-cljsbuild "1.1.5"]
