@@ -29,60 +29,20 @@ reading the hitchhiker-tree. Notice that you have control when you flush to the
 store and can also use batching.
 
 ~~~clojure
-(ns datahike.test.store
-  (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
-   [datahike.core :as d]
-   [datahike.db :as db]
-   [datahike.query-v3 :as q]
-   [datahike.test.core :as tdc]
-   [hitchhiker.konserve :as kons]
-   [hitchhiker.tree.core :as hc :refer [<??]]
-   [konserve.filestore :refer [new-fs-store]]))
+(require '[datahike.api :refer :all])
 
-
-(def db (d/db-with
-         (d/empty-db {:name {:db/index true}})
-         [{ :db/id 1, :name  "Ivan", :age   15 }
-          { :db/id 2, :name  "Petr", :age   37 }
-          { :db/id 3, :name  "Ivan", :age   37 }
-          { :db/id 4, :age 15 }]))
-
-(def store (kons/add-hitchhiker-tree-handlers
-            (async/<!! (new-fs-store "/tmp/datahike-play"))))
-
-
-(def backend (kons/->KonserveBackend store))
-
-(defn store-db [db backend]
-  (let [{:keys [eavt-durable aevt-durable avet-durable]} db]
-    {:eavt-key (kons/get-root-key (:tree (<?? (hc/flush-tree eavt-durable backend))))
-     :aevt-key (kons/get-root-key (:tree (<?? (hc/flush-tree aevt-durable backend))))
-     :avet-key (kons/get-root-key (:tree (<?? (hc/flush-tree avet-durable backend))))}))
-
-(defn load-db [stored-db]
-  (let [{:keys [eavt-key aevt-key avet-key]} stored-db
-        empty (d/empty-db)
-        eavt-durable (<?? (kons/create-tree-from-root-key store eavt-key))]
-    (assoc empty
-           :max-eid (datahike.db/init-max-eid (:eavt empty) eavt-durable)
-           :eavt-durable eavt-durable
-           :aevt-durable (<?? (kons/create-tree-from-root-key store aevt-key))
-           :avet-durable (<?? (kons/create-tree-from-root-key store avet-key)))))
-
-(let [stored-db (store-db db backend)
-      loaded-db (load-db stored-db)]
-    (is (= (d/q '[:find ?e
-                  :where [?e :name]] loaded-db)
-
-           #{[3] [2] [1]}))
-    (let [updated (d/db-with loaded-db
-                             [{:db/id -1 :name "Hiker" :age 9999}])]
-      (is (= (d/q '[:find ?e
-                    :where [?e :name "Hiker"]] updated)
-
-             #{[5]}))))
+(let [uri "datahike:file:///tmp/api-test"
+          _ (create-database uri)
+          conn (connect uri)
+          tx-report @(transact conn [{ :db/id 1, :name  "Ivan", :age   15 }
+                                     { :db/id 2, :name  "Petr", :age   37 }
+                                     { :db/id 3, :name  "Ivan", :age   37 }
+                                     { :db/id 4, :age 15 }])]
+      (= (q '[:find ?e
+              :where [?e :name]]
+            @conn)
+         #{[3] [2] [1]})
+      (delete-database uri))
 ~~~
 
 
