@@ -761,15 +761,15 @@
 
 ;; TODO make private again
 (defn init-max-eid [eavt eavt-durable]
-  (if-let [slice (vec (slice
-                       eavt
-                       eavt-durable
-                       (Datom. nil nil nil nil nil)
-                       [nil nil nil nil]
-                       (Datom. (dec tx0) nil nil nil nil)
-                       [(dec tx0) nil nil nil]
-                       (fn [e a v t] (Datom. e a v t true))))]
-    (-> slice rseq first :e) ;; :e of last datom in slice
+  (if-let [slice (slice
+                  eavt
+                  eavt-durable
+                  (Datom. nil nil nil nil nil)
+                  [nil nil nil nil]
+                  (Datom. (dec tx0) nil nil nil nil)
+                  [(dec tx0) nil nil nil]
+                  (fn [e a v t] (Datom. e a v t true)))]
+    (-> slice vec rseq first :e) ;; :e of last datom in slice
     0))
 
 
@@ -1042,6 +1042,7 @@
         (assoc-in [:tempids e] eid)
       true
         (update-in [:db-after] advance-max-eid eid))))
+
 
 ;; In context of `with-datom` we can use faster comparators which
 ;; do n
