@@ -6,11 +6,9 @@ datascript tests are passing, but we are still working on the internals. Having
 said this we consider datahike usable for small projects, since datascript is
 very mature and deployed in many applications and the hitchhiker-tree
 implementation is at least heavily tested through generative testing. We are
-only providing the glue code between the two projects and the storage backends
-for the hitchhiker-tree
-through [konserve](https://github.com/replikativ/konserve). The codebase *is
-subject to change* though. We would like to hear experience reports and are
-happy if you join us.
+building on the two projects and the storage backends for the hitchhiker-tree
+through [konserve](https://github.com/replikativ/konserve). We would like to
+hear experience reports and are happy if you join us. 
 
 ## Usage
 
@@ -19,14 +17,9 @@ Add to your leiningen dependencies:
 [![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
 
 
-In general all [datascript documentation](https://github.com/tonsky/datascript/wiki/Getting-started) applies.
-
-The code is currently a drop-in replacement for datascript on the JVM. If you
-are interested in this topic, please play around and give suggestions.
-
-The following example is taken from the store test which tests writing and
-reading the hitchhiker-tree. Notice that you have control when you flush to the
-store and can also use batching.
+We provide a small stable API for the JVM at the moment, but the on-disk schema
+is not fixed yet. We will provide a migration guide until we have reached a
+stable on-disk schema.
 
 ~~~clojure
 (require '[datahike.api :refer :all])
@@ -45,8 +38,45 @@ store and can also use batching.
       (delete-database uri))
 ~~~
 
+The API namespace provides compatibility to a subset of Datomic functions and
+should work as a drop-in replacement for them on the JVM. The rest of datahike
+will use core.async to coordinate IO in a platform-neutral manner.
+
+
+## Relationship to Datomic and datascript
+
+datahike provides similar functionality to [datomic](http://datomic.com) and can
+be used as a drop-in replacement for a subset of it. The goal of datahike is not
+to provide an open-source reimplementation of Datomic, but it is part of the
+[replikativ](https://github.com/replikativ) toolbox to build distributed data
+management solutions. 
+
+Some differences are:
+
+- datahike runs locally on one peer, (a transactor might be provided in the
+  future)
+- datahike provides the database as a transparent value, i.e. you can directly
+  access the index datastructures (hitchhiker-tree) and leverage their
+  persistent nature for replication
+- datahike does not provide historical information out of the box yet
+- datahike does not provide an API for transactor functions yet
+- datomic provides timeouts
+
+
+datahike's query engine comes from
+[datascript](https://github.com/tonsky/datascript). The differences to Datomic
+are documented there.
+
+## ClojureScript support
+
+In general all [datascript
+documentation](https://github.com/tonsky/datascript/wiki/Getting-started)
+applies for namespaces beyond `datahike.api`. We are working towards a portable
+version of datahike on top of core.async. Feel free to provide some help :).
 
 ## TODO
+
+- port to core.async
 - GC or eager deletion of fragments
 - use core.async in the future to provide durability also in a ClojureScript
 environment. core.async needs to be balanced with query performance though.
