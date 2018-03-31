@@ -61,13 +61,13 @@ will use core.async to coordinate IO in a platform-neutral manner.
 
 ## Relationship to Datomic and datascript
 
-datahike provides similar functionality to [datomic](http://datomic.com) and can
+datahike provides similar functionality to [Datomic](http://Datomic.com) and can
 be used as a drop-in replacement for a subset of it. The goal of datahike is not
 to provide an open-source reimplementation of Datomic, but it is part of the
 [replikativ](https://github.com/replikativ) toolbox to build distributed data
 management solutions. We have spoken to many clients and Clojure developers, who
 tried to stay away from Datomic because of its proprietary nature and we think
-in this regard datahike and datomic can very much complement each other.
+in this regard datahike and Datomic can very much complement each other.
 
 Some differences are:
 
@@ -80,12 +80,39 @@ Some differences are:
   stable, but provide useful insight into what is going on and can be optimized.
 - datahike does not provide historical information out of the box yet
 - datahike does not provide an API for transactor functions yet
-- datomic provides timeouts
+- Datomic has a REST interface and a Java API
+- Datomic provides timeouts
 
+Datomic is a full-fledged scalable database (as a service) built from the
+authors of Clojure and people with a lot of experience. If you need this kind
+of serious background, you should definitely stick to Datomic.
 
 datahike's query engine and most of its codebase comes from
 [datascript](https://github.com/tonsky/datascript). The differences to Datomic
 are documented there.
+
+
+## When should I pick what?
+
+### datahike
+
+Pick datahike if your app has modest requirements towards a typical database,
+e.g. a single machine and a few millions of entities at maximum, and you want to
+have an open-source solution. You should always be able to migrate to Datomic
+later easily.
+
+### Datomic
+
+Pick Datomic if you already know that you will need scalability later or if you
+need a network API for your database. There is also plenty of material about
+Datomic online already. Most of it applies in some form or another to datahike,
+but it might be easier to use Datomic directly when you first learn Datalog.
+
+### datascript
+
+Pick datascript if you want the fastest possible query performance and do not
+have a huge amount of data. You can easily persist the write operations
+separately and use the fast in-memory index datastructure of datascript then.
 
 ## ClojureScript support
 
@@ -104,15 +131,22 @@ version of datahike on top of core.async. Feel free to provide some help :).
 ### 0.2.0
 
 - cleanup interface to hitchhiker-tree
-- use core.async in the future to provide durability also in a ClojureScript
-environment. core.async needs to be balanced with query performance though.
+- use core.async to handle storage IO
+- ClojureScript support both in the browser and on node
+- work on schema concept
 
 ### 0.3.0
 
-- GC or eager deletion of fragments
+- support GC or eager deletion of fragments
 - use hitchhiker-tree synchronization for replication
-- run comprehensive query suite and compare to datascript and datomic
+- run comprehensive query suite and compare to datascript and Datomic
 
+### 1.0.0
+
+- support optimistic write support through attributes with conflict resolution
+  (CRDT-like)
+- reactive datalog for materialized views
+- provide some network access
  
 
 ## Commercial support
