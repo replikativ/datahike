@@ -4,21 +4,35 @@
             [hitchhiker.konserve :as kons]
             [hitchhiker.tree.core :as hc]
             [konserve.filestore :as fs]
+            [konserve-leveldb.core :as kl]
             [konserve.core :as k]
+            [konserve.cache :as kc]
+            [konserve.memory :as mem]
             [superv.async :refer [<?? S]]
-            ))
+            [clojure.core.cache :as cache]))
 
+
+(def memory (atom {}))
 
 (defn connect [uri]
   (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" uri)
         _ (when-not m
             (throw (ex-info "URI cannot be parsed." {:uri uri})))
-        store (case proto
-                "file"
-                (kons/add-hitchhiker-tree-handlers
-                 (<?? S (fs/new-fs-store path))))
+        store (kons/add-hitchhiker-tree-handlers
+               (kc/ensure-cache
+                (case proto
+                 "mem"
+                 (@memory uri)
+                 "file"
+                  (<?? S (fs/new-fs-store path))
+                 "level"
+                  (<?? S (kl/new-leveldb-store path)))
+               (atom (cache/lru-cache-factory {} :threshold 1000))))
         stored-db (<?? S (k/get-in store [:db]))
         _ (when-not stored-db
+            (case proto
+              "level"
+              (kl/release store))
             (throw (ex-info "DB does not exist." {:uri uri})))
         {:keys [eavt-key aevt-key avet-key]} stored-db
         empty (db/empty-db)
@@ -29,8 +43,8 @@
             :eavt-durable eavt-durable
             :aevt-durable (hc/<?? (kons/create-tree-from-root-key store aevt-key))
             :avet-durable (hc/<?? (kons/create-tree-from-root-key store avet-key))
-            :store store)) 
-    ))
+            :store store
+            :uri uri))))
 
 
 
@@ -38,10 +52,19 @@
   (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" uri)
         _ (when-not m
             (throw (ex-info "URI cannot be parsed." {:uri uri})))
-        store (case proto
-                "file"
-                (kons/add-hitchhiker-tree-handlers
-                 (<?? S (fs/new-fs-store path))))
+        store (kc/ensure-cache
+               (case proto
+                 "mem"
+                 (let [store (<?? S (mem/new-mem-store))]
+                   (swap! memory assoc uri store)
+                   store)
+                 "file"
+                 (kons/add-hitchhiker-tree-handlers
+                  (<?? S (fs/new-fs-store path)))
+                 "level"
+                 (kons/add-hitchhiker-tree-handlers
+                  (<?? S (kl/new-leveldb-store path))))
+               (atom (cache/lru-cache-factory {} :threshold 1000)))
         stored-db (<?? S (k/get-in store [:db]))
         _ (when stored-db
             (throw (ex-info "DB already exist." {:uri uri})))
@@ -53,19 +76,25 @@
                         :avet-key (kons/get-root-key (:tree (hc/<?? (hc/flush-tree avet-durable backend))))}
 
                        ))
+    (case proto
+      "level"
+      (kl/release store))
     nil))
 
 (defn delete-database [uri]
   (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" uri)]
     (case proto
+      "mem"
+      (swap! memory dissoc uri)
       "file"
-      (fs/delete-store path))))
-
+      (fs/delete-store path)
+      "level"
+      (kl/delete-store path))))
 
 (defn transact [connection tx-data]
   {:pre [(d/conn? connection)]}
-  (locking connection
-    (future
+  (future
+    (locking connection
       (let [{:keys [db-after] :as tx-report} @(d/transact connection tx-data)
             {:keys [eavt-durable aevt-durable avet-durable]} db-after
             store (:store @connection)
@@ -82,6 +111,17 @@
                                   :aevt-durable aevt-flushed
                                   :avet-durable avet-flushed))
         tx-report))))
+
+
+(defn release [conn]
+  (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" (:uri @conn))]
+    (case proto
+      "mem"
+      nil
+      "file"
+      nil
+      "level"
+      (kl/release (:store @conn)))))
 
 
 (def pull d/pull)

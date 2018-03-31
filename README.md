@@ -24,18 +24,34 @@ stable on-disk schema.
 ~~~clojure
 (require '[datahike.api :refer :all])
 
-(let [uri "datahike:file:///tmp/api-test"
-          _ (create-database uri)
-          conn (connect uri)
-          tx-report @(transact conn [{ :db/id 1, :name  "Ivan", :age   15 }
-                                     { :db/id 2, :name  "Petr", :age   37 }
-                                     { :db/id 3, :name  "Ivan", :age   37 }
-                                     { :db/id 4, :age 15 }])]
-      (= (q '[:find ?e
-              :where [?e :name]]
-            @conn)
-         #{[3] [2] [1]})
-      (delete-database uri))
+
+;; use the filesystem as storage medium
+(def uri #_"datahike:mem:///test"
+    "datahike:file:///tmp/api-test"
+    #_"datahike:level:///tmp/api-test1")
+	
+;; create a database at this place
+(create-database uri)
+	
+(def conn (connect uri))
+
+;; lets add some data and wait for the transaction
+@(transact conn [{ :db/id 1, :name  "Ivan", :age   15 }
+                 { :db/id 2, :name  "Petr", :age   37 }
+                 { :db/id 3, :name  "Ivan", :age   37 }
+                 { :db/id 4, :age 15 }])
+				 
+				 
+(q '[:find ?e
+     :where [?e :name]]
+  @conn)			 
+  
+;; => #{[3] [2] [1]}
+
+;; you might need to lease the connection, e.g. for leveldb
+(release conn)
+
+(delete-database uri)
 ~~~
 
 The API namespace provides compatibility to a subset of Datomic functions and
@@ -49,21 +65,25 @@ datahike provides similar functionality to [datomic](http://datomic.com) and can
 be used as a drop-in replacement for a subset of it. The goal of datahike is not
 to provide an open-source reimplementation of Datomic, but it is part of the
 [replikativ](https://github.com/replikativ) toolbox to build distributed data
-management solutions. 
+management solutions. We have spoken to many clients and Clojure developers, who
+tried to stay away from Datomic because of its proprietary nature and we think
+in this regard datahike and datomic can very much complement each other.
 
 Some differences are:
 
-- datahike runs locally on one peer, (a transactor might be provided in the
-  future)
+- datahike runs locally on one peer. A transactor might be provided in the
+  future and can also be realized through any linearizing write mechanism, e.g.
+  Apache Kafka. If you are interested, please contact us.
 - datahike provides the database as a transparent value, i.e. you can directly
   access the index datastructures (hitchhiker-tree) and leverage their
-  persistent nature for replication
+  persistent nature for replication. These internals are not guaranteed to stay
+  stable, but provide useful insight into what is going on and can be optimized.
 - datahike does not provide historical information out of the box yet
 - datahike does not provide an API for transactor functions yet
 - datomic provides timeouts
 
 
-datahike's query engine comes from
+datahike's query engine and most of its codebase comes from
 [datascript](https://github.com/tonsky/datascript). The differences to Datomic
 are documented there.
 
@@ -74,13 +94,31 @@ documentation](https://github.com/tonsky/datascript/wiki/Getting-started)
 applies for namespaces beyond `datahike.api`. We are working towards a portable
 version of datahike on top of core.async. Feel free to provide some help :).
 
-## TODO
+## Roadmap/Changelog
 
-- port to core.async
-- GC or eager deletion of fragments
+### 0.1.0
+
+- small, but stable JVM API
+- caching for fast query performance in konserve
+
+### 0.2.0
+
+- cleanup interface to hitchhiker-tree
 - use core.async in the future to provide durability also in a ClojureScript
 environment. core.async needs to be balanced with query performance though.
+
+### 0.3.0
+
+- GC or eager deletion of fragments
+- use hitchhiker-tree synchronization for replication
 - run comprehensive query suite and compare to datascript and datomic
+
+ 
+
+## Commercial support
+
+We can provide commercial support with [lambdaforge](http://lambdaforge.io). If
+you are interested in a particular feature, please let us know.
 
 ## License
 

@@ -16,11 +16,46 @@
                   :where [?e :name]]
                 @conn)
              #{[3] [2] [1]}))
+      (release conn)
       (delete-database uri)
       )))
 
 
+
 (comment
+
+  (def uri #_"datahike:mem:///test"
+    #_"datahike:file:///tmp/api-test"
+    "datahike:level:///tmp/api-test1")
+
+  (create-database uri)
+
+  (delete-database uri)
+
+  (def conn (connect uri))
+
+  (release conn)
+
+  (:cache (:store @conn))
+
+  (time
+   (doseq [i (range 100)]
+     @(transact conn [{ :db/id i, :name  "Ivan", :id i}])
+     ))
+
+  (time
+   @(transact conn (for [i (range 10000)]
+                     { :db/id i, :name  "Ivan", :id i}))
+   )
+
+  (dotimes [i 10]
+    (time
+     (q '[:find ?e
+          :where [?e :id 485]]
+        @conn)))
+
+
+
   (delete-database "datahike:file:///tmp/api-test"))
 
  
