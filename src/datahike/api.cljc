@@ -78,7 +78,8 @@
                        ))
     (case proto
       "level"
-      (kl/release store))
+      (kl/release store)
+      nil)
     nil))
 
 (defn delete-database [uri]
@@ -133,6 +134,12 @@
 (def seek-datoms d/seek-datoms)
 
 (def tempid d/tempid)
+
+(def entity d/entity)
+
+(def entity-db d/entity-db)
+
+(def filter d/filter)
 
 (defn db [conn]
   @conn)
