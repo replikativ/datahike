@@ -54,9 +54,10 @@ stable on-disk schema.
 (delete-database uri)
 ~~~
 
-The API namespace provides compatibility to a subset of Datomic functions and
-should work as a drop-in replacement for them on the JVM. The rest of datahike
-will use core.async to coordinate IO in a platform-neutral manner.
+The API namespace provides compatibility to a subset of Datomic functionality
+and should work as a drop-in replacement for them on the JVM. The rest of
+datahike will be ported to core.async to coordinate IO in a platform-neutral
+manner.
 
 
 ## Relationship to Datomic and datascript
@@ -64,10 +65,13 @@ will use core.async to coordinate IO in a platform-neutral manner.
 datahike provides similar functionality to [Datomic](http://Datomic.com) and can
 be used as a drop-in replacement for a subset of it. The goal of datahike is not
 to provide an open-source reimplementation of Datomic, but it is part of the
-[replikativ](https://github.com/replikativ) toolbox to build distributed data
-management solutions. We have spoken to many clients and Clojure developers, who
-tried to stay away from Datomic because of its proprietary nature and we think
-in this regard datahike and Datomic can very much complement each other.
+[replikativ](https://github.com/replikativ) toolbox aimed to build distributed
+data management solutions. We have spoken to many backend engineers and Clojure
+developers, who tried to stay away from Datomic just because of its proprietary
+nature and we think in this regard datahike should make an approach to Datomic
+easier and vice-versa people who only want to use the goodness of datalog in
+small scale applications should not worry about setting up and depending on
+Datomic.
 
 Some differences are:
 
@@ -87,19 +91,22 @@ Datomic is a full-fledged scalable database (as a service) built from the
 authors of Clojure and people with a lot of experience. If you need this kind
 of professional support, you should definitely stick to Datomic.
 
-datahike's query engine and most of its codebase comes from
-[datascript](https://github.com/tonsky/datascript). The differences to Datomic
-are documented there.
+datahike's query engine and most of its codebase come from
+[datascript](https://github.com/tonsky/datascript). Without the work on
+datascript datahike would not have been possible. Differences to Datomic with
+respect to the query engine are documented there.
 
 
 ## When should I pick what?
 
 ### datahike
 
-Pick datahike if your app has modest requirements towards a typical database,
-e.g. a single machine and a few millions of entities at maximum, and you want to
-have an open-source solution. You should always be able to migrate to Datomic
-later easily.
+Pick datahike if your app has modest requirements towards a typical durable
+database, e.g. a single machine and a few millions of entities at maximum.
+Similarly if you want to have an open-source solution and be able to study and
+tinker with the codebase of your database, datahike provides a comparatively
+small and well composed codebase to tweak it to your needs. You should also
+always be able to migrate to Datomic later easily.
 
 ### Datomic
 
@@ -152,8 +159,9 @@ version of datahike on top of core.async. Feel free to provide some help :).
 
 ## Commercial support
 
-We can provide commercial support with [lambdaforge](http://lambdaforge.io). If
-you are interested in a particular feature, please let us know.
+We are happy to provide commercial support with
+[lambdaforge](http://lambdaforge.io). If you are interested in a particular
+feature, please let us know.
 
 ## License
 
