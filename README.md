@@ -85,7 +85,7 @@ Some differences are:
 
 Datomic is a full-fledged scalable database (as a service) built from the
 authors of Clojure and people with a lot of experience. If you need this kind
-of serious background, you should definitely stick to Datomic.
+of professional support, you should definitely stick to Datomic.
 
 datahike's query engine and most of its codebase comes from
 [datascript](https://github.com/tonsky/datascript). The differences to Datomic
@@ -134,6 +134,7 @@ version of datahike on top of core.async. Feel free to provide some help :).
 - use core.async to handle storage IO
 - ClojureScript support both in the browser and on node
 - work on schema concept
+- implement transactor functions
 
 ### 0.3.0
 
