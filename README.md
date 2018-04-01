@@ -1,14 +1,15 @@
 # datahike <a href="https://gitter.im/replikativ/replikativ?utm_source=badge&amp;utm_medium=badge&amp;utm_campaign=pr-badge&amp;utm_content=badge"><img src="https://camo.githubusercontent.com/da2edb525cde1455a622c58c0effc3a90b9a181c/68747470733a2f2f6261646765732e6769747465722e696d2f4a6f696e253230436861742e737667" alt="Gitter" data-canonical-src="https://badges.gitter.im/Join%20Chat.svg" style="max-width:100%;"></a>
 
-This project is a port of [datascript](https://github.com/tonsky/datascript) to
-the [hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
+datahike is a durable database with an efficient datalog query engine. This
+project is a port of [datascript](https://github.com/tonsky/datascript) to the
+[hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
 datascript tests are passing, but we are still working on the internals. Having
 said this we consider datahike usable for small projects, since datascript is
 very mature and deployed in many applications and the hitchhiker-tree
 implementation is at least heavily tested through generative testing. We are
 building on the two projects and the storage backends for the hitchhiker-tree
 through [konserve](https://github.com/replikativ/konserve). We would like to
-hear experience reports and are happy if you join us. 
+hear experience reports and are happy if you join us.
 
 ## Usage
 
@@ -48,7 +49,7 @@ stable on-disk schema.
   
 ;; => #{[3] [2] [1]}
 
-;; you might need to lease the connection, e.g. for leveldb
+;; you might need to release the connection, e.g. for leveldb
 (release conn)
 
 (delete-database uri)
