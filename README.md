@@ -143,6 +143,7 @@ version of datahike on top of core.async. Feel free to provide some help :).
 - ClojureScript support both in the browser and on node
 - work on schema concept
 - implement transactor functions
+- fast redis backend support
 
 ### 0.3.0
 
@@ -156,6 +157,7 @@ version of datahike on top of core.async. Feel free to provide some help :).
   (CRDT-like)
 - reactive datalog for materialized views
 - provide some network access
+- investigate https://github.com/usethesource/capsule for faster hh-tree durability
  
 
 ## Commercial support
