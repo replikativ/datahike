@@ -48,7 +48,7 @@
 
 
 
-(defn create-database [uri]
+(defn create-database-with-schema [uri schema]
   (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" uri)
         _ (when-not m
             (throw (ex-info "URI cannot be parsed." {:uri uri})))
@@ -68,7 +68,7 @@
         stored-db (<?? S (k/get-in store [:db]))
         _ (when stored-db
             (throw (ex-info "DB already exist." {:uri uri})))
-        {:keys [eavt-durable aevt-durable avet-durable] :as new-db} (db/empty-db)
+        {:keys [eavt-durable aevt-durable avet-durable] :as new-db} (db/empty-db schema)
         backend (kons/->KonserveBackend store)]
     (<?? S (k/assoc-in store [:db]
                        {:eavt-key (kons/get-root-key (:tree (hc/<?? (hc/flush-tree eavt-durable backend))))
@@ -81,6 +81,9 @@
       (kl/release store)
       nil)
     nil))
+
+(defn create-database [uri]
+  (create-database-with-schema uri nil))
 
 (defn delete-database [uri]
   (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" uri)]
