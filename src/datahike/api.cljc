@@ -34,15 +34,17 @@
               "level"
               (kl/release store))
             (throw (ex-info "DB does not exist." {:uri uri})))
-        {:keys [eavt-key aevt-key avet-key]} stored-db
+        {:keys [eavt-key aevt-key avet-key schema rschema]} stored-db
         empty (db/empty-db)
         eavt-durable (hc/<?? (kons/create-tree-from-root-key store eavt-key))]
     (d/conn-from-db
      (assoc empty
+            :schema schema
             :max-eid (db/init-max-eid (:eavt empty) eavt-durable)
             :eavt-durable eavt-durable
             :aevt-durable (hc/<?? (kons/create-tree-from-root-key store aevt-key))
             :avet-durable (hc/<?? (kons/create-tree-from-root-key store avet-key))
+            :rschema rschema
             :store store
             :uri uri))))
 
@@ -68,13 +70,14 @@
         stored-db (<?? S (k/get-in store [:db]))
         _ (when stored-db
             (throw (ex-info "DB already exist." {:uri uri})))
-        {:keys [eavt-durable aevt-durable avet-durable] :as new-db} (db/empty-db schema)
+        {:keys [eavt-durable aevt-durable avet-durable rschema] :as new-db} (db/empty-db schema)
         backend (kons/->KonserveBackend store)]
     (<?? S (k/assoc-in store [:db]
-                       {:eavt-key (kons/get-root-key (:tree (hc/<?? (hc/flush-tree eavt-durable backend))))
+                       {:schema schema
+                        :eavt-key (kons/get-root-key (:tree (hc/<?? (hc/flush-tree eavt-durable backend))))
                         :aevt-key (kons/get-root-key (:tree (hc/<?? (hc/flush-tree aevt-durable backend))))
-                        :avet-key (kons/get-root-key (:tree (hc/<?? (hc/flush-tree avet-durable backend))))}
-
+                        :avet-key (kons/get-root-key (:tree (hc/<?? (hc/flush-tree avet-durable backend))))
+                        :rschema rschema}
                        ))
     (case proto
       "level"

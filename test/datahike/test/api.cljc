@@ -21,14 +21,30 @@
       )))
 
 
+(deftest datahike-simple-schema-support
+  (testing "Testing initial schema setup."
+    (let [uri "datahike:file:///tmp/schema-api-test"
+          _ (create-database-with-schema uri {:aka {:db/cardinality :db.cardinality/many}})
+          conn (connect uri)]
+      @(transact conn [ { :db/id -1
+                         :name  "Maksim"
+                         :age   45
+                         :aka   ["Max Otto von Stierlitz", "Jack Ryan"] } ])
+      (is (= (q '[ :find  ?n ?a ?aka
+                 :where [?e :aka ?aka]
+                 [?e :name ?n]
+                 [?e :age  ?a] ]
+                @conn)
+             #{["Maksim" 45 "Max Otto von Stierlitz"] ["Maksim" 45 "Jack Ryan"]})
+      (delete-database uri)))))
 
 (comment
 
   (def uri #_"datahike:mem:///test"
-    #_"datahike:file:///tmp/api-test"
-    "datahike:level:///tmp/api-test1")
+    "datahike:file:///tmp/api-test"
+    #_"datahike:level:///tmp/api-test1")
 
-  (create-database uri)
+  (create-database-with-schema uri nil #_{:aka {:db/cardinality :db.cardinality/many}})
 
   (delete-database uri)
 
@@ -42,6 +58,22 @@
    (doseq [i (range 100)]
      @(transact conn [{ :db/id i, :name  "Ivan", :id i}])
      ))
+
+  @(transact conn [ { :db/id -1
+                      :name  "Maksim"
+                       :age   45
+                       :aka   ["Max Otto von Stierlitz", "Jack Ryan"] } ])
+
+  (q '[ :find  ?n ?a ?aka
+         :where [?e :aka ?aka]
+         [?e :name ?n]
+         [?e :age  ?a] ]
+       @conn)
+
+  (let [schema {:aka {:db/cardinality :db.cardinality/many}}
+        conn   (d/create-conn schema)]
+    
+    )
 
   (time
    @(transact conn (for [i (range 10000)]
