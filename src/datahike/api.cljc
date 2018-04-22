@@ -1,4 +1,5 @@
 (ns datahike.api
+  (:refer-clojure :exclude [filter])
   (:require [datahike.db :as db]
             [datahike.core :as d]
             [hitchhiker.konserve :as kons]
@@ -103,14 +104,16 @@
   (future
     (locking connection
       (let [{:keys [db-after] :as tx-report} @(d/transact connection tx-data)
-            {:keys [eavt-durable aevt-durable avet-durable]} db-after
+            {:keys [eavt-durable aevt-durable avet-durable schema rschema]} db-after
             store (:store @connection)
             backend (kons/->KonserveBackend store)
             eavt-flushed (:tree (hc/<?? (hc/flush-tree eavt-durable backend)))
             aevt-flushed (:tree (hc/<?? (hc/flush-tree aevt-durable backend)))
             avet-flushed (:tree (hc/<?? (hc/flush-tree avet-durable backend)))]
         (<?? S (k/assoc-in store [:db]
-                           {:eavt-key (kons/get-root-key eavt-flushed)
+                           {:schema schema
+                            :rschema rschema
+                            :eavt-key (kons/get-root-key eavt-flushed)
                             :aevt-key (kons/get-root-key aevt-flushed)
                             :avet-key (kons/get-root-key avet-flushed)}))
         (reset! connection (assoc db-after
