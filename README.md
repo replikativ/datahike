@@ -131,10 +131,25 @@ version of datahike on top of core.async. Feel free to provide some help :).
 
 ## Roadmap/Changelog
 
+
+### 0.1.1
+
+- preliminary support for datascript style schema support
+  through `create-database-with-schema`
+- support storage of BigDecimal and BigInteger values
+
 ### 0.1.0
 
 - small, but stable JVM API
 - caching for fast query performance in konserve
+
+
+- reactive reflection warnings?
+- schema support
+- remove eavt-durable
+- remove redundant slicing code
+- generalize interface to indices
+- integration factui/reactive?
 
 ### 0.2.0
 
@@ -150,6 +165,7 @@ version of datahike on top of core.async. Feel free to provide some help :).
 - support GC or eager deletion of fragments
 - use hitchhiker-tree synchronization for replication
 - run comprehensive query suite and compare to datascript and Datomic
+- support anomaly errors (?)
 
 ### 1.0.0
 

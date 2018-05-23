@@ -6,16 +6,18 @@
   
   :dependencies [[org.clojure/clojure "1.7.0" :scope "provided"]
                  [org.clojure/clojurescript "1.7.228" :scope "provided"]
-                 [io.replikativ/hitchhiker-tree "0.1.0"]
+                 [io.replikativ/hitchhiker-tree "0.1.1-SNAPSHOT"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2"]]
   
   :plugins [
     [lein-cljsbuild "1.1.5"]
   ]
-  
+
+
+
   :global-vars {
-    *warn-on-reflection* true
+;;    *warn-on-reflection* true
 ;;     *unchecked-math* :warn-on-boxed
   }
   

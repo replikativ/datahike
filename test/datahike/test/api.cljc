@@ -1,6 +1,8 @@
 (ns datahike.test.api
+  (:refer-clojure :exclude [filter])
   (:require [datahike.api :refer :all]
-            [clojure.test :refer :all]))
+            [clojure.test :refer :all]
+            [konserve.core :as k]))
 
 
 (deftest datahike-api-test
@@ -35,8 +37,15 @@
                  [?e :name ?n]
                  [?e :age  ?a] ]
                 @conn)
-             #{["Maksim" 45 "Max Otto von Stierlitz"] ["Maksim" 45 "Jack Ryan"]})
-      (delete-database uri)))))
+             #{["Maksim" 45 "Max Otto von Stierlitz"] ["Maksim" 45 "Jack Ryan"]}))
+      (release conn)
+      (let [conn (connect uri)]
+        (is (= (q '[ :find  ?n ?a ?aka
+                    :where [?e :aka ?aka]
+                    [?e :name ?n]
+                    [?e :age ?a] ] @conn)
+               #{["Maksim" 45 "Max Otto von Stierlitz"] ["Maksim" 45 "Jack Ryan"]})))
+      (delete-database uri))))
 
 (comment
 
@@ -44,13 +53,17 @@
     "datahike:file:///tmp/api-test"
     #_"datahike:level:///tmp/api-test1")
 
-  (create-database-with-schema uri nil #_{:aka {:db/cardinality :db.cardinality/many}})
+  (create-database-with-schema uri {:aka {:db/cardinality :db.cardinality/many}})
 
   (delete-database uri)
 
   (def conn (connect uri))
 
   (release conn)
+
+  (require '[clojure.core.async :refer [<!!]])
+
+  (<!! (k/get-in (:store @conn) [:db]))
 
   (:cache (:store @conn))
 
