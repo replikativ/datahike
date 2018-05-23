@@ -1,4 +1,4 @@
-(defproject io.replikativ/datahike "0.1.1-SNAPSHOT"
+(defproject io.replikativ/datahike "0.1.1"
   :description "A durable datalog implementation adaptable for distribution."
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
@@ -6,7 +6,7 @@
   
   :dependencies [[org.clojure/clojure "1.7.0" :scope "provided"]
                  [org.clojure/clojurescript "1.7.228" :scope "provided"]
-                 [io.replikativ/hitchhiker-tree "0.1.1-SNAPSHOT"]
+                 [io.replikativ/hitchhiker-tree "0.1.1"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2"]]
   
