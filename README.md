@@ -20,7 +20,7 @@ Add to your leiningen dependencies:
 
 We provide a small stable API for the JVM at the moment, but the on-disk schema
 is not fixed yet. We will provide a migration guide until we have reached a
-stable on-disk schema.
+stable on-disk schema. Take a look at the ChangeLog before upgrading.
 
 ~~~clojure
 (require '[datahike.api :refer :all])
@@ -126,16 +126,48 @@ separately and use the fast in-memory index datastructure of datascript then.
 
 In general all [datascript
 documentation](https://github.com/tonsky/datascript/wiki/Getting-started)
-applies for namespaces beyond `datahike.api`. We are working towards a portable
+applies for namespaces beyond `datahike.api**. We are working towards a portable
 version of datahike on top of core.async. Feel free to provide some help :).
+
+
+# Migration & Backup
+
+The database can be exported to a flat file with:
+
+~~~clojure
+(require '[datahike.migrate :refer [export-db import-db]])
+(export-db @conn "/tmp/eavt-dump")
+~~~
+
+You must do so before upgrading a datahike version.
+
+~~~clojure
+;; ... setup new-conn (recreate with correct schema)
+
+(import-db new-conn "/tmp/eavt-dump")
+~~~
+
+The datoms are stored as strings in a line-based format, so you can easily check
+whether your dump is containing reasonable data. You can also use it to do some
+string based editing of the DB, but this might not be supported for future
+migrations. You can also use the export as a backup tool.
+
 
 ## Roadmap/Changelog
 
 
+### 0.1.2
+
+- *disk layout change, migration needed*
+- write root nodes of indices efficiently; reduces garbage by ~40 times and
+  halves transaction times
+- support export/import functionality
+
+
 ### 0.1.1
 
-- preliminary support for datascript style schema support
-  through `create-database-with-schema`
+- preliminary support for datascript style schemas through
+  `create-database-with-schema`
 - support storage of BigDecimal and BigInteger values
 
 ### 0.1.0
