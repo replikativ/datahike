@@ -156,6 +156,10 @@ The datoms are stored as strings in a line-based format, so you can easily check
 whether your dump is containing reasonable data. You can also use it to do some
 string based editing of the DB. You can also use the export as a backup.
 
+If you are upgrading from pre `0.1.2` where we have not had the migration code
+yet, then just evaluate the `datahike.migrate` namespace manually in your
+project before exporting.
+
 
 ## Changelog
 
