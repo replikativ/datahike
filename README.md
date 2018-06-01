@@ -20,7 +20,7 @@ Add to your leiningen dependencies:
 
 We provide a small stable API for the JVM at the moment, but the on-disk schema
 is not fixed yet. We will provide a migration guide until we have reached a
-stable on-disk schema. Take a look at the ChangeLog before upgrading.
+stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 
 ~~~clojure
 (require '[datahike.api :refer :all])
