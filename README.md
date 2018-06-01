@@ -130,7 +130,7 @@ applies for namespaces beyond `datahike.api**. We are working towards a portable
 version of datahike on top of core.async. Feel free to provide some help :).
 
 
-# Migration & Backup
+## Migration & Backup
 
 The database can be exported to a flat file with:
 
@@ -139,7 +139,10 @@ The database can be exported to a flat file with:
 (export-db @conn "/tmp/eavt-dump")
 ~~~
 
-You must do so before upgrading a datahike version.
+You must do so before upgrading to a datahike version that has changed the
+on-disk format. This can happen as long as we are arriving at version `1.0.0`
+and will always be communicated through the Changelog. After you have bumped the
+datahike version you can use
 
 ~~~clojure
 ;; ... setup new-conn (recreate with correct schema)
@@ -147,13 +150,14 @@ You must do so before upgrading a datahike version.
 (import-db new-conn "/tmp/eavt-dump")
 ~~~
 
+to reimport your data into the new format.
+
 The datoms are stored as strings in a line-based format, so you can easily check
 whether your dump is containing reasonable data. You can also use it to do some
-string based editing of the DB, but this might not be supported for future
-migrations. You can also use the export as a backup tool.
+string based editing of the DB. You can also use the export as a backup.
 
 
-## Roadmap/Changelog
+## Changelog
 
 
 ### 0.1.2
@@ -183,14 +187,16 @@ migrations. You can also use the export as a backup tool.
 - generalize interface to indices
 - integration factui/reactive?
 
+## Roadmap
+
 ### 0.2.0
 
 - cleanup interface to hitchhiker-tree
-- use core.async to handle storage IO
+- optionally use core.async to handle storage IO
 - ClojureScript support both in the browser and on node
-- work on schema concept
-- implement transactor functions
+- conceptualize schema upgrades
 - fast redis backend support
+- explore support for other index structures, e.g. FoundationDB
 
 ### 0.3.0
 
