@@ -84,7 +84,6 @@ Some differences are:
   persistent nature for replication. These internals are not guaranteed to stay
   stable, but provide useful insight into what is going on and can be optimized.
 - datahike does not provide historical information out of the box yet
-- datahike does not provide an API for transactor functions yet
 - Datomic has a REST interface and a Java API
 - Datomic provides timeouts
 
