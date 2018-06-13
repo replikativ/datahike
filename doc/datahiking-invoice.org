@@ -24,7 +24,7 @@
   - motivation
   - datahike
   - datalog
-  - life-coding example
+  - live-coding example
   
 * Motivation: CRDTs
   - /programming model/ for CRDTs?
@@ -33,7 +33,7 @@
 	
 
 * datalog
-  - subset of prolog
+  - subset of Prolog
   - similar to SQL (relational algebra)
   - /implicit/ joining through logic variables
   #+BEGIN_SRC clojure
@@ -67,30 +67,15 @@
    - databases: datahike, datomic, datascript
    - in-memory only
    - 100K entries
-   - 5 queries with increasing complexity
    - on local machine
 
-** simple baseline benchmark
-   #+BEGIN_SRC clojure
-(defn bench-basic-query [dbs db-type]
-  (let [query '[:find ?e :where [?e :name "user3299"]]]
-    (println "Testing simple query" db-type "...")
-    (crit/with-progress-reporting
-      (crit/bench
-       (case db-type
-         :datahike (d/q query (:datahike @dbs))
-         :datascript (ds/q query (-> dbs deref :datascript deref))
-         :datomic (dt/q query (:datomic @dbs)))
-      :verbose))
-    dbs))
-   #+END_SRC 
-   
 ** simple baseline benchmark
    file:perf.png
   
    
   
 * invoicing example
+  - REPL demo of https://gitlab.com/replikativ/datahike-invoice
 
   
 * References

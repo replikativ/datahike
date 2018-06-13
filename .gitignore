@@ -18,3 +18,4 @@ release.clj
 .idea
 *.iml
 .vscode
+/.gitold/COMMIT_EDITMSG
