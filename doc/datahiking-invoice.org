@@ -1,0 +1,100 @@
+#+Title: datahike - taking datalog to invoices
+#+Author: Christian Weilbach
+#+Email: christian@replikativ.io
+
+#+OPTIONS: reveal_center:t reveal_progress:t reveal_history:t reveal_control:t
+#+OPTIONS: reveal_mathjax:t reveal_rolling_Links:t reveal_keyboard:t reveal_overview:t num:nil
+#+OPTIONS: reveal_slide_number:t
+# +OPTIONS: reveal_width:1420 reveal_height:1080
+#+OPTIONS: toc:nil
+#+REVEAL_MARGIN: 0.1
+#+REVEAL_MIN_SCALE: 0.6
+#+REVEAL_MAX_SCALE: 1.2
+#+REVEAL_TRANS: linear
+#+REVEAL_THEME: simple
+#+REVEAL_HLEVEL: 1
+#+REVEAL_HEAD_PREAMBLE: <meta name="description" content="">
+
+* About
+  - future PhD student in probabilistic programming on Anglican
+  - one author of http://replikativ.io libraries
+  - consulting with Clojure at http://lambdaforge.io
+
+* Outline
+  - motivation
+  - datahike
+  - datalog
+  - life-coding example
+  
+* Motivation: CRDTs
+  - /programming model/ for CRDTs?
+  - decouple aggregations of data from CRDT object granularity
+  - datalog is turing-incomplete $\Rightarrow$ better design tradeoffs
+	
+
+* datalog
+  - subset of prolog
+  - similar to SQL (relational algebra)
+  - /implicit/ joining through logic variables
+  #+BEGIN_SRC clojure
+  [:find ?e :where [?e :name "user3299"]]
+  #+END_SRC
+	
+* datahike
+  $\text{datahike} \approx \text{datascript} + \text{hitchhiker-tree}$
+  
+** datascript
+   - in-memory datalog implementation for Clojure/Script
+   - very mature (4 years+ development)
+   - faster in memory query engine than Datomic
+   - supports a lot of Datomic's datalog flavour:
+     + pull-expressions
+     + transactor functions
+   - but allows partial schemas
+
+** hitchhiker-tree
+   - fractal tree
+   - fractal between append-log and B+-tree
+   - $\Rightarrow$ optimal tradeoff between read and write behaviour
+   - "amortized" $O(1)$ inserts and $O(log(n))$ fetches
+   - batched inserts
+	 
+
+** hitchhiker-tree
+   file:hhtree2.png
+   
+** simple baseline benchmark
+   - databases: datahike, datomic, datascript
+   - in-memory only
+   - 100K entries
+   - 5 queries with increasing complexity
+   - on local machine
+
+** simple baseline benchmark
+   #+BEGIN_SRC clojure
+(defn bench-basic-query [dbs db-type]
+  (let [query '[:find ?e :where [?e :name "user3299"]]]
+    (println "Testing simple query" db-type "...")
+    (crit/with-progress-reporting
+      (crit/bench
+       (case db-type
+         :datahike (d/q query (:datahike @dbs))
+         :datascript (ds/q query (-> dbs deref :datascript deref))
+         :datomic (dt/q query (:datomic @dbs)))
+      :verbose))
+    dbs))
+   #+END_SRC 
+   
+** simple baseline benchmark
+   file:perf.png
+  
+   
+  
+* invoicing example
+
+  
+* References
+  - https://github.com/replikativ/datahike
+  - HH-Tree talk: https://www.youtube.com/watch?v=jdn617M3-P4
+  - DataScript internals: http://tonsky.me/blog/datascript-internals/
+  - Reactive frontend vision: http://tonsky.me/blog/the-web-after-tomorrow/

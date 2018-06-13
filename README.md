@@ -1,8 +1,8 @@
 # datahike <a href="https://gitter.im/replikativ/replikativ?utm_source=badge&amp;utm_medium=badge&amp;utm_campaign=pr-badge&amp;utm_content=badge"><img src="https://camo.githubusercontent.com/da2edb525cde1455a622c58c0effc3a90b9a181c/68747470733a2f2f6261646765732e6769747465722e696d2f4a6f696e253230436861742e737667" alt="Gitter" data-canonical-src="https://badges.gitter.im/Join%20Chat.svg" style="max-width:100%;"></a>
 
-datahike is a durable database with an efficient datalog query engine. This
-project is a port of [datascript](https://github.com/tonsky/datascript) to the
-[hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
+datahike is a durable database powered by an efficient datalog query engine.
+This project is a port of [datascript](https://github.com/tonsky/datascript) to
+the [hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
 datascript tests are passing, but we are still working on the internals. Having
 said this we consider datahike usable for small projects, since datascript is
 very mature and deployed in many applications and the hitchhiker-tree
@@ -56,9 +56,15 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 ~~~
 
 The API namespace provides compatibility to a subset of Datomic functionality
-and should work as a drop-in replacement for them on the JVM. The rest of
-datahike will be ported to core.async to coordinate IO in a platform-neutral
-manner.
+and should work as a drop-in replacement on the JVM. The rest of datahike will
+be ported to core.async to coordinate IO in a platform-neutral manner.
+
+
+## Example projects
+
+- [Invoice creation](https://gitlab.com/replikativ/datahike-invoice)
+  demonstrated at the [Dutch Clojure
+  Meetup](https://www.meetup.com/de-DE/The-Dutch-Clojure-Meetup/events/trmqnpyxjbrb/).
 
 
 ## Relationship to Datomic and datascript
