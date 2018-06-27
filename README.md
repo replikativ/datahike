@@ -11,6 +11,8 @@ building on the two projects and the storage backends for the hitchhiker-tree
 through [konserve](https://github.com/replikativ/konserve). We would like to
 hear experience reports and are happy if you join us.
 
+There is also a [video presentation](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
+
 ## Usage
 
 Add to your leiningen dependencies:
