@@ -10,13 +10,19 @@
             [konserve.cache :as kc]
             [konserve.memory :as mem]
             [superv.async :refer [<?? S]]
-            [clojure.core.cache :as cache]))
+            [clojure.core.cache :as cache])
+  (:import [java.net URI]))
 
-
-(def memory (atom {}))
+(defn parse-uri [uri]
+  (let [base-uri (URI. uri)
+        m (.getScheme base-uri)
+        sub-uri (URI. (.getSchemeSpecificPart base-uri))
+        proto (.getScheme sub-uri)
+        path (.getPath sub-uri)]
+    [m proto path]))
 
 (defn connect [uri]
-  (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" uri)
+  (let [[m proto path] (parse-uri uri) #_(re-find #"datahike:(.+)://(/.+)" uri)
         _ (when-not m
             (throw (ex-info "URI cannot be parsed." {:uri uri})))
         store (kons/add-hitchhiker-tree-handlers
@@ -53,10 +59,8 @@
             :store store
             :uri uri))))
 
-
-
 (defn create-database-with-schema [uri schema]
-  (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" uri)
+  (let [[m proto path] (parse-uri uri)
         _ (when-not m
             (throw (ex-info "URI cannot be parsed." {:uri uri})))
         store (kc/ensure-cache
@@ -94,7 +98,7 @@
   (create-database-with-schema uri nil))
 
 (defn delete-database [uri]
-  (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" uri)]
+  (let [[m proto path] (parse-uri uri)]
     (case proto
       "mem"
       (swap! memory dissoc uri)
