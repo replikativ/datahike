@@ -13,6 +13,8 @@
             [clojure.core.cache :as cache])
   (:import [java.net URI]))
 
+(def memory (atom {}))
+
 (defn parse-uri [uri]
   (let [base-uri (URI. uri)
         m (.getScheme base-uri)
