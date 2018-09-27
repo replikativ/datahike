@@ -19,6 +19,7 @@
     (- storage-end (+ string-size 4))))
 
 
+;; TODO: [v] can only be a string for now
 (defn ->byteBuffer
   [[e a v t]]
   (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]

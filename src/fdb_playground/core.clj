@@ -124,12 +124,28 @@
 ;; ;;
 
 
+(defn empty-fdb
+  []
+  (let [fd (FDB/selectAPIVersion 510)]
+    (with-open [db (open fd)]
+      db)))
+
 
 (defn fdb-key
   "Converts a datom into a fdb key.
   Note the conversion of byte array into a string to fit the clj fdb library interface."
   [[e a v t]]
   (str (->byteBuffer [e (str a) (str v) t])))
+
+
+;; Get
+(defn get
+  [db [e a v t]]
+  (let [fd  (select-api-version 510)
+        key (fdb-key [e a v t])]
+    (with-open [db (open fd)]
+      (tr! db
+           (get-val tr key)))))
 
 
 ;; TODO: will have to insert the avet and co as well
@@ -141,10 +157,10 @@
   [db [e a v t]]
   (let [fd    (FDB/selectAPIVersion 510)
         key   (fdb-key [e a v t])
-        value  nil ;; We can put whatever here. TODO: is nil ok?
+        value key ;; Putting the key here, but we could put anything.
         ]
     (with-open [db (open fd)]
-      #break (tr! db
+      (tr! db
            (set-val tr key value))
       db)))
 

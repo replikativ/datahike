@@ -747,18 +747,18 @@
   ([] (empty-db default-schema))
   ([schema]
    {:pre [(or (nil? schema) (map? schema))]}
-   (map->DB {:schema       (validate-schema schema)
-             :eavt         (btset/btset-by cmp-datoms-eavt)
-             :eavt-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-             :eavt-scalable ()
-             :aevt         (btset/btset-by cmp-datoms-aevt)
-             :aevt-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-             :avet         (btset/btset-by cmp-datoms-avet)
-             :avet-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-             :max-eid      0
-             :max-tx       tx0
-             :rschema      (rschema schema)
-             :hash         (atom 0)})))
+   (map->DB {:schema        (validate-schema schema)
+             :eavt          (btset/btset-by cmp-datoms-eavt)
+             :eavt-durable  (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+             :eavt-scalable (fdb/empty-fdb)
+             :aevt          (btset/btset-by cmp-datoms-aevt)
+             :aevt-durable  (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+             :avet          (btset/btset-by cmp-datoms-avet)
+             :avet-durable  (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+             :max-eid       0
+             :max-tx        tx0
+             :rschema       (rschema schema)
+             :hash          (atom 0)})))
 
 ;; TODO make private again
 (defn init-max-eid [eavt eavt-durable]
@@ -1059,7 +1059,10 @@
                                                                    (.-tx datom)]
                                                                 nil)))
         true      (update-in [:eavt] btset/btset-conj datom cmp-datoms-eavt-quick)
-        true      (update-in [:eavt-scalable] fdb/fdb-insert datom)
+        true      (update-in [:eavt-scalable] #(fdb/fdb-insert % [(.-e datom)
+                                                                  (.-a datom)
+                                                                  (.-v datom)
+                                                                  (.-tx datom)]))
 
         true      (update-in [:aevt] btset/btset-conj datom cmp-datoms-aevt-quick)
         true      (update-in [:aevt-durable] #(<?? (hmsg/insert % [(.-a datom)
@@ -1092,9 +1095,10 @@
 
 
   (let [{:keys [eavt eavt-durable]} (-> (with-datom (empty-db) (Datom. 123 :likes "Hans" 0 true))
-                                        (with-datom (Datom. 124 :likes "GG" 0 true)))]
+                                        #_(with-datom (Datom. 124 :likes "GG" 0 true)))]
 
     (hc/lookup-fwd-iter eavt-durable [])
+    (fdb/get nil [123 :likes "Hans" 0 true])
     #_(slice eavt eavt-durable (Datom. nil nil nil nil nil) [nil])
     )
   )
