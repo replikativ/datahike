@@ -6,7 +6,8 @@
     [hitchhiker.tree.core :as hc :refer [<??]]
     [hitchhiker.tree.messaging :as hmsg]
     [hitchhiker.konserve :as kons]
-    [datahike.btset :as btset])
+    [datahike.btset :as btset]
+    [fdb-playground.core :as fdb])
   #?(:cljs (:require-macros [datahike.db :refer [case-tree combine-cmp raise defrecord-updatable cond-let]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry])))
@@ -745,19 +746,19 @@
 (defn ^DB empty-db
   ([] (empty-db default-schema))
   ([schema]
-    {:pre [(or (nil? schema) (map? schema))]}
-    (map->DB {
-      :schema  (validate-schema schema)
-      :eavt    (btset/btset-by cmp-datoms-eavt)
-      :eavt-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-      :aevt    (btset/btset-by cmp-datoms-aevt)
-      :aevt-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-      :avet    (btset/btset-by cmp-datoms-avet)
-      :avet-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-      :max-eid 0
-      :max-tx  tx0
-      :rschema (rschema schema)
-      :hash    (atom 0)})))
+   {:pre [(or (nil? schema) (map? schema))]}
+   (map->DB {:schema       (validate-schema schema)
+             :eavt         (btset/btset-by cmp-datoms-eavt)
+             :eavt-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+             :eavt-scalable ()
+             :aevt         (btset/btset-by cmp-datoms-aevt)
+             :aevt-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+             :avet         (btset/btset-by cmp-datoms-avet)
+             :avet-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+             :max-eid      0
+             :max-tx       tx0
+             :rschema      (rschema schema)
+             :hash         (atom 0)})))
 
 ;; TODO make private again
 (defn init-max-eid [eavt eavt-durable]
@@ -772,13 +773,13 @@
     (-> slice vec rseq first :e) ;; :e of last datom in slice
     0))
 
-
+;; TODO: Add our DB initialisation here
 (defn ^DB init-db
   ([datoms] (init-db datoms default-schema))
   ([datoms schema & {:as options :keys [validate?] :or {validate? true}}]
    (if (empty? datoms)
      (empty-db schema)
-     (let [_ (when validate? (validate-schema schema))
+     (let [_       (when validate? (validate-schema schema))
            rschema (rschema schema)
            indexed (:db/index rschema)
            #?@(:cljs
@@ -802,6 +803,7 @@
                                                                 (.-tx datom)] nil))
                                               (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
                                               (seq datoms)))
+
                 aevt        (apply btset/btset-by cmp-datoms-aevt datoms)
                 aevt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
                                                 (hmsg/insert t [(.-a datom)
@@ -821,25 +823,25 @@
                                               (seq datoms)))
                 max-eid     (init-max-eid eavt eavt-durable)])
            max-tx (transduce (map (fn [^Datom d] (.-tx d))) max tx0 eavt)]
-       (map->DB {:schema  schema
-                 :eavt    eavt
+       (map->DB {:schema       schema
+                 :eavt         eavt
                  :eavt-durable eavt-durable
-                 :aevt    aevt
+                 :aevt         aevt
                  :aevt-durable aevt-durable
-                 :avet    avet
+                 :avet         avet
                  :avet-durable avet-durable
-                 :max-eid max-eid
-                 :max-tx  max-tx
-                 :rschema rschema
-                 :hash    (atom 0)})))))
+                 :max-eid      max-eid
+                 :max-tx       max-tx
+                 :rschema      rschema
+                 :hash         (atom 0)})))))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)
          ys (seq y)]
     (cond
-      (nil? xs) (nil? ys)
+      (nil? xs)                 (nil? ys)
       (= (first xs) (first ys)) (recur (next xs) (next ys))
-      :else false)))
+      :else                     false)))
 
 (defn- hash-db [^DB db]
   (let [h @(.-hash db)]
@@ -849,7 +851,7 @@
       h)))
 
 (defn- hash-fdb [^FilteredDB db]
-  (let [h @(.-hash db)
+  (let [h      @(.-hash db)
         datoms (or (-datoms db :eavt []) #{})]
     (if (zero? h)
       (let [datoms (or (-datoms db :eavt []) #{})]
@@ -904,13 +906,13 @@
 (defn- resolve-datom [db e a v t]
   (when a (validate-attr a (list 'resolve-datom 'db e a v t)))
   (Datom.
-    (entid-some db e)               ;; e
-    a                               ;; a
-    (if (and (some? v) (ref? db a)) ;; v
-      (entid-strict db v)
-      v)
-    (entid-some db t)               ;; t
-    nil))
+   (entid-some db e)               ;; e
+   a                               ;; a
+   (if (and (some? v) (ref? db a)) ;; v
+     (entid-strict db v)
+     v)
+   (entid-some db t)               ;; t
+   nil))
 
 (defn- components->pattern [db index [c0 c1 c2 c3]]
   (case index
@@ -955,10 +957,10 @@
              {:error :lookup-ref/syntax, :entity-id eid})
       (not (is-attr? db (first eid) :db/unique))
       (if (= :db/ident (first eid))
-        (raise "You must have :db/ident marked as :db/unique in your schema to use keyword refs" {:error :lookup-ref/db-ident
-                              :entity-id eid})
+        (raise "You must have :db/ident marked as :db/unique in your schema to use keyword refs" {:error     :lookup-ref/db-ident
+                                                                                                  :entity-id eid})
         (raise "Lookup ref attribute should be marked as :db/unique: " eid
-               {:error :lookup-ref/unique
+               {:error     :lookup-ref/unique
                 :entity-id eid}))
       (nil? (second eid))
       nil
@@ -966,8 +968,8 @@
       (:e (first (-datoms db :avet eid))))
 
     #?@(:cljs
-         [(array? eid)
-          (recur db (array-seq eid))])
+        [(array? eid)
+         (recur db (array-seq eid))])
 
     (keyword? eid)
     (recur db [:db/ident eid])
@@ -1057,12 +1059,15 @@
                                                                    (.-tx datom)]
                                                                 nil)))
         true      (update-in [:eavt] btset/btset-conj datom cmp-datoms-eavt-quick)
+        true      (update-in [:eavt-scalable] fdb/fdb-insert datom)
+
         true      (update-in [:aevt] btset/btset-conj datom cmp-datoms-aevt-quick)
         true      (update-in [:aevt-durable] #(<?? (hmsg/insert % [(.-a datom)
                                                                    (.-e datom)
                                                                    (.-v datom)
                                                                    (.-tx datom)]
                                                                 nil)))
+
         indexing? (update-in [:avet] btset/btset-conj datom cmp-datoms-avet-quick)
         indexing? (update-in [:avet-durable] #(<?? (hmsg/insert % [(.-a datom)
                                                                    (.-v datom)
@@ -1086,10 +1091,13 @@
   (hc/lookup-fwd-iter (:eavt-durable ) [123 :likes])
 
 
-  (let [{:keys [eavt eavt-durable]} (with-datom (empty-db) (Datom. 123 :likes "Hans" 0 true))]
+  (let [{:keys [eavt eavt-durable]} (-> (with-datom (empty-db) (Datom. 123 :likes "Hans" 0 true))
+                                        (with-datom (Datom. 124 :likes "GG" 0 true)))]
 
     (hc/lookup-fwd-iter eavt-durable [])
-    #_(slice eavt eavt-durable (Datom. nil nil nil nil nil) [nil])))
+    #_(slice eavt eavt-durable (Datom. nil nil nil nil nil) [nil])
+    )
+  )
 
 
 
