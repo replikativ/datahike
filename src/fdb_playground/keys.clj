@@ -47,6 +47,7 @@
 (assert (== (offset "hello" 9) 0))
 
 (def test-buff (->byteBuffer [20 "hello" "some analysis" 3]))
+;; There are 64 bits for [e]. The last byte is at index 7.
 (assert (== (.get test-buff 7) 20))
 ;; size of 'hello' is 5
 (assert (== (.get test-buff (- a-end 6)) 5))
