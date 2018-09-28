@@ -2,7 +2,49 @@
   (:import (com.apple.foundationdb FDB))
   (:require [clj-foundationdb.utils :refer :all]
             [clj-foundationdb.core :refer :all]
-            [fdb-playground.keys :refer [->byteBuffer]]))
+            [fdb-playground.keys :refer [->byteArr]]))
+
+
+(defn empty-fdb
+  []
+  (let [fd (FDB/selectAPIVersion 510)]
+    (with-open [db (open fd)]
+      db)))
+
+
+(defn fdb-key
+  "Converts a datom into a fdb key.
+  Note the conversion of byte array into a string to fit the clj fdb library interface."
+  [[e a v t]]
+  (->byteArr [e (str a) (str v) t])
+  )
+
+
+;; Get
+(defn get
+  [db [e a v t]]
+  (let [fd  (select-api-version 510)
+        key (fdb-key [e a v t])]
+    (with-open [db (open fd)]
+      (tr! db
+           (get-val tr key)))))
+
+
+;; TODO: will have to insert the avet and co as well
+;; TODO: will have to return smthg that we can attach to datahike
+;; TODO: - db is the current fbd db, the with-open [db...] is obselete: we shall no longer open the db from there
+;;       - So look at how the clj-fdb lib is opening the db and do the same
+;;       - it could be the right time to get rid of the clj-fdb lib as well.
+(defn fdb-insert
+  [db [e a v t]]
+  (let [fd    (FDB/selectAPIVersion 510)
+        #break key   (fdb-key [e a v t])
+        value key ;; Putting the key here, but we could put anything.
+        ]
+    (with-open [db (open fd)]
+      (tr! db
+           (set-val tr key value))
+      db)))
 
 
 ;; ;; Set a key
@@ -124,45 +166,6 @@
 ;; ;;
 
 
-(defn empty-fdb
-  []
-  (let [fd (FDB/selectAPIVersion 510)]
-    (with-open [db (open fd)]
-      db)))
-
-
-(defn fdb-key
-  "Converts a datom into a fdb key.
-  Note the conversion of byte array into a string to fit the clj fdb library interface."
-  [[e a v t]]
-  (str (->byteBuffer [e (str a) (str v) t])))
-
-
-;; Get
-(defn get
-  [db [e a v t]]
-  (let [fd  (select-api-version 510)
-        key (fdb-key [e a v t])]
-    (with-open [db (open fd)]
-      (tr! db
-           (get-val tr key)))))
-
-
-;; TODO: will have to insert the avet and co as well
-;; TODO: will have to return smthg that we can attach to datahike
-;; TODO: - db is the current fbd db, the with-open [db...] is obselete: we shall no longer open the db from there
-;;       - So look at how the clj-fdb lib is opening the db and do the same
-;;       - it could be the right time to get rid of the clj-fdb lib as well.
-(defn fdb-insert
-  [db [e a v t]]
-  (let [fd    (FDB/selectAPIVersion 510)
-        key   (fdb-key [e a v t])
-        value key ;; Putting the key here, but we could put anything.
-        ]
-    (with-open [db (open fd)]
-      (tr! db
-           (set-val tr key value))
-      db)))
 
 ;; TODO: finish specing it and implement
 ;;(defn fdb-get)
