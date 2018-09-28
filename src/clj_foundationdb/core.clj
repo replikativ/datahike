@@ -102,9 +102,11 @@
   (let [key   (-> (if subspace (make-subspace subspace key) key)
                   key->packed-tuple)]
     (if-let [value @(.get tr key)]
-      (if coll
-        (.getItems (Tuple/fromBytes value))
-        (.get (Tuple/fromBytes value) 0)))))
+      value
+      ;; (if coll
+      ;;   (.getItems (Tuple/fromBytes value))
+      ;;   (.get (Tuple/fromBytes value) 0))
+      )))
 
 (spec/fdef get-val
            :args (spec/cat :tr tr? :key serializable?)
@@ -125,10 +127,12 @@
   ```
   "
   [tr key value & {:keys [subspace] :or {subspace *subspace*}}]
-  (let [key   (-> (if subspace (make-subspace subspace key) key)
-                  key->packed-tuple)
-        value (key->packed-tuple value)]
-    (.set tr key value)))
+  ;; (let [key   (-> (if subspace (make-subspace subspace key) key)
+  ;;                 key->packed-tuple)
+  ;;       value (key->packed-tuple value)]
+
+  ;;   )
+  (.set tr key value))
 
 (spec/fdef set-val
            :args (spec/cat :tr tr? :key serializable? :value serializable?)
