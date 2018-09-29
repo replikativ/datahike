@@ -38,12 +38,13 @@
 (defn fdb-insert
   [db [e a v t]]
   (let [fd    (FDB/selectAPIVersion 510)
-        #break key   (fdb-key [e a v t])
+        key   (fdb-key [e a v t])
         value key ;; Putting the key here, but we could put anything.
         ]
     (with-open [db (open fd)]
       (tr! db
-           (set-val tr key value))
+           (println "before set, key is: " key (set-val tr key value))
+           (println "val is:" (get-val tr key)))
       db)))
 
 

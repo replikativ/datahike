@@ -99,14 +99,14 @@
   ```
   "
   [tr key & {:keys [subspace coll] :or {subspace *subspace* coll false}}]
-  (let [key   (-> (if subspace (make-subspace subspace key) key)
-                  key->packed-tuple)]
-    (if-let [value @(.get tr key)]
-      value
-      ;; (if coll
-      ;;   (.getItems (Tuple/fromBytes value))
-      ;;   (.get (Tuple/fromBytes value) 0))
-      )))
+  ;; (let [key   (-> (if subspace (make-subspace subspace key) key)
+  ;;                 key->packed-tuple)])
+  (if-let [value @(.get tr key)]
+    value
+    ;; (if coll
+    ;;   (.getItems (Tuple/fromBytes value))
+    ;;   (.get (Tuple/fromBytes value) 0))
+    ))
 
 (spec/fdef get-val
            :args (spec/cat :tr tr? :key serializable?)
@@ -132,7 +132,9 @@
   ;;       value (key->packed-tuple value)]
 
   ;;   )
-  (.set tr key value))
+  (println "in set-val, key" key " -  val:" value)
+  (.set tr key value)
+  (println "in set-val .get is: "(.get tr key)))
 
 (spec/fdef set-val
            :args (spec/cat :tr tr? :key serializable? :value serializable?)

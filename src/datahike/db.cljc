@@ -1053,23 +1053,23 @@
   (let [indexing? (indexing? db (.-a datom))]
     (if (.-added datom)
       (cond-> db
-        true      (update-in [:eavt-durable] #(<?? (hmsg/insert % [(.-e datom)
-                                                                   (.-a datom)
-                                                                   (.-v datom)
-                                                                   (.-tx datom)]
-                                                                nil)))
-        true      (update-in [:eavt] btset/btset-conj datom cmp-datoms-eavt-quick)
-        true      (update-in [:eavt-scalable] #(fdb/fdb-insert % [(.-e datom)
-                                                                  (.-a datom)
-                                                                  (.-v datom)
-                                                                  (.-tx datom)]))
+        true (update-in [:eavt-durable] #(<?? (hmsg/insert % [(.-e datom)
+                                                              (.-a datom)
+                                                              (.-v datom)
+                                                              (.-tx datom)]
+                                                           nil)))
+        true (update-in [:eavt] btset/btset-conj datom cmp-datoms-eavt-quick)
+        true (update-in [:eavt-scalable] #(fdb/fdb-insert % [(.-e datom)
+                                                             (.-a datom)
+                                                             (.-v datom)
+                                                             (.-tx datom)]))
 
-        true      (update-in [:aevt] btset/btset-conj datom cmp-datoms-aevt-quick)
-        true      (update-in [:aevt-durable] #(<?? (hmsg/insert % [(.-a datom)
-                                                                   (.-e datom)
-                                                                   (.-v datom)
-                                                                   (.-tx datom)]
-                                                                nil)))
+        true (update-in [:aevt] btset/btset-conj datom cmp-datoms-aevt-quick)
+        true (update-in [:aevt-durable] #(<?? (hmsg/insert % [(.-a datom)
+                                                              (.-e datom)
+                                                              (.-v datom)
+                                                              (.-tx datom)]
+                                                           nil)))
 
         indexing? (update-in [:avet] btset/btset-conj datom cmp-datoms-avet-quick)
         indexing? (update-in [:avet-durable] #(<?? (hmsg/insert % [(.-a datom)
@@ -1099,8 +1099,9 @@
                                         #_(with-datom (Datom. 124 :likes "GG" 0 true)))]
 
     (hc/lookup-fwd-iter eavt-durable [])
-;;    (assert (== (.get (fdb/get nil [123 :likes "Hans" 0 true]) 7) 722))
-    (println (fdb/get db [123 :likes "Hans" 0 true]))
+    ;;    (assert (== (.get (fdb/get nil [123 :likes "Hans" 0 true]) 7) 722))
+    (assert (== (nth (fdb/get (:eavt-scalable db) [123 :likes "Hans" 0 true]) 7)
+                123))
     #_(slice eavt eavt-durable (Datom. nil nil nil nil nil) [nil])
     )
   )
