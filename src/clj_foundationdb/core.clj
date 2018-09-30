@@ -132,9 +132,7 @@
   ;;       value (key->packed-tuple value)]
 
   ;;   )
-  (println "in set-val, key" key " -  val:" value)
-  (.set tr key value)
-  (println "in set-val .get is: "(.get tr key)))
+  (.set tr key value))
 
 (spec/fdef set-val
            :args (spec/cat :tr tr? :key serializable? :value serializable?)

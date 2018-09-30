@@ -16,11 +16,9 @@
   "Converts a datom into a fdb key.
   Note the conversion of byte array into a string to fit the clj fdb library interface."
   [[e a v t]]
-  (->byteArr [e (str a) (str v) t])
-  )
+  (->byteArr [e (str a) (str v) t]))
 
 
-;; Get
 (defn get
   [db [e a v t]]
   (let [fd  (select-api-version 510)
@@ -29,22 +27,15 @@
       (tr! db
            (get-val tr key)))))
 
-
-;; TODO: will have to insert the avet and co as well
-;; TODO: will have to return smthg that we can attach to datahike
-;; TODO: - db is the current fbd db, the with-open [db...] is obselete: we shall no longer open the db from there
-;;       - So look at how the clj-fdb lib is opening the db and do the same
-;;       - it could be the right time to get rid of the clj-fdb lib as well.
 (defn fdb-insert
   [db [e a v t]]
   (let [fd    (FDB/selectAPIVersion 510)
         key   (fdb-key [e a v t])
-        value key ;; Putting the key here, but we could put anything.
-        ]
+        ;; Putting the key also in the value
+        value key]
     (with-open [db (open fd)]
       (tr! db
-           (println "before set, key is: " key (set-val tr key value))
-           (println "val is:" (get-val tr key)))
+           (set-val tr key value))
       db)))
 
 

@@ -1096,12 +1096,14 @@
 
   (let [db                          (empty-db)
         {:keys [eavt eavt-durable]} (-> (with-datom db (Datom. 123 :likes "Hans" 0 true))
-                                        #_(with-datom (Datom. 124 :likes "GG" 0 true)))]
+                                        (with-datom (Datom. 124 :likes "GG" 0 true)))]
 
     (hc/lookup-fwd-iter eavt-durable [])
     ;;    (assert (== (.get (fdb/get nil [123 :likes "Hans" 0 true]) 7) 722))
     (assert (== (nth (fdb/get (:eavt-scalable db) [123 :likes "Hans" 0 true]) 7)
                 123))
+    (assert (== (nth (fdb/get (:eavt-scalable db) [124 :likes "GG" 0 true]) 7)
+                124))
     #_(slice eavt eavt-durable (Datom. nil nil nil nil nil) [nil])
     )
   )
