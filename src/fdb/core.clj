@@ -18,7 +18,7 @@
 
 ;; =======================================================
 
-(defn empty-fdb
+(defn empty-db
   []
   (let [fd (FDB/selectAPIVersion 510)]
     (with-open [db (.open fd)]

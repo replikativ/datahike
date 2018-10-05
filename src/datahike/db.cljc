@@ -750,7 +750,7 @@
    (map->DB {:schema        (validate-schema schema)
              :eavt          (btset/btset-by cmp-datoms-eavt)
              :eavt-durable  (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-             :eavt-scalable (fdb/empty-fdb)
+             :eavt-scalable (fdb/empty-db)
              :aevt          (btset/btset-by cmp-datoms-aevt)
              :aevt-durable  (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
              :avet          (btset/btset-by cmp-datoms-avet)
