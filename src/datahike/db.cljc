@@ -6,7 +6,8 @@
     [hitchhiker.tree.core :as hc :refer [<??]]
     [hitchhiker.tree.messaging :as hmsg]
     [hitchhiker.konserve :as kons]
-    [datahike.btset :as btset])
+    [datahike.btset :as btset]
+    [fdb.core :as fdb])
   #?(:cljs (:require-macros [datahike.db :refer [case-tree combine-cmp raise defrecord-updatable cond-let]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry])))
@@ -772,13 +773,13 @@
     (-> slice vec rseq first :e) ;; :e of last datom in slice
     0))
 
-
+;; TODO: Add our DB initialisation here
 (defn ^DB init-db
   ([datoms] (init-db datoms default-schema))
   ([datoms schema & {:as options :keys [validate?] :or {validate? true}}]
    (if (empty? datoms)
      (empty-db schema)
-     (let [_ (when validate? (validate-schema schema))
+     (let [_       (when validate? (validate-schema schema))
            rschema (rschema schema)
            indexed (:db/index rschema)
            #?@(:cljs
@@ -802,6 +803,7 @@
                                                                 (.-tx datom)] nil))
                                               (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
                                               (seq datoms)))
+
                 aevt        (apply btset/btset-by cmp-datoms-aevt datoms)
                 aevt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
                                                 (hmsg/insert t [(.-a datom)
@@ -1044,25 +1046,34 @@
         (update-in [:db-after] advance-max-eid eid))))
 
 
+;; TODO: restore with-datom to be private, i.e. defn-. For now, it is
+;; public to enable unit tests
+;;
 ;; In context of `with-datom` we can use faster comparators which
 ;; do n
-(defn- with-datom [db ^Datom datom]
+(defn with-datom [db ^Datom datom]
   (validate-datom db datom)
   (let [indexing? (indexing? db (.-a datom))]
     (if (.-added datom)
       (cond-> db
-        true      (update-in [:eavt-durable] #(<?? (hmsg/insert % [(.-e datom)
-                                                                   (.-a datom)
-                                                                   (.-v datom)
-                                                                   (.-tx datom)]
-                                                                nil)))
-        true      (update-in [:eavt] btset/btset-conj datom cmp-datoms-eavt-quick)
-        true      (update-in [:aevt] btset/btset-conj datom cmp-datoms-aevt-quick)
-        true      (update-in [:aevt-durable] #(<?? (hmsg/insert % [(.-a datom)
-                                                                   (.-e datom)
-                                                                   (.-v datom)
-                                                                   (.-tx datom)]
-                                                                nil)))
+        true (update-in [:eavt-durable] #(<?? (hmsg/insert % [(.-e datom)
+                                                              (.-a datom)
+                                                              (.-v datom)
+                                                              (.-tx datom)]
+                                                           nil)))
+        true (update-in [:eavt] btset/btset-conj datom cmp-datoms-eavt-quick)
+        true (update-in [:eavt-scalable] #(fdb/insert % [(.-e datom)
+                                                         (.-a datom)
+                                                         (.-v datom)
+                                                         (.-tx datom)]))
+
+        true (update-in [:aevt] btset/btset-conj datom cmp-datoms-aevt-quick)
+        true (update-in [:aevt-durable] #(<?? (hmsg/insert % [(.-a datom)
+                                                              (.-e datom)
+                                                              (.-v datom)
+                                                              (.-tx datom)]
+                                                           nil)))
+
         indexing? (update-in [:avet] btset/btset-conj datom cmp-datoms-avet-quick)
         indexing? (update-in [:avet-durable] #(<?? (hmsg/insert % [(.-a datom)
                                                                    (.-v datom)
@@ -1086,10 +1097,18 @@
   (hc/lookup-fwd-iter (:eavt-durable ) [123 :likes])
 
 
-  (let [{:keys [eavt eavt-durable]} (with-datom (empty-db) (Datom. 123 :likes "Hans" 0 true))]
+  (let [db                          (empty-db)
+        {:keys [eavt eavt-durable]} (-> (with-datom db (Datom. 123 :likes "Hans" 0 true))
+                                        (with-datom (Datom. 124 :likes "GG" 0 true)))]
 
     (hc/lookup-fwd-iter eavt-durable [])
-    #_(slice eavt eavt-durable (Datom. nil nil nil nil nil) [nil])))
+    (assert (== (nth (fdb/get (:eavt-scalable db) [123 :likes "Hans" 0 true]) 7)
+                123))
+    (assert (== (nth (fdb/get (:eavt-scalable db) [124 :likes "GG" 0 true]) 7)
+                124))
+    #_(slice eavt eavt-durable (Datom. nil nil nil nil nil) [nil])
+    )
+  )
 
 
 
