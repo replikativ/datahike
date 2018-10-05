@@ -1046,9 +1046,12 @@
         (update-in [:db-after] advance-max-eid eid))))
 
 
+;; TODO: restore with-datom to be private, i.e. defn-. For now, it is
+;; public to enable unit tests
+;;
 ;; In context of `with-datom` we can use faster comparators which
 ;; do n
-(defn- with-datom [db ^Datom datom]
+(defn with-datom [db ^Datom datom]
   (validate-datom db datom)
   (let [indexing? (indexing? db (.-a datom))]
     (if (.-added datom)
