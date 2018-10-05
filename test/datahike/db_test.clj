@@ -2,7 +2,7 @@
   (:import [datahike.db Datom])
   (:require [datahike.db :as dh-db :refer [with-datom]]
             [clojure.test :refer [deftest is testing use-fixtures]]
-            [fdb-playground.core :as fdb]))
+            [fdb.core :as fdb]))
 
 
 (deftest fdb

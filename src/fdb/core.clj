@@ -1,26 +1,14 @@
-(ns fdb-playground.core
+(ns fdb.core
   (:import (com.apple.foundationdb FDB
                                    Transaction)
            (java.util List))
-  (:require [fdb-playground.keys :refer [->byteArr]]
-            [clj-foundationdb.utils :refer [open select-api-version]]))
+  (:require [fdb.keys :refer [->byteArr]]))
 
 ;; =======================================================
 
 (defmacro tr!
   "Transaction macro to perform actions. Always use tr for actions inside
-  each action since the transaction variable is bound to tr in the functions.
-
-  ```
-  (let [fd    (select-api-version 520)
-        key   \"foo\"
-        value \"bar\"]
-  (with-open [db (open fd)]
-     (tr! db
-          (set-val tr key value)
-          (get-val tr key))))
-  ```
-  "
+  each action since the transaction variable is bound to tr in the functions."
   [db & actions]
   `(.run ~db
          (reify
@@ -32,7 +20,7 @@
 
 (defn empty-fdb
   []
-  (let [fd (select-api-version 510)]
+  (let [fd (FDB/selectAPIVersion 510)]
     (with-open [db (.open fd)]
       db)))
 
@@ -46,14 +34,14 @@
 
 (defn get
   [db [e a v t]]
-  (let [fd  (select-api-version 510)
+  (let [fd  (FDB/selectAPIVersion 510)
         key (fdb-key [e a v t])]
     (with-open [db (.open fd)]
       (tr! db @(.get tr key)))))
 
 (defn fdb-insert
   [db [e a v t]]
-  (let [fd    (select-api-version 510)
+  (let [fd    (FDB/selectAPIVersion 510)
         key   (fdb-key [e a v t])
         ;; Putting the key also in the value
         value key]

@@ -7,7 +7,7 @@
     [hitchhiker.tree.messaging :as hmsg]
     [hitchhiker.konserve :as kons]
     [datahike.btset :as btset]
-    [fdb-playground.core :as fdb])
+    [fdb.core :as fdb])
   #?(:cljs (:require-macros [datahike.db :refer [case-tree combine-cmp raise defrecord-updatable cond-let]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry])))
