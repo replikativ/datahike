@@ -6,7 +6,7 @@
 
 
 (deftest fdb
-  "fdb"
+  "get"
   (let [db                          (dh-db/empty-db)
         {:keys [eavt eavt-durable]} (-> (with-datom db (Datom. 123 :likes "Hans" 0 true))
                                         (with-datom (Datom. 124 :likes "GG" 0 true)))]
@@ -16,4 +16,13 @@
             123))
     (is (== (nth (fdb/get (:eavt-scalable db)
                           [124 :likes "GG" 0 true]) 7)
-            124))))
+            124)))
+
+  "range"
+  (let [db (dh-db/empty-db)
+        inserts (-> (with-datom db (Datom. 123 :likes "Hans" 0 true))
+                    (with-datom (Datom. 124 :likes "GG" 0 true)))]
+    (is (== (fdb/get-range (:eavt-scalable db)
+                           [123 :likes "Hans" 0 true]
+                           [124 :likes "GG" 0 true])
+            2))))

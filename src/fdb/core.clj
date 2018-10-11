@@ -1,6 +1,7 @@
 (ns fdb.core
   (:import (com.apple.foundationdb FDB
-                                   Transaction)
+                                   Transaction
+                                   Range)
            (java.util List))
   (:require [fdb.keys :refer [->byteArr]]))
 
@@ -44,3 +45,12 @@
     (with-open [db (.open fd)]
       (tr! db (.set tr key value))
       db)))
+
+
+(defn get-range
+  [db begin end]
+  (let [fd        (FDB/selectAPIVersion 510)
+        begin-key (key begin)
+        end-key   (key end)]
+   (with-open [db (.open fd)]
+     (tr! db (.getRange tr (Range. begin-key end-key))))))
