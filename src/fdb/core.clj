@@ -37,7 +37,7 @@
       (tr! db @(.get tr key)))))
 
 (defn insert
-  [db [e a v t]]
+  [[e a v t]]
   (let [fd    (FDB/selectAPIVersion 510)
         key   (key [e a v t])
         ;; Putting the key also in the value
@@ -49,13 +49,14 @@
 
 (defn get-range
   "Returns keys in the range [begin end["
-  [db begin end]
+  [begin end]
   (let [fd        (FDB/selectAPIVersion 510)
         begin-key (key begin)
         end-key   (key end)]
     (with-open [db (.open fd)]
       (tr! db
-           (mapv #(.getKey %) (.getRange tr (Range. begin-key end-key)))))))
+           (mapv #(.getKey %)
+                 (.getRange tr (Range. begin-key end-key)))))))
 
 
 

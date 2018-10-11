@@ -1062,10 +1062,11 @@
                                                               (.-tx datom)]
                                                            nil)))
         true (update-in [:eavt] btset/btset-conj datom cmp-datoms-eavt-quick)
-        true (update-in [:eavt-scalable] #(fdb/insert % [(.-e datom)
-                                                         (.-a datom)
-                                                         (.-v datom)
-                                                         (.-tx datom)]))
+        true (update-in [:eavt-scalable] (fn [db]
+                                           (fdb/insert [(.-e datom)
+                                                        (.-a datom)
+                                                        (.-v datom)
+                                                        (.-tx datom)])))
 
         true (update-in [:aevt] btset/btset-conj datom cmp-datoms-aevt-quick)
         true (update-in [:aevt-durable] #(<?? (hmsg/insert % [(.-a datom)
