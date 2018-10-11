@@ -23,7 +23,6 @@
         inserts (-> (with-datom db (Datom. 123 :likes "Hans" 0 true))
                     (with-datom (Datom. 124 :likes "GG" 0 true))
                     (with-datom (Datom. 125 :likes "GG" 0 true)))]
-    (is (= (fdb/get-range [123 :likes "Hans" 0 true]
-                          [125 :likes "GG" 0 true])
-            2)))
-  )
+    (is (= 2
+           (count (fdb/get-range [123 :likes "Hans" 0 true]
+                                 [125 :likes "GG" 0 true]))))))
