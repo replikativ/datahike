@@ -48,12 +48,14 @@
 
 
 (defn get-range
+  "Returns keys in the range [begin end["
   [db begin end]
   (let [fd        (FDB/selectAPIVersion 510)
         begin-key (key begin)
         end-key   (key end)]
-   (with-open [db (.open fd)]
-     (tr! db (.getRange tr (Range. begin-key end-key))))))
+    (with-open [db (.open fd)]
+      (tr! db
+           (mapv #(.getKey %) (.getRange tr (Range. begin-key end-key)))))))
 
 
 
