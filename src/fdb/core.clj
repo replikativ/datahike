@@ -54,3 +54,38 @@
         end-key   (key end)]
    (with-open [db (.open fd)]
      (tr! db (.getRange tr (Range. begin-key end-key))))))
+
+
+
+
+
+
+;;;;;;;;;;; DEBUG HELPER
+
+;; ;; debug
+;; (defn bArr
+;;   [i]
+;;   (let [arr (byte-array 1)]
+;;     (aset-byte arr 0 i)
+;;     arr))
+
+;; (defn insert-int
+;;   [db i]
+;;   (let [fd    (FDB/selectAPIVersion 510)
+;;         key   (bArr i)
+;;         ;; Putting the key also in the value
+;;         value key]
+;;     (with-open [db (.open fd)]
+;;       (tr! db (.set tr key value))
+;;       db)))
+
+
+;; (defn get-range-int
+;;   [db begin end]
+;;   (let [fd        (FDB/selectAPIVersion 510)
+;;         begin-key (bArr begin)
+;;         end-key   (bArr end)]
+;;    (with-open [db (.open fd)]
+;;      (tr! db ;;(.getRange tr (Range. (bArr 1) (bArr 2)))
+;;           (.getRange tr begin-key end-key)
+;;           ))))
