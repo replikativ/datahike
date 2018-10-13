@@ -28,6 +28,14 @@
   [[e a v t]]
   (->byteArr [e (str a) (str v) t]))
 
+(defn clear-all
+  "Clear all  keys from the database"
+  []
+  (let [fd  (FDB/selectAPIVersion 510)
+        begin (byte-array [])
+        end   (byte-array [0xFF])]
+    (with-open [db (.open fd)]
+      (tr! db (.clear tr (Range. begin end))))))
 
 (defn get
   [db [e a v t]]
