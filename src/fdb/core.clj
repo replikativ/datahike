@@ -68,7 +68,7 @@
            (mapv #(.getKey %)
                  (.getRange tr (Range. begin-key end-key)))))))
 
-;;------------ KeySelectors
+;;------------ KeySelectors and iterations
 
 (defn get-key
   "Returns the key behind a key-selector"
