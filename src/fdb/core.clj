@@ -84,7 +84,7 @@
   [key]
   (let [ks (KeySelector/lastLessOrEqual key)]
       (when-let [ks-key (get-key ks)]
-        (lazy-seq (cons ks-key (iterate-from (get-key (.add ks 1))) )))))
+        (lazy-seq (cons ks-key (iterate-from (get-key (.add ks 1))))))))
 
 
 ;;;;;;;;;;; DEBUG HELPER
