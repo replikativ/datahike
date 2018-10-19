@@ -82,7 +82,7 @@
 (defn iterate-from
   "Lazily iterates through the keys starting from key"
   [key]
-  (let [ks (KeySelector/firstGreaterOrEqual key)]
+  (let [ks (KeySelector/lastLessOrEqual key)]
       (when-let [ks-key (get-key ks)]
         (lazy-seq (cons ks-key (iterate-from (get-key (.add ks 1))) )))))
 
