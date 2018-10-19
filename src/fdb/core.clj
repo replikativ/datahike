@@ -1,7 +1,8 @@
 (ns fdb.core
   (:import (com.apple.foundationdb FDB
                                    Transaction
-                                   Range)
+                                   Range
+                                   KeySelector)
            (java.util List))
   (:require [fdb.keys :refer [->byteArr]]))
 
@@ -31,12 +32,13 @@
 (defn clear-all
   "Clear all  keys from the database"
   []
-  (let [fd  (FDB/selectAPIVersion 510)
+  (let [fd    (FDB/selectAPIVersion 510)
         begin (byte-array [])
         end   (byte-array [0xFF])]
     (with-open [db (.open fd)]
       (tr! db (.clear tr (Range. begin end))))))
 
+;; TODO?: remove the db arg
 (defn get
   [db [e a v t]]
   (let [fd  (FDB/selectAPIVersion 510)
@@ -66,9 +68,23 @@
            (mapv #(.getKey %)
                  (.getRange tr (Range. begin-key end-key)))))))
 
+;;------------ KeySelectors
+
+(defn get-key
+  "Returns the key behind a key-selector"
+  [key-selector]
+  (let [fd (FDB/selectAPIVersion 510)]
+    (with-open [db (.open fd)]
+      (tr! db
+           @(.getKey tr key-selector)))))
 
 
-
+(defn iterate-from
+  "Lazily iterates through the keys starting from key"
+  [key]
+  (let [ks (KeySelector/firstGreaterOrEqual key)]
+      (when-let [ks-key (get-key ks)]
+        (lazy-seq (cons ks-key (iterate-from (get-key (.add ks 1))) )))))
 
 
 ;;;;;;;;;;; DEBUG HELPER

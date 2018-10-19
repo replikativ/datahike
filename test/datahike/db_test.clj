@@ -1,5 +1,6 @@
 (ns datahike.db-test
-  (:import [datahike.db Datom])
+  (:import [datahike.db Datom]
+           (com.apple.foundationdb KeySelector))
   (:require [datahike.db :as dh-db :refer [with-datom]]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [fdb.core :as fdb]))
