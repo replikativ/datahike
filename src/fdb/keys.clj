@@ -19,54 +19,39 @@
   "Returns the offset where to start writting a string
   given the end position of the string storage section.
   (The offset is a shift to the left from the end position.)"
-  [string storage-end]
-  (let [string-size (str-size string)]
-    ;; 4 as octet uses a 32 bits integer to store the string size
-    ;; (whereas octet writes it at the beginning)
-    (- storage-end (+ string-size 4))))
+  [string-size storage-end]
+  ;; 2 * 4 bytes as we store the string size twice:
+  ;; - octet puts the size before the string
+  ;; - we put it at the end
+  (- storage-end (+ string-size (* 2 4))))
 
+(defn- shift-left
+  [offset n]
+  "Shift left by 'n' bytes starting at the location given by 'offset'.
+   (Can be used to find out where to write n + 1 bytes that ends at the location
+   given by 'offset')"
+  (- offset n))
 
-(defn- str-bytes
-  "Return the bytes of a string"
-  [string]
-  (.getBytes string "UTF-8"))
-
-
-(defn- write-bytes
-  "Dumps the bytes from 'offset' into the buffer.
-  (Without writing a size.)"
-  [buffer bytes offset]
-  (let [len (alength bytes)]
-    (map #(.put buffer %1 %2) (range offset (+ offset len)) bytes)))
-
-
-(defn- read-bytes
-  [buffer offset len]
-  (map #(.get buffer %) (range offset (+ offset len))))
 
 ;; TODO: [v] can only be a string for now
-;;
-;; Why write strings at the end of a section? Because we want
-;; the keys (i.e. bytes) to be ordered correctly in fdb
-;;
-;; By writing strings at the end of a section, we are also
-;; forced to write the string size at the end so that we can
-;; parse it when reading.
-(defn- ->byteBuffer
+;; When writing a string also need to write its size at the end so that
+;; when we want to read it we know where to start.
+;; The place of the size of the string should match the end of the section.
+(defn ->byteBuffer
   [[e a v t]]
   (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]
     (buf/write! buffer [e] (buf/spec buf/int64))
-    (write-bytes buffer (str-bytes a) (offset a a-end))
+    (buf/write! buffer [a] (buf/spec buf/string*)
+                {:offset (offset (str-size a) a-end)})
     (buf/write! buffer [(str-size a)] (buf/spec buf/int32)
-                {:offset (- a-end (- 8 1))})
-    ;; (buf/write! buffer [(str-bytes v)] (buf/vector* buf/byte)
-    ;;             {:offset (offset v v-end)})
-    (write-bytes buffer (str-bytes v) (offset v v-end))
+                {:offset (shift-left a-end 3)})
+    (buf/write! buffer [v] (buf/spec buf/string*)
+                {:offset (offset (str-size v) v-end)})
     (buf/write! buffer [(str-size v)] (buf/spec buf/int32)
-                {:offset (- v-end (- 8 1))})
-    ;; TODO: replace last - by 7
-    (buf/write! buffer [t] (buf/spec buf/int64)   {:offset (- t-end (- 8 1))})
+                {:offset (shift-left v-end 3)})
+    (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left t-end 7)})
     buffer))
+
 
 (defn ->byteArr
   [[e a v t]]
@@ -75,24 +60,22 @@
     arr))
 
 
-;; String str = new String(bytes, StandardCharsets.UTF_8);
-
-(defn- str-from-bytes
-  [bytes]
-  (String. bytes "UTF_8"))
-
-
 (defn datom
-  "Converts a fdb key into a "
+  "Converts a fdb key into a ^Datom"
   [key]
-  (let [e (buf/read key (buf/spec buf/int64))
-        a-size (buf/read key (buf/spec buf/int32) {:offset a-end})
-        a (buf/read key (buf/spec buf/string*) {:offset (- a-end a-size)})
-        v-size (buf/read key (buf/spec buf/int32) {:offset v-end})
-        v (buf/read key (buf/spec buf/string*) {:offset (- v-end v-size)})
-        ;; TODO: replace last - by 7
-        t (buf/read key (buf/spec buf/int64) {:offset (- t-end (- 8 1))})]
-    (Datom. e 2 3 4 5)))
+  (let [e (first (buf/read key (buf/spec buf/int64)))
+        a-size (first (buf/read key (buf/spec buf/int32)
+                                {:offset (shift-left a-end 3)}))
+        a (first (buf/read key (buf/spec buf/string*)
+                           {:offset (offset a-size a-end)}))
+        v-size (first (buf/read key (buf/spec buf/int32)
+                                {:offset (shift-left v-end 3)}))
+        v (first (buf/read key (buf/spec buf/string*)
+                           {:offset (offset v-size v-end)}))
+        t (first (buf/read key (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
+    ;; TODO: ask what 'true' is
+    #_(Datom. e a v t true)
+    [e a v t]))
 
 
 (defn print-buf
@@ -104,15 +87,18 @@
 
 ;; ---- Tests
 ;;
-(assert (== (offset "hello" 9) 0))
+(assert (== (offset (str-size "hello") 13) 0))
 
 (def test-buff (->byteBuffer [20 "hello" "some analysis" 3]))
+
+(assert (= (datom test-buff) [20 "hello" "some analysis" 3]))
+
 ;; There are 64 bits for [e]. The last byte is at index 7.
 (assert (== (.get test-buff 7) 20))
-;; size of 'hello' is 5
-(assert (== (.get test-buff (- a-end 6)) 5))
-;; the transaction id is ok
-(assert (== (.get test-buff t-end) 3))
+;; ;; size of 'hello' is 5
+;; (assert (== (.get test-buff (shift-left a-end 3)) 5))
+;; ;; the transaction id is ok
+;; (assert (== (.get test-buff t-end) 3))
 
 
 (comment
