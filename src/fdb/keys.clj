@@ -60,8 +60,12 @@
     arr))
 
 
-(defn datom
-  "Converts a fdb key into a ^Datom"
+(defn byteArr->byteBuffer
+  [byteArr]
+  (ByteBuffer/wrap byteArr))
+
+(defn byteBuffer->datom
+  "Converts a fdb key (bytebuffer) into a ^Datom"
   [key]
   (let [e (first (buf/read key (buf/spec buf/int64)))
         a-size (first (buf/read key (buf/spec buf/int32)
@@ -78,6 +82,10 @@
     [e a v t]))
 
 
+(defn datom
+  [byteArr]
+  (byteBuffer->datom (byteArr->byteBuffer byteArr)))
+
 (defn print-buf
   [buffer]
   (for [x (range buf-len)]
@@ -89,9 +97,12 @@
 ;;
 (assert (== (offset (str-size "hello") 13) 0))
 
-(def test-buff (->byteBuffer [20 "hello" "some analysis" 3]))
+(def vect [20 "hello" "some analysis" 3])
+(def test-buff (->byteBuffer vect))
 
-(assert (= (datom test-buff) [20 "hello" "some analysis" 3]))
+(assert (= (byteBuffer->datom test-buff) vect))
+
+(assert (= (datom (->byteArr vect)) vect))
 
 ;; There are 64 bits for [e]. The last byte is at index 7.
 (assert (== (.get test-buff 7) 20))

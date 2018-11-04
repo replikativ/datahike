@@ -4,7 +4,7 @@
                                    Range
                                    KeySelector)
            (java.util List))
-  (:require [fdb.keys :refer [->byteArr]]))
+  (:require [fdb.keys :refer [->byteArr datom]]))
 
 (defmacro tr!
   "Transaction macro to perform actions. Always use tr for actions inside
@@ -24,8 +24,10 @@
 
 
 ;; TODO: [v] is converted to a String for now
+;; TODO: move to fdb.keys
 (defn key
-  "Converts a datom into a fdb key."
+  "Converts a datom into a fdb key"
+  ;; Can take ^Datom object as input (as they are array)
   [[e a v t]]
   (->byteArr [e (str a) (str v) t]))
 
@@ -80,11 +82,15 @@
 
 
 (defn iterate-from
-  "Lazily iterates through the keys starting from key"
+  "Lazily iterates through the keys starting from key (in fdb format)"
   [key]
   (let [ks (KeySelector/lastLessOrEqual key)]
-      (when-let [ks-key (get-key ks)]
-        (lazy-seq (cons ks-key (iterate-from (get-key (.add ks 1))))))))
+    ;; TODO: rename ks-key into datom or smthg meaning a real app key
+    (when-let [key (get-key ks)]
+        #_(lazy-seq (cons (clojure.lang.MapEntry. ks-key ks-key) (iterate-from (get-key (.add ks 1)))))
+        (lazy-seq (cons #_(clojure.lang.MapEntry. dat dat)
+                        key
+                        (iterate-from (get-key (.add ks 1))))))))
 
 
 ;;;;;;;;;;; DEBUG HELPER

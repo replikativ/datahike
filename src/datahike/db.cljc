@@ -445,58 +445,61 @@
 
          [a b c d] key
          [e f g h] key-to
-         xf (comp
-             (take-while (fn [^AMapEntry kv]
+         xf        (comp
+                    (take-while
+                     (fn [^AMapEntry kv]
                        ;; prefix scan
-                       (let [key (.key kv)
-                             #_new #_(cond (and e f g h)
-                                     (<= (hc/compare key key-to) 0)
-
-                                     (and e f g)
-                                     (<= (hc/compare (vec (take 3 key))
-                                                     (vec (take 3 key-to))) 0)
-
-                                     (and e f)
-                                     (<= (hc/compare (vec (take 2 key))
-                                                     (vec (take 2 key-to))) 0)
-
-                                     e
-                                     (<= (hc/compare (first key) (first key-to)) 0)
-
-                                     :else true)
-                             [i j k l] key
-                             new (not (cond (and e f g h)
-                                            (or (> (hc/compare i e) 0)
-                                                (> (hc/compare j f) 0)
-                                                (> (hc/compare k g) 0)
-                                                (> (hc/compare l h) 0))
+                       (let [key   (.key kv)
+                             #_new #_ (cond (and e f g h)
+                                            (<= (hc/compare key key-to) 0)
 
                                             (and e f g)
-                                            (or (> (hc/compare i e) 0)
-                                                (> (hc/compare j f) 0)
-                                                (> (hc/compare k g) 0))
+                                            (<= (hc/compare (vec (take 3 key))
+                                                            (vec (take 3 key-to))) 0)
 
                                             (and e f)
-                                            (or (> (hc/compare i e) 0)
-                                                (> (hc/compare j f) 0))
+                                            (<= (hc/compare (vec (take 2 key))
+                                                            (vec (take 2 key-to))) 0)
 
                                             e
-                                            (> (hc/compare i e) 0)
+                                            (<= (hc/compare (first key) (first key-to)) 0)
 
-                                            :else false))]
+                                            :else true)
+                             [i j k l] key
+                             new       (not (cond (and e f g h)
+                                                  (or (> (hc/compare i e) 0)
+                                                      (> (hc/compare j f) 0)
+                                                      (> (hc/compare k g) 0)
+                                                      (> (hc/compare l h) 0))
+
+                                                  (and e f g)
+                                                  (or (> (hc/compare i e) 0)
+                                                      (> (hc/compare j f) 0)
+                                                      (> (hc/compare k g) 0))
+
+                                                  (and e f)
+                                                  (or (> (hc/compare i e) 0)
+                                                      (> (hc/compare j f) 0))
+
+                                                  e
+                                                  (> (hc/compare i e) 0)
+
+                                                  :else false))]
                          #_(when (not= old new)
                              (prn "Mismatch:" key key-to old new)) new)))
-             (map (fn [kv]
-                    (let [[a b c d] (.key ^AMapEntry kv)]
-                      (create-datom a b c d)))))
-         new (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
-                  seq)]
+                    (map (fn [kv]
+                           (let [[a b c d] (.key ^AMapEntry kv)]
+                             (create-datom a b c d)))))
+         o-new     (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
+                      seq)
+         new (->> (sequence xf (fdb/iterate-from (fdb/key [a b c d])))
+                      seq)]
      #_(when-not (= (vec old) (vec new))
        (prn "QUERY" key key-to)
        (prn "Mismatch: ")
        (prn "OLD" old)
        (prn "NEW" new)
-       (try (prn "DIFF:" (diff old new))
+       #_(try (prn "DIFF:" (diff old new))
             (catch Error _)))
      new)))
 
@@ -1107,6 +1110,9 @@
                 123))
     (assert (== (nth (fdb/get (:eavt-scalable db) [124 :likes "GG" 0 true]) 7)
                 124))
+
+    (assert (== (first (-search db [124 :likes "GG" 0 true]))
+                2))
     #_(slice eavt eavt-durable (Datom. nil nil nil nil nil) [nil])
     )
   )
