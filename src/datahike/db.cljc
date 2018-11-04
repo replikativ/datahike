@@ -486,21 +486,25 @@
 
                                                   :else false))]
                          #_(when (not= old new)
-                             (prn "Mismatch:" key key-to old new)) new)))
+                             (prn "Mismatch:" key key-to old new))
+                         new)))
                     (map (fn [kv]
                            (let [[a b c d] (.key ^AMapEntry kv)]
                              (create-datom a b c d)))))
-         o-new     (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
+         old  #_new     (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
                       seq)
-         new (->> (sequence xf (fdb/iterate-from (fdb/key [a b c d])))
-                      seq)]
-     #_(when-not (= (vec old) (vec new))
-       (prn "QUERY" key key-to)
-       (prn "Mismatch: ")
-       (prn "OLD" old)
-       (prn "NEW" new)
-       #_(try (prn "DIFF:" (diff old new))
-            (catch Error _)))
+         new (->> (sequence xf (map #(clojure.lang.MapEntry.
+                                      (fdb.keys/key->vect %1) %1)
+                                    (fdb/iterate-from (fdb/key [a b c d]))))
+                  seq)
+         ]
+     ;; (when-not (= (vec old) (vec new))
+     ;;   (prn "QUERY" key key-to)
+     ;;   (prn "Mismatch: ")
+     ;;   (prn "OLD" old)
+     ;;   (prn "NEW" new)
+     ;;       #_(try (prn "DIFF:" (diff old new))
+     ;;        (catch Error _)))
      new)))
 
 

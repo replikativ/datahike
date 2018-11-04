@@ -85,12 +85,8 @@
   "Lazily iterates through the keys starting from key (in fdb format)"
   [key]
   (let [ks (KeySelector/lastLessOrEqual key)]
-    ;; TODO: rename ks-key into datom or smthg meaning a real app key
     (when-let [key (get-key ks)]
-        #_(lazy-seq (cons (clojure.lang.MapEntry. ks-key ks-key) (iterate-from (get-key (.add ks 1)))))
-        (lazy-seq (cons #_(clojure.lang.MapEntry. dat dat)
-                        key
-                        (iterate-from (get-key (.add ks 1))))))))
+        (lazy-seq (cons key (iterate-from (get-key (.add ks 1))))))))
 
 
 ;;;;;;;;;;; DEBUG HELPER
