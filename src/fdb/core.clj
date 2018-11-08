@@ -4,7 +4,7 @@
                                    Range
                                    KeySelector)
            (java.util List))
-  (:require [fdb.keys :refer [->byteArr datom]]))
+  (:require [fdb.keys :refer [->byteArr]]))
 
 (defmacro tr!
   "Transaction macro to perform actions. Always use tr for actions inside

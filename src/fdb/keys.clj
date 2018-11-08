@@ -1,6 +1,5 @@
 (ns fdb.keys
-  (:import (java.nio ByteBuffer)
-           (datahike.db Datom))
+  (:import (java.nio ByteBuffer))
   (:require [octet.core :as buf]))
 
 
@@ -27,7 +26,8 @@
 
 (defn- shift-left
   [offset n]
-  "Shift left by 'n' bytes starting at the location given by 'offset'.
+  "Returns the location given by shifting left by 'n' bytes starting
+   at the location given by 'offset'.
    (Can be used to find out where to write n + 1 bytes that ends at the location
    given by 'offset')"
   (- offset n))
@@ -77,8 +77,6 @@
         v (first (buf/read key (buf/spec buf/string*)
                            {:offset (offset v-size v-end)}))
         t (first (buf/read key (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
-    ;; TODO: ask what 'true' is
-    #_(Datom. e a v t true)
     [e a v t]))
 
 
@@ -90,7 +88,6 @@
   [buffer]
   (for [x (range buf-len)]
     (.get buffer x)))
-
 
 
 ;; ---- Tests

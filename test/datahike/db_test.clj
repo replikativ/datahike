@@ -1,16 +1,17 @@
 (ns datahike.db-test
-  (:import [datahike.db Datom]
-           (com.apple.foundationdb KeySelector))
+  (:import (com.apple.foundationdb KeySelector))
   (:require [datahike.db :as dh-db :refer [with-datom slice]]
             [clojure.test :refer [deftest is testing use-fixtures]]
-            [fdb.core :as fdb]))
+            [fdb.core :as fdb]
+            [datahike.db :refer [datom]]
+           ))
 
 
 (deftest fdb
   "get"
   (let [db                          (dh-db/empty-db)
-        {:keys [eavt eavt-durable]} (-> (with-datom db (Datom. 123 :likes "Hans" 0 true))
-                                        (with-datom (Datom. 124 :likes "GG" 0 true)))]
+        {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 :likes "Hans" 0 true))
+                                        (with-datom (datom 124 :likes "GG" 0 true)))]
 
     (is (== (nth (fdb/get (:eavt-scalable db)
                           [123 :likes "Hans" 0 true]) 7)
@@ -22,12 +23,12 @@
   "simple range"
   (let [db      (dh-db/empty-db)
         _  (fdb/clear-all)
-        _ (-> (with-datom db (Datom. 123 :likes "Hans" 0 true))
-              (with-datom (Datom. 124 :likes "GG" 0 true))
-              (with-datom (Datom. 125 :likes "GG" 0 true))
-              (with-datom (Datom. 1 :likes "GG" 0 true))
-              (with-datom (Datom. 2 :likes "GG" 0 true))
-              (with-datom (Datom. 3 :likes "GG" 0 true)))]
+        _ (-> (with-datom db (datom 123 :likes "Hans" 0 true))
+              (with-datom (datom 124 :likes "GG" 0 true))
+              (with-datom (datom 125 :likes "GG" 0 true))
+              (with-datom (datom 1 :likes "GG" 0 true))
+              (with-datom (datom 2 :likes "GG" 0 true))
+              (with-datom (datom 3 :likes "GG" 0 true)))]
     (is (= 2
            (count (fdb/get-range [123 :likes "Hans" 0 true]
                                  [125 :likes "GG" 0 true])))))
@@ -35,7 +36,7 @@
   "large range"
   (let [db (dh-db/empty-db)
         _  (fdb/clear-all)
-        _  (reduce #(with-datom %1 (Datom. %2 :likes "Hans" 0 true)) db (range 100))]
+        _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 0 true)) db (range 100))]
     (is (= 50
            (count (fdb/get-range [1 :likes "Hans" 0 true]
                                  [51 :likes "Hans" 0 true])))))
@@ -47,19 +48,20 @@
   ;; times and appears multiple times?
   (let [db (dh-db/empty-db)
         ;;        _  (fdb/clear-all)
-        _  (reduce #(with-datom %1 (Datom. %2 :likes "Hans" 0 true)) db (range 10))]
+        _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 0 true)) db (range 10))]
     (is (= 2
            (count (fdb/get-range [1 :likes "Hans" 0 true]
                                  [3 :likes "Hans" 0 true])))))
 
   "iterate-from"
   (let [db      (dh-db/empty-db)
-        datom-1 (Datom. 123 :likes "Hans" 0 true)
-        datom-2 (Datom. 124 :likes "GG" 0 true)
+        datom-1 (datom 123 :likes "Hans" 0 true)
+        datom-2 (datom 124 :likes "GG" 0 true)
         datoms  (-> (with-datom db datom-1)
                     (with-datom datom-2))
         iterate #(take % (fdb/iterate-from (fdb/key datom-1)))
         iterate-5 (iterate 5)]
+
     ;; NOTE: Because the fdb keys are Java arrays, we need to convert them
     ;; into seq if we want to compate them with =
     ;; (is (some #(= (seq (fdb/key datom-1)) (seq %))
@@ -85,10 +87,10 @@
 
   "slice"
   (let [db                          (dh-db/empty-db)
-        datom                       (Datom. 124 :likes "GG" 0 true)
-        {:keys [eavt eavt-durable]} (-> (with-datom db (Datom. 123 :likes "Hans" 0 true))
+        datom                       (datom 124 :likes "GG" 0 true)
+        {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 :likes "Hans" 0 true))
                                         (with-datom datom))
-        create-eavt                 (fn [e a v tx] (Datom. e a v tx true))]
+        create-eavt                 (fn [e a v tx] (datom e a v tx true))]
     (is (= datom
-           (first (slice eavt eavt-durable (Datom. 124 nil nil nil nil) [124] create-eavt)))))
+           (first (slice eavt eavt-durable (datom 124 nil nil nil nil) [124] create-eavt)))))
 )
