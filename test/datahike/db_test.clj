@@ -31,7 +31,10 @@
               (with-datom (datom 3 :likes "GG" 0 true)))]
     (is (= 2
            (count (fdb/get-range [123 :likes "Hans" 0 true]
-                                 [125 :likes "GG" 0 true])))))
+                                 [125 :likes "GG" 0 true]))))
+    (is (= 2
+           (count (fdb/get-range [123]
+                                 [125])))))
 
   "large range"
   (let [db (dh-db/empty-db)
@@ -82,15 +85,25 @@
              (seq (first iterate-5))))
     #_(is (= (seq (nth iterate-5 2))
              (seq (first iterate-5))))
-    )
+    ))
 
 
+(deftest slice-test
   "slice"
   (let [db                          (dh-db/empty-db)
+        datom-1                     (datom 123 :likes "Hans" 0 true)
         datom-2                     (datom 124 :likes "GG" 0 true)
-        {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 :likes "Hans" 0 true))
+        datom-3                     (datom 125 :likes "GG" 0 true)
+        {:keys [eavt eavt-durable]} (-> (with-datom db datom-1)
                                         (with-datom datom-2))
         create-eavt                 (fn [e a v tx] (datom e a v tx true))]
+    (is (= datom-1
+           (first (slice eavt eavt-durable (datom 123 nil nil nil nil) [123]
+                         (datom 124 nil nil nil nil)  [124] create-eavt))))
     (is (= datom-2
-           (first (slice eavt eavt-durable (datom 124 nil nil nil nil) [124] create-eavt)))))
-)
+           (first (slice eavt eavt-durable (datom 124 nil nil nil nil) [124]
+                         create-eavt))))
+    (is (= [datom-1 datom-2]
+           (first (slice eavt eavt-durable (datom 123 nil nil nil nil) [123]
+                         (datom 125 nil nil nil nil)  [125] create-eavt))))
+    ))

@@ -495,7 +495,7 @@
                       seq)
          new (->> (sequence xf (map #(clojure.lang.MapEntry.
                                       (fdb.keys/key->vect %1) %1)
-                                    (fdb/iterate-from (fdb/key [a b c d]))))
+                                    (fdb/get-range key key-to)))
                   seq)
          ]
      ;; (when-not (= (vec old) (vec new))

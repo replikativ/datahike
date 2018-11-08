@@ -60,15 +60,17 @@
 
 
 (defn get-range
-  "Returns keys in the range [begin end["
+  "Returns keys in the range [begin end[. (Keys are vector datoms)"
   [begin end]
   (let [fd        (FDB/selectAPIVersion 510)
-        begin-key (key begin)
-        end-key   (key end)]
+        begin-key (KeySelector/firstGreaterOrEqual (key begin))
+        end-key   (if (= begin end)
+                    (.add (KeySelector/firstGreaterOrEqual (key end)) 1)
+                    (KeySelector/firstGreaterOrEqual (key end)))]
     (with-open [db (.open fd)]
       (tr! db
            (mapv #(.getKey %)
-                 (.getRange tr (Range. begin-key end-key)))))))
+                 (.getRange tr begin-key end-key))))))
 
 ;;------------ KeySelectors and iterations
 
@@ -80,7 +82,7 @@
       (tr! db
            @(.getKey tr key-selector)))))
 
-
+;; NOTE: Works but not used. Using range instead as it should be faster.
 (defn iterate-from
   "Lazily iterates through the keys starting from key (in fdb format)"
   [key]
