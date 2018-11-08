@@ -84,9 +84,11 @@
 (defn iterate-from
   "Lazily iterates through the keys starting from key (in fdb format)"
   [key]
-  (let [ks (KeySelector/lastLessOrEqual key)]
-    (when-let [key (get-key ks)]
-        (lazy-seq (cons key (iterate-from (get-key (.add ks 1))))))))
+  (let [ks (KeySelector/firstGreaterOrEqual key)
+        key (get-key ks)
+        next-key (get-key (.add ks 1))]
+    (when-not (= (seq key) (seq next-key)) ;; seq makes [B comparable
+        (lazy-seq (cons key (iterate-from next-key))))))
 
 
 ;;;;;;;;;;; DEBUG HELPER

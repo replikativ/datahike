@@ -87,10 +87,10 @@
 
   "slice"
   (let [db                          (dh-db/empty-db)
-        datom                       (datom 124 :likes "GG" 0 true)
+        datom-2                     (datom 124 :likes "GG" 0 true)
         {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 :likes "Hans" 0 true))
-                                        (with-datom datom))
+                                        (with-datom datom-2))
         create-eavt                 (fn [e a v tx] (datom e a v tx true))]
-    (is (= datom
+    (is (= datom-2
            (first (slice eavt eavt-durable (datom 124 nil nil nil nil) [124] create-eavt)))))
 )
