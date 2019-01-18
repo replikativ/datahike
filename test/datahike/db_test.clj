@@ -7,7 +7,7 @@
            ))
 
 
-(deftest fdb
+(deftest fdb-using-with-datom
   "get"
   (let [db                          (dh-db/empty-db)
         {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 "likes" "Hans" 0 true))
@@ -21,14 +21,14 @@
             124)))
 
   "simple range"
-  (let [db      (dh-db/empty-db)
+  (let [db (dh-db/empty-db)
         _  (fdb/clear-all)
-        _ (-> (with-datom db (datom 123 "likes" "Hans" 0 true))
-              (with-datom (datom 124 "likes" "GG" 0 true))
-              (with-datom (datom 125 "likes" "GG" 0 true))
-              (with-datom (datom 1 "likes" "GG" 0 true))
-              (with-datom (datom 2 "likes" "GG" 0 true))
-              (with-datom (datom 3 "likes" "GG" 0 true)))]
+        _  (-> (with-datom db (datom 123 "likes" "Hans" 0 true))
+               (with-datom (datom 124 "likes" "GG" 0 true))
+               (with-datom (datom 125 "likes" "GG" 0 true))
+               (with-datom (datom 1 "likes" "GG" 0 true))
+               (with-datom (datom 2 "likes" "GG" 0 true))
+               (with-datom (datom 3 "likes" "GG" 0 true)))]
     (is (= 2
            (count (fdb/get-range [123 "likes" "Hans" 0 true]
                                  [125 "likes" "GG" 0 true]))))
@@ -45,7 +45,7 @@
                                  [51 "likes" "Hans" 0 true])))))
 
   "large range"
-  ;; TODO: if we don't clear the fdb db then tnere are weird things:
+  ;; TODO: if we don't clear the fdb db then there are weird things:
   ;; check as the following might not work for instance.
   ;; Could it be that the same key is allowed to be reinserted multiple
   ;; times and appears multiple times?
@@ -57,12 +57,12 @@
                                  [3 "likes" "Hans" 0 true])))))
 
   "iterate-from"
-  (let [db      (dh-db/empty-db)
-        datom-1 (datom 123 "likes" "Hans" 0 true)
-        datom-2 (datom 124 "likes" "GG" 0 true)
-        datoms  (-> (with-datom db datom-1)
-                    (with-datom datom-2))
-        iterate #(take % (fdb/iterate-from (fdb/key datom-1)))
+  (let [db        (dh-db/empty-db)
+        datom-1   (datom 123 "likes" "Hans" 0 true)
+        datom-2   (datom 124 "likes" "GG" 0 true)
+        datoms    (-> (with-datom db datom-1)
+                      (with-datom datom-2))
+        iterate   #(take % (fdb/iterate-from (fdb/key datom-1)))
         iterate-5 (iterate 5)]
 
     ;; NOTE: Because the fdb keys are Java arrays, we need to convert them
@@ -99,6 +99,44 @@
            (first (slice eavt eavt-durable (datom 124 nil nil nil nil) [124]
                          create-eavt))))
     (is (= [datom-1 datom-2]
-           (vec (slice eavt eavt-durable (datom 123 nil nil nil nil) [123]
-                       (datom 125 nil nil nil nil)  [125] create-eavt))))
+           (vec (slice eavt eavt-durable nil [123]
+                       nil  [125] create-eavt))))
     ))
+
+
+
+(deftest fdb-using-init-db
+  (testing "init-db on the simplest example"
+    (let [db (dh-db/empty-db)]
+      (dh-db/init-db [(dh-db/datom 1000 2 3)
+                      ;; TODO: weird if we use "5" instead of 5, it does not work
+                      (dh-db/datom 4 5 "hello")])))
+  ;; TODO: test that what's inserted in fdb through init-db above is really inside fdb
+  )
+
+
+;; ------------------------ PERFOMANCE Testing -------------------------
+
+
+;; FoundationDB write 1 million keys with 10 parallel clients and 100k keys per client
+
+#_(let [fd (select-api-version 510)
+        kv (map #(vector (str %1) %1) (range 100000))]
+    (time (let [clients (repeatedly 10 #(future
+                                          (with-open [db (open fd)]
+                                            (tr! db
+                                                 (doall (doseq [[k v] kv]
+                                                          (set-val tr k v)))))))]
+            (doall (map deref clients))
+            "Finished")))
+
+;; "Elapsed time: 27903.477365 msecs"
+
+
+
+;; Added by CR
+;; time' prints out elapsed time only when run in REPL!?
+(comment
+  (let [data (map #(vec [% % %]) (range 10))]
+    (time (-> (map #(apply dh-db/datom %) data)
+              (dh-db/init-db)))))

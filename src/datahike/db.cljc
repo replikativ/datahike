@@ -780,7 +780,7 @@
     (-> slice vec rseq first :e) ;; :e of last datom in slice
     0))
 
-;; TODO: Add our DB initialisation here
+;; TODO: Add our DB initialisation here, i.e eavt-scalable ...
 (defn ^DB init-db
   ([datoms] (init-db datoms default-schema))
   ([datoms schema & {:as options :keys [validate?] :or {validate? true}}]
@@ -810,6 +810,11 @@
                                                                 (.-tx datom)] nil))
                                               (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
                                               (seq datoms)))
+                eavt-scalable (doall (map #(fdb/insert [(.-e %)
+                                                        (.-a %)
+                                                        (.-v %)
+                                                        (.-tx %)])
+                                          datoms))
 
                 aevt        (apply btset/btset-by cmp-datoms-aevt datoms)
                 aevt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
@@ -833,6 +838,7 @@
        (map->DB {:schema  schema
                  :eavt    eavt
                  :eavt-durable eavt-durable
+                 :eavt-scalable eavt-scalable
                  :aevt    aevt
                  :aevt-durable aevt-durable
                  :avet    avet
@@ -1055,6 +1061,9 @@
 
 ;; TODO: restore with-datom to be private, i.e. defn-. For now, it is
 ;; public to enable unit tests
+;;
+;; TODO: add fdb/insert for :aevt-scalable and for :avet-scalable
+;;
 ;;
 ;; In context of `with-datom` we can use faster comparators which
 ;; do n
