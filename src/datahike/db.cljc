@@ -810,6 +810,7 @@
                                                                 (.-tx datom)] nil))
                                               (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
                                               (seq datoms)))
+                ;; 'doall to force the lazy sequence
                 eavt-scalable (doall (map #(fdb/insert [(.-e %)
                                                         (.-a %)
                                                         (.-v %)
