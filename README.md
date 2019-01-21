@@ -170,6 +170,10 @@ project before exporting.
 
 ## Changelog
 
+### 0.1.3
+
+- fixed null pointer exceptions in the compare relation of the hitchhiker-tree
+
 
 ### 0.1.2
 
