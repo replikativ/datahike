@@ -6,7 +6,9 @@
     [hitchhiker.tree.core :as hc :refer [<??]]
     [hitchhiker.tree.messaging :as hmsg]
     [hitchhiker.konserve :as kons]
-    [datahike.btset :as btset])
+    [datahike.btset :as btset]
+    [hasch.core :refer [uuid]]
+    [konserve.core :as k])
   #?(:cljs (:require-macros [datahike.db :refer [case-tree combine-cmp raise defrecord-updatable cond-let]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry])))
@@ -340,16 +342,6 @@
       0 -1)))
 
 
-
-
-(defrecord EAVTKey [datom]
-  hc/IKeyCompare
-  (compare [this other]
-    (if (= (type other) EAVTKey)
-      (cmp-datoms-eavt datom (.-datom ^EAVTKey other))
-      (throw (ex-info "Unexpected key type." {:error :not-eavt-key})))))
-
-
 (defn cmp-datoms-aevt [^Datom d1, ^Datom d2]
   (combine-cmp
     (cmp (.-a d1) (.-a d2))
@@ -357,10 +349,6 @@
     (cmp-val (.-v d1) (.-v d2))
     (cmp-num (.-tx d1) (.-tx d2))))
 
-(defrecord AEVTKey [datom]
-  hc/IKeyCompare
-  (compare [this other]
-    (cmp-datoms-aevt datom (.-datom ^AEVTKey other))))
 
 (defn cmp-datoms-avet [^Datom d1, ^Datom d2]
   (combine-cmp
@@ -369,10 +357,6 @@
     (cmp-num (.-e d1) (.-e d2))
     (cmp-num (.-tx d1) (.-tx d2))))
 
-(defrecord AVETKey [datom]
-  hc/IKeyCompare
-  (compare [this other]
-    (cmp-datoms-avet datom (.-datom ^AVETKey other))))
 
 ;; fast versions without nil checks
 
@@ -1436,3 +1420,11 @@
   (def store (kons/add-hitchhiker-tree-handlers (<?? (new-fs-store "/tmp/datahike"))))
 
   (def backend (kons/->KonserveBackend store)))
+
+
+(defn db->uuid [conn]
+  (let [root (-> (<?? (k/get-in (:store conn) [:db]))
+                 (update :eavt-key kons/node->value)
+                 (update :avet-key kons/node->value)
+                 (update :aevt-key kons/node->value))]
+    (uuid root)))
