@@ -19,6 +19,6 @@ jobs: # basic units of work in a run
           key: datahike-{{ checksum "project.clj" }}
       - run: lein do test, uberjar
       - store_artifacts: # Upload test summary for display in Artifacts: https://circleci.com/docs/2.0/artifacts/
-          path: target/uberjar/datahike-0.1.3.jar
+          path: target/datahike-0.1.3.jar
           destination: uberjar
       # See https://circleci.com/docs/2.0/deployment-integrations/ for deploy examples
