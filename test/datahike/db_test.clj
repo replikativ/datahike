@@ -82,7 +82,7 @@
     ))
 
 
-(deftest slice-test
+(deftest slice-simple
   "slice"
   (let [db                          (dh-db/empty-db)
         _                           (fdb/clear-all)
@@ -104,6 +104,19 @@
     ))
 
 
+(deftest slice-large-range
+  "slice"
+  (let [db                          (dh-db/empty-db)
+        _                           (fdb/clear-all)
+        {:keys [eavt eavt-durable]} (reduce #(with-datom %1
+                                               (datom %2 "likes" "Hans" 0 true))
+                                            db
+                                            (range 100))
+        create-eavt                 (fn [e a v tx] (datom e a v tx true))]
+    (is (= 10
+           (count (slice eavt eavt-durable (datom 50 nil nil nil nil) [50 "likes"]
+                         (datom 60 nil nil nil nil)  [60] create-eavt)))))
+  )
 
 (deftest fdb-using-init-db
   (testing "init-db on the simplest example"
