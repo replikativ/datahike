@@ -3,8 +3,7 @@
   (:require [datahike.db :as dh-db :refer [with-datom slice]]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [fdb.core :as fdb]
-            [datahike.db :refer [datom]]
-           ))
+            [datahike.db :refer [datom]]))
 
 
 (deftest fdb-using-with-datom
@@ -150,6 +149,6 @@
 ;; Added by CR
 ;; time' prints out elapsed time only when run in REPL!?
 (comment
-  (let [data (map #(vec [% % %]) (range 10))]
+  (let [data (map #(vec [% % %]) (range 1000))]
     (time (-> (map #(apply dh-db/datom %) data)
               (dh-db/init-db)))))
