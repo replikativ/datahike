@@ -59,6 +59,42 @@
       db)))
 
 
+;; Used for perf measuring and for testing an alternative implem.
+#_(defn insert
+  [[e a v t]]
+  (let [fd   (FDB/selectAPIVersion 510)
+        data (map #(vec [% % %]) (range 1000))
+        ;;        key   (key [e a v t])
+        ;; Putting the key also in the value
+        ;;        value key
+        ba (byte-array 3)
+        ]
+    (with-open [db (.open fd)]
+      (doall (map #(.run
+                    db
+                    (clojure.core/reify
+                      java.util.function.Function
+                      (apply [this tr]
+                        (.set tr % %))))
+                  ;; learned: only 2 sec diff between computing the keys or passing a fake bytearray on an overall time of 10 sec.
+                  #_(map #(fdb.core/key %)  data)
+                  (map (fn[x] ba)  data)))
+      db)))
+
+
+(comment
+  (with-open [db (.open fd)]
+    (.run
+      db
+      (clojure.core/reify
+        java.util.function.Function
+        (apply [this tr]
+          (.set tr (fdb.core/key [1 1 "a" 1]) (fdb.core/key [1 1 "a" 1])))))
+    db))
+
+
+;; (time (fdb.core/insert [1 1 1 1]))
+
 (defn get-range
   "Returns keys in the range [begin end[. (Keys are vector datoms)"
   [begin end]
