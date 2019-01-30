@@ -709,17 +709,18 @@
                      :value v}))))
 
 (defn- validate-schema [schema]
-  (doseq [[a kv] schema]
-    (let [comp? (:db/isComponent kv false)]
-      (validate-schema-key a :db/isComponent (:db/isComponent kv) #{true false})
-      (when (and comp? (not= (:db/valueType kv) :db.type/ref))
-        (throw (ex-info (str "Bad attribute specification for " a ": {:db/isComponent true} should also have {:db/valueType :db.type/ref}")
-                        {:error     :schema/validation
-                         :attribute a
-                         :key       :db/isComponent}))))
-    (validate-schema-key a :db/unique (:db/unique kv) #{:db.unique/value :db.unique/identity})
-    (validate-schema-key a :db/valueType (:db/valueType kv) #{:db.type/ref})
-    (validate-schema-key a :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many}))
+  (run! (fn [[a kv]]
+          (let [comp? (:db/isComponent kv false)]
+            (validate-schema-key a :db/isComponent (:db/isComponent kv) #{true false})
+            (when (and comp? (not= (:db/valueType kv) :db.type/ref))
+              (throw (ex-info (str "Bad attribute specification for " a ": {:db/isComponent true} should also have {:db/valueType :db.type/ref}")
+                              {:error     :schema/validation
+                               :attribute a
+                               :key       :db/isComponent}))))
+          (validate-schema-key a :db/unique (:db/unique kv) #{:db.unique/value :db.unique/identity})
+          (validate-schema-key a :db/valueType (:db/valueType kv) #{:db.type/ref})
+          (validate-schema-key a :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many}))
+        schema)
   schema)
 
 (def ^:const br 300)

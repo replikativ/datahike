@@ -133,9 +133,10 @@
   ([conn tx-data] (transact! conn tx-data nil))
   ([conn tx-data tx-meta]
     {:pre [(conn? conn)]}
-    (let [report (-transact! conn tx-data tx-meta)]
-      (doseq [[_ callback] @(:listeners (meta conn))]
-        (callback report))
+   (let [report (-transact! conn tx-data tx-meta)]
+     (run! (fn [[_ callback]]
+             (callback report))
+           @(:listeners (meta conn)))
       report)))
 
 (defn reset-conn!
@@ -149,8 +150,9 @@
                                  (datoms db :eavt))
                     :tx-meta   tx-meta})]
       (reset! conn db)
-      (doseq [[_ callback] @(:listeners (meta conn))]
-        (callback report))
+      (run! (fn [[_ callback]]
+              (callback report))
+            @(:listeners (meta conn)))
       db)))
 
 (defn listen!

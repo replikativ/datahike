@@ -230,7 +230,7 @@
 ;; find-coll        = [ find-elem '...' ]
 ;; find-scalar      = find-elem '.'
 ;; find-tuple       = [ find-elem+ ]
-;; find-elem        = (variable | pull-expr | aggregate | custom-aggregate) 
+;; find-elem        = (variable | pull-expr | aggregate | custom-aggregate)
 ;; pull-expr        = [ 'pull' src-var? variable pull-pattern ]
 ;; pull-pattern     = (constant | variable | plain-symbol)
 ;; aggregate        = [ aggregate-fn fn-arg+ ]
@@ -305,7 +305,7 @@
       (let [long?         (= (count form) 4)
             src           (if long? (nth form 1) '$)
             [var pattern] (if long? (nnext form) (next form))
-            src*          (parse-src-var src)                    
+            src*          (parse-src-var src)
             var*          (parse-variable var)
             pattern*      (or (parse-variable pattern)
                               (parse-plain-variable pattern)
@@ -419,7 +419,7 @@
     (if-let [source* (parse-src-var (first form))]
       [source* (next form)]
       [(DefaultSrc.) form])))
-      
+
 (defn parse-pattern [form]
   (when-let [[source* next-form] (take-source form)]
     (when-let [pattern* (parse-seq parse-pattern-el next-form)]
@@ -485,7 +485,7 @@
 
 (defn- collect-vars [form]
   (collect-vars-acc [] form))
-    
+
 (defn collect-vars-distinct [form]
   (vec (distinct (collect-vars form))))
 
@@ -531,8 +531,8 @@
           free     :free} :rule-vars
          clauses          :clauses} clause
         vars (concat required free)]
-    (doseq [clause clauses]
-      (validate-join-vars vars [clause] form))
+    (run! #(validate-join-vars vars [%] form)
+          clauses)
     clause))
 
 (defn parse-and [form]
@@ -598,7 +598,7 @@
 
 
 (defn parse-clause [form]
-  (or 
+  (or
       (parse-not       form)
       (parse-not-join  form)
       (parse-or        form)
@@ -658,21 +658,21 @@
 (defn validate-arity [name branches]
   (let [vars0  (:vars (first branches))
         arity0 (rule-vars-arity vars0)]
-    (doseq [b    (next branches)
-            :let [vars (:vars b)]]
-      (when (not= arity0 (rule-vars-arity vars))
-        (raise "Arity mismatch for rule '" (:symbol name) "': "
-               (flatten-rule-vars vars0) " vs. " (flatten-rule-vars vars)
-         {:error :parser/rule, :rule name})))))
+    (run! (fn [{:keys [vars]}]
+            (when (not= arity0 (rule-vars-arity vars))
+              (raise "Arity mismatch for rule '" (:symbol name) "': "
+                     (flatten-rule-vars vars0) " vs. " (flatten-rule-vars vars)
+                     {:error :parser/rule, :rule name})))
+          (next branches))))
 
 (defn parse-rules [form]
-  (vec
-    ;; group rule branches by name
-    (for [[name branches] (group-by :name (parse-seq parse-rule form))
-          :let [branches (mapv #(RuleBranch. (:vars %) (:clauses %)) branches)]]
-      (do
-        (validate-arity name branches)
-        (Rule. name branches)))))
+  (into []
+        (map (fn [[name branches]]
+               (let [branches (mapv #(RuleBranch. (:vars %) (:clauses %)) branches)]
+                 (validate-arity name branches)
+                 (Rule. name branches))))
+        ;; TODO use cgrand/xforms to make a single pass
+        (group-by :name (parse-seq parse-rule form))))
 
 
 ;; query
@@ -702,7 +702,7 @@
     (when-not (empty? shared)
       (raise ":in and :with should not use same variables: " (mapv :symbol shared)
              {:error :parser/query, :vars shared, :form form})))
-  
+
   (let [in-vars    (collect-vars (:qin q))
         in-sources (collect #(instance? SrcVar %) (:qin q))
         in-rules   (collect #(instance? RulesVar %) (:qin q))]
@@ -711,19 +711,19 @@
                    (distinct? in-rules))
       (raise "Vars used in :in should be distinct"
              {:error :parser/query, :form form})))
-  
+
   (let [with-vars (collect-vars (:qwith q))]
     (when-not (distinct? with-vars)
       (raise "Vars used in :with should be distinct"
              {:error :parser/query, :form form})))
-  
+
   (let [in-sources    (collect #(instance? SrcVar %) (:qin q) #{})
         where-sources (collect #(instance? SrcVar %) (:qwhere q) #{})
         unknown       (set/difference where-sources in-sources)]
     (when-not (empty? unknown)
       (raise "Where uses unknown source vars: " (mapv :symbol unknown)
              {:error :parser/query, :vars unknown, :form form})))
-  
+
   (let [rule-exprs (collect #(instance? RuleExpr %) (:qwhere q))
         rules-vars (collect #(instance? RulesVar %) (:qin q))]
     (when (and (not (empty? rule-exprs))

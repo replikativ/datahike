@@ -770,7 +770,7 @@
                         {:error :query/where
                          :form  form
                          :vars  missing}))))))
-                           
+
 
 (defn resolve-not [context clause]
   (perf/measure
@@ -811,20 +811,20 @@
 (defn collect-args! [context args target form]
   (let [consts  (:consts context)
         sources (:sources context)]
-    (doseq [[arg i] (zip args (range))
-            :let [sym (:symbol arg)]]
-      (cond
-        (instance? Variable arg)
-          (when (contains? consts sym)
-            (da/aset target i (get consts sym)))
-        (instance? SrcVar arg)
-          (if (contains? sources sym)
-            (da/aset target i (get sources sym))
-            (throw (ex-info (str "Unbound source variable: " sym " in " form)
-                            { :error :query/where, :form form, :var sym })))
-        (instance? Constant arg)
-          (da/aset target i (:value arg))))))
-
+    (run! (fn [[arg i]]
+            (let [sym (:symbol arg)]
+              (cond
+                (instance? Variable arg)
+                (when (contains? consts sym)
+                  (da/aset target i (get consts sym)))
+                (instance? SrcVar arg)
+                (if (contains? sources sym)
+                  (da/aset target i (get sources sym))
+                  (throw (ex-info (str "Unbound source variable: " sym " in " form)
+                                  { :error :query/where, :form form, :var sym })))
+                (instance? Constant arg)
+                (da/aset target i (:value arg)))))
+          (zip args (range)))))
 
 (defn get-f [context fun form]
   (let [sym (:symbol fun)]
@@ -909,7 +909,7 @@
     (doseq [rel (:rels context)]
       (println " " rel)))
   (println "  :consts" (:consts context) "}"))
-    
+
 
 (defn resolve-clauses [context clauses]
   (reduce (fn [context clause]
@@ -924,12 +924,12 @@
 
 
 (defn collect-consts [syms-indexed specimen consts]
-  (doseq [[sym i] syms-indexed]
-    (when (contains? consts sym)
-      (let [val (get consts sym)]
-        (da/aset specimen i val)))))
+  (run! (fn [[sym i]]
+         (when (contains? consts sym)
+           (let [val (get consts sym)]
+             (da/aset specimen i val))))
+        syms-indexed))
 
-        
 (defn collect-rel-xf [syms-indexed rel]
   (let [sym+idx     (for [[sym i] syms-indexed
                           :when (has? (-symbols rel) sym)]
