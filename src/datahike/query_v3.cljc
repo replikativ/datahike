@@ -12,7 +12,7 @@
     [datahike.btset :as btset #?@(:cljs [:refer [Iter]])]
     [datahike.perf :as perf])
   #?(:clj
-    (:import 
+    (:import
       [datahike.parser
         BindColl BindIgnore BindScalar BindTuple
         Constant DefaultSrc Pattern RulesVar SrcVar Variable
@@ -20,6 +20,14 @@
       [clojure.lang     IReduceInit Counted]
       [datahike.db  Datom]
       [datahike.btset Iter])))
+
+(defn indexed-map
+  "Equivalent of (zipmap xs (range))"
+  [xs]
+  #?(:clj (into {}
+                (map-indexed #(clojure.lang.MapEntry. %2 %1))
+                xs)
+     :cljs (into {} (map-indexed #(vector %2 %1)) xs)))
 
 ;; using defn instead of declare because of http://dev.clojure.org/jira/browse/CLJS-1871
 (defn ^:declared resolve-clauses [context clauses])
@@ -64,20 +72,20 @@
        (reify
          NativeColl
          (-native-coll [_] m)
-         
+
          clojure.lang.IEditableCollection
          (asTransient [this] this)
-         
+
          clojure.lang.ITransientAssociative
          (assoc [this k v] (.put m k v) this)
-         
+
          clojure.lang.ITransientCollection
          (persistent [this] this)
-         
+
          clojure.lang.IPersistentCollection
          clojure.lang.Counted
          (count [_] (.size m))
-         
+
          clojure.lang.ILookup
          (valAt [_ k] (.get m k))
          (valAt [_ k nf] (or (.get m k) nf))))
@@ -89,18 +97,18 @@
        (reify
          NativeColl
          (-native-coll [_] l)
-         
+
          clojure.lang.IEditableCollection
          (asTransient [this] this)
-         
+
          clojure.lang.ITransientCollection
          (conj [this v] (.add l v) this)
          (persistent [this] this)
-         
+
          clojure.lang.IPersistentCollection
          clojure.lang.Counted
          (count [_] (.size l))
-         
+
          clojure.lang.IReduceInit
          (reduce [_ f s]
            (loop [i   0
@@ -113,17 +121,17 @@
        (reify
          NativeColl
          (-native-coll [_] arr)
-         
+
          IEditableCollection
          (-as-transient [this] this)
-         
+
          ITransientCollection
          (-conj! [this v] (.push arr v) this)
          (-persistent! [this] this)
-         
+
          ICounted
          (-count [_] (alength arr))
-         
+
          IReduce
          (-reduce [_ f s]
            (loop [i   0
@@ -138,21 +146,21 @@
        (reify
          NativeColl
          (-native-coll [_] set)
-         
+
          clojure.lang.IEditableCollection
          (asTransient [this] this)
-         
+
          clojure.lang.ITransientCollection
          (conj [this v] (.add set v) this)
          (persistent [this] this)
-         
+
          clojure.lang.IPersistentCollection
          clojure.lang.IPersistentSet
          (contains [_ k] (.contains set k))
 
          clojure.lang.Counted
          (count [_] (.size set))
-         
+
          clojure.lang.IReduceInit
          (reduce [_ f s]
            (let [iter (.iterator set)]
@@ -195,7 +203,7 @@
 
 ;; (declare equiv-tuple)
 
-;; (deftype Tuple [arr hash]  
+;; (deftype Tuple [arr hash]
 ;;   #?@(
 ;;     :cljs [
 ;;       Object (equiv  [this other] (equiv-tuple this other))
@@ -266,7 +274,7 @@
      (pr-rel rel w)))
 
 (defn array-rel [symbols coll]
-  (->ArrayRelation (zipmap symbols (range)) coll))
+  (->ArrayRelation (indexed-map symbols) coll))
 
 
 ;;; CollRelation
@@ -310,7 +318,7 @@
                            (assoc acc e i)
                          :else acc))
                      {}
-                     (zipmap symbols (range)))]
+                     (indexed-map symbols))]
     (->CollRelation offset-map coll)))
 
 #?(:clj
@@ -320,7 +328,7 @@
 
 ;;; ProdRelation
 
-;; (deftype ProdRelation [rel1 rel2]  
+;; (deftype ProdRelation [rel1 rel2]
 ;;   IRelation
 ;;   (-symbols [_] (concatv (-symbols rel1) (-symbols rel2)))
 ;;   (-arity   [_] (+ (-arity rel1) (-arity rel2)))
@@ -455,7 +463,7 @@
         arity       (+ arity1 arity2)
         target-idxs1 (arange 0 arity1)
         target-idxs2 (arange arity1 arity)
-        
+
         coll        (-fold rel2 ;; iterate over rel2
                       (fn [acc t2]
                         (let [tuples1 (get hash1 (key-fn2 t2))]
@@ -512,7 +520,7 @@
                 (bind! ts b s indexes))
               tuples
               (zip bindings source)))
-    
+
     :else
       (db/raise "Unknown binding form " (dp/source binding)
                {:error :query/binding, :value source, :binding (dp/source binding)})))
@@ -520,7 +528,7 @@
 
 (defn bind [binding source]
   (let [syms    (map :symbol (dp/collect-vars-distinct binding))
-        indexes (zipmap syms (range))
+        indexes (indexed-map syms)
         tuples  (bind! [(da/make-array (count syms))] binding source indexes)]
     (array-rel syms tuples)))
 
@@ -568,7 +576,7 @@
     (or (get (:sources context) symbol)
         (db/raise "Source " symbol " is not defined"
                {:error :query/where, :symbol symbol}))))
-    
+
 
 ;; Patterns
 
