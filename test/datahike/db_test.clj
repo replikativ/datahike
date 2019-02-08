@@ -146,9 +146,13 @@
 
 
 
-;; Added by CR
+;; Tests init-db -- Added by CR
 ;; time' prints out elapsed time only when run in REPL!?
 (comment
-  (let [data (map #(vec [% % %]) (range 1000))]
+  (let [data (map #(vec [% % %]) (range 1000))] ;; 17:09: Weird works with 1000 but not with >5000
     (time (-> (map #(apply dh-db/datom %) data)
-              (dh-db/init-db)))))
+              (dh-db/init-db))))
+
+  fdb.keys/buf-len
+  )
+;; => nil

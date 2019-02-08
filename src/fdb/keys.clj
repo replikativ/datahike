@@ -3,12 +3,12 @@
   (:require [octet.core :as buf]))
 
 
-(def buf-len 10000)
+(def buf-len 100)
 
 ;; Positions in the byte buffer where each section ends
-(def a-end 300)
-(def v-end 9979)
-(def t-end 9999)
+(def a-end 40)
+(def v-end 80)
+(def t-end 99)
 
 (defn- str-size
   [string]

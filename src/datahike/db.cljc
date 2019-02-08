@@ -811,11 +811,11 @@
                                               (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
                                               (seq datoms)))
                 ;; 'doall to force the lazy sequence
-                eavt-scalable (doall (map #(fdb/insert [(.-e %)
-                                                        (.-a %)
-                                                        (.-v %)
-                                                        (.-tx %)])
-                                          datoms))
+                eavt-scalable  (fdb/batch-insert (doall (map #(vec [(.-e %)
+                                                                    (.-a %)
+                                                                    (.-v %)
+                                                                    (.-tx %)])
+                                                             datoms)))
 
                 aevt        (apply btset/btset-by cmp-datoms-aevt datoms)
                 aevt-durable (<?? (hc/reduce< (fn [t ^Datom datom]

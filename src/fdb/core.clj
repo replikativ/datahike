@@ -48,7 +48,9 @@
     (with-open [db (.open fd)]
       (tr! db @(.get tr key)))))
 
+
 (defn insert
+  "Inserts one vector"
   [[e a v t]]
   (let [fd    (FDB/selectAPIVersion 510)
         key   (key [e a v t])
@@ -58,6 +60,20 @@
       (tr! db (.set tr key value))
       db)))
 
+
+(defn batch-insert
+  "Batch inserts multiple vectors"
+  [vectors]
+  (let [fd (FDB/selectAPIVersion 510)]
+    (with-open [db (.open fd)]
+      ;; The value 5000 depends on the size of a fdb key.
+      ;; I.e. We have to find a combination such that *approximately*
+      ;; 5000 * <fdb key size> does not exceed 10MB (the transaction max size
+      ;; for fdb).
+     (doall (doseq [some_vecs (partition 5000 vectors)]
+              ;;(println "a")
+              (tr! db (doseq [k some_vecs]
+                        (.set tr k k))))))))
 
 ;; Used for perf measuring and for testing an alternative implem.
 #_(defn insert
@@ -82,6 +98,11 @@
       db)))
 
 
+;; (time (fdb.core/insert [1 1 1 1]))
+
+
+
+
 (comment
   (with-open [db (.open fd)]
     (.run
@@ -93,7 +114,25 @@
     db))
 
 
-;; (time (fdb.core/insert [1 1 1 1]))
+;; THiS IS THE GOOD version
+(comment
+  (let [v  (byte-array [])
+        fd (FDB/selectAPIVersion 510)
+        all_kv (map #(vector (fdb.core/key [%1 (str ":attribute/" %1) %1 %1])  v)
+                (range 100000))]
+    (time (with-open [db (.open fd)]
+            ;; with fdb key size of 500 bytes
+            (doall (doseq [kv_200 (partition 5000 all_kv)]
+                     ;;(println "a")
+                     (tr! db (doseq [[k v] kv_200]
+                               (.set tr k v)))))
+            ))))
+
+;; * With 100k datoms to store
+;; - and with fdb key size of 500 bytes and 5000 datoms per transaction: "Elapsed time: 14517.359219 msecs"
+;; storing 10000 datoms per transaction exceeds FDB limits
+;; - and with fdb key size of 100 bytes and 20000 datoms per transaction: "Elapsed time: 13781.928804 msecs"
+
 
 (defn get-range
   "Returns keys in the range [begin end[. (Keys are vector datoms)"
