@@ -69,71 +69,13 @@
         v    (byte-array [])]
     (with-open [db (.open fd)]
       ;; The value 5000 depends on the size of a fdb key.
-      ;; I.e. We have to find a combination such that *approximately*
+      ;; I.e. We have to find a combination such that ~
       ;; 5000 * <fdb key size> does not exceed 10MB (the transaction max size
       ;; for fdb).
       (doall (doseq [some_vecs (partition 5000 keys)]
                (tr! db (doseq [k some_vecs]
                          ;; (println k)
                          (.set tr k v))))))))
-
-;; Used for perf measuring and for testing an alternative implem.
-#_(defn insert
-  [[e a v t]]
-  (let [fd   (FDB/selectAPIVersion 510)
-        data (map #(vec [% % %]) (range 1000))
-        ;;        key   (key [e a v t])
-        ;; Putting the key also in the value
-        ;;        value key
-        ba (byte-array 3)
-        ]
-    (with-open [db (.open fd)]
-      (doall (map #(.run
-                    db
-                    (clojure.core/reify
-                      java.util.function.Function
-                      (apply [this tr]
-                        (.set tr % %))))
-                  ;; learned: only 2 sec diff between computing the keys or passing a fake bytearray on an overall time of 10 sec.
-                  #_(map #(fdb.core/key %)  data)
-                  (map (fn[x] ba)  data)))
-      db)))
-
-
-;; (time (fdb.core/insert [1 1 1 1]))
-
-
-
-
-(comment
-  (with-open [db (.open fd)]
-    (.run
-      db
-      (clojure.core/reify
-        java.util.function.Function
-        (apply [this tr]
-          (.set tr (fdb.core/key [1 1 "a" 1]) (fdb.core/key [1 1 "a" 1])))))
-    db))
-
-
-;; THiS IS THE GOOD version
-(comment
-  (let [v  (byte-array [])
-        fd (FDB/selectAPIVersion 510)
-        all_kv (map #(vector (fdb.core/key [%1 (str ":attribute/" %1) %1 %1])  v)
-                (range 100000))]
-    (time (with-open [db (.open fd)]
-            ;; with fdb key size of 500 bytes
-            (doall (doseq [kv_200 (partition 5000 all_kv)]
-                     ;;(println "a")
-                     (tr! db (doseq [[k v] kv_200]
-                               (.set tr k v)))))
-            ))))
-
-;; * With 100k datoms to store
-;; - and with fdb key size of 500 bytes and 5000 datoms per transaction: "Elapsed time: 14517.359219 msecs"
-;; storing 10000 datoms per transaction exceeds FDB limits
-;; - and with fdb key size of 100 bytes and 20000 datoms per transaction: "Elapsed time: 13781.928804 msecs"
 
 
 (defn get-range

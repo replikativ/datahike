@@ -1,5 +1,7 @@
+;; TODO: move this to the 'test' dir and rename it 'fdb'
 (ns datahike.db-test
-  (:import (com.apple.foundationdb KeySelector))
+  (:import (com.apple.foundationdb KeySelector
+                                   FDB))
   (:require [datahike.db :as dh-db :refer [with-datom slice]]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [fdb.core :as fdb]
@@ -145,14 +147,40 @@
 ;; "Elapsed time: 27903.477365 msecs"
 
 
-
-;; Tests init-db -- Added by CR
-;; time' prints out elapsed time only when run in REPL!?
 (comment
-  (let [data (map #(vec [% % %]) (range 1000))] ;; 17:09: Weird works with 1000 but not with >5000
-    (time (-> (map #(apply dh-db/datom %) data)
-              (dh-db/init-db))))
+  (with-open [db (.open fd)]
+    (.run
+      db
+      (clojure.core/reify
+        java.util.function.Function
+        (apply [this tr]
+          (.set tr (fdb.core/key [1 1 "a" 1]) (fdb.core/key [1 1 "a" 1])))))
+    db))
 
-  fdb.keys/buf-len
-  )
+
+;; To test how quick inserting 100k datoms is
+(comment
+  (let [v  (byte-array [])
+        fd (FDB/selectAPIVersion 510)
+        all_kv (map #(vector (fdb.core/key [%1 (str ":attribute/" %1) %1 %1])  v)
+                (range 100000))]
+    (time (with-open [db (.open fd)]
+            ;; with fdb key size of 500 bytes
+            (doall (doseq [kv_200 (partition 5000 all_kv)]
+                     ;;(println "a")
+                     (fdb/tr! db (doseq [[k v] kv_200]
+                                   (.set tr k v)))))))))
+
+;; * With 100k datoms to store
+;; - and with fdb key size of 500 bytes and 5000 datoms per transaction: "Elapsed time: 14517.359219 msecs"
+;; storing 10000 datoms per transaction exceeds FDB limits
+;; - and with fdb key size of 100 bytes and 20000 datoms per transaction: "Elapsed time: 13781.928804 msecs"
+
+
+
+;; Tests init-db for 100k
+(comment
+  (let [data (map #(vec [% % %]) (range 100000))]
+    (time (-> (map #(apply dh-db/datom %) data)
+              (dh-db/init-db)))))
 ;; => nil
