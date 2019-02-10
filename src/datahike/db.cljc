@@ -491,12 +491,14 @@
                     (map (fn [kv]
                            (let [[a b c d] (.key ^AMapEntry kv)]
                              (create-datom a b c d)))))
-         old  #_new     (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
+         new     (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
                       seq)
-         new (->> (sequence xf (map #(clojure.lang.MapEntry.
-                                      (fdb.keys/key->vect %1) %1)
-                                    (fdb/get-range key key-to)))
-                  seq)
+         ;; TODO: restore and fix for when testing init-db with 100k elems
+         ;; it does not work
+         ;; new (->> (sequence xf (map #(clojure.lang.MapEntry.
+         ;;                              (fdb.keys/key->vect %1) %1)
+         ;;                            (fdb/get-range key key-to)))
+         ;;          seq)
          ]
      ;; (when-not (= (vec old) (vec new))
      ;;   (prn "QUERY" key key-to)
