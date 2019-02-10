@@ -64,16 +64,18 @@
 (defn batch-insert
   "Batch inserts multiple vectors"
   [vectors]
-  (let [fd (FDB/selectAPIVersion 510)]
+  (let [fd   (FDB/selectAPIVersion 510)
+        keys (map #(fdb.core/key %) vectors)
+        v    (byte-array [])]
     (with-open [db (.open fd)]
       ;; The value 5000 depends on the size of a fdb key.
       ;; I.e. We have to find a combination such that *approximately*
       ;; 5000 * <fdb key size> does not exceed 10MB (the transaction max size
       ;; for fdb).
-     (doall (doseq [some_vecs (partition 5000 vectors)]
-              ;;(println "a")
-              (tr! db (doseq [k some_vecs]
-                        (.set tr k k))))))))
+      (doall (doseq [some_vecs (partition 5000 keys)]
+               (tr! db (doseq [k some_vecs]
+                         ;; (println k)
+                         (.set tr k v))))))))
 
 ;; Used for perf measuring and for testing an alternative implem.
 #_(defn insert
