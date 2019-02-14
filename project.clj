@@ -1,12 +1,12 @@
-(defproject io.replikativ/datahike "0.1.2"
+(defproject io.replikativ/datahike "0.1.3"
   :description "A durable datalog implementation adaptable for distribution."
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :url "https://github.com/replikativ/datahike"
 
-  :dependencies [[org.clojure/clojure "1.7.0" :scope "provided"]
-                 [org.clojure/clojurescript "1.7.228" :scope "provided"]
-                 [io.replikativ/hitchhiker-tree "0.1.2"]
+  :dependencies [[org.clojure/clojure       "1.8.0" :scope "provided"]
+                 [org.clojure/clojurescript "1.8.51" :scope "provided"]
+                 [io.replikativ/hitchhiker-tree "0.1.4"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2"]
                  [com.apple.foundationdb/fdb-java "5.1.7"]
@@ -88,7 +88,6 @@
            :global-vars  { *print-namespace-maps* false }}
     :dev { :source-paths ["bench/src" "test" "dev"]
           :dependencies [[org.clojure/tools.nrepl "0.2.12"]
-
                          ] }
   }
 
