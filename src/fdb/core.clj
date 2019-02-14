@@ -79,7 +79,7 @@
 
 
 (defn get-range
-  "Returns keys in the range [begin end[. (Keys are vector datoms)"
+  "Returns keys in the range [begin end[ (Keys are vector datoms)."
   [begin end]
   (let [fd        (FDB/selectAPIVersion 510)
         begin-key (KeySelector/firstGreaterOrEqual (key begin))
