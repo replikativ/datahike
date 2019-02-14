@@ -84,7 +84,7 @@
 
 
 (deftest slice-simple
-  "slice"
+  "slice-simple"
   (let [db                          (dh-db/empty-db)
         _                           (fdb/clear-all)
         datom-1                     (datom 123 "likes" "Hans" 0 true)
@@ -106,7 +106,7 @@
 
 
 (deftest slice-large-range
-  "slice"
+  "slice-large"
   (let [db                          (dh-db/empty-db)
         _                           (fdb/clear-all)
         {:keys [eavt eavt-durable]} (reduce #(with-datom %1
