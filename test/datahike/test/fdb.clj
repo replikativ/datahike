@@ -30,10 +30,10 @@
                (with-datom (datom 1 "likes" "GG" 0 true))
                (with-datom (datom 2 "likes" "GG" 0 true))
                (with-datom (datom 3 "likes" "GG" 0 true)))]
-    (is (= 2
+    (is (= 3
            (count (fdb/get-range [123 "likes" "Hans" 0 true]
                                  [125 "likes" "GG" 0 true]))))
-    (is (= 2
+    (is (= 2 ;; Not 3 because [125] does not exist in the db.
            (count (fdb/get-range [123]
                                  [125])))))
 
@@ -41,7 +41,7 @@
   (let [db (dh-db/empty-db)
         _  (fdb/clear-all)
         _  (reduce #(with-datom %1 (datom %2 "likes" "Hans" 0 true)) db (range 100))]
-    (is (= 50
+    (is (= 51
            (count (fdb/get-range [1 "likes" "Hans" 0 true]
                                  [51 "likes" "Hans" 0 true])))))
 
@@ -53,7 +53,7 @@
   (let [db (dh-db/empty-db)
         ;;        _  (fdb/clear-all)
         _  (reduce #(with-datom %1 (datom %2 "likes" "Hans" 0 true)) db (range 10))]
-    (is (= 2
+    (is (= 3
            (count (fdb/get-range [1 "likes" "Hans" 0 true]
                                  [3 "likes" "Hans" 0 true])))))
 

@@ -79,13 +79,13 @@
 
 
 (defn get-range
-  "Returns keys in the range [begin end[ (Keys are vector datoms)."
+  "Returns keys in the range [begin end] (Keys are vector datoms)."
   [begin end]
   (let [fd        (FDB/selectAPIVersion 510)
         begin-key (KeySelector/firstGreaterOrEqual (key begin))
         end-key   (if (= begin end)
                     (.add (KeySelector/firstGreaterOrEqual (key end)) 1)
-                    (KeySelector/firstGreaterOrEqual (key end)))]
+                    (KeySelector/firstGreaterThan (key end)))]
     (with-open [db (.open fd)]
       (tr! db
            (mapv #(.getKey %)
