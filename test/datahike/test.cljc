@@ -33,7 +33,8 @@
     datahike.test.serialization
     datahike.test.transact
     datahike.test.validation
-    datahike.test.upsert))
+    datahike.test.upsert
+    datahike.test.fdb))
 
 (defn ^:export test-most []
   (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\.test\.(?!btset).*")))
