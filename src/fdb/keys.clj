@@ -33,6 +33,15 @@
   (- offset n))
 
 
+(defn- attribute-as-str
+  "Expects a datom attribute, i.e. a keyword and converts it into a string.
+  If nil, return an empty string."
+  [a]
+  (if a
+    (let [a-namespace (namespace a)]
+      (str a-namespace (when a-namespace "/") (name a)))
+    ""))
+
 ;; TODO: [v] can only be a string for now.
 ;; TODO: add validations that each of e a v t does not overflow.
 ;;
@@ -41,10 +50,9 @@
 ;; The string size location must be at the end of the section.
 (defn ->byteBuffer
   [[e a v t]]
-  (assert (instance? clojure.lang.Keyword a))
-  (let [a-namespace (namespace a)
-        a-as-str    (str a-namespace (when a-namespace "/") (name a))
-        buffer      (buf/allocate buf-len {:impl :nio :type :direct})]
+  (when a (assert (instance? clojure.lang.Keyword a)))
+  (let [a-as-str (attribute-as-str a)
+        buffer   (buf/allocate buf-len {:impl :nio :type :direct})]
     (buf/write! buffer [e] (buf/spec buf/int64))
     (buf/write! buffer [a-as-str] (buf/spec buf/string*)
                 {:offset (offset (str-size a-as-str) a-end)})

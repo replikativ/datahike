@@ -30,7 +30,7 @@
   "Converts a datom into a fdb key"
   ;; Can take ^Datom object as input (as they are array)
   [[e a v t]]
-  (->byteArr [e (str a) (str v) t]))
+  (->byteArr [e a (str v) t]))
 
 (defn clear-all
   "Clear all  keys from the database"
