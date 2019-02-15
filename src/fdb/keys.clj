@@ -32,7 +32,6 @@
    given by 'offset')"
   (- offset n))
 
-
 (defn- attribute-as-str
   "Expects a datom attribute, i.e. a keyword and converts it into a string.
   If nil, return an empty string."
