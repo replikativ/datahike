@@ -14,16 +14,6 @@
   [string]
   (count (.getBytes string)))
 
-(defn- offset
-  "Returns the offset where to start writing a string
-  given the end position of the string storage section.
-  (Here offset means a shift to the left from the end position.)"
-  [string-size storage-end]
-  ;; 2 * 4 bytes as we store the string size twice:
-  ;; - octet puts the size before the string
-  ;; - we put it at the end
-  (- storage-end (+ string-size (* 2 4))))
-
 (defn- shift-left
   [offset n]
   "Returns the location given by shifting left by 'n' bytes starting
@@ -41,6 +31,32 @@
       (str a-namespace (when a-namespace "/") (name a)))
     ""))
 
+(defn- offset-str
+  "Returns the offset where to start writing a string
+  given the end position of the string storage section.
+  (Here offset means a shift to the left from the end position.)"
+  [string-size section-end]
+  ;; 2 * 4 bytes as we store the string size twice:
+  ;; - octet puts the size before the string
+  ;; - we put it at the end
+  (- section-end (+ string-size (* 2 4))))
+
+(defn- write-str
+  [val buffer section-end]
+  (buf/write! buffer [val] (buf/spec buf/string*)
+              {:offset (offset-str (str-size val) section-end)})
+  (buf/write! buffer [(str-size val)] (buf/spec buf/int32)
+              {:offset (shift-left section-end 3)}))
+
+(defn- write
+  [val buffer section-end]
+  "Write 'val' into 'buffer' given 'section-end', the end of the section where it should be written"
+  (let [type (type val)]
+    (cond
+      (= type java.lang.Integer) 1
+      (= type java.lang.Long)    2
+      (= type java.lang.String)  (write-str val buffer section-end))))
+
 ;; TODO: [v] can only be a string for now.
 ;; TODO: add validations that each of e a v t does not overflow.
 ;;
@@ -52,14 +68,10 @@
   (let [a-as-str (attribute-as-str a)
         buffer   (buf/allocate buf-len {:impl :nio :type :direct})]
     (buf/write! buffer [e] (buf/spec buf/int64))
-    (buf/write! buffer [a-as-str] (buf/spec buf/string*)
-                {:offset (offset (str-size a-as-str) a-end)})
+    (write-str a-as-str buffer a-end)
     (buf/write! buffer [(str-size a-as-str)] (buf/spec buf/int32)
                 {:offset (shift-left a-end 3)})
-    (buf/write! buffer [v] (buf/spec buf/string*)
-                {:offset (offset (str-size v) v-end)})
-    (buf/write! buffer [(str-size v)] (buf/spec buf/int32)
-                {:offset (shift-left v-end 3)})
+    (write v buffer v-end)
     (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left t-end 7)})
     buffer))
 
@@ -82,11 +94,11 @@
         a-size (first (buf/read key (buf/spec buf/int32)
                                 {:offset (shift-left a-end 3)}))
         a      (keyword (first (buf/read key (buf/spec buf/string*)
-                                         {:offset (offset a-size a-end)})))
+                                         {:offset (offset-str a-size a-end)})))
         v-size (first (buf/read key (buf/spec buf/int32)
                                 {:offset (shift-left v-end 3)}))
         v      (first (buf/read key (buf/spec buf/string*)
-                                {:offset (offset v-size v-end)}))
+                                {:offset (offset-str v-size v-end)}))
         t      (first (buf/read key (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
     [e a v t]))
 
@@ -103,7 +115,7 @@
 
 ;; ---- Tests
 ;;
-(assert (== (offset (str-size "hello") 13) 0))
+(assert (== (offset-str (str-size "hello") 13) 0))
 
 (def vect [20 :hello "some analysis" 3])
 (def test-buff (->byteBuffer vect))
