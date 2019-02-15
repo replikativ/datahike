@@ -33,17 +33,22 @@
   (- offset n))
 
 
-;; TODO: [v] can only be a string for now
+;; TODO: [v] can only be a string for now.
+;; TODO: add validations that each of e a v t does not overflow.
+;;
 ;; When writing a string also need to write its size at the end so that
 ;; when we want to read it we know where to start.
-;; The place of the size of the string should match the end of the section.
+;; The string size location must be at the end of the section.
 (defn ->byteBuffer
   [[e a v t]]
-  (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]
+  (assert (instance? clojure.lang.Keyword a))
+  (let [a-namespace (namespace a)
+        a-as-str    (str a-namespace (when a-namespace "/") (name a))
+        buffer      (buf/allocate buf-len {:impl :nio :type :direct})]
     (buf/write! buffer [e] (buf/spec buf/int64))
-    (buf/write! buffer [a] (buf/spec buf/string*)
-                {:offset (offset (str-size a) a-end)})
-    (buf/write! buffer [(str-size a)] (buf/spec buf/int32)
+    (buf/write! buffer [a-as-str] (buf/spec buf/string*)
+                {:offset (offset (str-size a-as-str) a-end)})
+    (buf/write! buffer [(str-size a-as-str)] (buf/spec buf/int32)
                 {:offset (shift-left a-end 3)})
     (buf/write! buffer [v] (buf/spec buf/string*)
                 {:offset (offset (str-size v) v-end)})
@@ -70,8 +75,8 @@
   (let [e (first (buf/read key (buf/spec buf/int64)))
         a-size (first (buf/read key (buf/spec buf/int32)
                                 {:offset (shift-left a-end 3)}))
-        a (first (buf/read key (buf/spec buf/string*)
-                           {:offset (offset a-size a-end)}))
+        a      (keyword (first (buf/read key (buf/spec buf/string*)
+                                         {:offset (offset a-size a-end)})))
         v-size (first (buf/read key (buf/spec buf/int32)
                                 {:offset (shift-left v-end 3)}))
         v (first (buf/read key (buf/spec buf/string*)
@@ -94,10 +99,11 @@
 ;;
 (assert (== (offset (str-size "hello") 13) 0))
 
-(def vect [20 "hello" "some analysis" 3])
+(def vect [20 :hello "some analysis" 3])
 (def test-buff (->byteBuffer vect))
-
-(assert (= (byteBuffer->vect test-buff) vect))
+(def buff->vect (byteBuffer->vect test-buff))
+(prn buff->vect)
+(assert (= buff->vect vect))
 
 (assert (= (key->vect (->byteArr vect)) vect))
 
@@ -108,6 +114,12 @@
 ;; ;; the transaction id is ok
 ;; (assert (== (.get test-buff t-end) 3))
 
+
+(def with-keyword [20 :shared/policy "some analysis" 3])
+(def buff (->byteBuffer with-keyword))
+(def buff->vect (byteBuffer->vect buff))
+(prn buff->vect)
+(assert (=  buff->vect with-keyword))
 
 (comment
 
