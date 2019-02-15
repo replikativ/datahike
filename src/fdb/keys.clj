@@ -31,21 +31,34 @@
       (str a-namespace (when a-namespace "/") (name a)))
     ""))
 
+(defn- type-encoding
+  [val]
+  "Returns what is used for encoding the type of 'val'"
+  (let [type (type val)]
+    (cond
+      (= type java.lang.Integer)  1
+      (= type java.lang.Long)     2
+      (= type java.lang.String)   3)))
+
 (defn- offset-str
   "Returns the offset where to start writing a string
   given the end position of the string storage section.
   (Here offset means a shift to the left from the end position.)"
   [string-size section-end]
-  ;; 2 * 4 bytes as we store the string size twice:
+  ;; 2 * 4 bytes: as we store the string size twice:
   ;; - octet puts the size before the string
   ;; - we also put it again at the end
-  (- section-end (+ string-size (* 2 4))))
+  ;; 4 more bytes: to store the encoding that we store a String
+  (- section-end (+ string-size (* 2 4) 4)))
 
 (defn- write-str
   [val buffer section-end]
+  (assert (= (type val) java.lang.String))
   (buf/write! buffer [val] (buf/spec buf/string*)
               {:offset (offset-str (str-size val) section-end)})
   (buf/write! buffer [(str-size val)] (buf/spec buf/int32)
+              {:offset (shift-left section-end 7)})
+  (buf/write! buffer [(type-encoding val)] (buf/spec buf/int32)
               {:offset (shift-left section-end 3)}))
 
 (defn- write
@@ -53,8 +66,8 @@
   "Write 'val' into 'buffer' given 'section-end', the end of the section where it should be written"
   (let [type (type val)]
     (cond
-      (= type java.lang.Integer) 1
-      (= type java.lang.Long)    2
+      (= type java.lang.Integer) 1 ;; TODO
+      (= type java.lang.Long)    2 ;; TODO
       (= type java.lang.String)  (write-str val buffer section-end))))
 
 ;; TODO: [v] can only be a string for now.
@@ -94,7 +107,7 @@
         a      (keyword (first (buf/read key (buf/spec buf/string*)
                                          {:offset (offset-str a-size a-end)})))
         v-size (first (buf/read key (buf/spec buf/int32)
-                                {:offset (shift-left v-end 3)}))
+                                {:offset (shift-left v-end 7)}))
         v      (first (buf/read key (buf/spec buf/string*)
                                 {:offset (offset-str v-size v-end)}))
         t      (first (buf/read key (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
@@ -113,7 +126,7 @@
 
 ;; ---- Tests
 ;;
-(assert (== (offset-str (str-size "hello") 13) 0))
+(assert (== (offset-str (str-size "hello") 17) 0))
 
 (def vect [20 :hello "some analysis" 3])
 (def test-buff (->byteBuffer vect))
