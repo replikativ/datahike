@@ -75,13 +75,11 @@
     (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left t-end 7)})
     buffer))
 
-
 (defn ->byteArr
   [[e a v t]]
   (let [arr (byte-array buf-len)]
     (.get (->byteBuffer [e a v t]) arr)
     arr))
-
 
 (defn byteArr->byteBuffer
   [byteArr]
