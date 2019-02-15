@@ -15,9 +15,9 @@
   (count (.getBytes string)))
 
 (defn- offset
-  "Returns the offset where to start writting a string
+  "Returns the offset where to start writing a string
   given the end position of the string storage section.
-  (The offset is a shift to the left from the end position.)"
+  (Here offset means a shift to the left from the end position.)"
   [string-size storage-end]
   ;; 2 * 4 bytes as we store the string size twice:
   ;; - octet puts the size before the string
