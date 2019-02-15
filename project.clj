@@ -88,6 +88,7 @@
            :global-vars  { *print-namespace-maps* false }}
     :dev { :source-paths ["bench/src" "test" "dev"]
           :dependencies [[org.clojure/tools.nrepl "0.2.12"]
+                         [org.clojure/tools.namespace "0.2.11"]
                          ] }
   }
 
