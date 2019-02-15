@@ -38,7 +38,7 @@
   [string-size section-end]
   ;; 2 * 4 bytes as we store the string size twice:
   ;; - octet puts the size before the string
-  ;; - we put it at the end
+  ;; - we also put it again at the end
   (- section-end (+ string-size (* 2 4))))
 
 (defn- write-str
