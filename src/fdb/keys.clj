@@ -45,9 +45,8 @@
 ;; TODO: [v] can only be a string for now.
 ;; TODO: add validations that each of e a v t does not overflow.
 ;;
-;; When writing a string also need to write its size at the end so that
+;; When writing a string also need to write its size at the end of the section so that
 ;; when we want to read it we know where to start.
-;; The string size location must be at the end of the section.
 (defn ->byteBuffer
   [[e a v t]]
   (when a (assert (instance? clojure.lang.Keyword a)))
