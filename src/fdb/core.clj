@@ -25,6 +25,7 @@
 
 ;; TODO: [v] is converted to a String for now
 ;; TODO: move to fdb.keys
+;; TODO: rename into binary-key may be
 (defn key
   "Converts a datom into a fdb key"
   ;; Can take ^Datom object as input (as they are array)

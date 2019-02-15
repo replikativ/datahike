@@ -70,18 +70,18 @@
   (ByteBuffer/wrap byteArr))
 
 (defn byteBuffer->vect
-  "Converts a fdb key (bytebuffer) into a ^Datom"
+  "Converts a fdb key (bytebuffer) into a datom vector"
   [key]
-  (let [e (first (buf/read key (buf/spec buf/int64)))
+  (let [e      (first (buf/read key (buf/spec buf/int64)))
         a-size (first (buf/read key (buf/spec buf/int32)
                                 {:offset (shift-left a-end 3)}))
         a      (keyword (first (buf/read key (buf/spec buf/string*)
                                          {:offset (offset a-size a-end)})))
         v-size (first (buf/read key (buf/spec buf/int32)
                                 {:offset (shift-left v-end 3)}))
-        v (first (buf/read key (buf/spec buf/string*)
-                           {:offset (offset v-size v-end)}))
-        t (first (buf/read key (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
+        v      (first (buf/read key (buf/spec buf/string*)
+                                {:offset (offset v-size v-end)}))
+        t      (first (buf/read key (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
     [e a v t]))
 
 
