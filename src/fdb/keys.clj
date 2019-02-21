@@ -35,15 +35,6 @@
 (def LONG 2)
 (def STRING 3)
 
-(defn- type->cst
-  [val]
-  "Returns what is used to encode the type of 'val'"
-  (let [type (type val)]
-    (cond
-      (= type java.lang.Integer)  INT
-      (= type java.lang.Long)     LONG
-      (= type java.lang.String)   STRING)))
-
 (defn- cst->type
   [int]
   "Returns the type corresponding to its encoding"
