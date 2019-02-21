@@ -12,7 +12,7 @@
 
 
 ;; helper
-(defn assert-vector-conversion
+(defn assert-vec-conversion
   [vect]
   (let [buff       (k/->byteBuffer vect)
         buff->vect (k/byteBuffer->vect buff)
@@ -27,13 +27,13 @@
     (is (= (k/key->vect (k/->byteArr vect)) vect)))
 
   "basic vector conversion"
-  (assert-vector-conversion [20 :hello "some analysis" 3])
+  (assert-vec-conversion [20 :hello "some analysis" 3])
 
   "int value"
-  (assert-vector-conversion [20 :hello (int 2356) 3])
+  (assert-vec-conversion [20 :hello (int 2356) 3])
 
   "long value"
-  (assert-vector-conversion [20 :hello (long 234) 3])
+  (assert-vec-conversion [20 :hello (long 234) 3])
   )
 
 
