@@ -92,22 +92,21 @@
 
 
 (defn- read-int
-  [buffer section-end]
+  [buffer section-end shift-left-val]
   (first (buf/read buffer (buf/spec buf/int32)
-                   {:offset (shift-left section-end 7)})))
+                   {:offset (shift-left section-end shift-left-val)})))
 
 (defn- read-str
   [buffer section-end]
-  (let [size (read-int buffer section-end)]
+  (let [size (read-int buffer section-end 7)]
     (first (buf/read buffer (buf/spec buf/string*)
                      {:offset (str-offset size v-end)}))))
 
 (defn- read
   [buffer section-end]
-  (let [type (cst->type (first (buf/read buffer (buf/spec buf/int32)
-                                         {:offset (shift-left section-end 3)})))]
+  (let [type (cst->type (read-int buffer section-end 3))]
     (cond
-      (= type java.lang.Integer) (read-int buffer section-end)
+      (= type java.lang.Integer) (read-int buffer section-end 7)
       (= type java.lang.Long)    2 ;; TODO
       (= type java.lang.String)  (read-str buffer section-end))))
 
