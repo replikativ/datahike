@@ -35,16 +35,16 @@
 (def LONG 2)
 (def STRING 3)
 
-(defn- type->int
+(defn- type->cst
   [val]
-  "Returns what is used for encoding the type of 'val'"
+  "Returns what is used to encode the type of 'val'"
   (let [type (type val)]
     (cond
       (= type java.lang.Integer)  INT
       (= type java.lang.Long)     LONG
       (= type java.lang.String)   STRING)))
 
-(defn- int->type
+(defn- cst->type
   [int]
   "Returns the type corresponding to its encoding"
   (cond
@@ -104,7 +104,7 @@
 
 (defn- read
   [buffer section-end]
-  (let [type (int->type (first (buf/read buffer (buf/spec buf/int32)
+  (let [type (cst->type (first (buf/read buffer (buf/spec buf/int32)
                                          {:offset (shift-left section-end 3)})))]
     (cond
       (= type java.lang.Integer) (read-int buffer section-end)
