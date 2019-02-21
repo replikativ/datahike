@@ -31,6 +31,7 @@
       (str a-namespace (when a-namespace "/") (name a)))
     ""))
 
+;; Def. and implement the other types
 (def INT 1)
 (def LONG 2)
 (def STRING 3)
@@ -53,6 +54,8 @@
   ;; - we also put it again at the end
   ;; 4 more bytes: to store the encoding that we store a String
   (- section-end (+ string-size (* 2 4) 4)))
+
+;; ------- writing --------
 
 (defn- write-str
   [val buffer section-end]
@@ -87,6 +90,8 @@
       (= type java.lang.Long)    (write-long val buffer section-end)
       (= type java.lang.String)  (write-str val buffer section-end))))
 
+
+;; ------- reading --------
 
 (defn- read-int
   [buffer section-end shift-left-val]
