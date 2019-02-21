@@ -74,6 +74,12 @@
   (buf/write! buffer [INT] (buf/spec buf/int32)
               {:offset (shift-left section-end 3)}))
 
+(defn- write-a
+  "Write the 'a' part in eavt"
+  [a buffer a-end]
+  (let [a-as-str (attribute-as-str a)]
+    (write-str a-as-str buffer a-end)))
+
 (defn- write-long
   [val buffer section-end]
   (buf/write! buffer [val] (buf/spec buf/int64)
@@ -121,12 +127,9 @@
 (defn ->byteBuffer
   [[e a v t]]
   (when a (assert (instance? clojure.lang.Keyword a)))
-  (let [a-as-str (attribute-as-str a)
-        buffer   (buf/allocate buf-len {:impl :nio :type :direct})]
+  (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]
     (buf/write! buffer [e] (buf/spec buf/int64))
-    (write-str a-as-str buffer a-end)
-    (buf/write! buffer [(str-size a-as-str)] (buf/spec buf/int32)
-                {:offset (shift-left a-end 3)})
+    (write-a a buffer a-end)
     (write v buffer v-end)
     (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left t-end 7)})
     buffer))
@@ -144,14 +147,11 @@
 (defn byteBuffer->vect
   "Converts a fdb key (bytebuffer) into a datom vector"
   [buffer]
-  (let [e      (first (buf/read buffer (buf/spec buf/int64)))
-        a-size (first (buf/read buffer (buf/spec buf/int32)
-                                {:offset (shift-left a-end 3)}))
-        a      (keyword (first (buf/read buffer (buf/spec buf/string*)
-                                         {:offset (str-offset a-size a-end)})))
-        v      (read buffer v-end)
-        t      (first (buf/read buffer (buf/spec buf/int64)
-                                {:offset (shift-left t-end 7)}))]
+  (let [e (first (buf/read buffer (buf/spec buf/int64)))
+        a (keyword (read-str buffer a-end))
+        v (read buffer v-end)
+        t (first (buf/read buffer (buf/spec buf/int64)
+                           {:offset (shift-left t-end 7)}))]
     [e a v t]))
 
 
