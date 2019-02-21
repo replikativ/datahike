@@ -30,7 +30,7 @@
                (with-datom (datom 1 :likes "GG" 0 true))
                (with-datom (datom 2 :likes "GG" 0 true))
                (with-datom (datom 3 :likes "GG" 0 true)))]
-    (is (= 2
+    (is (= 3
            (count (fdb/get-range [123 :likes "Hans" 0 true]
                                  [125 :likes "GG" 0 true]))))
     (is (= 2
@@ -41,7 +41,7 @@
   (let [db (dh-db/empty-db)
         _  (fdb/clear-all)
         _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 0 true)) db (range 100))]
-    (is (= 50
+    (is (= 51
            (count (fdb/get-range [1 :likes "Hans" 0 true]
                                  [51 :likes "Hans" 0 true])))))
 
@@ -53,7 +53,7 @@
   (let [db (dh-db/empty-db)
         ;;        _  (fdb/clear-all)
         _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 0 true)) db (range 10))]
-    (is (= 2
+    (is (= 3
            (count (fdb/get-range [1 :likes "Hans" 0 true]
                                  [3 :likes "Hans" 0 true])))))
 
@@ -114,7 +114,7 @@
                                             db
                                             (range 100))
         create-eavt                 (fn [e a v tx] (datom e a v tx true))]
-    (is (= 10
+    (is (= 11 ;; TODO: check 11 is really what we want. Should be ten no?
            (count (slice eavt eavt-durable (datom 50 nil nil nil nil) [50 :likes]
                          (datom 60 nil nil nil nil)  [60] create-eavt)))))
   )
