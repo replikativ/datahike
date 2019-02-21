@@ -141,14 +141,14 @@
 
 (defn byteBuffer->vect
   "Converts a fdb key (bytebuffer) into a datom vector"
-  [key]
-  (let [e      (first (buf/read key (buf/spec buf/int64)))
-        a-size (first (buf/read key (buf/spec buf/int32)
+  [buffer]
+  (let [e      (first (buf/read buffer (buf/spec buf/int64)))
+        a-size (first (buf/read buffer (buf/spec buf/int32)
                                 {:offset (shift-left a-end 3)}))
-        a      (keyword (first (buf/read key (buf/spec buf/string*)
+        a      (keyword (first (buf/read buffer (buf/spec buf/string*)
                                          {:offset (str-offset a-size a-end)})))
-        v      (read key v-end)
-        t      (first (buf/read key (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
+        v      (read buffer v-end)
+        t      (first (buf/read buffer (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
     [e a v t]))
 
 
