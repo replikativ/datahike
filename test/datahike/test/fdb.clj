@@ -5,8 +5,39 @@
   (:require [datahike.db :as dh-db :refer [with-datom slice]]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [fdb.core :as fdb]
+            [fdb.keys :as k]
             [datahike.db :refer [datom]]))
 
+;;;; FDB Keys
+
+
+;; helper
+(defn assert-vector-conversion
+  [vect]
+  (let [buff       (k/->byteBuffer vect)
+        buff->vect (k/byteBuffer->vect buff)
+        ;; _          (prn buff->vect)
+        ;; _          (prn vect)
+        ]
+    (is (= buff->vect vect))))
+
+(deftest fdb-keys
+  "->byteArr and back"
+  (let [vect [20 :hello "some analysis" 3]]
+    (is (= (k/key->vect (k/->byteArr vect)) vect)))
+
+  "basic vector conversion"
+  (assert-vector-conversion [20 :hello "some analysis" 3])
+
+  "int value"
+  (assert-vector-conversion [20 :hello (int 2356) 3])
+
+  "long value"
+  ;;(assert-vector-conversion [20 :hello (long 234) 3])
+  )
+
+
+;;;; FDB integration
 
 (deftest fdb-using-with-datom
   "get"

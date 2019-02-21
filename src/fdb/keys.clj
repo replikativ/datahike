@@ -31,14 +31,26 @@
       (str a-namespace (when a-namespace "/") (name a)))
     ""))
 
-(defn- type-encoding
+(def INT 1)
+(def LONG 2)
+(def STRING 3)
+
+(defn- type->int
   [val]
   "Returns what is used for encoding the type of 'val'"
   (let [type (type val)]
     (cond
-      (= type java.lang.Integer)  1
-      (= type java.lang.Long)     2
-      (= type java.lang.String)   3)))
+      (= type java.lang.Integer)  INT
+      (= type java.lang.Long)     LONG
+      (= type java.lang.String)   STRING)))
+
+(defn- int->type
+  [int]
+  "Returns the type corresponding to its encoding"
+  (cond
+    (= int INT)    java.lang.Integer
+    (= int LONG)   java.lang.Long
+    (= int STRING) java.lang.String))
 
 (defn- str-offset
   "Returns the offset where to start writing a string
@@ -58,7 +70,15 @@
               {:offset (str-offset (str-size val) section-end)})
   (buf/write! buffer [(str-size val)] (buf/spec buf/int32)
               {:offset (shift-left section-end 7)})
-  (buf/write! buffer [(type-encoding val)] (buf/spec buf/int32)
+  (buf/write! buffer [STRING] (buf/spec buf/int32)
+              {:offset (shift-left section-end 3)}))
+
+(defn- write-int
+  [val buffer section-end]
+  (prn (str "write-int: " 2334))
+  (buf/write! buffer [val] (buf/spec buf/int32)
+              {:offset (shift-left section-end 7)})
+  (buf/write! buffer [INT] (buf/spec buf/int32)
               {:offset (shift-left section-end 3)}))
 
 (defn- write
@@ -66,9 +86,30 @@
   "Write 'val' into 'buffer' given 'section-end', the end of the section where it should be written"
   (let [type (type val)]
     (cond
-      (= type java.lang.Integer) 1 ;; TODO
+      (= type java.lang.Integer) (write-int val buffer section-end)
       (= type java.lang.Long)    2 ;; TODO
       (= type java.lang.String)  (write-str val buffer section-end))))
+
+
+(defn- read-int
+  [buffer section-end]
+  (first (buf/read buffer (buf/spec buf/int32)
+                   {:offset (shift-left section-end 7)})))
+
+(defn- read-str
+  [buffer section-end]
+  (let [size (read-int buffer section-end)]
+    (first (buf/read buffer (buf/spec buf/string*)
+                     {:offset (str-offset size v-end)}))))
+
+(defn- read
+  [buffer section-end]
+  (let [type (int->type (first (buf/read buffer (buf/spec buf/int32)
+                                         {:offset (shift-left section-end 3)})))]
+    (cond
+      (= type java.lang.Integer) (read-int buffer section-end)
+      (= type java.lang.Long)    2 ;; TODO
+      (= type java.lang.String)  (read-str buffer section-end))))
 
 ;; TODO: [v] can only be a string for now.
 ;; TODO: add validations that each of e a v t does not overflow.
@@ -106,10 +147,7 @@
                                 {:offset (shift-left a-end 3)}))
         a      (keyword (first (buf/read key (buf/spec buf/string*)
                                          {:offset (str-offset a-size a-end)})))
-        v-size (first (buf/read key (buf/spec buf/int32)
-                                {:offset (shift-left v-end 7)}))
-        v      (first (buf/read key (buf/spec buf/string*)
-                                {:offset (str-offset v-size v-end)}))
+        v      (read key v-end)
         t      (first (buf/read key (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
     [e a v t]))
 
