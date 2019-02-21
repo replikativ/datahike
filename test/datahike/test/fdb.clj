@@ -8,7 +8,7 @@
             [fdb.keys :as k]
             [datahike.db :refer [datom]]))
 
-;;;; FDB Keys
+;;---- FDB Keys -----
 
 
 ;; helper
@@ -37,7 +37,7 @@
   )
 
 
-;;;; FDB integration
+;;----- FDB integration -----
 
 (deftest fdb-using-with-datom
   "get"
