@@ -33,7 +33,7 @@
   (assert-vector-conversion [20 :hello (int 2356) 3])
 
   "long value"
-  ;;(assert-vector-conversion [20 :hello (long 234) 3])
+  (assert-vector-conversion [20 :hello (long 234) 3])
   )
 
 

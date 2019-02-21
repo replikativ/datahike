@@ -75,10 +75,16 @@
 
 (defn- write-int
   [val buffer section-end]
-  (prn (str "write-int: " 2334))
   (buf/write! buffer [val] (buf/spec buf/int32)
               {:offset (shift-left section-end 7)})
   (buf/write! buffer [INT] (buf/spec buf/int32)
+              {:offset (shift-left section-end 3)}))
+
+(defn- write-long
+  [val buffer section-end]
+  (buf/write! buffer [val] (buf/spec buf/int64)
+              {:offset (shift-left section-end 11)})
+  (buf/write! buffer [LONG] (buf/spec buf/int32)
               {:offset (shift-left section-end 3)}))
 
 (defn- write
@@ -87,7 +93,7 @@
   (let [type (type val)]
     (cond
       (= type java.lang.Integer) (write-int val buffer section-end)
-      (= type java.lang.Long)    2 ;; TODO
+      (= type java.lang.Long)    (write-long val buffer section-end)
       (= type java.lang.String)  (write-str val buffer section-end))))
 
 
@@ -96,6 +102,10 @@
   (first (buf/read buffer (buf/spec buf/int32)
                    {:offset (shift-left section-end shift-left-val)})))
 
+(defn- read-long
+  [buffer section-end]
+  (first (buf/read buffer (buf/spec buf/int64)
+                   {:offset (shift-left section-end 11)})))
 (defn- read-str
   [buffer section-end]
   (let [size (read-int buffer section-end 7)]
@@ -107,7 +117,7 @@
   (let [type (cst->type (read-int buffer section-end 3))]
     (cond
       (= type java.lang.Integer) (read-int buffer section-end 7)
-      (= type java.lang.Long)    2 ;; TODO
+      (= type java.lang.Long)    (read-long buffer section-end)
       (= type java.lang.String)  (read-str buffer section-end))))
 
 ;; TODO: [v] can only be a string for now.
