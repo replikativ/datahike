@@ -106,7 +106,7 @@
   [buffer section-end]
   (let [size (read-int buffer section-end 7)]
     (first (buf/read buffer (buf/spec buf/string*)
-                     {:offset (str-offset size v-end)}))))
+                     {:offset (str-offset size section-end)}))))
 
 (defn- read
   [buffer section-end]
