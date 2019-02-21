@@ -40,7 +40,7 @@
       (= type java.lang.Long)     2
       (= type java.lang.String)   3)))
 
-(defn- offset-str
+(defn- str-offset
   "Returns the offset where to start writing a string
   given the end position of the string storage section.
   (Here offset means a shift to the left from the end position.)"
@@ -55,7 +55,7 @@
   [val buffer section-end]
   (assert (= (type val) java.lang.String))
   (buf/write! buffer [val] (buf/spec buf/string*)
-              {:offset (offset-str (str-size val) section-end)})
+              {:offset (str-offset (str-size val) section-end)})
   (buf/write! buffer [(str-size val)] (buf/spec buf/int32)
               {:offset (shift-left section-end 7)})
   (buf/write! buffer [(type-encoding val)] (buf/spec buf/int32)
@@ -105,11 +105,11 @@
         a-size (first (buf/read key (buf/spec buf/int32)
                                 {:offset (shift-left a-end 3)}))
         a      (keyword (first (buf/read key (buf/spec buf/string*)
-                                         {:offset (offset-str a-size a-end)})))
+                                         {:offset (str-offset a-size a-end)})))
         v-size (first (buf/read key (buf/spec buf/int32)
                                 {:offset (shift-left v-end 7)}))
         v      (first (buf/read key (buf/spec buf/string*)
-                                {:offset (offset-str v-size v-end)}))
+                                {:offset (str-offset v-size v-end)}))
         t      (first (buf/read key (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
     [e a v t]))
 
@@ -126,7 +126,7 @@
 
 ;; ---- Tests
 ;;
-(assert (== (offset-str (str-size "hello") 17) 0))
+(assert (== (str-offset (str-size "hello") 17) 0))
 
 (def vect [20 :hello "some analysis" 3])
 (def test-buff (->byteBuffer vect))
