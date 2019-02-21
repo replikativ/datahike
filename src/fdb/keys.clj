@@ -154,7 +154,8 @@
         a      (keyword (first (buf/read buffer (buf/spec buf/string*)
                                          {:offset (str-offset a-size a-end)})))
         v      (read buffer v-end)
-        t      (first (buf/read buffer (buf/spec buf/int64) {:offset (shift-left t-end 7)}))]
+        t      (first (buf/read buffer (buf/spec buf/int64)
+                                {:offset (shift-left t-end 7)}))]
     [e a v t]))
 
 
