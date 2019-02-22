@@ -97,6 +97,22 @@
       (= type java.lang.String)  (write-str val buffer section-end))))
 
 
+;; TODO: add validations that each of e a v t does not overflow.
+;;
+(defn ->byteBuffer
+  [[e a v t]]
+  (when a (assert (instance? clojure.lang.Keyword a)))
+  (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]
+    ;; Write a code in the first byte to distinguish between the diff. indices.
+    ;; The code is like a namespace.
+    (buf/write! buffer [(:code eavt)] (buf/spec buf/byte)
+                {:offset (shift-left (:e-end eavt) 7)})
+    (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (:e-end eavt) 7)})
+    (write-a a buffer (:a-end eavt))
+    (write v buffer (:v-end eavt))
+    (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (:t-end eavt) 7)})
+    buffer))
+
 ;; ------- reading --------
 
 (defn- read-int
@@ -122,17 +138,6 @@
       (= type java.lang.Long)    (read-long buffer section-end)
       (= type java.lang.String)  (read-str buffer section-end))))
 
-;; TODO: add validations that each of e a v t does not overflow.
-;;
-(defn ->byteBuffer
-  [[e a v t]]
-  (when a (assert (instance? clojure.lang.Keyword a)))
-  (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]
-    (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (:e-end eavt) 7)})
-    (write-a a buffer (:a-end eavt))
-    (write v buffer (:v-end eavt))
-    (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (:t-end eavt) 7)})
-    buffer))
 
 (defn ->byteArr
   [[e a v t]]
