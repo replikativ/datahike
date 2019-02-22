@@ -43,11 +43,13 @@
         {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 :likes "Hans" 0 true))
                                         (with-datom (datom 124 :likes "GG" 0 true)))]
 
+    ;; get :e-end
     (is (== (nth (fdb/get (:eavt-scalable db)
-                          [123 :likes "Hans" 0 true]) 7)
+                          [123 :likes "Hans" 0 true])
+                 (:e-end k/eavt))
             123))
     (is (== (nth (fdb/get (:eavt-scalable db)
-                          [124 :likes "GG" 0 true]) 7)
+                          [124 :likes "GG" 0 true]) (:e-end k/eavt))
             124)))
 
   "simple range"
