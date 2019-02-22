@@ -10,7 +10,6 @@
 ;;---- FDB Keys -----
 
 
-;; helper
 (defn assert-vec-conversion
   [vect]
   (let [buff       (k/->byteBuffer vect)
