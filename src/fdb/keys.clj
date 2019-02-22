@@ -6,7 +6,8 @@
 (def buf-len 100)
 
 ;; Positions in the byte buffer where each section ends
-(def eavt {:a-end 40 :v-end 80 :t-end 99})
+(def eavt {:e-end 7 :a-end 40 :v-end 80 :t-end 99})
+
 
 
 (defn- str-size
@@ -127,7 +128,7 @@
   [[e a v t]]
   (when a (assert (instance? clojure.lang.Keyword a)))
   (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]
-    (buf/write! buffer [e] (buf/spec buf/int64))
+    (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (:e-end eavt) 7)})
     (write-a a buffer (:a-end eavt))
     (write v buffer (:v-end eavt))
     (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (:t-end eavt) 7)})
@@ -146,7 +147,8 @@
 (defn byteBuffer->vect
   "Converts a fdb key (bytebuffer) into a datom vector"
   [buffer]
-  (let [e (first (buf/read buffer (buf/spec buf/int64)))
+  (let [e (first (buf/read buffer (buf/spec buf/int64)
+                           {:offset (shift-left (:e-end eavt) 7)}))
         a (keyword (read-str buffer (:a-end eavt)))
         v (read buffer (:v-end eavt))
         t (first (buf/read buffer (buf/spec buf/int64)
