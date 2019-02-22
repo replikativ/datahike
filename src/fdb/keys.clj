@@ -6,7 +6,7 @@
 (def buf-len 100)
 
 ;; Positions in the byte buffer where each section ends
-(def eavt {:e-end 7 :a-end 40 :v-end 80 :t-end 99})
+(def eavt {:code 0 :e-end 8 :a-end 40 :v-end 80 :t-end 99})
 
 
 
@@ -105,8 +105,7 @@
   (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]
     ;; Write a code in the first byte to distinguish between the diff. indices.
     ;; The code is like a namespace.
-    (buf/write! buffer [(:code eavt)] (buf/spec buf/byte)
-                {:offset (shift-left (:e-end eavt) 7)})
+    (buf/write! buffer [(:code eavt)] (buf/spec buf/byte))
     (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (:e-end eavt) 7)})
     (write-a a buffer (:a-end eavt))
     (write v buffer (:v-end eavt))
