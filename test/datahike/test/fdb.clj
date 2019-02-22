@@ -1,4 +1,3 @@
-;; TODO: move this to the 'test' dir and rename it 'fdb'
 (ns datahike.test.fdb
   (:import (com.apple.foundationdb KeySelector
                                    FDB))
