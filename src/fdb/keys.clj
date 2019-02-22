@@ -6,9 +6,8 @@
 (def buf-len 100)
 
 ;; Positions in the byte buffer where each section ends
-(def a-end 40)
-(def v-end 80)
-(def t-end 99)
+(def eavt {:a-end 40 :v-end 80 :t-end 99})
+
 
 (defn- str-size
   [string]
@@ -129,9 +128,9 @@
   (when a (assert (instance? clojure.lang.Keyword a)))
   (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]
     (buf/write! buffer [e] (buf/spec buf/int64))
-    (write-a a buffer a-end)
-    (write v buffer v-end)
-    (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left t-end 7)})
+    (write-a a buffer (:a-end eavt))
+    (write v buffer (:v-end eavt))
+    (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (:t-end eavt) 7)})
     buffer))
 
 (defn ->byteArr
@@ -148,10 +147,10 @@
   "Converts a fdb key (bytebuffer) into a datom vector"
   [buffer]
   (let [e (first (buf/read buffer (buf/spec buf/int64)))
-        a (keyword (read-str buffer a-end))
-        v (read buffer v-end)
+        a (keyword (read-str buffer (:a-end eavt)))
+        v (read buffer (:v-end eavt))
         t (first (buf/read buffer (buf/spec buf/int64)
-                           {:offset (shift-left t-end 7)}))]
+                           {:offset (shift-left (:t-end eavt) 7)}))]
     [e a v t]))
 
 
@@ -180,9 +179,9 @@
 ;; There are 64 bits for [e]. The last byte is at index 7.
 (assert (== (.get test-buff 7) 20))
 ;; ;; size of 'hello' is 5
-;; (assert (== (.get test-buff (shift-left a-end 3)) 5))
+;; (assert (== (.get test-buff (shift-left (:a-end eavt) 3)) 5))
 ;; ;; the transaction id is ok
-;; (assert (== (.get test-buff t-end) 3))
+;; (assert (== (.get test-buff (:t-end eavt)) 3))
 
 
 (def with-keyword [20 :shared/policy "some analysis" 3])
