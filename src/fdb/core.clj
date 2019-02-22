@@ -26,7 +26,7 @@
 ;; TODO: [v] is converted to a String for now
 ;; TODO: move to fdb.keys
 ;; TODO: rename into binary-key may be
-(defn key
+(defn eavt-key
   "Converts a datom into a fdb key"
   ;; Can take ^Datom object as input (as they are array)
   [[e a v t]]
@@ -45,7 +45,7 @@
 (defn get
   [db [e a v t]]
   (let [fd  (FDB/selectAPIVersion 510)
-        key (key [e a v t])]
+        key (eavt-key [e a v t])]
     (with-open [db (.open fd)]
       (tr! db @(.get tr key)))))
 
@@ -54,7 +54,7 @@
   "Inserts one vector"
   [[e a v t]]
   (let [fd    (FDB/selectAPIVersion 510)
-        key   (key [e a v t])
+        key   (eavt-key [e a v t])
         ;; Putting the key also in the value
         value key]
     (with-open [db (.open fd)]
@@ -66,7 +66,7 @@
   "Batch inserts multiple vectors"
   [vectors]
   (let [fd   (FDB/selectAPIVersion 510)
-        keys (map #(fdb.core/key %) vectors)
+        keys (map #(fdb.core/eavt-key %) vectors)
         v    (byte-array [])]
     (with-open [db (.open fd)]
       ;; The value 5000 depends on the size of a fdb key.
@@ -83,10 +83,10 @@
   "Returns keys in the range [begin end] (Keys are vector datoms)."
   [begin end]
   (let [fd        (FDB/selectAPIVersion 510)
-        begin-key (KeySelector/firstGreaterOrEqual (key begin))
+        begin-key (KeySelector/firstGreaterOrEqual (eavt-key begin))
         end-key   (if (= begin end)
-                    (.add (KeySelector/firstGreaterOrEqual (key end)) 1)
-                    (KeySelector/firstGreaterThan (key end)))]
+                    (.add (KeySelector/firstGreaterOrEqual (eavt-key end)) 1)
+                    (KeySelector/firstGreaterThan (eavt-key end)))]
     (with-open [db (.open fd)]
       (tr! db
            (mapv #(.getKey %)
