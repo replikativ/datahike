@@ -179,7 +179,7 @@
 (assert (= (key->vect (->byteArr vect)) vect))
 
 ;; There are 64 bits for [e]. The last byte is at index 7.
-(assert (== (.get test-buff 7) 20))
+(assert (== (.get test-buff (:e-end eavt)) 20))
 ;; ;; size of 'hello' is 5
 ;; (assert (== (.get test-buff (shift-left (:a-end eavt) 3)) 5))
 ;; ;; the transaction id is ok
