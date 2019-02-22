@@ -32,8 +32,10 @@
 
   "long value"
   (assert-vec-conversion [20 :hello (long 234) 3])
-  )
 
+  "biggest e value"
+  (assert-vec-conversion [9223372036854775807 :hello (long 234) 3])
+  )
 
 ;;----- FDB integration -----
 
