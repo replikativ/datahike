@@ -164,6 +164,16 @@
   [byteArr]
   (byteBuffer->vect (byteArr->byteBuffer byteArr)))
 
+
+;; TODO: [v] is converted to a String for now
+;; TODO: move to fdb.keys
+(defn eavt-key
+  "Converts a datom into a fdb key"
+  ;; Can take ^Datom object as input (as they are array)
+  [[e a v t]]
+  (->byteArr [e a (str v) t]))
+
+
 (defn print-buf
   [buffer]
   (for [x (range buf-len)]

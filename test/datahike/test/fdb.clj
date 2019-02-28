@@ -96,7 +96,7 @@
         datom-2   (datom 124 :likes "GG" 0 true)
         datoms    (-> (with-datom db datom-1)
                       (with-datom datom-2))
-        iterate   #(take % (fdb/iterate-from (fdb/eavt-key datom-1)))
+        iterate   #(take % (fdb/iterate-from (k/eavt-key datom-1)))
         iterate-5 (iterate 5)]
 
     ;; NOTE: Because the fdb keys are Java arrays, we need to convert them
@@ -104,11 +104,11 @@
     ;; (is (some #(= (seq (fdb/key datom-1)) (seq %))
     ;;           (fdb/iterate-from (fdb/key datom-1))))
     (is (= (seq (first (iterate 1)))
-           (seq (fdb/eavt-key datom-1))))
+           (seq (k/eavt-key datom-1))))
     (is (= (seq (first (iterate 2)))
-           (seq (fdb/eavt-key datom-1))))
+           (seq (k/eavt-key datom-1))))
     (is (= (seq (nth (iterate 2) 1))
-           (seq (fdb/eavt-key datom-2))))
+           (seq (k/eavt-key datom-2))))
     (is (= (seq (first iterate-5))
            (seq (nth iterate-5 0))))
     (is (not (= (seq (first iterate-5))

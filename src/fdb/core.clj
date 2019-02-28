@@ -4,7 +4,7 @@
                                    Range
                                    KeySelector)
            (java.util List))
-  (:require [fdb.keys :refer [->byteArr]]))
+  (:require [fdb.keys :refer [eavt-key ->byteArr]]))
 
 (defmacro tr!
   "Transaction macro to perform actions. Always use tr for actions inside
@@ -22,15 +22,6 @@
     (with-open [db (.open fd)]
       db)))
 
-
-;; TODO: [v] is converted to a String for now
-;; TODO: move to fdb.keys
-;; TODO: rename into binary-key may be
-(defn eavt-key
-  "Converts a datom into a fdb key"
-  ;; Can take ^Datom object as input (as they are array)
-  [[e a v t]]
-  (->byteArr [e a (str v) t]))
 
 (defn clear-all
   "Clear all  keys from the database"
@@ -66,7 +57,7 @@
   "Batch inserts multiple vectors"
   [vectors]
   (let [fd   (FDB/selectAPIVersion 510)
-        keys (map #(fdb.core/eavt-key %) vectors)
+        keys (map #(fdb.keys/eavt-key %) vectors)
         v    (byte-array [])]
     (with-open [db (.open fd)]
       ;; The value 5000 depends on the size of a fdb key.
