@@ -4,7 +4,7 @@
                                    Range
                                    KeySelector)
            (java.util List))
-  (:require [fdb.keys :refer [eavt-key ->byteArr]]))
+  (:require [fdb.keys :refer [key ->byteArr]]))
 
 (defmacro tr!
   "Transaction macro to perform actions. Always use tr for actions inside
@@ -34,18 +34,18 @@
 
 ;; TODO?: remove the db arg
 (defn get
-  [db [e a v t]]
+  [db index-type [e a v t]]
   (let [fd  (FDB/selectAPIVersion 510)
-        key (eavt-key [e a v t])]
+        key (key index-type [e a v t])]
     (with-open [db (.open fd)]
       (tr! db @(.get tr key)))))
 
 
 (defn insert
   "Inserts one vector"
-  [[e a v t]]
+  [index-type [e a v t]]
   (let [fd    (FDB/selectAPIVersion 510)
-        key   (eavt-key [e a v t])
+        key   (key index-type [e a v t])
         ;; Putting the key also in the value
         value key]
     (with-open [db (.open fd)]
@@ -54,10 +54,10 @@
 
 
 (defn batch-insert
-  "Batch inserts multiple vectors"
-  [vectors]
+  "Batch inserts multiple vectors. `index-type` is :eavt, etc..."
+  [index-type vectors]
   (let [fd   (FDB/selectAPIVersion 510)
-        keys (map #(eavt-key %) vectors)
+        keys (map #(key index-type %) vectors)
         v    (byte-array [])]
     (with-open [db (.open fd)]
       ;; The value 5000 depends on the size of a fdb key.
@@ -72,14 +72,13 @@
 
 (defn get-range
   "Returns fdb keys in the range [begin end]. `begin` and `end` are vectors.
-  key-type is `:eavt`, `:aevt`, ..."
-  [;;key-type
-   begin end]
+  index-type is `:eavt`, `:aevt`, ..."
+  [index-type begin end]
   (let [fd        (FDB/selectAPIVersion 510)
-        begin-key (KeySelector/firstGreaterOrEqual (eavt-key begin))
+        begin-key (KeySelector/firstGreaterOrEqual (key index-type begin))
         end-key   (if (= begin end)
-                    (.add (KeySelector/firstGreaterOrEqual (eavt-key end)) 1)
-                    (KeySelector/firstGreaterThan (eavt-key end)))]
+                    (.add (KeySelector/firstGreaterOrEqual (key index-type end)) 1)
+                    (KeySelector/firstGreaterThan (key index-type end)))]
     (with-open [db (.open fd)]
       (tr! db
            (mapv #(.getKey %)

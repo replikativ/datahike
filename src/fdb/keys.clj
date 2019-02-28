@@ -103,8 +103,7 @@
   [[e a v t]]
   (when a (assert (instance? clojure.lang.Keyword a)))
   (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]
-    ;; Write a code in the first byte to distinguish between the diff. indices.
-    ;; The code is like a namespace.
+    ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.
     (buf/write! buffer [(:code eavt)] (buf/spec buf/byte))
     (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (:e-end eavt) 7)})
     (write-a a buffer (:a-end eavt))
@@ -166,11 +165,10 @@
 
 
 ;; TODO: [v] is converted to a String for now
-;; TODO: move to fdb.keys
-(defn eavt-key
+(defn key
   "Converts a datom into a fdb key"
   ;; Can take ^Datom object as input (as they are array)
-  [[e a v t]]
+  [index-type [e a v t]]
   (->byteArr [e a (str v) t]))
 
 

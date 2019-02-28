@@ -796,12 +796,14 @@
                                                                 (.-tx datom)] nil))
                                               (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
                                               (seq datoms)))
+                ;; TODO: do this for the other key-types.
                 ;; 'doall to force the lazy sequence
-                eavt-scalable  (fdb/batch-insert (doall (map #(vec [(.-e %)
-                                                                    (.-a %)
-                                                                    (.-v %)
-                                                                    (.-tx %)])
-                                                             datoms)))
+                ;; TODO: WEIRD: if i use :eavt instead of "eavt", test fails and CIDER dies.
+                eavt-scalable  (fdb/batch-insert "aevt" (doall (map #(vec [(.-e %)
+                                                                          (.-a %)
+                                                                          (.-v %)
+                                                                          (.-tx %)])
+                                                                   datoms)))
 
                 aevt        (apply btset/btset-by cmp-datoms-aevt datoms)
                 aevt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
@@ -1066,10 +1068,10 @@
                                                            nil)))
         true (update-in [:eavt] btset/btset-conj datom cmp-datoms-eavt-quick)
         true (update-in [:eavt-scalable] (fn [db]
-                                           (fdb/insert [(.-e datom)
-                                                        (.-a datom)
-                                                        (.-v datom)
-                                                        (.-tx datom)])))
+                                           (fdb/insert :eavt [(.-e datom)
+                                                              (.-a datom)
+                                                              (.-v datom)
+                                                              (.-tx datom)])))
 
         true (update-in [:aevt] btset/btset-conj datom cmp-datoms-aevt-quick)
         true (update-in [:aevt-durable] #(<?? (hmsg/insert % [(.-a datom)
@@ -1087,6 +1089,7 @@
         true      (advance-max-eid (.-e datom))
         true      (assoc :hash (atom 0)))
       (if-let [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
+        ;; TODO: Anything todo in the 'removing' part here?
         (cond-> db
           true      (update-in [:eavt-durable] #(<?? (hmsg/delete % [(.-e removing) (.-a removing) (.-v removing) (.-tx removing)])))
           true      (update-in [:eavt] btset/btset-disj removing cmp-datoms-eavt-quick)
