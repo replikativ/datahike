@@ -71,8 +71,10 @@
 
 
 (defn get-range
-  "Returns keys in the range [begin end] (Keys are vector datoms)."
-  [begin end]
+  "Returns fdb keys in the range [begin end]. `begin` and `end` are vectors.
+  key-type is `:eavt`, `:aevt`, ..."
+  [;;key-type
+   begin end]
   (let [fd        (FDB/selectAPIVersion 510)
         begin-key (KeySelector/firstGreaterOrEqual (eavt-key begin))
         end-key   (if (= begin end)
