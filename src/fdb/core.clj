@@ -57,7 +57,7 @@
   "Batch inserts multiple vectors"
   [vectors]
   (let [fd   (FDB/selectAPIVersion 510)
-        keys (map #(fdb.keys/eavt-key %) vectors)
+        keys (map #(eavt-key %) vectors)
         v    (byte-array [])]
     (with-open [db (.open fd)]
       ;; The value 5000 depends on the size of a fdb key.
