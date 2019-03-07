@@ -6,7 +6,7 @@
     [hitchhiker.tree.core :as hc :refer [<??]]
     [hitchhiker.tree.messaging :as hmsg]
     [hitchhiker.konserve :as kons]
-    [datahike.btset :as btset]
+    [datahike.btset :as btset] ;;rb: refactored set and array into separate project
     [hasch.core :refer [uuid]]
     [konserve.core :as k])
   #?(:cljs (:require-macros [datahike.db :refer [case-tree combine-cmp raise defrecord-updatable cond-let]]))
@@ -23,6 +23,8 @@
 
 (def ^:const tx0 0x20000000)
 (def ^:const default-schema nil)
+
+;;rb: added more constants
 
 ;; ----------------------------------------------------------------------------
 
@@ -122,7 +124,7 @@
        ~(apply make-record-updatable-clj  name fields impls))))
 
 ;; ----------------------------------------------------------------------------
-
+;;rb: combined to declare
 ;; using defn instead of declare because of http://dev.clojure.org/jira/browse/CLJS-1871
 (defn- ^:declared hash-datom [d])
 (defn- ^:declared equiv-datom [a b])
@@ -130,7 +132,8 @@
 (defn- ^:declared nth-datom ([d i]) ([d i nf]))
 (defn- ^:declared assoc-datom [d k v])
 (defn- ^:declared val-at-datom [d k nf])
-
+;;rb: added protocol for Datom
+;;rb: added reflections to signature
 (deftype Datom [e a v tx added]
   #?@(:cljs
        [IHash
@@ -296,7 +299,7 @@
   (if (and o1 o2)
     (compare o1 o2)
     0))
-
+;;rb: removed
 (defn- cmp-num [n1 n2]
   (if (and n1 n2)
     #?(:clj  (Long/compare n1 n2)
@@ -317,7 +320,7 @@
     (cmp (.-a d1) (.-a d2))
     (cmp-val (.-v d1) (.-v d2))
     (cmp-num (.-tx d1) (.-tx d2))))
-
+;;rb: removed
 (extend-protocol hc/IKeyCompare
   clojure.lang.PersistentVector
   (compare [key1 key2]
@@ -389,14 +392,14 @@
     (compare (.-v d1) (.-v d2))
     (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
     (#?(:clj Long/compare :cljs -) (.-tx d1) (.-tx d2))))
-
+;;rb: added diff-sorted fn
 ;; ----------------------------------------------------------------------------
 
 ;;;;;;;;;; Searching
 
 (defprotocol ISearch
   (-search [data pattern]))
-
+;;rb: added -rseek-datoms fn
 (defprotocol IIndexAccess
   (-datoms [db index components])
   (-seek-datoms [db index components])
@@ -407,7 +410,7 @@
   (-attrs-by [db property]))
 
 ;; ----------------------------------------------------------------------------
-
+;;rb: combined declare
 ;; using defn instead of declare because of http://dev.clojure.org/jira/browse/CLJS-1871
 (defn- ^:declared hash-db [db])
 (defn- ^:declared hash-fdb [db])
@@ -419,7 +422,7 @@
 (defn- ^:declared components->pattern [db index cs])
 (defn ^:declared indexing? [db attr])
 
-
+;;rb: not found
 (defn slice
   ([btset tree datom key create-datom]
    (slice btset tree datom key datom key create-datom))
@@ -485,6 +488,7 @@
 
 
 (defrecord-updatable DB [schema eavt eavt-durable aevt aevt-durable avet avet-durable max-eid max-tx rschema hash]
+  ;;rb: added interfaces: IEditableCollection, ITransientCollection
   #?@(:cljs
       [IHash                (-hash  [db]        (hash-db db))
        IEquiv               (-equiv [db other]  (equiv-db db other))
@@ -521,6 +525,7 @@
                  create-avet (fn [a v e tx] (Datom. e a v tx true))
                  ]
              (case-tree [e a (some? v) tx]
+                        ;;rb: shorter datom syntax
                         [(slice eavt eavt-durable (Datom. e a v tx nil) [e a v tx] create-eavt)       ;; e a v tx
                          (slice eavt eavt-durable (Datom. e a v nil nil) [e a v] create-eavt)         ;; e a v _
                          (->> (slice eavt eavt-durable (Datom. e a nil nil nil) [e a] create-eavt)    ;; e a _ tx
@@ -557,6 +562,7 @@
                          (map #(apply create-eavt (first %)) (hc/lookup-fwd-iter eavt-durable []))])))                                                         ;; _ _ _ _
 
   IIndexAccess
+  ;;rb: implemented new rseek-datoms, also simplified
   (-datoms [db index cs]
            #_(btset/slice (get db index) (components->pattern db index cs))
            (let [^Datom pat (components->pattern db index cs)
@@ -599,6 +605,7 @@
     (when-not (indexing? db attr)
       (raise "Attribute" attr "should be marked as :db/index true"))
     (validate-attr attr (list '-index-range 'db attr start end))
+    ;;rb: needs to be compared
     (let [^DB db db
           ^Datom from (resolve-datom db nil attr start nil)
           ^Datom to (resolve-datom db nil attr end nil)]
@@ -607,7 +614,9 @@
              from [(.-a from) (.-v from) (.-e from) (.-tx from)]
              to [(.-a to) (.-v to) (.-e to) (.-tx to)]
              (fn [a v e t] (Datom. e a v t true)))
-      #_(btset/slice (.-avet db) from to))))
+      #_(btset/slice (.-avet db) from to)))
+;;rb: also implements clojure.data/EqualityPartition and clojure.data/Diff
+  )
 
 (defn db? [x]
   (and (satisfies? ISearch x)
@@ -669,7 +678,7 @@
 
   (-seek-datoms [db index cs]
                 (filter (.-pred db) (-seek-datoms (.-unfiltered-db db) index cs)))
-
+;;rb: implements -rseek-datoms
   (-index-range [db attr start end]
                 (filter (.-pred db) (-index-range (.-unfiltered-db db) attr start end))))
 
@@ -805,6 +814,7 @@
                                               (seq datoms)))
                 max-eid     (init-max-eid eavt eavt-durable)])
            max-tx (transduce (map (fn [^Datom d] (.-tx d))) max tx0 eavt)]
+       ;; TODO: check hhtree durability
        (map->DB {:schema  schema
                  :eavt    eavt
                  :eavt-durable eavt-durable
@@ -869,6 +879,7 @@
          (apply pr (map (fn [^Datom d] [(.-e d) (.-a d) (.-v d) (.-tx d)]) (-datoms db :eavt []))))
        (.write w "]}"))
 
+     ;;rb: heavy usage of clojure.prettyprint
      (defmethod print-method DB [db, ^java.io.Writer w]
        (pr-db db w))
 
@@ -879,12 +890,13 @@
   (init-db (map (fn [[e a v tx]] (Datom. e a v tx true)) datoms) schema))
 
 ;; ----------------------------------------------------------------------------
-
+;;rb: combined declare
 ;; using defn instead of declare because of http://dev.clojure.org/jira/browse/CLJS-1871
 (defn ^:declared entid-strict [db eid])
 (defn ^:declared entid-some [db eid])
 (defn ^:declared ref? [db attr])
 
+;;rb: has additional params: default-e, default-tx
 (defn- resolve-datom [db e a v t]
   (when a (validate-attr a (list 'resolve-datom 'db e a v t)))
   (Datom.
@@ -896,6 +908,7 @@
     (entid-some db t)               ;; t
     nil))
 
+;;rb: has additional params: default-e, default-tx
 (defn- components->pattern [db index [c0 c1 c2 c3]]
   (case index
     :eavt (resolve-datom db c0 c1 c2 c3)
@@ -933,6 +946,7 @@
     eid
 
     (sequential? eid)
+    ;;rb: refactored
     (cond
       (not= (count eid) 2)
       (raise "Lookup ref should contain 2 elements: " eid
@@ -954,6 +968,7 @@
           (recur db (array-seq eid))])
 
     (keyword? eid)
+    ;;rb: refactored
     (recur db [:db/ident eid])
 
     :else
@@ -1006,8 +1021,11 @@
 (defn- #?@(:clj  [^Boolean tx-id?]
            :cljs [^boolean tx-id?])
   [e]
+  ;;rb: added more comparisons
   (or (= e :db/current-tx)
       (= e ":db/current-tx"))) ;; for datahike.js interop
+
+;;rb: added tempid? fn
 
 (defn- advance-max-eid [db eid]
   (cond-> db
@@ -1029,7 +1047,7 @@
 
 
 ;; In context of `with-datom` we can use faster comparators which
-;; do n
+;; do n ;;rb: that was missing here: not check for nil (~10-15% performance gain in `transact`)
 (defn- with-datom [db ^Datom datom]
   (validate-datom db datom)
   (let [indexing? (indexing? db (.-a datom))]
@@ -1055,6 +1073,7 @@
                                                                 nil)))
         true      (advance-max-eid (.-e datom))
         true      (assoc :hash (atom 0)))
+      ;;rb: minor refactoring
       (if-let [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (cond-> db
           true      (update-in [:eavt-durable] #(<?? (hmsg/delete % [(.-e removing) (.-a removing) (.-v removing) (.-tx removing)])))
@@ -1066,6 +1085,7 @@
           true      (assoc :hash (atom 0)))
         db))))
 
+;;TODO: is this necessary?
 (comment
   (hc/lookup-fwd-iter (:eavt-durable ) [123 :likes])
 
@@ -1074,7 +1094,6 @@
 
     (hc/lookup-fwd-iter eavt-durable [])
     #_(slice eavt eavt-durable (Datom. nil nil nil nil nil) [nil])))
-
 
 
 (defn- transact-report [report datom]
@@ -1222,6 +1241,7 @@
               (map (fn [^Datom d] [:db.fn/retractEntity (.-v d)]))) datoms))
 
 #?(:clj
+   ;;rb: renamed to cond+
   (defmacro cond-let [& clauses]
     (when-let [[test expr & rest] clauses]
       `(~(if (vector? test) 'if-let 'if) ~test
@@ -1234,10 +1254,10 @@
   ([x] x)
   ([x & more]
     `(let [x# ~x] (if (nil? x#) (some-of ~@more) x#)))))
-
+;;rb: used declare
 ;; using defn instead of declare because of http://dev.clojure.org/jira/browse/CLJS-1871
 (defn ^:declared transact-tx-data [report es])
-
+;;rb: private fn
 (defn retry-with-tempid [report es tempid upserted-eid]
   (if (contains? (:tempids report) tempid)
     (raise "Conflicting upsert: " tempid " resolves"
@@ -1248,6 +1268,8 @@
     (transact-tx-data (assoc-in report [:tempids tempid] upserted-eid)
                       es)))
 
+;;rb: builtin-fn? added
+;;rb: merged with transact-tx-data
 (defn transact-tx-data* [initial-report initial-es]
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
@@ -1261,7 +1283,7 @@
         (empty? es)
           (-> report
               (assoc-in  [:tempids :db/current-tx] (current-tx report))
-              (update-in [:db-after :max-tx] inc))
+              (update-in [:db-after :max-tx] inc)) ;;rb: also some persistent stuff
 
         (nil? entity)
           (recur report entities)
