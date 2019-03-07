@@ -13,6 +13,7 @@
       [java.util UUID])))
 
 ;; SUMMING UP
+;;rb: added much much more docs
 
 (defn ^:declared q [q & inputs])
 (def             q dq/q)
@@ -94,6 +95,7 @@
   ([db index c1 c2]       {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2]))
   ([db index c1 c2 c3]    {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2 c3]))
   ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2 c3 c4])))
+;;rb: added rseek-datoms: reverse seek
 
 (defn index-range [db attr start end]
   {:pre [(db/db? db)]}
