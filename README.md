@@ -238,6 +238,6 @@ feature, please let us know.
 
 ## License
 
-Copyright © 2014–2018 Christian Weilbach, Nikita Prokopov, Konrad Kühne
+Copyright © 2014–2019 Christian Weilbach, Nikita Prokopov, Konrad Kühne
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).
