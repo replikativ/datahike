@@ -8,6 +8,7 @@
 ;; Positions in the byte buffer where each section ends
 (def eavt {:code 0 :e-end 8 :a-end 40 :v-end 80 :t-end 99})
 
+(def index-type->code {:eavt 0 :aevt 1 :veat 2})
 
 
 (defn- str-size
@@ -100,11 +101,14 @@
 ;; TODO: add validations that each of e a v t does not overflow.
 ;;
 (defn ->byteBuffer
-  [[e a v t]]
+  [index-type [e a v t]]
+  (assert (instance? clojure.lang.Keyword index-type))
   (when a (assert (instance? clojure.lang.Keyword a)))
-  (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})]
+  (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})
+        index-type-code (index-type->code index-type)]
+    (assert (and (<= 0 index-type-code) (>= 2 index-type-code)))
     ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.
-    (buf/write! buffer [(:code eavt)] (buf/spec buf/byte))
+    (buf/write! buffer [index-type-code] (buf/spec buf/byte))
     (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (:e-end eavt) 7)})
     (write-a a buffer (:a-end eavt))
     (write v buffer (:v-end eavt))
@@ -138,9 +142,9 @@
 
 
 (defn ->byteArr
-  [[e a v t]]
+  [index-type [e a v t]]
   (let [arr (byte-array buf-len)]
-    (.get (->byteBuffer [e a v t]) arr)
+    (.get (->byteBuffer index-type [e a v t]) arr)
     arr))
 
 (defn byteArr->byteBuffer
@@ -169,7 +173,7 @@
   "Converts a datom into a fdb key"
   ;; Can take ^Datom object as input (as they are array)
   [index-type [e a v t]]
-  (->byteArr [e a (str v) t]))
+  (->byteArr index-type [e a (str v) t]))
 
 
 (defn print-buf
@@ -183,12 +187,12 @@
 (assert (== (str-offset (str-size "hello") 17) 0))
 
 (def vect [20 :hello "some analysis" 3])
-(def test-buff (->byteBuffer vect))
+(def test-buff (->byteBuffer :eavt vect))
 (def buff->vect (byteBuffer->vect test-buff))
-(prn buff->vect)
+;;(prn buff->vect)
 (assert (= buff->vect vect))
 
-(assert (= (key->vect (->byteArr vect)) vect))
+(assert (= (key->vect (->byteArr :eavt vect)) vect))
 
 ;; There are 64 bits for [e]. The last byte is at index 7.
 (assert (== (.get test-buff (:e-end eavt)) 20))
@@ -199,9 +203,9 @@
 
 
 (def with-keyword [20 :shared/policy "some analysis" 3])
-(def buff (->byteBuffer with-keyword))
+(def buff (->byteBuffer :eavt with-keyword))
 (def buff->vect (byteBuffer->vect buff))
-(prn buff->vect)
+;;(prn buff->vect)
 (assert (=  buff->vect with-keyword))
 
 (comment

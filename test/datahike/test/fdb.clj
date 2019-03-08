@@ -12,7 +12,7 @@
 
 (defn assert-vec-conversion
   [vect]
-  (let [buff       (k/->byteBuffer vect)
+  (let [buff       (k/->byteBuffer :eavt vect)
         buff->vect (k/byteBuffer->vect buff)
         ;; _          (prn buff->vect)
         ;; _          (prn vect)
@@ -22,7 +22,7 @@
 (deftest fdb-keys
   "->byteArr and back"
   (let [vect [20 :hello "some analysis" 3]]
-    (is (= (k/key->vect (k/->byteArr vect)) vect)))
+    (is (= (k/key->vect (k/->byteArr :eavt vect)) vect)))
 
   "basic vector conversion"
   (assert-vec-conversion [20 :hello "some analysis" 3])
@@ -46,11 +46,11 @@
                                         (with-datom (datom 124 :likes "GG" 0 true)))]
 
     ;; get :e-end
-    (is (== (nth (fdb/get (:eavt-scalable db)
+    (is (== (nth (fdb/get (:eavt-scalable db) :eavt
                           [123 :likes "Hans" 0 true])
                  (:e-end k/eavt))
             123))
-    (is (== (nth (fdb/get (:eavt-scalable db)
+    (is (== (nth (fdb/get (:eavt-scalable db) :eavt
                           [124 :likes "GG" 0 true]) (:e-end k/eavt))
             124)))
 
@@ -64,10 +64,10 @@
                (with-datom (datom 2 :likes "GG" 0 true))
                (with-datom (datom 3 :likes "GG" 0 true)))]
     (is (= 3
-           (count (fdb/get-range [123 :likes "Hans" 0 true]
+           (count (fdb/get-range :eavt [123 :likes "Hans" 0 true]
                                  [125 :likes "GG" 0 true]))))
     (is (= 2 ;; Not 3 because [125] does not exist in the db.
-           (count (fdb/get-range [123]
+           (count (fdb/get-range :eavt [123]
                                  [125])))))
 
   "large range"
@@ -75,7 +75,7 @@
         _  (fdb/clear-all)
         _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 0 true)) db (range 100))]
     (is (= 51
-           (count (fdb/get-range [1 :likes "Hans" 0 true]
+           (count (fdb/get-range :eavt [1 :likes "Hans" 0 true]
                                  [51 :likes "Hans" 0 true])))))
 
   "large range"
@@ -87,17 +87,18 @@
         ;;        _  (fdb/clear-all)
         _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 0 true)) db (range 10))]
     (is (= 3
-           (count (fdb/get-range [1 :likes "Hans" 0 true]
+           (count (fdb/get-range :eavt [1 :likes "Hans" 0 true]
                                  [3 :likes "Hans" 0 true])))))
 
   "iterate-from"
-  (let [db        (dh-db/empty-db)
-        datom-1   (datom 123 :likes "Hans" 0 true)
-        datom-2   (datom 124 :likes "GG" 0 true)
-        datoms    (-> (with-datom db datom-1)
-                      (with-datom datom-2))
-        iterate   #(take % (fdb/iterate-from (k/key index-type datom-1)))
-        iterate-5 (iterate 5)]
+  (let [db         (dh-db/empty-db)
+        datom-1    (datom 123 :likes "Hans" 0 true)
+        datom-2    (datom 124 :likes "GG" 0 true)
+        datoms     (-> (with-datom db datom-1)
+                       (with-datom datom-2))
+        index-type :eavt
+        iterate    #(take % (fdb/iterate-from (k/key index-type datom-1)))
+        iterate-5  (iterate 5)]
 
     ;; NOTE: Because the fdb keys are Java arrays, we need to convert them
     ;; into seq if we want to compate them with =
@@ -151,7 +152,7 @@
                                            [50 :likes] (datom 60 nil nil nil nil) [60]
                                            create-eavt)]
     (is (= 11 ;; TODO: check but fdb.getrange and our slice does not seem to have the same behaviour. Why is it 2 here:     (is (= 2 ;; Not 3 because [125] does not exist in the db.
-           ;; (count (fdb/get-range [123]
+           ;; (count (fdb/get-range :eavt [123]
            ;;                       [125])))))
            ;;
            ;; and 11 in our current test.

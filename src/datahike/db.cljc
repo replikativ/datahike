@@ -481,7 +481,7 @@
          ;; it does not work
          ;; new (->> (sequence xf (map #(clojure.lang.MapEntry.
          ;;                              (fdb.keys/key->vect %1) %1)
-         ;;                            (fdb/get-range key key-to)))
+         ;;                            (fdb/get-range :eavt key key-to)))
          ;;          seq)
          ]
      ;; (when-not (= (vec old) (vec new))
@@ -799,7 +799,7 @@
                 ;; TODO: do this for the other key-types.
                 ;; 'doall to force the lazy sequence
                 ;; TODO: WEIRD: if i use :eavt instead of "eavt", test fails and CIDER dies.
-                eavt-scalable  (fdb/batch-insert "aevt" (doall (map #(vec [(.-e %)
+                eavt-scalable  (fdb/batch-insert :eavt (doall (map #(vec [(.-e %)
                                                                           (.-a %)
                                                                           (.-v %)
                                                                           (.-tx %)])
