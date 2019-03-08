@@ -36,7 +36,7 @@
     [datahike.arrays :as da])
   #?(:clj  (:import [java.util Arrays]))
   #?(:cljs (:require-macros [datahike.btset :refer [half not==]])))
-
+;;rb: moved to separate project
 #?(:clj
   (defmacro half [x]
     `(unsigned-bit-shift-right ~x 1)))

@@ -4,8 +4,9 @@
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :url "https://github.com/replikativ/datahike"
   
-  :dependencies [[org.clojure/clojure       "1.8.0" :scope "provided"]
-                 [org.clojure/clojurescript "1.8.51" :scope "provided"]
+  :dependencies [[org.clojure/clojure       "1.8.0" :scope "provided"] ;;rb: clojure 1.10
+                 [org.clojure/clojurescript "1.8.51" :scope "provided"] ;;rb: cljs 1.10.516
+                 ;;rb: added own set lib
                  [io.replikativ/hitchhiker-tree "0.1.4"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2"]]

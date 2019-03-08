@@ -41,7 +41,7 @@
   (-as-spec [this]
     (-> (-as-spec attr)
         (update 1 conj (-as-spec porrl)))))
-
+;;rb: added PullAttrWithOpts
 (defn- aggregate-specs
   [res part]
   (if (instance? PullWildcard part)

@@ -2,7 +2,7 @@
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    [clojure.set :as set]
-   [clojure.walk :as walk]
+   [clojure.walk :as walk] ;;rb: added clojure.string
    [datahike.db :as db #?(:cljs :refer-macros :clj :refer) [raise]]
    [datahike.arrays :as da]
    [datahike.lru]
@@ -19,7 +19,7 @@
 ;; ----------------------------------------------------------------------------
 
 (def ^:const lru-cache-size 100)
-
+;;rb: combined declare
 ;; using defn instead of declare because of http://dev.clojure.org/jira/browse/CLJS-1871
 (defn ^:declared -collect ([context symbols]) ([acc rels symbols]))
 (defn ^:declared -resolve-clause [context clause])
@@ -37,6 +37,7 @@
 
 
 ;; Utilities
+;;rb: added single fn
 
 (defn intersect-keys [attrs1 attrs2]
   (set/intersection (set (keys attrs1))
@@ -44,7 +45,7 @@
 
 (defn concatv [& xs]
   (into [] cat xs))
-
+;;rb: added zip, same-keys? fn
 (defn- looks-like? [pattern form]
   (cond
     (= '_ pattern)
@@ -94,6 +95,7 @@
       (aset res (+ l1 i) (#?(:cljs aget :clj get) t2 (aget idxs2 i)))) ;; FIXME aget
     res))
 
+;;rb: refactored and more complex
 (defn sum-rel [a b]
   (Relation. (:attrs a) (into (:tuples a) (:tuples b))))
 
@@ -294,7 +296,7 @@
   (reduce resolve-in context (zipmap bindings values)))
 
 ;;
-
+;;rb: more docs
 (def ^:dynamic *lookup-attrs* nil)
 (def ^:dynamic *lookup-source* nil)
 
@@ -529,7 +531,7 @@
   (let [res (atom [])]
     (walk/postwalk #(do (when (pred %) (swap! res conj %)) %) form)
     @res))
-
+;;rb: added collect-vars fn
 (defn split-guards [clauses guards]
   (let [bound-vars (set (walk-collect clauses free-var?))
         pred       (fn [[[_ & vars]]] (every? bound-vars vars))]

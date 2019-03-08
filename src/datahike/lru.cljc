@@ -1,5 +1,6 @@
 (ns datahike.lru)
 
+;;rb: combined declare
 ;; using defn instead of declare because of http://dev.clojure.org/jira/browse/CLJS-1871
 (defn ^:declared assoc-lru [lru k v])
 (defn ^:declared cleanup-lru [lru])

@@ -5,6 +5,8 @@
   #?(:cljs (:require-macros datahike.arrays))
   #?(:clj  (:import [java.util Arrays])))
 
+;;rb: moved to separate project
+
 (defn- if-cljs [env then else]
   (if (:ns env) then else))
 
