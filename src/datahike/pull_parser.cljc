@@ -1,4 +1,4 @@
-(ns datahike.pull-parser
+(ns ^:no-doc datahike.pull-parser
   (:require
    [datahike.db :as db #?(:cljs :refer-macros :clj :refer) [raise]]))
 
@@ -41,7 +41,13 @@
   (-as-spec [this]
     (-> (-as-spec attr)
         (update 1 conj (-as-spec porrl)))))
-;;rb: added PullAttrWithOpts
+
+(defrecord PullAttrWithOpts [attr opts]
+  IPullSpecComponent
+  (-as-spec [this]
+    (-> (-as-spec attr)
+        (update 1 merge opts))))    
+
 (defn- aggregate-specs
   [res part]
   (if (instance? PullWildcard part)
@@ -55,8 +61,7 @@
           spec (reduce aggregate-specs init specs)]
       [:subpattern (update spec :attrs persistent!)])))
 
-;; using defn instead of declare because of http://dev.clojure.org/jira/browse/CLJS-1871
-(defn ^:declared parse-pattern [pattern])
+(declare parse-pattern)
 
 (def ^:private wildcard? #{'* :* "*"})
 
@@ -106,8 +111,7 @@
   [spec]
   (let [[default-sym attr-name-spec default-val] spec]
     (when (default? default-sym)
-      (if-let [attr-name (and (default? default-sym)
-                              (parse-attr-name attr-name-spec))]
+      (if-let [attr-name (parse-attr-name attr-name-spec)]
         (PullDefaultExpr. attr-name default-val)
         (raise "Expected [\"default\" attr-name any-value]"
                {:error :parser/pull, :fragment spec})))))
@@ -131,6 +135,15 @@
     (assert (= 1 (count spec)) "Maps should contain exactly 1 entry")
     (parse-map-spec-entry (first spec))))
 
+(defn- parse-attr-with-opts
+  [spec]
+  (when (sequential? spec)
+    (let [[attr-name-spec & opts-spec] spec]
+      (when-some [attr-name (parse-attr-name attr-name-spec)]
+        (when (and (even? (count opts-spec))
+                   (every? #{:as :limit :default} (->> opts-spec (partition 2) (map first))))
+          (PullAttrWithOpts. attr-name (apply array-map opts-spec)))))))
+
 (defn- parse-attr-expr
   [spec]
   (when (maybe-attr-expr? spec)
@@ -142,6 +155,7 @@
   (or (parse-attr-name spec)
       (parse-wildcard spec)
       (parse-map-spec spec)
+      (parse-attr-with-opts spec)
       (parse-attr-expr spec)
       (raise "Cannot parse attr-spec, expected: (attr-name | wildcard | map-spec | attr-expr)"
              {:error :parser/pull, :fragment spec})))
@@ -176,6 +190,8 @@ attr-spec          = attr-name | wildcard | map-spec | attr-expr
 attr-name          = an edn keyword that names an attr
 wildcard           = \"*\" or '*'
 map-spec           = { ((attr-name | limit-expr) (pattern | recursion-limit))+ }
+attr-with-opts     = [attr-name attr-options+]
+attr-options       = :as any-value | :limit (positive-number | nil) | :default any-value
 attr-expr          = limit-expr | default-expr
 limit-expr         = [\"limit\" attr-name (positive-number | nil)]
 default-expr       = [\"default\" attr-name any-value]
@@ -201,6 +217,7 @@ attribute:
 
 * `:attr`       (required) - The attr name to pull; for reverse attributes
                              this will be the normalized attribute name.
+* `:as`         (optional) - Alias, any
 * `:limit`      (optional) - If present, specifies a custom limit for this
                              attribute; Either `nil`, indicating no limit,
                              or a positive integer.
@@ -213,7 +230,7 @@ attribute:
                              to be applied to entities matched by this
                              attribute."
   [pattern]
-  (nth (-as-spec pattern) 1))
+  (second (-as-spec pattern)))
 
 (defn parse-pull
   "Parse EDN pull `pattern` specification (see `parse-pattern`), and

@@ -3,7 +3,6 @@
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     [datahike.core :as d]
-    [datahike.arrays :as da]
     [datahike.db :as db]
     [datahike.test.core :as tdc]))
 
@@ -14,7 +13,7 @@
   (doseq [coll [["Devil" "Tupen"]
                 #{"Devil" "Tupen"}
                 '("Devil" "Tupen")
-                (da/into-array ["Devil" "Tupen"])]]
+                (to-array ["Devil" "Tupen"])]]
     (testing coll
       (let [conn (d/create-conn { :aka { :db/cardinality :db.cardinality/many }
                                  :also { :db/cardinality :db.cardinality/many} })]
@@ -53,7 +52,7 @@
                            [?e :name ?n]] db)
              #{["Petr"] ["Evgeny"]})))
     
-    (is (thrown-with-msg? Throwable #"Bad attribute :_parent"
+    (is (thrown-msg? "Bad attribute :_parent: reverse attribute name requires {:db/valueType :db.type/ref} in schema"
       (d/db-with db0 [{:name "Sergey" :_parent 1}])))))
 
 (deftest test-explode-nested-maps

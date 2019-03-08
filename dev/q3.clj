@@ -2,9 +2,33 @@
   (:require
     [datahike.core :as d]
     [datahike.query-v3 :as q]
-     datahike.perf))
+    [datahike-bench.perf :as perf]))
+
+
 
 (comment
+
+
+
+  )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+(comment
+
+
+  ;; not working because benchmark is buggy
 
 (defn rand-entity []
   {:name (rand-nth ["ivan" "oleg" "petr" "igor"])

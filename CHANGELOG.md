@@ -1,3 +1,101 @@
+# 0.18.1
+
+- Bumped persistent-sorted-set to 0.1.1 (Java 8 bytecode)
+
+# 0.18.0
+
+- Fixed DB and Datom pprinting (#287) 
+- Fixed cases when upsert resolves to tempid (#285)
+- Throw on tempid in `:db.fn/cas` (#264)
+- `distinct` aggregate returns set not a vector (thx @jdf-id-au)
+- Ability to run tests with Kaocha
+- [ BREAKING ] Some internals of `datahike.arrays`, `datahike.btset` and `datahike.Datom` type has changed
+
+Performance optimizations for JVM version:
+  
+- Reimplemented btset in Java with transients and better performance
+- Extracted btset to `[persistent-sorted-set "0.1.0"]` 
+- Used raw ints in Datom intead of wrapped Integers, added stored in tx sign
+
+Numbers I get on my 3.2 GHz i7-8700B (median time per test, ms):
+
+| version          | add-1   | add-5 | add-all | init | retract-5 | q1  | q2   | q3   | q4   | qpred1 | qpred2 |
+|------------------|---------|-------|---------|------|-----------|-----|------|------|------|--------|--------|
+| 0.17.1-jvm       | 795.8   | 670.7 | 651.8   | 79.4 | 617.5     | 2.3 | 5.4  | 8.2  | 13.1 | 7.1    | 27.3   |
+| 0.18.0-jvm       | 625.2   | 450.9 | 401.8   | 21.8 | 389.5     | 1.9 | 5.4  | 8.2  | 13.3 | 7.3    | 28.9   |
+| 0.9.5703-datomic | 1693.9  | 737.9 | 528.5   | ---  | 1420.9    | 2.8 | 5.2  | 7.3  | 9.3  | 12.8   | 15.5   |
+| 0.18.0-v8        | 1231.6  | 963.1 | 930.3   | 76.5 | 809.1     | 6.4 | 15.2 | 23.8 | 33.6 | 24.2   | 24.5   |
+
+Tests are as follows:
+
+| Test      | Description |
+|-----------|-------------|
+| add-1     | Add 100k datoms to an empty DB, one datom per transaction |
+| add-5     | Add 20k entities to an empty DB, 5 datoms per transaction, 100k datoms total |
+| add-all   | Add 20k entities to an empty DB in a single transaction, 100k datoms total |
+| init      | “Fast” datahike DB creation from an already sorted array of datoms (used in DB deserialization), 100k datoms |
+| retract-5 | Retract 20k entities from a DB with 100k datoms. Each entity removes 5 datoms. 1 entity per tx. |
+| q1        | Query with 1 clause over a DB with 100k datoms, ~12k tuples in resultset `[:find ?e :where [?e :name "Ivan"]]` |
+| q2        | Query with 2 clauses, 1 join, ~12k tuples `[:find ?e ?a :where [?e :name "Ivan"] [?e :age ?a]]` |
+| q3        | Query with 3 clauses, 2 joins, ~6k tuples `[:find ?e ?a :where [?e :name "Ivan"] [?e :age ?a] [?e :sex :male]]` |
+| q4        | Query with 4 clauses, 3 joins, ~6k tuples `[:find ?e ?l ?a :where [?e :name "Ivan"] [?e :last-name ?l] [?e :age ?a] [?e :sex :male]]` |
+| qpred1    | Query with a predicate, ~50k tuples `[:find ?e ?s :where [?e :salary ?s] [(> ?s 50000)]]` |
+| qpred2    | Query with a predicate and dynamic input, ~50k tuples `[:find ?e ?s :in $ ?min_s :where [?e :salary ?s] [(> ?s ?min_s)]]` |
+
+For Datomic an `datomic:mem://` database was used.
+
+What we see:
+
+- 20..40% faster transactions,
+- 75% faster deserialization (db-init),
+- No significant change on queries,
+- JVM transactions are more than twice as fast as V8,
+- JVM queries are 3-4 times as fast as V8,
+- Datahike transactions are 25..70% faster that Datomic in-memory. Query times vary.
+
+# 0.17.1
+
+- `or`, `or-join`, `not` and `not-jon` support in queries (#238, #50)
+
+# 0.17.0
+
+- Implement `clojure.data/diff` on `datahike/DB` (#281)
+- Drop Clojure 1.7 and 1.8 support
+- Fix externs.js syntax (PR #216, thx @thheller)
+- Support `:as` in Pull API an attr-with-opts syntax (#270, PR #271, thx @Jumblemuddle)
+- Support idents expansion (PR #245, thx bamarco)
+- JS API correctly handles nested maps with `{":db/id"}` in transactions (#228, thx @serebrianyi)
+- Calling transaction fns through idents directly (PR #185, thx @refset)
+
+# 0.16.9
+
+- AOT artifacts are now deployed with classifiers (`0.16.9-aot1.7`, `0.16.9-aot1.8`, `0.16.9-aot1.9`). Main Datahike artifact has no AOTed code (related: #241, #279, #280)
+
+# 0.16.8
+
+- Docstrings for https://cljdoc.org/d/datahike/datahike
+
+# 0.16.7
+
+- Removed references to `perf` from `datahike.query-v3` (closes #272)
+- Fixed compile error under java 11 (PR #273, thx [Ryan Belohlavek](https://github.com/rbelohlavek))
+
+# 0.16.6
+
+- Add support for renamed DB functions :db/retractEntity and :db/cas (#265, PR #256, thx [Kenny Williams](https://github.com/kennyjwilli))
+
+# 0.16.5
+
+- Provision AOT-compiled classes in datahike.jar (closes #241) 
+- Fixed direct-linking compatibility (rolled back #197, fixed #219, closes #259)
+
+# 0.16.4
+
+- Support string tempids (#251, PR #252, thx [Kenny Williams](https://github.com/kennyjwilli))
+- Better compatibility with JS / CLJS 1.9.946 (aget, aset on plain objects)
+- Added `rseek-datoms` (#253, PR #254, thx [Jeremy Taylor](https://github.com/refset))
+- Object.equals for entites (PR #255, thx [Camilo Roca](https://github.com/carocad))
+
 # 0.16.3
 
 - Silently skip nils in transaction (was stopping processing without an error before)
@@ -18,7 +116,7 @@
 - Fixed issue when string values were interpreted as lookup refs (#214)
 - Speed up rschema calculation (#192, thx [Andre R.](https://github.com/rauhs))
 - Optimize generated JS code by declaring fn arities (#197)
-- [ BREAKING ] Removed ^:exports from `datascript.core` to enable dead code elimination (#191). This should only affect you if you were using DataScript from JS and were importing `datascript.core` directly
+- [ BREAKING ] Removed ^:exports from `datahike.core` to enable dead code elimination (#191). This should only affect you if you were using Datahike from JS and were importing `datahike.core` directly
 
 # 0.15.5
 
@@ -53,7 +151,7 @@
 - Upsert works in vector form too (issue #99, #109)
 - Can specify transaction number in `:db/add`
 - Can put datoms into transaction directly (issue #121: supports both addition and retration datoms, keeps tx number)
-- Added all `datascript.core` symbols to externs so they can be called directly from JS (e.g. in combination with mori, issue #139)
+- Added all `datahike.core` symbols to externs so they can be called directly from JS (e.g. in combination with mori, issue #139)
 - Added `reset-conn`, `conn-from-datoms` and `conn-from-db` (issue #45)
 
 # 0.14.0
@@ -82,9 +180,9 @@
 
 # 0.13.0
 
-- **[ BREAKING ] Main namespace to include is now `datascript.core`, not `datascript`**
-- [ BREAKING ] Old `datascript.core` (internal namespace) was renamed to `datascript.db`
-- [ BREAKING ] `datascript.shim` (internal namespace) was renamed to `datascript.arrays`
+- **[ BREAKING ] Main namespace to include is now `datahike.core`, not `datahike`**
+- [ BREAKING ] Old `datahike.core` (internal namespace) was renamed to `datahike.db`
+- [ BREAKING ] `datahike.shim` (internal namespace) was renamed to `datahike.arrays`
 
 Motivations:
 
@@ -94,7 +192,7 @@ Motivations:
 
 Migration procedure:
 
-- Just change `(require '[datascript :as d])` to `(require '[datascript.core :as d])` and you’re good to go.
+- Just change `(require '[datahike :as d])` to `(require '[datahike.core :as d])` and you’re good to go.
 
 For the sake of easy migration, there’re no other changes in this release. Just renamings.
 
@@ -123,7 +221,7 @@ For the sake of easy migration, there’re no other changes in this release. Jus
 
 Benefits:
 
-- You can finally store _any_ trash easily and reliably in DataScript database: maps, vectors, functions, JS objects. It doesn’t even have to be comparable. Just do not mark it as `:db/index` and do not make it `:db.cardinality/many`
+- You can finally store _any_ trash easily and reliably in Datahike database: maps, vectors, functions, JS objects. It doesn’t even have to be comparable. Just do not mark it as `:db/index` and do not make it `:db.cardinality/many`
 - Faster transactions. There’s ⅓ less indexes to fill
 - Good defaults. Most cases where you’ll probably use AVET (lookup by value)—lookup refs, external ids, references—they are all indexed by default
 
@@ -153,7 +251,7 @@ Migration procedure:
 - BTSet and BTSetIter implement ChunkedSeq
 - New benchmark runner
 
-This release brings a significant performance boost for JVM version of DataScript (numbers are in comparison to JS/v8 version):
+This release brings a significant performance boost for JVM version of Datahike (numbers are in comparison to JS/v8 version):
 
 - queries with single clause, no join: ~5–6 times faster
 - queries with joins: ~3–4.5 times faster
@@ -208,7 +306,7 @@ Performance numbers so far ([raw data](https://gist.github.com/tonsky/9da339f871
 - Fixed a bug when cross-referencing components caused infinite loop in Pull API (isuue #58, pull request #61)
 - Pull API handles recursion more like Datomic does (issue #62)
 - Exposed DB filter API to js (pull request #65)
-- Added ICounted, ISequable, IEmptyableCollection to `datascript.core/DB`
+- Added ICounted, ISequable, IEmptyableCollection to `datahike.core/DB`
 - Force put `Datom` and `DB` tag readers to `cljs.reader/*tag-table*`, do not rely on `data_readers.clj`
 
 # 0.9.0
@@ -244,7 +342,7 @@ Performance numbers so far ([raw data](https://gist.github.com/tonsky/9da339f871
 # 0.7.0
 
 - BTSet and its slices (returned by `datoms`/`seek-datoms`/`index-range` calls) now support fast reverse iteration via `reverse`.
-- `(datascript/datom e a v & [tx added])` call for creating new datoms
+- `(datahike/datom e a v & [tx added])` call for creating new datoms
 - Added missing aggregate funs: `avg`, `median`, `variance`, `stddev` and `count-distinct` (issue #42, thx [@montyxcantsin](https://github.com/montyxcantsin))
 - `min` and `max` aggregates use comparator instead of default js `<` comparison
 - Fixed a bug when fn inside a query on empty relation returned non-empty result
@@ -258,7 +356,7 @@ Performance numbers so far ([raw data](https://gist.github.com/tonsky/9da339f871
 
 # 0.5.2
 
-- Externs provided via `deps.cljs` — no need to manually specify externs when using datascript dependency
+- Externs provided via `deps.cljs` — no need to manually specify externs when using datahike dependency
 
 # 0.5.1
 
@@ -267,8 +365,8 @@ Performance numbers so far ([raw data](https://gist.github.com/tonsky/9da339f871
 # 0.5.0
 
 - Javascript version is now packaged as a proper CommonJS/RequireJS module (include via script tag still supported) (issue #39)
-- Published to npm: [npmjs.org/package/datascript](https://www.npmjs.org/package/datascript)
-- [ BREAKING ] Javascript namespace is renamed from `datascript.js` to `datascript`
+- Published to npm: [npmjs.org/package/datahike](https://www.npmjs.org/package/datahike)
+- [ BREAKING ] Javascript namespace is renamed from `datahike.js` to `datahike`
 
 # 0.4.2
 
@@ -288,7 +386,7 @@ Performance numbers so far ([raw data](https://gist.github.com/tonsky/9da339f871
 
 # 0.4.0
 
-Cosmetic changes to better mimic Datomic API. Useful for sharing code between Datomic and DataScript:
+Cosmetic changes to better mimic Datomic API. Useful for sharing code between Datomic and Datahike:
 
 - Added `tempid`, `resolve-tempid`, `db`, `transact`, `transact-async`, `index-range`, `squuid`, `squuid-time-millis`
 - [ BREAKING ] renamed `transact` to `with`, `with` to `db-with`
@@ -296,7 +394,7 @@ Cosmetic changes to better mimic Datomic API. Useful for sharing code between Da
 # 0.3.1
 
 - Optimized speed of DB’s `equiv` and `hash`, Datom’s `hash`
-- Entity’s `touch` call accessible through `datascript` namespace
+- Entity’s `touch` call accessible through `datahike` namespace
 - Accept sets in entity maps as values for `:db.cardinality/many` attributes
 
 # 0.3.0
@@ -309,7 +407,7 @@ Proper entities implementation:
 
 # 0.2.1
 
-- Externs file now can be referred as `:externs [datascript/externs.js"]`
+- Externs file now can be referred as `:externs [datahike/externs.js"]`
 
 # 0.2.0
 

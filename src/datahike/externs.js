@@ -1,18 +1,25 @@
 var datahike = {};
 datahike.db = {};
-datahike.db.Datom = {};
-datahike.db.Datom.e = 0;
-datahike.db.Datom.a = "";
-datahike.db.Datom.v = "";
-datahike.db.Datom.tx = 0;
-datahike.db.Datom.added = true;
+
+/**
+ * @constructor
+ */
+datahike.db.Datom = function() {};
+datahike.db.Datom.prototype.e;
+datahike.db.Datom.prototype.a;
+datahike.db.Datom.prototype.v;
+datahike.db.Datom.prototype.tx;
+
 
 datahike.impl = {};
 datahike.impl.entity = {};
-datahike.impl.entity.Entity = {};
-datahike.impl.entity.Entity.db = {};
-datahike.impl.entity.Entity.eid = {};
 
+/**
+ * @constructor
+ */
+datahike.impl.entity.Entity = function() {};
+datahike.impl.entity.Entity.prototype.db;
+datahike.impl.entity.Entity.prototype.eid;
 datahike.impl.entity.Entity.prototype.keys      = function() {};
 datahike.impl.entity.Entity.prototype.entries   = function() {};
 datahike.impl.entity.Entity.prototype.values    = function() {};

@@ -1,21 +1,14 @@
-(ns datahike.impl.entity
+(ns ^:no-doc datahike.impl.entity
   (:refer-clojure :exclude [keys get])
   (:require [#?(:cljs cljs.core :clj clojure.core) :as c]
             [datahike.db :as db]))
 
-;; using defn instead of declare because of http://dev.clojure.org/jira/browse/CLJS-1871
-(defn ^:declared entity [db eid])
-(defn ^:declared entity? [this])
-(defn ^:declared ->Entity [db eid touched cache])
-(defn- ^:declared equiv-entity [this that])
-(defn- ^:declared lookup-entity ([this attr]) ([this attr not-found]))
-(defn ^:declared touch [e])
+(declare entity ->Entity equiv-entity lookup-entity touch)
 
 (defn- entid [db eid]
-  (when
-    (or (number? eid)
-        (sequential? eid)
-        (keyword? eid))
+  (when (or (number? eid)
+            (sequential? eid)
+            (keyword? eid))
     (db/entid db eid)))
 
 (defn entity [db eid]
@@ -127,6 +120,7 @@
       [Object
        (toString [e]      (pr-str (assoc @cache :db/id eid)))
        (hashCode [e]      (hash eid)) ; db?
+       (equals [e o]      (equiv-entity e o))
 
        clojure.lang.Seqable
        (seq [e]           (touch e) (seq @cache))
@@ -205,17 +199,4 @@
       (vreset! (.-touched e) true)))
   e)
 
-#?(:cljs (do
-           (goog/exportSymbol "datahike.impl.entity.Entity.prototype.get"       (.-get       (.-prototype Entity)))
-           (goog/exportSymbol "datahike.impl.entity.Entity.prototype.has"       (.-has       (.-prototype Entity)))
-           (goog/exportSymbol "datahike.impl.entity.Entity.prototype.forEach"   (.-forEach   (.-prototype Entity)))
-           (goog/exportSymbol "datahike.impl.entity.Entity.prototype.key_set"   (.-key_set   (.-prototype Entity)))
-           (goog/exportSymbol "datahike.impl.entity.Entity.prototype.value_set" (.-value_set (.-prototype Entity)))
-           (goog/exportSymbol "datahike.impl.entity.Entity.prototype.entry_set" (.-entry_set (.-prototype Entity)))
-           (goog/exportSymbol "datahike.impl.entity.Entity.prototype.keys"      (.-keys      (.-prototype Entity)))
-           (goog/exportSymbol "datahike.impl.entity.Entity.prototype.values"    (.-values    (.-prototype Entity)))
-           (goog/exportSymbol "datahike.impl.entity.Entity.prototype.entries"   (.-entries   (.-prototype Entity)))
-
-           (goog/exportSymbol "cljs.core.ES6Iterator.prototype.next"        (.-next (.-prototype cljs.core/ES6Iterator)))
-           (goog/exportSymbol "cljs.core.ES6EntriesIterator.prototype.next" (.-next (.-prototype cljs.core/ES6EntriesIterator)))
-           ))
+#?(:cljs (goog/exportSymbol "datahike.impl.entity.Entity" Entity))

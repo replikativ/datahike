@@ -3,10 +3,13 @@
     [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
+    [clojure.string :as str]
+    #?(:clj [kaocha.stacktrace])
     [datahike.core :as d]
     [datahike.impl.entity :as de]
     [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
-                                      :clj  [:refer [defrecord-updatable]])]))
+                              :clj  [:refer [defrecord-updatable]])]
+    #?(:cljs [datahike.test.cljs])))
 
 #?(:cljs
    (enable-console-print!))
@@ -41,6 +44,17 @@
                (System/exit 1)))))
 
 ;; utils
+#?(:clj
+(defmethod t/assert-expr 'thrown-msg? [msg form]
+  (let [[_ match & body] form]
+    `(try ~@body
+          (t/do-report {:type :fail, :message ~msg, :expected '~form, :actual nil})
+          (catch Throwable e#
+            (let [m# (.getMessage e#)]
+              (if (= ~match m#)
+                (t/do-report {:type :pass, :message ~msg, :expected '~form, :actual e#})
+                (t/do-report {:type :fail, :message ~msg, :expected '~form, :actual e#})))
+            e#)))))
 
 (defn entity-map [db e]
   (when-let [entity (d/entity db e)]
@@ -51,6 +65,15 @@
 
 (defn all-datoms [db]
   (into #{} (map (juxt :e :a :v)) (d/datoms db :eavt)))
+
+(defn no-namespace-maps [t]
+  (binding [*print-namespace-maps* false]
+    (t))) 
+
+;; Filter Kaocha frames from exceptions
+
+#?(:clj
+   (alter-var-root #'kaocha.stacktrace/*stacktrace-filters* (constantly ["java." "clojure." "kaocha." "orchestra."])))
 
 ;; Core tests
 
