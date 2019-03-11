@@ -543,9 +543,9 @@
           eavt-durable (.-eavt-durable db)
           aevt-durable (.-aevt-durable db)
           avet-durable (.-avet-durable db)
-          create-eavt (fn [e a v tx] (datom e a v tx))
-          create-aevt (fn [a e v tx] (datom e a v tx))
-          create-avet (fn [a v e tx] (datom e a v tx))
+          create-eavt (fn [e a v tx] (datom e a v tx true))
+          create-aevt (fn [a e v tx] (datom e a v tx true))
+          create-avet (fn [a v e tx] (datom e a v tx true))
           ]
       (case-tree [e a (some? v) tx]
                  [(slice eavt eavt-durable (datom e a v tx) [e a v tx] create-eavt)                   ;; e a v tx
@@ -602,15 +602,15 @@
                  ({:eavt [(.-eavt db)
                           (.-eavt-durable db)
                           [(.-e pat) (.-a pat) (.-v pat) (.-tx pat)]
-                          (fn [e a v t] (Datom. e a v t true))]
+                          (fn [e a v t] (datom e a v t true))]
                    :aevt [(.-aevt db)
                           (.-aevt-durable db)
                           [(.-a pat) (.-e pat) (.-v pat) (.-tx pat)]
-                          (fn [a e v t] (Datom. e a v t true))]
+                          (fn [a e v t] (datom e a v t true))]
                    :avet [(.-avet db)
                           (.-avet-durable db)
                           [(.-a pat) (.-v pat) (.-e pat) (.-tx pat)]
-                          (fn [a v e t] (Datom. e a v t true))]} index)]
+                          (fn [a v e t] (datom e a v t true))]} index)]
 
              (slice mem dur pat key create-datom))
     #_(set/slice (get db index) (components->pattern db index cs e0 tx0) (components->pattern db index cs emax txmax))) ;; TODO: figure out what happened here with rebase
@@ -622,15 +622,15 @@
                       ({:eavt [(.-eavt db)
                                (.-eavt-durable db)
                                [(.-e pat) (.-a pat) (.-v pat) (.-tx pat)]
-                               (fn [e a v t] (Datom. e a v t true))]
+                               (fn [e a v t] (datom e a v t true))]
                         :aevt [(.-aevt db)
                                (.-aevt-durable db)
                                [(.-a pat) (.-e pat) (.-v pat) (.-tx pat)]
-                               (fn [a e v t] (Datom. e a v t true))]
+                               (fn [a e v t] (datom e a v t true))]
                         :avet [(.-avet db)
                                (.-avet-durable db)
                                [(.-a pat) (.-v pat) (.-e pat) (.-tx pat)]
-                               (fn [a v e t] (Datom. e a v t true))]} index)]
+                               (fn [a v e t] (datom e a v t true))]} index)]
                   (slice mem dur pat key (datom emax nil nil txmax) [nil nil nil nil] create-datom))
     #_(set/slice (get db index) (components->pattern db index cs e0 tx0) (datom emax nil nil txmax)));; TODO: figure out what happened here with rebase
 
@@ -641,15 +641,15 @@
                       ({:eavt [(.-eavt db)
                                (.-eavt-durable db)
                                [(.-e pat) (.-a pat) (.-v pat) (.-tx pat)]
-                               (fn [e a v t] (Datom. e a v t true))]
+                               (fn [e a v t] (datom e a v t true))]
                         :aevt [(.-aevt db)
                                (.-aevt-durable db)
                                [(.-a pat) (.-e pat) (.-v pat) (.-tx pat)]
-                               (fn [a e v t] (Datom. e a v t true))]
+                               (fn [a e v t] (datom e a v t true))]
                         :avet [(.-avet db)
                                (.-avet-durable db)
                                [(.-a pat) (.-v pat) (.-e pat) (.-tx pat)]
-                               (fn [a v e t] (Datom. e a v t true))]} index)]
+                               (fn [a v e t] (datom e a v t true))]} index)]
                    (slice mem dur pat key (datom e0 nil nil tx0) [nil nil nil nil] create-datom))
     #_(set/rslice (get db index) (components->pattern db index cs emax txmax) (datom e0 nil nil tx0))) ;; TODO: figure out what happened here with rebase
 
@@ -664,7 +664,7 @@
              (.-avet-durable db)
              from [(.-a from) (.-v from) (.-e from) (.-tx from)]
              to [(.-a to) (.-v to) (.-e to) (.-tx to)]
-             (fn [a v e t] (Datom. e a v t true))))
+             (fn [a v e t] (datom e a v t true))))
     #_(set/slice (.-avet db)
       (resolve-datom db nil attr start nil e0 tx0)
       (resolve-datom db nil attr end nil emax txmax)))
@@ -826,7 +826,7 @@
                   [nil nil nil nil]
                   (datom (dec tx0) nil nil txmax)
                   [(dec tx0) nil nil nil]
-                  (fn [e a v t] (datom e a v t)))]
+                  (fn [e a v t] (datom e a v t true)))]
     (-> slice vec rseq first :e) ;; :e of last datom in slice
     e0))
 
