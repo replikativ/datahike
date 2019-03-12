@@ -195,8 +195,7 @@
         clojure.lang.Associative
         (entryAt [d k] (some->> (val-at-datom d k nil) (clojure.lang.MapEntry k)))
         (containsKey [e k] (#{:e :a :v :tx :added} k))
-        (assoc [d k v] (assoc-datom d k v))]
-))
+        (assoc [d k v] (assoc-datom d k v))]))
 
 #?(:cljs (goog/exportSymbol "datahike.db.Datom" Datom))
 
@@ -432,29 +431,12 @@
   ([btset tree datom key create-datom]
    (slice btset tree datom key datom key create-datom))
   ([btset tree datom key datom-to key-to create-datom]
-   (let [;old (btset/slice btset datom datom-to)
-
-         [a b c d] key
+   (let [[a b c d] key
          [e f g h] key-to
          xf (comp
              (take-while (fn [^AMapEntry kv]
                        ;; prefix scan
                        (let [key (.key kv)
-                             #_new #_(cond (and e f g h)
-                                     (<= (hc/compare key key-to) 0)
-
-                                     (and e f g)
-                                     (<= (hc/compare (vec (take 3 key))
-                                                     (vec (take 3 key-to))) 0)
-
-                                     (and e f)
-                                     (<= (hc/compare (vec (take 2 key))
-                                                     (vec (take 2 key-to))) 0)
-
-                                     e
-                                     (<= (hc/compare (first key) (first key-to)) 0)
-
-                                     :else true)
                              [i j k l] key
                              new (not (cond (and e f g h)
                                             (or (> (hc/compare i e) 0)
@@ -475,20 +457,12 @@
                                             (> (hc/compare i e) 0)
 
                                             :else false))]
-                         #_(when (not= old new)
-                             (prn "Mismatch:" key key-to old new)) new)))
+                         new)))
              (map (fn [kv]
                     (let [[a b c d] (.key ^AMapEntry kv)]
                       (create-datom a b c d)))))
          new (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
                   seq)]
-     #_(when-not (= (vec old) (vec new))
-       (prn "QUERY" key key-to)
-       (prn "Mismatch: ")
-       (prn "OLD" old)
-       (prn "NEW" new)
-       (try (prn "DIFF:" (diff old new))
-            (catch Error _)))
      new)))
 
 (defn db-transient [db]
@@ -598,7 +572,7 @@
   (-datoms [db index cs]
            (let [^Datom pat (components->pattern db index cs e0 tx0)
                  ^DB db db
-                 [mem dur key create-datom]
+                 [mem dur key key-to create-datom]
                  ({:eavt [(.-eavt db)
                           (.-eavt-durable db)
                           [(.-e pat) (.-a pat) (.-v pat) (.-tx pat)]
@@ -611,7 +585,6 @@
                           (.-avet-durable db)
                           [(.-a pat) (.-v pat) (.-e pat) (.-tx pat)]
                           (fn [a v e t] (datom e a v t true))]} index)]
-
              (slice mem dur pat key create-datom))
     #_(set/slice (get db index) (components->pattern db index cs e0 tx0) (components->pattern db index cs emax txmax))) ;; TODO: figure out what happened here with rebase
 
@@ -834,58 +807,60 @@
 (defn ^DB init-db
   ([datoms] (init-db datoms nil))
   ([datoms schema]
-    (validate-schema schema)
-    (let [rschema     (rschema (merge implicit-schema schema))
-          indexed     (:db/index rschema)
-           #?@(:cljs
-               [ds-arr  (if (array? datoms) datoms (da/into-array datoms))
-                eavt    (set/-sorted-set-from-sorted-arr (.sort ds-arr cmp-datoms-eavt-quick) cmp-datoms-eavt)
-                aevt    (set/-sorted-set-from-sorted-arr (.sort ds-arr cmp-datoms-aevt-quick) cmp-datoms-aevt)
-                avet-datoms (-> (reduce (fn [arr d]
-                                          (when (contains? indexed (.-a d))
-                                            (.push arr d))
-                                          arr)
-                                        #js [] datoms)
-                                (.sort cmp-datoms-avet-quick))
-                avet    (set/-sorted-set-from-sorted-arr avet-datoms cmp-datoms-avet)
-                max-eid (init-max-eid eavt)]
-               :clj
-               [eavt        (apply set/sorted-set-by cmp-datoms-eavt datoms)
-                eavt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
-                                                (hmsg/insert t [(.-e datom)
-                                                                (.-a datom)
-                                                                (.-v datom)
-                                                                (.-tx datom)] nil))
-                                              (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                              (seq datoms)))
-                aevt        (apply set/sorted-set-by cmp-datoms-aevt datoms)
-                aevt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
-                                                (hmsg/insert t [(.-a datom)
-                                                                (.-e datom)
-                                                                (.-v datom)
-                                                                (.-tx datom)] nil))
-                                              (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                              (seq datoms)))
-                avet-datoms (filter (fn [^Datom d] (contains? indexed (.-a d))) datoms)
-                avet        (apply set/sorted-set-by cmp-datoms-avet avet-datoms)
-                avet-durable (<?? (hc/reduce< (fn [t ^Datom datom]
-                                                (hmsg/insert t [(.-a datom)
-                                                                (.-v datom)
-                                                                (.-e datom)
-                                                                (.-tx datom)] nil))
-                                              (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                              (seq datoms)))
-                max-eid     (init-max-eid eavt eavt-durable)])
-          max-tx      (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 eavt)]
-      (map->DB {
-        :schema  schema
-        :rschema rschema
-        :eavt    eavt
-        :aevt    aevt
-        :avet    avet
-        :max-eid max-eid
-        :max-tx  max-tx
-        :hash    (atom 0)}))))
+   (validate-schema schema)
+   (let [rschema     (rschema (merge implicit-schema schema))
+         indexed     (:db/index rschema)
+         #?@(:cljs
+             [ds-arr  (if (array? datoms) datoms (da/into-array datoms))
+              eavt    (set/-sorted-set-from-sorted-arr (.sort ds-arr cmp-datoms-eavt-quick) cmp-datoms-eavt)
+              aevt    (set/-sorted-set-from-sorted-arr (.sort ds-arr cmp-datoms-aevt-quick) cmp-datoms-aevt)
+              avet-datoms (-> (reduce (fn [arr d]
+                                        (when (contains? indexed (.-a d))
+                                          (.push arr d))
+                                        arr)
+                                      #js [] datoms)
+                              (.sort cmp-datoms-avet-quick))
+              avet    (set/-sorted-set-from-sorted-arr avet-datoms cmp-datoms-avet)
+              max-eid (init-max-eid eavt)]
+             :clj
+             [eavt        (apply set/sorted-set-by cmp-datoms-eavt datoms)
+              eavt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
+                                              (hmsg/insert t [(.-e datom)
+                                                              (.-a datom)
+                                                              (.-v datom)
+                                                              (.-tx datom)] nil))
+                                            (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                            (seq datoms)))
+              aevt        (apply set/sorted-set-by cmp-datoms-aevt datoms)
+              aevt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
+                                              (hmsg/insert t [(.-a datom)
+                                                              (.-e datom)
+                                                              (.-v datom)
+                                                              (.-tx datom)] nil))
+                                            (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                            (seq datoms)))
+              avet-datoms (filter (fn [^Datom d] (contains? indexed (.-a d))) datoms)
+              avet        (apply set/sorted-set-by cmp-datoms-avet avet-datoms)
+              avet-durable (<?? (hc/reduce< (fn [t ^Datom datom]
+                                              (hmsg/insert t [(.-a datom)
+                                                              (.-v datom)
+                                                              (.-e datom)
+                                                              (.-tx datom)] nil))
+                                            (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                            (seq datoms)))
+              max-eid     (init-max-eid eavt eavt-durable)])
+         max-tx      (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 eavt)]
+     (map->DB {:schema  schema
+               :rschema rschema
+               :eavt    eavt
+               :eavt-durable eavt-durable
+               :aevt    aevt
+               :aevt-durable aevt-durable
+               :avet    avet
+               :avet-durable avet-durable
+               :max-eid max-eid
+               :max-tx  max-tx
+               :hash    (atom 0)}))))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)
