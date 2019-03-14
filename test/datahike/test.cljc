@@ -3,7 +3,7 @@
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     datahike.test.core
-   
+
     datahike.test.btset
     datahike.test.components
     datahike.test.conn
@@ -33,7 +33,8 @@
     datahike.test.serialization
     datahike.test.transact
     datahike.test.validation
-    datahike.test.upsert))
+    datahike.test.upsert
+    datahike.test.fdb))
 
 (defn ^:export test-most []
   (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\.test\.(?!btset).*")))

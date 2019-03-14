@@ -1,14 +1,15 @@
-(defproject io.replikativ/datahike "0.1.2"
+(defproject io.replikativ/datahike "0.1.3"
   :description "A durable datalog implementation adaptable for distribution."
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :url "https://github.com/replikativ/datahike"
 
+
   ;; TODO: moving clojure from 1.7.0 to 1.9.0 might be a no no.
   ;; It is clj-fdb who needs 1.9.0 so might mean we will have to get rid of it.
   :dependencies [[org.clojure/clojure "1.9.0" :scope "provided"]
-                 [org.clojure/clojurescript "1.7.228" :scope "provided"]
-                 [io.replikativ/hitchhiker-tree "0.1.2"]
+                 [org.clojure/clojurescript "1.8.51" :scope "provided"]
+                 [io.replikativ/hitchhiker-tree "0.1.4"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2"]
                  [com.apple.foundationdb/fdb-java "5.1.7"]
@@ -91,7 +92,7 @@
            :global-vars  { *print-namespace-maps* false }}
     :dev { :source-paths ["bench/src" "test" "dev"]
           :dependencies [[org.clojure/tools.nrepl "0.2.12"]
-
+                         [org.clojure/tools.namespace "0.2.11"]
                          ] }
   }
 

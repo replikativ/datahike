@@ -7,7 +7,9 @@
     [hitchhiker.tree.messaging :as hmsg]
     [hitchhiker.konserve :as kons]
     [datahike.btset :as btset]
-    [fdb.core :as fdb])
+    [fdb.core :as fdb]
+    [hasch.core :refer [uuid]]
+    [konserve.core :as k])
   #?(:cljs (:require-macros [datahike.db :refer [case-tree combine-cmp raise defrecord-updatable cond-let]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry])))
@@ -341,16 +343,6 @@
       0 -1)))
 
 
-
-
-(defrecord EAVTKey [datom]
-  hc/IKeyCompare
-  (compare [this other]
-    (if (= (type other) EAVTKey)
-      (cmp-datoms-eavt datom (.-datom ^EAVTKey other))
-      (throw (ex-info "Unexpected key type." {:error :not-eavt-key})))))
-
-
 (defn cmp-datoms-aevt [^Datom d1, ^Datom d2]
   (combine-cmp
     (cmp (.-a d1) (.-a d2))
@@ -358,10 +350,6 @@
     (cmp-val (.-v d1) (.-v d2))
     (cmp-num (.-tx d1) (.-tx d2))))
 
-(defrecord AEVTKey [datom]
-  hc/IKeyCompare
-  (compare [this other]
-    (cmp-datoms-aevt datom (.-datom ^AEVTKey other))))
 
 (defn cmp-datoms-avet [^Datom d1, ^Datom d2]
   (combine-cmp
@@ -370,10 +358,6 @@
     (cmp-num (.-e d1) (.-e d2))
     (cmp-num (.-tx d1) (.-tx d2))))
 
-(defrecord AVETKey [datom]
-  hc/IKeyCompare
-  (compare [this other]
-    (cmp-datoms-avet datom (.-datom ^AVETKey other))))
 
 ;; fast versions without nil checks
 
@@ -445,59 +429,68 @@
 
          [a b c d] key
          [e f g h] key-to
-         xf (comp
-             (take-while (fn [^AMapEntry kv]
+         xf        (comp
+                    (take-while
+                     (fn [^AMapEntry kv]
                        ;; prefix scan
-                       (let [key (.key kv)
-                             #_new #_(cond (and e f g h)
-                                     (<= (hc/compare key key-to) 0)
-
-                                     (and e f g)
-                                     (<= (hc/compare (vec (take 3 key))
-                                                     (vec (take 3 key-to))) 0)
-
-                                     (and e f)
-                                     (<= (hc/compare (vec (take 2 key))
-                                                     (vec (take 2 key-to))) 0)
-
-                                     e
-                                     (<= (hc/compare (first key) (first key-to)) 0)
-
-                                     :else true)
-                             [i j k l] key
-                             new (not (cond (and e f g h)
-                                            (or (> (hc/compare i e) 0)
-                                                (> (hc/compare j f) 0)
-                                                (> (hc/compare k g) 0)
-                                                (> (hc/compare l h) 0))
+                       (let [key   (.key kv)
+                             #_new #_ (cond (and e f g h)
+                                            (<= (hc/compare key key-to) 0)
 
                                             (and e f g)
-                                            (or (> (hc/compare i e) 0)
-                                                (> (hc/compare j f) 0)
-                                                (> (hc/compare k g) 0))
+                                            (<= (hc/compare (vec (take 3 key))
+                                                            (vec (take 3 key-to))) 0)
 
                                             (and e f)
-                                            (or (> (hc/compare i e) 0)
-                                                (> (hc/compare j f) 0))
+                                            (<= (hc/compare (vec (take 2 key))
+                                                            (vec (take 2 key-to))) 0)
 
                                             e
-                                            (> (hc/compare i e) 0)
+                                            (<= (hc/compare (first key) (first key-to)) 0)
 
-                                            :else false))]
+                                            :else true)
+                             [i j k l] key
+                             new       (not (cond (and e f g h)
+                                                  (or (> (hc/compare i e) 0)
+                                                      (> (hc/compare j f) 0)
+                                                      (> (hc/compare k g) 0)
+                                                      (> (hc/compare l h) 0))
+
+                                                  (and e f g)
+                                                  (or (> (hc/compare i e) 0)
+                                                      (> (hc/compare j f) 0)
+                                                      (> (hc/compare k g) 0))
+
+                                                  (and e f)
+                                                  (or (> (hc/compare i e) 0)
+                                                      (> (hc/compare j f) 0))
+
+                                                  e
+                                                  (> (hc/compare i e) 0)
+
+                                                  :else false))]
                          #_(when (not= old new)
-                             (prn "Mismatch:" key key-to old new)) new)))
-             (map (fn [kv]
-                    (let [[a b c d] (.key ^AMapEntry kv)]
-                      (create-datom a b c d)))))
-         new (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
-                  seq)]
-     #_(when-not (= (vec old) (vec new))
-       (prn "QUERY" key key-to)
-       (prn "Mismatch: ")
-       (prn "OLD" old)
-       (prn "NEW" new)
-       (try (prn "DIFF:" (diff old new))
-            (catch Error _)))
+                             (prn "Mismatch:" key key-to old new))
+                         new)))
+                    (map (fn [kv]
+                           (let [[a b c d] (.key ^AMapEntry kv)]
+                             (create-datom a b c d)))))
+         new     (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
+                      seq)
+         ;; TODO: restore and fix for when testing init-db with 100k elems
+         ;; it does not work
+         ;; new (->> (sequence xf (map #(clojure.lang.MapEntry.
+         ;;                              (fdb.keys/key->vect %1) %1)
+         ;;                            (fdb/get-range :eavt key key-to)))
+         ;;          seq)
+         ]
+     ;; (when-not (= (vec old) (vec new))
+     ;;   (prn "QUERY" key key-to)
+     ;;   (prn "Mismatch: ")
+     ;;   (prn "OLD" old)
+     ;;   (prn "NEW" new)
+     ;;       #_(try (prn "DIFF:" (diff old new))
+     ;;        (catch Error _)))
      new)))
 
 
@@ -803,7 +796,12 @@
                                                                 (.-tx datom)] nil))
                                               (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
                                               (seq datoms)))
-
+                ;; TODO: do this for the other key-types.
+                eavt-scalable  (fdb/batch-insert :eavt (doall (map #(vec [(.-e %)
+                                                                          (.-a %)
+                                                                          (.-v %)
+                                                                          (.-tx %)])
+                                                                   datoms)))
                 aevt        (apply btset/btset-by cmp-datoms-aevt datoms)
                 aevt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
                                                 (hmsg/insert t [(.-a datom)
@@ -826,6 +824,7 @@
        (map->DB {:schema       schema
                  :eavt         eavt
                  :eavt-durable eavt-durable
+                 :eavt-scalable eavt-scalable ;; TODO: is this needed?
                  :aevt         aevt
                  :aevt-durable aevt-durable
                  :avet         avet
@@ -1049,6 +1048,8 @@
 ;; TODO: restore with-datom to be private, i.e. defn-. For now, it is
 ;; public to enable unit tests
 ;;
+;; TODO: add fdb/insert for :aevt-scalable and for :avet-scalable
+;;
 ;; In context of `with-datom` we can use faster comparators which
 ;; do n
 (defn with-datom [db ^Datom datom]
@@ -1062,11 +1063,11 @@
                                                               (.-tx datom)]
                                                            nil)))
         true (update-in [:eavt] btset/btset-conj datom cmp-datoms-eavt-quick)
-        true (update-in [:eavt-scalable] #(fdb/insert % [(.-e datom)
-                                                         (.-a datom)
-                                                         (.-v datom)
-                                                         (.-tx datom)]))
-
+        true (update-in [:eavt-scalable] (fn [db]
+                                           (fdb/insert :eavt [(.-e datom)
+                                                              (.-a datom)
+                                                              (.-v datom)
+                                                              (.-tx datom)])))
         true (update-in [:aevt] btset/btset-conj datom cmp-datoms-aevt-quick)
         true (update-in [:aevt-durable] #(<?? (hmsg/insert % [(.-a datom)
                                                               (.-e datom)
@@ -1083,6 +1084,7 @@
         true      (advance-max-eid (.-e datom))
         true      (assoc :hash (atom 0)))
       (if-let [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
+        ;; TODO: Anything todo in the 'removing' part here?
         (cond-> db
           true      (update-in [:eavt-durable] #(<?? (hmsg/delete % [(.-e removing) (.-a removing) (.-v removing) (.-tx removing)])))
           true      (update-in [:eavt] btset/btset-disj removing cmp-datoms-eavt-quick)
@@ -1106,6 +1108,8 @@
                 123))
     (assert (== (nth (fdb/get (:eavt-scalable db) [124 :likes "GG" 0 true]) 7)
                 124))
+    (assert (== (first (-search db [124 :likes "GG" 0 true]))
+                2))
     #_(slice eavt eavt-durable (Datom. nil nil nil nil nil) [nil])
     )
   )
@@ -1455,3 +1459,11 @@
   (def store (kons/add-hitchhiker-tree-handlers (<?? (new-fs-store "/tmp/datahike"))))
 
   (def backend (kons/->KonserveBackend store)))
+
+
+(defn db->uuid [conn]
+  (let [root (-> (<?? (k/get-in (:store conn) [:db]))
+                 (update :eavt-key kons/node->value)
+                 (update :avet-key kons/node->value)
+                 (update :aevt-key kons/node->value))]
+    (uuid root)))
