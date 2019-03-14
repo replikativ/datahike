@@ -13,7 +13,6 @@
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2"]
                  [com.apple.foundationdb/fdb-java "5.1.7"]
-;;                 [xtreak/clj-foundationdb "0.0.1-SNAPSHOT"]
                  [byte-streams "0.2.3"]
                  [funcool/octet "1.1.1"]]
 
