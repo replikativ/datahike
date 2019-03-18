@@ -546,7 +546,7 @@
            (->> (slice aevt avet-durable (datom e0 a nil tx0) [a] create-aevt)
                 (filter (fn [^Datom d] (= v (.-v d))))))
                   (->> (slice aevt aevt-durable (datom e0 a nil tx0) [a] create-aevt)  ;; _ a _ tx
-              (filter (fn [^Datom d] (= tx (datom-tx d)))))
+                       (filter (fn [^Datom d] (= tx (datom-tx d)))))
                   (slice aevt aevt-durable (datom e0 a nil tx0) [a] create-aevt)       ;; _ a _ _
          (filter
           (fn [^Datom d] (and (= v (.-v d))
@@ -571,40 +571,48 @@
   IIndexAccess
   (-datoms [db index cs]
            (let [^Datom pat (components->pattern db index cs e0 tx0)
+                 ^Datom pat-to (components->pattern db index cs emax txmax)
                  ^DB db db
                  [mem dur key key-to create-datom]
                  ({:eavt [(.-eavt db)
                           (.-eavt-durable db)
                           [(.-e pat) (.-a pat) (.-v pat) (.-tx pat)]
+                          [(.-e pat-to) (.-a pat-to) (.-v pat-to) (.-tx pat-to)]
                           (fn [e a v t] (datom e a v t true))]
                    :aevt [(.-aevt db)
                           (.-aevt-durable db)
                           [(.-a pat) (.-e pat) (.-v pat) (.-tx pat)]
+                          [(.-a pat-to) (.-e pat-to) (.-v pat-to) (.-tx pat-to)]
                           (fn [a e v t] (datom e a v t true))]
                    :avet [(.-avet db)
                           (.-avet-durable db)
                           [(.-a pat) (.-v pat) (.-e pat) (.-tx pat)]
+                          [(.-a pat-to) (.-v pat-to) (.-e pat-to) (.-tx pat-to)]
                           (fn [a v e t] (datom e a v t true))]} index)]
-             (slice mem dur pat key create-datom))
+             (slice mem dur pat key pat-to key-to create-datom))
     #_(set/slice (get db index) (components->pattern db index cs e0 tx0) (components->pattern db index cs emax txmax))) ;; TODO: figure out what happened here with rebase
 
   (-seek-datoms [db index cs]
                 (let [^Datom pat (components->pattern db index cs e0 tx0)
+                      ^Datom pat-to (datom emax nil nil txmax)
                       ^DB db db
-                      [mem dur key create-datom]
+                      [mem dur key key-to create-datom]
                       ({:eavt [(.-eavt db)
                                (.-eavt-durable db)
                                [(.-e pat) (.-a pat) (.-v pat) (.-tx pat)]
+                               [(.-e pat-to) (.-a pat-to) (.-v pat-to) (.-tx pat-to)]
                                (fn [e a v t] (datom e a v t true))]
                         :aevt [(.-aevt db)
                                (.-aevt-durable db)
                                [(.-a pat) (.-e pat) (.-v pat) (.-tx pat)]
+                               [(.-a pat-to) (.-e pat-to) (.-v pat-to) (.-tx pat-to)]
                                (fn [a e v t] (datom e a v t true))]
                         :avet [(.-avet db)
                                (.-avet-durable db)
                                [(.-a pat) (.-v pat) (.-e pat) (.-tx pat)]
+                               [(.-a pat-to) (.-v pat-to) (.-e pat-to) (.-tx pat-to)]
                                (fn [a v e t] (datom e a v t true))]} index)]
-                  (slice mem dur pat key (datom emax nil nil txmax) [nil nil nil nil] create-datom))
+                  (slice mem dur pat key pat-to key-to create-datom))
     #_(set/slice (get db index) (components->pattern db index cs e0 tx0) (datom emax nil nil txmax)));; TODO: figure out what happened here with rebase
 
   (-rseek-datoms [db index cs]
@@ -776,11 +784,11 @@
       {:schema  schema
        :rschema (rschema (merge implicit-schema schema))
        :eavt    (set/sorted-set-by cmp-datoms-eavt)
-      :eavt-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+       :eavt-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
        :aevt    (set/sorted-set-by cmp-datoms-aevt)
-      :aevt-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+       :aevt-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
        :avet    (set/sorted-set-by cmp-datoms-avet)
-      :avet-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+       :avet-durable (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
        :max-eid e0
        :max-tx  tx0
        :hash    (atom 0)})))
@@ -823,7 +831,10 @@
               avet    (set/-sorted-set-from-sorted-arr avet-datoms cmp-datoms-avet)
               max-eid (init-max-eid eavt)]
              :clj
-             [eavt        (apply set/sorted-set-by cmp-datoms-eavt datoms)
+             [arr         (cond-> datoms
+                            (not (arrays/array? datoms)) (arrays/into-array))
+              _           (arrays/asort arr cmp-datoms-eavt-quick)
+              eavt        (set/from-sorted-array cmp-datoms-eavt arr)
               eavt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
                                               (hmsg/insert t [(.-e datom)
                                                               (.-a datom)
@@ -831,7 +842,8 @@
                                                               (.-tx datom)] nil))
                                             (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
                                             (seq datoms)))
-              aevt        (apply set/sorted-set-by cmp-datoms-aevt datoms)
+              _           (arrays/asort arr cmp-datoms-aevt-quick)
+              aevt        (set/from-sorted-array cmp-datoms-aevt arr)
               aevt-durable (<?? (hc/reduce< (fn [t ^Datom datom]
                                               (hmsg/insert t [(.-a datom)
                                                               (.-e datom)
@@ -840,7 +852,9 @@
                                             (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
                                             (seq datoms)))
               avet-datoms (filter (fn [^Datom d] (contains? indexed (.-a d))) datoms)
-              avet        (apply set/sorted-set-by cmp-datoms-avet avet-datoms)
+              avet-arr    (to-array avet-datoms)
+              _           (arrays/asort avet-arr cmp-datoms-avet-quick)
+              avet        (set/from-sorted-array cmp-datoms-avet avet-arr)
               avet-durable (<?? (hc/reduce< (fn [t ^Datom datom]
                                               (hmsg/insert t [(.-a datom)
                                                               (.-v datom)
@@ -1328,7 +1342,7 @@
     :db.fn/retractEntity
     :db/retractEntity})
 
-(defn transact-tx-data* [initial-report initial-es]
+(defn transact-tx-data [initial-report initial-es]
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
     (raise "Bad transaction data " initial-es ", expected sequential collection"
@@ -1357,13 +1371,13 @@
             (let [id (current-tx report)]
               (recur (allocate-eid report old-eid id)
                      (cons (assoc entity :db/id id) entities)))
-           
+
             ;; lookup-ref => resolved | error
             (sequential? old-eid)
             (let [id (entid-strict db old-eid)]
               (recur report
                      (cons (assoc entity :db/id id) entities)))
-           
+
             ;; upserted => explode | error
             :let [upserted-eid (upsert-eid db entity)]
 
@@ -1374,7 +1388,7 @@
               (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
               (recur (allocate-eid report old-eid upserted-eid)
                      (concat (explode db (assoc entity :db/id upserted-eid)) entities)))
-           
+
             ;; resolved | allocated-tempid | tempid | nil => explode
             (or (number? old-eid)
                 (nil?    old-eid)
@@ -1384,10 +1398,10 @@
                             (tempid? old-eid) (or (get tempids old-eid)
                                                   (next-eid db))
                             :else             old-eid)
-                  new-entity (assoc entity :db/id new-eid)]                
+                  new-entity (assoc entity :db/id new-eid)]
               (recur (allocate-eid report old-eid new-eid)
                      (concat (explode db new-entity) entities)))
-           
+
             ;; trash => error
             :else
             (raise "Expected number, string or lookup ref for :db/id, got " old-eid
@@ -1399,7 +1413,7 @@
             (= op :db.fn/call)
             (let [[_ f & args] entity]
               (recur report (concat (apply f db args) entities)))
-            
+
             (and (keyword? op)
                  (not (builtin-fn? op)))
             (if-some [ident (entid db op)]
@@ -1411,7 +1425,7 @@
                          {:error :transact/syntax, :operation :db.fn/call, :tx-data entity})))
               (raise "Can’t find entity for transaction fn " op
                      {:error :transact/syntax, :operation :db.fn/call, :tx-data entity}))
-            
+
             (and (tempid? e) (not= op :db/add))
             (raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
               { :error :transact/syntax, :op entity })
@@ -1488,7 +1502,7 @@
 
            :else
            (raise "Unknown operation at " entity ", expected :db/add, :db/retract, :db.fn/call, :db.fn/retractAttribute, :db.fn/retractEntity or an ident corresponding to an installed transaction function (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)" {:error :transact/syntax, :operation op, :tx-data entity})))
-       
+
        (datom? entity)
        (let [[e a v tx added] entity]
          (if added
@@ -1499,7 +1513,7 @@
        (raise "Bad entity type at " entity ", expected map or vector"
               {:error :transact/syntax, :tx-data entity})))))
 
-(defn transact-tx-data [{:as initial-report :keys [tx-meta]} initial-es]
+#_(defn transact-tx-data [{:as initial-report :keys [tx-meta]} initial-es]
   (let [middleware (or
                      (when (map? tx-meta)
                        (::tx-middleware tx-meta))

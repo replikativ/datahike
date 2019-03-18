@@ -1,5 +1,6 @@
 (ns sandbox
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d]
+            [datahike.core :as c]))
 
 
 (comment
@@ -17,5 +18,7 @@
                      {:db/id 3 :name "Charlie"}])
 
   (d/q '[:find ?n :where [?e :name ?n]] @conn)
+
+  (c/datoms (d/db conn) :eavt)
 
   )
