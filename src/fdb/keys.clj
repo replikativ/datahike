@@ -109,20 +109,20 @@
 (defn ->byteBuffer
   [index-type [p1 p2 p3 t]]
   (assert (instance? clojure.lang.Keyword index-type))
-  (when p2 (assert (instance? clojure.lang.Keyword p2)))
   (let [buffer          (buf/allocate buf-len {:impl :nio :type :direct})
         index-type-code (index-type->code index-type)
         [e a v]         (cond
                           (= index-type :eavt) [p1 p2 p3]
                           (= index-type :aevt) [p2 p1 p3]
                           (= index-type :avet) [p3 p1 p2])]
+    (when a (assert (instance? clojure.lang.Keyword a)))
     (assert (and (<= 0 index-type-code) (>= 2 index-type-code)))
     ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.
     (buf/write! buffer [index-type-code] (buf/spec buf/byte))
-    (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (position :eavt :e-end) 7)})
-    (write-a a buffer (position :eavt :a-end))
-    (write v buffer (position :eavt :v-end))
-    (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (position :eavt :t-end) 7)})
+    (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (position index-type :e-end) 7)})
+    (write-a a buffer (position index-type :a-end))
+    (write v buffer (position index-type :v-end))
+    (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (position index-type :t-end) 7)})
     buffer))
 
 ;; ------- reading --------

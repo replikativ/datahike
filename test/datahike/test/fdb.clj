@@ -13,13 +13,13 @@
 (defn assert-vec-conversion
   [index-type vect]
   (let [buff       (k/->byteBuffer index-type vect)
-        buff->vect (k/byteBuffer->vect :eavt buff)
+        buff->vect (k/byteBuffer->vect index-type buff)
         ;; _          (prn buff->vect)
         ;; _          (prn vect)
         ]
-    (is (= buff->vect vect))))
+    (is (= vect buff->vect))))
 
-(deftest fdb-keys
+(deftest eavt
   "->byteArr and back"
   (let [vect [20 :hello "some analysis" 3]]
     (is (= (k/key->vect :eavt (k/->byteArr :eavt vect)) vect)))
@@ -37,10 +37,15 @@
   (assert-vec-conversion :eavt [9223372036854775807 :hello (long 234) 3]))
 
 ;; --------- :aevt indices
-;; (deftest aevt
-;;   (testing "simple insert and retrieval"
-;;     ((let [ ]
-;;        )
+(deftest aevt
+  "simple insert and retrieval"
+  (let [vect [:hello 20 "some data" 3]]
+    (is (= vect (k/key->vect :aevt (k/->byteArr :aevt vect)))))
+
+  "basic vector conversion"
+  (assert-vec-conversion :aevt [:hello 20 "some analysis" 3])
+
+  )
 
 ;; ))
 ;;   (testing "mixture of aevt and other type of indices"))
