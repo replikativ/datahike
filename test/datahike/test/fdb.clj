@@ -36,6 +36,15 @@
   "biggest 'e' value"
   (assert-vec-conversion :eavt [9223372036854775807 :hello (long 234) 3]))
 
+;; --------- :aevt indices
+;; (deftest aevt
+;;   (testing "simple insert and retrieval"
+;;     ((let [ ]
+;;        )
+
+;; ))
+;;   (testing "mixture of aevt and other type of indices"))
+
 ;;----- FDB integration -----
 
 (deftest fdb-using-with-datom
@@ -47,10 +56,10 @@
     ;; get :e-end
     (is (== (nth (fdb/get (:eavt-scalable db) :eavt
                           [123 :likes "Hans" 0 true])
-                 (:e-end k/eavt))
+                 (k/position :eavt :e-end))
             123))
     (is (== (nth (fdb/get (:eavt-scalable db) :eavt
-                          [124 :likes "GG" 0 true]) (:e-end k/eavt))
+                          [124 :likes "GG" 0 true]) (k/position :eavt :e-end))
             124)))
 
   "simple range"
@@ -166,16 +175,6 @@
   ;; TODO: test that what's inserted in fdb through init-db above is really inside fdb
   )
 
-
-
-;; --------- :aevt indices
-(deftest aevt
-  (testing "simple insert and retrieval"
-    ((let [ ]
-       )
-
-))
-  (testing "mixture of aevt and other type of indices"))
 
 
 ;; ------------------------ PERFOMANCE Testing -------------------------

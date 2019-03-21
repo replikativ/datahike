@@ -5,8 +5,14 @@
 
 (def buf-len 100)
 
-;; Positions in the byte buffer where each section ends
-(def eavt {:code 0 :e-end 8 :a-end 40 :v-end 80 :t-end 99})
+
+(defn position
+  [index-type section-end]
+  "Given an `index-type`, returns the position in the byte buffer where a given `section-end` is located. `index-type` and `section-end` are both keywords."
+  (cond
+    (= index-type :eavt) (section-end {:code 0 :e-end 8  :a-end 40 :v-end 80 :t-end 99})
+    (= index-type :aevt) (section-end {:code 0 :a-end 40 :e-end 48 :v-end 80 :t-end 99})
+    (= index-type :avet) (section-end {:code 0 :a-end 32 :v-end 72 :e-end 80 :t-end 99})))
 
 (def index-type->code {:eavt 0 :aevt 1 :veat 2})
 
@@ -101,18 +107,22 @@
 ;; TODO: add validations that each of e a v t does not overflow.
 ;;
 (defn ->byteBuffer
-  [index-type [e a v t]]
+  [index-type [p1 p2 p3 t]]
   (assert (instance? clojure.lang.Keyword index-type))
-  (when a (assert (instance? clojure.lang.Keyword a)))
-  (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})
-        index-type-code (index-type->code index-type)]
+  (when p2 (assert (instance? clojure.lang.Keyword p2)))
+  (let [buffer          (buf/allocate buf-len {:impl :nio :type :direct})
+        index-type-code (index-type->code index-type)
+        [e a v]         (cond
+                          (= index-type :eavt) [p1 p2 p3]
+                          (= index-type :aevt) [p2 p1 p3]
+                          (= index-type :avet) [p3 p1 p2])]
     (assert (and (<= 0 index-type-code) (>= 2 index-type-code)))
     ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.
     (buf/write! buffer [index-type-code] (buf/spec buf/byte))
-    (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (:e-end eavt) 7)})
-    (write-a a buffer (:a-end eavt))
-    (write v buffer (:v-end eavt))
-    (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (:t-end eavt) 7)})
+    (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (position :eavt :e-end) 7)})
+    (write-a a buffer (position :eavt :a-end))
+    (write v buffer (position :eavt :v-end))
+    (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (position :eavt :t-end) 7)})
     buffer))
 
 ;; ------- reading --------
@@ -156,11 +166,11 @@
   "Converts a fdb key (bytebuffer) into a datom vector"
   [buffer]
   (let [e (first (buf/read buffer (buf/spec buf/int64)
-                           {:offset (shift-left (:e-end eavt) 7)}))
-        a (keyword (read-str buffer (:a-end eavt)))
-        v (read buffer (:v-end eavt))
+                           {:offset (shift-left (position :eavt :e-end) 7)}))
+        a (keyword (read-str buffer (position :eavt :a-end)))
+        v (read buffer (position :eavt :v-end))
         t (first (buf/read buffer (buf/spec buf/int64)
-                           {:offset (shift-left (:t-end eavt) 7)}))]
+                           {:offset (shift-left (position :eavt :t-end) 7)}))]
     [e a v t]))
 
 
@@ -196,7 +206,7 @@
 (assert (= (key->vect (->byteArr :eavt vect)) vect))
 
 ;; There are 64 bits for [e]. The last byte is at index 7.
-(assert (== (.get test-buff (:e-end eavt)) 20))
+(assert (== (.get test-buff (position :eavt :e-end)) 20))
 ;; ;; size of `hello` is 5
 ;; (assert (== (.get test-buff (shift-left (:a-end eavt) 3)) 5))
 ;; ;; the transaction id is ok
