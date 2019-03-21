@@ -161,22 +161,24 @@
   [byteArr]
   (ByteBuffer/wrap byteArr))
 
-;; TODO: BUG: this has to be converted to take index-type into account
 (defn byteBuffer->vect
   "Converts a fdb key (bytebuffer) into a datom vector"
-  [buffer]
+  [index-type buffer]
   (let [e (first (buf/read buffer (buf/spec buf/int64)
-                           {:offset (shift-left (position :eavt :e-end) 7)}))
-        a (keyword (read-str buffer (position :eavt :a-end)))
-        v (read buffer (position :eavt :v-end))
+                           {:offset (shift-left (position index-type :e-end) 7)}))
+        a (keyword (read-str buffer (position index-type :a-end)))
+        v (read buffer (position index-type :v-end))
         t (first (buf/read buffer (buf/spec buf/int64)
-                           {:offset (shift-left (position :eavt :t-end) 7)}))]
-    [e a v t]))
+                           {:offset (shift-left (position index-type :t-end) 7)}))]
+    (cond
+      (= index-type :eavt) [e a v t]
+      (= index-type :aevt) [a e v t]
+      (= index-type :avet) [a v e t])))
 
 
 (defn key->vect
-  [byteArr]
-  (byteBuffer->vect (byteArr->byteBuffer byteArr)))
+  [index-type byteArr]
+  (byteBuffer->vect index-type (byteArr->byteBuffer byteArr)))
 
 
 ;; TODO: [v] is converted to a String for now
@@ -199,11 +201,11 @@
 
 (def vect [20 :hello "some analysis" 3])
 (def test-buff (->byteBuffer :eavt vect))
-(def buff->vect (byteBuffer->vect test-buff))
+(def buff->vect (byteBuffer->vect :eavt test-buff))
 ;;(prn buff->vect)
 (assert (= buff->vect vect))
 
-(assert (= (key->vect (->byteArr :eavt vect)) vect))
+(assert (= (key->vect :eavt (->byteArr :eavt vect)) vect))
 
 ;; There are 64 bits for [e]. The last byte is at index 7.
 (assert (== (.get test-buff (position :eavt :e-end)) 20))
@@ -215,7 +217,7 @@
 
 (def with-keyword [20 :shared/policy "some analysis" 3])
 (def buff (->byteBuffer :eavt with-keyword))
-(def buff->vect (byteBuffer->vect buff))
+(def buff->vect (byteBuffer->vect :eavt buff))
 ;;(prn buff->vect)
 (assert (=  buff->vect with-keyword))
 

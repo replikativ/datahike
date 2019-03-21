@@ -13,7 +13,7 @@
 (defn assert-vec-conversion
   [index-type vect]
   (let [buff       (k/->byteBuffer index-type vect)
-        buff->vect (k/byteBuffer->vect buff)
+        buff->vect (k/byteBuffer->vect :eavt buff)
         ;; _          (prn buff->vect)
         ;; _          (prn vect)
         ]
@@ -22,7 +22,7 @@
 (deftest fdb-keys
   "->byteArr and back"
   (let [vect [20 :hello "some analysis" 3]]
-    (is (= (k/key->vect (k/->byteArr :eavt vect)) vect)))
+    (is (= (k/key->vect :eavt (k/->byteArr :eavt vect)) vect)))
 
   "basic vector conversion"
   (assert-vec-conversion :eavt [20 :hello "some analysis" 3])

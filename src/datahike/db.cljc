@@ -480,7 +480,7 @@
          ;; TODO: restore and fix for when testing init-db with 100k elems
          ;; it does not work
          ;; new (->> (sequence xf (map #(clojure.lang.MapEntry.
-         ;;                              (fdb.keys/key->vect %1) %1)
+         ;;                              (fdb.keys/key->vect :eavt %1) %1)
          ;;                            (fdb/get-range :eavt key key-to)))
          ;;          seq)
          ]
