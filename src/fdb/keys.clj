@@ -17,10 +17,10 @@
 
 (defn- shift-left
   [offset n]
-  "Returns the location given by shifting left by 'n' bytes starting
-   at the location given by 'offset'.
+  "Returns the location given by shifting left by `n` bytes starting
+   at the location given by `offset`.
    (Can be used to find out where to write n + 1 bytes that ends at the location
-   given by 'offset')"
+   given by `offset`)"
   (- offset n))
 
 (defn- attribute-as-str
@@ -76,7 +76,7 @@
               {:offset (shift-left section-end 3)}))
 
 (defn- write-a
-  "Write the 'a' part in eavt"
+  "Write the `a` part in eavt"
   [a buffer a-end]
   (let [a-as-str (attribute-as-str a)]
     (write-str a-as-str buffer a-end)))
@@ -90,7 +90,7 @@
 
 (defn- write
   [val buffer section-end]
-  "Write 'val' into 'buffer' given 'section-end', the end of the section where it should be written"
+  "Write `val` into `buffer` given `section-end`, the end of the section where it should be written"
   (let [type (type val)]
     (cond
       (= type java.lang.Integer) (write-int val buffer section-end)
@@ -151,6 +151,7 @@
   [byteArr]
   (ByteBuffer/wrap byteArr))
 
+;; TODO: BUG: this has to be converted to take index-type into account
 (defn byteBuffer->vect
   "Converts a fdb key (bytebuffer) into a datom vector"
   [buffer]
@@ -170,7 +171,7 @@
 
 ;; TODO: [v] is converted to a String for now
 (defn key
-  "Converts a datom into a fdb key"
+  "Converts a datom into a fdb key. `index-type` is keyword representing the index type."
   ;; Can take ^Datom object as input (as they are array)
   [index-type [e a v t]]
   (->byteArr index-type [e a (str v) t]))
@@ -196,7 +197,7 @@
 
 ;; There are 64 bits for [e]. The last byte is at index 7.
 (assert (== (.get test-buff (:e-end eavt)) 20))
-;; ;; size of 'hello' is 5
+;; ;; size of `hello` is 5
 ;; (assert (== (.get test-buff (shift-left (:a-end eavt) 3)) 5))
 ;; ;; the transaction id is ok
 ;; (assert (== (.get test-buff (:t-end eavt)) 3))
