@@ -150,9 +150,9 @@
   [buffer section-end]
   (let [type (cst->type (read-int buffer section-end 3))]
     (cond
-      (= type java.lang.Integer) (read-int buffer section-end 7)
-      (= type java.lang.Long)    (read-long buffer section-end)
-      (= type java.lang.String)  (read-str buffer section-end))))
+      (= type java.lang.Integer) (read-int   buffer section-end 7)
+      (= type java.lang.Long)    (read-long  buffer section-end)
+      (= type java.lang.String)  (read-str   buffer section-end))))
 
 
 (defn ->byteArr
