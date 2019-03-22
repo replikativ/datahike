@@ -40,7 +40,7 @@
       (str a-namespace (when a-namespace "/") (name a)))
     ""))
 
-;; Def. and implement the other types
+;; TODO: Def. and implement the other types
 (def INT 1)
 (def LONG 2)
 (def STRING 3)
