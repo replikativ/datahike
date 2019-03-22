@@ -92,21 +92,54 @@
                           [124 :likes "GG" 0 true]) (k/position :eavt :e-end))
             124)))
 
-  "simple range"
-  (let [db (dh-db/empty-db)
-        _  (fdb/clear-all)
-        _  (-> (with-datom db (datom 123 :likes "Hans" 0 true))
-               (with-datom (datom 124 :likes "GG" 0 true))
-               (with-datom (datom 125 :likes "GG" 0 true))
-               (with-datom (datom 1 :likes "GG" 0 true))
-               (with-datom (datom 2 :likes "GG" 0 true))
-               (with-datom (datom 3 :likes "GG" 0 true)))]
-    (is (= 3
-           (count (fdb/get-range :eavt [123 :likes "Hans" 0 true]
-                                 [125 :likes "GG" 0 true]))))
-    (is (= 2 ;; Not 3 because [125] does not exist in the db.
-           (count (fdb/get-range :eavt [123]
-                                 [125])))))
+
+  (testing "simple range :eavt"
+    (let [db (dh-db/empty-db)
+          _  (fdb/clear-all)
+          _  (-> (with-datom db (datom 123 :likes "Hans" 0 true))
+                 (with-datom (datom 124 :likes "GG" 0 true))
+                 (with-datom (datom 125 :likes "GG" 0 true))
+                 (with-datom (datom 1 :likes "GG" 0 true))
+                 (with-datom (datom 2 :likes "GG" 0 true))
+                 (with-datom (datom 3 :likes "GG" 0 true)))]
+      ;; :eavt
+      (is (= 3
+             (count (fdb/get-range :eavt [123 :likes "Hans" 0 true]
+                                   [125 :likes "GG" 0 true]))))
+      (is (= 2 ;; Not 3 because [125] does not exist in the db.
+             (count (fdb/get-range :eavt [123] [125]))))
+      ))
+
+  (testing "simple range :aevt"
+    (let [db (dh-db/empty-db)
+          _  (fdb/clear-all)
+          _  (-> (with-datom db (datom 123 :a "Hans" 0 true))
+                 (with-datom (datom 124 :b "GG" 0 true))
+                 (with-datom (datom 125 :c "GG" 0 true))
+                 (with-datom (datom 1 :d "GG" 0 true))
+                 (with-datom (datom 2 :e "GG" 0 true))
+                 (with-datom (datom 3 :f "GG" 0 true))
+                 (with-datom (datom 4 :f "GG" 0 true)))]
+      ;; :aevt
+      (is (= 3
+             (count (fdb/get-range :aevt
+                                   [:a 123 "Hans" 0 true]
+                                   [:c 125 "GG" 0 true]))))
+      (is (= 3
+             (count (fdb/get-range :aevt
+                                   [:a 123 "Hans" 0 true]
+                                   [:c 9999999 "GG" 0 true]))))
+      (is (= 2
+           (count (fdb/get-range :aevt
+                                 [:a 123 "Hans" 0 true]
+                                 [:c 0 "GG" 0 true]))))
+      (is (= 3
+             (count (fdb/get-range :aevt [:e] [:g]))))
+      (is (= 2
+             (count (fdb/get-range :aevt [:f] [:f]))))
+      ))
+
+
 
   "large range"
   (let [db (dh-db/empty-db)

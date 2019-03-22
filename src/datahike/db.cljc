@@ -1074,6 +1074,12 @@
                                                               (.-v datom)
                                                               (.-tx datom)]
                                                            nil)))
+        true (update-in [:aevt-scalable] (fn [db]
+                                           (fdb/insert :aevt [(.-a datom)
+                                                              (.-e datom)
+                                                              (.-v datom)
+                                                              (.-tx datom)])))
+
 
         indexing? (update-in [:avet] btset/btset-conj datom cmp-datoms-avet-quick)
         indexing? (update-in [:avet-durable] #(<?? (hmsg/insert % [(.-a datom)
