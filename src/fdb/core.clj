@@ -72,7 +72,7 @@
 
 (defn get-range
   "Returns fdb keys in the range [begin end]. `begin` and `end` are vectors.
-  index-type is `:eavt`, `:aevt`, ..."
+  index-type is `:eavt`, `:aevt` and `:avet`"
   [index-type begin end]
   (let [fd        (FDB/selectAPIVersion 510)
         begin-key (KeySelector/firstGreaterOrEqual (key index-type begin))
