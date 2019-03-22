@@ -146,6 +146,35 @@
              (count (fdb/get-range :aevt [:f] [:f]))))))
 
 
+  #_(testing "simple range :avet"
+    (let [db (dh-db/empty-db)
+          _  (fdb/clear-all)
+          _  (-> (with-datom db (datom 123 :a "Hans" 0 true))
+                 (with-datom (datom 124 :b "GG" 0 true))
+                 (with-datom (datom 125 :c "GG" 0 true))
+                 (with-datom (datom 1 :d "GG" 0 true))
+                 (with-datom (datom 2 :e "GG" 0 true))
+                 (with-datom (datom 3 :f "GG" 0 true))
+                 (with-datom (datom 4 :f "GG" 0 true)))]
+      ;; :aevt
+      (is (= 3
+             (count (fdb/get-range :avet
+                                   [:a "Hans" 123  0 true]
+                                   [:c "GG" 125  0 true]))))
+      (is (= 3
+             (count (fdb/get-range :avet
+                                   [:a "Hans" 123 0 true]
+                                   [:c "GG" 9999999 0 true]))))
+      (is (= 2
+             (count (fdb/get-range :avet
+                                   [:a "Hans" 123 0 true]
+                                   [:c "GG" 0  0 true]))))
+      #_(is (= 3
+             (count (fdb/get-range :avet [:e] [:g]))))
+      #_(is (= 0
+             (count (fdb/get-range :avet [:f] [:f]))))))
+
+
 
   "large range"
   (let [db (dh-db/empty-db)

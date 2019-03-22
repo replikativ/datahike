@@ -1087,6 +1087,12 @@
                                                                    (.-e datom)
                                                                    (.-tx datom)]
                                                                 nil)))
+        indexing? (update-in [:avet-scalable] (fn [db]
+                                                (fdb/insert :avet [(.-a datom)
+                                                                   (.-v datom)
+                                                                   (.-e datom)
+                                                                   (.-tx datom)])))
+
         true      (advance-max-eid (.-e datom))
         true      (assoc :hash (atom 0)))
       (if-let [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
