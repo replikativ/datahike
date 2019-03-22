@@ -186,12 +186,13 @@
   (byteBuffer->vect index-type (byteArr->byteBuffer byteArr)))
 
 
-;; TODO: [v] is converted to a String for now
+;; TODO: what's corresponding to 'v' can not be of any type for now. As only some of the basic types are supported.
 (defn key
   "Converts a datom into a fdb key. `index-type` is keyword representing the index type."
-  ;; Can take ^Datom object as input (as they are array)
-  [index-type [e a v t]]
-  (->byteArr index-type [e a (str v) t]))
+  ;; Can take ^Datom object as input (as they are array) ;; <- TODO: careful here as Datom does not provide on e a v t.
+  [index-type [a b c t]]
+  ;;(prn (str index-type  [a b c t])) ;; TODO
+  (->byteArr index-type [a b c t]))
 
 
 (defn print-buf
