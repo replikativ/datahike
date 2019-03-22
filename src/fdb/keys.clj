@@ -107,6 +107,7 @@
 ;; TODO: add validations that each of e a v t does not overflow.
 ;;
 (defn ->byteBuffer
+  "Converts a vector into a bytebuffer"
   [index-type [p1 p2 p3 t]]
   (assert (instance? clojure.lang.Keyword index-type))
   (let [buffer          (buf/allocate buf-len {:impl :nio :type :direct})
