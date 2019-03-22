@@ -45,7 +45,12 @@
   "basic vector conversion"
   (assert-vec-conversion :aevt [:hello 20 "some analysis" 3])
 
-  )
+  "int value"
+  (assert-vec-conversion :aevt [:hello 20 (int 2356) 3])
+
+  "biggest 'e' value"
+  (assert-vec-conversion :aevt [:hello 9223372036854775807 (long 234) 3]))
+
 
 ;; ))
 ;;   (testing "mixture of aevt and other type of indices"))
