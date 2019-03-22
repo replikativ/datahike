@@ -101,14 +101,21 @@
                  (with-datom (datom 125 :likes "GG" 0 true))
                  (with-datom (datom 1 :likes "GG" 0 true))
                  (with-datom (datom 2 :likes "GG" 0 true))
-                 (with-datom (datom 3 :likes "GG" 0 true)))]
+                 (with-datom (datom 3 :likes "GG" 0 true))
+                 (with-datom (datom 3 :likes "HH" 0 true)))]
       ;; :eavt
       (is (= 3
-             (count (fdb/get-range :eavt [123 :likes "Hans" 0 true]
+             (count (fdb/get-range :eavt
+                                   [123 :likes "Hans" 0 true]
                                    [125 :likes "GG" 0 true]))))
       (is (= 2 ;; Not 3 because [125] does not exist in the db.
              (count (fdb/get-range :eavt [123] [125]))))
-      ))
+      (is (= 0
+             (count (fdb/get-range :eavt [3] [3]))))
+      (is (= 1
+             (count (fdb/get-range :eavt
+                                   [3 :likes "HH" 0 true]
+                                   [3 :likes "HH" 0 true]))))))
 
   (testing "simple range :aevt"
     (let [db (dh-db/empty-db)
@@ -135,9 +142,8 @@
                                  [:c 0 "GG" 0 true]))))
       (is (= 3
              (count (fdb/get-range :aevt [:e] [:g]))))
-      (is (= 2
-             (count (fdb/get-range :aevt [:f] [:f]))))
-      ))
+      (is (= 0
+             (count (fdb/get-range :aevt [:f] [:f]))))))
 
 
 
