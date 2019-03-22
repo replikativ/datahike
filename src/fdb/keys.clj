@@ -5,16 +5,18 @@
 
 (def buf-len 100)
 
-
+;; TODO: Could/Should? add a version number in the bytebuffer so that if we cope
+;; with changes.
 (defn position
   [index-type section-end]
   "Given an `index-type`, returns the position in the byte buffer where a given `section-end` is located. `index-type` and `section-end` are both keywords."
-  (cond
-    (= index-type :eavt) (section-end {:code 0 :e-end 8  :a-end 40 :v-end 80 :t-end 99})
-    (= index-type :aevt) (section-end {:code 0 :a-end 40 :e-end 48 :v-end 80 :t-end 99})
-    (= index-type :avet) (section-end {:code 0 :a-end 32 :v-end 72 :e-end 80 :t-end 99})))
+  (case index-type
+    :eavt (section-end {:code 0 :e-end 8 :a-end 40 :v-end 80 :t-end 99})
+    :aevt (section-end {:code 0 :a-end 40 :e-end 48 :v-end 80 :t-end 99})
+    :avet (section-end {:code 0 :a-end 32 :v-end 72 :e-end 80 :t-end 99})
+    (throw (IllegalArgumentException. (str "invalid index-type " index-type)))))
 
-(def index-type->code {:eavt 0 :aevt 1 :veat 2})
+(def index-type->code {:eavt 0 :aevt 1 :avet 2})
 
 
 (defn- str-size
@@ -112,10 +114,11 @@
   (assert (instance? clojure.lang.Keyword index-type))
   (let [buffer          (buf/allocate buf-len {:impl :nio :type :direct})
         index-type-code (index-type->code index-type)
-        [e a v]         (cond
-                          (= index-type :eavt) [p1 p2 p3]
-                          (= index-type :aevt) [p2 p1 p3]
-                          (= index-type :avet) [p3 p1 p2])]
+        [e a v]         (case index-type
+                          :eavt [p1 p2 p3]
+                          :aevt [p2 p1 p3]
+                          :avet [p3 p1 p2]
+                          (throw (IllegalArgumentException. (str "Unknow index type: " index-type))))]
     (when a (assert (instance? clojure.lang.Keyword a)))
     (assert (and (<= 0 index-type-code) (>= 2 index-type-code)))
     ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.
@@ -171,10 +174,11 @@
         v (read buffer (position index-type :v-end))
         t (first (buf/read buffer (buf/spec buf/int64)
                            {:offset (shift-left (position index-type :t-end) 7)}))]
-    (cond
-      (= index-type :eavt) [e a v t]
-      (= index-type :aevt) [a e v t]
-      (= index-type :avet) [a v e t])))
+    (case index-type
+      :eavt [e a v t]
+      :aevt [a e v t]
+      :avet [a v e t]
+      (throw (IllegalArgumentException. (str "invalid index-type " index-type))))))
 
 
 (defn key->vect
@@ -196,7 +200,7 @@
     (.get buffer x)))
 
 
-;; ---- Tests
+;; ---- Tests   ;; TODO: move into comments at the end
 ;;
 (assert (== (str-offset (str-size "hello") 17) 0))
 

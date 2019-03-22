@@ -49,11 +49,31 @@
   (assert-vec-conversion :aevt [:hello 20 (int 2356) 3])
 
   "biggest 'e' value"
-  (assert-vec-conversion :aevt [:hello 9223372036854775807 (long 234) 3]))
+  (assert-vec-conversion :aevt [:hello 9223372036854775807 (long 234) 3])
+  )
 
 
-;; ))
-;;   (testing "mixture of aevt and other type of indices"))
+;; --------- :avet indices
+(deftest aevt
+  "simple insert and retrieval"
+  (let [vect [:hello "some values" 20  3]]
+    (is (= vect (k/key->vect :avet (k/->byteArr :avet vect)))))
+
+  "basic vector conversion"
+  (assert-vec-conversion :avet [:hello "some analysis" 20 3])
+
+  "int value"
+  (assert-vec-conversion :avet [:hello (int 2356) 20 3])
+
+  "biggest 'e' value"
+  (assert-vec-conversion :avet [:hello (long 234) 9223372036854775807 3])
+  )
+
+
+(deftest illegal-argument
+  (is (thrown? IllegalArgumentException (k/->byteBuffer :vrt [:hello 9223372036854775807 (long 234) 3]))))
+
+
 
 ;;----- FDB integration -----
 
