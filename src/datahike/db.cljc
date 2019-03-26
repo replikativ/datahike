@@ -465,6 +465,12 @@
                   seq)]
      new)))
 
+(defn rslice
+  ([btset tree datom key create-datom])
+  ([btset tree datom key datom-to key-to create-datom]
+   ;;TODO: implement
+   ))
+
 (defn db-transient [db]
   (-> db
     (update :eavt transient)
@@ -511,127 +517,132 @@
   ISearch
   (-search [db pattern]
     (let [[e a v tx] pattern
-          eavt (.-eavt db)
-          aevt (.-aevt db)
-          avet (.-avet db)
-          eavt-durable (.-eavt-durable db)
-          aevt-durable (.-aevt-durable db)
-          avet-durable (.-avet-durable db)
-          create-eavt (fn [e a v tx] (datom e a v tx true))
-          create-aevt (fn [a e v tx] (datom e a v tx true))
-          create-avet (fn [a v e tx] (datom e a v tx true))
-          ]
-      (case-tree [e a (some? v) tx]
-                 [(slice eavt eavt-durable (datom e a v tx) [e a v tx] create-eavt)                   ;; e a v tx
-                  (slice eavt eavt-durable (datom e a v tx0) [e a v] create-eavt)               ;; e a v _
-                  (->> (slice eavt eavt-durable (datom e a nil tx0) [e a] create-eavt)      ;; e a _ tx
-              (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                  (slice eavt eavt-durable (datom e a nil tx0) [e a] create-eavt)           ;; e a _ _
-                  (->> (slice eavt eavt-durable (datom e nil nil tx0) [e] create-eavt)  ;; e _ v tx
-              (filter (fn [^Datom d] (and (= v (.-v d))
-                                          (= tx (datom-tx d))))))
-                  (->> (slice eavt eavt-durable (datom e nil nil tx0) [e] create-eavt)  ;; e _ v _
-              (filter (fn [^Datom d] (= v (.-v d)))))
-                  (->> (slice eavt eavt-durable (datom e nil nil tx0) [e] create-eavt)  ;; e _ _ tx
-              (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                  (slice eavt eavt-durable (datom e nil nil tx0) [e] create-eavt)       ;; e _ _ _
-         (if (indexing? db a)                                                   ;; _ a v tx
-           (->> (slice avet avet-durable (datom e0 a v tx0) [a v] create-avet)
-                (filter (fn [^Datom d] (= tx (datom-tx d)))))
-           (->> (slice aevt aevt-durable (datom e0 a nil tx0) [a] create-aevt)
-                (filter (fn [^Datom d] (and (= v (.-v d))
-                                            (= tx (datom-tx d)))))))
-         (if (indexing? db a)                                                   ;; _ a v _
-           (slice avet avet-durable (datom e0 a v tx0) [a v] create-avet)
-           (->> (slice aevt avet-durable (datom e0 a nil tx0) [a] create-aevt)
-                (filter (fn [^Datom d] (= v (.-v d))))))
-                  (->> (slice aevt aevt-durable (datom e0 a nil tx0) [a] create-aevt)  ;; _ a _ tx
+        eavt (.-eavt db)
+        aevt (.-aevt db)
+        avet (.-avet db)
+        eavt-durable (.-eavt-durable db)
+        aevt-durable (.-aevt-durable db)
+        avet-durable (.-avet-durable db)
+        create-eavt (fn [e a v tx] (datom e a v tx true))
+        create-aevt (fn [a e v tx] (datom e a v tx true))
+        create-avet (fn [a v e tx] (datom e a v tx true))
+        ]
+    (case-tree [e a (some? v) tx]
+               [(slice eavt eavt-durable (datom e a v tx) [e a v tx] create-eavt)                   ;; e a v tx
+                (slice eavt eavt-durable (datom e a v tx0) [e a v] create-eavt)               ;; e a v _
+                (->> (slice eavt eavt-durable (datom e a nil tx0) [e a] create-eavt)      ;; e a _ tx
+                     (filter (fn [^Datom d] (= tx (datom-tx d)))))
+                (slice eavt eavt-durable (datom e a nil tx0) [e a] create-eavt)           ;; e a _ _
+                (->> (slice eavt eavt-durable (datom e nil nil tx0) [e] create-eavt)  ;; e _ v tx
+                     (filter (fn [^Datom d] (and (= v (.-v d))
+                                                 (= tx (datom-tx d))))))
+                (->> (slice eavt eavt-durable (datom e nil nil tx0) [e] create-eavt)  ;; e _ v _
+                     (filter (fn [^Datom d] (= v (.-v d)))))
+                (->> (slice eavt eavt-durable (datom e nil nil tx0) [e] create-eavt)  ;; e _ _ tx
+                     (filter (fn [^Datom d] (= tx (datom-tx d)))))
+                (slice eavt eavt-durable (datom e nil nil tx0) [e] create-eavt)       ;; e _ _ _
+                (if (indexing? db a)                                                   ;; _ a v tx
+                  (->> (slice avet avet-durable (datom e0 a v tx0) [a v] create-avet)
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                  (slice aevt aevt-durable (datom e0 a nil tx0) [a] create-aevt)       ;; _ a _ _
-         (filter
-          (fn [^Datom d] (and (= v (.-v d))
-                              (= tx (datom-tx d))))
-          (map
-           #(apply create-eavt (first %))
-           (hc/lookup-fwd-iter eavt-durable [])))                ;; _ _ v tx
-         (filter
-          (fn [^Datom d] (= v (.-v d)))
-          (map
-           #(apply create-eavt (first %))
-           (hc/lookup-fwd-iter eavt-durable [])))            ;; _ _ v _
-         (filter
-          (fn [^Datom d] (= tx (datom-tx d)))
-          (map
-           #(apply create-eavt (first %))
-           (hc/lookup-fwd-iter eavt-durable [])))           ;; _ _ _ tx
-         (map
-          #(apply create-eavt (first %))
-          (hc/lookup-fwd-iter eavt-durable []))])))         ;; _ _ _ _
+                  (->> (slice aevt aevt-durable (datom e0 a nil tx0) [a] create-aevt)
+                       (filter (fn [^Datom d] (and (= v (.-v d))
+                                                   (= tx (datom-tx d)))))))
+                (if (indexing? db a)                                                   ;; _ a v _
+                  (slice avet avet-durable (datom e0 a v tx0) [a v] create-avet)
+                  (->> (slice aevt aevt-durable (datom e0 a nil tx0) [a] create-aevt)
+                       (filter (fn [^Datom d] (= v (.-v d))))))
+                (->> (slice aevt aevt-durable (datom e0 a nil tx0) [a] create-aevt)  ;; _ a _ tx
+                     (filter (fn [^Datom d] (= tx (datom-tx d)))))
+                (slice aevt aevt-durable (datom e0 a nil tx0) [a] create-aevt)       ;; _ a _ _
+                (filter
+                  (fn [^Datom d] (and (= v (.-v d))
+                                      (= tx (datom-tx d))))
+                  (map
+                    #(apply create-eavt (first %))
+                    (hc/lookup-fwd-iter eavt-durable [])))                ;; _ _ v tx
+                (filter
+                  (fn [^Datom d] (= v (.-v d)))
+                  (map
+                    #(apply create-eavt (first %))
+                    (hc/lookup-fwd-iter eavt-durable [])))            ;; _ _ v _
+                (filter
+                  (fn [^Datom d] (= tx (datom-tx d)))
+                  (map
+                    #(apply create-eavt (first %))
+                    (hc/lookup-fwd-iter eavt-durable [])))           ;; _ _ _ tx
+                (map
+                  #(apply create-eavt (first %))
+                  (hc/lookup-fwd-iter eavt-durable []))])))         ;; _ _ _ _
 
   IIndexAccess
   (-datoms [db index cs]
-           (let [^Datom pat (components->pattern db index cs e0 tx0)
-                 ^Datom pat-to (components->pattern db index cs emax txmax)
+           (let [^Datom from (components->pattern db index cs e0 tx0)
+                 ^Datom to (components->pattern db index cs emax txmax)
                  ^DB db db
                  [mem dur key key-to create-datom]
                  ({:eavt [(.-eavt db)
                           (.-eavt-durable db)
-                          [(.-e pat) (.-a pat) (.-v pat) (.-tx pat)]
-                          [(.-e pat-to) (.-a pat-to) (.-v pat-to) (.-tx pat-to)]
+                          [(.-e from) (.-a from) (.-v from) (.-tx from)]
+                          [(.-e to) (.-a to) (.-v to) (.-tx to)]
                           (fn [e a v t] (datom e a v t true))]
                    :aevt [(.-aevt db)
-                          (.-aevt-durable db)
-                          [(.-a pat) (.-e pat) (.-v pat) (.-tx pat)]
-                          [(.-a pat-to) (.-e pat-to) (.-v pat-to) (.-tx pat-to)]
+                               (.-aevt-durable db)
+                          [(.-a from) (.-e from) (.-v from) (.-tx from)]
+                          [(.-a to) (.-e to) (.-v to) (.-tx to)]
                           (fn [a e v t] (datom e a v t true))]
                    :avet [(.-avet db)
                           (.-avet-durable db)
-                          [(.-a pat) (.-v pat) (.-e pat) (.-tx pat)]
-                          [(.-a pat-to) (.-v pat-to) (.-e pat-to) (.-tx pat-to)]
+                          [(.-a from) (.-v from) (.-e from) (.-tx from)]
+                          [(.-a to) (.-v to) (.-e to) (.-tx to)]
                           (fn [a v e t] (datom e a v t true))]} index)]
-             (slice mem dur pat key pat-to key-to create-datom))
+             (slice mem dur from key to key-to create-datom))
     #_(set/slice (get db index) (components->pattern db index cs e0 tx0) (components->pattern db index cs emax txmax))) ;; TODO: figure out what happened here with rebase
 
   (-seek-datoms [db index cs]
-                (let [^Datom pat (components->pattern db index cs e0 tx0)
-                      ^Datom pat-to (datom emax nil nil txmax)
+                (let [^Datom from (components->pattern db index cs e0 tx0)
+                      ^Datom to (datom emax nil nil txmax)
                       ^DB db db
                       [mem dur key key-to create-datom]
                       ({:eavt [(.-eavt db)
                                (.-eavt-durable db)
-                               [(.-e pat) (.-a pat) (.-v pat) (.-tx pat)]
-                               [(.-e pat-to) (.-a pat-to) (.-v pat-to) (.-tx pat-to)]
+                               [(.-e from) (.-a from) (.-v from) (.-tx from)]
+                               [(.-e to) (.-a to) (.-v to) (.-tx to)]
                                (fn [e a v t] (datom e a v t true))]
                         :aevt [(.-aevt db)
                                (.-aevt-durable db)
-                               [(.-a pat) (.-e pat) (.-v pat) (.-tx pat)]
-                               [(.-a pat-to) (.-e pat-to) (.-v pat-to) (.-tx pat-to)]
+                               [(.-a from) (.-e from) (.-v from) (.-tx from)]
+                               [(.-a to) (.-e to) (.-v to) (.-tx to)]
                                (fn [a e v t] (datom e a v t true))]
                         :avet [(.-avet db)
                                (.-avet-durable db)
-                               [(.-a pat) (.-v pat) (.-e pat) (.-tx pat)]
-                               [(.-a pat-to) (.-v pat-to) (.-e pat-to) (.-tx pat-to)]
+                               [(.-a from) (.-v from) (.-e from) (.-tx from)]
+                               [(.-a to) (.-v to) (.-e to) (.-tx to)]
                                (fn [a v e t] (datom e a v t true))]} index)]
-                  (slice mem dur pat key pat-to key-to create-datom))
+                  (slice mem dur from key to key-to create-datom))
     #_(set/slice (get db index) (components->pattern db index cs e0 tx0) (datom emax nil nil txmax)));; TODO: figure out what happened here with rebase
 
   (-rseek-datoms [db index cs]
-                 (let [^Datom pat (components->pattern db index cs emax txmax)
+                 (let [^Datom from (components->pattern db index cs emax txmax)
+                      ^Datom to (datom e0 nil nil tx0)
                       ^DB db db
-                      [mem dur key create-datom]
+                      [mem dur key key-to create-datom]
                       ({:eavt [(.-eavt db)
                                (.-eavt-durable db)
-                               [(.-e pat) (.-a pat) (.-v pat) (.-tx pat)]
+                               [(.-e from) (.-a from) (.-v from) (.-tx from)]
+                               [(.-e to) (.-a to) (.-v to) (.-tx to)]
                                (fn [e a v t] (datom e a v t true))]
                         :aevt [(.-aevt db)
                                (.-aevt-durable db)
-                               [(.-a pat) (.-e pat) (.-v pat) (.-tx pat)]
+                               [(.-a from) (.-e from) (.-v from) (.-tx from)]
+                               [(.-a to) (.-e to) (.-v to) (.-tx to)]
                                (fn [a e v t] (datom e a v t true))]
                         :avet [(.-avet db)
                                (.-avet-durable db)
-                               [(.-a pat) (.-v pat) (.-e pat) (.-tx pat)]
+                               [(.-a from) (.-v from) (.-e from) (.-tx from)]
+                               [(.-a to) (.-v to) (.-e to) (.-tx to)]
                                (fn [a v e t] (datom e a v t true))]} index)]
-                   (slice mem dur pat key (datom e0 nil nil tx0) [nil nil nil nil] create-datom))
+                  (slice mem dur from key to key-to create-datom))
+
     #_(set/rslice (get db index) (components->pattern db index cs emax txmax) (datom e0 nil nil tx0))) ;; TODO: figure out what happened here with rebase
 
   (-index-range [db attr start end]

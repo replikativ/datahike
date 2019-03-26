@@ -11,14 +11,26 @@
 
   (d/create-database path)
 
-  (def conn (d/connect path))
+  (def conn (d/connect path) )
 
-  @(d/transact conn [{:db/id 1 :name "Alice"}
-                     {:db/id 2 :name "Bob"}
-                     {:db/id 3 :name "Charlie"}])
+  @(d/transact conn [ { :db/id 1, :name  "Ivan", :age   15 }
+                            { :db/id 2, :name  "Petr", :age   37 }
+                            { :db/id 3, :name  "Ivan", :age   37 }
+                     { :db/id 4, :age 15 }])
 
-  (d/q '[:find ?n :where [?e :name ?n]] @conn)
+  (def query '[:find ?e :where [?e :name "Ivan"]] )
 
-  (c/datoms (d/db conn) :eavt)
+
+  (c/q query @conn)
+
+  (dq/q query @conn)
+
+  (c/datoms @conn :eavt)
+
+  (c/seek-datoms @conn :eavt)
+
+  (c/rseek-datoms @conn :eavt)
+
+  (ddb/-search @conn [1 :name "Ivan"])
 
   )

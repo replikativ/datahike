@@ -6,7 +6,7 @@
     [datahike.db :as db]
     [datahike.test.core :as tdc]))
 
-(def ^:private test-schema
+(def test-schema
   {:aka    { :db/cardinality :db.cardinality/many }
    :child  { :db/cardinality :db.cardinality/many
              :db/valueType :db.type/ref }
@@ -60,7 +60,7 @@
      [16 :part 18]]
    (map #(apply d/datom %))))
 
-(def ^:private test-db (d/init-db test-datoms test-schema))
+(def test-db (d/init-db test-datoms test-schema))
 
 (deftest test-pull-attr-spec
   (is (= {:name "Petr" :aka ["Devil" "Tupen"]}
