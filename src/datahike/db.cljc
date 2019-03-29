@@ -465,12 +465,6 @@
                   seq)]
      new)))
 
-(defn rslice
-  ([btset tree datom key create-datom])
-  ([btset tree datom key datom-to key-to create-datom]
-   ;;TODO: implement
-   ))
-
 (defn db-transient [db]
   (-> db
     (update :eavt transient)
@@ -595,8 +589,7 @@
                           [(.-a from) (.-v from) (.-e from) (.-tx from)]
                           [(.-a to) (.-v to) (.-e to) (.-tx to)]
                           (fn [a v e t] (datom e a v t true))]} index)]
-             (slice mem dur from key to key-to create-datom))
-    #_(set/slice (get db index) (components->pattern db index cs e0 tx0) (components->pattern db index cs emax txmax))) ;; TODO: figure out what happened here with rebase
+             (slice mem dur from key to key-to create-datom)))
 
   (-seek-datoms [db index cs]
                 (let [^Datom from (components->pattern db index cs e0 tx0)
@@ -618,8 +611,7 @@
                                [(.-a from) (.-v from) (.-e from) (.-tx from)]
                                [(.-a to) (.-v to) (.-e to) (.-tx to)]
                                (fn [a v e t] (datom e a v t true))]} index)]
-                  (slice mem dur from key to key-to create-datom))
-    #_(set/slice (get db index) (components->pattern db index cs e0 tx0) (datom emax nil nil txmax)));; TODO: figure out what happened here with rebase
+                  (slice mem dur from key to key-to create-datom)))
 
   (-rseek-datoms [db index cs]
                  (let [^Datom from (components->pattern db index cs emax txmax)
@@ -641,9 +633,7 @@
                                [(.-a from) (.-v from) (.-e from) (.-tx from)]
                                [(.-a to) (.-v to) (.-e to) (.-tx to)]
                                (fn [a v e t] (datom e a v t true))]} index)]
-                  (slice mem dur from key to key-to create-datom))
-
-    #_(set/rslice (get db index) (components->pattern db index cs emax txmax) (datom e0 nil nil tx0))) ;; TODO: figure out what happened here with rebase
+                  (slice mem dur from key to key-to create-datom)))
 
   (-index-range [db attr start end]
     (when-not (indexing? db attr)
@@ -656,17 +646,14 @@
              (.-avet-durable db)
              from [(.-a from) (.-v from) (.-e from) (.-tx from)]
              to [(.-a to) (.-v to) (.-e to) (.-tx to)]
-             (fn [a v e t] (datom e a v t true))))
-    #_(set/slice (.-avet db)
-      (resolve-datom db nil attr start nil e0 tx0)
-      (resolve-datom db nil attr end nil emax txmax)))
+             (fn [a v e t] (datom e a v t true)))))
                 
   clojure.data/EqualityPartition
-  (equality-partition [x] :datahike/db) ;; TODO: check if necessary for durables
+  (equality-partition [x] :datahike/db)
 
   clojure.data/Diff
   (diff-similar [a b]
-    (diff-sorted (:eavt a) (:eavt b) cmp-datoms-eavt-quick))) ;; TODO: should also be handled with durables
+    (diff-sorted (:eavt a) (:eavt b) cmp-datoms-eavt-quick)))
 
 (defn db? [x]
   (and (satisfies? ISearch x)
@@ -804,13 +791,8 @@
        :max-tx  tx0
        :hash    (atom 0)})))
 
-#_(defn- init-max-eid [eavt]
-  (or (-> (set/rslice eavt (datom (dec tx0) nil nil txmax) (datom e0 nil nil tx0))
-        (first)
-        (:e))
-      e0))
-
 (defn init-max-eid [eavt eavt-durable]
+;; solved with reserse slice first in datascript
   (if-let [slice (slice
                   eavt
                   eavt-durable
@@ -1523,16 +1505,6 @@
        :else
        (raise "Bad entity type at " entity ", expected map or vector"
               {:error :transact/syntax, :tx-data entity})))))
-
-#_(defn transact-tx-data [{:as initial-report :keys [tx-meta]} initial-es]
-  (let [middleware (or
-                     (when (map? tx-meta)
-                       (::tx-middleware tx-meta))
-                     identity)]
-    ((middleware transact-tx-data*)
-     initial-report
-     initial-es)))
-
 
 (defn db->uuid [conn]
   (let [root (-> (<?? (k/get-in (:store conn) [:db]))
