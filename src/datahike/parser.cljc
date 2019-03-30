@@ -1,4 +1,4 @@
-(ns datahike.parser
+(ns ^:no-doc datahike.parser
   (:refer-clojure :exclude [distinct?])
   #?(:cljs (:require-macros [datahike.parser :refer [deftrecord]]))
   (:require
@@ -7,11 +7,7 @@
 
 ;; utils
 
-;; using defn instead of declare because of http://dev.clojure.org/jira/browse/CLJS-1871
-(defn- ^:declared collect-vars-acc [acc form])
-(defn ^:declared parse-clause [form])
-(defn ^:declared parse-clauses [clauses])
-(defn ^:declared parse-binding [form])
+(declare collect-vars-acc parse-clause parse-clauses parse-binding)
 
 (defprotocol ITraversable
   (-collect      [_ pred acc])
@@ -700,7 +696,7 @@
       (raise "Query for unknown vars: " (mapv :symbol unknown)
              {:error :parser/query, :vars unknown, :form form}))
     (when-not (empty? shared)
-      (raise ":in and :with should not use same variables: " (mapv :symbol shared)
+      (raise ":find and :with should not use same variables: " (mapv :symbol shared)
              {:error :parser/query, :vars shared, :form form})))
   
   (let [in-vars    (collect-vars (:qin q))

@@ -1,4 +1,4 @@
-(ns datahike.js
+(ns ^:no-doc datahike.js
   (:refer-clojure :exclude [filter])
   (:require
     [goog.object :as go]
@@ -18,19 +18,30 @@
        (reduce-kv
          (fn [m k v] (assoc m k (walk/postwalk keywordize v))) {})))
 
-(defn- ^:declared entities->clj [entities])
+(declare entities->clj)
+
+(defn- entity-map->clj [e]
+  (walk/postwalk
+    (fn [form]
+      (if (and (map? form) (contains? form ":db/id"))
+        (-> form
+            (dissoc ":db/id")
+            (assoc  :db/id (get form ":db/id")))
+        form))
+    e))
 
 (defn- entity->clj [e]
-  (cond (map? e)
-    (-> e
-      (dissoc ":db/id")
-      (assoc  :db/id (e ":db/id")))
+  (cond
+    (map? e)
+    (entity-map->clj e)
+
     (= (first e) ":db.fn/call")
-      (let [[_ f & args] e]
-        (concat [:db.fn/call (fn [& args] (entities->clj (apply f args)))] args))
+    (let [[_ f & args] e]
+      (concat [:db.fn/call (fn [& args] (entities->clj (apply f args)))] args))
+
     (sequential? e)
-      (let [[op & entity] e]
-        (concat [(keywordize op)] entity))))
+    (let [[op & entity] e]
+      (concat [(keywordize op)] entity))))
 
 (defn- entities->clj [entities]
   (->> (js->clj entities)
@@ -39,7 +50,7 @@
 (defn- tempids->js [tempids]
   (let [obj (js-obj)]
     (doseq [[k v] tempids]
-      (aset obj (str k) v))
+      (go/set obj (str k) v))
     obj))
 
 (defn- tx-report->js [report]
@@ -91,30 +102,21 @@
 (defn ^:export entity [db eid]
   (d/entity db (js->clj eid)))
 
-(defn ^:export ^:declared touch [e])
-(def  ^:export            touch d/touch)
-
-(defn ^:export ^:declared entity_db [entity])
-(def  ^:export            entity_db d/entity-db)
-
-(defn ^:export ^:declared filter [db pred])
-(def  ^:export            filter d/filter)
-
-(defn ^:export ^:declared is-filtered [x])
-(def  ^:export            is_filtered d/is-filtered)
+(def ^:export touch d/touch)
+(def ^:export entity_db d/entity-db)
+(def ^:export filter d/filter)
+(def ^:export is_filtered d/is-filtered)
 
 (defn ^:export create_conn [& [schema]]
   (d/create-conn (schema->clj schema)))
 
-(defn ^:export ^:declared conn-from-db [db])
-(def  ^:export            conn_from_db d/conn-from-db)
+(def ^:export conn_from_db d/conn-from-db)
 
 (defn ^:export conn_from_datoms
   ([datoms]        (conn_from_db (init_db datoms)))
   ([datoms schema] (conn_from_db (init_db datoms schema))))
 
-(defn ^:export db [conn]
-  @conn)
+(defn ^:export db [conn] @conn)
 
 (defn ^:export transact [conn entities & [tx-meta]]
   (let [entities (entities->clj entities)
@@ -137,11 +139,8 @@
       (callback report))
     db))
 
-(defn ^:export ^:declared listen ([conn callback]) ([conn key callback]))
-(def  ^:export            listen d/listen!)
-
-(defn ^:export ^:declared unlisten [conn key])
-(def  ^:export            unlisten d/unlisten!)
+(def ^:export listen d/listen!)
+(def ^:export unlisten d/unlisten!)
 
 (defn ^:export resolve_tempid [tempids tempid]
   (go/get tempids (str tempid)))
