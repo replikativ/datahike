@@ -1,0 +1,1 @@
+(ns datahike.index)
