@@ -7,13 +7,15 @@
     [datahike.db :as db]
     [datahike.test.core :as tdc]))
 
+(t/use-fixtures :once tdc/no-namespace-maps)
+
 #?(:cljs
    (def Throwable js/Error))
 
 (deftest test-components
-  (is (thrown-with-msg? Throwable #"Bad attribute specification for :profile"
+  (is (thrown-msg? "Bad attribute specification for :profile: {:db/isComponent true} should also have {:db/valueType :db.type/ref}"
         (d/empty-db {:profile {:db/isComponent true}})))
-  (is (thrown-with-msg? Throwable #"Bad attribute specification for [{]:profile [{]:db/isComponent \"aaa\"}}"
+  (is (thrown-msg? "Bad attribute specification for {:profile {:db/isComponent \"aaa\"}}, expected one of #{true false}"
         (d/empty-db {:profile {:db/isComponent "aaa" :db/valueType :db.type/ref}})))
   
   (let [db (d/db-with

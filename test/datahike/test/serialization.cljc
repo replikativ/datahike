@@ -9,10 +9,13 @@
     #?(:clj
       (:import [clojure.lang ExceptionInfo])))
 
+(t/use-fixtures :once tdc/no-namespace-maps)
+
 (def readers
   { #?@(:cljs ["cljs.reader/read-string"  cljs.reader/read-string]
         :clj  ["clojure.edn/read-string"  #(clojure.edn/read-string {:readers d/data-readers} %)
-               "clojure.core/read-string" read-string]) })
+               "clojure.core/read-string" #(binding [*data-readers* (merge *data-readers* d/data-readers)]
+                                             (read-string %))]) })
 
 (deftest test-pr-read
   (doseq [[r read-fn] readers]
@@ -38,21 +41,6 @@
                       "[2 :name \"Ivan\" 536870914]"
                     "]}")))
         (is (= db (read-fn (pr-str db))))))))
-
-#?(:clj
-  (deftest test-reader-literals
-    (is (= #datahike/Datom [1 :name "Oleg"]
-                    (db/datom 1 :name "Oleg")))
-    (is (= #datahike/Datom [1 :name "Oleg" 100 false]
-                    (db/datom 1 :name "Oleg" 100 false)))
-    ;; not supported because IRecord print method is hard-coded into Compiler
-    #_(is (= #datahike/DB {:schema {:name {:db/unique :db.unique/identity}}
-                           :datoms [[1 :name "Oleg" 100] [1 :age 14 100] [2 :name "Petr" 101]]}
-           (d/init-db 
-             [ (db/datom 1 :name "Oleg" 100)
-               (db/datom 1 :age 14 100)
-               (db/datom 2 :name "Petr" 101) ]
-             {:name {:db/unique :db.unique/identity}})))))
 
 
 (def data
@@ -93,10 +81,12 @@
 
 
 (deftest test-init-db
-  (let [db-init     (-> (map #(apply d/datom %) data)
-                        (d/init-db schema))
-        db-transact (->> (map (fn [[e a v]] [:db/add e a v]) data)
-                         (d/db-with (d/empty-db schema)))]
+  (let [db-init     (d/init-db
+                      (map (fn [[e a v]] (d/datom e a v)) data)
+                      schema)
+        db-transact (d/db-with
+                      (d/empty-db schema)
+                      (map (fn [[e a v]] [:db/add e a v]) data))]
     (testing "db-init produces the same result as regular transactions"
       (is (= db-init db-transact)))
 

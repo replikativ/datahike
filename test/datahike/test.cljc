@@ -2,15 +2,15 @@
   (:require
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
+    #?(:clj [clojure.java.shell :as sh])
     datahike.test.core
-
-    datahike.test.btset
     datahike.test.components
     datahike.test.conn
     datahike.test.db
     datahike.test.entity
     datahike.test.explode
     datahike.test.filter
+    datahike.test.ident
     datahike.test.index
     datahike.test.listen
     datahike.test.lookup-refs
@@ -27,6 +27,7 @@
     datahike.test.query-find-specs
     datahike.test.query-fns
     datahike.test.query-not
+    datahike.test.query-or
     datahike.test.query-pull
     datahike.test.query-rules
     datahike.test.query-v3
@@ -36,18 +37,15 @@
     datahike.test.upsert
     datahike.test.fdb))
 
-(defn ^:export test-most []
-  (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\.test\.(?!btset).*")))
+(defn ^:export test-clj []
+  (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\..*")))
 
-(defn ^:export test-btset []
-  (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\.test\.btset")))
-
-(defn ^:export test-all []
+(defn ^:export test-cljs []
   (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\..*")))
 
 #?(:clj
 (defn test-node [& args]
-  (let [res (apply clojure.java.shell/sh "node" "test_node.js" args)]
+  (let [res (apply sh/sh "node" "test_node.js" args)]
     (println (:out res))
     (binding [*out* *err*]
       (println (:err res)))

@@ -6,7 +6,7 @@
     [datahike.db :as db]
     [datahike.test.core :as tdc]))
 
-(def ^:private test-schema
+(def test-schema
   {:aka    { :db/cardinality :db.cardinality/many }
    :child  { :db/cardinality :db.cardinality/many
              :db/valueType :db.type/ref }
@@ -60,7 +60,7 @@
      [16 :part 18]]
    (map #(apply d/datom %))))
 
-(def ^:private test-db (d/init-db test-datoms test-schema))
+(def test-db (d/init-db test-datoms test-schema))
 
 (deftest test-pull-attr-spec
   (is (= {:name "Petr" :aka ["Devil" "Tupen"]}
@@ -162,7 +162,8 @@
       (is (= 1000 (->> (d/pull db '[:aka] 8) :aka count))))
 
     (testing "Explicit limit can reduce the default"
-      (is (= 500 (->> (d/pull db '[(limit :aka 500)] 8) :aka count))))
+      (is (= 500 (->> (d/pull db '[(limit :aka 500)] 8) :aka count)))
+      (is (= 500 (->> (d/pull db '[[:aka :limit 500]] 8) :aka count))))
 
     (testing "Explicit limit can increase the default"
       (is (= 1500 (->> (d/pull db '[(limit :aka 1500)] 8) :aka count))))
@@ -181,7 +182,17 @@
 
   (testing "A default can be used to replace nil results"
     (is (= {:foo "bar"}
-           (d/pull test-db '[(default :foo "bar")] 1)))))
+           (d/pull test-db '[(default :foo "bar")] 1)))
+    (is (= {:foo "bar"}
+           (d/pull test-db '[[:foo :default "bar"]] 1)))))
+
+(deftest test-pull-as
+  (is (= {"Name" "Petr", :alias ["Devil" "Tupen"]}
+         (d/pull test-db '[[:name :as "Name"] [:aka :as :alias]] 1))))
+
+(deftest test-pull-attr-with-opts
+  (is (= {"Name" "Nothing"}
+         (d/pull test-db '[[:x :as "Name" :default "Nothing"]] 1))))
 
 (deftest test-pull-map
   (testing "Single attrs yield a map"
