@@ -467,7 +467,7 @@ seq)
          ;; TODO: restore and fix for when testing init-db with 100k elems
          ;; it does not work
          ;; new (->> (sequence xf (map #(clojure.lang.MapEntry.
-         ;;                              (fdb.keys/key->vect %1) %1)
+         ;;                              (fdb.keys/key->vect :eavt %1) %1)
          ;;                            (fdb/get-range :eavt key key-to)))
          ;;          seq)
 ]
@@ -1160,12 +1160,23 @@ seq)
                                                               (.-v datom)
                                                               (.-tx datom)]
                                                            nil)))
+        true (update-in [:aevt-scalable] (fn [db]
+                                           (fdb/insert :aevt [(.-a datom)
+                                                              (.-e datom)
+                                                              (.-v datom)
+                                                              (.-tx datom)])))
         indexing? (update-in [:avet] set/conj datom cmp-datoms-avet-quick)
         indexing? (update-in [:avet-durable] #(<?? (hmsg/insert % [(.-a datom)
                                                                    (.-v datom)
                                                                    (.-e datom)
                                                                    (.-tx datom)]
                                                                 nil)))
+        indexing? (update-in [:avet-scalable] (fn [db]
+                                                (fdb/insert :avet [(.-a datom)
+                                                                   (.-v datom)
+                                                                   (.-e datom)
+                                                                   (.-tx datom)])))
+
         true      (advance-max-eid (.-e datom))
         true      (assoc :hash (atom 0)))
         ;; TODO: Anything todo in the 'removing' part here?

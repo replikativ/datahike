@@ -13,16 +13,16 @@
 (defn assert-vec-conversion
   [index-type vect]
   (let [buff       (k/->byteBuffer index-type vect)
-        buff->vect (k/byteBuffer->vect buff)
+        buff->vect (k/byteBuffer->vect index-type buff)
         ;; _          (prn buff->vect)
         ;; _          (prn vect)
         ]
-    (is (= buff->vect vect))))
+    (is (= vect buff->vect))))
 
-(deftest fdb-keys
+(deftest eavt
   "->byteArr and back"
   (let [vect [20 :hello "some analysis" 3]]
-    (is (= (k/key->vect (k/->byteArr :eavt vect)) vect)))
+    (is (= (k/key->vect :eavt (k/->byteArr :eavt vect)) vect)))
 
   "basic vector conversion"
   (assert-vec-conversion :eavt [20 :hello "some analysis" 3])
@@ -36,6 +36,45 @@
   "biggest 'e' value"
   (assert-vec-conversion :eavt [9223372036854775807 :hello (long 234) 3]))
 
+;; --------- :aevt indices
+(deftest aevt
+  "simple insert and retrieval"
+  (let [vect [:hello 20 "some data" 3]]
+    (is (= vect (k/key->vect :aevt (k/->byteArr :aevt vect)))))
+
+  "basic vector conversion"
+  (assert-vec-conversion :aevt [:hello 20 "some analysis" 3])
+
+  "int value"
+  (assert-vec-conversion :aevt [:hello 20 (int 2356) 3])
+
+  "biggest 'e' value"
+  (assert-vec-conversion :aevt [:hello 9223372036854775807 (long 234) 3])
+  )
+
+
+;; --------- :avet indices
+(deftest aevt
+  "simple insert and retrieval"
+  (let [vect [:hello "some values" 20  3]]
+    (is (= vect (k/key->vect :avet (k/->byteArr :avet vect)))))
+
+  "basic vector conversion"
+  (assert-vec-conversion :avet [:hello "some analysis" 20 3])
+
+  "int value"
+  (assert-vec-conversion :avet [:hello (int 2356) 20 3])
+
+  "biggest 'e' value"
+  (assert-vec-conversion :avet [:hello (long 234) 9223372036854775807 3])
+  )
+
+
+(deftest illegal-argument
+  (is (thrown? IllegalArgumentException (k/->byteBuffer :vrt [:hello 9223372036854775807 (long 234) 3]))))
+
+
+
 ;;----- FDB integration -----
 
 (deftest fdb-using-with-datom
@@ -47,27 +86,95 @@
     ;; get :e-end
     (is (== (nth (fdb/get (:eavt-scalable db) :eavt
                           [123 :likes "Hans" 0 true])
-                 (:e-end k/eavt))
+                 (k/position :eavt :e-end))
             123))
     (is (== (nth (fdb/get (:eavt-scalable db) :eavt
-                          [124 :likes "GG" 0 true]) (:e-end k/eavt))
+                          [124 :likes "GG" 0 true]) (k/position :eavt :e-end))
             124)))
 
-  "simple range"
-  (let [db (dh-db/empty-db)
-        _  (fdb/clear-all)
-        _  (-> (with-datom db (datom 123 :likes "Hans" 0 true))
-               (with-datom (datom 124 :likes "GG" 0 true))
-               (with-datom (datom 125 :likes "GG" 0 true))
-               (with-datom (datom 1 :likes "GG" 0 true))
-               (with-datom (datom 2 :likes "GG" 0 true))
-               (with-datom (datom 3 :likes "GG" 0 true)))]
-    (is (= 3
-           (count (fdb/get-range :eavt [123 :likes "Hans" 0 true]
-                                 [125 :likes "GG" 0 true]))))
-    (is (= 2 ;; Not 3 because [125] does not exist in the db.
-           (count (fdb/get-range :eavt [123]
-                                 [125])))))
+
+  (testing "simple range :eavt"
+    (let [db (dh-db/empty-db)
+          _  (fdb/clear-all)
+          _  (-> (with-datom db (datom 123 :likes "Hans" 0 true))
+                 (with-datom (datom 124 :likes "GG" 0 true))
+                 (with-datom (datom 125 :likes "GG" 0 true))
+                 (with-datom (datom 1 :likes "GG" 0 true))
+                 (with-datom (datom 2 :likes "GG" 0 true))
+                 (with-datom (datom 3 :likes "GG" 0 true))
+                 (with-datom (datom 3 :likes "HH" 0 true)))]
+      ;; :eavt
+      (is (= 3
+             (count (fdb/get-range :eavt
+                                   [123 :likes "Hans" 0 true]
+                                   [125 :likes "GG" 0 true]))))
+      (is (= 2 ;; Not 3 because [125] does not exist in the db.
+             (count (fdb/get-range :eavt [123] [125]))))
+      (is (= 0
+             (count (fdb/get-range :eavt [3] [3]))))
+      (is (= 1
+             (count (fdb/get-range :eavt
+                                   [3 :likes "HH" 0 true]
+                                   [3 :likes "HH" 0 true]))))))
+
+  (testing "simple range :aevt"
+    (let [db (dh-db/empty-db)
+          _  (fdb/clear-all)
+          _  (-> (with-datom db (datom 123 :a "Hans" 0 true))
+                 (with-datom (datom 124 :b "GG" 0 true))
+                 (with-datom (datom 125 :c "GG" 0 true))
+                 (with-datom (datom 1 :d "GG" 0 true))
+                 (with-datom (datom 2 :e "GG" 0 true))
+                 (with-datom (datom 3 :f "GG" 0 true))
+                 (with-datom (datom 4 :f "GG" 0 true)))]
+      ;; :aevt
+      (is (= 3
+             (count (fdb/get-range :aevt
+                                   [:a 123 "Hans" 0 true]
+                                   [:c 125 "GG" 0 true]))))
+      (is (= 3
+             (count (fdb/get-range :aevt
+                                   [:a 123 "Hans" 0 true]
+                                   [:c 9999999 "GG" 0 true]))))
+      (is (= 2
+           (count (fdb/get-range :aevt
+                                 [:a 123 "Hans" 0 true]
+                                 [:c 0 "GG" 0 true]))))
+      (is (= 3
+             (count (fdb/get-range :aevt [:e] [:g]))))
+      (is (= 0
+             (count (fdb/get-range :aevt [:f] [:f]))))))
+
+
+  #_(testing "simple range :avet"
+    (let [db (dh-db/empty-db)
+          _  (fdb/clear-all)
+          _  (-> (with-datom db (datom 123 :a "Hans" 0 true))
+                 (with-datom (datom 124 :b "GG" 0 true))
+                 (with-datom (datom 125 :c "GG" 0 true))
+                 (with-datom (datom 1 :d "GG" 0 true))
+                 (with-datom (datom 2 :e "GG" 0 true))
+                 (with-datom (datom 3 :f "GG" 0 true))
+                 (with-datom (datom 4 :f "GG" 0 true)))]
+      ;; :aevt
+      (is (= 3
+             (count (fdb/get-range :avet
+                                   [:a "Hans" 123  0 true]
+                                   [:c "GG" 125  0 true]))))
+      (is (= 3
+             (count (fdb/get-range :avet
+                                   [:a "Hans" 123 0 true]
+                                   [:c "GG" 9999999 0 true]))))
+      (is (= 2
+             (count (fdb/get-range :avet
+                                   [:a "Hans" 123 0 true]
+                                   [:c "GG" 0  0 true]))))
+      #_(is (= 3
+             (count (fdb/get-range :avet [:e] [:g]))))
+      #_(is (= 0
+             (count (fdb/get-range :avet [:f] [:f]))))))
+
+
 
   "large range"
   (let [db (dh-db/empty-db)
@@ -166,16 +273,6 @@
   ;; TODO: test that what's inserted in fdb through init-db above is really inside fdb
   )
 
-
-
-;; --------- :aevt indices
-(deftest aevt
-  (testing "simple insert and retrieval"
-    ((let [ ]
-       )
-
-))
-  (testing "mixture of aevt and other type of indices"))
 
 
 ;; ------------------------ PERFOMANCE Testing -------------------------
