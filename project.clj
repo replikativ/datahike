@@ -5,8 +5,8 @@
 
   :url "https://github.com/tonsky/datahike"
 
-                 ;; TODO: moving clojure from 1.7.0 to 1.9.0 might be a no no.
-                 ;; It is clj-fdb who needs 1.9.0 so might mean we will have to get rid of it.
+  ;; TODO: moving clojure from 1.7.0 to 1.9.0 might be a no no.
+  ;; It is clj-fdb who needs 1.9.0 so might mean we will have to get rid of it.
   :dependencies [[org.clojure/clojure       "1.10.0"   :scope "provided"]
                  [org.clojure/clojurescript "1.10.516" :scope "provided"]
                  [persistent-sorted-set     "0.1.1"]
