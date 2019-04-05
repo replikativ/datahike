@@ -15,7 +15,7 @@
                  [io.replikativ/konserve-leveldb "0.1.2"]
                  [com.apple.foundationdb/fdb-java "5.1.7"]
                  [byte-streams "0.2.3"]
-                 [funcool/octet "1.1.1"]]
+                 [funcool/octet "1.1.2"]]
 
   :plugins [
     [lein-cljsbuild "1.1.7"]
