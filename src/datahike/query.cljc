@@ -4,7 +4,8 @@
    [clojure.set :as set]
    [clojure.string :as str]
    [clojure.walk :as walk]
-   [datahike.db :as db #?(:cljs :refer-macros :clj :refer) [raise]]
+   [datahike.db :as db]
+   [datahike.tools :as dt #?(:cljs :refer-macros :clj :refer) [raise]]
    [me.tonsky.persistent-sorted-set.arrays :as da]
    [datahike.lru]
    [datahike.impl.entity :as de]
@@ -298,7 +299,7 @@
   BindColl
   (in->rel [binding coll]
     (cond
-      (not (db/seqable? coll))
+      (not (dt/seqable? coll))
         (raise "Cannot bind value " coll " to collection " (dp/source binding)
                {:error :query/binding, :value coll, :binding (dp/source binding)})
       (empty? coll)
@@ -311,7 +312,7 @@
   BindTuple
   (in->rel [binding coll]
     (cond
-      (not (db/seqable? coll))
+      (not (dt/seqable? coll))
         (raise "Cannot bind value " coll " to tuple " (dp/source binding)
                {:error :query/binding, :value coll, :binding (dp/source binding)})
       (< (count coll) (count (:bindings binding)))

@@ -206,16 +206,25 @@ project before exporting.
 ## Roadmap
 
 ### 0.2.0
-
 - cleanup interface to hitchhiker-tree
-- optionally use core.async to handle storage IO
-- ClojureScript support both in the browser and on node
-- conceptualize schema upgrades
-- fast redis backend support
-- explore support for other index structures, e.g. FoundationDB
+- provide support for other index structures
+- basic schema integration
 
 ### 0.3.0
+- temporal index 
+- clojure.spec for api functions
+- conceptualize schema upgrades
 
+### 0.4.0
+- remote http support
+- access control
+
+### 0.5.0
+- optionally use core.async to handle storage IO
+- ClojureScript support both in the browser and on node
+- fast redis backend support
+
+### 0.5.0
 - support GC or eager deletion of fragments
 - use hitchhiker-tree synchronization for replication
 - run comprehensive query suite and compare to datascript and Datomic

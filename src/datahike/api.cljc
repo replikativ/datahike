@@ -10,8 +10,10 @@
             [konserve.cache :as kc]
             [konserve.memory :as mem]
             [superv.async :refer [<?? S]]
-            [clojure.core.cache :as cache])
-  (:import [java.net URI]))
+            [clojure.core.cache :as cache]
+            [datahike.index :as di])
+  (:import [java.net URI]
+           [datahike.index HitchhikerTree]))
 
 (def memory (atom {}))
 
@@ -38,7 +40,7 @@
                   (<?? S (kl/new-leveldb-store path)))
                (atom (cache/lru-cache-factory {} :threshold 1000))))
         stored-db (<?? S (k/get-in store [:db]))
-        ;_ (prn stored-db)
+        _ (prn stored-db)
         _ (when-not stored-db
             (case proto
               "level"
@@ -48,15 +50,16 @@
                                                   :uri uri})))
         {:keys [eavt-key aevt-key avet-key schema rschema]} stored-db
         empty (db/empty-db)
-        eavt-durable eavt-key]
-    ;(prn eavt-durable)
+        eavt (di/hitchhiker-tree eavt-key :eavt)
+        aevt (di/hitchhiker-tree aevt-key :aevt)
+        avet (di/hitchhiker-tree avet-key :avet)]
     (d/conn-from-db
      (assoc empty
             :schema schema
-            :max-eid (db/init-max-eid (:eavt empty) eavt-durable)
-            :eavt-durable eavt-durable
-            :aevt-durable aevt-key
-            :avet-durable avet-key
+            :max-eid (db/init-max-eid eavt)
+            :eavt eavt
+            :aevt aevt
+            :avet avet
             :rschema rschema
             :store store
             :uri uri))))
@@ -82,13 +85,16 @@
         _ (when stored-db
             (throw (ex-info "DB already exist." {:type :db-already-exists
                                                  :uri uri})))
-        {:keys [eavt-durable aevt-durable avet-durable rschema] :as new-db} (db/empty-db schema)
-        backend (kons/->KonserveBackend store)]
+        {:keys [eavt aevt avet rschema]} (db/empty-db schema)
+        backend (kons/->KonserveBackend store)
+        eavt-key (di/-coll eavt)
+        aevt-key (di/-coll aevt)
+        avet-key (di/-coll avet)]
     (<?? S (k/assoc-in store [:db]
                         {:schema schema
-                         :eavt-key (:tree (hc/<?? (hc/flush-tree-without-root eavt-durable backend)))
-                         :aevt-key (:tree (hc/<?? (hc/flush-tree-without-root aevt-durable backend)))
-                         :avet-key (:tree (hc/<?? (hc/flush-tree-without-root avet-durable backend)))
+                         :eavt-key (:tree (hc/<?? (hc/flush-tree-without-root eavt-key backend)))
+                         :aevt-key (:tree (hc/<?? (hc/flush-tree-without-root aevt-key backend)))
+                         :avet-key (:tree (hc/<?? (hc/flush-tree-without-root avet-key backend)))
                          :rschema rschema}))
     (case proto
       "level"
@@ -114,22 +120,22 @@
   (future
     (locking connection
       (let [{:keys [db-after] :as tx-report} @(d/transact connection tx-data)
-            {:keys [eavt-durable aevt-durable avet-durable schema rschema]} db-after
+            {:keys [ eavt  aevt avet schema rschema]} db-after
             store (:store @connection)
             backend (kons/->KonserveBackend store)
-            eavt-flushed (:tree (hc/<?? (hc/flush-tree-without-root eavt-durable backend)))
-            aevt-flushed (:tree (hc/<?? (hc/flush-tree-without-root aevt-durable backend)))
-            avet-flushed (:tree (hc/<?? (hc/flush-tree-without-root avet-durable backend)))]
+            eavt-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-coll eavt) backend)))
+            aevt-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-coll aevt) backend)))
+            avet-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-coll avet) backend)))]
         (<?? S (k/assoc-in store [:db]
                            {:schema schema
                             :rschema rschema
                             :eavt-key eavt-flushed
                             :aevt-key aevt-flushed
                             :avet-key avet-flushed}))
-        (reset! connection (assoc db-after
-                                  :eavt-durable eavt-flushed
-                                  :aevt-durable aevt-flushed
-                                  :avet-durable avet-flushed))
+        (di/-update-coll! eavt (fn [_] eavt-flushed))
+        (di/-update-coll! aevt (fn [_] aevt-flushed))
+        (di/-update-coll! avet (fn [_] avet-flushed))
+        (reset! connection db-after)
         tx-report))))
 
 

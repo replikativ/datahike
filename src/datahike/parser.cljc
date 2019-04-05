@@ -1,9 +1,9 @@
 (ns ^:no-doc datahike.parser
   (:refer-clojure :exclude [distinct?])
   #?(:cljs (:require-macros [datahike.parser :refer [deftrecord]]))
-  (:require
-    [clojure.set :as set]
-    [datahike.db :as db #?(:cljs :refer-macros :clj :refer) [raise]]))
+  (:require [clojure.set :as set]
+            [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise] :as dt]
+            [datahike.db :as db]))
 
 ;; utils
 
@@ -53,7 +53,7 @@
     (cond
       (pred form)                    (conj acc form)
       (satisfies? ITraversable form) (-collect form pred acc)
-      (db/seqable? form)             (reduce (fn [acc form] (collect pred form acc)) acc form)
+      (dt/seqable? form)             (reduce (fn [acc form] (collect pred form acc)) acc form)
       :else                          acc)))
 
 (defn distinct? [coll]

@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.pull-parser
   (:require
-   [datahike.db :as db #?(:cljs :refer-macros :clj :refer) [raise]]))
+   [datahike.db :as db]
+   [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]))
 
 (defrecord PullSpec [wildcard? attrs])
 

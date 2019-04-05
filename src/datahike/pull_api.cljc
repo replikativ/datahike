@@ -4,7 +4,7 @@
     [datahike.pull-parser :as dpp #?@(:cljs [:refer [PullSpec]])])
     #?(:clj
       (:import
-        [datahike.db Datom]
+        [datahike.datom Datom]
         [datahike.pull_parser PullSpec])))
 
 (defn- into!

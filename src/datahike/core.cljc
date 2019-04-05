@@ -4,7 +4,9 @@
     [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
     [datahike.pull-api :as dp]
     [datahike.query :as dq]
-    [datahike.impl.entity :as de])
+    [datahike.constants :as dc]
+    [datahike.impl.entity :as de]
+    [datahike.datom :as dd])
   #?(:clj
     (:import
       [datahike.db FilteredDB]
@@ -12,7 +14,7 @@
       [java.util UUID])))
 
 
-(def ^:const ^:no-doc tx0 db/tx0)
+(def ^:const ^:no-doc tx0 dc/tx0)
 
 
 ; Entities
@@ -172,12 +174,12 @@
              Optionally with transaction id (number) and `added` flag (`true` for addition, `false` for retraction).
 
              See also [[init-db]]."}
-  datom db/datom)
+  datom dd/datom)
 
 
 (def ^{:arglists '([x])
        :doc "Returns `true` if the given value is a datom, `false` otherwise."}
-  datom? db/datom?)
+  datom? dd/datom?)
 
 
 (def ^{:arglists '([datoms] [datoms schema])

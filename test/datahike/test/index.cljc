@@ -2,11 +2,20 @@
   (:require
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [datahike.core :as d]
-    [datahike.db :as db]
-    [datahike.test.core :as tdc]))
+    [datahike.datom :refer [datom]]
+    [datahike.constants :refer [e0 tx0 emax txmax]]
+    [datahike.index :as di]))
 
-(deftest test-datoms
+(deftest test-from-datom
+  (testing "core cases"
+    (is (= (di/from-datom (datom 1 :a "v" 500)) [1 :a "v" 500]))
+    (is (= (di/from-datom (datom 1 :a "v" tx0)) [1 :a "v"]))
+    (is (= (di/from-datom (datom 1 :a nil tx0)) [1 :a]))
+    (is (= (di/from-datom (datom 1 nil nil tx0)) [1]))
+    (is (= (di/from-datom (datom e0 :a nil tx0)) [:a]))
+    (is (= (di/from-datom (datom e0 :a "v" tx0)) [:a "v"]))))
+
+#_(deftest test-datoms
   (let [dvec #(vector (:e %) (:a %) (:v %))
         db (-> (d/empty-db {:age {:db/index true}})
                (d/db-with [ [:db/add 1 :name "Petr"]
@@ -50,7 +59,7 @@
                [1 :age 44] ]
              (map dvec (d/datoms db :avet :age)))))))
 
-(deftest test-seek-datoms
+#_(deftest test-seek-datoms
   (let [dvec #(vector (:e %) (:a %) (:v %))
         db (-> (d/empty-db { :name { :db/index true }
                              :age  { :db/index true } })
@@ -109,7 +118,7 @@
              [ [2 :age 25]
                [3 :age 11]])))))
 
-(deftest test-index-range
+#_(deftest test-index-range
   (let [dvec #(vector (:e %) (:a %) (:v %))
         db    (d/db-with
                 (d/empty-db { :name { :db/index true}
