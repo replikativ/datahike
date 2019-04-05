@@ -80,66 +80,65 @@
 (deftest fdb-using-with-datom
   "get"
   (let [db                          (dh-db/empty-db)
-        {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 :likes "Hans" 0 true))
-                                        (with-datom (datom 124 :likes "GG" 0 true)))]
+        {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 :likes "Hans" 1 true))
+                                        (with-datom (datom 124 :likes "GG" 1 true)))]
 
     ;; get :e-end
     (is (== (nth (fdb/get (:eavt-scalable db) :eavt
-                          [123 :likes "Hans" 0 true])
+                          [123 :likes "Hans" 1 true])
                  (k/position :eavt :e-end))
             123))
     (is (== (nth (fdb/get (:eavt-scalable db) :eavt
-                          [124 :likes "GG" 0 true]) (k/position :eavt :e-end))
+                          [124 :likes "GG" 1 true]) (k/position :eavt :e-end))
             124)))
-
 
   (testing "simple range :eavt"
     (let [db (dh-db/empty-db)
           _  (fdb/clear-all)
-          _  (-> (with-datom db (datom 123 :likes "Hans" 0 true))
-                 (with-datom (datom 124 :likes "GG" 0 true))
-                 (with-datom (datom 125 :likes "GG" 0 true))
-                 (with-datom (datom 1 :likes "GG" 0 true))
-                 (with-datom (datom 2 :likes "GG" 0 true))
-                 (with-datom (datom 3 :likes "GG" 0 true))
-                 (with-datom (datom 3 :likes "HH" 0 true)))]
+          _  (-> (with-datom db (datom 123 :likes "Hans" 1 true))
+                 (with-datom (datom 124 :likes "GG" 1 true))
+                 (with-datom (datom 125 :likes "GG" 1 true))
+                 (with-datom (datom 1 :likes "GG" 1 true))
+                 (with-datom (datom 2 :likes "GG" 1 true))
+                 (with-datom (datom 3 :likes "GG" 1 true))
+                 (with-datom (datom 3 :likes "HH" 1 true)))]
       ;; :eavt
       (is (= 3
              (count (fdb/get-range :eavt
-                                   [123 :likes "Hans" 0 true]
-                                   [125 :likes "GG" 0 true]))))
+                                   [123 :likes "Hans" 1 true]
+                                   [125 :likes "GG" 1 true]))))
       (is (= 2 ;; Not 3 because [125] does not exist in the db.
              (count (fdb/get-range :eavt [123] [125]))))
       (is (= 0
              (count (fdb/get-range :eavt [3] [3]))))
       (is (= 1
              (count (fdb/get-range :eavt
-                                   [3 :likes "HH" 0 true]
-                                   [3 :likes "HH" 0 true]))))))
+                                   [3 :likes "HH" 1 true]
+                                   [3 :likes "HH" 1 true]))))))
 
   (testing "simple range :aevt"
     (let [db (dh-db/empty-db)
           _  (fdb/clear-all)
-          _  (-> (with-datom db (datom 123 :a "Hans" 0 true))
-                 (with-datom (datom 124 :b "GG" 0 true))
-                 (with-datom (datom 125 :c "GG" 0 true))
-                 (with-datom (datom 1 :d "GG" 0 true))
-                 (with-datom (datom 2 :e "GG" 0 true))
-                 (with-datom (datom 3 :f "GG" 0 true))
-                 (with-datom (datom 4 :f "GG" 0 true)))]
+          _  (-> (with-datom db (datom 123 :a "Hans" 1 true))
+                 (with-datom (datom 124 :b "GG" 1 true))
+                 (with-datom (datom 125 :c "GG" 1 true))
+                 (with-datom (datom 1 :d "GG" 1 true))
+                 (with-datom (datom 2 :e "GG" 1 true))
+                 (with-datom (datom 3 :f "GG" 1 true))
+                 (with-datom (datom 4 :f "GG" 1 true)))]
       ;; :aevt
       (is (= 3
              (count (fdb/get-range :aevt
-                                   [:a 123 "Hans" 0 true]
-                                   [:c 125 "GG" 0 true]))))
+                                   [:a 123 "Hans" 1 true]
+                                   [:c 125 "GG" 1 true]))))
       (is (= 3
              (count (fdb/get-range :aevt
-                                   [:a 123 "Hans" 0 true]
-                                   [:c 9999999 "GG" 0 true]))))
+                                   [:a 123 "Hans" 1 true]
+                                   [:c 9999999 "GG" 1 true]))))
       (is (= 2
            (count (fdb/get-range :aevt
-                                 [:a 123 "Hans" 0 true]
-                                 [:c 0 "GG" 0 true]))))
+                                 [:a 123 "Hans" 1 true]
+                                 [:c 0 "GG" 1 true]))))
       (is (= 3
              (count (fdb/get-range :aevt [:e] [:g]))))
       (is (= 0
@@ -149,26 +148,26 @@
   #_(testing "simple range :avet"
     (let [db (dh-db/empty-db)
           _  (fdb/clear-all)
-          _  (-> (with-datom db (datom 123 :a "Hans" 0 true))
-                 (with-datom (datom 124 :b "GG" 0 true))
-                 (with-datom (datom 125 :c "GG" 0 true))
-                 (with-datom (datom 1 :d "GG" 0 true))
-                 (with-datom (datom 2 :e "GG" 0 true))
-                 (with-datom (datom 3 :f "GG" 0 true))
-                 (with-datom (datom 4 :f "GG" 0 true)))]
+          _  (-> (with-datom db (datom 123 :a "Hans" 1 true))
+                 (with-datom (datom 124 :b "GG" 1 true))
+                 (with-datom (datom 125 :c "GG" 1 true))
+                 (with-datom (datom 1 :d "GG" 1 true))
+                 (with-datom (datom 2 :e "GG" 1 true))
+                 (with-datom (datom 3 :f "GG" 1 true))
+                 (with-datom (datom 4 :f "GG" 1 true)))]
       ;; :aevt
       (is (= 3
              (count (fdb/get-range :avet
-                                   [:a "Hans" 123  0 true]
-                                   [:c "GG" 125  0 true]))))
+                                   [:a "Hans" 123  1 true]
+                                   [:c "GG" 125  1 true]))))
       (is (= 3
              (count (fdb/get-range :avet
-                                   [:a "Hans" 123 0 true]
-                                   [:c "GG" 9999999 0 true]))))
+                                   [:a "Hans" 123 1 true]
+                                   [:c "GG" 9999999 1 true]))))
       (is (= 2
              (count (fdb/get-range :avet
-                                   [:a "Hans" 123 0 true]
-                                   [:c "GG" 0  0 true]))))
+                                   [:a "Hans" 123 1 true]
+                                   [:c "GG" 0  1 true]))))
       #_(is (= 3
              (count (fdb/get-range :avet [:e] [:g]))))
       #_(is (= 0
@@ -179,10 +178,10 @@
   "large range"
   (let [db (dh-db/empty-db)
         _  (fdb/clear-all)
-        _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 0 true)) db (range 100))]
+        _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 1 true)) db (range 100))]
     (is (= 51
-           (count (fdb/get-range :eavt [1 :likes "Hans" 0 true]
-                                 [51 :likes "Hans" 0 true])))))
+           (count (fdb/get-range :eavt [1 :likes "Hans" 1 true]
+                                 [51 :likes "Hans" 1 true])))))
 
   "large range"
   ;; TODO: if we don't clear the fdb db then there are weird things:
@@ -191,15 +190,15 @@
   ;; times and appears multiple times?
   (let [db (dh-db/empty-db)
         ;;        _  (fdb/clear-all)
-        _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 0 true)) db (range 10))]
+        _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 1 true)) db (range 10))]
     (is (= 3
-           (count (fdb/get-range :eavt [1 :likes "Hans" 0 true]
-                                 [3 :likes "Hans" 0 true])))))
+           (count (fdb/get-range :eavt [1 :likes "Hans" 1 true]
+                                 [3 :likes "Hans" 1 true])))))
 
   "iterate-from"
   (let [db         (dh-db/empty-db)
-        datom-1    (datom 123 :likes "Hans" 0 true)
-        datom-2    (datom 124 :likes "GG" 0 true)
+        datom-1    (datom 123 :likes "Hans" 1 true)
+        datom-2    (datom 124 :likes "GG" 1 true)
         datoms     (-> (with-datom db datom-1)
                        (with-datom datom-2))
         index-type :eavt
@@ -227,17 +226,17 @@
   "slice-simple"
   (let [db                          (dh-db/empty-db)
         _                           (fdb/clear-all)
-        datom-1                     (datom 123 :likes "Hans" 0 true)
-        datom-2                     (datom 124 :likes "Hans" 0 true)
-        datom-3                     (datom 125 :likes "Hans" 0 true)
+        datom-1                     (datom 123 :likes "Hans" 1 true)
+        datom-2                     (datom 124 :likes "Hans" 1 true)
+        datom-3                     (datom 125 :likes "Hans" 1 true)
         {:keys [eavt eavt-durable]} (-> (with-datom db datom-1)
                                         (with-datom datom-2))
         create-eavt                 (fn [e a v tx] (datom e a v tx true))]
     (is (= datom-1
-           (first (slice eavt eavt-durable (datom 123 nil nil nil nil) [123]
-                         (datom 124 nil nil nil nil)  [124] create-eavt))))
+           (first (slice eavt eavt-durable (datom 123 nil nil 1 nil) [123]
+                         (datom 124 nil nil 1 nil)  [124] create-eavt))))
     (is (= datom-2
-           (first (slice eavt eavt-durable (datom 124 nil nil nil nil) [124]
+           (first (slice eavt eavt-durable (datom 124 nil nil 1 nil) [124]
                          create-eavt))))
     (is (= [datom-1 datom-2]
            (vec (slice eavt eavt-durable nil [123]
@@ -250,12 +249,12 @@
   (let [db                          (dh-db/empty-db)
         _                           (fdb/clear-all)
         {:keys [eavt eavt-durable]} (reduce #(with-datom %1
-                                               (datom %2 :likes "Hans" 0 true))
+                                               (datom %2 :likes "Hans" 1 true))
                                             db
                                             (range 100))
         create-eavt                 (fn [e a v tx] (datom e a v tx true))
-        sliced                      (slice eavt eavt-durable (datom 50 nil nil nil nil)
-                                           [50 :likes] (datom 60 nil nil nil nil) [60]
+        sliced                      (slice eavt eavt-durable (datom 50 nil nil 1 nil)
+                                           [50 :likes] (datom 60 nil nil 1 nil) [60]
                                            create-eavt)]
     (is (= 11 ;; TODO: check but fdb.getrange and our slice does not seem to have the same behaviour. Why is it 2 here:     (is (= 2 ;; Not 3 because [125] does not exist in the db.
            ;; (count (fdb/get-range :eavt [123]
