@@ -13,9 +13,12 @@
 
   (def conn (d/connect path) )
 
-  @(d/transact conn [{ :db/id 1, :name  "Ivan" }])
+  @(d/transact conn [{ :db/id 1, :name  "Alice" :age 30 }
+                     { :db/id 2, :name  "Bob" :age 35}
+                     { :db/id 3 :name "Charlie" :age 40}
+                     ])
 
-  (def query '[:find ?e ?tx :where [?e :name "Wanja" ?tx]] )
+  (def query '[:find ?e ?n ?tx :where [?e :name ?n ?tx]] )
 
   (c/q query @conn)
 

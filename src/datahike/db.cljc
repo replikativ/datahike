@@ -149,17 +149,17 @@
                                               (hc/lookup-fwd-iter eavt []))]))) ;; _ _ _ _
 
                      IIndexAccess
-                     (-datoms [db index cs]
-                              (let [index (get db index)]
-                                (-slice index (components->pattern db index cs e0 tx0) (components->pattern db index cs emax txmax))))
+                     (-datoms [db index-type cs]
+                              (let [index (get db index-type)]
+                                (-slice index (components->pattern db index-type cs e0 tx0) (components->pattern db index-type cs emax txmax))))
 
-                     (-seek-datoms [db index cs]
-                                   (let [index (get db index)]
-                                     (-slice index (components->pattern db index cs e0 tx0) (datom emax nil nil txmax))))
+                     (-seek-datoms [db index-type cs]
+                                   (let [index (get db index-type)]
+                                     (-slice index (components->pattern db index-type cs e0 tx0) (datom emax nil nil txmax))))
 
-                     (-rseek-datoms [db index cs]
-                                    (let [index (get db index)]
-                                      (-slice index (components->pattern db index cs emax txmax) (datom e0 nil nil tx0))))
+                     (-rseek-datoms [db index-type cs]
+                                    (let [index (get db index-type)]
+                                      (-slice index (components->pattern db index-type cs emax txmax) (datom e0 nil nil tx0))))
 
                      (-index-range [db attr start end]
                                    (when-not (indexing? db attr)

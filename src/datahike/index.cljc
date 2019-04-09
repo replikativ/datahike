@@ -10,7 +10,9 @@
 (defprotocol IIndex
   (-coll [index])
   (-slice [index from to] [index from])
-  (-update-coll! [index coll]))
+  (-update-coll! [index coll])
+  (-set-transient [index])
+  (-set-persistent! [index]))
 
 (defn from-datom [^Datom datom]
   (let [datom-seq (list (.-e datom) (.-a datom) (.-v datom) (.-tx datom))]
@@ -61,7 +63,9 @@
   (-slice [index from to]
     (hitchhiker-slice tree (from-datom from) (from-datom to) create-datom))
   (-update-coll! [index update-fn]
-    (set! tree (update-fn tree))))
+    (set! tree (update-fn tree)))
+  (-set-transient [index])
+  (-set-persistent! [index]))
 
 (defn hitchhiker-tree [tree index-type]
   (let [create-datom (case index-type
