@@ -50,3 +50,8 @@
     (binding [*out* *err*]
       (println (:err res)))
     (System/exit (:exit res)))))
+
+(comment
+  (t/run-all-tests #"datahike\..*")
+
+  )

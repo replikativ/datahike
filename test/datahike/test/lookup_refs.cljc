@@ -153,16 +153,16 @@
        :eavt [[:name "Ivan"] :friends [:name "Petr"]]
        [[1 :friends 2]]
        
-       :aevt [:friends [:name "Ivan"]]
+       :aevt [:friends nil [:name "Ivan"]]
        [[1 :friends 2] [1 :friends 3]]
           
-       :aevt [:friends [:name "Ivan"] [:name "Petr"]]
+       :aevt [:friends nil [:name "Ivan"] [:name "Petr"]]
        [[1 :friends 2]]
        
        :avet [:friends [:name "Oleg"]]
        [[1 :friends 3] [2 :friends 3]]
        
-       :avet [:friends [:name "Oleg"] [:name "Ivan"]]
+       :avet [:friends [:name "Oleg"] nil [:name "Ivan"]]
        [[1 :friends 3]])
     
      (are [index attrs resolved-attrs] (= (vec (apply d/seek-datoms db index attrs))
@@ -171,11 +171,11 @@
        :eavt [[:name "Ivan"] :name] [1 :name]
        :eavt [[:name "Ivan"] :friends [:name "Oleg"]] [1 :friends 3]
        
-       :aevt [:friends [:name "Petr"]] [:friends 2]
-       :aevt [:friends [:name "Ivan"] [:name "Oleg"]] [:friends 1 3]
+       :aevt [:friends nil [:name "Petr"]] [:friends nil 2]
+       :aevt [:friends nil [:name "Ivan"] [:name "Oleg"]] [:friends nil 1 3]
        
        :avet [:friends [:name "Oleg"]] [:friends 3]
-       :avet [:friends [:name "Oleg"] [:name "Petr"]] [:friends 3 2]
+       :avet [:friends [:name "Oleg"] nil [:name "Petr"]] [:friends 3 nil 2]
       )
     
     (are [attr start end datoms] (= (map (juxt :e :a :v) (d/index-range db attr start end)) datoms)

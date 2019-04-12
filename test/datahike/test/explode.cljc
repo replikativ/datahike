@@ -5,7 +5,6 @@
     [datahike.core :as d]
     [datahike.db :as db]
     [datahike.test.core :as tdc]))
-
 #?(:cljs
    (def Throwable js/Error))
 

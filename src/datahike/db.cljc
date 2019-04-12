@@ -11,12 +11,11 @@
     [konserve.core :as k]
     [me.tonsky.persistent-sorted-set :as set]
     [me.tonsky.persistent-sorted-set.arrays :as arrays]
-    [datahike.constants :refer [e0 tx0 emax txmax implicit-schema]]
+    [datahike.constants :refer [e0 tx0 emax txmax implicit-schema br br-sqrt]]
     #?(:clj [datahike.hash :refer [defrecord-updatable combine-hashes]])
     [datahike.datom :as dd :refer [datom case-tree datom-tx]]
-    [datahike.index :refer [-slice -coll hitchhiker-tree -update-coll!]]
-    #?(:clj [datahike.tools :refer [raise]])
-    )
+    [datahike.index :refer [-slice -iterator hitchhiker-tree -insert! -retract! -count -seq]]
+    #?(:clj [datahike.tools :refer [raise]]))
   #?(:cljs (:require-macros [datahike.db :refer [case-tree combine-cmp raise defrecord-updatable cond+]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [datahike.datom Datom]
@@ -76,21 +75,21 @@
                      #?@(:cljs
                          [IHash (-hash [db] (hash-db db))
                           IEquiv (-equiv [db other] (equiv-db db other))
-                          ISeqable (-seq [db] (-seq (-coll (.-eavt db))))
-                          IReversible (-rseq [db] (-rseq (-coll (.-eavt db))))
-                          ICounted (-count [db] (count (-coll (.-eavt db))))
+                          ISeqable (-seq [db] (-seq (-iterator (.-eavt db))))
+                          IReversible (-rseq [db] (-rseq (-iterator (.-eavt db))))
+                          ICounted (-count [db] (count (-iterator (.-eavt db))))
                           IEmptyableCollection (-empty [db] (empty-db (.-schema db)))
                           IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
                           ]
                          :clj
                          [Object (hashCode [db] (hash-db db))
                           clojure.lang.IHashEq (hasheq [db] (hash-db db))
-                          clojure.lang.Seqable (seq [db] (seq (-coll eavt)))
+                          clojure.lang.Seqable (seq [db] (-seq eavt))
                           clojure.lang.IPersistentCollection
-                          (count [db] (count (-coll eavt)))
+                          (count [db] (-count eavt))
                           (equiv [db other] (equiv-db db other))
                           (empty [db] (empty-db schema))
-                          ;; think about transient implementation of hitchhiker tree in memory
+                          ;;TODO: think about transient implementation of hitchhiker tree in memory
                           ])
 
                      IDB
@@ -133,20 +132,20 @@
                                                                   (= tx (datom-tx d))))
                                               (map
                                                 #(apply create-eavt (first %))
-                                                (hc/lookup-fwd-iter eavt []))) ;; _ _ v tx
+                                                (hc/lookup-fwd-iter (-iterator eavt) []))) ;; _ _ v tx
                                             (filter
                                               (fn [^Datom d] (= v (.-v d)))
                                               (map
                                                 #(apply create-eavt (first %))
-                                                (hc/lookup-fwd-iter eavt []))) ;; _ _ v _
+                                                (hc/lookup-fwd-iter (-iterator eavt) []))) ;; _ _ v _
                                             (filter
                                               (fn [^Datom d] (= tx (datom-tx d)))
                                               (map
                                                 #(apply create-eavt (first %))
-                                                (hc/lookup-fwd-iter eavt []))) ;; _ _ _ tx
+                                                (hc/lookup-fwd-iter (-iterator eavt) []))) ;; _ _ _ tx
                                             (map
                                               #(apply create-eavt (first %))
-                                              (hc/lookup-fwd-iter eavt []))]))) ;; _ _ _ _
+                                              (hc/lookup-fwd-iter (-iterator eavt) []))]))) ;; _ _ _ _
 
                      IIndexAccess
                      (-datoms [db index-type cs]
@@ -175,7 +174,7 @@
 
                      clojure.data/Diff
                      (diff-similar [a b]
-                                   (dd/diff-sorted (-coll (:eavt a)) (-coll (:eavt b)) dd/cmp-datoms-eavt-quick)))
+                                   (dd/diff-sorted (-seq (:eavt a)) (-seq (:eavt b)) dd/cmp-datoms-eavt-quick)))
 
 (defn db? [x]
   (and (satisfies? ISearch x)
@@ -292,29 +291,23 @@
     (validate-schema-key a :db/valueType (:db/valueType kv) #{:db.type/ref})
     (validate-schema-key a :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many})))
 
-(def ^:const br 300)
-(def ^:const br-sqrt (long (Math/sqrt br)))
 
 (defn ^DB empty-db
   ([] (empty-db nil))
-  ([schema]
+  ([schema & {:keys [db-type]}]
    {:pre [(or (nil? schema) (map? schema))]}
    (validate-schema schema)
    (map->DB
-     {:schema  schema
-      :rschema (rschema (merge implicit-schema schema))
-      :eavt    (hitchhiker-tree
-                 (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                 :eavt)
-      :aevt    (hitchhiker-tree
-                 (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                 :aevt)
-      :avet    (hitchhiker-tree
-                 (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                 :avet)
-      :max-eid e0
-      :max-tx  tx0
-      :hash    (atom 0)})))
+    {:schema  schema
+     :rschema (rschema (merge implicit-schema schema))
+     :eavt (hitchhiker-tree)
+     :aevt    (hitchhiker-tree :index-type :aevt)
+     :avet    (hitchhiker-tree :index-type :avet)
+     :max-eid e0
+     :max-tx  tx0
+     :hash    (atom 0)})))
+
+
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
@@ -325,7 +318,6 @@
     (-> entries vec rseq first :e)                          ;; :e of last datom in slice
     e0))
 
-
 (defn ^DB init-db
   ([datoms] (init-db datoms nil))
   ([datoms schema]
@@ -333,42 +325,40 @@
    (let [rschema (rschema (merge implicit-schema schema))
          indexed (:db/index rschema)
          arr (cond-> datoms
-                     (not (arrays/array? datoms)) (arrays/into-array))
+               (not (arrays/array? datoms)) (arrays/into-array))
          _ (arrays/asort arr dd/cmp-datoms-eavt-quick)
-         eavt (set/from-sorted-array dd/cmp-datoms-eavt arr)
-         eavt-durable (hitchhiker-tree
-                        (<?? (hc/reduce< (fn [t ^Datom datom]
-                                           (hmsg/insert t [(.-e datom)
-                                                           (.-a datom)
-                                                           (.-v datom)
-                                                           (.-tx datom)] nil))
-                                         (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                         (seq datoms)))
-                        :eavt)
-         _ (arrays/asort arr dd/cmp-datoms-aevt-quick)
-         aevt (set/from-sorted-array dd/cmp-datoms-aevt arr)
-         aevt-durable (hitchhiker-tree (<?? (hc/reduce< (fn [t ^Datom datom]
-                                                          (hmsg/insert t [(.-a datom)
-                                                                          (.-e datom)
-                                                                          (.-v datom)
-                                                                          (.-tx datom)] nil))
-                                                        (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                                        (seq datoms)))
-                                       :aevt)
-         avet-datoms (filter (fn [^Datom d] (contains? indexed (.-a d))) datoms)
-         avet-arr (to-array avet-datoms)
-         _ (arrays/asort avet-arr dd/cmp-datoms-avet-quick)
-         avet (set/from-sorted-array dd/cmp-datoms-avet avet-arr)
-         avet-durable (hitchhiker-tree (<?? (hc/reduce< (fn [t ^Datom datom]
-                                                          (hmsg/insert t [(.-a datom)
-                                                                          (.-v datom)
-                                                                          (.-e datom)
-                                                                          (.-tx datom)] nil))
-                                                        (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                                        (seq datoms)))
-                                       :avet)
-         max-eid (init-max-eid eavt eavt-durable)
-         max-tx (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 eavt)]
+         eavt-set (set/from-sorted-array dd/cmp-datoms-eavt arr)
+         eavt (hitchhiker-tree :tree (<?? (hc/reduce< (fn [t ^Datom datom]
+                                                        (hmsg/insert t [(.-e datom)
+                                                                        (.-a datom)
+                                                                        (.-v datom)
+                                                                        (.-tx datom)] nil))
+                                                      (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                                      (seq datoms))))
+         ;; _ (arrays/asort arr dd/cmp-datoms-aevt-quick)
+         ;;aevt (set/from-sorted-array dd/cmp-datoms-aevt arr)
+         aevt (hitchhiker-tree :tree (<?? (hc/reduce< (fn [t ^Datom datom]
+                                                        (hmsg/insert t [(.-a datom)
+                                                                        (.-e datom)
+                                                                        (.-v datom)
+                                                                        (.-tx datom)] nil))
+                                                      (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                                      (seq datoms)))
+                               :index-type :aevt)
+         ;; avet-datoms (filter (fn [^Datom d] (contains? indexed (.-a d))) datoms)
+         ;; avet-arr (to-array avet-datoms)
+         ;; _ (arrays/asort avet-arr dd/cmp-datoms-avet-quick)
+         ;;avet (set/from-sorted-array dd/cmp-datoms-avet avet-arr)
+         avet (hitchhiker-tree :tree (<?? (hc/reduce< (fn [t ^Datom datom]
+                                                        (hmsg/insert t [(.-a datom)
+                                                                        (.-v datom)
+                                                                        (.-e datom)
+                                                                        (.-tx datom)] nil))
+                                                      (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                                      (seq datoms)))
+                               :index-type :avet)
+         max-eid (init-max-eid eavt)
+         max-tx (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 eavt-set)]
      (map->DB {:schema  schema
                :rschema rschema
                :eavt    eavt
@@ -377,6 +367,41 @@
                :max-eid max-eid
                :max-tx  max-tx
                :hash    (atom 0)}))))
+
+(defn ^DB copy-db [^DB {:keys [schema rschema eavt aevt avet max-eid max-tx hash]}]
+  (map->DB {:schema schema
+            :rschema rschema
+            :eavt (hitchhiker-tree
+                   :tree
+                   (<?? (hc/reduce< (fn [t ^Datom datom]
+                                      (hmsg/insert t [(.-e datom)
+                                                      (.-a datom)
+                                                      (.-v datom)
+                                                      (.-tx datom)] nil))
+                                    (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                    (-seq eavt))))
+            :aevt (hitchhiker-tree
+                   :tree
+                   (<?? (hc/reduce< (fn [t ^Datom datom]
+                                      (hmsg/insert t [(.-a datom)
+                                                      (.-e datom)
+                                                      (.-v datom)
+                                                      (.-tx datom)] nil))
+                                    (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                    (-seq eavt)))
+                   :index-type :aevt)
+            :avet (hitchhiker-tree
+                   :tree (<?? (hc/reduce< (fn [t ^Datom datom]
+                                            (hmsg/insert t [(.-a datom)
+                                                            (.-v datom)
+                                                            (.-e datom)
+                                                            (.-tx datom)] nil))
+                                          (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                          (-seq eavt)))
+                   :index-type :avet)
+            :max-eid max-eid
+            :max-tx max-tx
+            :hash hash}))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)
@@ -631,29 +656,17 @@
   (let [indexing? (indexing? db (.-a datom))]
     (if (dd/datom-added datom)
       (do
-        (-update-coll! eavt #(<?? (hmsg/insert % [(.-e datom)
-                                               (.-a datom)
-                                               (.-v datom)
-                                               (.-tx datom)]
-                                               nil)))
-        (-update-coll! aevt #(<?? (hmsg/insert % [(.-a datom)
-                                               (.-e datom)
-                                               (.-v datom)
-                                               (.-tx datom)]
-                                               nil)))
-        (when indexing? (-update-coll! avet #(<?? (hmsg/insert % [(.-a datom)
-                                                             (.-v datom)
-                                                             (.-e datom)
-                                                             (.-tx datom)]
-                                                               nil))))
+        (-insert! eavt datom)
+        (-insert! aevt datom)
+        (when indexing? (-insert! avet datom))
         (cond-> db
                 true (advance-max-eid (.-e datom))
                 true (assoc :hash (atom 0))))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (do
-          (-update-coll! eavt #(<?? (hmsg/delete % [(.-e removing) (.-a removing) (.-v removing) (.-tx removing)])))
-          (-update-coll! aevt #(<?? (hmsg/delete % [(.-a removing) (.-e removing) (.-v removing) (.-tx removing)])))
-          (when indexing? (-update-coll! avet #(<?? (hmsg/delete % [(.-a removing) (.-v removing) (.-e removing) (.-tx removing)]))))
+          (-retract! eavt removing)
+          (-retract! aevt removing)
+          (when indexing? (-retract! avet removing))
           (assoc db :hash (atom 0)))
         db))))
 
@@ -753,7 +766,6 @@
     [vs]
 
     :else vs))
-
 
 (defn- explode [db entity]
   (let [eid (:db/id entity)]

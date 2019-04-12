@@ -3,7 +3,9 @@
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     [datahike.core :as d]
+    [datahike.datom :as dd]
     [datahike.db :as db]
+    [datahike.constants :as dc]
     [datahike.test.core :as tdc]))
 
 (deftest test-listen!
@@ -23,16 +25,16 @@
     (d/transact! conn [[:db/add -1 :name "Geogry"]])
     
     (is (= (:tx-data (first @reports))
-           [(db/datom 3 :name "Dima"   (+ d/tx0 2) true)
-            (db/datom 3 :age 19        (+ d/tx0 2) true)
-            (db/datom 4 :name "Evgeny" (+ d/tx0 2) true)]))
+           [(dd/datom 3 :name "Dima"   (+ dc/tx0 2) true)
+            (dd/datom 3 :age 19        (+ dc/tx0 2) true)
+            (dd/datom 4 :name "Evgeny" (+ dc/tx0 2) true)]))
     (is (= (:tx-meta (first @reports))
            {:some-metadata 1}))
     (is (= (:tx-data (second @reports))
-           [(db/datom 5 :name "Fedor"  (+ d/tx0 3) true)
-            (db/datom 1 :name "Alex"   (+ d/tx0 3) false)  ;; update -> retract
-            (db/datom 1 :name "Alex2"  (+ d/tx0 3) true)   ;;         + add
-            (db/datom 4 :name "Evgeny" (+ d/tx0 3) false)]))
+           [(dd/datom 5 :name "Fedor"  (+ dc/tx0 3) true)
+            (dd/datom 1 :name "Alex"   (+ dc/tx0 3) false)  ;; update -> retract
+            (dd/datom 1 :name "Alex2"  (+ dc/tx0 3) true)   ;;         + add
+            (dd/datom 4 :name "Evgeny" (+ dc/tx0 3) false)]))
     (is (= (:tx-meta (second @reports))
            nil))
     ))

@@ -87,9 +87,9 @@
                                                  :uri uri})))
         {:keys [eavt aevt avet rschema]} (db/empty-db schema)
         backend (kons/->KonserveBackend store)
-        eavt-key (di/-coll eavt)
-        aevt-key (di/-coll aevt)
-        avet-key (di/-coll avet)]
+        eavt-key (di/-iterator eavt)
+        aevt-key (di/-iterator aevt)
+        avet-key (di/-iterator avet)]
     (<?? S (k/assoc-in store [:db]
                         {:schema schema
                          :eavt-key (:tree (hc/<?? (hc/flush-tree-without-root eavt-key backend)))
@@ -123,18 +123,18 @@
             {:keys [ eavt  aevt avet schema rschema]} db-after
             store (:store @connection)
             backend (kons/->KonserveBackend store)
-            eavt-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-coll eavt) backend)))
-            aevt-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-coll aevt) backend)))
-            avet-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-coll avet) backend)))]
+            eavt-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-iterator eavt) backend)))
+            aevt-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-iterator aevt) backend)))
+            avet-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-iterator avet) backend)))]
         (<?? S (k/assoc-in store [:db]
                            {:schema schema
                             :rschema rschema
                             :eavt-key eavt-flushed
                             :aevt-key aevt-flushed
                             :avet-key avet-flushed}))
-        (di/-update-coll! eavt (fn [_] eavt-flushed))
-        (di/-update-coll! aevt (fn [_] aevt-flushed))
-        (di/-update-coll! avet (fn [_] avet-flushed))
+        (di/-set-iterator! eavt eavt-flushed)
+        (di/-set-iterator! aevt aevt-flushed)
+        (di/-set-iterator! avet avet-flushed)
         (reset! connection db-after)
         tx-report))))
 

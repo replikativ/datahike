@@ -26,7 +26,7 @@
               {:db/id 4 :email "@4"}])
         visible #(edn/read-string (pr-str %))
         touched #(visible (d/touch %))]
-    
+
     (testing "touch"
       (is (= (touched (d/entity db 1))
              {:db/id 1
@@ -51,7 +51,7 @@
       (let [db (d/db-with db [[:db.fn/retractAttribute 1 :profile]])]
         (is (= (d/q '[:find ?a ?v :where [3 ?a ?v]] db)
                #{}))))
-    
+
     (testing "reverse navigation"
       (is (= (visible (:_profile (d/entity db 3)))
              {:db/id 1})))))
@@ -66,7 +66,7 @@
               {:db/id 4 :email "@4"}])
         visible #(edn/read-string (pr-str %))
         touched #(visible (d/touch %))]
-    
+
     (testing "touch"
       (is (= (touched (d/entity db 1))
              {:db/id 1
@@ -83,7 +83,7 @@
       (let [db (d/db-with db [[:db.fn/retractAttribute 1 :profile]])]
         (is (= (d/q '[:find ?a ?v :in $ [?e ...] :where [?e ?a ?v]] db [3 4])
                #{}))))
-    
+
     (testing "reverse navigation"
       (is (= (visible (:_profile (d/entity db 3)))
              {:db/id 1})))))

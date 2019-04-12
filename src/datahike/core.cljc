@@ -224,15 +224,16 @@
   "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
   ([db tx-data] (with db tx-data nil))
   ([db tx-data tx-meta]
-    {:pre [(db/db? db)]}
-    (if (is-filtered db)
-      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
-      (db/transact-tx-data (db/map->TxReport
-                             { :db-before db
-                               :db-after  db
-                               :tx-data   []
-                               :tempids   {}
-                               :tx-meta   tx-meta}) tx-data))))
+   {:pre [(db/db? db)]}
+   (if (is-filtered db)
+     (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
+     (let [new-db (db/copy-db db)]
+       (db/transact-tx-data (db/map->TxReport
+                             {:db-before db
+                              :db-after  new-db
+                              :tx-data   []
+                              :tempids   {}
+                              :tx-meta   tx-meta}) tx-data)))))
 
 
 (defn db-with
@@ -581,7 +582,7 @@
              ```
              (clojure.edn/read-string {:readers data-readers} \"...\")
              ```"}
-  data-readers {'datahike/Datom db/datom-from-reader
+  data-readers {'datahike/Datom dd/datom-from-reader
                 'datahike/DB    db/db-from-reader})
 
 #?(:cljs

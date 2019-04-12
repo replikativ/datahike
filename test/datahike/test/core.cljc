@@ -7,8 +7,9 @@
     #?(:clj [kaocha.stacktrace])
     [datahike.core :as d]
     [datahike.impl.entity :as de]
-    [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
+    [datahike.hash #?@(:cljs [:refer-macros [defrecord-updatable]]
                               :clj  [:refer [defrecord-updatable]])]
+    [datahike.db :as db ]
     #?(:cljs [datahike.test.cljs])))
 
 #?(:cljs

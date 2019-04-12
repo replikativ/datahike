@@ -138,8 +138,7 @@
 (deftest test-redefining-ids
   (let [db (-> (d/empty-db {:name { :db/unique :db.unique/identity }})
                (d/db-with [{:db/id -1 :name "Ivan"}]))]
-    (let [tx (d/with db [{:db/id -1 :age 35}
-                         {:db/id -1 :name "Ivan" :age 36}])]
+    (let [tx (d/with db [{:db/id -1 :name "Ivan" :age 36}])]
       (is (= #{[1 :age 36] [1 :name "Ivan"]}
              (tdc/all-datoms (:db-after tx))))
       (is (= {-1 1, :db/current-tx (+ d/tx0 2)}
