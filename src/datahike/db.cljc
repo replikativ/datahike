@@ -470,7 +470,7 @@ seq)
          ;;                              (fdb.keys/key->vect :eavt %1) %1)
          ;;                            (fdb/get-range :eavt key key-to)))
          ;;          seq)
-]
+         ]
      new)))
 
 (defn db-transient [db]

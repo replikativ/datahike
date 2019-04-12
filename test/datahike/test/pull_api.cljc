@@ -124,7 +124,7 @@
                                     (d/datom 10 :spec 13)
                                     (d/datom 13 :spec 12)])
                test-schema)]
-    
+
     (testing "Component entities are expanded recursively"
       (is (= parts (d/pull test-db '[:name :part] 10))))
 
