@@ -466,10 +466,17 @@
 seq)
          ;; TODO: restore and fix for when testing init-db with 100k elems
          ;; it does not work
-         ;; new (->> (sequence xf (map #(clojure.lang.MapEntry.
-         ;;                              (fdb.keys/key->vect :eavt %1) %1)
-         ;;                            (fdb/get-range :eavt key key-to)))
-         ;;          seq)
+         ;;
+         ;; TODO: BUG: WE HAVE :eavt HARDCODED here
+         ;; TODO: ask K as he says this region has been abstracted so why
+         ;; do I still need to write this here.
+         ;; TODO: the bug in test/fdb 'slice-simple' is that key and key-to are
+         ;; [123] and [124] and that fdb/get-range on those keys returns only
+         ;; [123]. Whereas hmsg/lookup-fwd-iter would return both
+         new (->> (sequence xf (map #(clojure.lang.MapEntry.
+                                      (fdb.keys/key->vect :eavt %1) %1)
+                                    (fdb/get-range :eavt key key-to)))
+                  seq)
          ]
      new)))
 
