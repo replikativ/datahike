@@ -50,9 +50,9 @@
                                                   :uri uri})))
         {:keys [eavt-key aevt-key avet-key schema rschema]} stored-db
         empty (db/empty-db)
-        eavt (di/hitchhiker-tree eavt-key :eavt)
-        aevt (di/hitchhiker-tree aevt-key :aevt)
-        avet (di/hitchhiker-tree avet-key :avet)]
+        eavt (di/hitchhiker-tree :eavt eavt-key)
+        aevt (di/hitchhiker-tree :aevt aevt-key)
+        avet (di/hitchhiker-tree :avet avet-key)]
     (d/conn-from-db
      (assoc empty
             :schema schema
@@ -91,11 +91,11 @@
         aevt-key (di/-iterator aevt)
         avet-key (di/-iterator avet)]
     (<?? S (k/assoc-in store [:db]
-                        {:schema schema
-                         :eavt-key (:tree (hc/<?? (hc/flush-tree-without-root eavt-key backend)))
-                         :aevt-key (:tree (hc/<?? (hc/flush-tree-without-root aevt-key backend)))
-                         :avet-key (:tree (hc/<?? (hc/flush-tree-without-root avet-key backend)))
-                         :rschema rschema}))
+                       {:schema schema
+                        :eavt-key (:tree (hc/<?? (hc/flush-tree-without-root eavt-key backend)))
+                        :aevt-key (:tree (hc/<?? (hc/flush-tree-without-root aevt-key backend)))
+                        :avet-key (:tree (hc/<?? (hc/flush-tree-without-root avet-key backend)))
+                        :rschema rschema}))
     (case proto
       "level"
       (kl/release store)
@@ -123,21 +123,21 @@
             {:keys [ eavt  aevt avet schema rschema]} db-after
             store (:store @connection)
             backend (kons/->KonserveBackend store)
+            _ (clojure.pprint/pprint store)
             eavt-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-iterator eavt) backend)))
             aevt-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-iterator aevt) backend)))
-            avet-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-iterator avet) backend)))]
+            avet-flushed (:tree (hc/<?? (hc/flush-tree-without-root (di/-iterator avet) backend)))
+            _ (di/-set-iterator! eavt eavt-flushed)
+            _ (di/-set-iterator! aevt aevt-flushed)
+            _ (di/-set-iterator! avet avet-flushed)]
         (<?? S (k/assoc-in store [:db]
                            {:schema schema
                             :rschema rschema
                             :eavt-key eavt-flushed
                             :aevt-key aevt-flushed
                             :avet-key avet-flushed}))
-        (di/-set-iterator! eavt eavt-flushed)
-        (di/-set-iterator! aevt aevt-flushed)
-        (di/-set-iterator! avet avet-flushed)
         (reset! connection db-after)
         tx-report))))
-
 
 (defn release [conn]
   (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" (:uri @conn))]
@@ -148,7 +148,6 @@
       nil
       "level"
       (kl/release (:store @conn)))))
-
 
 (def pull d/pull)
 

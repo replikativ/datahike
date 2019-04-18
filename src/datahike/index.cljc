@@ -90,10 +90,13 @@
 
   (-set-persistent! [index]))
 
-
-(defn hitchhiker-tree [& {index-type :eavt
-                          tree (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))}]
-  (let [create-datom (case index-type
+(defn hitchhiker-tree
+  ([]
+   (hitchhiker-tree :eavt (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))))
+  ([index-type]
+   (hitchhiker-tree index-type (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))))
+  ([index-type tree]
+   (let [create-datom (case index-type
                        :aevt
                        (fn [a e v t] (dd/datom e a v t true))
                        :avet
@@ -116,7 +119,7 @@
                         :aevt [(.-a removing) (.-e removing) (.-v removing) (.-tx removing)]
                         :avet [(.-a removing) (.-v removing) (.-e removing) (.-tx removing)]
                         [(.-e removing) (.-a removing) (.-v removing) (.-tx removing)]))))]
-    (HitchhikerTree. tree create-datom insert delete)))
+    (HitchhikerTree. tree create-datom insert delete))))
 
 
 (deftype PersistentSortedSet [^{:volatile-mutable true} sorted-set cmp-quick]

@@ -300,9 +300,9 @@
    (map->DB
     {:schema  schema
      :rschema (rschema (merge implicit-schema schema))
-     :eavt (hitchhiker-tree)
-     :aevt    (hitchhiker-tree :index-type :aevt)
-     :avet    (hitchhiker-tree :index-type :avet)
+     :eavt  (hitchhiker-tree)
+     :aevt    (hitchhiker-tree :aevt)
+     :avet    (hitchhiker-tree :avet)
      :max-eid e0
      :max-tx  tx0
      :hash    (atom 0)})))
@@ -328,35 +328,36 @@
                (not (arrays/array? datoms)) (arrays/into-array))
          _ (arrays/asort arr dd/cmp-datoms-eavt-quick)
          eavt-set (set/from-sorted-array dd/cmp-datoms-eavt arr)
-         eavt (hitchhiker-tree :tree (<?? (hc/reduce< (fn [t ^Datom datom]
-                                                        (hmsg/insert t [(.-e datom)
-                                                                        (.-a datom)
-                                                                        (.-v datom)
-                                                                        (.-tx datom)] nil))
-                                                      (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                                      (seq datoms))))
+         eavt-tree (<?? (hc/reduce< (fn [t ^Datom datom]
+                                      (hmsg/insert t [(.-e datom)
+                                                      (.-a datom)
+                                                      (.-v datom)
+                                                      (.-tx datom)] nil))
+                                    (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                    (seq datoms)))
+         aevt-tree (<?? (hc/reduce< (fn [t ^Datom datom]
+                                      (hmsg/insert t [(.-a datom)
+                                                      (.-e datom)
+                                                      (.-v datom)
+                                                      (.-tx datom)] nil))
+                                    (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                    (seq datoms)))
+         avet-tree (<?? (hc/reduce< (fn [t ^Datom datom]
+                                      (hmsg/insert t [(.-a datom)
+                                                      (.-v datom)
+                                                      (.-e datom)
+                                                      (.-tx datom)] nil))
+                                    (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
+                                    (seq datoms)))
+         eavt (hitchhiker-tree :eavt eavt-tree)
          ;; _ (arrays/asort arr dd/cmp-datoms-aevt-quick)
          ;;aevt (set/from-sorted-array dd/cmp-datoms-aevt arr)
-         aevt (hitchhiker-tree :tree (<?? (hc/reduce< (fn [t ^Datom datom]
-                                                        (hmsg/insert t [(.-a datom)
-                                                                        (.-e datom)
-                                                                        (.-v datom)
-                                                                        (.-tx datom)] nil))
-                                                      (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                                      (seq datoms)))
-                               :index-type :aevt)
+         aevt (hitchhiker-tree :aevt aevt-tree)
          ;; avet-datoms (filter (fn [^Datom d] (contains? indexed (.-a d))) datoms)
          ;; avet-arr (to-array avet-datoms)
          ;; _ (arrays/asort avet-arr dd/cmp-datoms-avet-quick)
          ;;avet (set/from-sorted-array dd/cmp-datoms-avet avet-arr)
-         avet (hitchhiker-tree :tree (<?? (hc/reduce< (fn [t ^Datom datom]
-                                                        (hmsg/insert t [(.-a datom)
-                                                                        (.-v datom)
-                                                                        (.-e datom)
-                                                                        (.-tx datom)] nil))
-                                                      (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                                      (seq datoms)))
-                               :index-type :avet)
+         avet (hitchhiker-tree :avet avet-tree)
          max-eid (init-max-eid eavt)
          max-tx (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 eavt-set)]
      (map->DB {:schema  schema
@@ -368,11 +369,12 @@
                :max-tx  max-tx
                :hash    (atom 0)}))))
 
-(defn ^DB copy-db [^DB {:keys [schema rschema eavt aevt avet max-eid max-tx hash]}]
+(defn ^DB copy-db [^DB {:keys [schema rschema eavt aevt avet max-eid max-tx hash store]}]
   (map->DB {:schema schema
             :rschema rschema
+            :store store
             :eavt (hitchhiker-tree
-                   :tree
+                   :eavt
                    (<?? (hc/reduce< (fn [t ^Datom datom]
                                       (hmsg/insert t [(.-e datom)
                                                       (.-a datom)
@@ -381,24 +383,22 @@
                                     (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
                                     (-seq eavt))))
             :aevt (hitchhiker-tree
-                   :tree
+                   :aevt
                    (<?? (hc/reduce< (fn [t ^Datom datom]
                                       (hmsg/insert t [(.-a datom)
                                                       (.-e datom)
                                                       (.-v datom)
                                                       (.-tx datom)] nil))
                                     (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                    (-seq eavt)))
-                   :index-type :aevt)
+                                    (-seq eavt))))
             :avet (hitchhiker-tree
-                   :tree (<?? (hc/reduce< (fn [t ^Datom datom]
+                   :avet (<?? (hc/reduce< (fn [t ^Datom datom]
                                             (hmsg/insert t [(.-a datom)
                                                             (.-v datom)
                                                             (.-e datom)
                                                             (.-tx datom)] nil))
                                           (<?? (hc/b-tree (hc/->Config br-sqrt br (- br br-sqrt))))
-                                          (-seq eavt)))
-                   :index-type :avet)
+                                          (-seq eavt))))
             :max-eid max-eid
             :max-tx max-tx
             :hash hash}))
