@@ -33,31 +33,8 @@
 
   (d/rseek-datoms @conn :eavt)
 
-  (def db (let [empty-db (d/empty-db {:aka { :db/cardinality :db.cardinality/many }})]
-            (-> empty-db
-                (d/db-with [{:db/id 1
-                             :name  "Petr"
-                             :email "petya@spb.ru"
-                             :aka   ["I" "Great"]
-                             :password "<SECRET>"}
-                            {:db/id 2
-                             :name  "Ivan"
-                             :aka   ["Terrible" "IV"]
-                             :password "<PROTECTED>"}
-                            {:db/id 3
-                             :name  "Nikolai"
-                             :aka   ["II"]
-                             :password "<UNKWOWN>"}
-                            ]))))
+  (def db (d/db-with (d/empty-db) [{:db/id 1 :name "Konrad"}]))
 
-  (def  remove-ivan (fn [_ datom] (not= 2 (:e datom))))
-
-  db
-
-  (hash (d/db-with db [[:db.fn/retractEntity 2]]))
-
-  (hash (d/filter db remove-ivan))
-
-
+  (hash (d/db-with db [[:db.fn/retractEntity 1]]))
 
   )
