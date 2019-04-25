@@ -16,7 +16,7 @@
         Constant DefaultSrc Pattern RulesVar SrcVar Variable
         Not Or And Predicate PlainSymbol]
       [clojure.lang     IReduceInit Counted]
-      [datahike.db  Datom])))
+      [datahike.datom  Datom])))
 
 (declare resolve-clauses collect-rel-xf collect-to)
 

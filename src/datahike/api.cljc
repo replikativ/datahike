@@ -47,16 +47,15 @@
             (throw (ex-info "DB does not exist." {:type :db-does-not-exist
                                                   :uri uri})))
         {:keys [eavt-key aevt-key avet-key schema rschema]} stored-db
-        empty (db/empty-db)
-        eavt-durable eavt-key]
-    ;(prn eavt-durable)
+        empty (db/empty-db)]
+    ;(prn eavt)
     (d/conn-from-db
      (assoc empty
             :schema schema
-            :max-eid (db/init-max-eid (:eavt empty) eavt-durable)
-            :eavt-durable eavt-durable
-            :aevt-durable aevt-key
-            :avet-durable avet-key
+            :max-eid (db/init-max-eid eavt-key)
+            :eavt eavt-key
+            :aevt aevt-key
+            :avet avet-key
             :rschema rschema
             :store store
             :uri uri))))
@@ -82,13 +81,13 @@
         _ (when stored-db
             (throw (ex-info "DB already exist." {:type :db-already-exists
                                                  :uri uri})))
-        {:keys [eavt-durable aevt-durable avet-durable rschema] :as new-db} (db/empty-db schema)
+        {:keys [eavt aevt avet rschema]} (db/empty-db schema)
         backend (kons/->KonserveBackend store)]
     (<?? S (k/assoc-in store [:db]
                         {:schema schema
-                         :eavt-key (:tree (hc/<?? (hc/flush-tree-without-root eavt-durable backend)))
-                         :aevt-key (:tree (hc/<?? (hc/flush-tree-without-root aevt-durable backend)))
-                         :avet-key (:tree (hc/<?? (hc/flush-tree-without-root avet-durable backend)))
+                         :eavt-key (:tree (hc/<?? (hc/flush-tree-without-root eavt backend)))
+                         :aevt-key (:tree (hc/<?? (hc/flush-tree-without-root aevt backend)))
+                         :avet-key (:tree (hc/<?? (hc/flush-tree-without-root avet backend)))
                          :rschema rschema}))
     (case proto
       "level"
@@ -114,12 +113,12 @@
   (future
     (locking connection
       (let [{:keys [db-after] :as tx-report} @(d/transact connection tx-data)
-            {:keys [eavt-durable aevt-durable avet-durable schema rschema]} db-after
+            {:keys [eavt aevt avet schema rschema]} db-after
             store (:store @connection)
             backend (kons/->KonserveBackend store)
-            eavt-flushed (:tree (hc/<?? (hc/flush-tree-without-root eavt-durable backend)))
-            aevt-flushed (:tree (hc/<?? (hc/flush-tree-without-root aevt-durable backend)))
-            avet-flushed (:tree (hc/<?? (hc/flush-tree-without-root avet-durable backend)))]
+            eavt-flushed (:tree (hc/<?? (hc/flush-tree-without-root eavt backend)))
+            aevt-flushed (:tree (hc/<?? (hc/flush-tree-without-root aevt backend)))
+            avet-flushed (:tree (hc/<?? (hc/flush-tree-without-root avet backend)))]
         (<?? S (k/assoc-in store [:db]
                            {:schema schema
                             :rschema rschema
@@ -127,9 +126,9 @@
                             :aevt-key aevt-flushed
                             :avet-key avet-flushed}))
         (reset! connection (assoc db-after
-                                  :eavt-durable eavt-flushed
-                                  :aevt-durable aevt-flushed
-                                  :avet-durable avet-flushed))
+                                  :eavt eavt-flushed
+                                  :aevt aevt-flushed
+                                  :avet avet-flushed))
         tx-report))))
 
 
