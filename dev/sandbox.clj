@@ -25,16 +25,4 @@
 
   (def query '[:find ?e ?tx :where [?e :name "Wanja" ?tx]] )
 
-  (api/q query @conn)
-
-  (d/datoms @conn :eavt)
-
-  (d/seek-datoms @conn :eavt)
-
-  (d/rseek-datoms @conn :eavt)
-
-  (def db (d/db-with (d/empty-db) [{:db/id 1 :name "Konrad"}]))
-
-  (hash (d/db-with db [[:db.fn/retractEntity 1]]))
-
   )
