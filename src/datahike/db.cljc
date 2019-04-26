@@ -372,8 +372,8 @@
 (def ^:const br-sqrt (long (Math/sqrt br)))
 
 (defn ^DB empty-db
-  ([] (empty-db nil))
-  ([schema] (empty-db nil :datahike.index/hitchhiker-tree))
+  ([] (empty-db nil :datahike.index/hitchhiker-tree))
+  ([schema] (empty-db schema :datahike.index/hitchhiker-tree))
   ([schema index]
    {:pre [(or (nil? schema) (map? schema))]}
    (validate-schema schema)
