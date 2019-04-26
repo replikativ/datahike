@@ -12,6 +12,8 @@
 
 (def -all identity)
 
+(def -flush identity)
+
 (defn index-type->cmp [index-type]
   (case index-type
     :aevt dd/cmp-datoms-aevt

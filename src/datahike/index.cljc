@@ -74,8 +74,8 @@
 
 (defmulti empty-index
   "Creates empty index"
-  {:arglists '([backend-type index-type])}
-  (fn [backend-type index-type & opts] backend-type))
+  {:arglists '([index index-type])}
+  (fn [index index-type & opts] index))
 
 (defmethod empty-index ::hitchhiker-tree [_ _]
   (dih/empty-tree))
@@ -87,8 +87,8 @@
 
 (defmulti init-index
   "Initialize index with datoms"
-  {:arglists '([backend-type datoms indexed index-type])}
-  (fn [backend-type datoms indexed index-type] backend-type))
+  {:arglists '([index datoms indexed index-type])}
+  (fn [index datoms indexed index-type] index))
 
 (defmethod init-index ::hitchhiker-tree [_ datoms _ index-type]
   (dih/init-tree datoms index-type))
@@ -127,3 +127,19 @@
 
 (defmethod -remove PersistentSortedSet [set datom index-type]
   (dip/-remove set datom index-type))
+
+
+
+(defmulti -flush
+  "Flush index"
+  {:arglists '([index backend])}
+  (fn [index backend] (class index)))
+
+(defmethod -flush DataNode [tree backend]
+  (dih/-flush tree backend))
+
+(defmethod -flush IndexNode [tree backend]
+  (dih/-flush tree backend))
+
+(defmethod -flush PersistentSortedSet [set _]
+  (dip/-flush set))

@@ -373,16 +373,16 @@
 
 (defn ^DB empty-db
   ([] (empty-db nil))
-  ([schema & {backend-type :backend-type
-              :or {backend-type :datahike.index/hitchhiker-tree}}]
+  ([schema] (empty-db nil :datahike.index/hitchhiker-tree))
+  ([schema index]
    {:pre [(or (nil? schema) (map? schema))]}
    (validate-schema schema)
    (map->DB
     {:schema schema
      :rschema (rschema (merge implicit-schema schema))
-     :eavt (di/empty-index backend-type :eavt)
-     :aevt (di/empty-index backend-type :aevt)
-     :avet (di/empty-index backend-type :avet)
+     :eavt (di/empty-index index :eavt)
+     :aevt (di/empty-index index :aevt)
+     :avet (di/empty-index index :avet)
      :max-eid      e0
      :max-tx       tx0
      :hash         (atom 0)})))
@@ -403,14 +403,14 @@
 
 (defn ^DB init-db
   ([datoms] (init-db datoms nil))
-  ([datoms schema & {backend-type :backend-type
-                     :or {backend-type :datahike.index/hitchhiker-tree}}]
+  ([datoms schema & {index :index
+                     :or {index :datahike.index/hitchhiker-tree}}]
    (validate-schema schema)
    (let [rschema (rschema (merge implicit-schema schema))
          indexed (:db/index rschema)
-         eavt (di/init-index backend-type datoms indexed :eavt)
-         aevt (di/init-index backend-type datoms indexed :aevt)
-         avet (di/init-index backend-type datoms indexed :avet)
+         eavt (di/init-index index datoms indexed :eavt)
+         aevt (di/init-index index datoms indexed :aevt)
+         avet (di/init-index index datoms indexed :avet)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)]
      (map->DB {:schema       schema

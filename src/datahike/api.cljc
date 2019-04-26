@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [filter])
   (:require [datahike.db :as db]
             [datahike.core :as d]
+            [datahike.connector :as dc]
             [hitchhiker.konserve :as kons]
             [hitchhiker.tree.core :as hc]
             [konserve.filestore :as fs]
@@ -10,138 +11,23 @@
             [konserve.cache :as kc]
             [konserve.memory :as mem]
             [superv.async :refer [<?? S]]
-            [clojure.core.cache :as cache])
+            [clojure.core.cache :as cache]
+            [datahike.index :as di])
   (:import [java.net URI]))
 
-(def memory (atom {}))
+(def connect dc/connect)
 
-(defn parse-uri [uri]
-  (let [base-uri (URI. uri)
-        m (.getScheme base-uri)
-        sub-uri (URI. (.getSchemeSpecificPart base-uri))
-        proto (.getScheme sub-uri)
-        path (.getPath sub-uri)]
-    [m proto path]))
+(def create-database dc/create-database)
 
-(defn connect [uri]
-  (let [[m proto path] (parse-uri uri) #_(re-find #"datahike:(.+)://(/.+)" uri)
-        _ (when-not m
-            (throw (ex-info "URI cannot be parsed." {:uri uri})))
-        store (kons/add-hitchhiker-tree-handlers
-               (kc/ensure-cache
-                (case proto
-                 "mem"
-                 (@memory uri)
-                 "file"
-                  (<?? S (fs/new-fs-store path))
-                 "level"
-                  (<?? S (kl/new-leveldb-store path)))
-               (atom (cache/lru-cache-factory {} :threshold 1000))))
-        stored-db (<?? S (k/get-in store [:db]))
-        ;_ (prn stored-db)
-        _ (when-not stored-db
-            (case proto
-              "level"
-              (kl/release store)
-              nil)
-            (throw (ex-info "DB does not exist." {:type :db-does-not-exist
-                                                  :uri uri})))
-        {:keys [eavt-key aevt-key avet-key schema rschema]} stored-db
-        empty (db/empty-db)]
-    ;(prn eavt)
-    (d/conn-from-db
-     (assoc empty
-            :schema schema
-            :max-eid (db/init-max-eid eavt-key)
-            :eavt eavt-key
-            :aevt aevt-key
-            :avet avet-key
-            :rschema rschema
-            :store store
-            :uri uri))))
+(def create-database-with-schema dc/create-database)
 
-(defn create-database-with-schema [uri schema]
-  (let [[m proto path] (parse-uri uri)
-        _ (when-not m
-            (throw (ex-info "URI cannot be parsed." {:uri uri})))
-        store (kc/ensure-cache
-               (case proto
-                 "mem"
-                 (let [store (<?? S (mem/new-mem-store))]
-                   (swap! memory assoc uri store)
-                   store)
-                 "file"
-                 (kons/add-hitchhiker-tree-handlers
-                  (<?? S (fs/new-fs-store path)))
-                 "level"
-                 (kons/add-hitchhiker-tree-handlers
-                  (<?? S (kl/new-leveldb-store path))))
-               (atom (cache/lru-cache-factory {} :threshold 1000)))
-        stored-db (<?? S (k/get-in store [:db]))
-        _ (when stored-db
-            (throw (ex-info "DB already exist." {:type :db-already-exists
-                                                 :uri uri})))
-        {:keys [eavt aevt avet rschema]} (db/empty-db schema)
-        backend (kons/->KonserveBackend store)]
-    (<?? S (k/assoc-in store [:db]
-                        {:schema schema
-                         :eavt-key (:tree (hc/<?? (hc/flush-tree-without-root eavt backend)))
-                         :aevt-key (:tree (hc/<?? (hc/flush-tree-without-root aevt backend)))
-                         :avet-key (:tree (hc/<?? (hc/flush-tree-without-root avet backend)))
-                         :rschema rschema}))
-    (case proto
-      "level"
-      (kl/release store)
-      nil)
-    nil))
+(def delete-database dc/delete-database)
 
-(defn create-database [uri]
-  (create-database-with-schema uri nil))
+(def transact dc/transact)
 
-(defn delete-database [uri]
-  (let [[m proto path] (parse-uri uri)]
-    (case proto
-      "mem"
-      (swap! memory dissoc uri)
-      "file"
-      (fs/delete-store path)
-      "level"
-      (kl/delete-store path))))
+(def transact! dc/transact!)
 
-(defn transact [connection tx-data]
-  {:pre [(d/conn? connection)]}
-  (future
-    (locking connection
-      (let [{:keys [db-after] :as tx-report} @(d/transact connection tx-data)
-            {:keys [eavt aevt avet schema rschema]} db-after
-            store (:store @connection)
-            backend (kons/->KonserveBackend store)
-            eavt-flushed (:tree (hc/<?? (hc/flush-tree-without-root eavt backend)))
-            aevt-flushed (:tree (hc/<?? (hc/flush-tree-without-root aevt backend)))
-            avet-flushed (:tree (hc/<?? (hc/flush-tree-without-root avet backend)))]
-        (<?? S (k/assoc-in store [:db]
-                           {:schema schema
-                            :rschema rschema
-                            :eavt-key eavt-flushed
-                            :aevt-key aevt-flushed
-                            :avet-key avet-flushed}))
-        (reset! connection (assoc db-after
-                                  :eavt eavt-flushed
-                                  :aevt aevt-flushed
-                                  :avet avet-flushed))
-        tx-report))))
-
-
-(defn release [conn]
-  (let [[m proto path] (re-find #"datahike:(.+)://(/.+)" (:uri @conn))]
-    (case proto
-      "mem"
-      nil
-      "file"
-      nil
-      "level"
-      (kl/release (:store @conn)))))
-
+(def release dc/release)
 
 (def pull d/pull)
 

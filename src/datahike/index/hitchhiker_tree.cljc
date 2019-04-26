@@ -124,3 +124,6 @@
 
 (defn -remove [tree ^Datom datom index-type]
   (<?? (hmsg/delete tree (datom->node datom index-type))))
+
+(defn -flush [tree backend]
+  (:tree (hc/<?? (hc/flush-tree-without-root tree backend))))
