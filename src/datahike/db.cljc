@@ -172,9 +172,9 @@
       :clj
       [Object (hashCode [db] (hash-db db))
        clojure.lang.IHashEq (hasheq [db] (hash-db db))
-       clojure.lang.Seqable (seq [db] (-seq eavt :eavt))
+       clojure.lang.Seqable (seq [db] (-seq eavt))
        clojure.lang.IPersistentCollection
-       (count [db] (-count eavt :eavt))
+       (count [db] (-count eavt))
        (equiv [db other] (equiv-db db other))
        (empty [db] (empty-db schema))
        clojure.lang.IEditableCollection

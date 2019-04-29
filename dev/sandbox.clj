@@ -24,5 +24,4 @@
   (d/q query (d/db conn))
 
 
-
   )
