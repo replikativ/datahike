@@ -14,6 +14,10 @@
 
 (def -flush identity)
 
+(def -transient transient)
+
+(def -persistent! persistent!)
+
 (defn index-type->cmp [index-type]
   (case index-type
     :aevt dd/cmp-datoms-aevt

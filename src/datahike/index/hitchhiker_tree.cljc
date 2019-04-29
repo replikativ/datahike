@@ -127,3 +127,7 @@
 
 (defn -flush [tree backend]
   (:tree (hc/<?? (hc/flush-tree-without-root tree backend))))
+
+(def -persistent! identity)
+
+(def -transient identity)

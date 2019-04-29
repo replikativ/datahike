@@ -6,7 +6,7 @@
     #?(:clj [clojure.pprint :as pp])
     [hitchhiker.tree.core :as hc :refer [<??]]
     [hasch.core :refer [uuid]]
-    [datahike.index :refer [-slice -seq -count -all] :as di]
+    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
     [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
     [me.tonsky.persistent-sorted-set :as set]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
@@ -146,15 +146,15 @@
 
 (defn db-transient [db]
   (-> db
-      (update :eavt transient)
-      (update :aevt transient)
-      (update :avet transient)))
+      (update :eavt -transient)
+      (update :aevt -transient)
+      (update :avet -transient)))
 
 (defn db-persistent! [db]
   (-> db
-      (update :eavt persistent!)
-      (update :aevt persistent!)
-      (update :avet persistent!)))
+      (update :eavt -persistent!)
+      (update :aevt -persistent!)
+      (update :avet -persistent!)))
 
 (defrecord-updatable DB [schema eavt aevt avet max-eid max-tx rschema hash config]
   #?@(:cljs
@@ -876,7 +876,7 @@
     (raise "Bad transaction data " initial-es ", expected sequential collection"
            {:error :transact/syntax, :tx-data initial-es}))
   (loop [report (-> initial-report
-                    #_(update :db-after transient))
+                    (update :db-after transient))
          es initial-es]
     (let [[entity & entities] es
           db (:db-after report)
@@ -886,7 +886,7 @@
         (-> report
             (assoc-in [:tempids :db/current-tx] (current-tx report))
             (update-in [:db-after :max-tx] inc)
-            #_(update :db-after persistent!))
+            (update :db-after persistent!))
 
         (nil? entity)
         (recur report entities)
