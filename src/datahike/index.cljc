@@ -4,6 +4,7 @@
   #?(:clj (:import [hitchhiker.tree.core DataNode IndexNode]
                    [me.tonsky.persistent_sorted_set PersistentSortedSet])))
 
+;; TODO add doc to each function
 (defprotocol IIndex
   (-all [index])
   (-seq [index])
@@ -13,8 +14,7 @@
   (-slice [index from to index-type])
   (-flush [index backend])
   (-transient [index])
-  (-persistent! [index])
-  )
+  (-persistent! [index]))
 
 
 (extend-type DataNode
@@ -37,6 +37,7 @@
               (dih/-transient tree))
   (-persistent! [tree]
                (dih/-persistent! tree)))
+
 
 (extend-type IndexNode
   IIndex
@@ -80,6 +81,7 @@
               (dip/-transient set))
   (-persistent! [set]
                 (dip/-persistent! set)))
+
 
 
 (defmulti empty-index
