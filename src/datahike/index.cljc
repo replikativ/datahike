@@ -75,7 +75,7 @@
            (dip/-remove set datom index-type))
   (-slice [set from to _]
           (dip/-slice set from to))
-  (-flush [set]
+  (-flush [set _]
           (dip/-flush set))
   (-transient [set]
               (dip/-transient set))
