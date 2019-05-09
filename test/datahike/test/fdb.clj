@@ -231,10 +231,16 @@
         datom-3                     (datom 125 :likes "Hans" 1 true)
         {:keys [eavt eavt-durable]} (-> (with-datom db datom-1)
                                         (with-datom datom-2))
-        create-eavt                 (fn [e a v tx] (datom e a v tx true))]
+
+        ;; before (k/key->vect :eavt (fdb/get-key (KeySelector/firstGreaterOrEqual (k/key :eavt [124 nil nil nil]))))
+        ;; after  (k/key->vect :eavt (fdb/get-key (KeySelector/firstGreaterThan (k/key :eavt [124 nil nil nil]))))
+        ;; r      (fdb/get-range :eavt [124 nil nil nil] [124 nil nil nil])
+
+        create-eavt (fn [e a v tx] (datom e a v tx true))]
     (is (= datom-1
            (first (slice eavt eavt-durable (datom 123 nil nil 1 nil) [123]
                          (datom 124 nil nil 1 nil)  [124] create-eavt))))
+    ;;(hmsg/lookup-fwd-iter eavt-durable [124 nil nil nil])
     (is (= datom-2
            (first (slice eavt eavt-durable (datom 124 nil nil 1 nil) [124]
                          create-eavt))))
