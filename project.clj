@@ -3,18 +3,21 @@
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :url "https://github.com/tonsky/datahike"
-  
+
   :dependencies [[org.clojure/clojure       "1.10.0"   :scope "provided"]
                  [org.clojure/clojurescript "1.10.516" :scope "provided"]
                  [persistent-sorted-set     "0.1.1"]
                  [io.replikativ/hitchhiker-tree "0.1.4"]
                  [io.replikativ/superv.async "0.2.9"]
-                 [io.replikativ/konserve-leveldb "0.1.2"]]
-  
+                 [io.replikativ/konserve-leveldb "0.1.2"]
+                 [com.apple.foundationdb/fdb-java "5.1.7"]
+                 [byte-streams "0.2.3"]
+                 [funcool/octet "1.1.2"]]
+
   :plugins [
     [lein-cljsbuild "1.1.7"]
   ]
-  
+
   :global-vars {
     *warn-on-reflection*   true
     *print-namespace-maps* false
