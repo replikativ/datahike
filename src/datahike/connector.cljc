@@ -14,7 +14,7 @@
   (:import [java.net URI]))
 
 (s/def ::scheme #{"datahike"})
-(s/def ::store-scheme #{"mem" "file" "level" "fdb"})
+(s/def ::store-scheme #{"mem" "file" "level"})
 (s/def ::uri-config (s/cat :meta string?
                             :store-scheme ::store-scheme
                             :path string?))
@@ -38,7 +38,6 @@
     "mem" :datahike.index/persistent-set
     "file" :datahike.index/hitchhiker-tree
     "level" :datahike.index/hitchhiker-tree
-    "fdb" :datahike.index/fdb
     (throw (ex-info "Unknown datahike store scheme: " scheme))))
 
 (defn create-database
@@ -59,9 +58,7 @@
                    (<?? S (fs/new-fs-store path)))
                   "level"
                   (kons/add-hitchhiker-tree-handlers
-                   (<?? S (kl/new-leveldb-store path)))
-                  "fdb"
-                  (fdb.core/empty-db))
+                   (<?? S (kl/new-leveldb-store path))))
                 (atom (cache/lru-cache-factory {} :threshold 1000))) ;; TODO: move store to separate ns
          stored-db (<?? S (k/get-in store [:db]))
          _ (when stored-db
