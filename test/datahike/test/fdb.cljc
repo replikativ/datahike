@@ -79,7 +79,7 @@
 
 (deftest using-with
   "get"
-  #_(let [db (-> (d/empty-db {:age {:db/index true}})
+  (let [db (-> (d/empty-db {:age {:db/index true}})
                (d/db-with [ [:db/add 123 :likes "Hans" 2]
                             [:db/add 124 :likes "GG" 3] ]))]
     ;; get :e-end
