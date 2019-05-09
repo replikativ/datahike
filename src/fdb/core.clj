@@ -75,9 +75,18 @@
   index-type is `:eavt`, `:aevt` and `:avet`"
   [index-type begin end]
   (let [fd        (FDB/selectAPIVersion 510)
+        ;; TODO: on the console: put (datom 124 :likes "Hans" 1 true) in an empty db and then
+        ;; do (KeySelector/firstGreaterOrEqual (key :eavt [124 nil nil nil]))
+        ;; What does it return?
+        ;;
         begin-key (KeySelector/firstGreaterOrEqual (key index-type begin))
-        ;; 'GreaterThan' makes sure that `end` is in the returned interval
-        end-key   (KeySelector/firstGreaterThan (key index-type end))]
+        end-key (KeySelector/firstGreaterThan (key index-type end))
+        #_(if (= begin end)
+            ;; TODO: this is just a hack to force it to return something
+            ;; when begin = end. Coz in this case getRange returns empty
+            (KeySelector/firstGreaterOrEqual (byte-array [0xFF]))
+            ;; 'GreaterThan' makes sure that `end` is in the returned interval
+            (KeySelector/firstGreaterThan (key index-type end)))]
     (with-open [db (.open fd)]
       (tr! db
            (mapv #(.getKey %)
