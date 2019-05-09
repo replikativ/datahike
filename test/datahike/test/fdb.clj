@@ -135,9 +135,9 @@
                                    [:a 123 "Hans" 1 true]
                                    [:c 9999999 "GG" 1 true]))))
       (is (= 2
-           (count (fdb/get-range :aevt
-                                 [:a 123 "Hans" 1 true]
-                                 [:c 0 "GG" 1 true]))))
+             (count (fdb/get-range :aevt
+                                   [:a 123 "Hans" 1 true]
+                                   [:c 0 "GG" 1 true]))))
       (is (= 3
              (count (fdb/get-range :aevt [:e] [:g]))))
       (is (= 0

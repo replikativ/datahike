@@ -3,7 +3,6 @@
     [clojure.test :as t :refer [is are deftest testing]]
     [datahike.core :as d]))
 
-
 (def db
   (-> (d/empty-db {:ref {:db/valueType :db.type/ref}})
       (d/db-with [[:db/add 1 :db/ident :ent1]
