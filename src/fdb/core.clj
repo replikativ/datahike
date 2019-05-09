@@ -104,13 +104,13 @@
 
 ;; NOTE: Works but not used. Using range instead as it should be faster.
 (defn iterate-from
-  "Lazily iterates through the keys starting from key (in fdb format)"
-  [key]
-  (let [ks       (KeySelector/firstGreaterOrEqual key)
-        key      (get-key ks)
-        next-key (get-key (.add ks 1))]
+  "Lazily iterates through the keys starting from `begin` (a key in fdb format)"
+  [index-type begin]
+  (let [key-selector (KeySelector/firstGreaterOrEqual (key index-type begin))
+        key      (get-key key-selector)
+        next-key (get-key (.add key-selector 1))]
     (when-not (= (seq key) (seq next-key)) ;; seq makes [B comparable
-      (lazy-seq (cons key (iterate-from next-key))))))
+      (lazy-seq (cons key (iterate-from index-type next-key))))))
 
 
 ;;;;;;;;;;; Debug HELPER
