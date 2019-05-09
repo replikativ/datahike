@@ -166,7 +166,7 @@
   (ByteBuffer/wrap byteArr))
 
 (defn byteBuffer->vect
-  "Converts a fdb key (bytebuffer) into a datom vector"
+  "Converts a bytebuffer representation of a fdb key into a datom vector"
   [index-type buffer]
   (let [e (first (buf/read buffer (buf/spec buf/int64)
                            {:offset (shift-left (position index-type :e-end) 7)}))
@@ -182,6 +182,7 @@
 
 
 (defn key->vect
+  "Converts a fdb key (represented as a byte array) into a clojure vector."
   [index-type byteArr]
   (byteBuffer->vect index-type (byteArr->byteBuffer byteArr)))
 
