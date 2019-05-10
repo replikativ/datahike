@@ -16,11 +16,6 @@
     datahike.test.listen
     datahike.test.lookup-refs
     datahike.test.lru
-    datahike.test.parser
-    datahike.test.parser-find
-    datahike.test.parser-rules
-    datahike.test.parser-query
-    datahike.test.parser-where
     datahike.test.pull-api
     datahike.test.pull-parser
     datahike.test.query
