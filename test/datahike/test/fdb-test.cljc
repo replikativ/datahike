@@ -1,4 +1,4 @@
-(ns datahike.test.fdb
+(ns datahike.test.fdb-test
   (:import (com.apple.foundationdb KeySelector
                                    FDB))
   (:require [datahike.db :as dh-db :refer [with-datom slice]]
@@ -23,7 +23,7 @@
   (let [vect [20 :hello "some analysis" 3]]
     (is (= (k/key->vect :eavt (k/->byteArr :eavt vect)) vect)))
 
-  "basic vector conversion"
+  "basic vector conversion and inserting a string value"
   (assert-vec-conversion :eavt [20 :hello "some analysis" 3])
 
   "int value"
@@ -33,7 +33,13 @@
   (assert-vec-conversion :eavt [20 :hello (long 234) 3])
 
   "biggest 'e' value"
-  (assert-vec-conversion :eavt [9223372036854775807 :hello (long 234) 3]))
+  (assert-vec-conversion :eavt [9223372036854775807 :hello (long 234) 3])
+
+  ;; TODO: what happens when we try to insert something like :eavt [12 nil nil]
+  ;; TODO: this raises the question of 'can we pass a vector with only subelements in get range when we do a search? e.g. get-range [125]? Shall we convert that automatically to [125 nil nil]?
+  ;; Test as shown that you cannot insert a nil value in datahike: @(transact conn [{ :db/id 5, :name nil  }])
+
+  )
 
 ;; --------- :aevt indices
 (deftest aevt
@@ -113,7 +119,8 @@
       (is (= 1
              (count (fdb/get-range :eavt
                                    [3 :likes "HH" 1 true]
-                                   [3 :likes "HH" 1 true]))))))
+                                   [3 :likes "HH" 1 true]))))
+      ))
 
   (testing "simple range :aevt"
     (let [db (dh-db/empty-db)
@@ -222,7 +229,7 @@
       ))
 
 
-(deftest slice-simple
+#_(deftest slice-simple
   "slice-simple"
   (let [db                          (dh-db/empty-db)
         _                           (fdb/clear-all)
@@ -250,7 +257,7 @@
     ))
 
 
-(deftest slice-large-range
+#_(deftest slice-large-range
   "slice-large"
   (let [db                          (dh-db/empty-db)
         _                           (fdb/clear-all)
@@ -268,6 +275,7 @@
            ;;
            ;; and 11 in our current test.
            (count sliced)))))
+
 
 (deftest fdb-using-init-db
   (testing "init-db on the simplest example"
