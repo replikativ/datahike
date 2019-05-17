@@ -6,6 +6,7 @@
     datahike.test.core
     datahike.test.components
     datahike.test.conn
+    datahike.test.fdb
     datahike.test.db
     datahike.test.entity
     datahike.test.explode
@@ -34,8 +35,7 @@
     datahike.test.serialization
     datahike.test.transact
     datahike.test.validation
-    datahike.test.upsert
-    datahike.test.fdb))
+    datahike.test.upsert))
 
 (defn ^:export test-clj []
   (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\..*")))
