@@ -1,6 +1,7 @@
 (ns fdb.keys
   (:import (java.nio ByteBuffer))
-  (:require [octet.core :as buf]))
+  (:require [octet.core :as buf])
+  (:require [clojure.spec.alpha :as s]))
 
 
 (def buf-len 100)
@@ -10,6 +11,8 @@
 (defn position
   [index-type section-end]
   "Given an `index-type`, returns the position in the byte buffer where a given `section-end` is located. `index-type` and `section-end` are both keywords."
+  (assert (s/valid? keyword? index-type))
+  (assert (s/valid? keyword? section-end))
   (case index-type
     :eavt (section-end {:code 0 :e-end 8 :a-end 40 :v-end 80 :t-end 99})
     :aevt (section-end {:code 0 :a-end 40 :e-end 48 :v-end 80 :t-end 99})
@@ -29,6 +32,8 @@
    at the location given by `offset`.
    (Can be used to find out where to write n + 1 bytes that ends at the location
    given by `offset`)"
+  (assert (s/valid? int? offset))
+  (assert (s/valid? int? n))
   (- offset n))
 
 (defn- attribute-as-str
@@ -36,8 +41,10 @@
   If nil, return an empty string."
   [a]
   (if a
-    (let [a-namespace (namespace a)]
-      (str a-namespace (when a-namespace "/") (name a)))
+    (do
+      (assert (s/valid? keyword? a))
+      (let [a-namespace (namespace a)]
+        (str a-namespace (when a-namespace "/") (name a))))
     ""))
 
 ;; TODO: Def. and implement the other types
@@ -58,6 +65,8 @@
   given the end position of the string storage section.
   (Here offset means a shift to the left from the end position.)"
   [string-size section-end]
+  (assert (s/valid? int? string-size))
+  (assert (s/valid? int? section-end))
   ;; 2 * 4 bytes: as we store the string size twice:
   ;; - octet puts the size before the string
   ;; - we also put it again at the end
@@ -91,6 +100,7 @@
 
 (defn- write-long
   [val buffer section-end]
+  (assert (s/valid? integer? val))
   (buf/write! buffer [val] (buf/spec buf/int64)
               {:offset (shift-left section-end 11)})
   (buf/write! buffer [LONG] (buf/spec buf/int32)
@@ -106,12 +116,14 @@
       (= type java.lang.String)  (write-str val buffer section-end))))
 
 
+
+
 ;; TODO: add validations that each of e a v t does not overflow.
 ;;
 (defn ->byteBuffer
   "Converts a vector into a bytebuffer"
   [index-type [p1 p2 p3 t]]
-  (assert (instance? clojure.lang.Keyword index-type))
+  (assert (s/valid? keyword? index-type))
   (let [buffer          (buf/allocate buf-len {:impl :nio :type :direct})
         index-type-code (index-type->code index-type)
         [e a v]         (case index-type
