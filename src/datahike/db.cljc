@@ -8,6 +8,7 @@
     [hasch.core :refer [uuid]]
     [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
     [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
+    [datahike.schema :as ds]
     [me.tonsky.persistent-sorted-set :as set]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
     [datahike.tools :refer [case-tree combine-hashes]])
@@ -30,7 +31,29 @@
 (def ^:const tx0 0x20000000)
 (def ^:const emax 0x7FFFFFFF)
 (def ^:const txmax 0x7FFFFFFF)
-(def ^:const implicit-schema {:db/ident {:db/unique :db.unique/identity}})
+(def ^:const implicit-schema {:db/ident {:db/unique :db.unique/identity}
+                              :db.part/db   {:db/ident {:db/valueType :db.type/keyword
+                                                        :db/unique :db.unique/identity
+                                                        :db.cardinality :db.cardinality/one}
+                                             :db/valueType {:db/valueType :db.type/value
+                                                            :db/unique :db.unique/identity
+                                                            :db.cardinality :db.cardinality/one}
+                                             :db/id {:db/valueType :db.type/id
+                                                     :db/unique :db.unique/identity
+                                                     :db.cardinality :db.cardinality/one}
+
+                                             :db/cardinality {:db/valueType :db.type/cardinality
+                                                              :db/unique :db.unique/identity
+                                                              :db.cardinality :db.cardinality/one}
+                                             :db/index {:db/valueType :db.type/boolean
+                                                        :db/unique :db.unique/identity
+                                                        :db.cardinality :db.cardinality/one}
+                                             :db/unique {:db/valueType :db.type/unique
+                                                         :db/unique :db.unique/identity
+                                                         :db.cardinality :db.cardinality/one}
+                                             :db.install/_attribute {:db/valueType :db.type.install/_attribute
+                                                                     :db/unique :db.unique/identity
+                                                                     :db.cardinality :db.cardinality/one}}})
 
 ;; ----------------------------------------------------------------------------
 
@@ -378,7 +401,7 @@
    {:pre [(or (nil? schema) (map? schema))]}
    (validate-schema schema)
    (map->DB
-    {:schema schema
+    {:schema (merge implicit-schema schema)
      :rschema (rschema (merge implicit-schema schema))
      :eavt (di/empty-index index :eavt)
      :aevt (di/empty-index index :aevt)
@@ -667,19 +690,39 @@
            true
            (update-in [:db-after] advance-max-eid eid))))
 
+
+(defn update-schema [db ^Datom datom]
+  (cond-> db
+    (and
+     (= (.-a datom) :db/ident)
+     (not (get (:schema db) (.-v datom)) ))
+    (assoc-in [:schema (.-v datom)] (.-e datom))
+    true
+    (update-in [:schema (.-e datom)] #(assoc % (.-a datom) (.-v datom)))))
+
+(defn remove-schema [db ^Datom datom]
+  (cond-> db
+    (and
+     (= (.-a datom) :db/ident)
+     (get (:schema db) (.-v datom)))
+    (update :schema #(dissoc % (.-v datom)))
+    true
+    (update-in [:schema (.-e datom)] #(dissoc % (.-a datom)))))
+
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
-
 (defn- with-datom [db ^Datom datom]
   (validate-datom db datom)
-  (let [indexing? (indexing? db (.-a datom))]
+  (let [indexing? (indexing? db (.-a datom))
+        schema? (ds/schema-attr? (.-a datom))]
     (if (datom-added datom)
       (cond-> db
         true (update-in [:eavt] #(di/-insert % datom :eavt))
         true (update-in [:aevt] #(di/-insert % datom :aevt))
         indexing? (update-in [:avet] #(di/-insert % datom :avet))
         true (advance-max-eid (.-e datom))
-        true (assoc :hash (atom 0)))
+        true (assoc :hash (atom 0))
+        schema? (update-schema datom))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (cond-> db
           true (update-in [:eavt] #(di/-remove % removing :eavt))

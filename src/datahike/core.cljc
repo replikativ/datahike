@@ -581,6 +581,7 @@
              (clojure.edn/read-string {:readers data-readers} \"...\")
              ```"}
   data-readers {'datahike/Datom dd/datom-from-reader
+                'db/id tempid
                 'datahike/DB    db/db-from-reader})
 
 #?(:cljs
