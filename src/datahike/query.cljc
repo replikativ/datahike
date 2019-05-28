@@ -8,12 +8,12 @@
    [me.tonsky.persistent-sorted-set.arrays :as da]
    [datahike.lru]
    [datahike.impl.entity :as de]
-   [datahike.parser :as dp #?@(:cljs [:refer [BindColl BindIgnore BindScalar BindTuple Constant
+   [datalog-parser.core :as dp #?@(:cljs [:refer [BindColl BindIgnore BindScalar BindTuple Constant
                                                 FindColl FindRel FindScalar FindTuple PlainSymbol
                                                 RulesVar SrcVar Variable]])]
    [datahike.pull-api :as dpa]
    [datahike.pull-parser :as dpp])
-  #?(:clj (:import [datahike.parser BindColl BindIgnore BindScalar BindTuple
+  #?(:clj (:import [datalog_parser.core BindColl BindIgnore BindScalar BindTuple
                     Constant FindColl FindRel FindScalar FindTuple PlainSymbol
                     RulesVar SrcVar Variable])))
 

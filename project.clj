@@ -7,7 +7,7 @@
   :dependencies [[org.clojure/clojure       "1.10.0"   :scope "provided"]
                  [org.clojure/clojurescript "1.10.516" :scope "provided"]
                  [persistent-sorted-set     "0.1.1"]
-                 [io.lambdaforge/datahike.parser "0.0.1"]
+                 [io.lambdaforge/datalog-parser"0.0.1"]
                  [io.replikativ/hitchhiker-tree "0.1.4"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2"]]
