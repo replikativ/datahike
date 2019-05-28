@@ -1,12 +1,11 @@
 (ns ^:no-doc datahike.pull-api
   (:require
     [datahike.db :as db]
-    [datahike.datom :as dd]
-    [datahike.pull-parser :as dpp #?@(:cljs [:refer [PullSpec]])])
+    [datalog-parser.pull :as dpp #?@(:cljs [:refer [PullSpec]])])
     #?(:clj
       (:import
         [datahike.datom Datom]
-        [datahike.pull_parser PullSpec])))
+        [datalog_parser.pull PullSpec])))
 
 (defn- into!
   [transient-coll items]

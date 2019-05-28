@@ -12,7 +12,7 @@
                                                 FindColl FindRel FindScalar FindTuple PlainSymbol
                                                 RulesVar SrcVar Variable]])]
    [datahike.pull-api :as dpa]
-   [datahike.pull-parser :as dpp])
+   [datalog-parser.pull :as dpp])
   #?(:clj (:import [datalog_parser.core BindColl BindIgnore BindScalar BindTuple
                     Constant FindColl FindRel FindScalar FindTuple PlainSymbol
                     RulesVar SrcVar Variable])))
