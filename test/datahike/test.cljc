@@ -17,7 +17,6 @@
     datahike.test.lookup-refs
     datahike.test.lru
     datahike.test.pull-api
-    datahike.test.pull-parser
     datahike.test.query
     datahike.test.query-aggregates
     datahike.test.query-find-specs
