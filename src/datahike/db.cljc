@@ -351,23 +351,27 @@
     :db.unique/value [:db/unique :db.unique/value :db/index]
     :db.cardinality/many [:db.cardinality/many]
     :db.type/ref [:db.type/ref :db/index]
-    (when (true? v)
-      (case k
-        :db/isComponent [:db/isComponent]
-        :db/index [:db/index]
-        []))))
+    (if (= k :db/ident)
+      [:db/ident]
+      (when (true? v)
+        (case k
+          :db/isComponent [:db/isComponent]
+          :db/index [:db/index]
+          [])))))
 
-(defn- rschema [schema]
+(defn rschema [schema]
   (reduce-kv
-    (fn [m attr keys->values]
-      (reduce-kv
+   (fn [m attr keys->values]
+     (if (or (keyword? keys->values) (= attr :db.part/db))
+       m
+       (reduce-kv
         (fn [m key value]
           (reduce
-            (fn [m prop]
-              (assoc m prop (conj (get m prop #{}) attr)))
-            m (attr->properties key value)))
-        m keys->values))
-    {} schema))
+           (fn [m prop]
+             (assoc m prop (conj (get m prop #{}) attr)))
+           m (attr->properties key value)))
+        m keys->values)))
+   {} schema))
 
 (defn- validate-schema-key [a k v expected]
   (when-not (or (nil? v)
@@ -701,17 +705,20 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)]
-    (if (= a :db/ident)
-      (if (schema v)
-        (raise (str "Schema with attribute " v " already exists")
-               {:error :transact/schema :attribute v })
-        (-> (assoc-in db [:schema v] (merge (or (schema e) {}) (hash-map a v)))
-            (assoc-in [:schema e] v)))
-      (if-let [schema-entry (schema e)]
-        (if (schema schema-entry)
-          (update-in db [:schema schema-entry] #(assoc % a v))
-          (update-in db [:schema e] #(assoc % a v)))
-        (assoc-in db [:schema e] (hash-map a v))))))
+     (if (= a :db/ident)
+         (if (schema v)
+           (raise (str "Schema with attribute " v " already exists")
+                  {:error :transact/schema :attribute v })
+           (-> (assoc-in db [:schema v] (merge (or (schema e) {}) (hash-map a v)))
+               (assoc-in [:schema e] v)))
+         (if-let [schema-entry (schema e)]
+           (if (schema schema-entry)
+             (update-in db [:schema schema-entry] #(assoc % a v))
+             (update-in db [:schema e] #(assoc % a v)))
+           (assoc-in db [:schema e] (hash-map a v))))))
+
+(defn update-rschema [db]
+  (assoc db :rschema (rschema (:schema db))))
 
 (defn remove-schema [db ^Datom datom]
   (let [schema (:schema db)
@@ -744,7 +751,7 @@
               indexing? (update-in [:avet] #(di/-insert % datom :avet))
               true (advance-max-eid (.-e datom))
               true (assoc :hash (atom 0))
-              schema? (update-schema datom))
+              schema? (-> (update-schema datom) update-rschema))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (cond-> db
                 true (update-in [:eavt] #(di/-remove % removing :eavt))
