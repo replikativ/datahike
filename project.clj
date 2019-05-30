@@ -11,7 +11,6 @@
                  [io.replikativ/hitchhiker-tree "0.1.4"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2"]]
-  
   :plugins [
     [lein-cljsbuild "1.1.7"]
   ]
