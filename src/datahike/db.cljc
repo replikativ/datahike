@@ -714,13 +714,22 @@
         (assoc-in db [:schema e] (hash-map a v))))))
 
 (defn remove-schema [db ^Datom datom]
-  (cond-> db
-          (and
-            (= (.-a datom) :db/ident)
-            (get (:schema db) (.-v datom)))
-          (update :schema #(dissoc % (.-v datom)))
-          true
-          (update-in [:schema (.-e datom)] #(dissoc % (.-a datom)))))
+  (let [schema (:schema db)
+        e (.-e datom)
+        a (.-a datom)
+        v (.-v datom)]
+    (if (= a :db/ident)
+      (if-not (schema v)
+        (raise (str "Schema with attribute " v " does not exist")
+               {:error :retract/schema :attribute v })
+        (-> (assoc-in db [:schema e] (dissoc (schema v) a))
+            (assoc-in [:schema] #(dissoc % v))))
+      (if-let [schema-entry (schema e)]
+        (if (schema schema-entry)
+          (update-in db [:schema schema-entry] #(dissoc % a))
+          (update-in db [:schema e] #(dissoc % a v)))
+         (raise (str "Schema with entity id " e " does not exist")
+               {:error :retract/schema :entity-id e :attribute a :value e })))))
 
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
