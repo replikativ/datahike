@@ -63,7 +63,7 @@
          stored-db (<?? S (k/get-in store [:db]))
          _ (when stored-db
              (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
-         {:keys [eavt aevt avet rschema]} (db/empty-db schema (store-scheme->index store-scheme))
+         {:keys [eavt aevt avet schema rschema]} (db/empty-db schema (store-scheme->index store-scheme))
          backend (kons/->KonserveBackend store)]
      (<?? S (k/assoc-in store [:db]
                         {:schema schema
