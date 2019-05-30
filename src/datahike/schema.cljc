@@ -25,3 +25,11 @@
 (defn schema-val-valid? [[e a v _] schema]
   (when (schema-attr? a)
     (s/valid? (-> schema a :db/valueType) v)))
+
+(defn value-valid? [[_ _ a v _ :as at] schema]
+  (s/valid?
+   (get-in schema
+           (if (schema-attr? a)
+             [:db.part/db a :db/valueType]
+             [a :db/valueType]))
+   v))

@@ -1,5 +1,6 @@
 (ns sandbox
   (:require [datahike.api :as d]
+            [datahike.db :as dd]
             [datahike.core :as c]))
 
 (comment
@@ -14,6 +15,8 @@
                            :sibling {:db/valueType :db.type/ref
                                      :db.cardinality :db.cardinality/many
                                      }})
+
+  (d/create-database path)
 
   (def conn (d/connect path) )
 
@@ -33,15 +36,26 @@
 
   (def db (c/empty-db))
 
-  (d/transact! conn [{:db/id #db/id[]
-                      :db/ident :name
-                      :db/valueType :db.type/string}])
 
-  (d/q '[:find ?e ?ident :where [?e :db/ident ?ident]] (d/db conn))
+  (def path "datahike:mem://dev")
+  (d/create-database path)
+  (def conn (d/connect path) )
 
-  (:rschema db)
+  (:schema (d/db conn))
 
-  (get-in db [:schema :db.part/db])
 
+  (d/transact! conn [{:db/id #db/id[db.part/db]
+                      :db/valueType :db.type/string
+                      :db/cardinality :db.cardinality/many
+                      :db/ident :name}
+                     {:db/id #db/id[db.part/db]
+                      :db/valueType :db.type/long
+                      :db/ident :age}])
+
+  (d/q '[:find ?e ?ident :where [?e :db/valueType ?ident]] (d/db conn))
+
+  (d/transact! conn [{:db/id #db/id[db.part/user] :name "Alice" :age 30}])
+
+  (d/transact! conn [{:db/id #db/id[db.part/user] :name "Alice" :age "23"}])
 
   )

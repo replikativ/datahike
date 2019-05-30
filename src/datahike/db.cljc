@@ -359,7 +359,7 @@
           :db/index [:db/index]
           [])))))
 
-(defn rschema [schema]
+(defn- rschema [schema]
   (reduce-kv
    (fn [m attr keys->values]
      (if (or (keyword? keys->values) (= attr :db.part/db))
@@ -649,18 +649,18 @@
            {:error :transact/syntax, :entity-id eid, :context at})))
 
 (defn- validate-attr [attr at db]
-  (let [db-idents (get-in db [:rschema :db/ident])]
-    #_(when-not (contains? db-idents attr)
-      (raise "Bad entity attribute " attr " at " at ", not part of current schema"
-             {:error :transact/schema :attribute attr :context at}))
-    (when-not (or (keyword? attr) (string? attr))
-      (raise "Bad entity attribute " attr " at " at ", expected keyword or string"
-               {:error :transact/syntax, :attribute attr, :context at}))))
+  (when-let [db-idents (-> db :rschema :db/ident)]
+    (when-not (or (ds/schema-attr? attr) (db-idents attr))
+      (raise "Bad entity attribute " attr " at " at ", not defined in current schema"
+             {:error :transact/schema :attribute attr :context at}))))
 
-(defn- validate-val [v at db]
+(defn- validate-val [v [_ e a v t :as at] db]
   (when (nil? v)
     (raise "Cannot store nil as a value at " at
-           {:error :transact/syntax, :value v, :context at})))
+           {:error :transact/syntax, :value v, :context at}))
+  (when-not (ds/value-valid? at (:schema db))
+    (raise "Bad entity value " v " at " at ", value does not match schema definition. Must be of type " (get-in db [:schema a :db/valueType])
+           {:error :transact/schema :value v :attribute a :schema (get-in db [:schema a])})))
 
 (defn- current-tx [report]
   (inc (get-in report [:db-before :max-tx])))
@@ -877,7 +877,7 @@
 
 (defn- transact-add [{:keys [db-after] :as report} [_ e a v tx :as ent]]
   (validate-attr a ent db-after)
-  (validate-val v ent (:schema db-after))
+  (validate-val v ent db-after)
   (let [tx (or tx (current-tx report))
         db (:db-after report)
         e (entid-strict db e)
