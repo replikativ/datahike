@@ -4,10 +4,11 @@ jobs: # basic units of work in a run
     working_directory: ~/datahike # directory where steps will run
     docker: # run the steps with Docker
       - image: circleci/clojure:lein-2.8.3 # ...with this image as the primary container; this is where all `steps` will run
-    branches:
-      only:
-        - master
-        - development
+    filters:
+      branches:
+        only:
+          - master
+          - development
     environment: # environment variables for primary container
       LEIN_ROOT: nbd
       JVM_OPTS: -Xmx3200m # limit the maximum heap size to prevent out of memory errors
