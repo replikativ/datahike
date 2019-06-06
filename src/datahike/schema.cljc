@@ -1,7 +1,7 @@
 (ns datahike.schema
   (:require [clojure.spec.alpha :as s]))
 
-(s/def :db.type/id #(or (= (class %) java.lang.Long) string?) )
+(s/def :db.type/id #(or (= (class %) java.lang.Long) string?))
 (s/def :db.type/value #{:db.type/ref :db.type/string :db.type/long :db.type/boolean :db.type/double :db.type/keyword})
 (s/def :db.type/ref :db.type/id)
 (s/def :db.type/string string?)
@@ -16,8 +16,8 @@
 
 (s/def ::schema-attribute #{:db/id :db/ident :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute})
 
-(s/def ::schema (s/keys :req [:db/id :db/ident :db/valueType :db.install/_attribute]
-                        :opt [:db/cardinality :db/unique :db/index]))
+(s/def ::schema (s/keys :req [:db/id :db/ident :db/valueType]
+                        :opt [:db/cardinality :db/unique :db/index :db.install/_attribute]))
 
 (defn schema-attr? [attr]
   (s/valid? ::schema-attribute attr))
@@ -33,3 +33,12 @@
              [:db.part/db a :db/valueType]
              [a :db/valueType]))
    v))
+
+(defn schema-valid? [schema]
+  (s/valid? ::schema schema))
+
+(comment
+  
+  
+  
+  )

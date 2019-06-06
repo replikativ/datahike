@@ -55,6 +55,8 @@
                                                                    :db/unique      :db.unique/identity
                                                                    :db.cardinality :db.cardinality/one}}})
 
+(def ^:const implicit-rschema {:db/ident #{}})
+
 ;; ----------------------------------------------------------------------------
 
 #?(:clj
@@ -383,17 +385,12 @@
                      :value     v}))))
 
 (defn- validate-schema [schema]
-  (doseq [[a kv] schema]
-    (let [comp? (:db/isComponent kv false)]
-      (validate-schema-key a :db/isComponent (:db/isComponent kv) #{true false})
-      (when (and comp? (not= (:db/valueType kv) :db.type/ref))
-        (throw (ex-info (str "Bad attribute specification for " a ": {:db/isComponent true} should also have {:db/valueType :db.type/ref}")
-                        {:error     :schema/validation
-                         :attribute a
-                         :key       :db/isComponent}))))
-    (validate-schema-key a :db/unique (:db/unique kv) #{:db.unique/value :db.unique/identity})
-    (validate-schema-key a :db/valueType (:db/valueType kv) #{:db.type/ref})
-    (validate-schema-key a :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many})))
+  (doall (for [[a s] schema]
+    (when-not (ds/schema-valid? s)
+      (throw (ex-info (str "Bad schema specification for attribute " a)
+                      {:error :schema/validation
+                       :attribute a
+                       :schema s}))))))
 
 (def ^:const br 300)
 (def ^:const br-sqrt (long (Math/sqrt br)))
@@ -401,18 +398,18 @@
 (defn ^DB empty-db
   ([] (empty-db nil :datahike.index/hitchhiker-tree))
   ([schema] (empty-db schema :datahike.index/hitchhiker-tree))
-  ([schema index]
-   {:pre [(or (nil? schema) (map? schema))]}
-   (validate-schema schema)
+  ([schema index & {config :config
+                    :or {config {:schema-on-read false}}}]
    (map->DB
-     {:schema  (merge implicit-schema schema)
-      :rschema (rschema (merge implicit-schema schema))
-      :eavt    (di/empty-index index :eavt)
-      :aevt    (di/empty-index index :aevt)
-      :avet    (di/empty-index index :avet)
-      :max-eid e0
-      :max-tx  tx0
-      :hash    (atom 0)})))
+    {:schema implicit-schema
+     :rschema (merge implicit-rschema (rschema implicit-schema))
+     :eavt    (di/empty-index index :eavt)
+     :aevt    (di/empty-index index :aevt)
+     :avet    (di/empty-index index :avet)
+     :config config
+     :max-eid e0
+     :max-tx  tx0
+     :hash    (atom 0)})))
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
@@ -430,11 +427,12 @@
 
 (defn ^DB init-db
   ([datoms] (init-db datoms nil))
-  ([datoms schema & {index :index
-                     :or   {index :datahike.index/hitchhiker-tree}}]
-   (validate-schema schema)
-   (let [rschema (rschema (merge implicit-schema schema))
-         schema (merge implicit-schema schema)
+  ([datoms & {index :index
+                     config :config
+                     :or   {index :datahike.index/hitchhiker-tree
+                            config {:schema-on-read false}}}]
+   (let [rschema (merge implicit-rschema (rschema implicit-schema))
+         schema implicit-schema
          indexed (:db/index rschema)
          eavt (di/init-index index datoms indexed :eavt)
          aevt (di/init-index index datoms indexed :aevt)
@@ -448,7 +446,8 @@
                :avet    avet
                :max-eid max-eid
                :max-tx  max-tx
-               :hash    (atom 0)}))))
+               :hash    (atom 0)
+               :config config}))))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)
@@ -649,18 +648,25 @@
            {:error :transact/syntax, :entity-id eid, :context at})))
 
 (defn- validate-attr [attr at db]
-  (when-let [db-idents (-> db :rschema :db/ident)]
-    (when-not (or (ds/schema-attr? attr) (db-idents attr))
-      (raise "Bad entity attribute " attr " at " at ", not defined in current schema"
+  (if (get-in db [:config :schema-on-read])
+    (when-not (or (keyword? attr) (string? attr))
+      (raise "Bad entity attribute " attr " at " at ", expected keyword or string"
+             {:error :transact/syntax, :attribute attr, :context at}))
+    (if-let [db-idents (-> db :rschema :db/ident)]
+      (when-not (or (ds/schema-attr? attr) (db-idents attr))
+        (raise "Bad entity attribute " attr " at " at ", not defined in current schema"
+               {:error :transact/schema :attribute attr :context at}))
+      (raise "No schema found in db."
              {:error :transact/schema :attribute attr :context at}))))
 
 (defn- validate-val [v [_ e a v t :as at] db]
   (when (nil? v)
     (raise "Cannot store nil as a value at " at
            {:error :transact/syntax, :value v, :context at}))
-  (when-not (ds/value-valid? at (:schema db))
-    (raise "Bad entity value " v " at " at ", value does not match schema definition. Must be of type " (get-in db [:schema a :db/valueType])
-           {:error :transact/schema :value v :attribute a :schema (get-in db [:schema a])})))
+  (when-not (get-in db [:config :schema-on-read])
+    (when-not (ds/value-valid? at (:schema db))
+      (raise "Bad entity value " v " at " at ", value does not match schema definition. Must be of type " (get-in db [:schema a :db/valueType])
+             {:error :transact/schema :value v :attribute a :schema (get-in db [:schema a])}))))
 
 (defn- current-tx [report]
   (inc (get-in report [:db-before :max-tx])))
