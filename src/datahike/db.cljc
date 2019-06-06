@@ -32,28 +32,30 @@
 (def ^:const emax 0x7FFFFFFF)
 (def ^:const txmax 0x7FFFFFFF)
 (def ^:const implicit-schema {:db/ident   {:db/unique :db.unique/identity}
-                              :db.part/db {:db/ident              {:db/valueType   :db.type/keyword
-                                                                   :db/unique      :db.unique/identity
-                                                                   :db.cardinality :db.cardinality/one}
-                                           :db/valueType          {:db/valueType   :db.type/value
-                                                                   :db/unique      :db.unique/identity
-                                                                   :db.cardinality :db.cardinality/one}
-                                           :db/id                 {:db/valueType   :db.type/id
-                                                                   :db/unique      :db.unique/identity
-                                                                   :db.cardinality :db.cardinality/one}
-
-                                           :db/cardinality        {:db/valueType   :db.type/cardinality
-                                                                   :db/unique      :db.unique/identity
-                                                                   :db.cardinality :db.cardinality/one}
-                                           :db/index              {:db/valueType   :db.type/boolean
-                                                                   :db/unique      :db.unique/identity
-                                                                   :db.cardinality :db.cardinality/one}
-                                           :db/unique             {:db/valueType   :db.type/unique
-                                                                   :db/unique      :db.unique/identity
-                                                                   :db.cardinality :db.cardinality/one}
+                              :db.part/db {:db/ident {:db/valueType   :db.type/keyword
+                                                      :db/unique      :db.unique/identity
+                                                      :db/cardinality :db.cardinality/one}
+                                           :db/valueType {:db/valueType   :db.type/value
+                                                          :db/unique      :db.unique/identity
+                                                          :db/cardinality :db.cardinality/one}
+                                           :db/id {:db/valueType   :db.type/id
+                                                   :db/unique      :db.unique/identity
+                                                   :db/cardinality :db.cardinality/one}
+                                           :db/cardinality {:db/valueType   :db.type/cardinality
+                                                            :db/unique      :db.unique/identity
+                                                            :db/cardinality :db.cardinality/one}
+                                           :db/index {:db/valueType   :db.type/boolean
+                                                      :db/unique      :db.unique/identity
+                                                      :db/cardinality :db.cardinality/one}
+                                           :db/unique {:db/valueType   :db.type/unique
+                                                       :db/unique      :db.unique/identity
+                                                       :db/cardinality :db.cardinality/one}
+                                           :db/isComponent {:db/valueType :db.type/boolean
+                                                            :db/unique :db.unique/identity
+                                                            :db/cardinality :db.cardinality/one}
                                            :db.install/_attribute {:db/valueType   :db.type.install/_attribute
                                                                    :db/unique      :db.unique/identity
-                                                                   :db.cardinality :db.cardinality/one}}})
+                                                                   :db/cardinality :db.cardinality/one}}})
 
 (def ^:const implicit-rschema {:db/ident #{}})
 

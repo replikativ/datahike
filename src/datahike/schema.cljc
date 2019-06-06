@@ -14,7 +14,7 @@
 ;; only for datomic compliance
 (s/def :db.type.install/_attribute #{:db.part/tx :db.part/db :db.part/user})
 
-(s/def ::schema-attribute #{:db/id :db/ident :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute})
+(s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute})
 
 (s/def ::schema (s/keys :req [:db/id :db/ident :db/valueType]
                         :opt [:db/cardinality :db/unique :db/index :db.install/_attribute]))

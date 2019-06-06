@@ -7,7 +7,7 @@
 (comment
 
   (def path "datahike:mem://dev")
-  ;;(def path "datahike:file:///tmp/local-db-0")
+ ;;(def path "datahike:file:///tmp/local-db-0")
   (d/delete-database path)
 
   (def schema [{:db/id #db/id[db.part/db]
@@ -23,7 +23,7 @@
 
   (d/create-database path schema)
 
-  (d/create-database path)
+  ;; (d/create-database path)
 
   (def conn (d/connect path))
 
