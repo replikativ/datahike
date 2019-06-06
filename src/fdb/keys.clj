@@ -55,6 +55,7 @@
 (defn- cst->type
   [int]
   "Returns the type corresponding to its encoding"
+  (assert (s/valid? int? int))
   (cond
     (= int INT)    java.lang.Integer
     (= int LONG)   java.lang.Long
@@ -77,7 +78,7 @@
 
 (defn- write-str
   [val buffer section-end]
-  (assert (= (type val) java.lang.String))
+  (assert (s/valid? string? val))
   (buf/write! buffer [val] (buf/spec buf/string*)
               {:offset (str-offset (str-size val) section-end)})
   (buf/write! buffer [(str-size val)] (buf/spec buf/int32)
@@ -87,6 +88,7 @@
 
 (defn- write-int
   [val buffer section-end]
+  (assert (s/valid? int? val))
   (buf/write! buffer [val] (buf/spec buf/int32)
               {:offset (shift-left section-end 7)})
   (buf/write! buffer [INT] (buf/spec buf/int32)
@@ -95,6 +97,8 @@
 (defn- write-a
   "Write the `a` part in eavt"
   [a buffer a-end]
+  (assert (s/valid? (s/alt :nil nil?
+                           :keyword keyword?) [a]))
   (let [a-as-str (attribute-as-str a)]
     (write-str a-as-str buffer a-end)))
 
