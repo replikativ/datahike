@@ -13,22 +13,27 @@
             [clojure.core.cache :as cache])
   (:import [java.net URI]))
 
+(def uri-regex #"datahike:(mem|file|level):(.+)/([^/]+)")
+(s/def ::uri-string (s/and string? #(re-matches uri-regex %)))
+
 (s/def ::scheme #{"datahike"})
 (s/def ::store-scheme #{"mem" "file" "level"})
 (s/def ::uri-config (s/cat :meta string?
-                            :store-scheme ::store-scheme
-                            :path string?))
+                           :store-scheme ::store-scheme
+                           :path string?))
 
 (s/fdef parse-uri
-  :args (s/cat :uri string?)
-  :ret ::uri-config)
+        :args ::uri-string
+        :ret ::uri-config)
 
-(defn- parse-uri [uri]
-  (let [base-uri (URI. uri)
-        scheme (.getScheme base-uri)
-        sub-uri (URI. (.getSchemeSpecificPart base-uri))
+(defn parse-uri [uri]
+  #_{:pre [(s/valid? ::uri-string uri)]
+   :post [(s/valid? ::uri-config %)]}
+  (let [base-uri     (URI. uri)
+        scheme       (.getScheme base-uri)
+        sub-uri      (URI. (.getSchemeSpecificPart base-uri))
         store-scheme (.getScheme sub-uri)
-        path (.getPath sub-uri)]
+        path         (.getPath sub-uri)]
     [scheme store-scheme path]))
 
 (def memory (atom {}))

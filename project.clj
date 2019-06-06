@@ -93,11 +93,12 @@
            :dependencies [[org.clojure/tools.nrepl     "0.2.13"]
                           [org.clojure/tools.namespace "0.2.11"]
                           [lambdaisland/kaocha         "0.0-389"]
-                          [lambdaisland/kaocha-cljs    "0.0-16"]] }
+                          [lambdaisland/kaocha-cljs    "0.0-16"]
+                          [org.clojure/test.check      "0.9.0"]] }
     :aot { :aot [#"datahike\.(?!query-v3).*"]
            :jvm-opts ["-Dclojure.compiler.direct-linking=true"] }
   }
-  
+
   :clean-targets ^{:protect false} [
     "target"
     "release-js/datahike.bare.js"
