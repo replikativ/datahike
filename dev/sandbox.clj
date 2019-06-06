@@ -27,6 +27,8 @@
 
   (def conn (d/connect path))
 
+  (def db (d/db conn))
+
   (d/transact! conn [{:db/id 1, :name  "Alice", :age   15}
                      {:db/id 2, :name  "Bob", :age   37}
                      {:db/id 3, :name  "Charlie", :age   37}
@@ -34,6 +36,8 @@
                      {:db/id 5, :name  "Daisy", :age   22 :sibling [1]}])
 
   (def query '[:find ?e ?a ?tx :where [?e :name "Daisy" ?tx] [?e :age ?a]])
+
+  (d/q query db)
 
   (d/q query (d/db conn))
 
