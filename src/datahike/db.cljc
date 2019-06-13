@@ -1093,7 +1093,7 @@
 
             (= op :db.fn/retractAttribute)
             (if-let [e (entid db e)]
-              (let [_ (validate-attr a entity (:schema db))
+              (let [_ (validate-attr a entity db)
                     datoms (-search db [e a])]
                 (recur (reduce transact-retract-datom report datoms)
                        (concat (retract-components db datoms) entities)))
