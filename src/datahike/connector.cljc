@@ -10,11 +10,21 @@
             [konserve.memory :as mem]
             [superv.async :refer [<?? S]]
             [clojure.spec.alpha :as s]
-            [clojure.core.cache :as cache])
+            [clojure.core.cache :as cache]
+            [miner.strgen :as sg]
+            [clojure.spec.gen.alpha :as gen])
   (:import [java.net URI]))
 
-(def uri-regex #"datahike:(mem|file|level):(.+)/([^/]+)")
-(s/def ::uri-string (s/and string? #(re-matches uri-regex %)))
+(s/def ::uri-string (let [uri-regex #"datahike:(mem|file|level):///(.*)([^/]+)"]
+                      (s/spec (s/and string? #(re-matches uri-regex %))
+                              :gen  #(sg/string-generator uri-regex))))
+
+(def uri-regex #"datahike:(mem|file|level)://(.*)/([^/]+)")
+(s/def ::hello
+  (s/with-gen (s/and string? #(re-matches uri-regex %))
+    #(gen/fmap (fn [[s1 s2]] (str "datahike:" s1 ":///" s2))
+               (gen/tuple (s/gen #{"mem" "file" "level"})
+                          (gen/string-alphanumeric)))))
 
 (s/def ::scheme #{"datahike"})
 (s/def ::store-scheme #{"mem" "file" "level"})

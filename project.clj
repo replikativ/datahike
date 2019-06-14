@@ -94,7 +94,8 @@
                           [org.clojure/tools.namespace "0.2.11"]
                           [lambdaisland/kaocha         "0.0-389"]
                           [lambdaisland/kaocha-cljs    "0.0-16"]
-                          [org.clojure/test.check      "0.9.0"]] }
+                          [org.clojure/test.check      "0.9.0"]
+                          [com.velisco/strgen          "0.1.8"]] }
     :aot { :aot [#"datahike\.(?!query-v3).*"]
            :jvm-opts ["-Dclojure.compiler.direct-linking=true"] }
   }
