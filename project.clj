@@ -3,18 +3,19 @@
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :url "https://github.com/tonsky/datahike"
-  
+
   :dependencies [[org.clojure/clojure       "1.10.0"   :scope "provided"]
                  [org.clojure/clojurescript "1.10.516" :scope "provided"]
                  [persistent-sorted-set     "0.1.1"]
                  [io.replikativ/hitchhiker-tree "0.1.4"]
                  [io.replikativ/superv.async "0.2.9"]
-                 [io.replikativ/konserve-leveldb "0.1.2"]]
-  
+                 [io.replikativ/konserve-leveldb "0.1.2"]
+                 [io.lambdaforge/datalog-parser "0.1.0"]]
+
   :plugins [
     [lein-cljsbuild "1.1.7"]
   ]
-  
+
   :global-vars {
     *warn-on-reflection*   true
     *print-namespace-maps* false
@@ -28,8 +29,8 @@
             "node-repl"    ["run" "-m" "user/node-repl"]
             "browser-repl" ["run" "-m" "user/browser-repl"]
             "test-all"     ["do" ["clean"] ["test-clj"] ["test-cljs"]]}
-  
-  :cljsbuild { 
+
+  :cljsbuild {
     :builds [
       { :id "release"
         :source-paths ["src"]
@@ -39,12 +40,12 @@
           :optimizations :advanced
           :pretty-print  false
           :elide-asserts true
-          :output-wrapper false 
+          :output-wrapper false
           :parallel-build true
           :checked-arrays :warn
         }
-        :notify-command ["release-js/wrap_bare.sh"]}
-              
+       :notify-command ["release-js/wrap_bare.sh"]}
+
       { :id "advanced"
         :source-paths ["src" "test"]
         :compiler {
