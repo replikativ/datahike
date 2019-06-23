@@ -8,14 +8,18 @@
    [me.tonsky.persistent-sorted-set.arrays :as da]
    [datahike.lru]
    [datahike.impl.entity :as de]
-   [datalog-parser.core :as dp #?@(:cljs [:refer [BindColl BindIgnore BindScalar BindTuple Constant
-                                                FindColl FindRel FindScalar FindTuple PlainSymbol
-                                                RulesVar SrcVar Variable]])]
+   #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple Constant
+                                          FindColl FindRel FindScalar FindTuple PlainSymbol
+                                          RulesVar SrcVar Variable]])
+   [datalog.parser.impl :as dpi]
+   [datalog.parser.impl.proto :as dpip]
    [datahike.pull-api :as dpa]
-   [datalog-parser.pull :as dpp])
-  #?(:clj (:import [datalog_parser.core BindColl BindIgnore BindScalar BindTuple
-                    Constant FindColl FindRel FindScalar FindTuple PlainSymbol
+   [datalog.parser :refer [parse]]
+   [datalog.parser.pull :as dpp])
+  #?(:clj (:import [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
+                    Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                     RulesVar SrcVar Variable])))
+
 
 ;; ----------------------------------------------------------------------------
 
@@ -279,7 +283,7 @@
     (group-by ffirst rules)))
 
 (defn empty-rel [binding]
-  (let [vars (->> (dp/collect-vars-distinct binding)
+  (let [vars (->> (dpi/collect-vars-distinct binding)
                (map :symbol))]
     (Relation. (zipmap vars (range)) [])))
 
@@ -299,8 +303,8 @@
   (in->rel [binding coll]
     (cond
       (not (db/seqable? coll))
-        (raise "Cannot bind value " coll " to collection " (dp/source binding)
-               {:error :query/binding, :value coll, :binding (dp/source binding)})
+        (raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
+               {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (empty? coll)
         (empty-rel binding)
       :else
@@ -312,11 +316,11 @@
   (in->rel [binding coll]
     (cond
       (not (db/seqable? coll))
-        (raise "Cannot bind value " coll " to tuple " (dp/source binding)
-               {:error :query/binding, :value coll, :binding (dp/source binding)})
+        (raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
+               {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (< (count coll) (count (:bindings binding)))
-        (raise "Not enough elements in a collection " coll " to bind tuple " (dp/source binding)
-               {:error :query/binding, :value coll, :binding (dp/source binding)})
+        (raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
+               {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       :else
         (reduce prod-rel
           (map #(in->rel %1 %2) (:bindings binding) coll)))))
@@ -523,7 +527,7 @@
 
 (defn bind-by-fn [context clause]
   (let [[[f & args] out] clause
-        binding  (dp/parse-binding out)
+        binding  (dpi/parse-binding out)
         fun      (or (get built-ins f)
                      (context-resolve-val context f)
                      (resolve-sym f)
@@ -829,7 +833,7 @@
 
 (defn -aggregate [find-elements context tuples]
   (mapv (fn [element fixed-value i]
-          (if (dp/aggregate? element)
+          (if (instance? Aggregate element)
             (let [f    (-context-resolve (:fn element) context)
                   args (map #(-context-resolve % context) (butlast (:args element)))
                   vals (map #(nth % i) tuples)]
@@ -844,7 +848,7 @@
        (remove nil?)))
 
 (defn aggregate [find-elements context resultset]
-  (let [group-idxs (idxs-of (complement dp/aggregate?) find-elements)
+  (let [group-idxs (idxs-of (complement #(instance? Aggregate %)) find-elements)
         group-fn   (fn [tuple]
                      (map #(nth tuple %) group-idxs))
         grouped    (group-by group-fn resultset)]
@@ -866,7 +870,7 @@
 
 (defn- pull [find-elements context resultset]
   (let [resolved (for [find find-elements]
-                   (when (dp/pull? find)
+                   (when (instance? Pull find)
                      [(-context-resolve (:source find) context)
                       (dpp/parse-pull
                         (-context-resolve (:pattern find) context))]))]
@@ -884,21 +888,21 @@
 (defn memoized-parse-query [q]
   (if-some [cached (get @query-cache q nil)]
     cached
-    (let [qp (dp/parse-query q)]
+    (let [qp (parse q)]
       (vswap! query-cache assoc q qp)
       qp)))
 
 (defn q [q & inputs]
   (let [parsed-q      (memoized-parse-query q)
         find          (:qfind parsed-q)
-        find-elements (dp/find-elements find)
-        find-vars     (dp/find-vars find)
+        find-elements (dpip/find-elements find) 
+        find-vars     (dpi/find-vars find) 
         result-arity  (count find-elements)
         with          (:qwith parsed-q)
         ;; TODO utilize parser
         all-vars      (concat find-vars (map :symbol with))
         q             (cond-> q
-                        (sequential? q) dp/query->map)
+                        (sequential? q) dpi/query->map)
         wheres        (:where q)
         context       (-> (Context. [] {} {})
                         (resolve-ins (:qin parsed-q) inputs))
@@ -908,9 +912,9 @@
     (cond->> resultset
       (:with q)
         (mapv #(vec (subvec % 0 result-arity)))
-      (some dp/aggregate? find-elements)
+      (some #(instance? Aggregate %) find-elements)
         (aggregate find-elements context)
-      (some dp/pull? find-elements)
+      (some #(instance? Pull %) find-elements)
         (pull find-elements context)
       true
         (-post-process find))))

@@ -1,17 +1,20 @@
 (ns ^:no-doc datahike.query-v3
   (:require
-    [clojure.set :as set]
-    [datahike.core :as d]
-    [datahike.db :as db]
-    [datahike.query :as dq]
-    [datahike.lru :as lru]
-    [me.tonsky.persistent-sorted-set.arrays :as da]
-    [datalog-parser.core :as dp #?@(:cljs [:refer [BindColl BindIgnore BindScalar BindTuple
-                                                 Constant DefaultSrc Pattern RulesVar SrcVar Variable
-                                                 Not Or And Predicate PlainSymbol]])])
+   [clojure.set :as set]
+   [datahike.core :as d]
+   [datahike.db :as db]
+   [datahike.query :as dq]
+   [datahike.lru :as lru]
+   [me.tonsky.persistent-sorted-set.arrays :as da]
+   #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple
+                                          Constant DefaultSrc Pattern RulesVar SrcVar Variable
+                                          Not Or And Predicate PlainSymbol]])
+   [datahike.parser :as dp]
+   [datalog.parser.util :as dpu]
+   [datalog.parser.impl :as dpi])
   #?(:clj
     (:import 
-      [datalog_parser.core
+      [datalog.parser.type
         BindColl BindIgnore BindScalar BindTuple
         Constant DefaultSrc Pattern RulesVar SrcVar Variable
         Not Or And Predicate PlainSymbol]
@@ -475,8 +478,8 @@
 
     BindColl
       (if (not (db/seqable? source))
-        (db/raise "Cannot bind value " source " to collection " (dp/source binding)
-                  {:error :query/binding, :value source, :binding (dp/source binding)})
+        (db/raise "Cannot bind value " source " to collection " (dpi/get-source binding)
+                  {:error :query/binding, :value source, :binding (dpi/get-source binding)})
         (let [inner-binding (:binding binding)]
           (case (count source)
             0 []
@@ -490,23 +493,23 @@
     BindTuple
     (let [bindings (:bindings binding)]
       (when-not (db/seqable? source)
-        (db/raise "Cannot bind value " source " to tuple " (dp/source binding)
-                  {:error :query/binding, :value source, :binding (dp/source binding)}))
+        (db/raise "Cannot bind value " source " to tuple " (dpi/get-source binding)
+                  {:error :query/binding, :value source, :binding (dpi/get-source binding)}))
       (when (< (count source) (count bindings))
-        (db/raise "Not enough elements in a collection " source " to bind tuple " (dp/source binding)
-                  {:error :query/binding, :value source, :binding (dp/source binding)}))
+        (db/raise "Not enough elements in a collection " source " to bind tuple " (dpi/get-source binding)
+                  {:error :query/binding, :value source, :binding (dpi/get-source binding)}))
       (reduce (fn [ts [b s]]
                 (bind! ts b s indexes))
               tuples
               (zip bindings source)))
     
     :else
-      (db/raise "Unknown binding form " (dp/source binding)
-               {:error :query/binding, :value source, :binding (dp/source binding)})))
+      (db/raise "Unknown binding form " (dpi/get-source binding)
+               {:error :query/binding, :value source, :binding (dpi/get-source binding)})))
 
 
 (defn bind [binding source]
-  (let [syms    (map :symbol (dp/collect-vars-distinct binding))
+  (let [syms    (map :symbol  (dpi/collect-vars-distinct binding))
         indexes (zipmap syms (range))
         tuples  (bind! [(da/make-array (count syms))] binding source indexes)]
     (array-rel syms tuples)))
@@ -534,9 +537,9 @@
 
 (defn resolve-ins [context bindings values]
   (when (not= (count bindings) (count values))
-    (db/raise "Wrong number of arguments for bindings " (mapv dp/source bindings)
+    (db/raise "Wrong number of arguments for bindings " (mapv dpi/get-source bindings)
            ", " (count bindings) " required, " (count values) " provided"
-           {:error :query/binding, :binding (mapv dp/source bindings)}))
+           {:error :query/binding, :binding (mapv dpi/get-source bindings)}))
   (reduce resolve-in context (zip bindings values)))
 
 
@@ -569,11 +572,11 @@
 
 (defn- matches-pattern? [idxs tuple] ;; TODO handle repeated vars
 ;;   (when-not (db/seqable? tuple)
-;;     (db/raise "Cannot match pattern " (dp/source clause) " because tuple is not a collection: " tuple
-;;            {:error :query/where, :value tuple, :binding (dp/source clause)}))
+;;     (db/raise "Cannot match pattern " (dpi/get-source clause) " because tuple is not a collection: " tuple
+;;            {:error :query/where, :value tuple, :binding (dpi/get-source clause)}))
 ;;   (when (< (count tuple) (count (:pattern clause)))
-;;     (db/raise "Not enough elements in a relation tuple " tuple " to match " (dp/source clause)
-;;            {:error :query/where, :value tuple, :binding (dp/source clause)}))
+;;     (db/raise "Not enough elements in a relation tuple " tuple " to match " (dpi/get-source clause)
+;;            {:error :query/where, :value tuple, :binding (dpi/get-source clause)}))
   (reduce-kv
     (fn [_ i v]
       (if (not= (nth tuple i) v) ;; nth?
@@ -585,8 +588,8 @@
 
 (defn resolve-pattern-coll [coll clause]
   (when-not (db/seqable? coll)
-    (db/raise "Cannot match by pattern " (dp/source clause) " because source is not a collection: " coll
-       {:error :query/where, :value coll, :binding (dp/source clause)}))
+    (db/raise "Cannot match by pattern " (dpi/get-source clause) " because source is not a collection: " coll
+       {:error :query/where, :value coll, :binding (dpi/get-source clause)}))
   (let [pattern (:pattern clause)
         idxs    (->> (map #(when (instance? Constant %1) [%2 (:value %1)]) pattern (range))
                      (remove nil?)
@@ -596,14 +599,14 @@
 
 
 (defn clause-syms [clause]
-  (into #{} (map :symbol) (dp/collect #(instance? Variable %) clause #{})))
+  (into #{} (map :symbol) (dpi/collect-type #(instance? Variable %) clause #{})))
 
 
 (defn substitute-constants [clause context]
   (let [syms   (clause-syms clause)
         consts (:consts context)]
     (if (some #(contains? consts %) syms)
-      (dp/postwalk
+      (dpu/postwalk
         clause
         (fn [form]
           (if (instance? Variable form)
@@ -742,7 +745,7 @@
 (defn resolve-not [context clause]
   (let [{:keys [source vars clauses]} clause
         syms      (into #{} (map :symbol) vars)
-        _         (check-bound context syms (dp/source clause))
+        _         (check-bound context syms (dpi/get-source clause))
         context*  (-> context
                     (project-context syms) ;; sub-context will only see symbols Not is joined by
                     (upd-default-source clause)
@@ -753,7 +756,7 @@
 (defn resolve-or [context clause]
   (let [{:keys [source rule-vars clauses]} clause
         {:keys [required free]}            rule-vars
-        _    (check-bound context (map :symbol required) (dp/source clause))
+        _    (check-bound context (map :symbol required) (dpi/get-source clause))
         syms (into #{} (map :symbol) (concat required free))
         context*  (-> context
                     (project-context syms)
@@ -802,7 +805,7 @@
 
 (defn resolve-predicate [context clause]
   (let [{fun :fn, args :args} clause
-        form      (dp/source clause)
+        form      (dpi/get-source clause)
         f         (get-f context fun form)
         args-arr  (da/make-array (count args))
         _         (collect-args! context args args-arr form)
@@ -878,7 +881,7 @@
               (if (:empty? context*)
                 (reduced context*)
                 (do
-;;                   (println (dp/source clause) "=>")
+;;                   (println (dpi/get-source clause) "=>")
 ;;                   (println-context context*)
                   context*))))
           context clauses))
@@ -975,7 +978,7 @@
                           [(?list ?sid ?fname ?lname) ?studentinfo]]
         parsed (dp/parse-query query)]
     (perf/minibench "postwalk"
-      (dp/postwalk parsed identity))
+      (dpu/postwalk parsed identity))
     (perf/minibench "parse-query"
       (dp/parse-query query))
     (perf/minibench "substitute-constants"
