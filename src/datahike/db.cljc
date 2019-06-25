@@ -434,7 +434,7 @@
   (let [h @(.-hash db)]
     (if (zero? h)
       (reset! (.-hash db) (combine-hashes (hash (.-schema db))
-                                          (hash (.-eavt db))))
+                                          (hash (-datoms db :eavt []))))
       h)))
 
 (defn- hash-fdb [^FilteredDB db]
