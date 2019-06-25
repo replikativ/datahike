@@ -9,8 +9,9 @@
    #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple
                                           Constant DefaultSrc Pattern RulesVar SrcVar Variable
                                           Not Or And Predicate PlainSymbol]])
-   [datahike.parser :as dp]
+   [datalog.parser :refer [parse]]
    [datalog.parser.util :as dpu]
+   [datalog.parser.impl.util :as dpiu]
    [datalog.parser.impl :as dpi])
   #?(:clj
     (:import 
@@ -20,6 +21,7 @@
         Not Or And Predicate PlainSymbol]
       [clojure.lang     IReduceInit Counted]
       [datahike.datom  Datom])))
+
 
 (declare resolve-clauses collect-rel-xf collect-to)
 
@@ -599,7 +601,7 @@
 
 
 (defn clause-syms [clause]
-  (into #{} (map :symbol) (dpi/collect-type #(instance? Variable %) clause #{})))
+  (into #{} (map :symbol) (dpiu/collect #(instance? Variable %) clause #{})))
 
 
 (defn substitute-constants [clause context]
@@ -939,7 +941,7 @@
 (defn parse-query [q]
   (if-let [cached (get @query-cache q nil)]
     cached
-    (let [qp (dp/parse-query q)]
+    (let [qp (parse q)]
       (vswap! query-cache assoc q qp)
       qp)))
 
@@ -953,7 +955,7 @@
                     :default-source-symbol '$ }
         context  (resolve-ins context (:qin parsed-q) inputs)
         context  (resolve-clauses context (:qwhere parsed-q))
-        syms     (concat (dp/find-vars (:qfind parsed-q))
+        syms     (concat (dpi/find-vars (:qfind parsed-q))
                           (map :symbol (:qwith parsed-q)))]
     (native-coll (collect-to context syms (fast-set) [(map vec)]))))
 
@@ -976,11 +978,11 @@
                           [?lid :lesson/starttime ?starttime]
                           [?lid :lesson/endtime ?endtime]
                           [(?list ?sid ?fname ?lname) ?studentinfo]]
-        parsed (dp/parse-query query)]
+        parsed (parse query)]
     (perf/minibench "postwalk"
       (dpu/postwalk parsed identity))
     (perf/minibench "parse-query"
-      (dp/parse-query query))
+      (parse query))
     (perf/minibench "substitute-constants"
       (substitute-constants (first (:where parsed)) {:consts {'?tid 7}})))
 
