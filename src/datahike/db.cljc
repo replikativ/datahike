@@ -433,13 +433,13 @@
 (defn- hash-db [^DB db]
   (let [h @(.-hash db)]
     (if (zero? h)
-      (reset! (.-hash db) (combine-hashes (hash (.-schema db))
-                                          (hash (-datoms db :eavt []))))
+      (let [datoms (or (-datoms db :eavt []) #{})]
+        (reset! (.-hash db) (combine-hashes (hash (-schema db))
+                                            (hash-unordered-coll datoms))))
       h)))
 
 (defn- hash-fdb [^FilteredDB db]
-  (let [h @(.-hash db)
-        datoms (or (-datoms db :eavt []) #{})]
+  (let [h @(.-hash db)]
     (if (zero? h)
       (let [datoms (or (-datoms db :eavt []) #{})]
         (reset! (.-hash db) (combine-hashes (hash (-schema db))

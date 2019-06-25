@@ -64,8 +64,7 @@
              (d/filter empty-db (constantly true))
              (d/filter db (constantly false)))))
 
-    ;; TODO: fix hashing for equivalent functions, see https://github.com/replikativ/datahike/issues/38
-    #_(testing "hash"
+    (testing "hash"
       (is (= (hash (d/db-with db [[:db.fn/retractEntity 2]]))
              (hash (d/filter db remove-ivan))))
       (is (= (hash empty-db)
