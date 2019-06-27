@@ -12,7 +12,10 @@ building on the two projects and the storage backends for the hitchhiker-tree
 through [konserve](https://github.com/replikativ/konserve). We would like to
 hear experience reports and are happy if you join us.
 
-There is also a [video presentation](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
+There is a [video presentation with a walkthrough](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
+
+The overall vision is described in this [presentation](https://www.youtube.com/watch?v=A2CZwOHOb6U).
+
 
 ## Usage
 
@@ -129,13 +132,15 @@ but it might be easier to use Datomic directly when you first learn Datalog.
 Pick datascript if you want the fastest possible query performance and do not
 have a huge amount of data. You can easily persist the write operations
 separately and use the fast in-memory index datastructure of datascript then.
+datahike also at the moment does not support ClojureScript anymore, although we
+plan to recover this functionality.
 
 ## ClojureScript support
 
 In general all [datascript
 documentation](https://github.com/tonsky/datascript/wiki/Getting-started)
-applies for namespaces beyond `datahike.api**. We are working towards a portable
-version of datahike on top of core.async. Feel free to provide some help :).
+applies for namespaces beyond `datahike.api`. We are working towards a portable
+version of datahike on top of `core.async`. Feel free to provide some help :).
 
 
 ## Migration & Backup
