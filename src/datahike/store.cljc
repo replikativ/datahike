@@ -46,46 +46,46 @@
 
 (def memory (atom {}))
 
-(defmethod empty-store "mem" [_ uri]
+(defmethod empty-store "mem" [_ path]
   (let [store (<?? S (mem/new-mem-store))]
-    (swap! memory assoc uri store)
+    (swap! memory assoc path store)
     store))
 
-(defmethod delete-store "mem" [_ uri]
-  (swap! memory dissoc uri))
+(defmethod delete-store "mem" [_ path]
+  (swap! memory dissoc path))
 
-(defmethod connect-store "mem" [_ uri]
-  (@memory uri))
+(defmethod connect-store "mem" [_ path]
+  (@memory path))
 
 (defmethod scheme->index "mem" [_]
   :datahike.index/persistent-set)
 
 ;; file
 
-(defmethod empty-store "file" [_ uri]
+(defmethod empty-store "file" [_ path]
   (kons/add-hitchhiker-tree-handlers
-    (<?? S (fs/new-fs-store uri))))
+    (<?? S (fs/new-fs-store path))))
 
-(defmethod delete-store  "file" [_ uri]
-  (fs/delete-store uri))
+(defmethod delete-store  "file" [_ path]
+  (fs/delete-store path))
 
-(defmethod connect-store "file" [_ uri]
-  (<?? S (fs/new-fs-store uri)))
+(defmethod connect-store "file" [_ path]
+  (<?? S (fs/new-fs-store path)))
 
 (defmethod scheme->index "file" [_]
   :datahike.index/hitchhiker-tree)
 
 ;; level
 
-(defmethod empty-store "level" [_ uri]
+(defmethod empty-store "level" [_ path]
   (kons/add-hitchhiker-tree-handlers
-    (<?? S (kl/new-leveldb-store uri))))
+    (<?? S (kl/new-leveldb-store path))))
 
-(defmethod delete-store "level" [_ uri]
-  (kl/delete-store uri))
+(defmethod delete-store "level" [_ path]
+  (kl/delete-store path))
 
-(defmethod connect-store "level" [_ uri]
-  (<?? S (kl/new-leveldb-store uri)))
+(defmethod connect-store "level" [_ path]
+  (<?? S (kl/new-leveldb-store path)))
 
 (defmethod release-store "level" [_ store]
   (kl/release store))
