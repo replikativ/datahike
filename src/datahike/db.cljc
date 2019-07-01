@@ -33,7 +33,6 @@
 (def ^:const txmax 0x7FFFFFFF)
 (def ^:const implicit-schema {:db/ident {:db/unique :db.unique/identity}})
 
-
 ;; ----------------------------------------------------------------------------
 
 #?(:clj
@@ -374,6 +373,7 @@
 (def ^:const br 300)
 (def ^:const br-sqrt (long (Math/sqrt br)))
 
+
 (defn ^DB empty-db
   ([] (empty-db nil :datahike.index/hitchhiker-tree))
   ([schema] (empty-db schema :datahike.index/hitchhiker-tree))
@@ -382,16 +382,15 @@
    {:pre [(or (nil? schema) (map? schema))]}
    (validate-schema schema)
    (map->DB
-      {:schema (merge implicit-schema schema)
-       :rschema (rschema (merge implicit-schema schema))
-       :config config
-       :eavt (di/empty-index index :eavt)
-       :aevt (di/empty-index index :aevt)
-       :avet (di/empty-index index :avet)
-       :max-eid      e0
-       :max-tx       tx0
-       :hash         (atom 0)})
-   ))
+    {:schema schema
+     :rschema (rschema (merge implicit-schema schema))
+     :config config
+     :eavt (di/empty-index index :eavt)
+     :aevt (di/empty-index index :aevt)
+     :avet (di/empty-index index :avet)
+     :max-eid      e0
+     :max-tx       tx0
+     :hash         (atom 0)})))
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
@@ -446,13 +445,7 @@
       h)))
 
 (defn- hash-fdb [^FilteredDB db]
-  (let [h @(.-hash db)
-        datoms (or (-datoms db :eavt []) #{})]
-    (if (zero? h)
-      (let [datoms (or (-datoms db :eavt []) #{})]
-        (reset! (.-hash db) (combine-hashes (hash (-schema db))
-                                            (hash-unordered-coll datoms))))
-      h)))
+)
 
 (defn- equiv-db [db other]
   (and (or (instance? DB other) (instance? FilteredDB other))
@@ -734,7 +727,8 @@
 (defn- with-datom [db ^Datom datom]
   (validate-datom db datom)
   (let [indexing? (indexing? db (.-a datom))
-        schema? (ds/schema-attr? (.-a datom))]
+        schema? (and (not (get-in db [:config :schema-on-read]))
+                     (ds/schema-attr? (.-a datom)))]
     (if (datom-added datom)
       (cond-> db
         true (update-in [:eavt] #(di/-insert % datom :eavt))

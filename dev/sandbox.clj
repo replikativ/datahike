@@ -1,5 +1,6 @@
 (ns sandbox
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d]
+            [datahike.core :as c]))
 
 (comment
 
@@ -21,6 +22,7 @@
   (d/create-database path schema)
 
   ;; (d/create-database path)
+  ;;
 
   (def conn (d/connect path))
 
@@ -47,7 +49,6 @@
   (d/create-database path)
   (def conn (d/connect path))
 
-  (:schema (d/db conn))
 
   (d/transact! conn [{:db/id #db/id[db.part/db]
                       :db/valueType :db.type/string

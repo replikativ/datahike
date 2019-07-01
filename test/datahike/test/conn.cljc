@@ -7,6 +7,7 @@
     [datahike.test.core :as tdc]))
 
 (def schema { :aka { :db/cardinality :db.cardinality/many }})
+
 (def datoms #{(d/datom 1 :age  17)
               (d/datom 1 :name "Ivan")})
 
