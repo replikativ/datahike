@@ -2,7 +2,7 @@
   (:require
    [datahike.db :as db]
    [datahike.datom :as dd]
-   #?@(:cljs [datalog.parse.type :refer [PullSpec]])
+   #?@(:cljs [datalog.parser.pull :refer [PullSpec]])
    [datalog.parser.pull :as dpp])
   #?(:clj
      (:import
@@ -273,8 +273,8 @@
 
 (defn pull [db selector eid]
   {:pre [(db/db? db)]}
-  (pull-spec db (datalog.parser.pull/parse-pull selector)  [eid] false))
+  (pull-spec db (dpp/parse-pull selector)  [eid] false))
 
 (defn pull-many [db selector eids]
   {:pre [(db/db? db)]}
-  (pull-spec db (datalog.parser.pull/parse-pull selector) eids true))
+  (pull-spec db (dpp/parse-pull selector) eids true))
