@@ -633,7 +633,7 @@
         (raise "No schema found in db."
                {:error :transact/schema :attribute attr :context at})))))
 
-(defn- validate-val [v [_ e a v t :as at] db]
+(defn- validate-val [v [_ _ a _ _ :as at] db]
   (when (nil? v)
     (raise "Cannot store nil as a value at " at
            {:error :transact/syntax, :value v, :context at}))
