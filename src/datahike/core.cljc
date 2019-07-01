@@ -573,20 +573,6 @@
   (swap! (:listeners (meta conn)) dissoc key))
 
 
-; Data Readers
-
-(def ^{:doc "Data readers for EDN readers. In CLJS they’re registered automatically. In CLJ, if `data_readers.clj` do not work, you can always do
-
-             ```
-             (clojure.edn/read-string {:readers data-readers} \"...\")
-             ```"}
-  data-readers {'datahike/Datom dd/datom-from-reader
-                'datahike/DB    db/db-from-reader})
-
-#?(:cljs
-   (doseq [[tag cb] data-readers] (cljs.reader/register-tag-parser! tag cb)))
-
-
 ;; Datomic compatibility layer
 
 (def ^:private last-tempid (atom -1000000))
@@ -594,7 +580,7 @@
 
 (defn tempid
   "Allocates and returns an unique temporary id (a negative integer). Ignores `part`. Returns `x` if it is specified.
-  
+
    Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
   ([part]
     (if (= part :db.part/tx)
@@ -604,6 +590,21 @@
     (if (= part :db.part/tx)
       :db/current-tx
       x)))
+
+
+;; Data Readers
+
+(def ^{:doc "Data readers for EDN readers. In CLJS they’re registered automatically. In CLJ, if `data_readers.clj` do not work, you can always do
+
+             ```
+             (clojure.edn/read-string {:readers data-readers} \"...\")
+             ```"}
+  data-readers {'datahike/Datom dd/datom-from-reader
+                'db/id tempid
+                'datahike/DB    db/db-from-reader})
+
+#?(:cljs
+   (doseq [[tag cb] data-readers] (cljs.reader/register-tag-parser! tag cb)))
 
 
 (defn resolve-tempid

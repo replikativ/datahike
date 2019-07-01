@@ -16,8 +16,8 @@
 (s/def ::scheme #{"datahike"})
 (s/def ::store-scheme #{"mem" "file" "level"})
 (s/def ::uri-config (s/cat :meta string?
-                            :store-scheme ::store-scheme
-                            :path string?))
+                           :store-scheme ::store-scheme
+                           :path string?))
 
 (s/fdef parse-uri
   :args (s/cat :uri string?)
@@ -39,53 +39,6 @@
     "file" :datahike.index/hitchhiker-tree
     "level" :datahike.index/hitchhiker-tree
     (throw (ex-info "Unknown datahike store scheme: " scheme))))
-
-(defn create-database
-  ([uri]
-   (create-database uri nil))
-  ([uri schema]
-   (let [[m store-scheme path] (parse-uri uri)
-         _ (when-not m
-             (throw (ex-info "URI cannot be parsed." {:uri uri})))
-         store (kc/ensure-cache
-                (case store-scheme
-                  "mem"
-                  (let [store (<?? S (mem/new-mem-store))]
-                    (swap! memory assoc uri store)
-                    store)
-                  "file"
-                  (kons/add-hitchhiker-tree-handlers
-                   (<?? S (fs/new-fs-store path)))
-                  "level"
-                  (kons/add-hitchhiker-tree-handlers
-                   (<?? S (kl/new-leveldb-store path))))
-                (atom (cache/lru-cache-factory {} :threshold 1000))) ;; TODO: move store to separate ns
-         stored-db (<?? S (k/get-in store [:db]))
-         _ (when stored-db
-             (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
-         {:keys [eavt aevt avet rschema]} (db/empty-db schema (store-scheme->index store-scheme))
-         backend (kons/->KonserveBackend store)]
-     (<?? S (k/assoc-in store [:db]
-                        {:schema schema
-                         :eavt-key (di/-flush eavt backend)
-                         :aevt-key (di/-flush aevt backend)
-                         :avet-key (di/-flush avet backend)
-                         :rschema rschema}))
-     (case store-scheme
-       "level"
-       (kl/release store)
-       nil)
-     nil)))
-
-(defn delete-database [uri]
-  (let [[m store-scheme path] (parse-uri uri)]
-    (case store-scheme
-      "mem"
-      (swap! memory dissoc uri)
-      "file"
-      (fs/delete-store path)
-      "level"
-      (kl/delete-store path))))
 
 (defn connect [uri]
   (let [[scheme store-scheme path] (parse-uri uri)
@@ -110,10 +63,11 @@
               nil)
             (throw (ex-info "Database does not exist." {:type :db-does-not-exist
                                                   :uri uri})))
-        {:keys [eavt-key aevt-key avet-key schema rschema]} stored-db
+        {:keys [eavt-key aevt-key avet-key schema rschema config]} stored-db
         empty (db/empty-db)]
     (d/conn-from-db
      (assoc empty
+            :config config
             :schema schema
             :max-eid (db/init-max-eid eavt-key)
             :eavt eavt-key
@@ -138,7 +92,7 @@
   (future
     (locking connection
       (let [{:keys [db-after] :as tx-report} @(d/transact connection tx-data)
-            {:keys [eavt aevt avet schema rschema]} db-after
+            {:keys [eavt aevt avet schema rschema config]} db-after
             store (:store @connection)
             backend (kons/->KonserveBackend store)
             eavt-flushed (di/-flush eavt backend)
@@ -147,6 +101,7 @@
         (<?? S (k/assoc-in store [:db]
                            {:schema schema
                             :rschema rschema
+                            :config config
                             :eavt-key eavt-flushed
                             :aevt-key aevt-flushed
                             :avet-key avet-flushed}))
@@ -158,3 +113,56 @@
 
 (defn transact! [connection tx-data]
   (deref (transact connection tx-data)))
+
+(defn create-database
+  ([uri]
+   (create-database uri nil))
+  ([uri initial-tx]
+   (let [[m store-scheme path] (parse-uri uri)
+         _ (when-not m
+             (throw (ex-info "URI cannot be parsed." {:uri uri})))
+         store (kc/ensure-cache
+                (case store-scheme
+                  "mem"
+                  (let [store (<?? S (mem/new-mem-store))]
+                    (swap! memory assoc uri store)
+                    store)
+                  "file"
+                  (kons/add-hitchhiker-tree-handlers
+                   (<?? S (fs/new-fs-store path)))
+                  "level"
+                  (kons/add-hitchhiker-tree-handlers
+                   (<?? S (kl/new-leveldb-store path))))
+                (atom (cache/lru-cache-factory {} :threshold 1000))) ;; TODO: move store to separate ns
+         stored-db (<?? S (k/get-in store [:db]))
+         _ (when stored-db
+             (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
+         index-type (store-scheme->index store-scheme)
+         config {:schema-on-read false}
+         {:keys [eavt aevt avet schema rschema config]} (db/empty-db nil index-type :config config)
+         backend (kons/->KonserveBackend store)]
+     (<?? S (k/assoc-in store [:db]
+                        {:schema schema
+                         :rschema rschema
+                         :config config
+                         :eavt-key (di/-flush eavt backend)
+                         :aevt-key (di/-flush aevt backend)
+                         :avet-key (di/-flush avet backend)}))
+     (case store-scheme
+       "level"
+       (kl/release store)
+       nil)
+     (when initial-tx
+       (let [conn (connect uri)]
+         (transact! conn initial-tx)
+         (release conn))))))
+
+(defn delete-database [uri]
+  (let [[m store-scheme path] (parse-uri uri)]
+    (case store-scheme
+      "mem"
+      (swap! memory dissoc uri)
+      "file"
+      (fs/delete-store path)
+      "level"
+      (kl/delete-store path))))

@@ -19,6 +19,31 @@
 (s/def ::schema (s/keys :req [:db/id :db/ident :db/valueType]
                         :opt [:db/cardinality :db/unique :db/index :db.install/_attribute]))
 
+(def ^:const implicit-schema-spec {:db/ident {:db/valueType   :db.type/keyword
+                                              :db/unique      :db.unique/identity
+                                              :db/cardinality :db.cardinality/one}
+                                   :db/valueType {:db/valueType   :db.type/value
+                                                  :db/unique      :db.unique/identity
+                                                  :db/cardinality :db.cardinality/one}
+                                   :db/id {:db/valueType   :db.type/id
+                                           :db/unique      :db.unique/identity
+                                           :db/cardinality :db.cardinality/one}
+                                   :db/cardinality {:db/valueType   :db.type/cardinality
+                                                    :db/unique      :db.unique/identity
+                                                    :db/cardinality :db.cardinality/one}
+                                   :db/index {:db/valueType   :db.type/boolean
+                                              :db/unique      :db.unique/identity
+                                              :db/cardinality :db.cardinality/one}
+                                   :db/unique {:db/valueType   :db.type/unique
+                                               :db/unique      :db.unique/identity
+                                               :db/cardinality :db.cardinality/one}
+                                   :db/isComponent {:db/valueType :db.type/boolean
+                                                    :db/unique :db.unique/identity
+                                                    :db/cardinality :db.cardinality/one}
+                                   :db.install/_attribute {:db/valueType   :db.type.install/_attribute
+                                                           :db/unique      :db.unique/identity
+                                                           :db/cardinality :db.cardinality/one}})
+
 (defn schema-attr? [attr]
   (s/valid? ::schema-attribute attr))
 
@@ -27,12 +52,10 @@
     (s/valid? (-> schema a :db/valueType) v)))
 
 (defn value-valid? [[_ _ a v _ :as at] schema]
-  (s/valid?
-   (get-in schema
-           (if (schema-attr? a)
-             [:db.part/db a :db/valueType]
-             [a :db/valueType]))
-   v))
+  (let [schema (if (schema-attr? a) implicit-schema-spec schema)
+        value-type (get-in schema [a :db/valueType])]
+    (s/valid? value-type v)))
 
 (defn schema-valid? [schema]
   (s/valid? ::schema schema))
+
