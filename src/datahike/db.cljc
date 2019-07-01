@@ -382,17 +382,17 @@
    {:pre [(or (nil? schema) (map? schema))]}
    (prn-str config)
    (validate-schema schema)
-   (let [schema (merge implicit-schema schema)]
-     (map->DB
+   (map->DB
       {:schema schema
-       :rschema (rschema schema)
+       :rschema (rschema (merge schema implicit-schema))
        :config config
        :eavt (di/empty-index index :eavt)
        :aevt (di/empty-index index :aevt)
        :avet (di/empty-index index :avet)
        :max-eid      e0
        :max-tx       tx0
-       :hash         (atom 0)}))))
+       :hash         (atom 0)})
+   ))
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
