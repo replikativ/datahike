@@ -273,7 +273,7 @@
 
 (defn pull [db selector eid]
   {:pre [(db/db? db)]}
-  (pull-spec db (dpp/parse-pull selector)  [eid] false))
+  (pull-spec db (dpp/parse-pull selector) [eid] false))
 
 (defn pull-many [db selector eids]
   {:pre [(db/db? db)]}
