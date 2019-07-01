@@ -380,11 +380,10 @@
   ([schema index & {config :config
                     :or {config {:schema-on-read true}}}]
    {:pre [(or (nil? schema) (map? schema))]}
-   (prn-str config)
    (validate-schema schema)
    (map->DB
-      {:schema schema
-       :rschema (rschema (merge schema implicit-schema))
+      {:schema (merge implicit-schema schema)
+       :rschema (rschema (merge implicit-schema schema))
        :config config
        :eavt (di/empty-index index :eavt)
        :aevt (di/empty-index index :aevt)
@@ -633,15 +632,13 @@
     (when-not (or (keyword? attr) (string? attr))
       (raise "Bad entity attribute " attr " at " at ", expected keyword or string"
              {:error :transact/syntax, :attribute attr, :context at}))
-    (let [db-idents (-> db :rschema :db/ident)
-          schema-attr? (ds/schema-attr? attr)]
-      (if (and (not db-idents) (not schema-attr?))
-        (raise "No schema found in db."
-               {:error :transact/schema :attribute attr :context at})
-        (when-not (or schema-attr? (db-idents attr))
+    (when-not (ds/schema-attr? attr)
+      (if-let [db-idents (-> db :rschema :db/ident)]
+        (when-not (db-idents attr)
           (raise "Bad entity attribute " attr " at " at ", not defined in current schema"
                  {:error :transact/schema :attribute attr :context at}))
-        ))))
+        (raise "No schema found in db."
+               {:error :transact/schema :attribute attr :context at})))))
 
 (defn- validate-val [v [_ e a v t :as at] db]
   (when (nil? v)
@@ -745,7 +742,8 @@
         indexing? (update-in [:avet] #(di/-insert % datom :avet))
         true (advance-max-eid (.-e datom))
         true (assoc :hash (atom 0))
-        schema? (->  (update-schema datom) update-rschema))
+        schema? (-> (update-schema datom)
+                    update-rschema))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (cond-> db
           true (update-in [:eavt] #(di/-remove % removing :eavt))
