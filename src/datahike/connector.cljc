@@ -44,6 +44,12 @@
   (let [[scheme store-scheme path] (parse-uri uri)
         _ (when-not (s/valid? ::scheme scheme)
             (throw (ex-info "URI cannot be parsed." {:uri uri})))
+        _ (when (= store-scheme "mem")
+            (when-not (@memory uri)
+              (throw (ex-info
+                      (str "Database does not exist at " uri "!")
+                      {:type :db-does-not-exist
+                       :uri uri}))))
         store (kons/add-hitchhiker-tree-handlers
                (kc/ensure-cache
                 (case store-scheme
@@ -61,8 +67,9 @@
               "level"
               (kl/release store)
               nil)
-            (throw (ex-info "Database does not exist." {:type :db-does-not-exist
-                                                  :uri uri})))
+            (throw (ex-info
+                    (str "Database does not exist at " uri "!")
+                    {:type :db-does-not-exist :uri uri})))
         {:keys [eavt-key aevt-key avet-key schema rschema config]} stored-db
         empty (db/empty-db)]
     (d/conn-from-db
