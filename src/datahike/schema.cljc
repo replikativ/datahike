@@ -16,8 +16,10 @@
 
 (s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute})
 
-(s/def ::schema (s/keys :req [:db/id :db/ident :db/valueType]
-                        :opt [:db/cardinality :db/unique :db/index :db.install/_attribute]))
+(s/def ::schema (s/keys :req [:db/id :db/ident :db/valueType :db/cardinality ]
+                        :opt [:db/unique :db/index :db.install/_attribute]))
+
+(def required-keys #{:db/ident :db/valueType :db/cardinality})
 
 (def ^:const implicit-schema-spec {:db/ident {:db/valueType   :db.type/keyword
                                               :db/unique      :db.unique/identity
@@ -43,19 +45,18 @@
                                    :db.install/_attribute {:db/valueType   :db.type.install/_attribute
                                                            :db/unique      :db.unique/identity
                                                            :db/cardinality :db.cardinality/one}})
+(def schema-keys #{:db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute})
 
 (defn schema-attr? [attr]
   (s/valid? ::schema-attribute attr))
 
-(defn schema-val-valid? [[e a v _] schema]
-  (when (schema-attr? a)
-    (s/valid? (-> schema a :db/valueType) v)))
-
-(defn value-valid? [[_ _ a v _ :as at] schema]
+(defn value-valid? [[_ _ a v _] schema]
   (let [schema (if (schema-attr? a) implicit-schema-spec schema)
         value-type (get-in schema [a :db/valueType])]
     (s/valid? value-type v)))
 
-(defn schema-valid? [schema]
-  (s/valid? ::schema schema))
+(defn schema-entity? [entity]
+  (some #(contains? entity %) schema-keys))
 
+(defn schema? [schema]
+  (s/valid? ::schema schema))

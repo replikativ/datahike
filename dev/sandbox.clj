@@ -36,9 +36,6 @@
 
   (def query '[:find ?e ?a ?tx :where [?e :name "Daisy" ?tx] [?e :age ?a]])
 
-  (d/transact! conn [{:db/id #db/id [db.part/user]
-                      :email "foo"}])
-
   (d/q query db)
 
   (d/q query (d/db conn))

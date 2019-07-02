@@ -17,7 +17,7 @@
                       :where
                       [?e :db/ident ?n]
                       [?e :db/valueType ?vt]
-                      [?e :db/cardinality ?c]])
+                     [?e :db/cardinality ?c]])
 
 (deftest test-empty-db
   (let [test-uri "datahike:mem://test-empty-db"]
@@ -26,7 +26,7 @@
 
     (let [conn (d/connect test-uri)
           db (d/db conn)
-          tx [{:db/id #db/id [db.part/user] :name "Alice"}]]
+          tx [{:db/id #db/id [:db.part/user] :name "Alice"}]]
 
       (is (= {} (:schema db)))
 
@@ -58,7 +58,13 @@
       (testing "insert new data with additional attributes not in schema"
         (is (thrown-msg?
              "Bad entity attribute :age at {:db/id 3, :age 42}, not defined in current schema"
-             (d/transact! conn [{:db/id #db/id [db.part/user] :name "Bob" :age 42}])))))
+             (d/transact! conn [{:db/id #db/id [db.part/user] :name "Bob" :age 42}]))))
+
+      (testing "insert incomplete schema"
+        (is (thrown-msg?
+             "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+             (d/transact! conn [{:db/id #db/id [db.part/user]
+                                 :db/ident :phone}])))))
 
     (testing "cleanup"
       (d/delete-database test-uri))))
@@ -84,7 +90,7 @@
         (d/transact! conn [{:db/id #db/id [:db.part/user] :name "Alice"}])
         (is (= #{["Alice"]} (d/q find-name-q (d/db conn)))))
 
-      (testing "extend schema"
+      (testing "extend schema with :age"
         (d/transact! conn [{:db/id #db/id [:db.part/db]
                             :db/ident :age
                             :db/valueType :db.type/long
@@ -106,7 +112,23 @@
         (d/transact! conn [{:db/id #db/id [:db.part/user]
                             :name "Bob"
                             :age 42}])
-        (is (= #{["Alice"] ["Bob"]} (d/q find-name-q (d/db conn))))))
+        (is (= #{["Alice"] ["Bob"]} (d/q find-name-q (d/db conn)))))
+
+      (testing "change cardinality for :name"
+        (d/transact! conn [{:db/id 1
+                            :db/cardinality :db.cardinality/many}])
+        (let [db (d/db conn)]
+          (is (= {:name #:db{:ident :name,
+                             :valueType :db.type/string,
+                             :cardinality :db.cardinality/many},
+                  1 :name,
+                  :age #:db{:ident :age,
+                            :valueType :db.type/long,
+                            :cardinality :db.cardinality/one},
+                  3 :age}
+                 (:schema db)))
+          (is (= #{[:name :db.type/string :db.cardinality/many] [:age :db.type/long :db.cardinality/one]}
+                 (d/q find-schema-q db))))))
 
     (testing "cleanup"
       (d/delete-database test-uri))))

@@ -983,6 +983,10 @@
                                                  (next-eid db))
                            :else old-eid)
                  new-entity (assoc entity :db/id new-eid)]
+             (when (and (ds/schema-entity? entity) (not (get-in db [:schema new-eid])))
+               (when-not (ds/schema? entity)
+                 (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                        {:error :transact/schema :entity entity})))
              (recur (allocate-eid report old-eid new-eid)
                     (concat (explode db new-entity) entities)))
 
