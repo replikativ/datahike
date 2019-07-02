@@ -119,7 +119,10 @@
         tx-report))))
 
 (defn transact! [connection tx-data]
-  (deref (transact connection tx-data)))
+  (try
+    (deref (transact connection tx-data))
+    (catch Exception e
+      (throw (.getCause e)))))
 
 (defn create-database
   ([uri]
