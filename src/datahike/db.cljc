@@ -724,7 +724,7 @@
         true (update-in [:aevt] #(di/-insert % datom :aevt))
         indexing? (update-in [:avet] #(di/-insert % datom :avet))
         true (advance-max-eid (.-e datom))
-        true (update :hash + (hash datom)))
+        true (update :hash + (hash datom))
         schema? (-> (update-schema datom)
                     update-rschema))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
@@ -732,7 +732,7 @@
           true (update-in [:eavt] #(di/-remove % removing :eavt))
           true (update-in [:aevt] #(di/-remove % removing :aevt))
           indexing? (update-in [:avet] #(di/-remove % removing :avet))
-          true (update :hash - (hash removing)))
+          true (update :hash - (hash removing))
           schema? (-> (remove-schema datom) update-rschema))
         db))))
 
