@@ -206,6 +206,7 @@
    - All operations on filtered database are proxied to original DB, then filter pred is applied.
    - Not cached. You pay filter penalty every time.
    - Supports entities, pull, queries, index access.
+   - Does not support hashing of DB.
    - Does not support [[with]] and [[db-with]]."
   [db pred]
   {:pre [(db/db? db)]}
@@ -213,8 +214,8 @@
     (let [^FilteredDB fdb db
           orig-pred (.-pred fdb)
           orig-db   (.-unfiltered-db fdb)]
-      (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %)) (atom 0)))
-    (FilteredDB. db #(pred db %) (atom 0))))
+      (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
+    (FilteredDB. db #(pred db %))))
 
 
 ; Changing DB

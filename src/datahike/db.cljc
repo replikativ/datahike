@@ -1,20 +1,20 @@
 (ns ^:no-doc datahike.db
   (:require
-   #?(:cljs [goog.array :as garray])
-   [clojure.walk]
-   [clojure.data]
-   #?(:clj [clojure.pprint :as pp])
-   [hitchhiker.tree.core :as hc :refer [<??]]
-   [hasch.core :refer [uuid]]
-   [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
-   [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
+    #?(:cljs [goog.array :as garray])
+    [clojure.walk]
+    [clojure.data]
+    #?(:clj [clojure.pprint :as pp])
+    [hitchhiker.tree.core :as hc :refer [<??]]
+    [hasch.core :refer [uuid]]
+    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
+    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    [datahike.schema :as ds]
-   [me.tonsky.persistent-sorted-set :as set]
-   [me.tonsky.persistent-sorted-set.arrays :as arrays]
-   [datahike.tools :refer [case-tree combine-hashes]])
+    [me.tonsky.persistent-sorted-set :as set]
+            [me.tonsky.persistent-sorted-set.arrays :as arrays]
+    [datahike.tools :refer [case-tree]])
   #?(:cljs (:require-macros [datahike.db :refer [raise defrecord-updatable cond+]]
-                            [datahike.datom :refer [combine-cmp]]
-                            [datahike.tools :refer [combine-hashes case-tree]]))
+                            [datahike.datom :refer [ combine-cmp ]]
+                            [datahike.tools :refer [case-tree]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
@@ -140,7 +140,7 @@
 
 ;; ----------------------------------------------------------------------------
 
-(declare hash-db hash-fdb equiv-db empty-db resolve-datom validate-attr components->pattern indexing?)
+(declare hash-datoms equiv-db empty-db resolve-datom validate-attr components->pattern indexing?)
 #?(:cljs (declare pr-db))
 
 (defn db-transient [db]
@@ -157,7 +157,7 @@
 
 (defrecord-updatable DB [schema eavt aevt avet max-eid max-tx rschema hash config]
   #?@(:cljs
-      [IHash (-hash [db] (hash-db db))
+      [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (-seq (.-eavt db)))
        IReversible (-rseq [db] (-rseq (.-eavt db)))
@@ -169,8 +169,8 @@
        (-persistent! [db] (db-persistent! db))]
 
       :clj
-      [Object (hashCode [db] (hash-db db))
-       clojure.lang.IHashEq (hasheq [db] (hash-db db))
+      [Object (hashCode [db] hash)
+       clojure.lang.IHashEq (hasheq [db] hash)
        clojure.lang.Seqable (seq [db] (-seq eavt))
        clojure.lang.IPersistentCollection
        (count [db] (-count eavt))
@@ -258,14 +258,14 @@
        (satisfies? IDB x)))
 
 ;; ----------------------------------------------------------------------------
-(defrecord-updatable FilteredDB [unfiltered-db pred hash]
-  #?@(:cljs
-      [IHash (-hash [db] (hash-fdb db))
-       IEquiv (-equiv [db other] (equiv-db db other))
-       ISeqable (-seq [db] (-datoms db :eavt []))
-       ICounted (-count [db] (count (-datoms db :eavt [])))
-       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
+(defrecord-updatable FilteredDB [unfiltered-db pred]
+                     #?@(:cljs
+                         [IEquiv (-equiv [db other] (equiv-db db other))
+                          ISeqable (-seq [db] (-datoms db :eavt []))
+                          ICounted (-count [db] (count (-datoms db :eavt [])))
+                          IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
+                          IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
 
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on FilteredDB")))
@@ -273,17 +273,12 @@
 
        IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on FilteredDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on FilteredDB")))]
-
-      :clj
-      [Object (hashCode [db] (hash-fdb db))
-
-       clojure.lang.IHashEq (hasheq [db] (hash-fdb db))
-
-       clojure.lang.IPersistentCollection
-       (count [db] (count (-datoms db :eavt [])))
-       (equiv [db o] (equiv-db db o))
-       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on FilteredDB")))
-       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on FilteredDB")))
+                         :clj
+                         [clojure.lang.IPersistentCollection
+                          (count [db] (count (-datoms db :eavt [])))
+                          (equiv [db o] (equiv-db db o))
+                          (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on FilteredDB")))
+                          (empty [db] (throw (UnsupportedOperationException. "empty is not supported on FilteredDB")))
 
        clojure.lang.Seqable (seq [db] (-datoms db :eavt []))
 
@@ -390,7 +385,7 @@
      :avet (di/empty-index index :avet)
      :max-eid      e0
      :max-tx       tx0
-     :hash         (atom 0)})))
+     :hash         0})))
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
@@ -419,15 +414,15 @@
          avet (di/init-index index datoms indexed :avet)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)]
-     (map->DB {:schema schema
-               :rschema rschema
+     (map->DB {:schema       schema
+               :rschema      rschema
                :config config
-               :eavt eavt
-               :aevt aevt
-               :avet avet
-               :max-eid max-eid
-               :max-tx max-tx
-               :hash (atom 0)}))))
+               :eavt         eavt
+               :aevt         aevt
+               :avet         avet
+               :max-eid      max-eid
+               :max-tx       max-tx
+               :hash         (hash-datoms datoms)}))))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)
@@ -437,15 +432,9 @@
       (= (first xs) (first ys)) (recur (next xs) (next ys))
       :else false)))
 
-(defn- hash-db [^DB db]
-  (let [h @(.-hash db)]
-    (if (zero? h)
-      (reset! (.-hash db) (combine-hashes (hash (.-schema db))
-                                          (hash (-datoms db :eavt []))))
-      h)))
-
-(defn- hash-fdb [^FilteredDB db]
-)
+(defn- hash-datoms
+  [datoms]
+  (reduce #(+ %1 (hash %2)) 0 datoms))
 
 (defn- equiv-db [db other]
   (and (or (instance? DB other) (instance? FilteredDB other))
@@ -735,7 +724,7 @@
         true (update-in [:aevt] #(di/-insert % datom :aevt))
         indexing? (update-in [:avet] #(di/-insert % datom :avet))
         true (advance-max-eid (.-e datom))
-        true (assoc :hash (atom 0))
+        true (update :hash + (hash datom)))
         schema? (-> (update-schema datom)
                     update-rschema))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
@@ -743,7 +732,7 @@
           true (update-in [:eavt] #(di/-remove % removing :eavt))
           true (update-in [:aevt] #(di/-remove % removing :aevt))
           indexing? (update-in [:avet] #(di/-remove % removing :avet))
-          true (assoc :hash (atom 0))
+          true (update :hash - (hash removing)))
           schema? (-> (remove-schema datom) update-rschema))
         db))))
 
