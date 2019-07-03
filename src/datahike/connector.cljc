@@ -149,7 +149,7 @@
              (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
          index-type (store-scheme->index store-scheme)
          config {:schema-on-read false}
-         {:keys [eavt aevt avet schema rschema config]} (db/empty-db {} index-type :config config)
+         {:keys [eavt aevt avet schema rschema config]} (db/empty-db {:db/ident {:db/unique :db.unique/identity}} index-type :config config)
          backend (kons/->KonserveBackend store)]
      (<?? S (k/assoc-in store [:db]
                         {:schema schema

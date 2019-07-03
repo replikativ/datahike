@@ -18,8 +18,6 @@
                       [?e :db/valueType ?vt]
                      [?e :db/cardinality ?c]])
 
-
-
 (deftest test-empty-db
   (let [test-uri "datahike:mem://test-empty-db"]
     (testing "Create empty database"
@@ -29,7 +27,7 @@
           db (d/db conn)
           tx [{:name "Alice"}]]
 
-      (is (= {} (:schema db)))
+      (is (= {:db/ident {:db/unique :db.unique/identity}} (:schema db)))
 
       (testing "transact without schema present"
         (is (thrown-msg?
@@ -40,7 +38,8 @@
         (d/transact! conn [name-schema])
         (is (= #{[:name :db.type/string :db.cardinality/one]}
                (d/q find-schema-q (d/db conn))))
-        (is (=  {:name #:db{:ident :name
+        (is (=  {:db/ident #:db{:unique :db.unique/identity}
+                 :name #:db{:ident :name
                             :valueType :db.type/string
                             :cardinality :db.cardinality/one}
                  1 :name}
@@ -79,7 +78,8 @@
 
       (testing "schema existence"
         (let [db (d/db conn)]
-          (is (= {:name #:db{:ident :name,
+          (is (= {:db/ident {:db/unique :db.unique/identity}
+                  :name #:db{:ident :name,
                              :valueType :db.type/string
                              :cardinality :db.cardinality/one}
                   1 :name}
@@ -95,7 +95,8 @@
                             :db/valueType :db.type/long
                             :db/cardinality :db.cardinality/one}])
         (let [db (d/db conn)]
-          (is (= {:name #:db{:ident :name,
+          (is (= {:db/ident {:db/unique :db.unique/identity}
+                  :name #:db{:ident :name,
                              :valueType :db.type/string,
                              :cardinality :db.cardinality/one},
                   1 :name,
@@ -115,7 +116,8 @@
         (d/transact! conn [{:db/id 1
                             :db/cardinality :db.cardinality/many}])
         (let [db (d/db conn)]
-          (is (= {:name #:db{:ident :name,
+          (is (= {:db/ident {:db/unique :db.unique/identity}
+                  :name #:db{:ident :name,
                              :valueType :db.type/string,
                              :cardinality :db.cardinality/many},
                   1 :name,
@@ -198,5 +200,54 @@
     (testing-type conn "string" "one" 21 :one)
     (testing-type conn "symbol" 'one  22 :one)
     (testing-type conn "uuid" (java.util.UUID/randomUUID)  23 1)
+
+    (d/delete-database uri)))
+
+(deftest test-schema-cardinality
+  (let [uri "datahike:mem://test-schema-cardinality"
+        schema-tx [{:db/ident :owner
+                    :db/valueType :db.type/string
+                    :db/index true
+                    :db/unique :db.unique/identity
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :cars
+                    :db/valueType :db.type/keyword
+                    :db/cardinality :db.cardinality/many}]
+        _ (d/create-database uri schema-tx)
+        conn (d/connect uri)]
+
+    (testing "insert :owner and :cars one by one"
+      (d/transact! conn [{:db/id -1
+                          :owner "Alice"}
+                         {:db/id -1
+                          :cars :audi}
+                         {:db/id -1
+                          :cars :bmw}])
+      (is (= #{["Alice" :audi] ["Alice" :bmw]}
+             (d/q '[:find ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
+
+    (testing "insert :cars as list"
+      (d/transact! conn [{:db/id -2
+                          :owner "Bob"
+                          :cars [:chrysler :daimler]}
+                         ])
+      (is (= #{["Alice" :audi] ["Alice" :bmw] ["Bob" :chrysler] ["Bob" :daimler]}
+             (d/q '[:find ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
+
+    (testing "insert to cardinality one"
+      (d/transact! conn [{:db/id [:owner "Alice"]
+                          :owner "Charlie"}])
+      (is (= #{["Charlie" :audi] ["Charlie" :bmw] ["Bob" :chrysler] ["Bob" :daimler]}
+             (d/q '[:find ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
+
+    (testing "change :owner cardinality to many"
+      (d/transact! conn [{:db/id [:db/ident :owner]
+                          :db/cardinality :db.cardinality/many}])
+      (d/transact! conn [{:db/id [:owner "Charlie"]
+                          :owner "Alice"}])
+      (is (= #{[ 3 "Alice" :audi] [3 "Alice" :bmw]
+               [3 "Charlie" :audi] [3 "Charlie" :bmw]
+               [4 "Bob" :chrysler] [4 "Bob" :daimler]}
+             (d/q '[:find ?e ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
 
     (d/delete-database uri)))
