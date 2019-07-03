@@ -8,15 +8,16 @@
  ;;(def path "datahike:file:///tmp/local-db-0")
   (d/delete-database path)
 
-  (def schema [{:db/id #db/id[db.part/db]
-                :db/ident :name
+  (def schema [{:db/ident :name
+                :db/cardinality :db.cardinality/one
+                :db/index true
+                :db/unique :db.unique/identity
                 :db/valueType :db.type/string}
-               {:db/id #db/id[db.part/db]
-                :db/ident :sibling
+               {:db/ident :sibling
                 :db/cardinality :db.cardinality/many
                 :db/valueType :db.type/ref}
-               {:db/id #db/id[db.part/db]
-                :db/ident :age
+               {:db/ident :age
+                :db/cardinality :db.cardinality/one
                 :db/valueType :db.type/long}])
 
   (d/create-database path schema)
@@ -28,13 +29,18 @@
 
   (def db (d/db conn))
 
-  (d/transact! conn [{:db/id 1, :name  "Alice", :age   15}
-                     {:db/id 2, :name  "Bob", :age   37}
-                     {:db/id 3, :name  "Charlie", :age   37}
-                     {:db/id 4, :age 15}
-                     {:db/id 5, :name  "Daisy", :age   22 :sibling [1]}])
+  (d/transact! conn [{:name  "Alice", :age   15}
+                     {:name  "Bob", :age   37}
+                     {:name  "Charlie", :age   37}
+                     {:age 15}
+                     {:name  "Daisy", :age   22 :sibling [:name "Alice"]}])
 
   (def query '[:find ?e ?a ?tx :where [?e :name "Daisy" ?tx] [?e :age ?a]])
+
+  (d/transact! conn [{:name "Enoch" :age 55 :sibling [:name "Alice"]}])
+  (d/transact! conn [{:name "Freya" :age 25 :sibling [[:name "Bob" ] [:name "Charlie"]]}])
+
+  (d/q '[:find ?n ?sn :where [?e :name ?n] [?e :sibling ?s] [?s :name ?sn]] (d/db conn))
 
   (d/q query db)
 

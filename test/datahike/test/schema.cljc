@@ -5,8 +5,7 @@
     [datahike.api :as d]
     [datahike.test.core :as tdc]))
 
-(def name-schema {:db/id #db/id [:db.part/user]
-                  :db/ident :name
+(def name-schema {:db/ident :name
                   :db/valueType :db.type/string
                   :db/cardinality :db.cardinality/one})
 
@@ -19,6 +18,8 @@
                       [?e :db/valueType ?vt]
                      [?e :db/cardinality ?c]])
 
+
+
 (deftest test-empty-db
   (let [test-uri "datahike:mem://test-empty-db"]
     (testing "Create empty database"
@@ -26,7 +27,7 @@
 
     (let [conn (d/connect test-uri)
           db (d/db conn)
-          tx [{:db/id #db/id [:db.part/user] :name "Alice"}]]
+          tx [{:name "Alice"}]]
 
       (is (= {} (:schema db)))
 
@@ -53,18 +54,17 @@
       (testing "insert new data with wrong data type"
         (is (thrown-msg?
              "Bad entity value 42 at [:db/add 3 :name 42], value does not match schema definition. Must be of type :db.type/string"
-             (d/transact! conn [{:db/id #db/id [db.part/user] :name 42}]))))
+             (d/transact! conn [{:name 42}]))))
 
       (testing "insert new data with additional attributes not in schema"
         (is (thrown-msg?
              "Bad entity attribute :age at {:db/id 3, :age 42}, not defined in current schema"
-             (d/transact! conn [{:db/id #db/id [db.part/user] :name "Bob" :age 42}]))))
+             (d/transact! conn [{:name "Bob" :age 42}]))))
 
       (testing "insert incomplete schema"
         (is (thrown-msg?
              "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-             (d/transact! conn [{:db/id #db/id [db.part/user]
-                                 :db/ident :phone}])))))
+             (d/transact! conn [{:db/ident :phone}])))))
 
     (testing "cleanup"
       (d/delete-database test-uri))))
@@ -87,12 +87,11 @@
           (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q db)))))
 
       (testing "insert new data according to schema"
-        (d/transact! conn [{:db/id #db/id [:db.part/user] :name "Alice"}])
+        (d/transact! conn [{:name "Alice"}])
         (is (= #{["Alice"]} (d/q find-name-q (d/db conn)))))
 
       (testing "extend schema with :age"
-        (d/transact! conn [{:db/id #db/id [:db.part/db]
-                            :db/ident :age
+        (d/transact! conn [{:db/ident :age
                             :db/valueType :db.type/long
                             :db/cardinality :db.cardinality/one}])
         (let [db (d/db conn)]
@@ -109,9 +108,7 @@
                  (d/q find-schema-q db)))))
 
       (testing "insert new data"
-        (d/transact! conn [{:db/id #db/id [:db.part/user]
-                            :name "Bob"
-                            :age 42}])
+        (d/transact! conn [{:name "Bob" :age 42}])
         (is (= #{["Alice"] ["Bob"]} (d/q find-name-q (d/db conn)))))
 
       (testing "change cardinality for :name"
@@ -132,3 +129,74 @@
 
     (testing "cleanup"
       (d/delete-database test-uri))))
+
+(defn testing-type [conn type-name tx-val tx-id wrong-val]
+  (testing "float"
+    (let [schema-name (keyword "value" type-name)]
+      (d/transact! conn [{schema-name tx-val}])
+      (is (= #{[tx-val]}
+             (d/q '[:find ?v :in $ ?sn :where [?e ?sn  ?v]] (d/db conn) schema-name)))
+      (is (thrown-msg?
+           (str "Bad entity value "
+                wrong-val
+                " at [:db/add "
+                tx-id
+                " "
+                schema-name
+                " "
+                wrong-val
+                "], value does not match schema definition. Must be of type :db.type/"
+                type-name)
+           (d/transact! conn [{schema-name wrong-val}]))))))
+
+(deftest test-schema-types
+  (let [uri "datahike:mem://test-schema-types"
+        schema-tx [{:db/ident :value/bigdec
+                    :db/valueType :db.type/bigdec
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :value/bigint
+                    :db/valueType :db.type/bigint
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :value/boolean
+                    :db/valueType :db.type/boolean
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :value/double
+                    :db/valueType :db.type/double
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :value/float
+                    :db/valueType :db.type/float
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :value/instant
+                    :db/valueType :db.type/instant
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :value/keyword
+                    :db/valueType :db.type/keyword
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :value/long
+                    :db/valueType :db.type/long
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :value/string
+                    :db/valueType :db.type/string
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :value/symbol
+                    :db/valueType :db.type/symbol
+                    :db/cardinality :db.cardinality/one}
+                   {:db/ident :value/uuid
+                    :db/valueType :db.type/uuid
+                    :db/cardinality :db.cardinality/one}]
+        _ (d/create-database uri schema-tx)
+        conn (d/connect uri)]
+
+    (testing-type conn "bigdec" (bigdec 1) 13 1)
+    (testing-type conn "bigint" (biginteger 1) 14 1)
+    (testing-type conn "boolean" true 15 0)
+    (testing-type conn "double" (double 1) 16 1)
+    (testing-type conn "float" (float 1) 17 1)
+    (testing-type conn "instant" (java.util.Date.) 18 1)
+    (testing-type conn "keyword" :one 19 1)
+    (testing-type conn "long" (long 2) 20 :2)
+    (testing-type conn "string" "one" 21 :one)
+    (testing-type conn "symbol" 'one  22 :one)
+    (testing-type conn "uuid" (java.util.UUID/randomUUID)  23 1)
+
+    (d/delete-database uri)))

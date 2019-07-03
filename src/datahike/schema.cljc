@@ -26,7 +26,7 @@
     :db.type/instant
     :db.type/keyword
     :db.type/long
-    :db.type/ref :db
+    :db.type/ref
     :db.type/string
     :db.type/symbol
     :db.type/uuid
@@ -42,8 +42,8 @@
 
 (s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
 
-(s/def ::schema (s/keys :req [:db/id :db/ident :db/valueType :db/cardinality ]
-                        :opt [:db/unique :db/index :db.install/_attribute]))
+(s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality ]
+                        :opt [:db/id :db/unique :db/index :db.install/_attribute]))
 
 (def required-keys #{:db/ident :db/valueType :db/cardinality})
 
