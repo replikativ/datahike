@@ -3,6 +3,7 @@
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing use-fixtures]])
     [datahike.api :as d]
+    [datahike.schema :as ds]
     [datahike.test.core :as tdc]))
 
 (def name-schema {:db/ident :name
@@ -52,7 +53,7 @@
 
       (testing "insert new data with wrong data type"
         (is (thrown-msg?
-             "Bad entity value 42 at [:db/add 3 :name 42], value does not match schema definition. Must be of type :db.type/string"
+             "Bad entity value 42 at [:db/add 3 :name 42], value does not match schema definition. Must be conform to: string?"
              (d/transact! conn [{:name 42}]))))
 
       (testing "insert new data with additional attributes not in schema"
@@ -60,10 +61,33 @@
              "Bad entity attribute :age at {:db/id 3, :age 42}, not defined in current schema"
              (d/transact! conn [{:name "Bob" :age 42}]))))
 
-      (testing "insert incomplete schema"
+      (testing "insert incomplete schema :db/ident"
         (is (thrown-msg?
              "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-             (d/transact! conn [{:db/ident :phone}])))))
+             (d/transact! conn [{:db/ident :phone}]))))
+
+      (testing "insert incomplete schema :db/valueType"
+        (is (thrown-msg?
+             "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+             (d/transact! conn [{:db/valueType :db.type/string}]))))
+
+      (testing "insert incomplete schema :db/cardinality"
+        (is (thrown-msg?
+             "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+             (d/transact! conn [{:db/cardinality :db.cardinality/many}]))))
+
+      (testing "insert incomplete schema :db/cardinality, :db/ident"
+        (is (thrown-msg?
+             "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+             (d/transact! conn [{:db/ident :phone :db/cardinality :db.cardinality/many}]))))
+
+      (testing "insert schema with incorrect value type"
+        (is (thrown-msg?
+             "Bad entity value :string at [:db/add 3 :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/instant :db.type/boolean :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/symbol}"
+             (d/transact! conn [{:db/ident :phone
+                                 :db/cardinality :db.cardinality/one
+                                 :db/valueType :string}]))))
+      )
 
     (testing "cleanup"
       (d/delete-database test-uri))))
@@ -147,8 +171,8 @@
                 schema-name
                 " "
                 wrong-val
-                "], value does not match schema definition. Must be of type :db.type/"
-                type-name)
+                "], value does not match schema definition. Must be conform to: "
+                (ds/describe-type (keyword "db.type" type-name)))
            (d/transact! conn [{schema-name wrong-val}]))))))
 
 (deftest test-schema-types

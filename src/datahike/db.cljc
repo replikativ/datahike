@@ -630,7 +630,7 @@
     (let [schema (:schema db)
           schema-spec (if (ds/schema-attr? a) ds/implicit-schema-spec schema)]
       (when-not (ds/value-valid? at schema)
-        (raise "Bad entity value " v " at " at ", value does not match schema definition. Must be of type " (get-in schema-spec [a :db/valueType])
+        (raise "Bad entity value " v " at " at ", value does not match schema definition. Must be conform to: " (ds/describe-type (get-in schema-spec [a :db/valueType]))
                {:error :transact/schema :value v :attribute a :schema (get-in db [:schema a])})))))
 
 (defn- current-tx [report]

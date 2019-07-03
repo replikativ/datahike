@@ -86,3 +86,6 @@
 
 (defn schema? [schema]
   (s/valid? ::schema schema))
+
+(defn describe-type [schema-type]
+  (s/describe schema-type))
