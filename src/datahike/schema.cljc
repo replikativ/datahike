@@ -96,13 +96,13 @@
    (fn [m attr-def new-value]
      (let [old-value (get-in attr-schema [attr-def])]
        (when-not (= old-value new-value)
-         (assoc m attr-def
-                (case attr-def
-                  :db/isComponent nil
-                  :db/cardinality (when-not (and (= new-value :db.cardinality/many)
-                                                 (not (get-in attr-schema [:db/unique])))
-                                    [old-value new-value])
-                  :db/unique (when-not (get-in attr-schema [:db/unique])
-                               (when-not (= (get-in attr-schema [:db/cardinality]) :db.cardinality/one)
-                                 [old-value new-value]))
-                  [old-value new-value]))))) {} (dissoc entity :db/id)))
+         (case attr-def
+           :db/cardinality (if (= new-value :db.cardinality/many)
+                             (if (get-in attr-schema [:db/unique])
+                               (assoc m attr-def [old-value new-value])
+                               nil)
+                             (assoc m attr-def [old-value new-value]))
+           :db/unique (when-not (get-in attr-schema [:db/unique])
+                        (when-not (= (get-in attr-schema [:db/cardinality]) :db.cardinality/one)
+                          (assoc m attr-def [old-value new-value])))
+           (assoc m attr-def [old-value new-value]))))) {} (dissoc entity :db/id)))

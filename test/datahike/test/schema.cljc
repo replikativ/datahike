@@ -264,15 +264,11 @@
       (is (= #{["Charlie" :audi] ["Charlie" :bmw] ["Bob" :chrysler] ["Bob" :daimler]}
              (d/q '[:find ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
 
-    (testing "change :owner cardinality to many"
-      (d/transact! conn [{:db/id [:db/ident :owner]
-                          :db/cardinality :db.cardinality/many}])
-      (d/transact! conn [{:db/id [:owner "Charlie"]
-                          :owner "Alice"}])
-      (is (= #{[ 3 "Alice" :audi] [3 "Alice" :bmw]
-               [3 "Charlie" :audi] [3 "Charlie" :bmw]
-               [4 "Bob" :chrysler] [4 "Bob" :daimler]}
-             (d/q '[:find ?e ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
+    (testing "test  cardinality change if unique is set"
+      (is (thrown-msg?
+           "Update not supported for these schema attributes"
+           (d/transact! conn [{:db/id [:db/ident :owner]
+                               :db/cardinality :db.cardinality/many}]))))
 
     (d/delete-database uri)))
 
