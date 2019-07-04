@@ -275,3 +275,26 @@
              (d/q '[:find ?e ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
 
     (d/delete-database uri)))
+
+
+(deftest test-schema-persistence
+  (testing "test file persistence"
+    (let [uri "datahike:file:///tmp/dh-test-schema-persistence"
+          _ (d/create-database uri [name-schema])
+          conn (d/connect uri)]
+      (testing "schema exists on creation and first connection"
+        (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db conn)))))
+      (testing "reconnect with db"
+        (let [new-conn (d/connect uri)]
+          (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db new-conn))))))
+      (d/delete-database uri)))
+  (testing "test mem persistence"
+    (let [uri "datahike:mem://test-schema-persistence"
+          _ (d/create-database uri [name-schema])
+          conn (d/connect uri)]
+      (testing "schema exists on creation and first connection"
+        (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db conn)))))
+      (testing "reconnect with db"
+        (let [new-conn (d/connect uri)]
+          (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db new-conn))))))
+      (d/delete-database uri))))
