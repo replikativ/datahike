@@ -972,10 +972,16 @@
                                                  (next-eid db))
                            :else old-eid)
                  new-entity (assoc entity :db/id new-eid)]
-             (when (and (ds/schema-entity? entity) (not (get-in db [:schema new-eid])))
-               (when-not (ds/schema? entity)
-                 (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                        {:error :transact/schema :entity entity})))
+             ;; schema tx
+             (when (ds/schema-entity? entity)
+               (if-let [attr-name (get-in db [:schema new-eid])]
+                 (when-let [invalid-updates (ds/find-invalid-schema-updates  entity (get-in db [:schema attr-name]))]
+                   (when-not (empty? invalid-updates)
+                     (raise (str "Update not supported for following schema attributes: " (clojure.string/join ", "  (map (fn [[k [o n]]] (str k ": [" o " -> " n "]")) invalid-updates)))
+                            {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
+                 (when-not (ds/schema? entity)
+                   (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                          {:error :transact/schema :entity entity}))))
              (recur (allocate-eid report old-eid new-eid)
                     (concat (explode db new-entity) entities)))
 

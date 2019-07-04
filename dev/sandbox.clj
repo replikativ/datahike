@@ -32,7 +32,6 @@
   (d/transact! conn [{:name  "Alice", :age   15}
                      {:name  "Bob", :age   37}
                      {:name  "Charlie", :age   37}
-                     {:age 15}
                      {:name  "Daisy", :age   22 :sibling [:name "Alice"]}])
 
   (def query '[:find ?e ?a ?tx :where [?e :name "Daisy" ?tx] [?e :age ?a]])
@@ -45,6 +44,13 @@
   (d/q query db)
 
   (d/q query (d/db conn))
+
+  (d/transact! conn [{:db/id [:db/ident :name]
+                      :db/cardinality :db.cardinality/many
+                      :db/ident :boofar}])
+
+  (d/transact! conn [{:db/id [:db/ident :sibling]
+                      :db/unique :db.unique/identity}])
 
   (def db (c/empty-db))
 
@@ -59,6 +65,7 @@
                       :db/ident :name}
                      {:db/id #db/id[db.part/db]
                       :db/valueType :db.type/long
+                      :db/cardinality :db.cardinality/one
                       :db/ident :age}])
 
   (d/q '[:find ?e ?ident :where [?e :db/valueType ?ident]] (d/db conn))
@@ -68,5 +75,7 @@
   (d/transact! conn [{:db/id #db/id[db.part/user] :name "Alice" :age "23"}])
 
   (d/q '[:find ?e :where [?e :name "Alice"]] (d/db conn))
+
+  (empty? {:a 1})
 
   )

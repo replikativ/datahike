@@ -71,6 +71,7 @@
                                    :db.install/_attribute {:db/valueType   :db.type.install/_attribute
                                                            :db/unique      :db.unique/identity
                                                            :db/cardinality :db.cardinality/one}})
+
 (def schema-keys #{:db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute})
 
 (defn schema-attr? [attr]
@@ -89,3 +90,19 @@
 
 (defn describe-type [schema-type]
   (s/describe schema-type))
+
+(defn find-invalid-schema-updates [entity attr-schema]
+  (reduce-kv
+   (fn [m attr-def new-value]
+     (let [old-value (get-in attr-schema [attr-def])]
+       (when-not (= old-value new-value)
+         (assoc m attr-def
+                (case attr-def
+                  :db/isComponent nil
+                  :db/cardinality (when-not (and (= new-value :db.cardinality/many)
+                                                 (not (get-in attr-schema [:db/unique])))
+                                    [old-value new-value])
+                  :db/unique (when-not (get-in attr-schema [:db/unique])
+                               (when-not (= (get-in attr-schema [:db/cardinality]) :db.cardinality/one)
+                                 [old-value new-value]))
+                  [old-value new-value]))))) {} (dissoc entity :db/id)))
