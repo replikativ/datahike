@@ -96,7 +96,7 @@
   (let [test-uri "datahike:mem://test-db-with-initial-schema"]
 
     (testing "create database with initial schema"
-      (d/create-database test-uri [name-schema]))
+      (d/create-database {:uri test-uri :initial-tx [name-schema]}))
 
     (let [conn (d/connect test-uri)]
 
@@ -157,7 +157,7 @@
       (d/delete-database test-uri))))
 
 (defn testing-type [conn type-name tx-val tx-id wrong-val]
-  (testing "float"
+  (testing type-name
     (let [schema-name (keyword "value" type-name)]
       (d/transact! conn [{schema-name tx-val}])
       (is (= #{[tx-val]}
@@ -210,7 +210,7 @@
                    {:db/ident :value/uuid
                     :db/valueType :db.type/uuid
                     :db/cardinality :db.cardinality/one}]
-        _ (d/create-database uri schema-tx)
+        _ (d/create-database {:uri uri :initial-tx schema-tx})
         conn (d/connect uri)]
 
     (testing-type conn "bigdec" (bigdec 1) 13 1)
@@ -237,7 +237,7 @@
                    {:db/ident :cars
                     :db/valueType :db.type/keyword
                     :db/cardinality :db.cardinality/many}]
-        _ (d/create-database uri schema-tx)
+        _ (d/create-database {:uri uri :initial-tx schema-tx})
         conn (d/connect uri)]
 
     (testing "insert :owner and :cars one by one"
@@ -276,7 +276,7 @@
 (deftest test-schema-persistence
   (testing "test file persistence"
     (let [uri "datahike:file:///tmp/dh-test-schema-persistence"
-          _ (d/create-database uri [name-schema])
+          _ (d/create-database {:uri uri :initial-tx [name-schema]})
           conn (d/connect uri)]
       (testing "schema exists on creation and first connection"
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db conn)))))
@@ -286,7 +286,7 @@
       (d/delete-database uri)))
   (testing "test mem persistence"
     (let [uri "datahike:mem://test-schema-persistence"
-          _ (d/create-database uri [name-schema])
+          _ (d/create-database {:uri uri :initial-tx [name-schema]})
           conn (d/connect uri)]
       (testing "schema exists on creation and first connection"
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db conn)))))

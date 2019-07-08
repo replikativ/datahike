@@ -20,8 +20,8 @@
                            :path string?))
 
 (s/fdef parse-uri
-  :args (s/cat :uri string?)
-  :ret ::uri-config)
+        :args (s/cat :uri string?)
+        :ret ::uri-config)
 
 (defn- parse-uri [uri]
   (let [base-uri (URI. uri)
@@ -47,19 +47,19 @@
         _ (when (= store-scheme "mem")
             (when-not (@memory uri)
               (throw (ex-info
-                      (str "Database does not exist at " uri "!")
-                      {:type :db-does-not-exist
-                       :uri uri}))))
+                       (str "Database does not exist at " uri "!")
+                       {:type :db-does-not-exist
+                        :uri  uri}))))
         store (kons/add-hitchhiker-tree-handlers
-               (kc/ensure-cache
-                (case store-scheme
-                 "mem"
-                 (@memory uri)
-                 "file"
-                  (<?? S (fs/new-fs-store path))
-                 "level"
-                  (<?? S (kl/new-leveldb-store path)))
-               (atom (cache/lru-cache-factory {} :threshold 1000))))
+                (kc/ensure-cache
+                  (case store-scheme
+                    "mem"
+                    (@memory uri)
+                    "file"
+                    (<?? S (fs/new-fs-store path))
+                    "level"
+                    (<?? S (kl/new-leveldb-store path)))
+                  (atom (cache/lru-cache-factory {} :threshold 1000))))
         stored-db (<?? S (k/get-in store [:db]))
         ;_ (prn stored-db)
         _ (when-not stored-db
@@ -68,21 +68,21 @@
               (kl/release store)
               nil)
             (throw (ex-info
-                    (str "Database does not exist at " uri "!")
-                    {:type :db-does-not-exist :uri uri})))
+                     (str "Database does not exist at " uri "!")
+                     {:type :db-does-not-exist :uri uri})))
         {:keys [eavt-key aevt-key avet-key schema rschema config]} stored-db
         empty (db/empty-db)]
     (d/conn-from-db
-     (assoc empty
-            :config config
-            :schema schema
-            :max-eid (db/init-max-eid eavt-key)
-            :eavt eavt-key
-            :aevt aevt-key
-            :avet avet-key
-            :rschema rschema
-            :store store
-            :uri uri))))
+      (assoc empty
+        :config config
+        :schema schema
+        :max-eid (db/init-max-eid eavt-key)
+        :eavt eavt-key
+        :aevt aevt-key
+        :avet avet-key
+        :rschema rschema
+        :store store
+        :uri uri))))
 
 (defn release [conn]
   (let [[m store-scheme path] (parse-uri (:uri @conn))]
@@ -106,16 +106,16 @@
             aevt-flushed (di/-flush aevt backend)
             avet-flushed (di/-flush avet backend)]
         (<?? S (k/assoc-in store [:db]
-                           {:schema schema
-                            :rschema rschema
-                            :config config
+                           {:schema   schema
+                            :rschema  rschema
+                            :config   config
                             :eavt-key eavt-flushed
                             :aevt-key aevt-flushed
                             :avet-key avet-flushed}))
         (reset! connection (assoc db-after
-                                  :eavt eavt-flushed
-                                  :aevt aevt-flushed
-                                  :avet avet-flushed))
+                             :eavt eavt-flushed
+                             :aevt aevt-flushed
+                             :avet avet-flushed))
         tx-report))))
 
 (defn transact! [connection tx-data]
@@ -124,14 +124,20 @@
     (catch Exception e
       (throw (.getCause e)))))
 
-(defn create-database
-  ([uri]
-   (create-database uri nil))
-  ([uri initial-tx]
-   (let [[m store-scheme path] (parse-uri uri)
-         _ (when-not m
-             (throw (ex-info "URI cannot be parsed." {:uri uri})))
-         store (kc/ensure-cache
+(defmulti create-database
+          "Creates a new database"
+          {:arglists '([config])}
+          (fn [config] (type config)))
+
+(defmethod create-database String [uri]
+  (create-database {:uri uri}))
+
+(defmethod create-database clojure.lang.PersistentArrayMap
+  [{:keys [uri initial-tx schema-on-read]}]
+  (let [[m store-scheme path] (parse-uri uri)
+        _ (when-not m
+            (throw (ex-info "URI cannot be parsed." {:uri uri})))
+        store (kc/ensure-cache
                 (case store-scheme
                   "mem"
                   (let [store (<?? S (mem/new-mem-store))]
@@ -139,33 +145,33 @@
                     store)
                   "file"
                   (kons/add-hitchhiker-tree-handlers
-                   (<?? S (fs/new-fs-store path)))
+                    (<?? S (fs/new-fs-store path)))
                   "level"
                   (kons/add-hitchhiker-tree-handlers
-                   (<?? S (kl/new-leveldb-store path))))
+                    (<?? S (kl/new-leveldb-store path))))
                 (atom (cache/lru-cache-factory {} :threshold 1000))) ;; TODO: move store to separate ns
-         stored-db (<?? S (k/get-in store [:db]))
-         _ (when stored-db
-             (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
-         index-type (store-scheme->index store-scheme)
-         config {:schema-on-read false}
-         {:keys [eavt aevt avet schema rschema config]} (db/empty-db {:db/ident {:db/unique :db.unique/identity}} index-type :config config)
-         backend (kons/->KonserveBackend store)]
-     (<?? S (k/assoc-in store [:db]
-                        {:schema schema
-                         :rschema rschema
-                         :config config
-                         :eavt-key (di/-flush eavt backend)
-                         :aevt-key (di/-flush aevt backend)
-                         :avet-key (di/-flush avet backend)}))
-     (case store-scheme
-       "level"
-       (kl/release store)
-       nil)
-     (when initial-tx
-       (let [conn (connect uri)]
-         (transact! conn initial-tx)
-         (release conn))))))
+        stored-db (<?? S (k/get-in store [:db]))
+        _ (when stored-db
+            (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
+        index-type (store-scheme->index store-scheme)
+        config {:schema-on-read (or schema-on-read false)}
+        {:keys [eavt aevt avet schema rschema config]} (db/empty-db {:db/ident {:db/unique :db.unique/identity}} index-type :config config)
+        backend (kons/->KonserveBackend store)]
+    (<?? S (k/assoc-in store [:db]
+                       {:schema   schema
+                        :rschema  rschema
+                        :config   config
+                        :eavt-key (di/-flush eavt backend)
+                        :aevt-key (di/-flush aevt backend)
+                        :avet-key (di/-flush avet backend)}))
+    (case store-scheme
+      "level"
+      (kl/release store)
+      nil)
+    (when initial-tx
+      (let [conn (connect uri)]
+        (transact! conn initial-tx)
+        (release conn)))))
 
 (defn delete-database [uri]
   (let [[m store-scheme path] (parse-uri uri)]

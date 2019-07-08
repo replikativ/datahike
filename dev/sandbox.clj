@@ -4,9 +4,9 @@
 
 (comment
 
-  (def path "datahike:mem://dev")
+  (def uri "datahike:mem://dev")
  ;;(def path "datahike:file:///tmp/local-db-0")
-  (d/delete-database path)
+  (d/delete-database uri)
 
   (def schema [{:db/ident :name
                 :db/cardinality :db.cardinality/one
@@ -20,10 +20,10 @@
                 :db/cardinality :db.cardinality/one
                 :db/valueType :db.type/long}])
 
-  (d/create-database path schema)
+  (d/create-database {:uri uri :initial-tx schema})
 
-  ;; (d/create-database path)
-  ;;
+  (d/create-database {:uri uri
+                      :schema-on-read true})
 
   (def conn (d/connect path))
 
