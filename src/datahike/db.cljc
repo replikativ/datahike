@@ -384,7 +384,7 @@
      :aevt (di/empty-index index :aevt)
      :avet (di/empty-index index :avet)
      :max-eid      e0
-     :max-tx       tx0
+     :max-tx       tx0 #_(.getTime (java.util.Date.))
      :hash         0})))
 
 (defn init-max-eid [eavt]
@@ -634,6 +634,8 @@
                {:error :transact/schema :value v :attribute a :schema (get-in db [:schema a])})))))
 
 (defn- current-tx [report]
+  #_#?(:clj (.getTime (java.util.Date.))
+     :cljs (.getTime (js/Date.)))
   (inc (get-in report [:db-before :max-tx])))
 
 (defn- next-eid [db]
@@ -977,7 +979,6 @@
                (if-let [attr-name (get-in db [:schema new-eid])]
                  (when-let [invalid-updates (ds/find-invalid-schema-updates  entity (get-in db [:schema attr-name]))]
                    (when-not (empty? invalid-updates)
-                     #_(str "Update not supported for following schema attributes: " (clojure.string/join ", "  (map (fn [[k [o n]]] (str k ": [" o " -> " n "]")) invalid-updates)))
                      (raise "Update not supported for these schema attributes"
                             {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
                  (when-not (ds/schema? entity)

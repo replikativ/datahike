@@ -22,17 +22,14 @@
 
   (d/create-database {:uri uri :initial-tx schema})
 
-  (d/create-database {:uri uri
-                      :schema-on-read true})
-
-  (def conn (d/connect path))
+  (def conn (d/connect uri))
 
   (def db (d/db conn))
 
-  (d/transact! conn [{:name  "Alice", :age   15}
+  (d/transact! conn [{:name  "Alice", :age   27}
                      {:name  "Bob", :age   37}
-                     {:name  "Charlie", :age   37}
-                     {:name  "Daisy", :age   22 :sibling [:name "Alice"]}])
+                     {:name  "Charlie", :age   47}
+                     {:name  "Daisy", :age   24 :sibling [:name "Alice"]}])
 
   (def query '[:find ?e ?a ?tx :where [?e :name "Daisy" ?tx] [?e :age ?a]])
 
@@ -45,6 +42,11 @@
 
   (d/q query (d/db conn))
 
+  (d/q '[:find ?a ?v ?t :in $ ?e :where [?e ?a ?v ?t]] (d/db conn) 4)
+
+  (d/transact! conn [{:db/id 4 :age 50}])
+
+  
   (d/transact! conn [{:db/id [:db/ident :name]
                       :db/cardinality :db.cardinality/many
                       :db/ident :boofar}])
