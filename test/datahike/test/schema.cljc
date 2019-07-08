@@ -294,3 +294,16 @@
         (let [new-conn (d/connect uri)]
           (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db new-conn))))))
       (d/delete-database uri))))
+
+(deftest test-schema-on-read-db
+  (testing "test database creation wit schema-on-read"
+    (let [uri "datahike:mem://test-schemaless-db"
+          _ (d/create-database {:uri uri :schema-on-read true})
+          conn (d/connect uri)]
+      (testing "insert any data"
+        (d/transact! conn [{:name "Alice" :age 26} {:age "12" :car :bmw }])
+        (is (= #{[1 "Alice" 26]}
+               (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))))
+        (is (= #{[2 "12" :bmw]}
+               (d/q '[:find ?e ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn)))))
+      (d/delete-database uri))))
