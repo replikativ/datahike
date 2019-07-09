@@ -73,7 +73,6 @@
 (d/transact! conn [{:db/id 8 :contributor/name "bobby"}])
 
 ;; check it
-
 (d/q find-name-email (d/db conn))
 
 (d/pull (d/db conn) '[*] [:contributor/name "bobby"])
@@ -90,7 +89,7 @@
 ;; let's search with pull inside the query
 (def find-repositories '[:find (pull ?e [*]) :where [?e :repository/name ?n]])
 
-;; nice
+;; looks good
 (d/q find-repositories (d/db conn))
 
 ;; let's go further and fetch the related contributor data as well
