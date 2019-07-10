@@ -1,10 +1,12 @@
 (ns datahike.test.schema
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing use-fixtures]])
-    [datahike.api :as d]
-    [datahike.schema :as ds]
-    [datahike.test.core :as tdc]))
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing use-fixtures]])
+   [datahike.api :as d]
+   [datahike.schema :as ds]
+   [datahike.test.core :as tdc])
+  (:import [java.io File]))
+
 
 (def name-schema {:db/ident :name
                   :db/valueType :db.type/string
@@ -253,8 +255,7 @@
     (testing "insert :cars as list"
       (d/transact! conn [{:db/id -2
                           :owner "Bob"
-                          :cars [:chrysler :daimler]}
-                         ])
+                          :cars [:chrysler :daimler]}])
       (is (= #{["Alice" :audi] ["Alice" :bmw] ["Bob" :chrysler] ["Bob" :daimler]}
              (d/q '[:find ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
 
@@ -272,10 +273,22 @@
 
     (d/delete-database uri)))
 
+;; see https://gist.github.com/edw/5128978
+(defn delete-files-recursively [fname & [silently]]
+  (letfn [(delete-f [^File file]
+            (when (.exists file)
+              (when (.isDirectory file)
+                (doseq [child-file (.listFiles file)]
+                  (delete-f child-file)))
+              (clojure.java.io/delete-file file silently)))]
+    (delete-f (clojure.java.io/file fname))))
+
 
 (deftest test-schema-persistence
   (testing "test file persistence"
-    (let [uri "datahike:file:///tmp/dh-test-schema-persistence"
+    (let [file-path "/tmp/dh-test-schema-persistence"
+          _ (delete-files-recursively file-path)
+          uri (str "datahike:file://" file-path)
           _ (d/create-database {:uri uri :initial-tx [name-schema]})
           conn (d/connect uri)]
       (testing "schema exists on creation and first connection"
