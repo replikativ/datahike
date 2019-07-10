@@ -793,19 +793,21 @@
      (reduce-kv
       (fn [acc a v]                                       ;; acc = [e a v]
         (if (contains? idents a)
-          (if-some [e (:e (first (-datoms db :avet [a v])))]
-            (cond
-              (nil? acc) [e a v]                          ;; first upsert
-              (= (get acc 0) e) acc                       ;; second+ upsert, but does not conflict
-              :else
-              (let [[_e _a _v] acc]
-                (raise "Conflicting upserts: " [_a _v] " resolves to " _e
-                       ", but " [a v] " resolves to " e
-                       {:error     :transact/upsert
-                        :entity    entity
-                        :assertion [e a v]
-                        :conflict  [_e _a _v]})))
-            acc)                                          ;; upsert attr, but resolves to nothing
+          (do
+            (validate-val v [nil nil a v nil] db)
+            (if-some [e (:e (first (-datoms db :avet [a v])))]
+              (cond
+                (nil? acc) [e a v]                          ;; first upsert
+                (= (get acc 0) e) acc                       ;; second+ upsert, but does not conflict
+                :else
+                (let [[_e _a _v] acc]
+                  (raise "Conflicting upserts: " [_a _v] " resolves to " _e
+                         ", but " [a v] " resolves to " e
+                         {:error     :transact/upsert
+                          :entity    entity
+                          :assertion [e a v]
+                          :conflict  [_e _a _v]})))
+              acc))                                          ;; upsert attr, but resolves to nothing
           acc))                                           ;; non-upsert attr
       nil
       entity)
