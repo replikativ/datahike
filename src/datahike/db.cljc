@@ -792,8 +792,7 @@
       (fn [acc a v]                                       ;; acc = [e a v]
         (if (contains? idents a)
           (do
-            (when-not (ds/schema-attr? a)
-              (validate-val v [nil nil a v nil] db))
+            (validate-val v [nil nil a v nil] db)
             (if-some [e (:e (first (-datoms db :avet [a v])))]
               (cond
                 (nil? acc) [e a v]                          ;; first upsert
