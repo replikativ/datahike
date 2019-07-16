@@ -6,7 +6,11 @@
 
 (def connect dc/connect)
 
-(def create-database dc/create-database)
+(def
+  ^{:arglists '([uri] [{:keys [uri initial-tx schema-on-read temporal-index]}])
+    :doc "Creates a databse with optional configuration"}
+  create-database
+  dc/create-database)
 
 (def delete-database dc/delete-database)
 
