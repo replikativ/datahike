@@ -98,7 +98,7 @@
   (create-database {:uri uri}))
 
 (defmethod create-database clojure.lang.PersistentArrayMap
-  [{:keys [uri initial-tx schema-on-read]}]
+  [{:keys [uri initial-tx schema-on-read temporal-index]}]
   (let [[m store-scheme path] (parse-uri uri)
         _ (when-not m
             (throw (ex-info "URI cannot be parsed." {:uri uri})))
@@ -108,7 +108,8 @@
         stored-db (<?? S (k/get-in store [:db]))
         _ (when stored-db
             (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
-        config {:schema-on-read (or schema-on-read false)}
+        config {:schema-on-read (or schema-on-read false)
+                :temporal-index (or temporal-index true)}
         {:keys [eavt aevt avet schema rschema config]} (db/empty-db {:db/ident {:db/unique :db.unique/identity}} (ds/scheme->index store-scheme) :config config)
         backend (kons/->KonserveBackend store)]
     (<?? S (k/assoc-in store [:db]

@@ -30,7 +30,7 @@
                      {:name  "Charlie", :age   47}
                      {:name "Daisy", :age 24 :sibling [[:name "Alice"] [:name "Charlie"]]}])
 
-  (d/q '[:find ?a ?v ?tx :in $ ?e :where [?e ?a ?v ?tx]] (d/db conn) 4)
+  (sort (fn [[_ _ tx0] [_ _ tx1]] (< tx0 tx1))  (d/q '[:find ?a ?v ?tx :in $ ?e :where [?e ?a ?v ?tx]] (d/db conn) 4))
 
   (d/pull (d/db conn) '[*] [:name "Alice"])
 
@@ -48,6 +48,6 @@
 
   (d/q '[:find ?e ?a ?v :where [?e ?a ?v 1563193744848]] (d/db conn))
 
-  (d/q '[:find ?e ?a ?v ?tx :where [?e ?a ?v ?tx] [(<= ?tx 1563193744848)]] (d/db conn))
+  (d/q '[:find ?e ?a ?v ?tx :where [?e ?a ?v ?tx] [(< ?tx 1563287548286)]] (d/db conn))
 
   )

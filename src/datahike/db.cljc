@@ -878,7 +878,9 @@
         report)
       (if-some [^Datom old-datom (first (-search db [e a]))]
         (if (= (.-v old-datom) v)
-          report
+          (if temporal-index
+            (transact-report report new-datom)
+            report)
           (let [removed-report (if temporal-index
                                  report
                                  (transact-report report (datom e a (.-v old-datom) tx false)))]
