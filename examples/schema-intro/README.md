@@ -1,4 +1,4 @@
-# example
+# strict schema example
 
 See [blog post](https://lambdaforge.io/articles)
 
