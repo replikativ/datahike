@@ -8,6 +8,8 @@
     [hasch.core :refer [uuid]]
     [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
     [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
+    [datahike.constants :refer [e0 tx0 emax txmax]]
+    [datahike.tools :refer [get-time]]
    [datahike.schema :as ds]
     [me.tonsky.persistent-sorted-set :as set]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
@@ -27,10 +29,6 @@
      (def IllegalArgumentException js/Error)
      (def UnsupportedOperationException js/Error)))
 
-(def ^:const e0 0)
-(def ^:const tx0 0x20000000)
-(def ^:const emax 0x7FFFFFFF)
-(def ^:const txmax 0x7FFFFFFF)
 (def ^:const implicit-schema {:db/ident {:db/unique :db.unique/identity}})
 
 ;; ----------------------------------------------------------------------------
@@ -136,9 +134,11 @@
 
 (defprotocol IDB
   (-schema [db])
-  (-attrs-by [db property]))
+  (-attrs-by [db property])
+  (-temporal-index? [db]))
 
 ;; ----------------------------------------------------------------------------
+
 
 (declare hash-datoms equiv-db empty-db resolve-datom validate-attr components->pattern indexing?)
 #?(:cljs (declare pr-db))
@@ -185,10 +185,12 @@
   IDB
   (-schema [db] (.-schema db))
   (-attrs-by [db property] ((.-rschema db) property))
+  (-temporal-index? [db] ((.-config db) :temporal-index))
 
   ISearch
   (-search [db pattern]
-           (let [[e a v tx] pattern]
+           (let [rschema (get-in db [:rschema])
+                 [e a v tx] pattern]
              (case-tree [e a (some? v) tx]
                         [(-slice eavt (datom e a v tx) (datom e a v tx) :eavt) ;; e a v tx
                          (-slice eavt (datom e a v tx0) (datom e a v txmax) :eavt) ;; e a v _
@@ -212,7 +214,7 @@
                          (if (indexing? db a) ;; _ a v _
                            (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
                            (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
-                                (filter (fn [^Datom d] (= v (.-v d))))))
+                                (filter (fn [^Datom d] (= v (.-v d)))) ))
                          (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ tx
                               (filter (fn [^Datom d] (= tx (datom-tx d)))))
                          (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ _
@@ -295,6 +297,7 @@
   IDB
   (-schema [db] (-schema (.-unfiltered-db db)))
   (-attrs-by [db property] (-attrs-by (.-unfiltered-db db) property))
+  (-temporal-index? [db] (-temporal-index? (.-unfiltered-db db)))
 
   ISearch
   (-search [db pattern]
@@ -373,7 +376,8 @@
   ([] (empty-db nil :datahike.index/hitchhiker-tree))
   ([schema] (empty-db schema :datahike.index/hitchhiker-tree))
   ([schema index & {config :config
-                    :or {config {:schema-on-read true}}}]
+                    :or {config {:schema-on-read true
+                                 :temporal-index false}}}]
    {:pre [(or (nil? schema) (map? schema))]}
    (validate-schema schema)
    (map->DB
@@ -383,9 +387,11 @@
      :eavt (di/empty-index index :eavt)
      :aevt (di/empty-index index :aevt)
      :avet (di/empty-index index :avet)
-     :max-eid      e0
-     :max-tx       tx0 #_(.getTime (java.util.Date.))
-     :hash         0})))
+     :max-eid e0
+     :max-tx (if (:temporal-index config)
+               (get-time)
+               tx0)
+     :hash 0})))
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
@@ -405,7 +411,8 @@
   ([datoms schema & {index :index
                      config :config
                      :or {index :datahike.index/hitchhiker-tree
-                          config {:schema-on-read true}}}]
+                          config {:schema-on-read true
+                                  :temporal-index false}}}]
    (validate-schema schema)
    (let [rschema (rschema (merge implicit-schema schema))
          indexed (:db/index rschema)
@@ -635,8 +642,10 @@
 
 (defn- current-tx [report]
   #_#?(:clj (.getTime (java.util.Date.))
-     :cljs (.getTime (js/Date.)))
-  (inc (get-in report [:db-before :max-tx])))
+       :cljs (.getTime (js/Date.)))
+  (if (get-in report [:db-before :config :temporal-index])
+    (get-in report [:db-after :max-tx])
+    (inc (get-in report [:db-before :max-tx]))))
 
 (defn- next-eid [db]
   (inc (:max-eid db)))
@@ -852,7 +861,7 @@
           [:db/add v straight-a eid]
           [:db/add eid straight-a v])))))
 
-(defn- transact-add [{:keys [db-after] :as report} [_ e a v tx :as ent]]
+(defn- transact-add [{{{:keys [temporal-index] :as config} :config :as db-after} :db-after :as report} [_ e a v tx :as ent]]
   (validate-attr a ent db-after)
   (validate-val v ent db-after)
   (let [tx (or tx (current-tx report))
@@ -867,9 +876,10 @@
       (if-some [^Datom old-datom (first (-search db [e a]))]
         (if (= (.-v old-datom) v)
           report
-          (-> report
-              (transact-report (datom e a (.-v old-datom) tx false))
-              (transact-report new-datom)))
+          (let [removed-report (if temporal-index
+                                 report
+                                 (transact-report report (datom e a (.-v old-datom) tx false)))]
+            (transact-report removed-report new-datom)))
         (transact-report report new-datom)))))
 
 (defn- transact-retract-datom [report ^Datom d]
@@ -924,18 +934,21 @@
                 (sequential? initial-es))
     (raise "Bad transaction data " initial-es ", expected sequential collection"
            {:error :transact/syntax, :tx-data initial-es}))
-  (loop [report (-> initial-report
-                    (update :db-after transient))
+  (loop [report (let [transient-report (update initial-report :db-after transient)]
+                  (if (get-in initial-report [:db-before :config :temporal-index])
+                    (assoc-in transient-report [:db-after :max-tx] (get-time))
+                    transient-report))
          es initial-es]
     (let [[entity & entities] es
           db (:db-after report)
           {:keys [tempids]} report]
       (cond
         (empty? es)
-        (-> report
-            (assoc-in [:tempids :db/current-tx] (current-tx report))
-            (update-in [:db-after :max-tx] inc)
-            (update :db-after persistent!))
+        (let [current-report (assoc-in report [:tempids :db/current-tx] (current-tx report))
+              max-report (if (get-in initial-report [:db-before :config :temporal-index])
+                           current-report
+                           (update-in current-report [:db-after :max-tx] inc))]
+          (update max-report :db-after persistent!))
 
         (nil? entity)
         (recur report entities)

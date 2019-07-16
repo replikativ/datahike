@@ -5,6 +5,7 @@
     [datahike.datom :as dd]
     [datahike.pull-api :as dp]
     [datahike.query :as dq]
+    [datahike.constants :as dc]
     [datahike.impl.entity :as de])
   #?(:clj
     (:import
@@ -13,7 +14,7 @@
       [java.util UUID])))
 
 
-(def ^:const ^:no-doc tx0 db/tx0)
+(def ^:const ^:no-doc tx0 dc/tx0)
 
 
 ; Entities

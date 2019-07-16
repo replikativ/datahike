@@ -1,7 +1,7 @@
 (ns datahike.datom
   (:require  [clojure.walk]
              [clojure.data]
-             [datahike.tools :refer [combine-hashes]]
+             [datahike.tools :refer [combine-hashes get-time]]
              [datahike.constants :refer [tx0 txmax e0 emax]]))
 
 (declare hash-datom equiv-datom seq-datom nth-datom assoc-datom val-at-datom)
@@ -10,7 +10,7 @@
   (datom-tx [this])
   (datom-added [this]))
 
-(deftype Datom #?(:clj  [^int e a v ^int tx ^:unsynchronized-mutable ^int _hash]
+(deftype Datom #?(:clj  [^int e a v ^long tx ^:unsynchronized-mutable ^int _hash]
                   :cljs [^number e a v ^number tx ^:mutable ^number _hash])
   IDatom
   (datom-tx [d] (if (pos? tx) tx (- tx)))
@@ -184,7 +184,7 @@
     (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
     (cmp (.-a d1) (.-a d2))
     (cmp (.-v d1) (.-v d2))
-    (#?(:clj Integer/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 
 
@@ -193,14 +193,14 @@
     (cmp (.-a d1) (.-a d2))
     (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
     (cmp (.-v d1) (.-v d2))
-    (#?(:clj Integer/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-avet [^Datom d1, ^Datom d2]
   (combine-cmp
     (cmp (.-a d1) (.-a d2))
     (cmp (.-v d1) (.-v d2))
     (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
-    (#?(:clj Integer/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 ;; fast versions without nil checks
 
@@ -218,21 +218,21 @@
     (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
     (cmp-attr-quick (.-a d1) (.-a d2))
     (compare (.-v d1) (.-v d2))
-    (#?(:clj Integer/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-aevt-quick [^Datom d1, ^Datom d2]
   (combine-cmp
     (cmp-attr-quick (.-a d1) (.-a d2))
     (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
     (compare (.-v d1) (.-v d2))
-    (#?(:clj Integer/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-avet-quick [^Datom d1, ^Datom d2]
   (combine-cmp
     (cmp-attr-quick (.-a d1) (.-a d2))
     (compare (.-v d1) (.-v d2))
     (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
-    (#?(:clj Integer/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 (defn diff-sorted [a b cmp]
   (loop [only-a []

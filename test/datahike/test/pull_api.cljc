@@ -21,7 +21,9 @@
              :db/cardinality :db.cardinality/many }
    :spec   { :db/valueType :db.type/ref
              :db/isComponent true
-             :db/cardinality :db.cardinality/one }})
+            :db/cardinality :db.cardinality/one }})
+
+(def tx0 (datahike.tools/get-time))
 
 (def test-datoms
   (->>
@@ -58,7 +60,7 @@
      [16 :part 17]
      [18 :name  "Part A.B.A.B"]
      [16 :part 18]]
-   (map #(apply d/datom %))))
+    (map (fn [[e a v]] (d/datom e a v tx0)))))
 
 (def test-db (d/init-db test-datoms test-schema))
 

@@ -18,7 +18,8 @@
    [datalog.parser.pull :as dpp])
   #?(:clj (:import [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
                     Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
-                    RulesVar SrcVar Variable])))
+                    RulesVar SrcVar Variable]
+                   [datahike.datom Datom])))
 
 
 ;; ----------------------------------------------------------------------------
@@ -94,6 +95,17 @@
 
 (defn lookup-ref? [form]
   (looks-like? [attr? '_] form))
+
+(defn get-latest-values [db datoms]
+  (->> datoms
+       (group-by (fn [^Datom datom] [(.-e datom) (.-a datom)]))
+       (mapcat (fn [[[_ a] entities]]
+                 (if (contains? (get-in db [:rschema :db.cardinality/many]) a)
+                   entities
+                   [(reduce (fn [^Datom datom-0 ^Datom datom-1]
+                              (if (> (.-tx datom-0) (.-tx datom-1))
+                                datom-0
+                                datom-1)) entities)])))))
 
 ;; Relation algebra
 
@@ -417,12 +429,15 @@
         getters-a (map #(getter-fn attrs-a %) attrs)
         key-fn-a  (tuple-key-fn getters-a)]
     (assoc a
-      :tuples (filterv #(nil? (hash (key-fn-a %))) tuples-a))))
+           :tuples (filterv #(nil? (hash (key-fn-a %))) tuples-a))))
 
 (defn lookup-pattern-db [db pattern]
   ;; TODO optimize with bound attrs min/max values here
   (let [search-pattern (mapv #(if (symbol? %) nil %) pattern)
-        datoms         (db/-search db search-pattern)
+        raw-datoms     (db/-search db search-pattern)
+        datoms         (if (and (db/-temporal-index? db) (< (count pattern) 4))
+                         (get-latest-values db raw-datoms)
+                         raw-datoms)
         attr->prop     (->> (map vector pattern ["e" "a" "v" "tx"])
                             (filter (fn [[s _]] (free-var? s)))
                             (into {}))]
