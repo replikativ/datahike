@@ -1,12 +1,13 @@
 (ns ^:no-doc datahike.pull-api
   (:require
-    [datahike.db :as db]
-    [datahike.datom :as dd]
-    [datahike.pull-parser :as dpp #?@(:cljs [:refer [PullSpec]])])
-    #?(:clj
-      (:import
-        [datahike.datom Datom]
-        [datahike.pull_parser PullSpec])))
+   [datahike.db :as db]
+   [datahike.datom :as dd]
+   #?@(:cljs [datalog.parser.pull :refer [PullSpec]])
+   [datalog.parser.pull :as dpp])
+  #?(:clj
+     (:import
+      [datahike.datom Datom]
+      [datalog.parser.pull PullSpec])))
 
 (defn- into!
   [transient-coll items]
@@ -136,8 +137,8 @@
                (mapv datom-val)
                (expand-frame parent eid attr-key multi?)
                (conj frames parent))
-          
-          :else 
+
+          :else
           (let [as-value  (cond->> datom-val
                             ref? (comp #(hash-map :db/id %)))
                 single?   (not multi?)]
