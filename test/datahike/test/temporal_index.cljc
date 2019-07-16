@@ -5,6 +5,6 @@
    [datahike.api :as d]
    [datahike.test.core :as tdc]))
 
-(defn test-historical-queries
+(deftest test-historical-queries
   (let [uri "datahike:mem://test-historical-queries"
         _ (d/delete-database uri)]))
