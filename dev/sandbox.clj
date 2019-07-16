@@ -21,11 +21,9 @@
                 :db/cardinality :db.cardinality/one
                 :db/valueType :db.type/long}])
 
-
   (d/create-database {:uri uri :initial-tx schema})
 
   (def conn (d/connect uri))
-
 
   (d/transact! conn [{:name  "Alice", :age   27}
                      {:name  "Bob", :age   37}

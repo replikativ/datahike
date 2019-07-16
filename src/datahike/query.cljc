@@ -100,7 +100,7 @@
   (->> datoms
        (group-by (fn [^Datom datom] [(.-e datom) (.-a datom)]))
        (mapcat (fn [[[_ a] entities]]
-                 (if (contains? (get-in db [:rschema :db.cardinality/many]) a)
+                 (if (contains? (get-in (db/-rschema db) [:db.cardinality/many]) a)
                    entities
                    [(reduce (fn [^Datom datom-0 ^Datom datom-1]
                               (if (> (.-tx datom-0) (.-tx datom-1))

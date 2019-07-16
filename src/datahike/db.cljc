@@ -134,6 +134,7 @@
 
 (defprotocol IDB
   (-schema [db])
+  (-rschema [db])
   (-attrs-by [db property])
   (-temporal-index? [db]))
 
@@ -184,6 +185,7 @@
 
   IDB
   (-schema [db] (.-schema db))
+  (-rschema [db] (.-rschema db))
   (-attrs-by [db property] ((.-rschema db) property))
   (-temporal-index? [db] ((.-config db) :temporal-index))
 
@@ -296,6 +298,7 @@
 
   IDB
   (-schema [db] (-schema (.-unfiltered-db db)))
+  (-rschema [db] (-rschema (.-unfiltered-db db)))
   (-attrs-by [db property] (-attrs-by (.-unfiltered-db db) property))
   (-temporal-index? [db] (-temporal-index? (.-unfiltered-db db)))
 
