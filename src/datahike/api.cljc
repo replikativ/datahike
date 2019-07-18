@@ -8,7 +8,7 @@
 
 (def
   ^{:arglists '([uri] [{:keys [uri initial-tx schema-on-read temporal-index]}])
-    :doc "Creates a databse with optional configuration"}
+    :doc "Creates a database with optional configuration"}
   create-database
   dc/create-database)
 

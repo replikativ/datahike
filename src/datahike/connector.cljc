@@ -41,10 +41,11 @@
             (ds/release-store store-scheme store)
             (throw (ex-info "Database does not exist." {:type :db-does-not-exist
                                                   :uri uri})))
-        {:keys [eavt-key aevt-key avet-key schema rschema config]} stored-db
-        empty (db/empty-db)]
+        {:keys [eavt-key aevt-key avet-key schema rschema config max-tx]} stored-db
+        empty (db/empty-db nil :datahike.index/hitchhiker-tree :config config)]
     (d/conn-from-db
       (assoc empty
+        :max-tx max-tx
         :config config
         :schema schema
         :max-eid (db/init-max-eid eavt-key)
@@ -64,7 +65,7 @@
   (future
     (locking connection
       (let [{:keys [db-after] :as tx-report} @(d/transact connection tx-data)
-            {:keys [eavt aevt avet schema rschema config]} db-after
+            {:keys [eavt aevt avet schema rschema config max-tx]} db-after
             store (:store @connection)
             backend (kons/->KonserveBackend store)
             eavt-flushed (di/-flush eavt backend)
@@ -74,6 +75,7 @@
                            {:schema   schema
                             :rschema  rschema
                             :config   config
+                            :max-tx max-tx
                             :eavt-key eavt-flushed
                             :aevt-key aevt-flushed
                             :avet-key avet-flushed}))
@@ -110,10 +112,11 @@
             (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
         config {:schema-on-read (or schema-on-read false)
                 :temporal-index (or temporal-index true)}
-        {:keys [eavt aevt avet schema rschema config]} (db/empty-db {:db/ident {:db/unique :db.unique/identity}} (ds/scheme->index store-scheme) :config config)
+        {:keys [eavt aevt avet schema rschema config max-tx]} (db/empty-db {:db/ident {:db/unique :db.unique/identity}} (ds/scheme->index store-scheme) :config config)
         backend (kons/->KonserveBackend store)]
     (<?? S (k/assoc-in store [:db]
                        {:schema   schema
+                        :max-tx max-tx
                         :rschema  rschema
                         :config   config
                         :eavt-key (di/-flush eavt backend)
