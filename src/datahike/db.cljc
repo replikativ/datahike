@@ -391,9 +391,7 @@
      :aevt (di/empty-index index :aevt)
      :avet (di/empty-index index :avet)
      :max-eid e0
-     :max-tx (if (:temporal-index config)
-               (get-time)
-               tx0)
+     :max-tx tx0
      :hash 0})))
 
 (defn init-max-eid [eavt]
@@ -624,7 +622,7 @@
     (when-not (or (keyword? attr) (string? attr))
       (raise "Bad entity attribute " attr " at " at ", expected keyword or string"
              {:error :transact/syntax, :attribute attr, :context at}))
-    (when-not (ds/schema-attr? attr)
+    (when-not (or (ds/meta-attr? attr) (ds/schema-attr? attr))
       (if-let [db-idents (-> db :rschema :db/ident)]
         (when-not (db-idents attr)
           (raise "Bad entity attribute " attr " at " at ", not defined in current schema"
@@ -638,17 +636,13 @@
            {:error :transact/syntax, :value v, :context at}))
   (when-not (get-in db [:config :schema-on-read])
     (let [schema (:schema db)
-          schema-spec (if (ds/schema-attr? a) ds/implicit-schema-spec schema)]
+          schema-spec (if (or (ds/meta-attr? a) (ds/schema-attr? a)) ds/implicit-schema-spec schema)]
       (when-not (ds/value-valid? at schema)
         (raise "Bad entity value " v " at " at ", value does not match schema definition. Must be conform to: " (ds/describe-type (get-in schema-spec [a :db/valueType]))
                {:error :transact/schema :value v :attribute a :schema (get-in db [:schema a])})))))
 
 (defn- current-tx [report]
-  #_#?(:clj (.getTime (java.util.Date.))
-       :cljs (.getTime (js/Date.)))
-  (if (get-in report [:db-before :config :temporal-index])
-    (get-in report [:db-after :max-tx])
-    (inc (get-in report [:db-before :max-tx]))))
+  (inc (get-in report [:db-before :max-tx])))
 
 (defn- next-eid [db]
   (inc (:max-eid db)))
@@ -939,21 +933,19 @@
                 (sequential? initial-es))
     (raise "Bad transaction data " initial-es ", expected sequential collection"
            {:error :transact/syntax, :tx-data initial-es}))
-  (loop [report (let [transient-report (update initial-report :db-after transient)]
-                  (if (get-in initial-report [:db-before :config :temporal-index])
-                    (assoc-in transient-report [:db-after :max-tx] (get-time))
-                    transient-report))
-         es initial-es]
+  (loop [report (update initial-report :db-after transient)
+         es (if (get-in initial-report [:db-before :temporal-index])
+              (conj initial-es {:db/id :db/current-tx :db/txInstant (get-time)})
+              initial-es)]
     (let [[entity & entities] es
           db (:db-after report)
           {:keys [tempids]} report]
       (cond
         (empty? es)
-        (let [current-report (assoc-in report [:tempids :db/current-tx] (current-tx report))
-              max-report (if (get-in initial-report [:db-before :config :temporal-index])
-                           current-report
-                           (update-in current-report [:db-after :max-tx] inc))]
-          (update max-report :db-after persistent!))
+        (-> report
+            (assoc-in [:tempids :db/current-tx] (current-tx report))
+            (update-in [:db-after :max-tx] inc)
+            (update :db-after persistent!))
 
         (nil? entity)
         (recur report entities)
