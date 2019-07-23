@@ -40,8 +40,8 @@
 ;; let's change something
 (d/transact! conn [{:db/id [:name "Alice"] :age 30}])
 
-;; search for current data of Alice, without using tx in a query, always the latest values are collected
+;; search for current data of Alice
 (d/q '[:find ?v :in $ ?e :where [?e :age ?v]] (d/db conn) [:name "Alice"])
 
-;; now we search with tx ids
-(d/q '[:find ?v ?t :in $ ?e :where [?e :age ?v ?t]] (d/db conn) [:name "Alice"])
+;; now we search within historical data
+(d/q '[:find ?v :in $ ?e :where [?e :age ?v]] (d/history conn) [:name "Alice"])
