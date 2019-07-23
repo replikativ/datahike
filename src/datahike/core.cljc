@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [filter])
   (:require
     [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
+    [datahike.datom :as dd]
     [datahike.pull-api :as dp]
     [datahike.query :as dq]
     [datahike.impl.entity :as de])
@@ -172,12 +173,12 @@
              Optionally with transaction id (number) and `added` flag (`true` for addition, `false` for retraction).
 
              See also [[init-db]]."}
-  datom db/datom)
+  datom dd/datom)
 
 
 (def ^{:arglists '([x])
        :doc "Returns `true` if the given value is a datom, `false` otherwise."}
-  datom? db/datom?)
+  datom? dd/datom?)
 
 
 (def ^{:arglists '([datoms] [datoms schema])
@@ -205,6 +206,7 @@
    - All operations on filtered database are proxied to original DB, then filter pred is applied.
    - Not cached. You pay filter penalty every time.
    - Supports entities, pull, queries, index access.
+   - Does not support hashing of DB.
    - Does not support [[with]] and [[db-with]]."
   [db pred]
   {:pre [(db/db? db)]}
@@ -212,8 +214,8 @@
     (let [^FilteredDB fdb db
           orig-pred (.-pred fdb)
           orig-db   (.-unfiltered-db fdb)]
-      (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %)) (atom 0)))
-    (FilteredDB. db #(pred db %) (atom 0))))
+      (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
+    (FilteredDB. db #(pred db %))))
 
 
 ; Changing DB
@@ -579,7 +581,7 @@
              ```
              (clojure.edn/read-string {:readers data-readers} \"...\")
              ```"}
-  data-readers {'datahike/Datom db/datom-from-reader
+  data-readers {'datahike/Datom dd/datom-from-reader
                 'datahike/DB    db/db-from-reader})
 
 #?(:cljs
