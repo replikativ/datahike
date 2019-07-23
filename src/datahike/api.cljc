@@ -1,25 +1,12 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
-  (:require [datahike.db :as db]
-            [datahike.core :as d]
+  (:require [datahike.core :as d]
             [datahike.connector :as dc]
-            [hitchhiker.konserve :as kons]
-            [hitchhiker.tree.core :as hc]
-            [konserve.filestore :as fs]
-            [konserve-leveldb.core :as kl]
-            [konserve.core :as k]
-            [konserve.cache :as kc]
-            [konserve.memory :as mem]
-            [superv.async :refer [<?? S]]
-            [clojure.core.cache :as cache]
-            [datahike.index :as di])
-  (:import [java.net URI]))
+            [superv.async :refer [<?? S]]))
 
 (def connect dc/connect)
 
 (def create-database dc/create-database)
-
-(def create-database-with-schema dc/create-database)
 
 (def delete-database dc/delete-database)
 

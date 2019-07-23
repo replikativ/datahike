@@ -1,27 +1,40 @@
 (ns sandbox
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d]
+            [datahike.core :as c]))
 
 (comment
 
-  (def path "datahike:mem://dev")
-  ;;(def path "datahike:file:///tmp/local-db-0")
+  (def uri "datahike:mem://dev")
+ ;;(def path "datahike:file:///tmp/local-db-0")
+  (d/delete-database uri)
 
-  (d/delete-database path)
+  (def schema [{:db/ident :name
+                :db/cardinality :db.cardinality/one
+                :db/index true
+                :db/unique :db.unique/identity
+                :db/valueType :db.type/string}
+               {:db/ident :sibling
+                :db/cardinality :db.cardinality/many
+                :db/valueType :db.type/ref}
+               {:db/ident :age
+                :db/cardinality :db.cardinality/one
+                :db/valueType :db.type/long}])
 
-  (d/create-database path)
+  (d/create-database {:uri uri :initial-tx schema})
 
-  (def conn (d/connect path) )
+  #_(d/create-database {:uri uri :schema-on-read true})
 
-  (d/transact! conn [{ :db/id 1, :name  "Alice", :age   15 }
-                     { :db/id 2, :name  "Bob", :age   37 }
-                     { :db/id 3, :name  "Charlie", :age   37 }
-                     { :db/id 4, :age 15 }
-                     { :db/id 5, :name  "Daisy", :age   22 }
-                     ])
+  (def conn (d/connect uri))
 
-  (def query '[:find ?e ?a ?tx :where [?e :name "Daisy" ?tx] [?e :age ?a]] )
+  (def db (d/db conn))
 
-  (d/q query (d/db conn))
+  (d/transact! conn [{:name  "Alice", :age   15}
+                     {:name  "Bob", :age   37}
+                     {:name  "Charlie", :age   37}
+                     {:name  "Daisy", :age   22 :sibling [:name "Alice"]}])
+
+  (d/transact! conn [{:db/id [:name "Alice"]
+                      :name "bob"}])
 
 
   )

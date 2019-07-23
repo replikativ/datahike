@@ -7,8 +7,19 @@
             [konserve.core :as k]
             [konserve.cache :as kc]
             [superv.async :refer [<?? S]]
+            [clojure.spec.alpha :as s]
             [clojure.core.cache :as cache])
   (:import [java.net URI]))
+
+(s/def ::scheme #{"datahike"})
+(s/def ::store-scheme #{"mem" "file" "level"})
+(s/def ::uri-config (s/cat :meta string?
+                           :store-scheme ::store-scheme
+                           :path string?))
+
+(s/fdef parse-uri
+        :args (s/cat :uri string?)
+        :ret ::uri-config)
 
 (defn- parse-uri [uri]
   (let [base-uri (URI. uri)
@@ -17,34 +28,6 @@
         store-scheme (.getScheme sub-uri)
         path (.getPath sub-uri)]
     [scheme store-scheme path]))
-
-(defn create-database
-  ([uri]
-   (create-database uri nil))
-  ([uri schema]
-   (let [[m store-scheme path] (parse-uri uri)
-         _ (when-not m
-             (throw (ex-info "URI cannot be parsed." {:uri uri})))
-         store (kc/ensure-cache
-                  (ds/empty-store store-scheme path)
-                  (atom (cache/lru-cache-factory {} :threshold 1000)))
-         stored-db (<?? S (k/get-in store [:db]))
-         _ (when stored-db
-             (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
-         {:keys [eavt aevt avet rschema]} (db/empty-db schema (ds/scheme->index store-scheme))
-         backend (kons/->KonserveBackend store)]
-     (<?? S (k/assoc-in store [:db]
-                        {:schema schema
-                         :eavt-key (di/-flush eavt backend)
-                         :aevt-key (di/-flush aevt backend)
-                         :avet-key (di/-flush avet backend)
-                         :rschema rschema}))
-     (ds/release-store store-scheme store)
-     nil)))
-
-(defn delete-database [uri]
-  (let [[m store-scheme path] (parse-uri uri)]
-    (ds/delete-store store-scheme path)))
 
 (defn connect [uri]
   (let [[scheme store-scheme path] (parse-uri uri)
@@ -58,18 +41,19 @@
             (ds/release-store store-scheme store)
             (throw (ex-info "Database does not exist." {:type :db-does-not-exist
                                                   :uri uri})))
-        {:keys [eavt-key aevt-key avet-key schema rschema]} stored-db
+        {:keys [eavt-key aevt-key avet-key schema rschema config]} stored-db
         empty (db/empty-db)]
     (d/conn-from-db
-     (assoc empty
-            :schema schema
-            :max-eid (db/init-max-eid eavt-key)
-            :eavt eavt-key
-            :aevt aevt-key
-            :avet avet-key
-            :rschema rschema
-            :store store
-            :uri uri))))
+      (assoc empty
+        :config config
+        :schema schema
+        :max-eid (db/init-max-eid eavt-key)
+        :eavt eavt-key
+        :aevt aevt-key
+        :avet avet-key
+        :rschema rschema
+        :store store
+        :uri uri))))
 
 (defn release [conn]
   (let [[m store-scheme path] (parse-uri (:uri @conn))]
@@ -80,23 +64,66 @@
   (future
     (locking connection
       (let [{:keys [db-after] :as tx-report} @(d/transact connection tx-data)
-            {:keys [eavt aevt avet schema rschema]} db-after
+            {:keys [eavt aevt avet schema rschema config]} db-after
             store (:store @connection)
             backend (kons/->KonserveBackend store)
             eavt-flushed (di/-flush eavt backend)
             aevt-flushed (di/-flush aevt backend)
             avet-flushed (di/-flush avet backend)]
         (<?? S (k/assoc-in store [:db]
-                           {:schema schema
-                            :rschema rschema
+                           {:schema   schema
+                            :rschema  rschema
+                            :config   config
                             :eavt-key eavt-flushed
                             :aevt-key aevt-flushed
                             :avet-key avet-flushed}))
         (reset! connection (assoc db-after
-                                  :eavt eavt-flushed
-                                  :aevt aevt-flushed
-                                  :avet avet-flushed))
+                             :eavt eavt-flushed
+                             :aevt aevt-flushed
+                             :avet avet-flushed))
         tx-report))))
 
 (defn transact! [connection tx-data]
-  (deref (transact connection tx-data)))
+  (try
+    (deref (transact connection tx-data))
+    (catch Exception e
+      (throw (.getCause e)))))
+
+(defmulti create-database
+          "Creates a new database"
+          {:arglists '([config])}
+          (fn [config] (type config)))
+
+(defmethod create-database String [uri]
+  (create-database {:uri uri}))
+
+(defmethod create-database clojure.lang.PersistentArrayMap
+  [{:keys [uri initial-tx schema-on-read]}]
+  (let [[m store-scheme path] (parse-uri uri)
+        _ (when-not m
+            (throw (ex-info "URI cannot be parsed." {:uri uri})))
+         store (kc/ensure-cache
+                  (ds/empty-store store-scheme path)
+                  (atom (cache/lru-cache-factory {} :threshold 1000)))
+        stored-db (<?? S (k/get-in store [:db]))
+        _ (when stored-db
+            (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
+        config {:schema-on-read (or schema-on-read false)}
+        {:keys [eavt aevt avet schema rschema config]} (db/empty-db {:db/ident {:db/unique :db.unique/identity}} (ds/scheme->index store-scheme) :config config)
+        backend (kons/->KonserveBackend store)]
+    (<?? S (k/assoc-in store [:db]
+                       {:schema   schema
+                        :rschema  rschema
+                        :config   config
+                        :eavt-key (di/-flush eavt backend)
+                        :aevt-key (di/-flush aevt backend)
+                        :avet-key (di/-flush avet backend)}))
+    (ds/release-store store-scheme store)
+    (when initial-tx
+      (let [conn (connect uri)]
+        (transact! conn initial-tx)
+        (release conn)))))
+
+(defn delete-database [uri]
+  (let [[m store-scheme path] (parse-uri uri)]
+    (ds/delete-store store-scheme path)))
