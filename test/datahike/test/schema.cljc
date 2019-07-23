@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is are deftest testing use-fixtures]])
    [datahike.api :as d]
    [datahike.schema :as ds]
+   [datahike.db :as dd]
    [datahike.test.core :as tdc]))
 
 (def name-schema {:db/ident       :name
@@ -27,7 +28,7 @@
         db (d/db conn)
         tx [{:name "Alice"}]]
 
-    (is (= {:db/ident {:db/unique :db.unique/identity}} (:schema db)))
+    (is (= {:db/ident {:db/unique :db.unique/identity}} (dd/-schema db)))
 
     (testing "transact without schema present"
       (is (thrown-msg?
@@ -43,7 +44,7 @@
                           :valueType :db.type/string
                           :cardinality :db.cardinality/one}
                1 :name}
-              (:schema (d/db conn)))))
+              (dd/-schema (d/db conn)))))
 
     (testing "transacting data with schema present"
       (d/transact! conn tx)
@@ -100,7 +101,7 @@
                            :valueType :db.type/string
                            :cardinality :db.cardinality/one}
                 1 :name}
-               (:schema db)))
+               (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q db)))))
 
     (testing "insert new data according to schema"
@@ -121,7 +122,7 @@
                           :valueType :db.type/long,
                           :cardinality :db.cardinality/one},
                 3 :age}
-               (:schema db)))
+               (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one] [:age :db.type/long :db.cardinality/one]}
                (d/q find-schema-q db)))))
 
@@ -142,7 +143,7 @@
                           :valueType :db.type/long,
                           :cardinality :db.cardinality/one},
                 3 :age}
-               (:schema db)))
+               (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/many] [:age :db.type/long :db.cardinality/one]}
                (d/q find-schema-q db)))))))
 

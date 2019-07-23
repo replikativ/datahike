@@ -2,7 +2,10 @@
   (:refer-clojure :exclude [filter])
   (:require [datahike.core :as d]
             [datahike.connector :as dc]
-            [superv.async :refer [<?? S]]))
+            [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
+            [superv.async :refer [<?? S]])
+  #?(:clj
+     (:import [datahike.db CurrentDB])))
 
 (def connect dc/connect)
 
@@ -37,6 +40,9 @@
 (def filter d/filter)
 
 (defn db [conn]
+  (CurrentDB. @conn))
+
+(defn history [conn]
   @conn)
 
 (def with d/with)

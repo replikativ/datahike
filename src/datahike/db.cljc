@@ -136,6 +136,7 @@
   (-schema [db])
   (-rschema [db])
   (-attrs-by [db property])
+  (-max-tx [db])
   (-temporal-index? [db]))
 
 ;; ----------------------------------------------------------------------------
@@ -188,6 +189,7 @@
   (-rschema [db] (.-rschema db))
   (-attrs-by [db property] ((.-rschema db) property))
   (-temporal-index? [db] ((.-config db) :temporal-index))
+  (-max-tx [db] (.-max-tx db))
 
   ISearch
   (-search [db pattern]
@@ -301,6 +303,7 @@
   (-rschema [db] (-rschema (.-unfiltered-db db)))
   (-attrs-by [db property] (-attrs-by (.-unfiltered-db db) property))
   (-temporal-index? [db] (-temporal-index? (.-unfiltered-db db)))
+  (-max-tx [db] (-max-tx (.-unfiltered-db db)))
 
   ISearch
   (-search [db pattern]
@@ -318,6 +321,78 @@
 
   (-index-range [db attr start end]
                 (filter (.-pred db) (-index-range (.-unfiltered-db db) attr start end))))
+
+
+(defn- get-current-values [datoms rschema]
+  (->> datoms
+       (group-by (fn [^Datom datom] [(.-e datom) (.-a datom)]))
+       (mapcat
+        (fn [[[_ a] entities]]
+          (if (contains? (get-in rschema [:db.cardinality/many]) a)
+            entities
+            [(reduce (fn [^Datom datom-0 ^Datom datom-1]
+                       (if (> (.-tx datom-0) (.-tx datom-1))
+                         datom-0
+                         datom-1)) entities)])))))
+
+(defrecord-updatable CurrentDB [historical-db]
+  #?@(:cljs
+      [IEquiv (-equiv [db other] (equiv-db db other))
+       ISeqable (-seq [db] (-datoms db :eavt []))
+       ICounted (-count [db] (count (-datoms db :eavt [])))
+       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
+
+       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
+       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
+
+       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on FilteredDB")))
+                        ([_ _ _] (throw (js/Error. "-lookup is not supported on FilteredDB"))))
+
+       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on FilteredDB")))
+       (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on FilteredDB")))]
+      :clj
+      [clojure.lang.IPersistentCollection
+       (count [db] (count (-datoms db :eavt [])))
+       (equiv [db o] (equiv-db db o))
+       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on CurrentDB")))
+       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on CurrentDB")))
+
+       clojure.lang.Seqable (seq [db] (-datoms db :eavt []))
+
+       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on CurrentDB")))
+       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on CurrentDB")))
+       clojure.lang.IKeywordLookup (getLookupThunk [db k]
+                                     (throw (UnsupportedOperationException. "getLookupThunk is not supported on CurrentDB")))
+
+       clojure.lang.Associative
+       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on CurrentDB")))
+       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on CurrentDB")))
+       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on CurrentDB")))])
+
+  IDB
+  (-schema [db] (-schema (.-historical-db db)))
+  (-rschema [db] (-rschema (.-historical-db db)))
+  (-attrs-by [db property] (-attrs-by (.-historical-db db) property))
+  (-temporal-index? [db] (-temporal-index? (.-historical-db db)))
+  (-max-tx [db] (-max-tx (.-historical-db db)))
+
+  ISearch
+  (-search [db pattern]
+           (get-current-values (-search (.-historical-db db) pattern) (-rschema db)))
+
+  IIndexAccess
+  (-datoms [db index cs]
+           (get-current-values (-datoms (.-historical-db db) index cs) (-rschema db)))
+
+  (-seek-datoms [db index cs]
+                (get-current-values  (-seek-datoms (.-historical-db db) index cs) (-rschema db)))
+
+  (-rseek-datoms [db index cs]
+                 (get-current-values (-rseek-datoms (.-historical-db db) index cs) (-rschema db)))
+
+  (-index-range [db attr start end]
+                (get-current-values (-index-range (.-historical-db db) attr start end) (-rschema db))))
+
 
 ;; ----------------------------------------------------------------------------
 
@@ -934,8 +1009,8 @@
     (raise "Bad transaction data " initial-es ", expected sequential collection"
            {:error :transact/syntax, :tx-data initial-es}))
   (loop [report (update initial-report :db-after transient)
-         es (if (get-in initial-report [:db-before :temporal-index])
-              (conj initial-es {:db/id :db/current-tx :db/txInstant (get-time)})
+         es (if (-temporal-index? (get-in initial-report [:db-before]))
+              (conj initial-es [:db/add (current-tx report) :db/txInstant (get-time) (current-tx report)])
               initial-es)]
     (let [[entity & entities] es
           db (:db-after report)

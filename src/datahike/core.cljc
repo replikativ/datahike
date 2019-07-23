@@ -201,7 +201,7 @@
 
 (defn filter
   "Returns a view over database that has same interface but only includes datoms for which the `(pred db datom)` is true. Can be applied multiple times.
-   
+
    Filtered DB gotchas:
 
    - All operations on filtered database are proxied to original DB, then filter pred is applied.

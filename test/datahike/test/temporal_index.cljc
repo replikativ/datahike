@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing use-fixtures]])
    [datahike.api :as d]
+   [datahike.db :as dd]
    [datahike.test.core :as tdc]))
 
 
@@ -27,7 +28,7 @@
 
     (testing "Initial data"
       (let [db (d/db conn)
-            max-tx (:max-tx db)]
+            max-tx (dd/-max-tx db)]
         (are [x y]
           (= x y)
 
@@ -39,17 +40,18 @@
 
       (testing "transact new :age value to 'Alice'"
         (let [_ (d/transact! conn [{:db/id [:name "Alice"] :age 30}])
-              db (d/db conn)]
+              db (d/db conn)
+              history (d/history conn)]
           (are [x y]
             (= x y)
             #{[30]}
             (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] db [:name "Alice"])
             #{[30] [25]}
-            (d/q '[:find ?a :in $ ?e :where [?e :age ?a ?tx]] db [:name "Alice"]))))
+            (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] history [:name "Alice"]))))
 
       (testing "get all values before current transaction"
-        (let [db (d/db conn)
-              max-tx (:max-tx db)]
+        (let [db (d/history conn)
+              max-tx (dd/-max-tx db)]
           (is (=
                 #{[25]}
                 (d/q '[:find ?a :in $ ?e ?t :where [?e :age ?a ?tx] [(< ?tx ?t)]] db [:name "Alice"] max-tx))))))))

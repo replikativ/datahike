@@ -46,7 +46,7 @@
 
   (def db (d/db conn))
 
-  (d/q '[:find ?v :where [4 :age ?v]] (d/db conn))
+  (d/q '[:find ?v ?t :where [4 :age ?v ?tx] [?tx :db/txInstant ?t]] (d/history conn))
 
   (d/q '[:find ?e ?a ?tx :where [?e ?a 27 ?tx]] (d/db conn))
 
