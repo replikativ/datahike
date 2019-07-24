@@ -322,8 +322,7 @@
   (-index-range [db attr start end]
                 (filter (.-pred db) (-index-range (.-unfiltered-db db) attr start end))))
 
-
-(defn- get-current-values [datoms rschema]
+(defn- get-current-values [rschema datoms]
   (->> datoms
        (group-by (fn [^Datom datom] [(.-e datom) (.-a datom)]))
        (mapcat
@@ -378,21 +377,103 @@
 
   ISearch
   (-search [db pattern]
-           (get-current-values (-search (.-historical-db db) pattern) (-rschema db)))
+           (get-current-values (-rschema db) (-search (.-historical-db db) pattern) ))
 
   IIndexAccess
   (-datoms [db index cs]
-           (get-current-values (-datoms (.-historical-db db) index cs) (-rschema db)))
+           (get-current-values (-rschema db) (-datoms (.-historical-db db) index cs) ))
 
   (-seek-datoms [db index cs]
-                (get-current-values  (-seek-datoms (.-historical-db db) index cs) (-rschema db)))
+                (get-current-values (-rschema db)  (-seek-datoms (.-historical-db db) index cs)))
 
   (-rseek-datoms [db index cs]
-                 (get-current-values (-rseek-datoms (.-historical-db db) index cs) (-rschema db)))
+                 (get-current-values (-rschema db) (-rseek-datoms (.-historical-db db) index cs) ))
 
   (-index-range [db attr start end]
-                (get-current-values (-index-range (.-historical-db db) attr start end) (-rschema db))))
+                (get-current-values (-rschema db) (-index-range (.-historical-db db) attr start end) )))
 
+
+(defn filter-as-of-datoms [datoms as-of-date db]
+  (let [filtered-tx-ids (->> datoms
+                            (map (fn [^Datom d] (datom-tx d)))
+                            (into #{})
+                            (mapcat (fn [tx] (-datoms db :eavt [tx])))
+                            (reduce (fn [results ^Datom d]
+                                      (if (<= (.-v d) as-of-date)
+                                        (conj results (.-e d))
+                                        results)) #{}))]
+    (->> datoms
+         (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
+         (get-current-values (-rschema db)))))
+
+
+(defrecord-updatable AsOfDB [historical-db as-of-date]
+  #?@(:cljs
+      [IEquiv (-equiv [db other] (equiv-db db other))
+       ISeqable (-seq [db] (-datoms db :eavt []))
+       ICounted (-count [db] (count (-datoms db :eavt [])))
+       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
+
+       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
+       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
+
+       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on FilteredDB")))
+                        ([_ _ _] (throw (js/Error. "-lookup is not supported on FilteredDB"))))
+
+       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on FilteredDB")))
+       (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on FilteredDB")))]
+      :clj
+      [clojure.lang.IPersistentCollection
+       (count [db] (count (-datoms db :eavt [])))
+       (equiv [db o] (equiv-db db o))
+       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on CurrentDB")))
+       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on CurrentDB")))
+
+       clojure.lang.Seqable (seq [db] (-datoms db :eavt []))
+
+       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on CurrentDB")))
+       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on CurrentDB")))
+       clojure.lang.IKeywordLookup (getLookupThunk [db k]
+                                                   (throw (UnsupportedOperationException. "getLookupThunk is not supported on CurrentDB")))
+
+       clojure.lang.Associative
+       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on CurrentDB")))
+       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on CurrentDB")))
+       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on CurrentDB")))])
+
+  IDB
+  (-schema [db] (-schema (.-historical-db db)))
+  (-rschema [db] (-rschema (.-historical-db db)))
+  (-attrs-by [db property] (-attrs-by (.-historical-db db) property))
+  (-temporal-index? [db] (-temporal-index? (.-historical-db db)))
+  (-max-tx [db] (-max-tx (.-historical-db db)))
+
+  ISearch
+  (-search [db pattern]
+           (let [history (.-historical-db db)]
+             (-> (-search history pattern)
+                 (filter-as-of-datoms (.-as-of-date db) history))))
+
+  IIndexAccess
+  (-datoms [db index cs]
+           (let [history (.-historical-db db)]
+             (-> (-datoms history index cs)
+                 (filter-as-of-datoms (.-as-of-date db) history))))
+
+  (-seek-datoms [db index cs]
+                (let [history (.-historical-db db)]
+                  (-> (-seek-datoms history index cs)
+                      (filter-as-of-datoms (.-as-of-date db) history))))
+
+  (-rseek-datoms [db index cs]
+                 (let [history (.-historical-db db)]
+                   (-> (-rseek-datoms history index cs)
+                       (filter-as-of-datoms (.-as-of-date db) history))))
+
+  (-index-range [db attr start end]
+                (let [history (.-historical-db db)]
+                  (-> (-index-range history attr start end)
+                      (filter-as-of-datoms (.-as-of-date db) history)))))
 
 ;; ----------------------------------------------------------------------------
 

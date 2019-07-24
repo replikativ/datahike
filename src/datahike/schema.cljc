@@ -71,6 +71,7 @@
                                                     :db/cardinality :db.cardinality/one}
                                    :db/txInstant {:db/valueType :db.type/long
                                                   :db/unique :db.unique/identity
+                                                  :db/index true
                                                   :db/cardinality :db.cardinality/one}
                                    :db.install/_attribute {:db/valueType   :db.type.install/_attribute
                                                            :db/unique      :db.unique/identity
