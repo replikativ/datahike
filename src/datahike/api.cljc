@@ -5,7 +5,7 @@
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
             [superv.async :refer [<?? S]])
   #?(:clj
-     (:import [datahike.db CurrentDB AsOfDB]
+     (:import [datahike.db CurrentDB AsOfDB SinceDB]
               [java.util Date])))
 
 (def connect dc/connect)
@@ -56,5 +56,8 @@
 
 (defn as-of [conn date]
   (AsOfDB. @conn (if (platform-date? date) (get-time date) date)))
+
+(defn since [conn date]
+  (SinceDB. @conn (if (platform-date? date) (get-time date) date)))
 
 (def with d/with)
