@@ -5,7 +5,7 @@
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
             [superv.async :refer [<?? S]])
   #?(:clj
-     (:import [datahike.db CurrentDB AsOfDB SinceDB]
+     (:import [datahike.db HistoricalDB AsOfDB SinceDB]
               [java.util Date])))
 
 (def connect dc/connect)
@@ -41,10 +41,12 @@
 (def filter d/filter)
 
 (defn db [conn]
-  (CurrentDB. @conn))
+  @conn)
 
 (defn history [conn]
-  @conn)
+  (if (db/-temporal-index? @conn)
+    (HistoricalDB. @conn)
+    (throw (ex-info "as-of is only allowed on temporal indexed dbs" conn))))
 
 (defn- platform-date? [d]
   #?(:cljs (instance? js/Date d)
@@ -55,9 +57,13 @@
      :clj (.getTime ^Date d)))
 
 (defn as-of [conn date]
-  (AsOfDB. @conn (if (platform-date? date) (get-time date) date)))
+  (if (db/-temporal-index? @conn)
+    (AsOfDB. @conn (if (platform-date? date) (get-time date) date))
+    (throw (ex-info "as-of is only allowed on temporal indexed dbs"))))
 
 (defn since [conn date]
-  (SinceDB. @conn (if (platform-date? date) (get-time date) date)))
+  (if (db/-temporal-index? @conn)
+    (SinceDB. @conn (if (platform-date? date) (get-time date) date))
+    (throw (ex-info "since is only allowed on temporal indexed dbs"))))
 
 (def with d/with)

@@ -42,7 +42,20 @@
           #{[30]}
           (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] db [:name "Alice"])
           #{[30] [25]}
-          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] history [:name "Alice"]))))))
+          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] history [:name "Alice"]))))
+    (testing "historical values after with retraction"
+      (let [_ (d/transact! conn [[:db/retractEntity [:name "Alice"]]])
+                 db (d/db conn)
+            history (d/history conn)]
+        (are [x y]
+          (= x y)
+          #{}
+          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] db [:name "Alice"])
+          #{[30] [25]}
+          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] history [:name "Alice"]))))
+    (testing "find retracted values"
+      (is (= #{["Alice" 25] ["Alice" 30]}
+             (d/q '[:find ?n ?a  :where [?e :db/retracted ?r] [?r :age ?a] [?r :name ?n]] (d/history conn)))))))
 
 (deftest test-historical-queries
   (let [uri "datahike:mem://test-historical-queries"
@@ -99,4 +112,4 @@
       (let [new-age 30
             _ (d/transact! conn [{:db/id [:name "Alice"] :age new-age}])]
         (is (= #{[new-age]}
-                 (d/q query (d/since conn first-date))))))))
+               (d/q query (d/since conn first-date))))))))

@@ -41,7 +41,7 @@
 (s/def :db.type.install/_attribute #{:db.part/tx :db.part/db :db.part/user})
 
 (s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
-(s/def ::meta-attribute #{:db/txInstant})
+(s/def ::meta-attribute #{:db/txInstant :db/retracted})
 
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality ]
                         :opt [:db/id :db/unique :db/index :db.install/_attribute]))
@@ -73,15 +73,18 @@
                                                   :db/unique :db.unique/identity
                                                   :db/index true
                                                   :db/cardinality :db.cardinality/one}
+                                   :db/retracted {:db/valueType :db.type/long
+                                                  :db/unique :db.unique/identity
+                                                  :db/cardinality :db.cardinality/many}
                                    :db.install/_attribute {:db/valueType   :db.type.install/_attribute
                                                            :db/unique      :db.unique/identity
                                                            :db/cardinality :db.cardinality/one}})
 
 (def schema-keys #{:db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute})
-(def meta-keys #{:db/txInstant})
+(def meta-keys #{:db/txInstant :db/retracted})
 
 (defn meta-attr? [attr]
-  (= :db/txInstant attr))
+  (s/valid? ::meta-attribute attr))
 
 (defn meta-entity? [entity]
   (some #(contains? entity %) meta-keys))

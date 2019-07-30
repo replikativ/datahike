@@ -23,9 +23,10 @@
 
   (def conn (d/connect uri))
 
-  (d/transact! conn [{:name  "Alice", :age   27}
-                     {:name  "Bob", :age   37}
-                     {:name  "Charlie", :age   47}
-                     {:name "Daisy", :age 24 :sibling [[:name "Alice"] [:name "Charlie"]]}])
+  (d/transact! conn [{:name  "Alice", :age   25}
+                     {:name  "Bob", :age   35}
+                     {:name "Charlie", :age 45 :sibling [[:name "Alice"] [:name "Bob"]]}])
 
-)
+  (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))
+
+  )
