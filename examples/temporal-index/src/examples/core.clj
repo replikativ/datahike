@@ -51,7 +51,7 @@
 (d/q '[:find ?a ?v ?t :where [?e ?a ?v ?tx] [?tx :db/txInstant ?t]] (d/history conn))
 
 ;; next let's get the current data of a specific time
-(d/q query (d/as-of conn first-date) )
+(d/q query (d/as-of conn first-date))
 
 ;; now we want to now any additions after a specific time
 (d/q query (d/since conn first-date))

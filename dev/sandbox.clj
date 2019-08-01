@@ -6,7 +6,7 @@
 
   (def uri "datahike:mem://sandbox")
 
-  (def uri "datahike:pg://johto:boofar@localhost:5433/johto")
+  #_(def uri "datahike:pg://johto:boofar@localhost:5433/johto")
 
   (d/delete-database uri)
 
