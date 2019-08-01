@@ -78,7 +78,6 @@
   :datahike.index/hitchhiker-tree)
 
 ;; postgresql
-;;
 
 (defn pg-path [path]
   (clojure.string/join  ["postgres:" path]))
@@ -115,12 +114,3 @@
 (defmethod scheme->index "level" [_]
   :datahike.index/hitchhiker-tree)
 
-
-(comment
-
-  (def store (<?? S (kp/new-pg-store "postgres://localhost:5433/johto?user=johto&password=boofar")))
-
-  (<?? S (k/exists? store "john"))
-
-
-  )
