@@ -1,10 +1,13 @@
 (ns sandbox
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d])
+  (:import [java.net URI]))
 
 (comment
 
-  (def uri "datahike:mem://dev")
-  ;;(def path "datahike:file:///tmp/local-db-0")
+  (def uri "datahike:mem://sandbox")
+
+  (def uri "datahike:pg://johto:boofar@localhost:5433/johto")
+
   (d/delete-database uri)
 
   (def schema [{:db/ident :name

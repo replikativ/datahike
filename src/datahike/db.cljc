@@ -460,7 +460,6 @@
                           datom-0
                           datom-1)) entities)])))))
 
-
 (defn filter-as-of-datoms [datoms as-of-date db]
   (let [as-of-pred (fn [^Datom d] (<= (.-v d) as-of-date))
         filtered-tx-ids (filter-txInstant datoms as-of-pred db)
@@ -666,7 +665,6 @@
 
 (def ^:const br 300)
 (def ^:const br-sqrt (long (Math/sqrt br)))
-
 
 (defn ^DB empty-db
   ([] (empty-db nil :datahike.index/hitchhiker-tree))

@@ -22,12 +22,14 @@
         :ret ::uri-config)
 
 (defn- parse-uri [uri]
-  (let [base-uri (URI. uri)
+(let [base-uri (URI. uri)
         scheme (.getScheme base-uri)
         sub-uri (URI. (.getSchemeSpecificPart base-uri))
         store-scheme (.getScheme sub-uri)
-        path (.getPath sub-uri)]
-    [scheme store-scheme path]))
+        path (if (=  store-scheme "pg")
+               (.getSchemeSpecificPart sub-uri)
+                 (.getPath sub-uri))]
+    [scheme store-scheme path ]))
 
 (defn connect [uri]
   (let [[scheme store-scheme path] (parse-uri uri)
