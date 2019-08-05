@@ -5,8 +5,6 @@
 
   (def uri "datahike:mem://sandbox")
 
-  #_(def uri "datahike:pg://johto:boofar@localhost:5433/johto")
-
   (d/delete-database uri)
 
   (def schema [{:db/ident :name
