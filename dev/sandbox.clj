@@ -23,6 +23,8 @@
 
   (def conn (d/connect uri))
 
+  (type conn)
+
   (d/transact! conn [{:name  "Alice", :age   25}
                      {:name  "Bob", :age   35}
                      {:name "Charlie", :age 45 :sibling [[:name "Alice"] [:name "Bob"]]}])

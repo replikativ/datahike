@@ -31,6 +31,8 @@
                  (.getPath sub-uri))]
     [scheme store-scheme path ]))
 
+(s/def ::connection #(instance? clojure.lang.Atom %))
+
 (defn connect [uri]
   (let [[scheme store-scheme path] (parse-uri uri)
         store (kons/add-hitchhiker-tree-handlers

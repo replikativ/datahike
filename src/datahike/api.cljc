@@ -5,16 +5,34 @@
             [datahike.query :as dq]
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
             [superv.async :refer [<?? S]]
-            [datahike.impl.entity :as de])
+            [datahike.impl.entity :as de]
+            [clojure.spec.test.alpha :as st]
+            [clojure.spec.alpha :as s])
   #?(:clj
      (:import [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
               [datahike.impl.entity Entity]
               [java.util Date])))
 
+(s/def ::uri string?)
+
+(s/fdef connect
+  :args (s/cat :uri ::uri)
+  :ret :datahike.connector/connection)
+
 (def
-  ^{:arglists '[(uri)]
+  ^{:arglists '([uri])
     :doc "Connects to a datahike database."}
   connect dc/connect)
+
+
+(s/def ::initial-tx (s/coll-of map?))
+(s/def ::schema-on-read boolean?)
+(s/def ::temporal-index boolean?)
+(s/def ::config (s/keys :req-un [::uri ::initial-tx ::schema-on-read ::temporal-index]))
+
+(s/fdef create-database
+  :args (s/alt :uri (s/cat :uri string?)
+               :config (s/cat :config ::config)) )
 
 (def
   ^{:arglists '([uri] [{:keys [uri initial-tx schema-on-read temporal-index]}])
