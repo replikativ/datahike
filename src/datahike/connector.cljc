@@ -98,15 +98,15 @@
 
 (defmethod create-database String
   ([uri]
-   (create-database uri nil))
+   (create-database {:uri uri} nil))
   ([uri initial-tx]
-   (create-database (dc/uri->config) initial-tx)))
+   (create-database {:uri uri} initial-tx)))
 
 (defmethod create-database clojure.lang.PersistentArrayMap
   ([config]
    (create-database config nil))
-  ([{:keys [uri schema-on-read temporal-index]} initial-tx]
-   (let [[m store-scheme path] (parse-uri uri)
+  ([{:keys [uri schema-on-read temporal-index initial-tx]} initial]
+   (let [[m store-scheme path] (dc/parse-uri uri)
          _ (when-not m
              (throw (ex-info "URI cannot be parsed." {:uri uri})))
          store (kc/ensure-cache
@@ -142,5 +142,5 @@
          (release conn))))))
 
 (defn delete-database [uri]
-  (let [[m store-scheme path] (parse-uri uri)]
+  (let [[m store-scheme path] (dc/parse-uri uri)]
     (ds/delete-store store-scheme path)))
