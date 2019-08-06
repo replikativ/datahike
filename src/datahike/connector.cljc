@@ -129,7 +129,6 @@
         stored-db (<?? S (k/get-in store [:db]))
         _ (when stored-db
             (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
-        temporal-index (or temporal-index true)
         config {:schema-on-read (or schema-on-read false)
                 :temporal-index temporal-index}
         {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]} (db/empty-db {:db/ident {:db/unique :db.unique/identity}} (ds/scheme->index store-scheme) :config config)

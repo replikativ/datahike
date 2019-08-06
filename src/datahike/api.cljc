@@ -24,7 +24,6 @@
     :doc "Connects to a datahike database."}
   connect dc/connect)
 
-
 (s/def ::initial-tx (s/coll-of map?))
 (s/def ::schema-on-read boolean?)
 (s/def ::temporal-index boolean?)
@@ -259,7 +258,7 @@
 (defn history [conn]
   (if (db/-temporal-index? @conn)
     (HistoricalDB. @conn)
-    (throw (ex-info "as-of is only allowed on temporal indexed dbs" conn))))
+    (throw (ex-info "as-of is only allowed on temporal indexed dbs" {:config (.-config @conn)}))))
 
 (defn- platform-date? [d]
   #?(:cljs (instance? js/Date d)
@@ -272,10 +271,9 @@
 (defn as-of [conn date]
   (if (db/-temporal-index? @conn)
     (AsOfDB. @conn (if (platform-date? date) (get-time date) date))
-    (throw (ex-info "as-of is only allowed on temporal indexed dbs"))))
+    (throw (ex-info "as-of is only allowed on temporal indexed dbs" {:config (.-config @conn)}))))
 
 (defn since [conn date]
   (if (db/-temporal-index? @conn)
     (SinceDB. @conn (if (platform-date? date) (get-time date) date))
-    (throw (ex-info "since is only allowed on temporal indexed dbs"))))
-
+    (throw (ex-info "since is only allowed on temporal indexed dbs" {:config (.-config @conn)}))))
