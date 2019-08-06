@@ -92,6 +92,8 @@ be ported to core.async to coordinate IO in a platform-neutral manner.
 
 ## Example projects
 
+- simple examples can be found in the `examples` folder.
+
 - [Invoice creation](https://gitlab.com/replikativ/datahike-invoice)
   demonstrated at the [Dutch Clojure
   Meetup](https://www.meetup.com/de-DE/The-Dutch-Clojure-Meetup/events/trmqnpyxjbrb/).
@@ -119,7 +121,6 @@ Some differences are:
   access the index datastructures (hitchhiker-tree) and leverage their
   persistent nature for replication. These internals are not guaranteed to stay
   stable, but provide useful insight into what is going on and can be optimized.
-- datahike does not provide historical information out of the box yet
 - Datomic has a REST interface and a Java API
 - Datomic provides timeouts
 
@@ -243,27 +244,24 @@ project before exporting.
 
 ## Roadmap
 
-
-## Roadmap
-
-### 0.2.0
-- cleanup interface to hitchhiker-tree
-- provide support for other index structures
-- basic schema integration
-
 ### 0.3.0
-- temporal index 
 - clojure.spec for api functions
 - conceptualize schema upgrades
+- Java API
+- remote HTTP interface
+- Docker image
+- further schema types: bytes, tuples
 
 ### 0.4.0
-- remote http support
-- access control
+- identity and access management
+- CRDT type schema support
+- fast redis backend support
+- query planner and optimizer
+- transaction monitoring 
 
 ### 0.5.0
 - optionally use core.async to handle storage IO
 - ClojureScript support both in the browser and on node
-- fast redis backend support
 
 ### 0.5.0
 - support GC or eager deletion of fragments
@@ -275,8 +273,6 @@ project before exporting.
 
 - support optimistic write support through attributes with conflict resolution
   (CRDT-like)
-- reactive datalog for materialized views
-- provide some network access
 - investigate https://github.com/usethesource/capsule for faster hh-tree durability
 
 ## Commercial support
