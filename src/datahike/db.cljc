@@ -137,7 +137,9 @@
   (-rschema [db])
   (-attrs-by [db property])
   (-max-tx [db])
-  (-temporal-index? [db]))
+  (-temporal-index? [db])
+  (-config [db])
+  )
 
 ;; ----------------------------------------------------------------------------
 
@@ -222,8 +224,9 @@
   (-schema [db] (.-schema db))
   (-rschema [db] (.-rschema db))
   (-attrs-by [db property] ((.-rschema db) property))
-  (-temporal-index? [db] ((.-config db) :temporal-index))
+  (-temporal-index? [db] (-> db -config :temporal-index))
   (-max-tx [db] (.-max-tx db))
+  (-config [db] (.-config db))
 
   ISearch
   (-search [db pattern]
@@ -316,6 +319,7 @@
   (-attrs-by [db property] (-attrs-by (.-unfiltered-db db) property))
   (-temporal-index? [db] (-temporal-index? (.-unfiltered-db db)))
   (-max-tx [db] (-max-tx (.-unfiltered-db db)))
+  (-config [db] (-config (.-unfiltered-db db)))
 
   ISearch
   (-search [db pattern]
@@ -425,6 +429,7 @@
   (-attrs-by [db property] (-attrs-by (.-origin-db db) property))
   (-temporal-index? [db] (-temporal-index? (.-origin-db db)))
   (-max-tx [db] (-max-tx (.-origin-db db)))
+  (-config [db] (-config (.-origin-db db)))
 
   ISearch
   (-search [db pattern] (temporal-search (.-origin-db db) pattern))
@@ -508,6 +513,7 @@
   (-attrs-by [db property] (-attrs-by (.-origin-db db) property))
   (-temporal-index? [db] (-temporal-index? (.-origin-db db)))
   (-max-tx [db] (-max-tx (.-origin-db db)))
+  (-config [db] (-config (.-origin-db db)))
 
   ISearch
   (-search [db pattern]
@@ -583,6 +589,7 @@
   (-attrs-by [db property] (-attrs-by (.-origin-db db) property))
   (-temporal-index? [db] (-temporal-index? (.-origin-db db)))
   (-max-tx [db] (-max-tx (.-origin-db db)))
+  (-config [db] (-config (.-origin-db db)))
 
   ISearch
   (-search [db pattern]
