@@ -5,6 +5,7 @@
     #?(:clj [clojure.java.shell :as sh])
     datahike.test.core
     datahike.test.components
+    datahike.test.config
     datahike.test.conn
     datahike.test.db
     datahike.test.entity
