@@ -23,42 +23,66 @@ Add to your leiningen dependencies:
 
 [![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
 
-
 We provide a small stable API for the JVM at the moment, but the on-disk schema
 is not fixed yet. We will provide a migration guide until we have reached a
 stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 
 ~~~clojure
-(require '[datahike.api :refer :all])
+(require '[datahike.api :as d])
 
 
 ;; use the filesystem as storage medium
-(def uri #_"datahike:mem:///test"
-    "datahike:file:///tmp/api-test"
-    #_"datahike:level:///tmp/api-test1")
-	
-;; create a database at this place
-(create-database uri)
-	
-(def conn (connect uri))
+(def uri "datahike:file:///tmp/api-test")
+
+;; create a database at this place, per default configuration we have a strict
+;; schema and temporal index
+(d/create-database uri)
+
+(def conn (d/connect uri))
+
+;; the first transaction will be the schema we are using
+(d/transact! conn [{:db/ident :name 
+                    :db/valueType :db.type/string
+                    :db/cardinality :db.cardinality/one }
+                    {:db/ident :age 
+                    :db/valueType :db.type/long
+                    :db/cardinality :db.cardinality/one }])
 
 ;; lets add some data and wait for the transaction
-@(transact conn [{ :db/id 1, :name  "Ivan", :age   15 }
-                 { :db/id 2, :name  "Petr", :age   37 }
-                 { :db/id 3, :name  "Ivan", :age   37 }
-                 { :db/id 4, :age 15 }])
-				 
-				 
-(q '[:find ?e
-     :where [?e :name]]
-  @conn)			 
-  
-;; => #{[3] [2] [1]}
+(d/transact! conn [{:name  "Alice", :age   20 }
+                   {:name  "Bob", :age   30 }
+                   {:name  "Charlie", :age   40 }
+                   {:age 15 }])
+                   
+(d/q '[:find ?e ?n ?a 
+       :where 
+       [?e :name ?n]
+       [?e :age ?a]]
+  (d/db conn))
+;; => #{[3 "Alice" 20] [4 "Bob" 30] [5 "Charlie" 40]}
+
+;; add new entity data
+(d/transact! conn [{:db/id 3 :age 25}])
+
+(d/q '[:find ?e ?n ?a 
+       :where 
+       [?e :name ?n] 
+       [?e :age ?a]]
+  (d/db conn))
+;; => #{[5 "Charlie" 40] [4 "Bob" 30] [3 "Alice" 25]}
+
+;; query the history of the data
+(d/q '[:find ?a 
+       :where 
+       [?e :name "Alice"] 
+       [?e :age ?a]]
+  (d/history conn))
+;; => #{[20] [25]}
 
 ;; you might need to release the connection, e.g. for leveldb
-(release conn)
+(d/release conn)
 
-(delete-database uri)
+(d/delete-database uri)
 ~~~
 
 The API namespace provides compatibility to a subset of Datomic functionality
@@ -175,6 +199,15 @@ project before exporting.
 
 
 ## Changelog
+
+
+### 0.2.0
+- integrate latest code from `datascript` 
+- add protocols for core indices
+- add protocols for backend store
+- add strict schema creation and validation
+- add temporal index 
+
 
 ### 0.1.3
 
