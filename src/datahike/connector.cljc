@@ -14,18 +14,24 @@
 
 (s/def ::connection #(instance? clojure.lang.Atom %))
 
-(defn connect [uri]
-  (let [[scheme store-scheme path] (dc/parse-uri uri)
-        store (kons/add-hitchhiker-tree-handlers
+(defmulti connect
+  "Connects to existing database"
+  {:arglists '([config & opts])}
+  (fn [config] (type config)))
+
+(defmethod connect String [uri]
+  (connect (dc/uri->config uri)))
+
+(defmethod connect clojure.lang.PersistentArrayMap [config]
+  (let [store (kons/add-hitchhiker-tree-handlers
                (kc/ensure-cache
-                (ds/connect-store store-scheme path)
+                (ds/connect-store config)
                (atom (cache/lru-cache-factory {} :threshold 1000))))
         stored-db (<?? S (k/get-in store [:db]))
-        ;_ (prn stored-db)
         _ (when-not stored-db
-            (ds/release-store store-scheme store)
+            (ds/release-store config)
             (throw (ex-info "Database does not exist." {:type :db-does-not-exist
-                                                  :uri uri})))
+                                                        :config config})))
         {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx]} stored-db
         empty (db/empty-db nil :datahike.index/hitchhiker-tree :config config)]
     (d/conn-from-db
@@ -41,12 +47,10 @@
         :temporal-aevt temporal-aevt-key
         :temporal-avet temporal-avet-key
         :rschema rschema
-        :store store
-        :uri uri))))
+        :store store))))
 
 (defn release [conn]
-  (let [[m store-scheme path] (dc/parse-uri (:uri @conn))]
-    (ds/release-store store-scheme (:store @conn))))
+  (ds/release-store (get-in @conn [:config :storage]) (:store @conn)))
 
 (defn transact [connection tx-data]
   {:pre [(d/conn? connection)]}
@@ -93,54 +97,53 @@
 
 (defmulti create-database
   "Creates a new database"
-  {:arglists '([config & initial-tx])}
-  (fn [config & initial-tx] (type config)))
+  {:arglists '([config & opts])}
+  (fn [config & opts] (type config)))
 
 (defmethod create-database String
-  ([uri]
-   (create-database {:uri uri} nil))
-  ([uri initial-tx]
-   (create-database {:uri uri} initial-tx)))
+  [uri & opts]
+  (apply create-database (dc/uri->config uri) opts))
 
 (defmethod create-database clojure.lang.PersistentArrayMap
-  ([config]
-   (create-database config nil))
-  ([{:keys [uri schema-on-read temporal-index initial-tx]} initial]
-   (let [[m store-scheme path] (dc/parse-uri uri)
-         _ (when-not m
-             (throw (ex-info "URI cannot be parsed." {:uri uri})))
-         store (kc/ensure-cache
-                (ds/empty-store store-scheme path)
-                (atom (cache/lru-cache-factory {} :threshold 1000)))
-         stored-db (<?? S (k/get-in store [:db]))
-         _ (when stored-db
-             (throw (ex-info "Database already exists." {:type :db-already-exists :uri uri})))
-         temporal-index (if (nil? temporal-index)
-                          true
-                          temporal-index)
-         config {:schema-on-read (or schema-on-read false)
-                 :uri uri
-                 :temporal-index temporal-index}
-         {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]} (db/empty-db {:db/ident {:db/unique :db.unique/identity}} (ds/scheme->index store-scheme) :config config)
-         backend (kons/->KonserveBackend store)]
-     (<?? S (k/assoc-in store [:db]
-                        (merge {:schema   schema
-                                :max-tx max-tx
-                                :rschema  rschema
-                                :config   config
-                                :eavt-key (di/-flush eavt backend)
-                                :aevt-key (di/-flush aevt backend)
-                                :avet-key (di/-flush avet backend)}
-                               (when temporal-index
-                                 {:temporal-eavt-key (di/-flush temporal-eavt backend)
-                                  :temporal-aevt-key (di/-flush temporal-aevt backend)
-                                  :temporal-avet-key (di/-flush temporal-avet backend)}))))
-     (ds/release-store store-scheme store)
-     (when initial-tx
-       (let [conn (connect uri)]
-         (transact! conn initial-tx)
-         (release conn))))))
+  [store-config
+   & {:keys [initial-tx schema-on-read temporal-index]
+      :or {schema-on-read false temporal-index true}
+      :as opt-config}]
+  (dc/validate-config store-config)
+  (dc/validate-config-attribute :datahike.config/schema-on-read schema-on-read opt-config)
+  (dc/validate-config-attribute :datahike.config/temporal-index temporal-index opt-config)
+  (let [store (kc/ensure-cache
+               (ds/empty-store store-config)
+               (atom (cache/lru-cache-factory {} :threshold 1000)))
+        stored-db (<?? S (k/get-in store [:db]))
+        _ (when stored-db
+            (throw (ex-info "Database already exists." {:type :db-already-exists :config store-config})))
+        db-config {:schema-on-read schema-on-read
+                   :temporal-index temporal-index
+                   :storage store-config}
+        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]}
+        (db/empty-db
+         {:db/ident {:db/unique :db.unique/identity}}
+         (ds/scheme->index store-config)
+         :config db-config)
+        backend (kons/->KonserveBackend store)]
+    (<?? S (k/assoc-in store [:db]
+                       (merge {:schema   schema
+                               :max-tx max-tx
+                               :rschema  rschema
+                               :config   db-config
+                               :eavt-key (di/-flush eavt backend)
+                               :aevt-key (di/-flush aevt backend)
+                               :avet-key (di/-flush avet backend)}
+                              (when temporal-index
+                                {:temporal-eavt-key (di/-flush temporal-eavt backend)
+                                 :temporal-aevt-key (di/-flush temporal-aevt backend)
+                                 :temporal-avet-key (di/-flush temporal-avet backend)}))))
+    (ds/release-store store-config store)
+    (when initial-tx
+      (let [conn (connect store-config)]
+        (transact! conn initial-tx)
+        (release conn)))))
 
 (defn delete-database [uri]
-  (let [[m store-scheme path] (dc/parse-uri uri)]
-    (ds/delete-store store-scheme path)))
+  (ds/delete-store (dc/uri->config uri)))

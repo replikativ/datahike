@@ -34,7 +34,7 @@
                :config (s/cat :config ::config)) )
 
 (def
-  ^{:arglists '([uri] [{:keys [uri initial-tx schema-on-read temporal-index]}])
+  ^{:arglists '([uri & opts])
     :doc "Creates a database with optional configuration"}
   create-database
   dc/create-database)

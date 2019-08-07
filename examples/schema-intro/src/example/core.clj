@@ -28,12 +28,8 @@
 ;; define uri
 (def uri "datahike:mem://schema-intro")
 
-;; basic config with uri and initial transaction
-(def config {:uri uri
-             :initial-tx schema})
-
 ;; create the in-memory database
-(d/create-database config)
+(d/create-database uri :initial-tx schema)
 
 ;; connect to it
 (def conn (d/connect uri))

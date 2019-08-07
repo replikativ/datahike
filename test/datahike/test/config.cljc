@@ -5,37 +5,22 @@
     [datahike.config :refer [uri->config]]))
 
 (deftest config-test
-  (are [x y] (= x (uri->config y))
-    {:storage-type :mem :storage-config {:host "config-test"}}
-    "datahike:mem://config-test"
+  (let [mem-uri "datahike:mem://config-test"
+        file-uri "datahike:file:///tmp/config-test"
+        level-uri "datahike:level:///tmp/config-test"
+        pg-uri "datahike:pg://alice:foo@localhost:5432/config-test"]
 
-    {:storage-type :mem :storage-config {:host "config-test"} :temporal-index false}
-    "datahike:mem://config-test?temporal-index=false"
+    (are [x y] (= x (uri->config y))
+      {:backend :mem :host "config-test" :uri mem-uri}
+      mem-uri
 
-    {:storage-type :mem :storage-config {:host "config-test"} :schema-on-read true}
-    "datahike:mem://config-test?schema-on-read=true"
+      {:backend :file :path "/tmp/config-test" :uri file-uri}
+      file-uri
 
-    {:storage-type :mem :storage-config {:host "config-test"} :schema-on-read true :temporal-index false}
-    "datahike:mem://config-test?schema-on-read=true&temporal-index=false"
+      {:backend :level :path "/tmp/config-test" :uri level-uri}
+      level-uri
 
-    {:storage-type :file :storage-config {:path "/tmp/config-test"}}
-    "datahike:file:///tmp/config-test"
-
-    {:storage-type :file :storage-config {:path "/tmp/config-test"} :temporal-index false}
-    "datahike:file:///tmp/config-test?temporal-index=false"
-
-    {:storage-type :file :storage-config {:path "/tmp/config-test"} :temporal-index false :schema-on-read true}
-    "datahike:file:///tmp/config-test?temporal-index=false&schema-on-read=true"
-
-    {:storage-type :level :storage-config {:path "/tmp/config-test"}}
-    "datahike:level:///tmp/config-test"
-
-    {:storage-type :pg :storage-config {:host "localhost" :port 5432 :username "alice" :password "foo" :path "/config-test"}}
-    "datahike:pg://alice:foo@localhost:5432/config-test"
-
-    {:storage-type :pg :storage-config {:host "localhost" :port 5432 :username "alice" :password "foo" :path "/config-test"} :schema-on-read true}
-    "datahike:pg://alice:foo@localhost:5432/config-test?schema-on-read=true"
-
-    {:storage-type :pg :storage-config {:host "localhost" :port 5432 :username "alice" :password "foo" :path "/config-test"} :schema-on-read true :temporal-index false}
-    "datahike:pg://alice:foo@localhost:5432/config-test?schema-on-read=true&temporal-index=false"
-    ))
+      {:backend :pg
+        :host "localhost" :port 5432 :username "alice" :password "foo" :path "/config-test"
+       :uri pg-uri}
+      pg-uri)))

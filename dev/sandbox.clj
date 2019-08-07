@@ -19,11 +19,9 @@
                 :db/cardinality :db.cardinality/one
                 :db/valueType :db.type/long}])
 
-  (d/create-database {:uri uri :initial-tx schema})
+  (d/create-database uri :initial-tx schema)
 
   (def conn (d/connect uri))
-
-  (type conn)
 
   (d/transact! conn [{:name  "Alice", :age   25}
                      {:name  "Bob", :age   35}
@@ -31,4 +29,4 @@
 
   (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))
 
-  )
+  (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/history conn)))

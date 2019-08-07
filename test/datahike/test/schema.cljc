@@ -91,7 +91,7 @@
 (deftest test-db-with-initial-schema
   (let [uri "datahike:mem://test-db-with-initial-schema"
         _ (d/delete-database uri)
-        _ (d/create-database {:uri uri :initial-tx [name-schema]})
+        _ (d/create-database uri :initial-tx [name-schema])
         conn (d/connect uri)]
 
     (testing "schema existence"
@@ -202,7 +202,7 @@
                    {:db/ident       :value/uuid
                     :db/valueType   :db.type/uuid
                     :db/cardinality :db.cardinality/one}]
-        _ (d/create-database {:uri uri :initial-tx schema-tx})
+        _ (d/create-database uri :initial-tx schema-tx)
         conn (d/connect uri)]
 
     (testing-type conn "bigdec" (bigdec 1) 13 1)
@@ -228,7 +228,7 @@
                    {:db/ident       :cars
                     :db/valueType   :db.type/keyword
                     :db/cardinality :db.cardinality/many}]
-        _ (d/create-database {:uri uri :initial-tx schema-tx})
+        _ (d/create-database uri :initial-tx schema-tx)
         conn (d/connect uri)]
 
     (testing "insert :owner and :cars one by one"
@@ -265,7 +265,7 @@
   (testing "test file persistence"
     (let [uri (str "datahike:file:///tmp/dh-test-persistence")
           _ (d/delete-database uri)
-          _ (d/create-database {:uri uri :initial-tx [name-schema]})
+          _ (d/create-database uri :initial-tx [name-schema])
           conn (d/connect uri)]
       (testing "schema exists on creation and first connection"
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db conn)))))
@@ -275,7 +275,7 @@
       (d/delete-database uri)))
   (testing "test mem persistence"
     (let [uri "datahike:mem://test-schema-persistence"
-          _ (d/create-database {:uri uri :initial-tx [name-schema]})
+          _ (d/create-database uri :initial-tx [name-schema])
           conn (d/connect uri)]
       (testing "schema exists on creation and first connection"
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db conn)))))
@@ -288,7 +288,7 @@
   (testing "test database creation with schema-on-read"
     (let [uri "datahike:mem://test-schemaless-db"
           _ (d/delete-database uri)
-          _ (d/create-database {:uri uri :schema-on-read true})
+          _ (d/create-database uri :schema-on-read true)
           conn (d/connect uri)]
       (testing "insert any data"
         (d/transact! conn [{:name "Alice" :age 26} {:age "12" :car :bmw}])

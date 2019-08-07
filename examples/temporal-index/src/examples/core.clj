@@ -14,13 +14,11 @@
                  :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}])
 
-(def config {:uri uri :initial-tx schema-tx})
-
 ;; cleanup any previous data
 (d/delete-database uri)
 
 ;; create the database with default configuration w
-(d/create-database config)
+(d/create-database uri :initial-tx schema-tx)
 
 ;; connect to the database
 (def conn (d/connect uri))
