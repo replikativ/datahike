@@ -21,7 +21,7 @@ example configuration and transactions.
 ## Schema-on-read
 By inheriting most of the code from
 [datascript](https://github.com/tonsky/datascript) the default approach was
-*schema-on-read*, where you could add any arbitrary clojure data structures to
+*schema-on-read*, where you could add any arbitrary Clojure data structures to
 the database with a small set of helper definitions that added informations
 about references and cardinality. Even though datahike's API moved to a
 *schema-on-write* approach, the schemaless behaviour is still supported. On
