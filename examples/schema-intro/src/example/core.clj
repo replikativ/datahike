@@ -102,3 +102,7 @@
 ;; the schema is part of the index, so we can query them too.
 ;; Let's find all attribute names and their description.
 (d/q '[:find ?a ?d :where [?e :db/ident ?a] [?e :db/doc ?d]] (d/db conn))
+
+
+
+;; TODO: add schema-on-read example
