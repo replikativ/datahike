@@ -81,6 +81,8 @@ database creation. You may add basic schema definitions like `:db/unique`,
 (d/create-database "datahike:mem://example" :schema-on-read true)
 ```
 
+Have a look at the [schema documation](./schema.md) for more information.
+
 ## Historical Data 
 Datahike has the capability to inspect and query historical data with a temporal
 index that is per default activated. If your application does not require any 
