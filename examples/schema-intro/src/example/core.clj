@@ -6,24 +6,30 @@
               :db/valueType :db.type/string
               :db/unique :db.unique/identity
               :db/index true
-              :db/cardinality :db.cardinality/one}
+              :db/cardinality :db.cardinality/one
+              :db/doc "a contributor's name"}
              {:db/ident :contributor/email
               :db/valueType :db.type/string
-              :db/cardinality :db.cardinality/many}
+              :db/cardinality :db.cardinality/many
+              :db/doc "a contributor's email"}
              {:db/ident :repository/name
               :db/valueType :db.type/string
               :db/unique :db.unique/identity
               :db/index true
-              :db/cardinality :db.cardinality/one}
+              :db/cardinality :db.cardinality/one
+              :db/doc "a repository's name"}
              {:db/ident :repository/contributors
               :db/valueType :db.type/ref
-              :db/cardinality :db.cardinality/many}
+              :db/cardinality :db.cardinality/many
+              :db/doc "the repository's contributors"}
              {:db/ident :repository/public
               :db/valueType :db.type/boolean
-              :db/cardinality :db.cardinality/one}
+              :db/cardinality :db.cardinality/one
+              :db/doc "toggle whether the repository is public"}
              {:db/ident :repository/tags
               :db/valueType :db.type/keyword
-              :db/cardinality :db.cardinality/many}])
+              :db/cardinality :db.cardinality/many
+              :db/doc "the repository's tags"}])
 
 ;; define uri
 (def uri "datahike:mem://schema-intro")
@@ -92,3 +98,7 @@
 (def find-repositories-with-contributors '[:find (pull ?e [* {:repository/contributors [*]}]) :where [?e :repository/name ?n]])
 
 (d/q find-repositories-with-contributors (d/db conn))
+
+;; the schema is part of the index, so we can query them too.
+;; Let's find all attribute names and their description.
+(d/q '[:find ?a ?d :where [?e :db/ident ?a] [?e :db/doc ?d]] (d/db conn))

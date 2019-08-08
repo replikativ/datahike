@@ -16,20 +16,24 @@
 (def
   ^{:arglists '([uri])
     :doc
-    "Connects to a datahike database via URI. URI contains storage backend type and additional information for backends like database name, credentials, or location.
-Refer to the store project in the examples folder or the documention in the config markdown file of the doc folder.
+    "Connects to a datahike database via URI. URI contains storage backend type
+  and additional information for backends like database name, credentials, or
+  location. Refer to the store project in the examples folder or the documention
+  in the config markdown file in the doc folder.
 
-Usage:
+  Usage:
 
-(connect \"datahike:mem://example\")"}
+    (connect \"datahike:mem://example\")"}
   connect dc/connect)
 
 (def
   ^{:arglists '([config & opts])
     :doc
-    "Creates a database using backend configuration with optional database configuration by providing either a URI
-  that encodes storage backend data like database name, credentials, or location, or by providing a configuration hash map.
-  Refer to the store project in the examples folder or the documention in the config markdown file of the doc folder.
+    "Creates a database using backend configuration with optional database configuration
+  by providing either a URI that encodes storage backend data like database name,
+  credentials, or location, or by providing a configuration hash map. Refer to the
+  store project in the examples folder or the documention in the config markdown
+  file of the doc folder.
 
   Usage:
 
@@ -41,11 +45,15 @@ Usage:
 
       (create-database \"datahike:mem://example\" :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])
 
-    Datahike has a strict schema validation (schema-on-write) policy per default, that only allows data that has been defined via schema definition in advance. You may influence this behaviour using the `:schema-on-read` parameter:
+    Datahike has a strict schema validation (schema-on-write) policy per default,
+    that only allows data that has been defined via schema definition in advance.
+    You may influence this behaviour using the `:schema-on-read` parameter:
 
       (create-database \"datahike:mem://example\" :schema-on-read true)
 
-    By storing historical data in a separate index, datahike has the capability of querying data from any point in time. You may control this feature using the `:temporal-index` parameter:
+    By storing historical data in a separate index, datahike has the capability of
+    querying data from any point in time. You may control this feature using the
+    `:temporal-index` parameter:
 
       (create-database \"datahike:mem://example\" :temporal-index false)"}
   create-database
