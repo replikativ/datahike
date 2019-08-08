@@ -13,34 +13,46 @@
               [datahike.impl.entity Entity]
               [java.util Date])))
 
-(s/def ::uri string?)
-
-(s/fdef connect
-  :args (s/cat :uri ::uri)
-  :ret :datahike.connector/connection)
-
 (def
   ^{:arglists '([uri])
-    :doc "Connects to a datahike database."}
+    :doc
+    "Connects to a datahike database via URI. URI contains storage backend type and additional information for backends like database name, credentials, or location.
+Refer to the store project in the examples folder or the documention in the config markdown file of the doc folder.
+
+Usage:
+
+(connect \"datahike:mem://example\")"}
   connect dc/connect)
 
-(s/def ::initial-tx (s/coll-of map?))
-(s/def ::schema-on-read boolean?)
-(s/def ::temporal-index boolean?)
-(s/def ::config (s/keys :req-un [::uri ::initial-tx ::schema-on-read ::temporal-index]))
-
-(s/fdef create-database
-  :args (s/alt :uri (s/cat :uri string?)
-               :config (s/cat :config ::config)) )
-
 (def
-  ^{:arglists '([uri & opts])
-    :doc "Creates a database with optional configuration"}
+  ^{:arglists '([config & opts])
+    :doc
+    "Creates a database using backend configuration with optional database configuration by providing either a URI
+  that encodes storage backend data like database name, credentials, or location, or by providing a configuration hash map.
+  Refer to the store project in the examples folder or the documention in the config markdown file of the doc folder.
+
+  Usage:
+
+    Create an empty database with default configuration:
+
+      `(create-database \"datahike:mem://example\")`
+
+    Initial data after creation may be added using the `:initial-tx` parameter:
+
+      (create-database \"datahike:mem://example\" :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])
+
+    Datahike has a strict schema validation (schema-on-write) policy per default, that only allows data that has been defined via schema definition in advance. You may influence this behaviour using the `:schema-on-read` parameter:
+
+      (create-database \"datahike:mem://example\" :schema-on-read true)
+
+    By storing historical data in a separate index, datahike has the capability of querying data from any point in time. You may control this feature using the `:temporal-index` parameter:
+
+      (create-database \"datahike:mem://example\" :temporal-index false)"}
   create-database
   dc/create-database)
 
 (def ^{:arglists '([uri])
-       :doc "Deletes a database"}
+       :doc "Deletes a database at given URI."}
   delete-database
   dc/delete-database)
 
@@ -252,10 +264,14 @@
                                :tempids   {}
                                :tx-meta   tx-meta}) tx-data))))
 
-(defn db [conn]
+(defn db
+  "Returns the current state of the database you may interact with."
+  [conn]
   @conn)
 
-(defn history [conn]
+(defn history
+  "Returns the full historical state of the database you may interact with."
+  [conn]
   (if (db/-temporal-index? @conn)
     (HistoricalDB. @conn)
     (throw (ex-info "as-of is only allowed on temporal indexed dbs" {:config (db/-config @conn)}))))
@@ -268,12 +284,17 @@
   #?(:cljs (.getTime d)
      :clj (.getTime ^Date d)))
 
-(defn as-of [conn date]
+(defn as-of
+  "Returns the database state at given Date (you may use either java.util.Date or Epoch Time as long)."
+  [conn date]
   (if (db/-temporal-index? @conn)
     (AsOfDB. @conn (if (platform-date? date) (get-time date) date))
     (throw (ex-info "as-of is only allowed on temporal indexed dbs" {:config (db/-config @conn)}))))
 
-(defn since [conn date]
+(defn since
+  "Returns the database state since a given Date (you may use either java.util.Date or Epoch Time as long).
+  Be aware: the database contains only the datoms that were added since the date."
+  [conn date]
   (if (db/-temporal-index? @conn)
     (SinceDB. @conn (if (platform-date? date) (get-time date) date))
     (throw (ex-info "since is only allowed on temporal indexed dbs" {:config (db/-config @conn)}))))
