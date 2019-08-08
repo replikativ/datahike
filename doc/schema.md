@@ -68,9 +68,9 @@ like any other datom.
 (d/transact! conn [{:name "Alice"}])
 ```
 
-The schema definition is compliant with
-[Datomic's](https://docs.datomic.com/on-prem/schema.html) approach. Required are
-three attributes: 
+The schema definition is compliant with Datomic's 
+[approach](https://docs.datomic.com/on-prem/schema.html). Required are three 
+attributes: 
 - `:db/ident`: the name of the attribute, defined as a keyword with optional
   namespace, e.g. `:user/name`
 - `:db/valueType`: the type of the value associated with an attribute, e.g. `db.type/string`, see
