@@ -683,7 +683,7 @@
    (validate-schema schema)
    (map->DB
     (merge
-     {:schema  schema
+     {:schema  (merge schema (when (:schema-on-read config) implicit-schema))
       :rschema (rschema (merge implicit-schema schema))
       :config  config
       :eavt    (di/empty-index index :eavt)
@@ -725,7 +725,7 @@
          avet (di/init-index index datoms indexed :avet)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)]
-     (map->DB (merge {:schema  schema
+     (map->DB (merge {:schema  (merge schema (when (:schema-on-read config) implicit-schema))
                       :rschema rschema
                       :config  config
                       :eavt    eavt
@@ -1031,8 +1031,7 @@
 (defn- with-datom [db ^Datom datom]
   (validate-datom db datom)
   (let [indexing? (indexing? db (.-a datom))
-        schema? (and (not (get-in db [:config :schema-on-read]))
-                     (ds/schema-attr? (.-a datom)))
+        schema? (ds/schema-attr? (.-a datom))
         temporal-index? (-temporal-index? db)]
     (if (datom-added datom)
       (cond-> db
@@ -1304,9 +1303,10 @@
                     (when-not (empty? invalid-updates)
                       (raise "Update not supported for these schema attributes"
                              {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
-                  (when-not (ds/schema? entity)
-                    (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                           {:error :transact/schema :entity entity}))))
+                  (when-not (get-in db [:config :schema-on-read])
+                    (when-not (ds/schema? entity)
+                      (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                             {:error :transact/schema :entity entity})))))
               (recur (allocate-eid report old-eid new-eid)
                      (concat (explode db new-entity) entities)))
 
