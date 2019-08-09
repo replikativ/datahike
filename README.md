@@ -32,7 +32,7 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 
 
 ;; use the filesystem as storage medium
-(def uri "datahike:file:///tmp/api-test")
+(def uri "datahike:file:///tmp/example")
 
 ;; create a database at this place, per default configuration we have a strict
 ;; schema and temporal index
@@ -53,7 +53,8 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
                    {:name  "Bob", :age   30 }
                    {:name  "Charlie", :age   40 }
                    {:age 15 }])
-                   
+
+;; search the data
 (d/q '[:find ?e ?n ?a 
        :where 
        [?e :name ?n]
@@ -82,6 +83,7 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 ;; you might need to release the connection, e.g. for leveldb
 (d/release conn)
 
+;; clean up the database if it is not need any more
 (d/delete-database uri)
 ~~~
 
@@ -89,10 +91,16 @@ The API namespace provides compatibility to a subset of Datomic functionality
 and should work as a drop-in replacement on the JVM. The rest of datahike will
 be ported to core.async to coordinate IO in a platform-neutral manner.
 
+Refer to the docs for more information:
+
+- [configuration](./blob/master/doc/configuration.md)
+- [schema flexibility](./blob/master/doc/schema.md)
+- [time variance](./blob/master/doc/time_variance.md)
+
+For simple examples have a look at the projects in the `examples` folder.
 
 ## Example projects
 
-- simple examples can be found in the `examples` folder.
 
 - [Invoice creation](https://gitlab.com/replikativ/datahike-invoice)
   demonstrated at the [Dutch Clojure
@@ -198,49 +206,7 @@ If you are upgrading from pre `0.1.2` where we have not had the migration code
 yet, then just evaluate the `datahike.migrate` namespace manually in your
 project before exporting.
 
-
-## Changelog
-
-
-### 0.2.0
-- integrate latest code from `datascript` 
-- add protocols for core indices
-- add protocols for backend store
-- add strict schema creation and validation
-- add temporal index 
-
-
-### 0.1.3
-
-- fixed null pointer exceptions in the compare relation of the hitchhiker-tree
-
-
-### 0.1.2
-
-- *disk layout change, migration needed*
-- write root nodes of indices efficiently; reduces garbage by ~40 times and
-  halves transaction times
-- support export/import functionality
-
-
-### 0.1.1
-
-- preliminary support for datascript style schemas through
-  `create-database-with-schema`
-- support storage of BigDecimal and BigInteger values
-
-### 0.1.0
-
-- small, but stable JVM API
-- caching for fast query performance in konserve
-
-
-- reactive reflection warnings?
-- schema support
-- remove eavt-durable
-- remove redundant slicing code
-- generalize interface to indices
-- integration factui/reactive?
+Have a look at the [change log](./CHANGELOG.md) for recent updates.
 
 ## Roadmap
 
@@ -283,6 +249,6 @@ feature, please let us know.
 
 ## License
 
-Copyright © 2014–2019 Christian Weilbach, Nikita Prokopov, Konrad Kühne
+Copyright © 2014–2019 Konrad Kühne, Christian Weilbach, Nikita Prokopov
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).
