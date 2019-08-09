@@ -54,7 +54,7 @@
 ;; pull is also supported
 (d/pull (d/as-of conn first-date) '[*] [:name "Alice"])
 
-;; now we want to now any additions after a specific time
+;; now we want to know any additions after a specific time
 (d/q query (d/since conn first-date))
 ;; => {}, because :name was transacted before the first date
 

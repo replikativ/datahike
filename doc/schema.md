@@ -1,5 +1,5 @@
 # Schema
-In databases there are two approaches for imposing integrity constraints on a 
+In databases there are two approaches for imposing integrity constraints on
 structured data collections: *schema-on-read* or *schema-on-write*. 
 The *schema-on-read* approach assumes an implicit structure of the data where
 the structure is only intepreted at read level. Document databases like 
@@ -12,7 +12,7 @@ data model. The traditional relational databases like
 databases like [Cassandra](https://cassandra.apache.org/) fall under this 
 category.
 
-Datahike supports both approaches which could be set at creation time but it can
+Datahike supports both approaches which could be set at creation time but which can
 not be changed afterwards.
 
 Have a look at the `core`-namespace in the `examples/store-intro` folder for
@@ -21,11 +21,11 @@ example configuration and transactions.
 ## Schema-on-read
 By inheriting most of the code from
 [datascript](https://github.com/tonsky/datascript) the default approach was
-*schema-on-read*, where you could add any arbitrary Clojure data structures to
+*schema-on-read* where you could add any arbitrary Clojure data structures to
 the database with a small set of helper definitions that added informations
 about references and cardinality. Even though datahike's API moved to a
 *schema-on-write* approach, the schemaless behaviour is still supported. On
-database creation you may set the `:schema-on-read` parameter.
+database creation you may set the `:schema-on-read` parameter to `true`.
 
 ```clojure
 (require '[datahike.api :as d])
@@ -82,7 +82,7 @@ Additionally the following optional attributes are supported:
 - `db/doc`: the documentation for the attribute as a string
 - `db/unique`: a uniqueness constraint on the attribute for a given value, can
   be either `db.unique/value` (only one entity with this attribute can have the same value) or `db.unique/identity`(only one entity can have
-  the value for this attribute with upsert enabled).
+  the value for this attribute with upsert enabled)
 - `db/index`: indicates whether an index for the attribute's value should be
   created as a boolean
 

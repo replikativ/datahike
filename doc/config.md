@@ -1,9 +1,10 @@
 # Datahike database configuration
 
-Starting with version `0.2.0` datahike supports features that can be be
+At database creation *datahike* supports features that can be be
 configured based on the application's requirements. As of version `0.2.0`
-datahike supports configuration for the [storage backend](#storage-backend), the [schema
-flexibility](#schema-flexibility), the [historical data](#historical-data).
+ configuration for the [storage backend](#storage-backend), the [schema
+flexibility](#schema-flexibility), and the 
+[temporal variance](#temporal-variance) is supported.
 Be aware: all these features can be set at database creation 
 but can not be changed afterwards.
 
@@ -83,15 +84,17 @@ database creation. You may add basic schema definitions like `:db/unique`,
 
 Have a look at the [schema documation](./schema.md) for more information.
 
-## Historical Data 
-Datahike has the capability to inspect and query historical data with a temporal
-index that is per default activated. If your application does not require any 
-temporal data, you may set `:temporal-index` to `false`. 
+## Temporal Variance
+Datahike has the capability to inspect and query historical data within temporal
+indices. If your application does not require any temporal data, you may 
+set `:temporal-index` to `false`. 
 
 ```clojure
 (:require '[datahike.api :as d])
 (d/create-database "datahike:mem://example" :temporal-index false)
 ```
 
-Be aware: you may not use any temporal database like `history`, `as-of`, or
-`since`, and the temporal meta attribute `:db/txInstant` is not present in the index.
+Be aware: when deactivating he temporal index you may not use any temporal databases like `history`, `as-of`, or
+`since`.
+
+Refer to the [temporal variance documentation](./temporal_variance.md) for more information.

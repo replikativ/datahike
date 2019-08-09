@@ -8,7 +8,7 @@ Datahike tracks per default the transaction time for each entity by using the
 `:db/txInstant` attribute in the meta entity that is present in each
 transaction. This uni-temporal approach allows different perspectives of the 
 data present in the index. Entities can be searched either at the [current point
-in time](#db), [at specific point in time](#as-of), [over the whole database
+in time](#db), [at a specific point in time](#as-of), [over the whole database
 existence](#history), or [since a specific point in time](#since).
 
 If the database does not need to be time variant you can choose to ignore the
@@ -183,7 +183,7 @@ database:
 (d/q query (d/db conn))
 ;; => #{["Alice" 30]}
 
-;; now we want to now any additions after a specific time
+;; now we want to know any additions after a specific time
 (d/q query (d/since conn first-date))
 ;; => {}, because :name was transacted before the first date
 
@@ -199,7 +199,7 @@ database:
 
 ## Meta Entity
 With each transaction a meta entity is added to the index that stores the
-current point in time in the `:db/txInstant` attribute, and if entites are
+current point in time in the `:db/txInstant` attribute, and if entities are
 retracted from the current index the entity identifiers as a list in the
 `:db/retracted`.
 
