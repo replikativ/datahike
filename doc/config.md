@@ -4,7 +4,7 @@ At database creation *datahike* supports features that can be be
 configured based on the application's requirements. As of version `0.2.0`
  configuration for the [storage backend](#storage-backend), the [schema
 flexibility](#schema-flexibility), and the 
-[temporal variance](#temporal-variance) is supported.
+[time variance](#time-variance) is supported.
 Be aware: all these features can be set at database creation 
 but can not be changed afterwards.
 
@@ -97,4 +97,4 @@ set `:temporal-index` to `false`.
 Be aware: when deactivating he temporal index you may not use any temporal databases like `history`, `as-of`, or
 `since`.
 
-Refer to the [temporal variance documentation](./temporal_variance.md) for more information.
+Refer to the [time variance documentation](./time_variance.md) for more information.
