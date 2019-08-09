@@ -17,7 +17,7 @@
 ;; cleanup any previous data
 (d/delete-database uri)
 
-;; create the database with default configuration w
+;; create the database with default configuration and above schema
 (d/create-database uri :initial-tx schema-tx)
 
 ;; connect to the database
@@ -50,6 +50,9 @@
 
 ;; next let's get the current data of a specific time
 (d/q query (d/as-of conn first-date))
+
+;; pull is also supported
+(d/pull (d/as-of conn first-date) '[*] [:name "Alice"])
 
 ;; now we want to now any additions after a specific time
 (d/q query (d/since conn first-date))
