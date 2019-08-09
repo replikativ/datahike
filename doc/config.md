@@ -84,7 +84,7 @@ database creation. You may add basic schema definitions like `:db/unique`,
 
 Have a look at the [schema documation](./schema.md) for more information.
 
-## Temporal Variance
+## Time Variance
 Datahike has the capability to inspect and query historical data within temporal
 indices. If your application does not require any temporal data, you may 
 set `:temporal-index` to `false`. 
