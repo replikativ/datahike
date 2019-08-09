@@ -5,13 +5,13 @@ Many modern data warehouses need to be
 should have the ability to store, track and query data entities that change over 
 time. As a [temporal database](https://en.wikipedia.org/wiki/Temporal_database)
 Datahike tracks per default the transaction time for each entity by using the
-`:db/txInstant` attribute in the meta entity that is present in each
+`:db/txInstant` attribute in the meta entity that is added to each
 transaction. This uni-temporal approach allows different perspectives of the 
 data present in the index. Entities can be searched either at the [current point
 in time](#db), [at a specific point in time](#as-of), [over the whole database
 existence](#history), or [since a specific point in time](#since).
 
-If the database does not need to be time variant you can choose to ignore the
+If the database does not require to be time variant you can choose to ignore the
 temporal data and set the `temporal-index` parameter to `false` at database
 creation like so:
 
