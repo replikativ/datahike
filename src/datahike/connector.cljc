@@ -31,7 +31,10 @@
                  (.getPath sub-uri))]
     [scheme store-scheme path ]))
 
+
 (defn connect [uri]
+  "Returns a connection to the database identified by `uri`.
+  See `create-database` for a description of the `uri` syntax."
   (let [[scheme store-scheme path] (parse-uri uri)
         store (kons/add-hitchhiker-tree-handlers
                (kc/ensure-cache
@@ -109,9 +112,22 @@
       (throw (.getCause e)))))
 
 (defmulti create-database
-          "Creates a new database"
-          {:arglists '([config])}
-          (fn [config] (type config)))
+   "Creates a new database from `uri` with a given `schema`.
+  Returns `nil` or throws an exception when the `uri` can't be parsed or
+  if database already exists.
+
+  `uri` syntax:
+
+  - For an in memory database:
+  'datahike:mem:///<path>'
+
+  - For a file based database:
+  'datahike:file:///<path>'
+
+  - For a leveldb database:
+  'datahike:level:///<path>'"
+  {:arglists '([config])}
+  (fn [config] (type config)))
 
 (defmethod create-database String [uri]
   (create-database {:uri uri}))
