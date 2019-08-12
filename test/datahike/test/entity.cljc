@@ -91,3 +91,12 @@
     (is (= 777 (:db/id (d/entity db 777))))
     (is (thrown-msg? "Lookup ref attribute should be marked as :db/unique: [:not-an-attr 777]"
           (d/entity db [:not-an-attr 777])))))
+
+(deftest test-entity-walk
+  (let [ivan {:name "Ivan", :age 19, :aka #{"X" "Y"}}
+        db (-> (d/empty-db {:aka {:db/cardinality :db.cardinality/many}})
+               (d/db-with [(assoc ivan :db/id 1)]))
+        e  (d/entity db 1)]
+    (is (= (clojure.walk/walk identity identity e) ivan))
+    (is (= (clojure.walk/postwalk identity e) ivan))
+    (is (= (clojure.walk/prewalk identity e) ivan))))
