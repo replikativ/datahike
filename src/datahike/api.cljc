@@ -48,7 +48,7 @@
     (HistoricalDB. @conn)
     (throw (ex-info "as-of is only allowed on temporal indexed dbs" conn))))
 
-(defn- platform-date? [d]
+(defn- date? [d]
   #?(:cljs (instance? js/Date d)
      :clj (instance? Date d)))
 
@@ -58,12 +58,12 @@
 
 (defn as-of [conn date]
   (if (db/-temporal-index? @conn)
-    (AsOfDB. @conn (if (platform-date? date) (get-time date) date))
+    (AsOfDB. @conn (if (date? date) (get-time date) date))
     (throw (ex-info "as-of is only allowed on temporal indexed dbs"))))
 
 (defn since [conn date]
   (if (db/-temporal-index? @conn)
-    (SinceDB. @conn (if (platform-date? date) (get-time date) date))
+    (SinceDB. @conn (if (date? date) (get-time date) date))
     (throw (ex-info "since is only allowed on temporal indexed dbs"))))
 
 (def with d/with)

@@ -19,7 +19,7 @@
 ;; cleanup any previous data
 (d/delete-database uri)
 
-;; create the database with default configuration w
+;; create the database with default configuration
 (d/create-database config)
 
 ;; connect to the database
@@ -45,7 +45,7 @@
 ;; now we search within historical data
 (d/q query (d/history conn))
 
-;; let's find the dates for each attribute additions
+;; let's find the dates for each attribute additions.
 ;; :db/txInstant is an attribute of the meta entity added to each transaction
 ;; and can be treated just as any other data
 (d/q '[:find ?a ?v ?t :where [?e ?a ?v ?tx] [?tx :db/txInstant ?t]] (d/history conn))
