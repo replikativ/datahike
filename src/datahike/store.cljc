@@ -2,8 +2,10 @@
   (:require [hitchhiker.konserve :as kons]
             [konserve.filestore :as fs]
             [konserve-leveldb.core :as kl]
+            [konserve-pg.core :as kp]
             [konserve.memory :as mem]
-            [superv.async :refer [<?? S]]))
+            [superv.async :refer [<?? S]]
+            [konserve.core :as k]))
 
 (defmulti empty-store
   "Creates an empty store"
@@ -75,6 +77,25 @@
 (defmethod scheme->index "file" [_]
   :datahike.index/hitchhiker-tree)
 
+;; postgresql
+
+(defn pg-path [path]
+  (clojure.string/join  ["postgres:" path]))
+
+(defmethod empty-store "pg" [_ path]
+  (kons/add-hitchhiker-tree-handlers
+   (<?? S (kp/new-pg-store (pg-path path)))))
+
+(defmethod delete-store  "pg" [_ path]
+  (kp/delete-store (pg-path path)))
+
+(defmethod connect-store "pg" [_ path]
+  (<?? S (kp/new-pg-store (pg-path path))))
+
+(defmethod scheme->index "pg" [_]
+  :datahike.index/hitchhiker-tree)
+
+
 ;; level
 
 (defmethod empty-store "level" [_ path]
@@ -92,3 +113,4 @@
 
 (defmethod scheme->index "level" [_]
   :datahike.index/hitchhiker-tree)
+

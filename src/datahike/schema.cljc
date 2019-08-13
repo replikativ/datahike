@@ -32,7 +32,7 @@
     :db.type/uuid
     :db.type/value})
 
-;; TODO: add tuples
+;; TODO: add tuples, bytes
 
 (s/def :db.type/cardinality #{:db.cardinality/one :db.cardinality/many})
 (s/def :db.type/unique #{:db.unique/identity :db.unique/value})
@@ -41,6 +41,7 @@
 (s/def :db.type.install/_attribute #{:db.part/tx :db.part/db :db.part/user})
 
 (s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
+(s/def ::meta-attribute #{:db/txInstant :db/retracted})
 
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality ]
                         :opt [:db/id :db/unique :db/index :db.install/_attribute]))
@@ -68,17 +69,33 @@
                                    :db/isComponent {:db/valueType :db.type/boolean
                                                     :db/unique :db.unique/identity
                                                     :db/cardinality :db.cardinality/one}
+                                   :db/txInstant {:db/valueType :db.type/long
+                                                  :db/unique :db.unique/identity
+                                                  :db/index true
+                                                  :db/cardinality :db.cardinality/one}
+                                   :db/retracted {:db/valueType :db.type/long
+                                                  :db/unique :db.unique/identity
+                                                  :db/cardinality :db.cardinality/many}
                                    :db.install/_attribute {:db/valueType   :db.type.install/_attribute
                                                            :db/unique      :db.unique/identity
                                                            :db/cardinality :db.cardinality/one}})
 
 (def schema-keys #{:db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute})
+(def meta-keys #{:db/txInstant :db/retracted})
+
+(defn meta-attr? [attr]
+  (s/valid? ::meta-attribute attr))
+
+(defn meta-entity? [entity]
+  (some #(contains? entity %) meta-keys))
 
 (defn schema-attr? [attr]
   (s/valid? ::schema-attribute attr))
 
 (defn value-valid? [[_ _ a v _] schema]
-  (let [schema (if (schema-attr? a) implicit-schema-spec schema)
+  (let [schema (if (or (meta-attr? a) (schema-attr? a))
+                 implicit-schema-spec
+                 schema)
         value-type (get-in schema [a :db/valueType])]
     (s/valid? value-type v)))
 

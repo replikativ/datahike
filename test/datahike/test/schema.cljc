@@ -4,21 +4,20 @@
       :clj  [clojure.test :as t :refer        [is are deftest testing use-fixtures]])
    [datahike.api :as d]
    [datahike.schema :as ds]
-   [datahike.test.core :as tdc])
-  (:import [java.io File]))
+   [datahike.db :as dd]
+   [datahike.test.core :as tdc]))
 
-
-(def name-schema {:db/ident :name
-                  :db/valueType :db.type/string
+(def name-schema {:db/ident       :name
+                  :db/valueType   :db.type/string
                   :db/cardinality :db.cardinality/one})
 
 (def find-name-q '[:find ?n
                    :where [_ :name ?n]])
 
 (def find-schema-q '[:find ?n ?vt ?c
-                      :where
-                      [?e :db/ident ?n]
-                      [?e :db/valueType ?vt]
+                     :where
+                     [?e :db/ident ?n]
+                     [?e :db/valueType ?vt]
                      [?e :db/cardinality ?c]])
 
 (deftest test-empty-db
@@ -29,7 +28,7 @@
         db (d/db conn)
         tx [{:name "Alice"}]]
 
-    (is (= {:db/ident {:db/unique :db.unique/identity}} (:schema db)))
+    (is (= {:db/ident {:db/unique :db.unique/identity}} (dd/-schema db)))
 
     (testing "transact without schema present"
       (is (thrown-msg?
@@ -45,7 +44,7 @@
                           :valueType :db.type/string
                           :cardinality :db.cardinality/one}
                1 :name}
-              (:schema (d/db conn)))))
+              (dd/-schema (d/db conn)))))
 
     (testing "transacting data with schema present"
       (d/transact! conn tx)
@@ -102,7 +101,7 @@
                            :valueType :db.type/string
                            :cardinality :db.cardinality/one}
                 1 :name}
-               (:schema db)))
+               (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q db)))))
 
     (testing "insert new data according to schema"
@@ -123,7 +122,7 @@
                           :valueType :db.type/long,
                           :cardinality :db.cardinality/one},
                 3 :age}
-               (:schema db)))
+               (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one] [:age :db.type/long :db.cardinality/one]}
                (d/q find-schema-q db)))))
 
@@ -144,7 +143,7 @@
                           :valueType :db.type/long,
                           :cardinality :db.cardinality/one},
                 3 :age}
-               (:schema db)))
+               (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/many] [:age :db.type/long :db.cardinality/one]}
                (d/q find-schema-q db)))))))
 
@@ -153,19 +152,19 @@
     (let [schema-name (keyword "value" type-name)]
       (d/transact! conn [{schema-name tx-val}])
       (is (= #{[tx-val]}
-             (d/q '[:find ?v :in $ ?sn :where [?e ?sn  ?v]] (d/db conn) schema-name)))
+             (d/q '[:find ?v :in $ ?sn :where [?e ?sn ?v]] (d/db conn) schema-name)))
       (is (thrown-msg?
-           (str "Bad entity value "
-                wrong-val
-                " at [:db/add "
-                tx-id
-                " "
-                schema-name
-                " "
-                wrong-val
-                "], value does not match schema definition. Must be conform to: "
-                (ds/describe-type (keyword "db.type" type-name)))
-           (d/transact! conn [{schema-name wrong-val}]))))))
+            (str "Bad entity value "
+                 wrong-val
+                 " at [:db/add "
+                 tx-id
+                 " "
+                 schema-name
+                 " "
+                 wrong-val
+                 "], value does not match schema definition. Must be conform to: "
+                 (ds/describe-type (keyword "db.type" type-name)))
+            (d/transact! conn [{schema-name wrong-val}]))))))
 
 (deftest test-schema-types
   (let [uri "datahike:mem://test-schema-types"
@@ -173,35 +172,35 @@
         schema-tx [{:db/ident :value/bigdec
                     :db/valueType :db.type/bigdec
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :value/bigint
-                    :db/valueType :db.type/bigint
+                   {:db/ident       :value/bigint
+                    :db/valueType   :db.type/bigint
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :value/boolean
-                    :db/valueType :db.type/boolean
+                   {:db/ident       :value/boolean
+                    :db/valueType   :db.type/boolean
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :value/double
-                    :db/valueType :db.type/double
+                   {:db/ident       :value/double
+                    :db/valueType   :db.type/double
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :value/float
-                    :db/valueType :db.type/float
+                   {:db/ident       :value/float
+                    :db/valueType   :db.type/float
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :value/instant
-                    :db/valueType :db.type/instant
+                   {:db/ident       :value/instant
+                    :db/valueType   :db.type/instant
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :value/keyword
-                    :db/valueType :db.type/keyword
+                   {:db/ident       :value/keyword
+                    :db/valueType   :db.type/keyword
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :value/long
-                    :db/valueType :db.type/long
+                   {:db/ident       :value/long
+                    :db/valueType   :db.type/long
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :value/string
-                    :db/valueType :db.type/string
+                   {:db/ident       :value/string
+                    :db/valueType   :db.type/string
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :value/symbol
-                    :db/valueType :db.type/symbol
+                   {:db/ident       :value/symbol
+                    :db/valueType   :db.type/symbol
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :value/uuid
-                    :db/valueType :db.type/uuid
+                   {:db/ident       :value/uuid
+                    :db/valueType   :db.type/uuid
                     :db/cardinality :db.cardinality/one}]
         _ (d/create-database {:uri uri :initial-tx schema-tx})
         conn (d/connect uri)]
@@ -226,8 +225,8 @@
                     :db/index true
                     :db/unique :db.unique/identity
                     :db/cardinality :db.cardinality/one}
-                   {:db/ident :cars
-                    :db/valueType :db.type/keyword
+                   {:db/ident       :cars
+                    :db/valueType   :db.type/keyword
                     :db/cardinality :db.cardinality/many}]
         _ (d/create-database {:uri uri :initial-tx schema-tx})
         conn (d/connect uri)]
@@ -236,9 +235,9 @@
       (d/transact! conn [{:db/id -1
                           :owner "Alice"}
                          {:db/id -1
-                          :cars :audi}
+                          :cars  :audi}
                          {:db/id -1
-                          :cars :bmw}])
+                          :cars  :bmw}])
       (is (= #{["Alice" :audi] ["Alice" :bmw]}
              (d/q '[:find ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
 
@@ -286,15 +285,14 @@
       (d/delete-database uri))))
 
 (deftest test-schema-on-read-db
-  (testing "test database creation wit schema-on-read"
+  (testing "test database creation with schema-on-read"
     (let [uri "datahike:mem://test-schemaless-db"
           _ (d/delete-database uri)
           _ (d/create-database {:uri uri :schema-on-read true})
           conn (d/connect uri)]
       (testing "insert any data"
-        (d/transact! conn [{:name "Alice" :age 26} {:age "12" :car :bmw }])
+        (d/transact! conn [{:name "Alice" :age 26} {:age "12" :car :bmw}])
         (is (= #{[1 "Alice" 26]}
                (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))))
         (is (= #{[2 "12" :bmw]}
-               (d/q '[:find ?e ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn)))))
-      )))
+               (d/q '[:find ?e ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn))))))))

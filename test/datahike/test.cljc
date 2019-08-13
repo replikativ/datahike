@@ -4,7 +4,6 @@
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     #?(:clj [clojure.java.shell :as sh])
     datahike.test.core
-   
     datahike.test.components
     datahike.test.conn
     datahike.test.db
@@ -26,10 +25,14 @@
     datahike.test.query-pull
     datahike.test.query-rules
     datahike.test.query-v3
+    datahike.test.schema
     datahike.test.serialization
+    datahike.test.store
+    datahike.test.temporal-index
     datahike.test.transact
     datahike.test.validation
-    datahike.test.upsert))
+    datahike.test.upsert
+    ))
 
 (defn ^:export test-clj []
   (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\..*")))
@@ -44,3 +47,9 @@
     (binding [*out* *err*]
       (println (:err res)))
     (System/exit (:exit res)))))
+
+(comment
+
+  (test-clj)
+
+  )
