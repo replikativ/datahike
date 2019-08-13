@@ -12,7 +12,7 @@ data model. The traditional relational databases like
 databases like [Cassandra](https://cassandra.apache.org/) fall under this 
 category.
 
-Datahike supports both approaches which could be set at creation time but which can
+Datahike supports both approaches which can be chosen at creation time but which can
 not be changed afterwards.
 
 Have a look at the `core`-namespace in the `examples/store-intro` folder for
@@ -25,7 +25,7 @@ By inheriting most of the code from
 the database with a small set of helper definitions that added informations
 about references and cardinality. Even though datahike's API moved to a
 *schema-on-write* approach, the schemaless behaviour is still supported. On
-database creation you may set the `:schema-on-read` parameter to `true`.
+database creation you may opt out by setting the `:schema-on-read` parameter to `true`.
 
 ```clojure
 (require '[datahike.api :as d])
@@ -44,8 +44,8 @@ database creation you may set the `:schema-on-read` parameter to `true`.
 
 ## Schema-on-write
 With the release of version `0.2.0` datahike enforces per default an explicit
-schema where you have to define your expected data structures in advance. Since
-the schema itself is present in the database index, you can simply transact it
+schema where you have to define your expected data shapes in advance. The 
+schema itself is present in the database index, so you can simply transact it
 like any other datom.
 
 ```clojure
