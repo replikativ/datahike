@@ -3,9 +3,10 @@
 - move query parser to separate project: io.lambdaforge/datalog-parser
 - add protocols for core indices: persistent set, hitchhiker tree now supported
 - add protocols for backend stores: memory, file-based, LevelDB, PostgreSQL now supported
-- add schema-on-read capabilities
+- add schema-on-write capabilities
 - add time variance capabilities 
 - add example projects
+- improve api documentation
 
 # 0.1.3
 - fixed null pointer exceptions in the compare relation of the hitchhiker-tree
