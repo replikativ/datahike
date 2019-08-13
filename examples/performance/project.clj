@@ -6,6 +6,7 @@
   :main performance.core
   :jvm-opts ["-Xmx2g" "-server"]
   :dependencies [[org.clojure/clojure "1.10.0"]
+                 [com.datomic/datomic-free "0.9.5697"]
                  [incanter/incanter-core "1.9.3"]
                  [incanter/incanter-charts "1.9.3"]
                  [incanter/incanter-io "1.9.3"]

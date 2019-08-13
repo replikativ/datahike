@@ -1,6 +1,7 @@
 (ns performance.core
   (:gen-class)
   (:require [datahike.api :as d]
+            [datomic.api :as da]
             [incanter.stats :as is]
             [incanter.charts :as charts]
             [incanter.datasets :as ds]
@@ -12,9 +13,25 @@
           "LevelDB" "datahike:level:///tmp/lvl-perf"
           "File-based" "datahike:file:///tmp/file-perf"})
 
+;; and start a datomic-free instance
+(def datomic-uri "datomic:free://localhost:4334/perf")
+
 (def schema [{:db/ident :name
               :db/valueType :db.type/string
               :db/cardinality :db.cardinality/one}])
+
+(defn run-datomic-perf [conn iterations d-count]
+  (let [ti (loop [i 0
+                  observations []]
+             (if (> i iterations)
+               observations
+               (let [txs (->> (repeatedly #(str (java.util.UUID/randomUUID)))
+                              (take d-count)
+                              (mapv (fn [id] {:name id})))
+                     t0 (.getTime (java.util.Date.))]
+                 @(da/transact conn txs)
+                 (recur (inc i) (conj observations (- (.getTime (java.util.Date.)) t0))))))]
+    ["Datomic" (is/mean ti) (is/sd ti)]))
 
 (defn run-perf [conns iterations d-count]
   (->> conns
@@ -38,11 +55,16 @@
           (println "datoms" d-count)
           (->> (vals uri) (map d/delete-database) doall)
           (->> (vals uri) (map #(d/create-database % :initial-tx schema)) doall)
+          (da/delete-database datomic-uri)
+          (da/create-database datomic-uri)
           (let [conns (reduce-kv (fn [m k v] (assoc m k (d/connect v))) {} uri)
+                datomic-conn (da/connect datomic-uri)
+                _ @(da/transact datomic-conn schema)
                t0 (.getTime (java.util.Date.))
-               observations (run-perf conns iterations d-count)]
+                observations (run-perf conns iterations d-count)
+                datomic-observations (run-datomic-perf datomic-conn iterations d-count)]
            (->> conns vals (map d/release) doall)
-           [d-count observations])))
+           [d-count (conj observations datomic-observations)])))
       doall
       vec))
 
