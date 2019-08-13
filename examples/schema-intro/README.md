@@ -1,6 +1,6 @@
 # strict schema example
 
-See [blog post](https://lambdaforge.io/articles)
+Shows some examples with the schema-on-write approach in datahike.
 
 ## Usage
 
