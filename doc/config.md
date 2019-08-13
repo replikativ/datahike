@@ -51,7 +51,7 @@ At the moment we support four different backends: [in-memory](#in-memory) ,[file
 ### LevelDB
 - `<backend>`: `level`
 - `path`: absolute path to the LevelDB instance
-- uri example: `datahike:file:///tmp/level-example`
+- uri example: `datahike:level:///tmp/level-example`
 - hash map example: `{:backend :level :path "/tmp/level-example"}`
 
 ### PostgreSQL
