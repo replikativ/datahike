@@ -24,6 +24,8 @@
   }
   :jvm-opts ["-Xmx2g" "-server"]
 
+  :java-source-paths ["java/src"]
+
   :aliases {"test-clj"     ["run" "-m" "datahike.test/test-clj"]
             "test-cljs"    ["do" ["cljsbuild" "once" "release" "advanced"]
                                  ["run" "-m" "datahike.test/test-node" "--all"]]
@@ -99,7 +101,7 @@
     :aot { :aot [#"datahike\.(?!query-v3).*"]
            :jvm-opts ["-Dclojure.compiler.direct-linking=true"] }
   }
-  
+
   :clean-targets ^{:protect false} [
     "target"
     "release-js/datahike.bare.js"
