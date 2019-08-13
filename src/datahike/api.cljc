@@ -284,7 +284,7 @@
     (HistoricalDB. @conn)
     (throw (ex-info "as-of is only allowed on temporal indexed dbs" {:config (db/-config @conn)}))))
 
-(defn- platform-date? [d]
+(defn- date? [d]
   #?(:cljs (instance? js/Date d)
      :clj (instance? Date d)))
 
@@ -296,13 +296,13 @@
   "Returns the database state at given Date (you may use either java.util.Date or Epoch Time as long)."
   [conn date]
   (if (db/-temporal-index? @conn)
-    (AsOfDB. @conn (if (platform-date? date) (get-time date) date))
-    (throw (ex-info "as-of is only allowed on temporal indexed dbs" {:config (db/-config @conn)}))))
+    (AsOfDB. @conn (if (date? date) (get-time date) date))
+    (throw (ex-info "as-of is only allowed on temporal indexed dbs"))))
 
 (defn since
   "Returns the database state since a given Date (you may use either java.util.Date or Epoch Time as long).
   Be aware: the database contains only the datoms that were added since the date."
   [conn date]
   (if (db/-temporal-index? @conn)
-    (SinceDB. @conn (if (platform-date? date) (get-time date) date))
-    (throw (ex-info "since is only allowed on temporal indexed dbs" {:config (db/-config @conn)}))))
+    (SinceDB. @conn (if (date? date) (get-time date) date))
+    (throw (ex-info "since is only allowed on temporal indexed dbs"))))

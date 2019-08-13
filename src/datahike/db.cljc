@@ -381,13 +381,13 @@
 
 (defn temporal-index-range [^DB db current-db attr start end]
   (when-not (indexing? db attr)
-                  (raise "Attribute" attr "should be marked as :db/index true" {}))
-                (validate-attr attr (list '-index-range 'db attr start end) db)
-                (let [from (resolve-datom current-db nil attr start nil e0 tx0)
-                      to (resolve-datom current-db nil attr end nil emax txmax)]
-                  (concat
-                   (-slice (get db :avet) from to :avet)
-                   (-slice (get db :temporal-avet) from to :avet))))
+    (raise "Attribute" attr "should be marked as :db/index true" {}))
+  (validate-attr attr (list '-index-range 'db attr start end) db)
+  (let [from (resolve-datom current-db nil attr start nil e0 tx0)
+        to (resolve-datom current-db nil attr end nil emax txmax)]
+    (concat
+     (-slice (get db :avet) from to :avet)
+     (-slice (get db :temporal-avet) from to :avet))))
 
 (defrecord-updatable HistoricalDB [origin-db]
   #?@(:cljs
@@ -396,32 +396,32 @@
        ICounted (-count [db] (count (-datoms db :eavt [])))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
+       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on HistoricalDB")))
+       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on HistoricalDB")))
 
-       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on FilteredDB")))
-                        ([_ _ _] (throw (js/Error. "-lookup is not supported on FilteredDB"))))
+       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on HistoricalDB")))
+                        ([_ _ _] (throw (js/Error. "-lookup is not supported on HistoricalDB"))))
 
-       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on FilteredDB")))
-       (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on FilteredDB")))]
+       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on HistoricalDB")))
+       (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on HistoricalDB")))]
       :clj
       [clojure.lang.IPersistentCollection
        (count [db] (count (-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
-       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on CurrentDB")))
-       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on CurrentDB")))
+       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on HistoricalDB")))
+       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on HistoricalDB")))
 
        clojure.lang.Seqable (seq [db] (-datoms db :eavt []))
 
-       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on CurrentDB")))
-       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on CurrentDB")))
+       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on HistoricalDB")))
+       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on HistoricalDB")))
        clojure.lang.IKeywordLookup (getLookupThunk [db k]
-                                     (throw (UnsupportedOperationException. "getLookupThunk is not supported on CurrentDB")))
+                                     (throw (UnsupportedOperationException. "getLookupThunk is not supported on HistoricalDB")))
 
        clojure.lang.Associative
-       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on CurrentDB")))
-       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on CurrentDB")))
-       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on CurrentDB")))])
+       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on HistoricalDB")))
+       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on HistoricalDB")))
+       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on HistoricalDB")))])
 
   IDB
   (-schema [db] (-schema (.-origin-db db)))
@@ -480,32 +480,32 @@
        ICounted (-count [db] (count (-datoms db :eavt [])))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
+       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on AsOfDB")))
+       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on AsOfDB")))
 
-       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on FilteredDB")))
-                        ([_ _ _] (throw (js/Error. "-lookup is not supported on FilteredDB"))))
+       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on AsOfDB")))
+                        ([_ _ _] (throw (js/Error. "-lookup is not supported on AsOfDB"))))
 
-       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on FilteredDB")))
-       (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on FilteredDB")))]
+       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on AsOfDB")))
+       (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on AsOfDB")))]
       :clj
       [clojure.lang.IPersistentCollection
        (count [db] (count (-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
-       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on CurrentDB")))
-       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on CurrentDB")))
+       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on AsOfDB")))
+       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on AsOfDB")))
 
        clojure.lang.Seqable (seq [db] (-datoms db :eavt []))
 
-       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on CurrentDB")))
-       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on CurrentDB")))
+       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on AsOfDB")))
+       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on AsOfDB")))
        clojure.lang.IKeywordLookup (getLookupThunk [db k]
-                                     (throw (UnsupportedOperationException. "getLookupThunk is not supported on CurrentDB")))
+                                     (throw (UnsupportedOperationException. "getLookupThunk is not supported on AsOfDB")))
 
        clojure.lang.Associative
-       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on CurrentDB")))
-       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on CurrentDB")))
-       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on CurrentDB")))])
+       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on AsOfDB")))
+       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on AsOfDB")))
+       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on AsOfDB")))])
 
   IDB
   (-schema [db] (-schema (.-origin-db db)))
@@ -556,32 +556,32 @@
        ICounted (-count [db] (count (-datoms db :eavt [])))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
+       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on SinceDB")))
+       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on SinceDB")))
 
-       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on FilteredDB")))
-                        ([_ _ _] (throw (js/Error. "-lookup is not supported on FilteredDB"))))
+       ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on SinceDB")))
+                        ([_ _ _] (throw (js/Error. "-lookup is not supported on SinceDB"))))
 
-       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on FilteredDB")))
-       (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on FilteredDB")))]
+       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on SinceDB")))
+       (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on SinceDB")))]
       :clj
       [clojure.lang.IPersistentCollection
        (count [db] (count (-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
-       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on CurrentDB")))
-       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on CurrentDB")))
+       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on SinceDB")))
+       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on SinceDB")))
 
        clojure.lang.Seqable (seq [db] (-datoms db :eavt []))
 
-       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on CurrentDB")))
-       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on CurrentDB")))
+       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on SinceDB")))
+       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on SinceDB")))
        clojure.lang.IKeywordLookup (getLookupThunk [db k]
-                                     (throw (UnsupportedOperationException. "getLookupThunk is not supported on CurrentDB")))
+                                     (throw (UnsupportedOperationException. "getLookupThunk is not supported on SinceDB")))
 
        clojure.lang.Associative
-       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on CurrentDB")))
-       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on CurrentDB")))
-       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on CurrentDB")))])
+       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on SinceDB")))
+       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on SinceDB")))
+       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on SinceDB")))])
 
   IDB
   (-schema [db] (-schema (.-origin-db db)))
