@@ -70,13 +70,13 @@ You can query the database at a specific point in time using `as-of`:
 
 ;; define simple schema
 (def schema [{:db/ident :name
-                 :db/valueType :db.type/string
-                 :db/unique :db.unique/identity
-                 :db/index true
-                 :db/cardinality :db.cardinality/one}
-                {:db/ident :age
-                 :db/valueType :db.type/long
-                 :db/cardinality :db.cardinality/one}])
+              :db/valueType :db.type/string
+              :db/unique :db.unique/identity
+              :db/index true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident :age
+              :db/valueType :db.type/long
+              :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
 (d/create-database "datahike:mem://as-of-db" :initial-tx schema)
@@ -99,7 +99,7 @@ You can query the database at a specific point in time using `as-of`:
 (d/q query  (d/db conn))
 ;; => #{["Alice" 30]}
 
-(d/q query (d/as-of conn))
+(d/q query (d/as-of conn first-date))
 ;; => #{["Alice" 25]}
 ```
 
@@ -114,13 +114,13 @@ current and all historical data:
 
 ;; define simple schema
 (def schema [{:db/ident :name
-                 :db/valueType :db.type/string
-                 :db/unique :db.unique/identity
-                 :db/index true
-                 :db/cardinality :db.cardinality/one}
-                {:db/ident :age
-                 :db/valueType :db.type/long
-                 :db/cardinality :db.cardinality/one}])
+              :db/valueType :db.type/string
+              :db/unique :db.unique/identity
+              :db/index true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident :age
+              :db/valueType :db.type/long
+              :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
 (d/create-database "datahike:mem://history-db" :initial-tx schema)
@@ -154,13 +154,13 @@ database:
 
 ;; define simple schema
 (def schema [{:db/ident :name
-                 :db/valueType :db.type/string
-                 :db/unique :db.unique/identity
-                 :db/index true
-                 :db/cardinality :db.cardinality/one}
-                {:db/ident :age
-                 :db/valueType :db.type/long
-                 :db/cardinality :db.cardinality/one}])
+              :db/valueType :db.type/string
+              :db/unique :db.unique/identity
+              :db/index true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident :age
+              :db/valueType :db.type/long
+              :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
 (d/create-database "datahike:mem://since-db" :initial-tx schema)
