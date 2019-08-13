@@ -1,6 +1,6 @@
 # Datahike database configuration
 
-At database creation *datahike* supports features that can be be
+At database creation *datahike* supports features that can be
 configured based on the application's requirements. As of version `0.2.0`
  configuration for the [storage backend](#storage-backend), the [schema
 flexibility](#schema-flexibility), and the 
@@ -70,7 +70,7 @@ At the moment we support four different backends: [in-memory](#in-memory) ,[file
                       :path "/pg_example"}`
 
 ## Schema Flexibility
-Per default the datahike api uses a schema-on-write appoach with strict value
+Per default the datahike api uses a `schema-on-write` appoach with strict value
 types that need to be defined in advance. If you are not sure how your data
 model looks like and you want to transact any kind of data into the database you
 can set `schema-on-read` to `true` by adding it as optional parameter at
@@ -94,7 +94,7 @@ set `:temporal-index` to `false`.
 (d/create-database "datahike:mem://example" :temporal-index false)
 ```
 
-Be aware: when deactivating he temporal index you may not use any temporal databases like `history`, `as-of`, or
+Be aware: when deactivating the temporal index you may not use any temporal databases like `history`, `as-of`, or
 `since`.
 
 Refer to the [time variance documentation](./time_variance.md) for more information.
