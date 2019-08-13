@@ -1,22 +1,17 @@
 # performance
 
-A Clojure library designed to ... well, that part is up to you.
+Basic performance tests are run.
+
+See `core` namespace for more information
 
 ## Usage
 
-FIXME
+Make sure a `PostgreSQL` and `Datomic` instance is running, adjust configuration
+accordingly. Build the project and run it locally for best performance results:
 
-## License
+``` clojure
+lein uberjar
+java -jar -Xmx2g -server target/performance-0.1.0-SNAPSHOT-standalone.jar
+```
 
-Copyright © 2019 FIXME
-
-This program and the accompanying materials are made available under the
-terms of the Eclipse Public License 2.0 which is available at
-http://www.eclipse.org/legal/epl-2.0.
-
-This Source Code may also be made available under the following Secondary
-Licenses when the conditions for such availability set forth in the Eclipse
-Public License, v. 2.0 are satisfied: GNU General Public License as published by
-the Free Software Foundation, either version 2 of the License, or (at your
-option) any later version, with the GNU Classpath Exception which is available
-at https://www.gnu.org/software/classpath/license.html.
+Wait and see the results as csv in `./data` and as charts in `./plots`.
