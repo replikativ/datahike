@@ -18,6 +18,8 @@ import datahike.java.api.Api;
 //          (d/transact! conn tx))))
 
 
+
+// To run it: java -cp target/datahike-0.2.0-beta3-standalone.jar datahike.java.test.api.Main
 public class Main {
     public static void main(String[] args) {
         String uri = "datahike:mem://test-empty-db";
