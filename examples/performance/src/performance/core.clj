@@ -1,10 +1,12 @@
 (ns performance.core
+  (:gen-class)
   (:require [datahike.api :as d]
             [incanter.stats :as is]
             [incanter.charts :as charts]
             [incanter.datasets :as ds]
             [incanter.core :as ic]))
 
+;; make sure you have a postgres instance!
 (def uri {"PostgreSQL" "datahike:pg://datahike:clojure@localhost:5434/datahike"
           "In-Memory" "datahike:mem://perf"
           "LevelDB" "datahike:level:///tmp/lvl-perf"
@@ -97,37 +99,11 @@
          :y-label "transaction time (ms)")
         (charts/set-axis :x (charts/log-axis :base 2, :label "Number of datoms per transaction"))))))
 
-
-(comment
-
-  (def result (time (run-combinations 256)))
-
-  (def formatter (java.text.SimpleDateFormat. "yyyy-MM-dd-HH:mm:ss"))
-
-  (ic/view (means-datoms-plot result))
-  (ic/view (normalized-means-datoms-plot result))
-
-
-  (ic/save (ic/dataset (mapcat
+(defn -main [& args]
+  (let [result (run-combinations 256)
+        formatter (java.text.SimpleDateFormat. "yyyy-MM-dd-HH:mm:ss")
+        means-plot (overall-means-datoms-plot result)]
+    (ic/save (ic/dataset (mapcat
                         (fn [[d-count results]] (mapv (fn [[backend mean sd]] {:datoms d-count :backend backend :mean mean :sd sd}) results)) result))
-           (str "./data/" (.format formatter (java.util.Date.)) "-mean-tx-per-datoms.dat"))
-
-  (ic/save
-   (means-datoms-plot result)
-   (str "./plots/" (.format formatter (java.util.Date.)) "-mean-tx-per-datoms.png")
-   :width 1000
-   :height 750)
-
-(ic/save
-   (normalized-means-datoms-plot result)
-   (str "./plots/" (.format formatter (java.util.Date.)) "-mean-tx-per-datoms-normalized.png")
-   :width 1000
-   :height 750)
-
-(ic/save
- (overall-means-datoms-plot result)
- (str "./plots/" (.format formatter (java.util.Date.)) "-tx-time-per-datoms.png")
-   :width 1000
-   :height 750)
-
-  )
+             (str "./data/" (.format formatter (java.util.Date.)) "-tx-time-per-datoms.dat"))
+    (ic/save means-plot (str "./plots/" (.format formatter (java.util.Date.)) "-tx-time-per-datoms.png") :width 1000 :height 750)))
