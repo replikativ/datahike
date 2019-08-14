@@ -11,9 +11,9 @@ public class Main {
         Api.deleteDatabase(uri);
         Api.createDatabase(uri);
         Object conn = Api.connect(uri);
-        Api.transact(conn, Util.map(k(":db/ident"), k(":name"),
-                k(":db/valueType"), k(":db.type/string"),
-                k(":db/cardinality"), k(":db.cardinality/one")));
+        Api.transact(conn, Util.vector(Util.map(k(":db/ident"), k(":name"),
+                                                k(":db/valueType"), k(":db.type/string"),
+                                                k(":db/cardinality"), k(":db.cardinality/one"))));
         System.out.println("Done!");
     }
 }

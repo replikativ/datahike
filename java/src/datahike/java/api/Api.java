@@ -2,15 +2,13 @@ package datahike.java.api;
 
 import clojure.java.api.Clojure;
 import clojure.lang.IFn;
-import clojure.lang.PersistentHashMap;
-import datahike.java.Util;
+import clojure.lang.PersistentVector;
 
 public class Api {
     static {
         IFn require = Clojure.var("clojure.core", "require");
         require.invoke(Clojure.read("datahike.api"));
     }
-
 
     private static final IFn deleteDatabaseFn = Clojure.var("datahike.api", "delete-database");
     private static final IFn createDatabaseFn = Clojure.var("datahike.api", "create-database");
@@ -29,7 +27,7 @@ public class Api {
         return connectFn.invoke(uri);
     }
 
-    public static Object transact(Object conn, PersistentHashMap txData) {
-        return transactFn.invoke(conn, Util.vector(txData));
+    public static Object transact(Object conn, PersistentVector txData) {
+        return transactFn.invoke(conn, txData);
     }
 }

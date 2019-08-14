@@ -5,7 +5,6 @@ import clojure.lang.IFn;
 import clojure.lang.PersistentHashMap;
 import clojure.lang.PersistentVector;
 import clojure.lang.RT;
-import datahike.java.api.Api;
 
 public class Util {
     private static final IFn hashMapFn = Clojure.var("clojure.core", "hash-map");
