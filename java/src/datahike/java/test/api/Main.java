@@ -1,6 +1,7 @@
 package datahike.java.test.api;
 
 import datahike.java.api.Api;
+import clojure.java.api.Clojure;
 
 // TODO: to-delete
 // (let [uri "datahike:mem://test-empty-db"
