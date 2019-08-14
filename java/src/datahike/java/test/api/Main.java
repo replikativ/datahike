@@ -24,7 +24,7 @@ public class Main {
         String uri = "datahike:mem://test-empty-db";
         Api.deleteDatabase(uri);
         Api.createDatabase(uri);
-        Object conn = Api.connect(uri);   // Returns an Atom
+        Object conn = Api.connect(uri);
         Api.transact(conn, Api.map(Clojure.read(":db/ident"), Clojure.read(":name"),
                 Clojure.read(":db/valueType"), Clojure.read(":db.type/string"),
                 Clojure.read(":db/cardinality"), Clojure.read(":db.cardinality/one")));
