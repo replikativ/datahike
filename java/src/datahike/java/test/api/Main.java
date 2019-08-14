@@ -1,5 +1,6 @@
 package datahike.java.test.api;
 
+import datahike.java.Util;
 import datahike.java.api.Api;
 import static datahike.java.Util.k;
 
@@ -10,7 +11,7 @@ public class Main {
         Api.deleteDatabase(uri);
         Api.createDatabase(uri);
         Object conn = Api.connect(uri);
-        Api.transact(conn, Api.map(k(":db/ident"), k(":name"),
+        Api.transact(conn, Util.map(k(":db/ident"), k(":name"),
                 k(":db/valueType"), k(":db.type/string"),
                 k(":db/cardinality"), k(":db.cardinality/one")));
         System.out.println("Done!");
