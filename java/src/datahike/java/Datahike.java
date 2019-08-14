@@ -15,6 +15,7 @@ public class Datahike {
     private static final IFn connectFn = Clojure.var("datahike.api", "connect");
     private static final IFn transactFn = Clojure.var("datahike.api", "transact!");
     private static final IFn dbFn = Clojure.var("datahike.api", "db");
+    private static final IFn qFn = Clojure.var("datahike.api", "q");
 
     public static void deleteDatabase(String uri) {
         deleteDatabaseFn.invoke(uri);
@@ -29,10 +30,14 @@ public class Datahike {
     }
 
     public static Object db(Object conn) {
-            return dbFn.invoke(conn);
+        return dbFn.invoke(conn);
+    }
+
+    public static Object q(Object query, Object db) {
+        return qFn.invoke(query, db);
     }
 
     public static Object transact(Object conn, PersistentVector txData) {
-            return transactFn.invoke(conn, txData);
+        return transactFn.invoke(conn, txData);
     }
 }

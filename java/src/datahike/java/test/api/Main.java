@@ -1,5 +1,6 @@
 package datahike.java.test.api;
 
+import clojure.java.api.Clojure;
 import datahike.java.Util;
 import datahike.java.Datahike;
 import static datahike.java.Util.k;
@@ -21,8 +22,12 @@ public class Main {
         Datahike.transact(conn, Util.vector(Util.map(k(":name"), "Alice")));
 
         // Querying
-        Object ddb = Datahike.db(conn);
-        
-        System.out.println(ddb.getClass());
+        Object db = Datahike.db(conn);
+
+        Object res = Datahike.q(Clojure.read("[:find ?e :where [?e :name]]"), db);
+        System.out.println(res);
+
+        res = Datahike.q(Clojure.read("[:find ?v :where [_ :name ?v]]"), db);
+        System.out.println(res);
     }
 }
