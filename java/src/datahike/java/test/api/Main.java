@@ -25,11 +25,9 @@ public class Main {
         Api.deleteDatabase(uri);
         Api.createDatabase(uri);
         Object conn = Api.connect(uri);   // Returns an Atom
-        // TODO: define a schema as below and transact
-        // (def name-schema {:db/ident :name
-        //           :db/valueType :db.type/string
-        //           :db/cardinality :db.cardinality/one})
-        Api.transact(conn, Api.map("name", "Alice")); // TODO: passing var args in map does not work yet
+        Api.transact(conn, Api.map(Clojure.read(":db/ident"), Clojure.read(":name"),
+                Clojure.read(":db/valueType"), Clojure.read(":db.type/string"),
+                Clojure.read(":db/cardinality"), Clojure.read(":db.cardinality/one")));
         System.out.println("Done!");
     }
 }
