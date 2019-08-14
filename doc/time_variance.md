@@ -1,6 +1,6 @@
 # Time Variance
 
-Many modern data warehouses need to be 
+For the purpose of auditing and analytics modern business information systems need to be 
 [time variant](https://en.wikipedia.org/wiki/Time_variance) which means they 
 should have the ability to store, track and query data entities that change over 
 time. As a [temporal database](https://en.wikipedia.org/wiki/Temporal_database)
