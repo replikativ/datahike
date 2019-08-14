@@ -52,7 +52,18 @@
 (defn release [conn]
   (ds/release-store (get-in @conn [:config :storage]) (:store @conn)))
 
-(defn transact [connection tx-data]
+
+(defmulti transact
+  "Transacts new data to database"
+  {:arglists '([conn tx-data])}
+  (fn [conn tx-data] (type tx-data)))
+
+(defmethod transact clojure.lang.PersistentVector
+  [connection tx-data]
+  (transact connection {:tx-data tx-data}))
+
+(defmethod transact clojure.lang.PersistentArrayMap
+  [connection {:keys [tx-data]}]
   {:pre [(d/conn? connection)]}
   (future
     (locking connection

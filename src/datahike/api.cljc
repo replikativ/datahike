@@ -16,70 +16,70 @@
 (def
   ^{:arglists '([uri])
     :doc
-    "Connects to a datahike database via URI. URI contains storage backend type
-  and additional information for backends like database name, credentials, or
-  location. Refer to the store project in the examples folder or the documention
-  in the config markdown file in the doc folder.
+              "Connects to a datahike database via URI. URI contains storage backend type
+            and additional information for backends like database name, credentials, or
+            location. Refer to the store project in the examples folder or the documention
+            in the config markdown file in the doc folder.
 
-  Usage:
+            Usage:
 
-    (connect \"datahike:mem://example\")"}
+              (connect \"datahike:mem://example\")"}
   connect dc/connect)
 
 (def
   ^{:arglists '([config & opts])
     :doc
-    "Creates a database using backend configuration with optional database configuration
-  by providing either a URI that encodes storage backend data like database name,
-  credentials, or location, or by providing a configuration hash map. Refer to the
-  store project in the examples folder or the documention in the config markdown
-  file of the doc folder.
+              "Creates a database using backend configuration with optional database configuration
+            by providing either a URI that encodes storage backend data like database name,
+            credentials, or location, or by providing a configuration hash map. Refer to the
+            store project in the examples folder or the documention in the config markdown
+            file of the doc folder.
 
-  Usage:
+            Usage:
 
-    Create an empty database with default configuration:
+              Create an empty database with default configuration:
 
-      `(create-database \"datahike:mem://example\")`
+                `(create-database \"datahike:mem://example\")`
 
-    Initial data after creation may be added using the `:initial-tx` parameter:
+              Initial data after creation may be added using the `:initial-tx` parameter:
 
-      (create-database \"datahike:mem://example\" :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])
+                (create-database \"datahike:mem://example\" :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])
 
-    Datahike has a strict schema validation (schema-on-write) policy per default,
-    that only allows data that has been defined via schema definition in advance.
-    You may influence this behaviour using the `:schema-on-read` parameter:
+              Datahike has a strict schema validation (schema-on-write) policy per default,
+              that only allows data that has been defined via schema definition in advance.
+              You may influence this behaviour using the `:schema-on-read` parameter:
 
-      (create-database \"datahike:mem://example\" :schema-on-read true)
+                (create-database \"datahike:mem://example\" :schema-on-read true)
 
-    By storing historical data in a separate index, datahike has the capability of
-    querying data from any point in time. You may control this feature using the
-    `:temporal-index` parameter:
+              By storing historical data in a separate index, datahike has the capability of
+              querying data from any point in time. You may control this feature using the
+              `:temporal-index` parameter:
 
-      (create-database \"datahike:mem://example\" :temporal-index false)"}
+                (create-database \"datahike:mem://example\" :temporal-index false)"}
   create-database
   dc/create-database)
 
 (def ^{:arglists '([uri])
-       :doc "Deletes a database at given URI."}
+       :doc      "Deletes a database at given URI."}
   delete-database
   dc/delete-database)
 
 (def ^{:arglists '([conn tx-data])
-       :doc "Same as [transact!] but returns realized value directly."}
+       :doc      "Same as [transact!] but returns realized value directly."}
   transact
   dc/transact)
 
 (def ^{:arglists '([conn tx-data tx-meta])
-       :doc "Applies transaction the underlying database value and atomically updates connection reference to point to the result of that transaction, new db value."}
+       :doc      "Applies transaction the underlying database value and atomically updates connection reference to point to the result of that transaction, new db value."}
   transact!
   dc/transact!)
 
 (def ^{:arglists '([conn])
-       :doc "Releases a database connection"}
+       :doc      "Releases a database connection"}
   release dc/release)
 
 (def ^{:arglists '([db selector eid])
-       :doc "Fetches data from database using recursive declarative description. See [docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html).
+       :doc      "Fetches data from database using recursive declarative description. See [docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html).
 
              Unlike [[entity]], returns plain Clojure map (not lazy).
 
@@ -93,7 +93,7 @@
   pull dp/pull)
 
 (def ^{:arglists '([db selector eids])
-       :doc "Same as [[pull]], but accepts sequence of ids and returns sequence of maps.
+       :doc      "Same as [[pull]], but accepts sequence of ids and returns sequence of maps.
 
              Usage:
 
@@ -105,20 +105,37 @@
   pull-many dp/pull-many)
 
 
-(def
-  ^{:arglists '([query & inputs])
-    :doc "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
+(defmulti q
+  "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
 
-          Usage:
+   Usage:
 
-          ```
-          (q '[:find ?value
-               :where [_ :likes ?value]]
-             db)
-          ; => #{[\"fries\"] [\"candy\"] [\"pie\"] [\"pizza\"]}
-          ```"}
-  q dq/q)
+   ```
+   (q '[:find ?value
+        :where [_ :likes ?value]]
+      db)
+   ; => #{[\"fries\"] [\"candy\"] [\"pie\"] [\"pizza\"]}
+   ```"
+  {:arglists '([query & inputs])}
+  (fn [query & inputs] (type query)))
 
+(defmethod q clojure.lang.PersistentVector
+  [query & inputs]
+  (apply dq/q query inputs))
+
+(defmethod q clojure.lang.PersistentArrayMap
+  [query-map & arg-list]
+  (let [query (if (contains? query-map :query)
+                (:query query-map)
+                query-map)
+        args (if (contains? query-map :args)
+               (:args query-map)
+               arg-list)
+        query-vector (->> query
+                          (mapcat (fn [[k v]]
+                                    (into [k] v)))
+                          vec)]
+    (apply dq/q query args)))
 
 (defn seek-datoms
   "Similar to [[datoms]], but will return datoms starting from specified components and including rest of the database until the end of the index.
@@ -151,10 +168,10 @@
        (seek-datoms db :eavt 2 :likes \"fish\")
        ; => (#datahike/Datom [2 :likes \"pie\"]
        ;     #datahike/Datom [2 :likes \"pizza\"])"
-  ([db index]             {:pre [(db/db? db)]} (db/-seek-datoms db index []))
-  ([db index c1]          {:pre [(db/db? db)]} (db/-seek-datoms db index [c1]))
-  ([db index c1 c2]       {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2]))
-  ([db index c1 c2 c3]    {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2 c3]))
+  ([db index] {:pre [(db/db? db)]} (db/-seek-datoms db index []))
+  ([db index c1] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1]))
+  ([db index c1 c2] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2]))
+  ([db index c1 c2 c3] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2 c3]))
   ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2 c3 c4])))
 
 (def ^:private last-tempid (atom -1000000))
@@ -164,16 +181,16 @@
 
    Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
   ([part]
-    (if (= part :db.part/tx)
-      :db/current-tx
-      (swap! last-tempid dec)))
+   (if (= part :db.part/tx)
+     :db/current-tx
+     (swap! last-tempid dec)))
   ([part x]
-    (if (= part :db.part/tx)
-      :db/current-tx
-      x)))
+   (if (= part :db.part/tx)
+     :db/current-tx
+     x)))
 
 (def ^{:arglists '([db eid])
-       :doc "Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate DataScript database content.
+       :doc      "Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate DataScript database content.
 
              For `eid` pass entity id or lookup attr:
 
@@ -249,7 +266,7 @@
   (if (is-filtered db)
     (let [^FilteredDB fdb db
           orig-pred (.-pred fdb)
-          orig-db   (.-unfiltered-db fdb)]
+          orig-db (.-unfiltered-db fdb)]
       (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
     (FilteredDB. db #(pred db %))))
 
@@ -262,15 +279,15 @@
   "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
   ([db tx-data] (with db tx-data nil))
   ([db tx-data tx-meta]
-    {:pre [(db/db? db)]}
+   {:pre [(db/db? db)]}
    (if (or (is-filtered db) (is-temporal? db))
-      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
-      (db/transact-tx-data (db/map->TxReport
-                             { :db-before db
-                               :db-after  db
-                               :tx-data   []
-                               :tempids   {}
-                               :tx-meta   tx-meta}) tx-data))))
+     (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
+     (db/transact-tx-data (db/map->TxReport
+                            {:db-before db
+                             :db-after  db
+                             :tx-data   []
+                             :tempids   {}
+                             :tx-meta   tx-meta}) tx-data))))
 
 (defn db
   "Returns the current state of the database you may interact with."
@@ -286,11 +303,11 @@
 
 (defn- date? [d]
   #?(:cljs (instance? js/Date d)
-     :clj (instance? Date d)))
+     :clj  (instance? Date d)))
 
 (defn- get-time [d]
   #?(:cljs (.getTime d)
-     :clj (.getTime ^Date d)))
+     :clj  (.getTime ^Date d)))
 
 (defn as-of
   "Returns the database state at given Date (you may use either java.util.Date or Epoch Time as long)."
