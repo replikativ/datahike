@@ -1,39 +1,47 @@
 (ns example.core
   (:require [datahike.api :as d]))
 
+;; The first example assumes you know your data model in advanve,
+;; so you we can use a schema-on-write approach in contrast to a schema-on-read
+;; approach. Have a look at the documentation in `/doc/schema.md` for more
+;; information on the different types of schema flexibility. After the first
+;; example we will have a short schema-on-read example.
+
 ; first define data model
 (def schema [{:db/ident :contributor/name
               :db/valueType :db.type/string
               :db/unique :db.unique/identity
               :db/index true
-              :db/cardinality :db.cardinality/one}
+              :db/cardinality :db.cardinality/one
+              :db/doc "a contributor's name"}
              {:db/ident :contributor/email
               :db/valueType :db.type/string
-              :db/cardinality :db.cardinality/many}
+              :db/cardinality :db.cardinality/many
+              :db/doc "a contributor's email"}
              {:db/ident :repository/name
               :db/valueType :db.type/string
               :db/unique :db.unique/identity
               :db/index true
-              :db/cardinality :db.cardinality/one}
+              :db/cardinality :db.cardinality/one
+              :db/doc "a repository's name"}
              {:db/ident :repository/contributors
               :db/valueType :db.type/ref
-              :db/cardinality :db.cardinality/many}
+              :db/cardinality :db.cardinality/many
+              :db/doc "the repository's contributors"}
              {:db/ident :repository/public
               :db/valueType :db.type/boolean
-              :db/cardinality :db.cardinality/one}
+              :db/cardinality :db.cardinality/one
+              :db/doc "toggle whether the repository is public"}
              {:db/ident :repository/tags
               :db/valueType :db.type/keyword
-              :db/cardinality :db.cardinality/many}])
+              :db/cardinality :db.cardinality/many
+              :db/doc "the repository's tags"}])
 
 ;; define uri
 (def uri "datahike:mem://schema-intro")
 
-;; basic config with uri and initial transaction
-(def config {:uri uri
-             :initial-tx schema})
-
 ;; create the in-memory database
-(d/create-database config)
+(d/create-database uri :initial-tx schema)
 
 ;; connect to it
 (def conn (d/connect uri))
@@ -41,25 +49,25 @@
 ;; let's insert our first user
 (d/transact! conn [{:contributor/name "alice" :contributor/email "alice@exam.ple"}])
 
-;; let's find him with a query
+;; let's find her with a query
 (def find-name-email '[:find ?e ?n ?em :where [?e :contributor/name ?n] [?e :contributor/email ?em]])
 
 (d/q find-name-email (d/db conn))
 
-;; let's find him directly, as contributior/name is a unique, indexed identity
+;; let's find her directly, as contributior/name is a unique, indexed identity
 (d/pull (d/db conn) '[*] [:contributor/name "alice"])
 
-;; add a second email
+;; add a second email, as we have a many cardinality, we can have serveral one's as a user
 (d/transact! conn [{:db/id 7 :contributor/email "alice@test.test"}])
 
 ;; let's see both emails
 (d/q find-name-email (d/db conn))
 
-;; try to add something completely out of schema
+;; try to add something completely not defined in the schema
 (d/transact! conn [{:something "different"}])
 ;; => error occurs
 
-;; try add wrong contributor values
+;; try to add wrong contributor values
 (d/transact! conn [{:contributor/email :alice}])
 
 ;; add another contributor
@@ -96,3 +104,38 @@
 (def find-repositories-with-contributors '[:find (pull ?e [* {:repository/contributors [*]}]) :where [?e :repository/name ?n]])
 
 (d/q find-repositories-with-contributors (d/db conn))
+
+;; the schema is part of the index, so we can query them too.
+;; Let's find all attribute names and their description.
+(d/q '[:find ?a ?d :where [?e :db/ident ?a] [?e :db/doc ?d]] (d/db conn))
+
+;; cleanup the database
+(d/delete-database uri)
+
+;; Schema On Read
+
+;; let's create another database that can hold any arbitrary data
+
+(def uri "datahike:mem://schemaless")
+
+;; we have set the parameter `:schema-on-read` to true at database creation
+(d/create-database uri :schema-on-read true)
+
+(def conn (d/connect uri))
+
+;; now we can go wild and transact anything
+(d/transact! conn [{:any "thing"}])
+
+;; use simple query on this data
+(d/q '[:find ?v :where [_ :any ?v]] (d/db conn))
+
+;; be aware: although there is no schema, you should tell the database if some
+;; attributes can have specific cardinality or indices.
+;; You may add that as schema transactions like before
+(d/transact! conn [{:db/ident :any :db/cardinality :db.cardinality/many}])
+
+;; let's add more data to the first any entity
+(def any-eid (d/q '[:find ?e . :where [?e :any "thing"]] (d/db conn)))
+(d/transact! conn [{:db/id any-eid :any "thing else"}])
+
+(d/q '[:find ?v :where [_ :any ?v]] (d/db conn))

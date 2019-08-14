@@ -6,7 +6,8 @@
     [datahike.db :as db]
     [datahike.test.core :as tdc]))
 
-(def schema { :aka { :db/cardinality :db.cardinality/many }})
+(def schema (merge db/implicit-schema
+                   { :aka { :db/cardinality :db.cardinality/many }}))
 
 (def datoms #{(d/datom 1 :age  17)
               (d/datom 1 :name "Ivan")})
@@ -14,7 +15,7 @@
 (deftest test-ways-to-create-conn
   (let [conn (d/create-conn)]
     (is (= #{} (set (d/datoms @conn :eavt))))
-    (is (= nil (:schema @conn))))
+    (is (= db/implicit-schema (:schema @conn))))
   
   (let [conn (d/create-conn schema)]
     (is (= #{} (set (d/datoms @conn :eavt))))
@@ -22,7 +23,7 @@
   
   (let [conn (d/conn-from-datoms datoms)]
     (is (= datoms (set (d/datoms @conn :eavt))))
-    (is (= nil (:schema @conn))))
+    (is (= db/implicit-schema (:schema @conn))))
   
   (let [conn (d/conn-from-datoms datoms schema)]
     (is (= datoms (set (d/datoms @conn :eavt))))
@@ -30,7 +31,7 @@
   
   (let [conn (d/conn-from-db (d/init-db datoms))]
     (is (= datoms (set (d/datoms @conn :eavt))))
-    (is (= nil (:schema @conn))))
+    (is (= db/implicit-schema (:schema @conn))))
   
   (let [conn (d/conn-from-db (d/init-db datoms schema))]
     (is (= datoms (set (d/datoms @conn :eavt))))
@@ -42,7 +43,7 @@
         _       (d/listen! conn #(reset! report %))
         datoms' #{(d/datom 1 :age 20)
                   (d/datom 1 :sex :male)}
-        schema' { :email { :db/unique :db.unique/identity }}
+        schema' (merge db/implicit-schema { :email { :db/unique :db.unique/identity }})
         db'     (d/init-db datoms' schema')]
     (d/reset-conn! conn db' :meta)
     (is (= datoms' (set (d/datoms @conn :eavt))))

@@ -35,7 +35,8 @@
                    (d/db-with [ [:db/add 2 :name "Ivan"] ]))]
         (is (= (pr-str db)
                (str "#datahike/DB {"
-                    ":schema {:name {:db/unique :db.unique/identity}}, "
+                    ":schema {:name {:db/unique :db.unique/identity}, "
+                    ":db/ident {:db/unique :db.unique/identity}}, "
                     ":datoms ["
                       "[1 :age 44 536870913] "
                       "[1 :name \"Petr\" 536870913] "

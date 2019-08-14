@@ -44,7 +44,7 @@
 (s/def ::meta-attribute #{:db/txInstant :db/retracted})
 
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality ]
-                        :opt [:db/id :db/unique :db/index :db.install/_attribute]))
+                        :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc]))
 
 (def required-keys #{:db/ident :db/valueType :db/cardinality})
 
@@ -76,11 +76,14 @@
                                    :db/retracted {:db/valueType :db.type/long
                                                   :db/unique :db.unique/identity
                                                   :db/cardinality :db.cardinality/many}
+                                   :db/doc {:db/valueType :db.type/string
+                                            :db/index true
+                                            :db/cardinality :db.cardinality/one}
                                    :db.install/_attribute {:db/valueType   :db.type.install/_attribute
                                                            :db/unique      :db.unique/identity
                                                            :db/cardinality :db.cardinality/one}})
 
-(def schema-keys #{:db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute})
+(def schema-keys #{:db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
 (def meta-keys #{:db/txInstant :db/retracted})
 
 (defn meta-attr? [attr]

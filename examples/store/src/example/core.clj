@@ -5,16 +5,12 @@
               :db/valueType :db.type/string
               :db/cardinality :db.cardinality/one}])
 
-(defn config [uri]
-  {:uri uri
-   :initial-tx schema})
-
 (def query '[:find ?n :where [?e :name ?n]])
 
 ;; let's cleanup, create, and connect all in one
 (defn cleanup-and-create-conn [uri]
   (d/delete-database uri)
-  (d/create-database (config uri))
+  (d/create-database uri :initial-tx schema)
   (d/connect uri))
 
 (defn transact-and-find [conn name]

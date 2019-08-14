@@ -6,8 +6,7 @@
 
 (defn test-store [uri]
   (let [_ (d/delete-database uri)
-        db (d/create-database {:uri uri
-                               :schema-on-read true})
+        db (d/create-database uri :schema-on-read true)
         conn (d/connect uri)]
     @(d/transact conn [{ :db/id 1, :name  "Ivan", :age   15 }
                        { :db/id 2, :name  "Petr", :age   37 }

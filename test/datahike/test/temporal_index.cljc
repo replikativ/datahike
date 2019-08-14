@@ -18,14 +18,13 @@
                 {:name "Bob"
                  :age  35}])
 
-(defn config [uri]
-  {:uri        uri
-   :initial-tx schema-tx})
+(defn create-test-db [uri]
+  (d/create-database uri :initial-tx schema-tx))
 
 (deftest test-base-history
   (let [uri "datahike:mem://test-base-history"
         _ (d/delete-database uri)
-        _ (d/create-database (config uri))
+        _ (create-test-db uri)
         conn (d/connect uri)]
 
     (testing "Initial data"
@@ -60,7 +59,7 @@
 (deftest test-historical-queries
   (let [uri "datahike:mem://test-historical-queries"
         _ (d/delete-database uri)
-        _ (d/create-database (config uri))
+        _ (create-test-db uri)
         conn (d/connect uri)]
 
     (testing "get all values before specific time"
@@ -86,7 +85,7 @@
 (deftest test-as-of-db
   (let [uri "datahike:mem://test-historical-queries"
         _ (d/delete-database uri)
-        _ (d/create-database (config uri))
+        _ (create-test-db uri)
         conn (d/connect uri)
         first-date (.getTime (java.util.Date.))
         query '[:find ?a :in $ ?e :where [?e :age ?a ?tx]]]
@@ -101,7 +100,7 @@
 (deftest test-since-db
   (let [uri "datahike:mem://test-historical-queries"
         _ (d/delete-database uri)
-        _ (d/create-database (config uri))
+        _ (create-test-db uri)
         conn (d/connect uri)
         first-date (.getTime (java.util.Date.))
         query '[:find ?a :where [?e :age ?a]]]

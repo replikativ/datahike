@@ -14,13 +14,11 @@
                  :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}])
 
-(def config {:uri uri :initial-tx schema-tx})
-
 ;; cleanup any previous data
 (d/delete-database uri)
 
-;; create the database with default configuration
-(d/create-database config)
+;; create the database with default configuration and above schema
+(d/create-database uri :initial-tx schema-tx)
 
 ;; connect to the database
 (def conn (d/connect uri))
@@ -53,7 +51,10 @@
 ;; next let's get the current data of a specific time
 (d/q query (d/as-of conn first-date))
 
-;; now we want to now any additions after a specific time
+;; pull is also supported
+(d/pull (d/as-of conn first-date) '[*] [:name "Alice"])
+
+;; now we want to know any additions after a specific time
 (d/q query (d/since conn first-date))
 ;; => {}, because :name was transacted before the first date
 
