@@ -12,6 +12,8 @@ public class Api {
         require.invoke(Clojure.read("datahike.api"));
     }
 
+
+    private static final IFn deleteDatabaseFn = Clojure.var("datahike.api", "delete-database");
     private static final IFn createDatabaseFn = Clojure.var("datahike.api", "create-database");
     private static final IFn connectFn = Clojure.var("datahike.api", "connect");
     private static final IFn transactFn = Clojure.var("datahike.api", "transact!");

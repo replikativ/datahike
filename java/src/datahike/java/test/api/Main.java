@@ -21,7 +21,7 @@ import datahike.java.api.Api;
 public class Main {
     public static void main(String[] args) {
         String uri = "datahike:mem://test-empty-db";
-        // TODO: add delete db first
+        Api.deleteDatabase(uri);
         Api.createDatabase(uri);
         Object conn = Api.connect(uri);   // Returns an Atom
         // TODO: define a schema as below and transact
