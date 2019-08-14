@@ -21,12 +21,17 @@ public class Api {
 
     // Move this to a Util.java
     /** Creates a new clojure HashMap */
-    public static PersistentHashMap map(Object ...a) {
-        return (PersistentHashMap) hashMapFn.applyTo(RT.seq(a));
+    public static PersistentHashMap map(Object... keyVals) {
+        return (PersistentHashMap) hashMapFn.applyTo(RT.seq(keyVals));
     }
 
-    public static PersistentVector vector(Object ...a) {
-        return (PersistentVector) vectorFn.applyTo(RT.seq(a));
+    public static PersistentVector vector(Object... items) {
+        // return (PersistentVector) vectorFn.applyTo(RT.seq(items));
+        return (PersistentVector) vectorFn.invoke(items);
+    }
+
+    public static void deleteDatabase(String uri) {
+        deleteDatabaseFn.invoke(uri);
     }
 
     public static void createDatabase(String uri) {
