@@ -1304,9 +1304,10 @@
                       (raise "Update not supported for these schema attributes"
                              {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
                   (when-not (get-in db [:config :schema-on-read])
-                    (when-not (ds/schema? entity)
-                      (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                             {:error :transact/schema :entity entity})))))
+                    (when (or (:db/cardinality entity) (:db/valueType entity))
+                      (when-not (ds/schema? entity)
+                        (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                               {:error :transact/schema :entity entity}))))))
               (recur (allocate-eid report old-eid new-eid)
                      (concat (explode db new-entity) entities)))
 
