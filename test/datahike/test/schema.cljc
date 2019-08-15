@@ -61,11 +61,6 @@
            "Bad entity attribute :age at {:db/id 3, :age 42}, not defined in current schema"
            (d/transact! conn [{:name "Bob" :age 42}]))))
 
-    (testing "insert incomplete schema :db/ident"
-      (is (thrown-msg?
-           "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-           (d/transact! conn [{:db/ident :phone}]))))
-
     (testing "insert incomplete schema :db/valueType"
       (is (thrown-msg?
            "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
@@ -296,3 +291,22 @@
                (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))))
         (is (= #{[2 "12" :bmw]}
                (d/q '[:find ?e ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn))))))))
+
+(deftest test-ident
+  (testing "use db/ident as enum"
+    (let [uri "datahike:mem://test-ident"
+          schema [{:db/ident :important}
+                  {:db/ident :archive}
+                  {:db/ident :message
+                   :db/valueType :db.type/string
+                   :db/cardinality :db.cardinality/one}
+                  {:db/ident :tag
+                   :db/valueType :db.type/ref
+                   :db/cardinality :db.cardinality/many}]
+          _ (d/delete-database uri)
+          _ (d/create-database uri :initial-tx schema)
+          conn (d/connect uri)]
+      (testing "insert data with enums"
+        (d/transact! conn [{:message "important" :tag :important} {:message "archive" :tag [:important :archive] }])
+        (is (= #{["important" :important] ["archive" :important] ["archive" :archive]}
+               (d/q '[:find ?m ?t :where [?e :message ?m] [?e :tag ?te] [?te :db/ident ?t]] (d/db conn))))))))
