@@ -84,3 +84,14 @@
        [?e :age ?a]
        [?r :db/txInstant ?tx]]
      (d/history @conn))
+
+;; you can use db fns to compare dates within datalog: `before?` and `after?`.
+;; let's find all transactions after the first date:
+(d/q '[:find ?e ?a ?v
+       :in $ ?fd
+       :where
+       [?e ?a ?v ?t]
+       [?t :db/txInstant ?tx]
+       [(after? ?tx ?fd)]]
+     @conn
+     first-date)

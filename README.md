@@ -62,14 +62,16 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
   @conn)
 ;; => #{[3 "Alice" 20] [4 "Bob" 30] [5 "Charlie" 40]}
 
-;; add new entity data
-(d/transact conn [{:db/id 3 :age 25}])
+;; add new entity data using a hash map
+(d/transact conn {:tx-data [{:db/id 3 :age 25}]})
 
-(d/q '[:find ?e ?n ?a 
-       :where 
-       [?e :name ?n] 
-       [?e :age ?a]]
-  @conn)
+;; if you want to work with queries like in
+;; https://grishaev.me/en/datomic-query/,
+;; you may use a hashmap
+(d/q {:query '{:find [?e ?n ?a ]
+               :where [[?e :name ?n]
+                       [?e :age ?a]]}
+      :args [@conn]})
 ;; => #{[5 "Charlie" 40] [4 "Bob" 30] [3 "Alice" 25]}
 
 ;; query the history of the data

@@ -66,3 +66,13 @@
      (d/db file-conn)
      (d/db level-conn)
      (d/db pg-conn))
+
+;; clean up
+;; LevelDB needs to be released
+(d/release level-conn)
+
+(do
+ (d/delete-database mem-uri)
+ (d/delete-database level-uri)
+ (d/delete-database file-uri)
+ (d/delete-database pg-uri))
