@@ -46,19 +46,19 @@ system. Use `db` for this view. The following example shows a simple interaction
 (d/create-database "datahike:mem://current-db" :initial-tx schema)
 
 ;; add first data
-(d/transact! conn [{:name "Alice" :age 25}])
+(d/transact conn [{:name "Alice" :age 25}])
 
 ;; define simple query for name and age
 (def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
 
-(d/q query  (d/db conn))
+(d/q query  @conn)
 ;; => #{["Alice" 25]}
 
 ;; update the entity
-(d/transact! conn [{:db/id [:name "Alice"] :age 30}])
+(d/transact conn [{:db/id [:name "Alice"] :age 30}])
 
 ;; `db` reflects the latest state of the database
-(d/q query  (d/db conn))
+(d/q query  @conn)
 ;; => #{["Alice" 30]}
 ```
 
@@ -82,24 +82,24 @@ You can query the database at a specific point in time using `as-of`:
 (d/create-database "datahike:mem://as-of-db" :initial-tx schema)
 
 ;; add first data
-(d/transact! conn [{:name "Alice" :age 25}])
+(d/transact conn [{:name "Alice" :age 25}])
 
 (def first-date (java.util.Date.))
 
 ;; define simple query for name and age
 (def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
 
-(d/q query  (d/db conn))
+(d/q query  @conn)
 ;; => #{["Alice" 25]}
 
 ;; update the entity
-(d/transact! conn [{:db/id [:name "Alice"] :age 30}])
+(d/transact conn [{:db/id [:name "Alice"] :age 30}])
 
 ;; let's compare the current and the as-of value:
-(d/q query  (d/db conn))
+(d/q query  @conn)
 ;; => #{["Alice" 30]}
 
-(d/q query (d/as-of conn first-date))
+(d/q query (d/as-of @conn first-date))
 ;; => #{["Alice" 25]}
 ```
 
@@ -126,20 +126,20 @@ current and all historical data:
 (d/create-database "datahike:mem://history-db" :initial-tx schema)
 
 ;; add first data
-(d/transact! conn [{:name "Alice" :age 25}])
+(d/transact conn [{:name "Alice" :age 25}])
 
 ;; define simple query for name and age
 (def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
 
 ;; history should have only one entry
-(d/q query (d/history conn))
+(d/q query (d/history @conn))
 ;; => #{["Alice" 25]}
 
 ;; update the entity
-(d/transact! conn [{:db/id [:name "Alice"] :age 30}])
+(d/transact conn [{:db/id [:name "Alice"] :age 30}])
 
 ;; both entries are present
-(d/q query (d/history conn))
+(d/q query (d/history @conn))
 ;; => #{["Alice" 30] ["Alice" 25]}
 ```
 
@@ -166,25 +166,25 @@ database:
 (d/create-database "datahike:mem://since-db" :initial-tx schema)
 
 ;; add first data
-(d/transact! conn [{:name "Alice" :age 25}])
+(d/transact conn [{:name "Alice" :age 25}])
 
 (def first-date (java.util.Date.))
 
 ;; define simple query for name and age
 (def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
 
-(d/q query (d/db conn))
+(d/q query @conn)
 ;; => #{["Alice" 25]}
 
 ;; update the entity
-(d/transact! conn [{:db/id [:name "Alice"] :age 30}])
+(d/transact conn [{:db/id [:name "Alice"] :age 30}])
 
 ;; let's compare the current and the as-of value:
-(d/q query (d/db conn))
+(d/q query @conn)
 ;; => #{["Alice" 30]}
 
 ;; now we want to know any additions after a specific time
-(d/q query (d/since conn first-date))
+(d/q query (d/since @conn first-date))
 ;; => {}, because :name was transacted before the first date
 
 ;; let's build a query where we use the latest db to find the name and the since db to find out who's age changed
@@ -193,8 +193,8 @@ database:
        :where
        [$ ?e :name ?n]
        [$since ?e :age ?a]]
-     (d/db conn)
-     (d/since conn first-date))
+     @conn
+     (d/since @conn first-date))
 ```
 
 ## Meta Entity
@@ -223,14 +223,14 @@ your purposes.
 (d/create-database "datahike:mem://since-db" :initial-tx schema)
 
 ;; add first data
-(d/transact! conn [{:name "Alice" :age 25}])
+(d/transact conn [{:name "Alice" :age 25}])
 
 ;; let's find all transaction dates, should be two: one for the schema and one
 ;; for the first data
-(d/q '[:find ?t :where [_ :db/txInstant ?t]] (d/db conn))
-;; => #{[1565360564899] [1565360566697]} 
+(d/q '[:find ?t :where [_ :db/txInstant ?t]] @conn)
+;; => #{[#inst "2019-08-16T11:40:28.794-00:00"] [#inst "2019-08-16T11:40:26.587-00:00"]}
 
 ;; you might join over the tx id to get the date of any transaction 
-(d/q '[:find ?n ?t :where [_ :name ?n ?tx] [?tx :db/txInstant ?t]] (d/db conn))
-;; => #{["Alice" 1565360566697]}
+(d/q '[:find ?n ?t :where [_ :name ?n ?tx] [?tx :db/txInstant ?t]] @conn)
+;; => #{["Alice" #inst "2019-08-16T11:40:28.794-00:00"]}
 ```

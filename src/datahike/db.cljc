@@ -19,6 +19,7 @@
                             [datahike.tools :refer [case-tree]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry]
+                   [java.util Date]
                    [datahike.datom Datom])))
 
 ;; ----------------------------------------------------------------------------
@@ -463,8 +464,8 @@
                          datom-0
                          datom-1)) entities)])))))
 
-(defn filter-as-of-datoms [datoms as-of-date db]
-  (let [as-of-pred (fn [^Datom d] (<= (.-v d) as-of-date))
+(defn filter-as-of-datoms [datoms ^Date as-of-date db]
+  (let [as-of-pred (fn [^Datom d] (.before ^Date (.-v d) as-of-date))
         filtered-tx-ids (filter-txInstant datoms as-of-pred db)
         filtered-datoms (->> datoms
                              (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
@@ -540,8 +541,8 @@
                   (-> (temporal-index-range origin-db db attr start end)
                       (filter-as-of-datoms (.-as-of-date db) origin-db)))))
 
-(defn- filter-since [datoms since-date db]
-  (let [since-pred (fn [^Datom d] (>= (.-v d) since-date))
+(defn- filter-since [datoms ^Date since-date db]
+  (let [since-pred (fn [^Datom d] (.after ^Date (.-v d) since-date))
         filtered-tx-ids (filter-txInstant datoms since-pred db)]
     (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))) datoms)))
 
@@ -1018,8 +1019,6 @@
           (update-in db [:schema e] #(dissoc % a v)))
         (raise (str "Schema with entity id " e " does not exist")
                {:error :retract/schema :entity-id e :attribute a :value e})))))
-
-
 
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)

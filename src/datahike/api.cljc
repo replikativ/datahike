@@ -305,21 +305,19 @@
   #?(:cljs (instance? js/Date d)
      :clj  (instance? Date d)))
 
-(defn- get-time [d]
-  #?(:cljs (.getTime d)
-     :clj  (.getTime ^Date d)))
-
 (defn as-of
   "Returns the database state at given Date (you may use either java.util.Date or Epoch Time as long)."
   [db date]
+  {:pre [(or (int? date) (date? date))]}
   (if (db/-temporal-index? db)
-    (AsOfDB. db (if (date? date) (get-time date) date))
+    (AsOfDB. db (if (date? date) date (java.util.Date. ^long date)))
     (throw (ex-info "as-of is only allowed on temporal indexed dbs"))))
 
 (defn since
   "Returns the database state since a given Date (you may use either java.util.Date or Epoch Time as long).
   Be aware: the database contains only the datoms that were added since the date."
   [db date]
+  {:pre [(or (int? date) (date? date))]}
   (if (db/-temporal-index? db)
-    (SinceDB. db (if (date? date) (get-time date) date))
+    (SinceDB. db (if (date? date) date (java.util.Date. ^long date)))
     (throw (ex-info "since is only allowed on temporal indexed dbs"))))

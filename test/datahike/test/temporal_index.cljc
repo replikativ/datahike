@@ -60,7 +60,7 @@
     (testing "get all values before specific time"
       (let [_ (d/transact conn [{:db/id [:name "Alice"] :age 30}])
             _ (Thread/sleep 100)
-            date (.getTime (java.util.Date.))
+            date (java.util.Date.)
             _ (Thread/sleep 100)
             _ (d/transact conn [{:db/id [:name "Alice"] :age 35}])
             history-db (d/history @conn)
@@ -71,33 +71,33 @@
                     :where
                     [?e :age ?a ?tx]
                     [?tx :db/txInstant ?t]
-                    [(< ?t ?fd)]]]
+                    [(before? ?t ?fd)]]]
         (is (= #{[35]}
                (d/q current-query current-db [:name "Alice"])))
         (is (= #{[25] [30]}
-               (d/q query history-db [:name "Alice"] date)))))))
+               (d/q query history-db [:name "Alice"] date))))))) <
 
 (deftest test-as-of-db
   (let [uri "datahike:mem://test-historical-queries"
         _ (d/delete-database uri)
         _ (create-test-db uri)
         conn (d/connect uri)
-        first-date (.getTime (java.util.Date.))
+        first-date (java.util.Date.)
         query '[:find ?a :in $ ?e :where [?e :age ?a ?tx]]]
     (testing "get values at specific time"
       (is (= #{[25]}
                (d/q query (d/as-of @conn first-date) [:name "Alice"]))))
-    (testing "use java date objects"
-      (let [java-date (java.util.Date. first-date)]
+    (testing "use unix epoch time as long"
+      (let [epoch-date (.getTime first-date)]
         (is (= #{[25]}
-                 (d/q query (d/as-of @conn java-date) [:name "Alice"])))))))
+                 (d/q query (d/as-of @conn epoch-date) [:name "Alice"])))))))
 
 (deftest test-since-db
   (let [uri "datahike:mem://test-historical-queries"
         _ (d/delete-database uri)
         _ (create-test-db uri)
         conn (d/connect uri)
-        first-date (.getTime (java.util.Date.))
+        first-date (java.util.Date.)
         query '[:find ?a :where [?e :age ?a]]]
     (testing "empty after first insertion"
       (is (= #{}

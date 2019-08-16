@@ -19,5 +19,5 @@
      (-case-tree qs vs)))
 
 (defn get-time []
-  #?(:clj (.getTime (java.util.Date.))
-     :cljs (.getTime (js/Date.))))
+  #?(:clj (java.util.Date.)
+     :cljs (js/Date.)))

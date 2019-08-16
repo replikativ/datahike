@@ -19,7 +19,8 @@
   #?(:clj (:import [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
                     Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                     RulesVar SrcVar Variable]
-                   [datahike.datom Datom])))
+                   [datahike.datom Datom]
+                   [java.util Date])))
 
 
 ;; ----------------------------------------------------------------------------
@@ -195,6 +196,14 @@
   (reduce (fn [a b]
             (if b (reduced b) b)) nil args))
 
+(defn- -before? [d0 d1]
+  #?(:clj (.before ^Date d0 ^Date d1)
+     :cljs (< d0 d1)))
+
+(defn- -after? [d0 d1]
+  #?(:clj (.after ^Date d0 ^Date d1)
+     :cljs (< d0 d1)))
+
 (def built-ins {
   '= =, '== ==, 'not= not=, '!= not=, '< <, '> >, '<= <=, '>= >=, '+ +, '- -,
   '* *, '/ /, 'quot quot, 'rem rem, 'mod mod, 'inc inc, 'dec dec, 'max max, 'min min,
@@ -207,7 +216,7 @@
   'count count, 'range range, 'not-empty not-empty, 'empty? empty, 'contains? contains?,
   'str str, 'pr-str pr-str, 'print-str print-str, 'println-str println-str, 'prn-str prn-str, 'subs subs,
   're-find re-find, 're-matches re-matches, 're-seq re-seq,
-  '-differ? -differ?, 'get-else -get-else, 'get-some -get-some, 'missing? -missing?, 'ground identity})
+  '-differ? -differ?, 'get-else -get-else, 'get-some -get-some, 'missing? -missing?, 'ground identity, 'before? -before?, 'after? -after?})
 
 (def built-in-aggregates
  (letfn [(sum [coll] (reduce + 0 coll))
