@@ -33,12 +33,17 @@
               :db/cardinality :db.cardinality/one
               :db/doc "toggle whether the repository is public"}
              {:db/ident :repository/tags
-              :db/valueType :db.type/keyword
+              :db/valueType :db.type/ref
               :db/cardinality :db.cardinality/many
-              :db/doc "the repository's tags"}])
+              :db/doc "the repository's tags"}
+             {:db/ident :language/clojure}
+             {:db/ident :language/rust}])
 
 ;; define uri
 (def uri "datahike:mem://schema-intro")
+
+;; cleanup previous database
+(d/delete-database uri)
 
 ;; create the in-memory database
 (d/create-database uri :initial-tx schema)
@@ -58,7 +63,7 @@
 (d/pull @conn '[*] [:contributor/name "alice"])
 
 ;; add a second email, as we have a many cardinality, we can have serveral one's as a user
-(d/transact conn [{:db/id 7 :contributor/email "alice@test.test"}])
+(d/transact conn [{:db/id [:contributor/name "alice"] :contributor/email "alice@test.test"}])
 
 ;; let's see both emails
 (d/q find-name-email @conn)
@@ -78,7 +83,7 @@
 (d/pull @conn '[*] [:contributor/name "bob"])
 
 ;; change bobs name to bobby
-(d/transact conn [{:db/id 8 :contributor/name "bobby"}])
+(d/transact conn [{:db/id [:contributor/name "bob"] :contributor/name "bobby"}])
 
 ;; check it
 (d/q find-name-email @conn)
@@ -88,11 +93,11 @@
 ;; bob is not related anymore as index
 (d/pull @conn '[*] [:contributor/name "bob"])
 
-;; create a repository, with refs from uniques
+;; create a repository, with refs from uniques, and an ident as enum
 (d/transact conn [{:repository/name "top secret"
-                    :repository/public false
-                    :repository/contributors [[:contributor/name "bobby"] [:contributor/name "alice"]]
-                    :repository/tags :clojure}])
+                   :repository/public false
+                   :repository/contributors [[:contributor/name "bobby"] [:contributor/name "alice"]]
+                   :repository/tags :language/clojure}])
 
 ;; let's search with pull inside the query
 (def find-repositories '[:find (pull ?e [*]) :where [?e :repository/name ?n]])
@@ -101,7 +106,7 @@
 (d/q find-repositories @conn)
 
 ;; let's go further and fetch the related contributor data as well
-(def find-repositories-with-contributors '[:find (pull ?e [* {:repository/contributors [*]}]) :where [?e :repository/name ?n]])
+(def find-repositories-with-contributors '[:find (pull ?e [* {:repository/contributors [*] :repository/tags [*]}]) :where [?e :repository/name ?n]])
 
 (d/q find-repositories-with-contributors @conn)
 
