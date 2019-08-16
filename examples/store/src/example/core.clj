@@ -14,7 +14,7 @@
   (d/connect uri))
 
 (defn transact-and-find [conn name]
-  (d/transact! conn [{:name name}])
+  (d/transact conn [{:name name}])
   (d/q query (d/db conn)))
 
 ;; first let's have a look at the memory store which uses an atom internally to store data

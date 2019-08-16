@@ -41,7 +41,7 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 (def conn (d/connect uri))
 
 ;; the first transaction will be the schema we are using
-(d/transact! conn [{:db/ident :name 
+(d/transact conn [{:db/ident :name 
                     :db/valueType :db.type/string
                     :db/cardinality :db.cardinality/one }
                     {:db/ident :age 
@@ -49,7 +49,7 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
                     :db/cardinality :db.cardinality/one }])
 
 ;; lets add some data and wait for the transaction
-(d/transact! conn [{:name  "Alice", :age   20 }
+(d/transact conn [{:name  "Alice", :age   20 }
                    {:name  "Bob", :age   30 }
                    {:name  "Charlie", :age   40 }
                    {:age 15 }])
@@ -59,17 +59,17 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
        :where 
        [?e :name ?n]
        [?e :age ?a]]
-  (d/db conn))
+  @conn)
 ;; => #{[3 "Alice" 20] [4 "Bob" 30] [5 "Charlie" 40]}
 
 ;; add new entity data
-(d/transact! conn [{:db/id 3 :age 25}])
+(d/transact conn [{:db/id 3 :age 25}])
 
 (d/q '[:find ?e ?n ?a 
        :where 
        [?e :name ?n] 
        [?e :age ?a]]
-  (d/db conn))
+  @conn)
 ;; => #{[5 "Charlie" 40] [4 "Bob" 30] [3 "Alice" 25]}
 
 ;; query the history of the data
@@ -77,7 +77,7 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
        :where 
        [?e :name "Alice"] 
        [?e :age ?a]]
-  (d/history conn))
+  (d/history @conn))
 ;; => #{[20] [25]}
 
 ;; you might need to release the connection, e.g. for leveldb

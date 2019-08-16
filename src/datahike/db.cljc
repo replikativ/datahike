@@ -1242,7 +1242,7 @@
   ;; TODO check for valid meta transaction
   (loop [report (update initial-report :db-after transient)
          es (if (-temporal-index? (get-in initial-report [:db-before]))
-              (conj initial-es [:db/add (current-tx report) :db/txInstant (get-time) (current-tx report)])
+              (concat [[:db/add (current-tx report) :db/txInstant (get-time) (current-tx report)]] initial-es)
               initial-es)]
     (let [[entity & entities] es
           db (:db-after report)

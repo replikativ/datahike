@@ -65,7 +65,7 @@
   dc/delete-database)
 
 (def ^{:arglists '([conn tx-data])
-       :doc      "Same as [transact!] but returns realized value directly."}
+       :doc      "Same as [[transact!]] but returns realized value directly."}
   transact
   dc/transact)
 
@@ -296,10 +296,10 @@
 
 (defn history
   "Returns the full historical state of the database you may interact with."
-  [conn]
-  (if (db/-temporal-index? @conn)
-    (HistoricalDB. @conn)
-    (throw (ex-info "as-of is only allowed on temporal indexed dbs" {:config (db/-config @conn)}))))
+  [db]
+  (if (db/-temporal-index? db)
+    (HistoricalDB. db)
+    (throw (ex-info "as-of is only allowed on temporal indexed dbs" {:config (db/-config db)}))))
 
 (defn- date? [d]
   #?(:cljs (instance? js/Date d)
@@ -311,15 +311,15 @@
 
 (defn as-of
   "Returns the database state at given Date (you may use either java.util.Date or Epoch Time as long)."
-  [conn date]
-  (if (db/-temporal-index? @conn)
-    (AsOfDB. @conn (if (date? date) (get-time date) date))
+  [db date]
+  (if (db/-temporal-index? db)
+    (AsOfDB. db (if (date? date) (get-time date) date))
     (throw (ex-info "as-of is only allowed on temporal indexed dbs"))))
 
 (defn since
   "Returns the database state since a given Date (you may use either java.util.Date or Epoch Time as long).
   Be aware: the database contains only the datoms that were added since the date."
-  [conn date]
-  (if (db/-temporal-index? @conn)
-    (SinceDB. @conn (if (date? date) (get-time date) date))
+  [db date]
+  (if (db/-temporal-index? db)
+    (SinceDB. db (if (date? date) (get-time date) date))
     (throw (ex-info "since is only allowed on temporal indexed dbs"))))

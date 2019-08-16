@@ -47,7 +47,7 @@
 (def conn (d/connect uri))
 
 ;; let's insert our first user
-(d/transact! conn [{:contributor/name "alice" :contributor/email "alice@exam.ple"}])
+(d/transact conn [{:contributor/name "alice" :contributor/email "alice@exam.ple"}])
 
 ;; let's find her with a query
 (def find-name-email '[:find ?e ?n ?em :where [?e :contributor/name ?n] [?e :contributor/email ?em]])
@@ -58,27 +58,27 @@
 (d/pull (d/db conn) '[*] [:contributor/name "alice"])
 
 ;; add a second email, as we have a many cardinality, we can have serveral one's as a user
-(d/transact! conn [{:db/id 7 :contributor/email "alice@test.test"}])
+(d/transact conn [{:db/id 7 :contributor/email "alice@test.test"}])
 
 ;; let's see both emails
 (d/q find-name-email (d/db conn))
 
 ;; try to add something completely not defined in the schema
-(d/transact! conn [{:something "different"}])
+(d/transact conn [{:something "different"}])
 ;; => error occurs
 
 ;; try to add wrong contributor values
-(d/transact! conn [{:contributor/email :alice}])
+(d/transact conn [{:contributor/email :alice}])
 
 ;; add another contributor
-(d/transact! conn [{:contributor/name "bob" :contributor/email "bob@ac.me"}])
+(d/transact conn [{:contributor/name "bob" :contributor/email "bob@ac.me"}])
 
 (d/q find-name-email (d/db conn))
 
 (d/pull (d/db conn) '[*] [:contributor/name "bob"])
 
 ;; change bobs name to bobby
-(d/transact! conn [{:db/id 8 :contributor/name "bobby"}])
+(d/transact conn [{:db/id 8 :contributor/name "bobby"}])
 
 ;; check it
 (d/q find-name-email (d/db conn))
@@ -89,7 +89,7 @@
 (d/pull (d/db conn) '[*] [:contributor/name "bob"])
 
 ;; create a repository, with refs from uniques
-(d/transact! conn [{:repository/name "top secret"
+(d/transact conn [{:repository/name "top secret"
                     :repository/public false
                     :repository/contributors [[:contributor/name "bobby"] [:contributor/name "alice"]]
                     :repository/tags :clojure}])
@@ -124,7 +124,7 @@
 (def conn (d/connect uri))
 
 ;; now we can go wild and transact anything
-(d/transact! conn [{:any "thing"}])
+(d/transact conn [{:any "thing"}])
 
 ;; use simple query on this data
 (d/q '[:find ?v :where [_ :any ?v]] (d/db conn))
@@ -132,10 +132,10 @@
 ;; be aware: although there is no schema, you should tell the database if some
 ;; attributes can have specific cardinality or indices.
 ;; You may add that as schema transactions like before
-(d/transact! conn [{:db/ident :any :db/cardinality :db.cardinality/many}])
+(d/transact conn [{:db/ident :any :db/cardinality :db.cardinality/many}])
 
 ;; let's add more data to the first any entity
 (def any-eid (d/q '[:find ?e . :where [?e :any "thing"]] (d/db conn)))
-(d/transact! conn [{:db/id any-eid :any "thing else"}])
+(d/transact conn [{:db/id any-eid :any "thing else"}])
 
 (d/q '[:find ?v :where [_ :any ?v]] (d/db conn))

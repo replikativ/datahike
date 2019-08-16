@@ -53,16 +53,16 @@
   (ds/release-store (get-in @conn [:config :storage]) (:store @conn)))
 
 
-(defmulti transact
+(defmulti transact!
   "Transacts new data to database"
   {:arglists '([conn tx-data])}
   (fn [conn tx-data] (type tx-data)))
 
-(defmethod transact clojure.lang.PersistentVector
+(defmethod transact! clojure.lang.PersistentVector
   [connection tx-data]
-  (transact connection {:tx-data tx-data}))
+  (transact! connection {:tx-data tx-data}))
 
-(defmethod transact clojure.lang.PersistentArrayMap
+(defmethod transact! clojure.lang.PersistentArrayMap
   [connection {:keys [tx-data]}]
   {:pre [(d/conn? connection)]}
   (future
@@ -100,9 +100,9 @@
                              :temporal-avet temporal-avet-flushed))
         tx-report))))
 
-(defn transact! [connection tx-data]
+(defn transact [connection tx-data]
   (try
-    (deref (transact connection tx-data))
+    (deref (transact! connection tx-data))
     (catch Exception e
       (throw (.getCause e)))))
 
@@ -153,7 +153,7 @@
     (ds/release-store store-config store)
     (when initial-tx
       (let [conn (connect store-config)]
-        (transact! conn initial-tx)
+        (transact conn initial-tx)
         (release conn)))))
 
 (defn delete-database [uri]

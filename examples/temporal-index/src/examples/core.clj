@@ -24,7 +24,7 @@
 (def conn (d/connect uri))
 
 ;; transact age and name data
-(d/transact! conn [{:name "Alice" :age 25} {:name "Bob" :age 30}])
+(d/transact conn [{:name "Alice" :age 25} {:name "Bob" :age 30}])
 
 ;; let's find name and age of all data
 (def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
@@ -35,7 +35,7 @@
 (def first-date (java.util.Date.))
 
 ;; let's change something
-(d/transact! conn [{:db/id [:name "Alice"] :age 30}])
+(d/transact conn [{:db/id [:name "Alice"] :age 30}])
 
 ;; search for current data of Alice
 (d/q query (d/db conn))
@@ -68,7 +68,7 @@
      (d/since conn first-date))
 
 ;; let's remove Bob
-(d/transact! conn [[:db/retractEntity [:name "Bob"]]])
+(d/transact conn [[:db/retractEntity [:name "Bob"]]])
 
 ;; Only Alice remains
 (d/q query (d/db conn))

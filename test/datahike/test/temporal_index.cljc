@@ -28,33 +28,28 @@
         conn (d/connect uri)]
 
     (testing "Initial data"
-      (let [db (d/db conn)]
-        (is (= #{["Alice" 25] ["Bob" 35]}
-               (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] db)))))
+      (is (= #{["Alice" 25] ["Bob" 35]}
+             (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] @conn))))
 
     (testing "historical values"
-      (let [_ (d/transact! conn [{:db/id [:name "Alice"] :age 30}])
-            db (d/db conn)
-            history (d/history conn)]
-        (are [x y]
+      (d/transact conn [{:db/id [:name "Alice"] :age 30}])
+      (are [x y]
           (= x y)
-          #{[30]}
-          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] db [:name "Alice"])
-          #{[30] [25]}
-          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] history [:name "Alice"]))))
+        #{[30]}
+        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
+        #{[30] [25]}
+        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
-      (let [_ (d/transact! conn [[:db/retractEntity [:name "Alice"]]])
-                 db (d/db conn)
-            history (d/history conn)]
-        (are [x y]
+      (d/transact conn [[:db/retractEntity [:name "Alice"]]])
+      (are [x y]
           (= x y)
-          #{}
-          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] db [:name "Alice"])
-          #{[30] [25]}
-          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] history [:name "Alice"]))))
+        #{}
+        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
+        #{[30] [25]}
+        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "find retracted values"
       (is (= #{["Alice" 25] ["Alice" 30]}
-             (d/q '[:find ?n ?a  :where [?e :db/retracted ?r] [?r :age ?a] [?r :name ?n]] (d/history conn)))))))
+             (d/q '[:find ?n ?a  :where [?e :db/retracted ?r] [?r :age ?a] [?r :name ?n]] (d/history @conn)))))))
 
 (deftest test-historical-queries
   (let [uri "datahike:mem://test-historical-queries"
@@ -63,13 +58,13 @@
         conn (d/connect uri)]
 
     (testing "get all values before specific time"
-      (let [_ (d/transact! conn [{:db/id [:name "Alice"] :age 30}])
+      (let [_ (d/transact conn [{:db/id [:name "Alice"] :age 30}])
             _ (Thread/sleep 100)
             date (.getTime (java.util.Date.))
             _ (Thread/sleep 100)
-            _ (d/transact! conn [{:db/id [:name "Alice"] :age 35}])
-            db (d/history conn)
-            current-db (d/db conn)
+            _ (d/transact conn [{:db/id [:name "Alice"] :age 35}])
+            history-db (d/history @conn)
+            current-db @conn
             current-query '[:find ?a :in $ ?e :where [?e :age ?a]]
             query '[:find ?a
                     :in $ ?e ?fd
@@ -80,7 +75,7 @@
         (is (= #{[35]}
                (d/q current-query current-db [:name "Alice"])))
         (is (= #{[25] [30]}
-               (d/q query db [:name "Alice"] date)))))))
+               (d/q query history-db [:name "Alice"] date)))))))
 
 (deftest test-as-of-db
   (let [uri "datahike:mem://test-historical-queries"
@@ -91,11 +86,11 @@
         query '[:find ?a :in $ ?e :where [?e :age ?a ?tx]]]
     (testing "get values at specific time"
       (is (= #{[25]}
-               (d/q query (d/as-of conn first-date) [:name "Alice"]))))
+               (d/q query (d/as-of @conn first-date) [:name "Alice"]))))
     (testing "use java date objects"
       (let [java-date (java.util.Date. first-date)]
         (is (= #{[25]}
-                 (d/q query (d/as-of conn java-date) [:name "Alice"])))))))
+                 (d/q query (d/as-of @conn java-date) [:name "Alice"])))))))
 
 (deftest test-since-db
   (let [uri "datahike:mem://test-historical-queries"
@@ -106,9 +101,9 @@
         query '[:find ?a :where [?e :age ?a]]]
     (testing "empty after first insertion"
       (is (= #{}
-            (d/q query (d/since conn first-date)))))
+            (d/q query (d/since @conn first-date)))))
     (testing "added new value"
       (let [new-age 30
-            _ (d/transact! conn [{:db/id [:name "Alice"] :age new-age}])]
+            _ (d/transact conn [{:db/id [:name "Alice"] :age new-age}])]
         (is (= #{[new-age]}
-               (d/q query (d/since conn first-date))))))))
+               (d/q query (d/since @conn first-date))))))))
