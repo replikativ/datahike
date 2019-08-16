@@ -71,11 +71,19 @@
                     :where
                     [?e :age ?a ?tx]
                     [?tx :db/txInstant ?t]
-                    [(before? ?t ?fd)]]]
+                    [(before? ?t ?fd)]]
+            query-with-< '[:find ?a
+                           :in $ ?e ?fd
+                           :where
+                           [?e :age ?a ?tx]
+                           [?tx :db/txInstant ?t]
+                           [(< ?t ?fd)]]]
         (is (= #{[35]}
                (d/q current-query current-db [:name "Alice"])))
         (is (= #{[25] [30]}
-               (d/q query history-db [:name "Alice"] date))))))) <
+               (d/q query history-db [:name "Alice"] date)))
+        (is (= #{[25] [30]}
+               (d/q query-with-< history-db [:name "Alice"] date)))))))
 
 (deftest test-as-of-db
   (let [uri "datahike:mem://test-historical-queries"
