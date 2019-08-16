@@ -1,4 +1,4 @@
-(ns example.core
+(ns examples.store
   (:require [datahike.api :as d]))
 
 (def schema [{:db/ident :name
@@ -15,7 +15,7 @@
 
 (defn transact-and-find [conn name]
   (d/transact conn [{:name name}])
-  (d/q query (d/db conn)))
+  (d/q query @conn))
 
 ;; first let's have a look at the memory store which uses an atom internally to store data
 ;; only a simple identifier is needed, we use
