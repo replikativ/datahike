@@ -199,9 +199,7 @@ database:
 
 ## Meta Entity
 With each transaction a meta entity is added to the index that stores the
-current point in time in the `:db/txInstant` attribute, and if entities are
-retracted from the current index the entity identifiers as a list in the
-`:db/retracted`.
+current point in time in the `:db/txInstant` attribute.
 
 With this data present in the current index, you can search and analyse them for
 your purposes.

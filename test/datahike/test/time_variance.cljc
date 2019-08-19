@@ -1,9 +1,8 @@
-(ns datahike.test.temporal-index
+(ns datahike.test.time_variance
   (:require
     #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-    [datahike.api :as d]
-    [datahike.db :as dd]))
+    [datahike.api :as d]))
 
 (def schema-tx [{:db/ident       :name
                  :db/valueType   :db.type/string
@@ -49,7 +48,7 @@
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "find retracted values"
       (is (= #{["Alice" 25] ["Alice" 30]}
-             (d/q '[:find ?n ?a  :where [?e :db/retracted ?r] [?r :age ?a] [?r :name ?n]] (d/history @conn)))))))
+             (d/q '[:find ?n ?a :where [?r :age ?a _ false] [?r :name ?n _ false]] (d/history @conn)))))))
 
 (deftest test-historical-queries
   (let [uri "datahike:mem://test-historical-queries"

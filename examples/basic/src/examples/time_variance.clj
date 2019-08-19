@@ -76,12 +76,10 @@
 ;; Let's have a look at the history, Bob should be there
 (d/q query (d/history @conn))
 
-;; let's find the retracted entity and the date of the retraction
-(d/q '[:find ?n ?a ?tx
+;; let's find the retracted entity ID, its attribute and value, and the date of the retraction
+(d/q '[:find ?e ?a ?v ?tx
        :where
-       [?r :db/retracted ?e]
-       [?e :name ?n]
-       [?e :age ?a]
+       [?e ?a ?v ?r false]
        [?r :db/txInstant ?tx]]
      (d/history @conn))
 
@@ -93,5 +91,15 @@
        [?e ?a ?v ?t]
        [?t :db/txInstant ?tx]
        [(after? ?tx ?fd)]]
+     @conn
+     first-date)
+
+;; for convenience you may also use the `<`, `>` macro
+(d/q '[:find ?e ?a ?v
+       :in $ ?fd
+       :where
+       [?e ?a ?v ?t]
+       [?t :db/txInstant ?tx]
+       [(> ?tx ?fd)]]
      @conn
      first-date)

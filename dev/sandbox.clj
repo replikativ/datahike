@@ -27,6 +27,6 @@
                                 {:name  "Bob", :age   35}
                                 {:name "Charlie", :age 45 :sibling [[:name "Alice"] [:name "Bob"]]}]))
 
-  (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] @conn)
+  (d/q '[:find ?e ?a ?v ?t :where [?e ?a ?v ?t]] (d/history @conn))
 
-  (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/history @conn)))
+  (d/q '[:find ?e ?a ?n :where [?e ?a ?n ?tx false]] (d/history @conn)))
