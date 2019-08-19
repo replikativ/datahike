@@ -159,39 +159,41 @@
       (update :aevt -persistent!)
       (update :avet -persistent!)))
 
-(defn- search-indices [eavt aevt avet pattern indexed?]
-  (let [[e a v tx] pattern]
-    (case-tree [e a (some? v) tx]
-               [(-slice eavt (datom e a v tx) (datom e a v tx) :eavt) ;; e a v tx
-                (-slice eavt (datom e a v tx0) (datom e a v txmax) :eavt) ;; e a v _
-                (->> (-slice eavt (datom e a nil tx0) (datom e a nil txmax) :eavt) ;; e a _ tx
-                     (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                (-slice eavt (datom e a nil tx0) (datom e a nil txmax) :eavt) ;; e a _ _
-                (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ v tx
-                     (filter (fn [^Datom d] (and (= v (.-v d))
-                                                 (= tx (datom-tx d))))))
-                (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ v _
-                     (filter (fn [^Datom d] (= v (.-v d)))))
-                (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ tx
-                     (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ _
-                (if indexed?                     ;; _ a v tx
-                  (->> (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
+(defn- search-indices [eavt aevt avet pattern indexed? temporal-db?]
+  (let [[e a v tx added?] pattern]
+    (if (or (and temporal-db? (true? added?)) (and (not temporal-db?) (false? added?)))
+      '()
+      (case-tree [e a (some? v) tx]
+                 [(-slice eavt (datom e a v tx) (datom e a v tx) :eavt) ;; e a v tx
+                  (-slice eavt (datom e a v tx0) (datom e a v txmax) :eavt) ;; e a v _
+                  (->> (-slice eavt (datom e a nil tx0) (datom e a nil txmax) :eavt) ;; e a _ tx
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                  (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
+                  (-slice eavt (datom e a nil tx0) (datom e a nil txmax) :eavt) ;; e a _ _
+                  (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ v tx
                        (filter (fn [^Datom d] (and (= v (.-v d))
-                                                   (= tx (datom-tx d)))))))
-                (if indexed?                     ;; _ a v _
-                  (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
-                  (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
-                       (filter (fn [^Datom d] (= v (.-v d))))))
-                (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ tx
-                     (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ _
-                (filter (fn [^Datom d] (and (= v (.-v d)) (= tx (datom-tx d)))) (-all eavt)) ;; _ _ v tx
-                (filter (fn [^Datom d] (= v (.-v d))) (-all eavt)) ;; _ _ v _
-                (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
-                (-all eavt)])))
+                                                   (= tx (datom-tx d))))))
+                  (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ v _
+                       (filter (fn [^Datom d] (= v (.-v d)))))
+                  (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ tx
+                       (filter (fn [^Datom d] (= tx (datom-tx d)))))
+                  (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ _
+                  (if indexed?                              ;; _ a v tx
+                    (->> (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
+                         (filter (fn [^Datom d] (= tx (datom-tx d)))))
+                    (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
+                         (filter (fn [^Datom d] (and (= v (.-v d))
+                                                     (= tx (datom-tx d)))))))
+                  (if indexed?                              ;; _ a v _
+                    (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
+                    (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
+                         (filter (fn [^Datom d] (= v (.-v d))))))
+                  (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ tx
+                       (filter (fn [^Datom d] (= tx (datom-tx d)))))
+                  (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ _
+                  (filter (fn [^Datom d] (and (= v (.-v d)) (= tx (datom-tx d)))) (-all eavt)) ;; _ _ v tx
+                  (filter (fn [^Datom d] (= v (.-v d))) (-all eavt)) ;; _ _ v _
+                  (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
+                  (-all eavt)]))))
 
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx rschema hash config]
   #?@(:cljs
@@ -231,7 +233,7 @@
   ISearch
   (-search [db pattern]
            (let [[_ a _ _] pattern]
-             (search-indices eavt aevt avet pattern (indexing? db a))))
+             (search-indices eavt aevt avet pattern (indexing? db a) false)))
 
   IIndexAccess
   (-datoms [db index-type cs]
@@ -344,12 +346,14 @@
                             (.-aevt db)
                             (.-avet db)
                             pattern
-                            (indexing? db a))
+                            (indexing? db a)
+                            false)
             (search-indices (.-temporal-eavt db)
                             (.-temporal-aevt db)
                             (.-temporal-avet db)
                             pattern
-                            (indexing? db a)))))
+                            (indexing? db a)
+                            true))))
 
 (defn temporal-datoms [^DB db index-type cs]
   (let [index (get db index-type)
@@ -1238,7 +1242,6 @@
                 (sequential? initial-es))
     (raise "Bad transaction data " initial-es ", expected sequential collection"
            {:error :transact/syntax, :tx-data initial-es}))
-  ;; TODO check for valid meta transaction
   (loop [report (update initial-report :db-after transient)
          es (if (-temporal-index? (get-in initial-report [:db-before]))
               (concat [[:db/add (current-tx report) :db/txInstant (get-time) (current-tx report)]] initial-es)
@@ -1386,9 +1389,7 @@
                 (if-some [old-datom (first (-search db [e a v]))]
                   (recur (transact-retract-datom report old-datom) entities)
                   (recur report
-                         (if (-temporal-index? (get-in initial-report [:db-before]))
-                           (concat entities [[:db/add (current-tx report) :db/retracted (long e) (current-tx report)]])
-                           entities))))
+                         entities)))
               (recur report entities))
 
             (= op :db.fn/retractAttribute)
@@ -1402,12 +1403,11 @@
             (or (= op :db.fn/retractEntity)
                 (= op :db/retractEntity))
             (if-let [e (entid db e)]
-              (let [e-datoms (-search db [e])
-                    v-datoms (mapcat (fn [a] (-search db [nil a e])) (-attrs-by db :db.type/ref))]
+              (let [e-datoms (vec (-search db [e]))
+                    v-datoms (vec (mapcat (fn [a] (-search db [nil a e])) (-attrs-by db :db.type/ref)))
+                    retracted-comps (retract-components db e-datoms) ]
                 (recur (reduce transact-retract-datom report (concat e-datoms v-datoms))
-                       (if (-temporal-index? (get-in initial-report [:db-before]))
-                         (concat (retract-components db e-datoms) entities [[:db/add (current-tx report) :db/retracted (long e) (current-tx report)]])
-                         (concat (retract-components db e-datoms) entities))))
+                       (concat retracted-comps entities)))
               (recur report entities))
 
             :else

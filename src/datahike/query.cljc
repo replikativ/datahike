@@ -453,7 +453,7 @@
   ;; TODO optimize with bound attrs min/max values here
   (let [search-pattern (mapv #(if (symbol? %) nil %) pattern)
         datoms (db/-search db search-pattern)
-        attr->prop (->> (map vector pattern ["e" "a" "v" "tx"])
+        attr->prop (->> (map vector pattern ["e" "a" "v" "tx" "added"])
                         (filter (fn [[s _]] (free-var? s)))
                         (into {}))]
     (Relation. attr->prop datoms)))
@@ -689,12 +689,13 @@
 
 (defn resolve-pattern-lookup-refs [source pattern]
   (if (satisfies? db/IDB source)
-    (let [[e a v tx] pattern]
+    (let [[e a v tx added] pattern]
       (->
         [(if (or (lookup-ref? e) (attr? e)) (db/entid-strict source e) e)
          a
          (if (and v (attr? a) (db/ref? source a) (or (lookup-ref? v) (attr? v))) (db/entid-strict source v) v)
-         (if (lookup-ref? tx) (db/entid-strict source tx) tx)]
+         (if (lookup-ref? tx) (db/entid-strict source tx) tx)
+         added]
         (subvec 0 (count pattern))))
     pattern))
 
