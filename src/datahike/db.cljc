@@ -910,6 +910,35 @@
     (entid-strict db eid)))
 
 ;;;;;;;;;; Transacting
+(defn #?@(:clj  [^Boolean reverse-ref?]
+          :cljs [^boolean reverse-ref?]) [attr]
+  (cond
+    (keyword? attr)
+    (= \_ (nth (name attr) 0))
+
+    (string? attr)
+    (boolean (re-matches #"(?:([^/]+)/)?_([^/]+)" attr))
+
+    :else
+    (raise "Bad attribute type: " attr ", expected keyword or string"
+           {:error :transact/syntax, :attribute attr})))
+
+(defn reverse-ref [attr]
+  (cond
+    (keyword? attr)
+    (if (reverse-ref? attr)
+      (keyword (namespace attr) (subs (name attr) 1))
+      (keyword (namespace attr) (str "_" (name attr))))
+
+    (string? attr)
+    (let [[_ ns name] (re-matches #"(?:([^/]+)/)?([^/]+)" attr)]
+      (if (= \_ (nth name 0))
+        (if ns (str ns "/" (subs name 1)) (subs name 1))
+        (if ns (str ns "/_" name) (str "_" name))))
+
+    :else
+    (raise "Bad attribute type: " attr ", expected keyword or string"
+           {:error :transact/syntax, :attribute attr})))
 
 (defn validate-datom [db ^Datom datom]
   (when (and (datom-added datom)
@@ -932,9 +961,12 @@
              {:error :transact/syntax, :attribute attr, :context at}))
     (when-not (or (ds/meta-attr? attr) (ds/schema-attr? attr))
       (if-let [db-idents (-> db :rschema :db/ident)]
-        (when-not (db-idents attr)
-          (raise "Bad entity attribute " attr " at " at ", not defined in current schema"
-                 {:error :transact/schema :attribute attr :context at}))
+        (let [attr (if (reverse-ref? attr)
+                     (reverse-ref attr)
+                     attr)]
+          (when-not (db-idents attr)
+            (raise "Bad entity attribute " attr " at " at ", not defined in current schema"
+                   {:error :transact/schema :attribute attr :context at})))
         (raise "No schema found in db."
                {:error :transact/schema :attribute attr :context at})))))
 
@@ -1059,35 +1091,6 @@
       (update-in [:db-after] with-datom datom)
       (update-in [:tx-data] conj datom)))
 
-(defn #?@(:clj  [^Boolean reverse-ref?]
-          :cljs [^boolean reverse-ref?]) [attr]
-  (cond
-    (keyword? attr)
-    (= \_ (nth (name attr) 0))
-
-    (string? attr)
-    (boolean (re-matches #"(?:([^/]+)/)?_([^/]+)" attr))
-
-    :else
-    (raise "Bad attribute type: " attr ", expected keyword or string"
-           {:error :transact/syntax, :attribute attr})))
-
-(defn reverse-ref [attr]
-  (cond
-    (keyword? attr)
-    (if (reverse-ref? attr)
-      (keyword (namespace attr) (subs (name attr) 1))
-      (keyword (namespace attr) (str "_" (name attr))))
-
-    (string? attr)
-    (let [[_ ns name] (re-matches #"(?:([^/]+)/)?([^/]+)" attr)]
-      (if (= \_ (nth name 0))
-        (if ns (str ns "/" (subs name 1)) (subs name 1))
-        (if ns (str ns "/_" name) (str "_" name))))
-
-    :else
-    (raise "Bad attribute type: " attr ", expected keyword or string"
-           {:error :transact/syntax, :attribute attr})))
 
 (defn- check-upsert-conflict [entity acc]
   (let [[e a v] acc
