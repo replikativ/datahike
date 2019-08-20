@@ -4,11 +4,11 @@
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :url "https://github.com/tonsky/datahike"
 
-  :dependencies [[org.clojure/clojure       "1.10.0"   :scope "provided"]
-                 [org.clojure/clojurescript "1.10.516" :scope "provided"]
+  :dependencies [[org.clojure/clojure       "1.10.1"   :scope "provided"]
+                 [org.clojure/clojurescript "1.10.520" :scope "provided"]
                  [org.clojars.mihaelkonjevic/konserve-pg "0.1.2"]
-                 [persistent-sorted-set     "0.1.1"]
-                 [org.clojure/tools.reader "1.2.2"]
+                 [persistent-sorted-set     "0.1.2"]
+                 [org.clojure/tools.reader "1.3.2"]
                  [io.replikativ/hitchhiker-tree "0.1.4"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2"]
@@ -90,13 +90,13 @@
   ]}
 
   :profiles {
-    :1.9 { :dependencies [[org.clojure/clojure         "1.9.0"   :scope "provided"]
-                          [org.clojure/clojurescript   "1.9.946" :scope "provided"]] }
+    :1.9 { :dependencies [[org.clojure/clojure         "1.10.1"   :scope "provided"]
+                          [org.clojure/clojurescript   "1.10.520" :scope "provided"]] }
     :dev { :source-paths ["bench/src" "test" "dev"]
            :dependencies [[org.clojure/tools.nrepl     "0.2.13"]
-                          [org.clojure/tools.namespace "0.2.11"]
-                          [lambdaisland/kaocha         "0.0-389"]
-                          [lambdaisland/kaocha-cljs    "0.0-16"]] }
+                          [org.clojure/tools.namespace "0.3.1"]
+                          [lambdaisland/kaocha         "0.0-529"]
+                          [lambdaisland/kaocha-cljs    "0.0-40"]] }
     :aot { :aot [#"datahike\.(?!query-v3).*"]
            :jvm-opts ["-Dclojure.compiler.direct-linking=true"] }
   }
