@@ -1,7 +1,6 @@
 (ns ^:no-doc datahike.pull-api
   (:require
    [datahike.db :as db]
-   [datahike.datom :as dd]
    #?@(:cljs [datalog.parser.pull :refer [PullSpec]])
    [datalog.parser.pull :as dpp])
   #?(:clj

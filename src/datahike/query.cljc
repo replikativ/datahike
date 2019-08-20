@@ -2,7 +2,6 @@
   (:require
     [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
     [clojure.set :as set]
-    [clojure.string :as str]
     [clojure.walk :as walk]
     [datahike.db :as db #?(:cljs :refer-macros :clj :refer) [raise]]
     [me.tonsky.persistent-sorted-set.arrays :as da]

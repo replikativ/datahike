@@ -4,10 +4,7 @@
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
-            [superv.async :refer [<?? S]]
-            [datahike.impl.entity :as de]
-            [clojure.spec.test.alpha :as st]
-            [clojure.spec.alpha :as s])
+            [datahike.impl.entity :as de])
   #?(:clj
      (:import [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
               [datahike.impl.entity Entity]
@@ -130,11 +127,7 @@
                 query-map)
         args (if (contains? query-map :args)
                (:args query-map)
-               arg-list)
-        query-vector (->> query
-                          (mapcat (fn [[k v]]
-                                    (into [k] v)))
-                          vec)]
+               arg-list)]
     (apply dq/q query args)))
 
 (defn seek-datoms
@@ -299,7 +292,7 @@
   [db]
   (if (db/-temporal-index? db)
     (HistoricalDB. db)
-    (throw (ex-info "as-of is only allowed on temporal indexed dbs" {:config (db/-config db)}))))
+    (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn- date? [d]
   #?(:cljs (instance? js/Date d)
@@ -311,7 +304,7 @@
   {:pre [(or (int? date) (date? date))]}
   (if (db/-temporal-index? db)
     (AsOfDB. db (if (date? date) date (java.util.Date. ^long date)))
-    (throw (ex-info "as-of is only allowed on temporal indexed dbs"))))
+    (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn since
   "Returns the database state since a given Date (you may use either java.util.Date or Epoch Time as long).
@@ -320,4 +313,4 @@
   {:pre [(or (int? date) (date? date))]}
   (if (db/-temporal-index? db)
     (SinceDB. db (if (date? date) date (java.util.Date. ^long date)))
-    (throw (ex-info "since is only allowed on temporal indexed dbs"))))
+    (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)}))))
