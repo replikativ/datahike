@@ -1449,31 +1449,37 @@
               (recur report entities))
 
             (= op :db/purge)
-            (let [history (HistoricalDB. db)]
-              (if-some [e (entid history e)]
-                (let [v (if (ref? history a) (entid-strict history v) v)]
-                  (if-some [old-datom (first (-search history [e a v]))]
-                    (recur (transact-purge-datom report old-datom) entities)
-                    (recur report entities)))
-                (recur report entities)))
+            (if (-temporal-index? db)
+              (let [history (HistoricalDB. db)]
+                (if-some [e (entid history e)]
+                  (let [v (if (ref? history a) (entid-strict history v) v)]
+                    (if-some [old-datom (first (-search history [e a v]))]
+                      (recur (transact-purge-datom report old-datom) entities)
+                      (recur report entities)))
+                  (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
+              (raise "Purge is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
 
             (= op :db.purge/attribute)
-            (let [history (HistoricalDB. db)]
-              (if-let [e (entid history e)]
-                (let [datoms (vec (-search history [e a]))]
-                  (recur (reduce transact-purge-datom report datoms)
-                         (concat (purge-components history datoms) entities)))
-                (recur report entities)))
+            (if (-temporal-index? db)
+              (let [history (HistoricalDB. db)]
+                (if-let [e (entid history e)]
+                  (let [datoms (vec (-search history [e a]))]
+                    (recur (reduce transact-purge-datom report datoms)
+                           (concat (purge-components history datoms) entities)))
+                  (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
+              (raise "Purge attribute is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
 
             (= op :db.purge/entity)
-            (let [history (HistoricalDB. db)]
-              (if-let [e (entid history e)]
-                (let [e-datoms (vec (-search history [e]))
-                      v-datoms (vec (mapcat (fn [a] (-search history [nil a e])) (-attrs-by history :db.type/ref)))
-                      retracted-comps (purge-components history e-datoms)]
-                  (recur (reduce transact-purge-datom report (concat e-datoms v-datoms))
-                         (concat retracted-comps entities)))
-                (raise "Can't find entity with ID " e " to be purged" {:error :transact/not-found, :operation op, :tx-data entity})))
+            (if (-temporal-index? db)
+              (let [history (HistoricalDB. db)]
+                (if-let [e (entid history e)]
+                  (let [e-datoms (vec (-search history [e]))
+                        v-datoms (vec (mapcat (fn [a] (-search history [nil a e])) (-attrs-by history :db.type/ref)))
+                        retracted-comps (purge-components history e-datoms)]
+                    (recur (reduce transact-purge-datom report (concat e-datoms v-datoms))
+                           (concat retracted-comps entities)))
+                  (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
+              (raise "Purge entity is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
 
             :else
             (raise "Unknown operation at " entity ", expected :db/add, :db/retract, :db.fn/call, :db.fn/retractAttribute, :db.fn/retractEntity or an ident corresponding to an installed transaction function (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)" {:error :transact/syntax, :operation op, :tx-data entity})))
