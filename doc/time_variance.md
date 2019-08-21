@@ -34,13 +34,13 @@ system. Use `db` for this view. The following example shows a simple interaction
 
 ;; define simple schema
 (def schema [{:db/ident :name
-                 :db/valueType :db.type/string
-                 :db/unique :db.unique/identity
-                 :db/index true
-                 :db/cardinality :db.cardinality/one}
-                {:db/ident :age
-                 :db/valueType :db.type/long
-                 :db/cardinality :db.cardinality/one}])
+              :db/valueType :db.type/string
+              :db/unique :db.unique/identity
+              :db/index true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident :age
+              :db/valueType :db.type/long
+              :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
 (d/create-database "datahike:mem://current-db" :initial-tx schema)
@@ -51,14 +51,14 @@ system. Use `db` for this view. The following example shows a simple interaction
 ;; define simple query for name and age
 (def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
 
-(d/q query  @conn)
+(d/q query @conn)
 ;; => #{["Alice" 25]}
 
 ;; update the entity
 (d/transact conn [{:db/id [:name "Alice"] :age 30}])
 
 ;; `db` reflects the latest state of the database
-(d/q query  @conn)
+(d/q query @conn)
 ;; => #{["Alice" 30]}
 ```
 
@@ -209,13 +209,13 @@ your purposes.
 
 ;; define simple schema
 (def schema [{:db/ident :name
-                 :db/valueType :db.type/string
-                 :db/unique :db.unique/identity
-                 :db/index true
-                 :db/cardinality :db.cardinality/one}
-                {:db/ident :age
-                 :db/valueType :db.type/long
-                 :db/cardinality :db.cardinality/one}])
+              :db/valueType :db.type/string
+              :db/unique :db.unique/identity
+              :db/index true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident :age
+              :db/valueType :db.type/long
+              :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
 (d/create-database "datahike:mem://since-db" :initial-tx schema)
@@ -232,3 +232,55 @@ your purposes.
 (d/q '[:find ?n ?t :where [_ :name ?n ?tx] [?tx :db/txInstant ?t]] @conn)
 ;; => #{["Alice" #inst "2019-08-16T11:40:28.794-00:00"]}
 ```
+
+## Data Purging
+Since retraction only moves the datoms from the current index to a history, data
+is in that way never completely deleted. If your use case (for instance related
+to GDPR compliancy) requires complete data removal use the `db.purge` functions
+available in transactions:
+
+- `:db/purge`: removes a datom with given entity identifier, attribute and value
+- `:db.purge/attribute`: removes attribute datoms given an identifier and attribute name
+- `:db.purge/entity`: removes all datoms related to an entity given an entity identifier
+
+```clojure
+(require '[datahike.api :as d])
+
+;; define simple schema
+(def schema [{:db/ident :name
+              :db/valueType :db.type/string
+              :db/unique :db.unique/identity
+              :db/index true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident :age
+              :db/valueType :db.type/long
+              :db/cardinality :db.cardinality/one}])
+
+;; create our temporal database
+(d/create-database "datahike:mem://purge-db" :initial-tx schema)
+
+;; add data
+(d/transact conn [{:name "Alice" :age 25}])
+
+;; define simple query for name and age
+(def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
+
+(d/q query  @conn)
+;; => #{["Alice" 25]}
+
+(d/transact [[:db.purge/entity [:name "Alice"]]])
+
+;; data was removed from current database view
+(d/q query  @conn)
+;; => #{}
+
+;; data was also removed from history
+(d/q query (history @conn))
+;; => #{}
+```
+
+Have a look at the the `time-variance` namespace in the examples project for
+more examples.
+
+Be aware: these functions are only available if temporal index is active. Don't
+use these functions to remove data per default. 

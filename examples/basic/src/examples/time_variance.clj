@@ -94,7 +94,7 @@
      @conn
      first-date)
 
-;; for convenience you may also use the `<`, `>` macro
+;; for convenience you may also use the `<`, `>`, `<=`, `>=` functions
 (d/q '[:find ?e ?a ?v
        :in $ ?fd
        :where
@@ -110,3 +110,8 @@
 ;; Alice's age 30 is not there anymore
 (d/q query (d/history @conn))
 
+;; let's remove Alice's entity completely from our database
+(d/transact conn [[:db.purge/entity [:name "Alice"]]])
+
+;; Only Bob remains in the history
+(d/q query (d/history @conn))
