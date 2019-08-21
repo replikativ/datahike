@@ -1093,27 +1093,25 @@
 
 (defn- with-temporal-datom [db ^Datom datom]
   (let [indexing? (indexing? db (.-a datom))
-        schema? (ds/schema-attr? (.-a datom))]
-    (when-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
-      (let [db (cond-> db
-                       true (update-in [:eavt] #(di/-remove % removing :eavt))
-                       true (update-in [:aevt] #(di/-remove % removing :aevt))
-                       indexing? (update-in [:avet] #(di/-remove % removing :avet))
-                       true (update :hash - (hash removing))
-                       schema? (-> (remove-schema datom) update-rschema))]
-        (if-some [removing ^Datom (first (search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom)]))]
-          (cond-> db
-                  true (update-in [:temporal-eavt] #(di/-remove % removing :eavt))
-                  true (update-in [:temporal-aevt] #(di/-remove % removing :aevt))
-                  indexing? (update-in [:temporal-avet] #(di/-remove % removing :avet)))
-          db))
-      db)))
+        schema? (ds/schema-attr? (.-a datom))
+        current-datom ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))
+        history-datom ^Datom (first (search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom)]))
+        current? (not (nil? current-datom))
+        history? (not (nil? history-datom))]
+    (cond-> db
+      current? (update-in [:eavt] #(di/-remove % current-datom :eavt))
+      current? (update-in [:aevt] #(di/-remove % current-datom :aevt))
+      (and current? indexing?) (update-in [:avet] #(di/-remove % current-datom :avet))
+      current? (update :hash - (hash current-datom))
+      (and current? schema?) (-> (remove-schema datom) update-rschema)
+      history? (update-in [:temporal-eavt] #(di/-remove % history-datom :eavt))
+      history? (update-in [:temporal-aevt] #(di/-remove % history-datom :aevt))
+      (and history? indexing?) (update-in [:temporal-avet] #(di/-remove % history-datom :avet)))))
 
 (defn- transact-report [report datom]
   (-> report
       (update-in [:db-after] with-datom datom)
       (update-in [:tx-data] conj datom)))
-
 
 (defn- check-upsert-conflict [entity acc]
   (let [[e a v] acc
@@ -1266,7 +1264,11 @@
     :db.fn/retractAttribute
     :db.fn/retractEntity
     :db/retractEntity
-    :db/purge})
+    :db/purge
+    :db.purge/entity
+    :db.purge/attribute
+    :db.purge/before
+    })
 
 (defn transact-tx-data [initial-report initial-es]
   (when-not (or (nil? initial-es)

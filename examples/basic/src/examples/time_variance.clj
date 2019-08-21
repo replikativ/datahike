@@ -67,7 +67,7 @@
      @conn
      (d/since @conn first-date))
 
-;; let's remove Bob
+;; let's retract Bob from the current view
 (d/transact conn [[:db/retractEntity [:name "Bob"]]])
 
 ;; Only Alice remains
@@ -103,3 +103,10 @@
        [(> ?tx ?fd)]]
      @conn
      first-date)
+
+;; since retraction only removes data from the current view of the data, you may use `purge` to completely remove data
+(d/transact conn [[:db/purge [:name "Alice"] :age 30]])
+
+;; Alice's age 30 is not there anymore
+(d/q query (d/history @conn))
+
