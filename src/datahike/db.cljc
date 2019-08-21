@@ -1227,6 +1227,11 @@
               (filter (fn [^Datom d] (component? db (.-a d))))
               (map (fn [^Datom d] [:db.fn/retractEntity (.-v d)]))) datoms))
 
+(defn- purge-components [db datoms]
+  (into #{} (comp
+              (filter (fn [^Datom d] (component? db (.-a d))))
+              (map (fn [^Datom d] [:db.purge/entity (.-v d)]))) datoms))
+
 #?(:clj
    (defmacro cond+ [& clauses]
      (when-some [[test expr & rest] clauses]
@@ -1296,57 +1301,57 @@
         (let [old-eid (:db/id entity)]
           (cond+
             ;; :db/current-tx / "datomic.tx" => tx
-            (tx-id? old-eid)
-            (let [id (current-tx report)]
-              (recur (allocate-eid report old-eid id)
-                     (cons (assoc entity :db/id id) entities)))
+           (tx-id? old-eid)
+           (let [id (current-tx report)]
+             (recur (allocate-eid report old-eid id)
+                    (cons (assoc entity :db/id id) entities)))
 
             ;; lookup-ref => resolved | error
-            (sequential? old-eid)
-            (let [id (entid-strict db old-eid)]
-              (recur report
-                     (cons (assoc entity :db/id id) entities)))
+           (sequential? old-eid)
+           (let [id (entid-strict db old-eid)]
+             (recur report
+                    (cons (assoc entity :db/id id) entities)))
 
             ;; upserted => explode | error
-            :let [upserted-eid (upsert-eid db entity)]
+           :let [upserted-eid (upsert-eid db entity)]
 
-            (some? upserted-eid)
-            (if (and (tempid? old-eid)
-                     (contains? tempids old-eid)
-                     (not= upserted-eid (get tempids old-eid)))
-              (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
-              (recur (allocate-eid report old-eid upserted-eid)
-                     (concat (explode db (assoc entity :db/id upserted-eid)) entities)))
+           (some? upserted-eid)
+           (if (and (tempid? old-eid)
+                    (contains? tempids old-eid)
+                    (not= upserted-eid (get tempids old-eid)))
+             (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
+             (recur (allocate-eid report old-eid upserted-eid)
+                    (concat (explode db (assoc entity :db/id upserted-eid)) entities)))
 
             ;; resolved | allocated-tempid | tempid | nil => explode
-            (or (number? old-eid)
-                (nil? old-eid)
-                (string? old-eid))
-            (let [new-eid (cond
-                            (nil? old-eid) (next-eid db)
-                            (tempid? old-eid) (or (get tempids old-eid)
-                                                  (next-eid db))
-                            :else old-eid)
-                  new-entity (assoc entity :db/id new-eid)]
+           (or (number? old-eid)
+               (nil? old-eid)
+               (string? old-eid))
+           (let [new-eid (cond
+                           (nil? old-eid) (next-eid db)
+                           (tempid? old-eid) (or (get tempids old-eid)
+                                                 (next-eid db))
+                           :else old-eid)
+                 new-entity (assoc entity :db/id new-eid)]
               ;; schema tx
-              (when (ds/schema-entity? entity)
-                (if-let [attr-name (get-in db [:schema new-eid])]
-                  (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
-                    (when-not (empty? invalid-updates)
-                      (raise "Update not supported for these schema attributes"
-                             {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
-                  (when-not (get-in db [:config :schema-on-read])
-                    (when (or (:db/cardinality entity) (:db/valueType entity))
-                      (when-not (ds/schema? entity)
-                        (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                               {:error :transact/schema :entity entity}))))))
-              (recur (allocate-eid report old-eid new-eid)
-                     (concat (explode db new-entity) entities)))
+             (when (ds/schema-entity? entity)
+               (if-let [attr-name (get-in db [:schema new-eid])]
+                 (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
+                   (when-not (empty? invalid-updates)
+                     (raise "Update not supported for these schema attributes"
+                            {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
+                 (when-not (get-in db [:config :schema-on-read])
+                   (when (or (:db/cardinality entity) (:db/valueType entity))
+                     (when-not (ds/schema? entity)
+                       (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                              {:error :transact/schema :entity entity}))))))
+             (recur (allocate-eid report old-eid new-eid)
+                    (concat (explode db new-entity) entities)))
 
             ;; trash => error
-            :else
-            (raise "Expected number, string or lookup ref for :db/id, got " old-eid
-                   {:error :entity-id/syntax, :entity entity})))
+           :else
+           (raise "Expected number, string or lookup ref for :db/id, got " old-eid
+                  {:error :entity-id/syntax, :entity entity})))
 
         (sequential? entity)
         (let [[op e a v] entity]
@@ -1414,7 +1419,6 @@
             (= op :db/add)
             (recur (transact-add report entity) entities)
 
-
             (= op :db/retract)
             (if-some [e (entid db e)]
               (let [v (if (ref? db a) (entid-strict db v) v)]
@@ -1429,7 +1433,7 @@
             (= op :db.fn/retractAttribute)
             (if-let [e (entid db e)]
               (let [_ (validate-attr a entity db)
-                    datoms (-search db [e a])]
+                    datoms (vec (-search db [e a]))]
                 (recur (reduce transact-retract-datom report datoms)
                        (concat (retract-components db datoms) entities)))
               (recur report entities))
@@ -1452,6 +1456,24 @@
                     (recur (transact-purge-datom report old-datom) entities)
                     (recur report entities)))
                 (recur report entities)))
+
+            (= op :db.purge/attribute)
+            (let [history (HistoricalDB. db)]
+              (if-let [e (entid history e)]
+                (let [datoms (vec (-search history [e a]))]
+                  (recur (reduce transact-purge-datom report datoms)
+                         (concat (purge-components history datoms) entities)))
+                (recur report entities)))
+
+            (= op :db.purge/entity)
+            (let [history (HistoricalDB. db)]
+              (if-let [e (entid history e)]
+                (let [e-datoms (vec (-search history [e]))
+                      v-datoms (vec (mapcat (fn [a] (-search history [nil a e])) (-attrs-by history :db.type/ref)))
+                      retracted-comps (purge-components history e-datoms)]
+                  (recur (reduce transact-purge-datom report (concat e-datoms v-datoms))
+                         (concat retracted-comps entities)))
+                (raise "Can't find entity with ID " e " to be purged" {:error :transact/not-found, :operation op, :tx-data entity})))
 
             :else
             (raise "Unknown operation at " entity ", expected :db/add, :db/retract, :db.fn/call, :db.fn/retractAttribute, :db.fn/retractEntity or an ident corresponding to an installed transaction function (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)" {:error :transact/syntax, :operation op, :tx-data entity})))

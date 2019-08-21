@@ -17,6 +17,7 @@
     datahike.test.lookup-refs
     datahike.test.lru
     datahike.test.pull-api
+    datahike.test.purge
     datahike.test.query
     datahike.test.query-aggregates
     datahike.test.query-find-specs
