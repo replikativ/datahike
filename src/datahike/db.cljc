@@ -555,6 +555,11 @@
         filtered-tx-ids (filter-txInstant datoms since-pred db)]
     (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))) datoms)))
 
+(defn- filter-before [datoms ^Date before-date db]
+  (let [before-pred (fn [^Datom d] (.before ^Date (.-v d) before-date))
+        filtered-tx-ids (filter-txInstant datoms before-pred db)]
+    (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))) datoms)))
+
 (defrecord-updatable SinceDB [origin-db since-date]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
@@ -1272,7 +1277,7 @@
     :db/purge
     :db.purge/entity
     :db.purge/attribute
-    :db.purge/before
+    :db.history.purge/before
     })
 
 (defn transact-tx-data [initial-report initial-es]
@@ -1479,6 +1484,15 @@
                     (recur (reduce transact-purge-datom report (concat e-datoms v-datoms))
                            (concat retracted-comps entities)))
                   (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
+              (raise "Purge entity is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
+
+            (= op :db.history.purge/before)
+            (if (-temporal-index? db)
+              (let [history (HistoricalDB. db)
+                    e-datoms (-> (-search history [nil nil nil nil false]) vec (filter-before e db) vec)
+                    retracted-comps (purge-components history e-datoms)]
+                (recur (reduce transact-purge-datom report e-datoms)
+                       (concat retracted-comps entities)))
               (raise "Purge entity is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
 
             :else

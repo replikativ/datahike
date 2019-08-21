@@ -79,11 +79,10 @@
 (deftest test-purge-entity
   (let [conn (create-test-db "datahike:mem://test-purge-entity")]
     (testing "purge entity from current index"
-      (let [name "Alice"]
-        (is (= #{{:name "Alice" :age 25} {:name "Bob" :age 35}} (find-entities @conn)))
-        (d/transact conn [[:db.purge/entity [:name "Alice"]]])
-        (is (= #{{:name "Bob" :age 35}} (find-entities @conn)))
-        (is (= #{{:name "Bob" :age 35}} (find-entities (d/history @conn))))))
+      (is (= #{{:name "Alice" :age 25} {:name "Bob" :age 35}} (find-entities @conn)))
+      (d/transact conn [[:db.purge/entity [:name "Alice"]]])
+      (is (= #{{:name "Bob" :age 35}} (find-entities @conn)))
+      (is (= #{{:name "Bob" :age 35}} (find-entities (d/history @conn)))))
     (testing "retract entity from current index and purge from history"
       (let [name "Bob"]
         (testing "retracting from current index"
@@ -108,3 +107,20 @@
       (is (thrown-msg?
             "Purge entity is only available in temporal databases."
             (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
+
+(defn find-ages [db name]
+  (into #{}
+        (d/q '[:find [?a ...] :in $ ?n :where [?e :name ?n] [?e :age ?a]] db name)))
+
+(deftest test-history-purge-before
+  (let [conn (create-test-db "datahike:mem://purge-history-before")
+        name "Alice"]
+    (is (= #{25} (find-ages @conn name)))
+    (testing "remove all historical data before date"
+      (let [before-date (java.util.Date.)]
+        (d/transact conn [{:db/id [:name name] :age 30}])
+        (is (= #{30} (find-ages @conn name)))
+        (is (= #{25 30} (find-ages (d/history @conn) name)))
+        (d/transact conn [[:db.history.purge/before before-date]])
+        (is (= #{30} (find-ages @conn name)))
+        (is (= #{30} (find-ages (d/history @conn) name)))))))

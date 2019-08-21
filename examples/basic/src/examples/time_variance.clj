@@ -115,3 +115,28 @@
 
 ;; Only Bob remains in the history
 (d/q query (d/history @conn))
+
+
+;; let's add some more data
+(d/transact conn [{:name "Charlie" :age 45}])
+
+(d/q query @conn)
+
+;; store the current date
+(def before-date (java.util.Date.))
+
+;; update Charlie's age
+(d/transact conn [{:db/id [:name "Charlie"] :age 50}])
+
+(d/transact conn [{:db/id [:name "Charlie"] :age 55}])
+
+(d/q query @conn)
+(d/q query (d/history @conn))
+
+;; now let's purge data from temporal index that was added to the temporal index before a specific date
+(d/transact conn [[:db.history.purge/before before-date]])
+
+;; Charlie's current age should remain since it is not in the temporal index
+(d/q query @conn)
+;; Only the latest data after before-date should be in the history
+(d/q query (d/history @conn))

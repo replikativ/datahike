@@ -242,7 +242,8 @@ available in transactions:
 - `:db/purge`: removes a datom with given entity identifier, attribute and value
 - `:db.purge/attribute`: removes attribute datoms given an identifier and attribute name
 - `:db.purge/entity`: removes all datoms related to an entity given an entity identifier
-
+- `:db.history.purge/before`: removes all datoms from historical data before given date, useful for cleanup after some retention period
+ 
 ```clojure
 (require '[datahike.api :as d])
 
