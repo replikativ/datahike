@@ -4,6 +4,8 @@ import clojure.java.api.Clojure;
 import clojure.lang.IFn;
 import clojure.lang.PersistentVector;
 
+import java.util.Set;
+
 public class Datahike {
     static {
         IFn require = Clojure.var("clojure.core", "require");
@@ -34,8 +36,8 @@ public class Datahike {
         return dbFn.invoke(conn);
     }
 
-    public static Object q(Object query, Object db) {
-        return qFn.invoke(query, db);
+    public static Set q(Object query, Object db) {
+        return (Set)qFn.invoke(query, db);
     }
 
     public static Object transact(Object conn, PersistentVector txData) {
