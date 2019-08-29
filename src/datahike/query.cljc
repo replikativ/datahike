@@ -1,24 +1,25 @@
 (ns datahike.query
   (:require
-   [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
-   [clojure.set :as set]
-   [clojure.string :as str]
-   [clojure.walk :as walk]
-   [datahike.db :as db #?(:cljs :refer-macros :clj :refer) [raise]]
-   [me.tonsky.persistent-sorted-set.arrays :as da]
-   [datahike.lru]
-   [datahike.impl.entity :as de]
-   #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple Constant
-                                          FindColl FindRel FindScalar FindTuple PlainSymbol
-                                          RulesVar SrcVar Variable]])
-   [datalog.parser.impl :as dpi]
-   [datalog.parser.impl.proto :as dpip]
-   [datahike.pull-api :as dpa]
-   [datalog.parser :refer [parse]]
-   [datalog.parser.pull :as dpp])
+    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
+    [clojure.set :as set]
+    [clojure.walk :as walk]
+    [datahike.db :as db #?(:cljs :refer-macros :clj :refer) [raise]]
+    [me.tonsky.persistent-sorted-set.arrays :as da]
+    [datahike.lru]
+    [datahike.impl.entity :as de]
+    #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple Constant
+                                           FindColl FindRel FindScalar FindTuple PlainSymbol
+                                           RulesVar SrcVar Variable]])
+    [datalog.parser.impl :as dpi]
+    [datalog.parser.impl.proto :as dpip]
+    [datahike.pull-api :as dpa]
+    [datalog.parser :refer [parse]]
+    [datalog.parser.pull :as dpp])
   #?(:clj (:import [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
-                    Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
-                    RulesVar SrcVar Variable])))
+                                        Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
+                                        RulesVar SrcVar Variable]
+                   [datahike.datom Datom]
+                   [java.util Date])))
 
 
 ;; ----------------------------------------------------------------------------
@@ -64,22 +65,22 @@
 (defn- looks-like? [pattern form]
   (cond
     (= '_ pattern)
-      true
+    true
     (= '[*] pattern)
-      (sequential? form)
+    (sequential? form)
     (symbol? pattern)
-      (= form pattern)
+    (= form pattern)
     (sequential? pattern)
-      (if (= (last pattern) '*)
-        (and (sequential? form)
-             (every? (fn [[pattern-el form-el]] (looks-like? pattern-el form-el))
-                     (map vector (butlast pattern) form)))
-        (and (sequential? form)
-             (= (count form) (count pattern))
-             (every? (fn [[pattern-el form-el]] (looks-like? pattern-el form-el))
-                     (map vector pattern form))))
-    :else ;; (predicate? pattern)
-      (pattern form)))
+    (if (= (last pattern) '*)
+      (and (sequential? form)
+           (every? (fn [[pattern-el form-el]] (looks-like? pattern-el form-el))
+                   (map vector (butlast pattern) form)))
+      (and (sequential? form)
+           (= (count form) (count pattern))
+           (every? (fn [[pattern-el form-el]] (looks-like? pattern-el form-el))
+                   (map vector pattern form))))
+    :else                                                   ;; (predicate? pattern)
+    (pattern form)))
 
 (defn source? [sym]
   (and (symbol? sym)
@@ -96,13 +97,12 @@
   (looks-like? [attr? '_] form))
 
 ;; Relation algebra
-
 (defn join-tuples [t1 #?(:cljs idxs1
                          :clj  ^{:tag "[[Ljava.lang.Object;"} idxs1)
                    t2 #?(:cljs idxs2
                          :clj  ^{:tag "[[Ljava.lang.Object;"} idxs2)]
-  (let [l1  (alength idxs1)
-        l2  (alength idxs2)
+  (let [l1 (alength idxs1)
+        l2 (alength idxs2)
         res (da/make-array (+ l1 l2))]
     (dotimes [i l1]
       (aset res i (#?(:cljs da/aget :clj get) t1 (aget idxs1 i)))) ;; FIXME aget
@@ -121,10 +121,10 @@
       (raise "Can’t sum relations with different attrs: " attrs-a " and " attrs-b
              {:error :query/where})
 
-      (every? number? (vals attrs-a)) ;; can’t conj into BTSetIter
+      (every? number? (vals attrs-a))                       ;; can’t conj into BTSetIter
       (let [idxb->idxa (vec (for [[sym idx-b] attrs-b]
                               [idx-b (attrs-a sym)]))
-            tlen    (->> (vals attrs-a) (reduce max) (inc)) 
+            tlen (->> (vals attrs-a) (reduce max) (inc))
             tuples' (persistent!
                       (reduce
                         (fn [acc tuple-b]
@@ -145,20 +145,20 @@
 (defn prod-rel
   ([] (Relation. {} [(da/make-array 0)]))
   ([rel1 rel2]
-    (let [attrs1 (keys (:attrs rel1))
-          attrs2 (keys (:attrs rel2))
-          idxs1  (to-array (map (:attrs rel1) attrs1))
-          idxs2  (to-array (map (:attrs rel2) attrs2))]
-      (Relation.
-        (zipmap (concat attrs1 attrs2) (range))
-        (persistent!
-          (reduce
-            (fn [acc t1]
-              (reduce (fn [acc t2]
-                        (conj! acc (join-tuples t1 idxs1 t2 idxs2)))
-                      acc (:tuples rel2)))
-            (transient []) (:tuples rel1)))
-        ))))
+   (let [attrs1 (keys (:attrs rel1))
+         attrs2 (keys (:attrs rel2))
+         idxs1 (to-array (map (:attrs rel1) attrs1))
+         idxs2 (to-array (map (:attrs rel2) attrs2))]
+     (Relation.
+       (zipmap (concat attrs1 attrs2) (range))
+       (persistent!
+         (reduce
+           (fn [acc t1]
+             (reduce (fn [acc t2]
+                       (conj! acc (join-tuples t1 idxs1 t2 idxs2)))
+                     acc (:tuples rel2)))
+           (transient []) (:tuples rel1)))
+       ))))
 
 ;; built-ins
 
@@ -177,11 +177,11 @@
 (defn- -get-some
   [db e & as]
   (reduce
-   (fn [_ a]
-     (when-some [datom (first (db/-search db [e a]))]
-       (reduced [(:a datom) (:v datom)])))
-   nil
-   as))
+    (fn [_ a]
+      (when-some [datom (first (db/-search db [e a]))]
+        (reduced [(:a datom) (:v datom)])))
+    nil
+    as))
 
 (defn- -missing?
   [db e a]
@@ -190,90 +190,119 @@
 (defn- and-fn [& args]
   (reduce (fn [a b]
             (if b b (reduced b))) true args))
-            
+
 (defn- or-fn [& args]
   (reduce (fn [a b]
             (if b (reduced b) b)) nil args))
 
+(defmulti -lesser?
+          {:arglists '([value & more])}
+          (fn [value & more] (class value)))
+
+(defmethod -lesser? java.util.Date [^Date d0 ^Date d1]
+  #?(:clj  (.before ^Date d0 ^Date d1)
+     :cljs (< d0 d1)))
+
+(defmethod -lesser? :default [value & more]
+  (apply < value more))
+
+(defmulti -greater? {:arglists '([value & more])}
+  (fn [value & more] (class value)))
+
+(defmethod -greater? java.util.Date [^Date d0 ^Date d1]
+  #?(:clj  (.after ^Date d0 ^Date d1)
+     :cljs (> d0 d1)))
+
+(defmethod -greater? :default [value & more]
+  (apply > value more))
+
+(defn- -lesser-equal? [value & more]
+  (or (apply = value more)
+      (apply -lesser? value more)))
+
+(defn- -greater-equal? [value & more]
+  (or (apply = value more)
+      (apply -greater? value more)))
+
 (def built-ins {
-  '= =, '== ==, 'not= not=, '!= not=, '< <, '> >, '<= <=, '>= >=, '+ +, '- -,
-  '* *, '/ /, 'quot quot, 'rem rem, 'mod mod, 'inc inc, 'dec dec, 'max max, 'min min,
-  'zero? zero?, 'pos? pos?, 'neg? neg?, 'even? even?, 'odd? odd?, 'compare compare,
-  'rand rand, 'rand-int rand-int,
-  'true? true?, 'false? false?, 'nil? nil?, 'some? some?, 'not not, 'and and-fn, 'or or-fn,
-  'complement complement, 'identical? identical?,
-  'identity identity, 'meta meta, 'name name, 'namespace namespace, 'type type,
-  'vector vector, 'list list, 'set set, 'hash-map hash-map, 'array-map array-map,
-  'count count, 'range range, 'not-empty not-empty, 'empty? empty, 'contains? contains?,
-  'str str, 'pr-str pr-str, 'print-str print-str, 'println-str println-str, 'prn-str prn-str, 'subs subs,
-  're-find re-find, 're-matches re-matches, 're-seq re-seq,
-  '-differ? -differ?, 'get-else -get-else, 'get-some -get-some, 'missing? -missing?, 'ground identity})
- 
-(def built-in-aggregates 
- (letfn [(sum [coll] (reduce + 0 coll))
-         (avg [coll] (/ (sum coll) (count coll)))
-         (median
-           [coll]
-           (let [terms (sort coll)
-                 size (count coll)
-                 med (bit-shift-right size 1)]
-             (cond-> (nth terms med)
-               (even? size)
-               (-> (+ (nth terms (dec med)))
-                   (/ 2)))))
-         (variance
-           [coll]
-           (let [mean (avg coll)
-                 sum  (sum (for [x coll
+                '=          =, '== ==, 'not= not=, '!= not=, '< -lesser?, '> -greater?, '<= -lesser-equal?, '>= -greater-equal?, '+ +, '- -,
+                '*          *, '/ /, 'quot quot, 'rem rem, 'mod mod, 'inc inc, 'dec dec, 'max max, 'min min,
+                'zero?      zero?, 'pos? pos?, 'neg? neg?, 'even? even?, 'odd? odd?, 'compare compare,
+                'rand       rand, 'rand-int rand-int,
+                'true?      true?, 'false? false?, 'nil? nil?, 'some? some?, 'not not, 'and and-fn, 'or or-fn,
+                'complement complement, 'identical? identical?,
+                'identity   identity, 'meta meta, 'name name, 'namespace namespace, 'type type,
+                'vector     vector, 'list list, 'set set, 'hash-map hash-map, 'array-map array-map,
+                'count      count, 'range range, 'not-empty not-empty, 'empty? empty, 'contains? contains?,
+                'str        str, 'pr-str pr-str, 'print-str print-str, 'println-str println-str, 'prn-str prn-str, 'subs subs,
+                're-find    re-find, 're-matches re-matches, 're-seq re-seq,
+                '-differ?   -differ?, 'get-else -get-else, 'get-some -get-some, 'missing? -missing?, 'ground identity, 'before? -lesser?, 'after? -greater?})
+
+(def built-in-aggregates
+  (letfn [(sum [coll] (reduce + 0 coll))
+          (avg [coll] (/ (sum coll) (count coll)))
+          (median
+            [coll]
+            (let [terms (sort coll)
+                  size (count coll)
+                  med (bit-shift-right size 1)]
+              (cond-> (nth terms med)
+                      (even? size)
+                      (-> (+ (nth terms (dec med)))
+                          (/ 2)))))
+          (variance
+            [coll]
+            (let [mean (avg coll)
+                  sum (sum (for [x coll
                                  :let [delta (- x mean)]]
                              (* delta delta)))]
-             (/ sum (count coll))))
-         (stddev 
-           [coll] 
-           (#?(:cljs js/Math.sqrt :clj Math/sqrt) (variance coll)))]
-   {'avg      avg
-    'median   median
-    'variance variance
-    'stddev   stddev
-    'distinct set
-    'min      (fn
-                ([coll] (reduce (fn [acc x]
-                                  (if (neg? (compare x acc))
-                                    x acc))
-                                (first coll) (next coll)))
-                ([n coll]
-                  (vec
-                    (reduce (fn [acc x]
-                              (cond
-                                (< (count acc) n)
-                                  (sort compare (conj acc x))
-                                (neg? (compare x (last acc)))
-                                  (sort compare (conj (butlast acc) x))
-                                :else acc))
-                            [] coll))))
-    'max      (fn
-                ([coll] (reduce (fn [acc x]
-                                  (if (pos? (compare x acc))
-                                    x acc))
-                                (first coll) (next coll)))
-                ([n coll]
-                  (vec
-                    (reduce (fn [acc x]
-                              (cond
-                                (< (count acc) n)
-                                  (sort compare (conj acc x))
-                                (pos? (compare x (first acc)))
-                                  (sort compare (conj (next acc) x))
-                                :else acc))
-                            [] coll))))
-    'sum      sum
-    'rand     (fn
-                ([coll] (rand-nth coll))
-                ([n coll] (vec (repeatedly n #(rand-nth coll)))))
-    'sample   (fn [n coll]
-                (vec (take n (shuffle coll))))
-    'count    count
-    'count-distinct (fn [coll] (count (distinct coll)))}))
+              (/ sum (count coll))))
+          (stddev
+            [coll]
+            (#?(:cljs js/Math.sqrt :clj Math/sqrt) (variance coll)))]
+    {'avg            avg
+     'median         median
+     'variance       variance
+     'stddev         stddev
+     'distinct       set
+     'min            (fn
+                       ([coll] (reduce (fn [acc x]
+                                         (if (neg? (compare x acc))
+                                           x acc))
+                                       (first coll) (next coll)))
+                       ([n coll]
+                        (vec
+                          (reduce (fn [acc x]
+                                    (cond
+                                      (< (count acc) n)
+                                      (sort compare (conj acc x))
+                                      (neg? (compare x (last acc)))
+                                      (sort compare (conj (butlast acc) x))
+                                      :else acc))
+                                  [] coll))))
+     'max            (fn
+                       ([coll] (reduce (fn [acc x]
+                                         (if (pos? (compare x acc))
+                                           x acc))
+                                       (first coll) (next coll)))
+                       ([n coll]
+                        (vec
+                          (reduce (fn [acc x]
+                                    (cond
+                                      (< (count acc) n)
+                                      (sort compare (conj acc x))
+                                      (pos? (compare x (first acc)))
+                                      (sort compare (conj (next acc) x))
+                                      :else acc))
+                                  [] coll))))
+     'sum            sum
+     'rand           (fn
+                       ([coll] (rand-nth coll))
+                       ([n coll] (vec (repeatedly n #(rand-nth coll)))))
+     'sample         (fn [n coll]
+                       (vec (take n (shuffle coll))))
+     'count          count
+     'count-distinct (fn [coll] (count (distinct coll)))}))
 
 
 ;;
@@ -284,7 +313,7 @@
 
 (defn empty-rel [binding]
   (let [vars (->> (dpi/collect-vars-distinct binding)
-               (map :symbol))]
+                  (map :symbol))]
     (Relation. (zipmap vars (range)) [])))
 
 (defprotocol IBinding
@@ -294,47 +323,47 @@
   BindIgnore
   (in->rel [_ _]
     (prod-rel))
-  
+
   BindScalar
   (in->rel [binding value]
     (Relation. {(get-in binding [:variable :symbol]) 0} [(into-array [value])]))
-  
+
   BindColl
   (in->rel [binding coll]
     (cond
       (not (db/seqable? coll))
-        (raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
-               {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
+      (raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
+             {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (empty? coll)
-        (empty-rel binding)
+      (empty-rel binding)
       :else
-        (->> coll
-          (map #(in->rel (:binding binding) %))
-          (reduce sum-rel))))
-  
+      (->> coll
+           (map #(in->rel (:binding binding) %))
+           (reduce sum-rel))))
+
   BindTuple
   (in->rel [binding coll]
     (cond
       (not (db/seqable? coll))
-        (raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
-               {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
+      (raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
+             {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (< (count coll) (count (:bindings binding)))
-        (raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
-               {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
+      (raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
+             {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       :else
-        (reduce prod-rel
-          (map #(in->rel %1 %2) (:bindings binding) coll)))))
+      (reduce prod-rel
+              (map #(in->rel %1 %2) (:bindings binding) coll)))))
 
 (defn resolve-in [context [binding value]]
   (cond
     (and (instance? BindScalar binding)
          (instance? SrcVar (:variable binding)))
-      (update context :sources assoc (get-in binding [:variable :symbol]) value)
+    (update context :sources assoc (get-in binding [:variable :symbol]) value)
     (and (instance? BindScalar binding)
          (instance? RulesVar (:variable binding)))
-      (assoc context :rules (parse-rules value))
+    (assoc context :rules (parse-rules value))
     :else
-      (update context :rels conj (in->rel binding value))))
+    (update context :rels conj (in->rel binding value))))
 
 (defn resolve-ins [context bindings values]
   (reduce resolve-in context (zipmap bindings values)))
@@ -342,11 +371,11 @@
 ;;
 
 (def ^{:dynamic true
-       :doc "List of symbols in current pattern that might potentiall be resolved to refs"}
+       :doc     "List of symbols in current pattern that might potentiall be resolved to refs"}
   *lookup-attrs* nil)
 
 (def ^{:dynamic true
-       :doc "Default pattern source. Lookup refs, patterns, rules will be resolved with it"}
+       :doc     "Default pattern source. Lookup refs, patterns, rules will be resolved with it"}
   *implicit-source* nil)
 
 (defn getter-fn [attrs attr]
@@ -355,10 +384,10 @@
       (fn [tuple]
         (let [eid (#?(:cljs da/aget :clj get) tuple idx)]
           (cond
-            (number? eid)     eid ;; quick path to avoid fn call
+            (number? eid) eid                               ;; quick path to avoid fn call
             (sequential? eid) (db/entid *implicit-source* eid)
-            (da/array? eid)   (db/entid *implicit-source* eid)
-            :else             eid)))
+            (da/array? eid) (db/entid *implicit-source* eid)
+            :else eid)))
       (fn [tuple]
         (#?(:cljs da/aget :clj get) tuple idx)))))
 
@@ -371,7 +400,7 @@
                   :clj  (to-array (map #(% tuple) getters))))))))
 
 (defn hash-attrs [key-fn tuples]
-  (loop [tuples     tuples
+  (loop [tuples tuples
          hash-table (transient {})]
     (if-some [tuple (first tuples)]
       (let [key (key-fn tuple)]
@@ -380,56 +409,56 @@
       (persistent! hash-table))))
 
 (defn hash-join [rel1 rel2]
-  (let [tuples1       (:tuples rel1)
-        tuples2       (:tuples rel2)
-        attrs1        (:attrs rel1)
-        attrs2        (:attrs rel2)
-        common-attrs  (vec (intersect-keys (:attrs rel1) (:attrs rel2)))
-        common-gtrs1  (map #(getter-fn attrs1 %) common-attrs)
-        common-gtrs2  (map #(getter-fn attrs2 %) common-attrs)
-        keep-attrs1   (keys attrs1)
-        keep-attrs2   (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
-        keep-idxs1    (to-array (map attrs1 keep-attrs1))
-        keep-idxs2    (to-array (map attrs2 keep-attrs2))
-        key-fn1       (tuple-key-fn common-gtrs1)
-        hash          (hash-attrs key-fn1 tuples1)
-        key-fn2       (tuple-key-fn common-gtrs2)
-        new-tuples    (->>
-                        (reduce (fn [acc tuple2]
-                                  (let [key (key-fn2 tuple2)]
-                                    (if-some [tuples1 (get hash key)]
-                                      (reduce (fn [acc tuple1]
-                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc tuples1)
-                                      acc)))
-                          (transient []) tuples2)
-                        (persistent!))]
+  (let [tuples1 (:tuples rel1)
+        tuples2 (:tuples rel2)
+        attrs1 (:attrs rel1)
+        attrs2 (:attrs rel2)
+        common-attrs (vec (intersect-keys (:attrs rel1) (:attrs rel2)))
+        common-gtrs1 (map #(getter-fn attrs1 %) common-attrs)
+        common-gtrs2 (map #(getter-fn attrs2 %) common-attrs)
+        keep-attrs1 (keys attrs1)
+        keep-attrs2 (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
+        keep-idxs1 (to-array (map attrs1 keep-attrs1))
+        keep-idxs2 (to-array (map attrs2 keep-attrs2))
+        key-fn1 (tuple-key-fn common-gtrs1)
+        hash (hash-attrs key-fn1 tuples1)
+        key-fn2 (tuple-key-fn common-gtrs2)
+        new-tuples (->>
+                     (reduce (fn [acc tuple2]
+                               (let [key (key-fn2 tuple2)]
+                                 (if-some [tuples1 (get hash key)]
+                                   (reduce (fn [acc tuple1]
+                                             (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
+                                           acc tuples1)
+                                   acc)))
+                             (transient []) tuples2)
+                     (persistent!))]
     (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
                new-tuples)))
 
 (defn subtract-rel [a b]
   (let [{attrs-a :attrs, tuples-a :tuples} a
         {attrs-b :attrs, tuples-b :tuples} b
-        attrs     (intersect-keys attrs-a attrs-b)
+        attrs (intersect-keys attrs-a attrs-b)
         getters-b (map #(getter-fn attrs-b %) attrs)
-        key-fn-b  (tuple-key-fn getters-b)
-        hash      (hash-attrs key-fn-b tuples-b)
+        key-fn-b (tuple-key-fn getters-b)
+        hash (hash-attrs key-fn-b tuples-b)
         getters-a (map #(getter-fn attrs-a %) attrs)
-        key-fn-a  (tuple-key-fn getters-a)]
+        key-fn-a (tuple-key-fn getters-a)]
     (assoc a
       :tuples (filterv #(nil? (hash (key-fn-a %))) tuples-a))))
 
 (defn lookup-pattern-db [db pattern]
   ;; TODO optimize with bound attrs min/max values here
   (let [search-pattern (mapv #(if (symbol? %) nil %) pattern)
-        datoms         (db/-search db search-pattern)
-        attr->prop     (->> (map vector pattern ["e" "a" "v" "tx"])
-                            (filter (fn [[s _]] (free-var? s)))
-                            (into {}))]
+        datoms (db/-search db search-pattern)
+        attr->prop (->> (map vector pattern ["e" "a" "v" "tx" "added"])
+                        (filter (fn [[s _]] (free-var? s)))
+                        (into {}))]
     (Relation. attr->prop datoms)))
 
 (defn matches-pattern? [pattern tuple]
-  (loop [tuple   tuple
+  (loop [tuple tuple
          pattern pattern]
     (if (and tuple pattern)
       (let [t (first tuple)
@@ -440,11 +469,11 @@
       true)))
 
 (defn lookup-pattern-coll [coll pattern]
-  (let [data       (filter #(matches-pattern? pattern %) coll)
-        attr->idx  (->> (map vector pattern (range))
-                        (filter (fn [[s _]] (free-var? s)))
-                        (into {}))]
-    (Relation. attr->idx (mapv to-array data)))) ;; FIXME to-array
+  (let [data (filter #(matches-pattern? pattern %) coll)
+        attr->idx (->> (map vector pattern (range))
+                       (filter (fn [[s _]] (free-var? s)))
+                       (into {}))]
+    (Relation. attr->idx (mapv to-array data))))            ;; FIXME to-array
 
 (defn normalize-pattern-clause [clause]
   (if (source? (first clause))
@@ -454,14 +483,14 @@
 (defn lookup-pattern [source pattern]
   (cond
     (satisfies? db/ISearch source)
-      (lookup-pattern-db source pattern)
+    (lookup-pattern-db source pattern)
     :else
-      (lookup-pattern-coll source pattern)))
+    (lookup-pattern-coll source pattern)))
 
 (defn collapse-rels [rels new-rel]
-  (loop [rels    rels
+  (loop [rels rels
          new-rel new-rel
-         acc     []]
+         acc []]
     (if-some [rel (first rels)]
       (if (not-empty (intersect-keys (:attrs new-rel) (:attrs rel)))
         (recur (next rels) (hash-join rel new-rel) acc)
@@ -480,19 +509,19 @@
   (some #(contains? (:attrs rel) %) attrs))
 
 (defn- rel-prod-by-attrs [context attrs]
-  (let [rels       (filter #(rel-contains-attrs? % attrs) (:rels context))
+  (let [rels (filter #(rel-contains-attrs? % attrs) (:rels context))
         production (reduce prod-rel rels)]
     [(update context :rels #(remove (set rels) %)) production]))
 
 (defn -call-fn [context rel f args]
-  (let [sources     (:sources context)
-        attrs       (:attrs rel)
-        len         (count args)
+  (let [sources (:sources context)
+        attrs (:attrs rel)
+        len (count args)
         static-args (da/make-array len)
         tuples-args (da/make-array len)]
     (dotimes [i len]
       (let [arg (nth args i)]
-        (if (symbol? arg) 
+        (if (symbol? arg)
           (if-some [source (get sources arg)]
             (da/aset static-args i source)
             (da/aset tuples-args i (get attrs arg)))
@@ -507,45 +536,45 @@
 
 (defn- resolve-sym [sym]
   #?(:cljs nil
-     :clj (when (namespace sym)
-            (when-some [v (resolve sym)] @v))))
+     :clj  (when (namespace sym)
+             (when-some [v (resolve sym)] @v))))
 
 (defn filter-by-pred [context clause]
   (let [[[f & args]] clause
-        pred         (or (get built-ins f)
-                         (context-resolve-val context f)
-                         (resolve-sym f)
-                         (when (nil? (rel-with-attr context f))
-                           (raise "Unknown predicate '" f " in " clause
-                                  {:error :query/where, :form clause, :var f})))
+        pred (or (get built-ins f)
+                 (context-resolve-val context f)
+                 (resolve-sym f)
+                 (when (nil? (rel-with-attr context f))
+                   (raise "Unknown predicate '" f " in " clause
+                          {:error :query/where, :form clause, :var f})))
         [context production] (rel-prod-by-attrs context (filter symbol? args))
-        new-rel      (if pred
-                       (let [tuple-pred (-call-fn context production pred args)]
-                         (update production :tuples #(filter tuple-pred %)))
-                       (assoc production :tuples []))]
+        new-rel (if pred
+                  (let [tuple-pred (-call-fn context production pred args)]
+                    (update production :tuples #(filter tuple-pred %)))
+                  (assoc production :tuples []))]
     (update context :rels conj new-rel)))
 
 (defn bind-by-fn [context clause]
   (let [[[f & args] out] clause
-        binding  (dpi/parse-binding out)
-        fun      (or (get built-ins f)
-                     (context-resolve-val context f)
-                     (resolve-sym f)
-                     (when (nil? (rel-with-attr context f))
-                       (raise "Unknown function '" f " in " clause
-                              {:error :query/where, :form clause, :var f})))
+        binding (dpi/parse-binding out)
+        fun (or (get built-ins f)
+                (context-resolve-val context f)
+                (resolve-sym f)
+                (when (nil? (rel-with-attr context f))
+                  (raise "Unknown function '" f " in " clause
+                         {:error :query/where, :form clause, :var f})))
         [context production] (rel-prod-by-attrs context (filter symbol? args))
-        new-rel  (if fun
-                   (let [tuple-fn (-call-fn context production fun args)
-                        rels     (for [tuple (:tuples production)
-                                       :let  [val (tuple-fn tuple)]
-                                       :when (not (nil? val))]
-                                   (prod-rel (Relation. (:attrs production) [tuple])
-                                             (in->rel binding val)))]
-                     (if (empty? rels)
-                       (prod-rel production (empty-rel binding))
-                       (reduce sum-rel rels)))
-                   (prod-rel (assoc production :tuples []) (empty-rel binding)))]
+        new-rel (if fun
+                  (let [tuple-fn (-call-fn context production fun args)
+                        rels (for [tuple (:tuples production)
+                                   :let [val (tuple-fn tuple)]
+                                   :when (not (nil? val))]
+                               (prod-rel (Relation. (:attrs production) [tuple])
+                                         (in->rel binding val)))]
+                    (if (empty? rels)
+                      (prod-rel production (empty-rel binding))
+                      (reduce sum-rel rels)))
+                  (prod-rel (assoc production :tuples []) (empty-rel binding)))]
     (update context :rels collapse-rels new-rel)))
 
 ;;; RULES
@@ -561,17 +590,17 @@
 
 (defn expand-rule [clause context used-args]
   (let [[rule & call-args] clause
-        seqid              (swap! rule-seqid inc)
-        branches           (get (:rules context) rule)]
+        seqid (swap! rule-seqid inc)
+        branches (get (:rules context) rule)]
     (for [branch branches
           :let [[[_ & rule-args] & clauses] branch
                 replacements (zipmap rule-args call-args)]]
       (walk/postwalk
-       #(if (free-var? %)
-          (db/some-of
-            (replacements %)
-            (symbol (str (name %) "__auto__" seqid)))
-          %)
+        #(if (free-var? %)
+           (db/some-of
+             (replacements %)
+             (symbol (str (name %) "__auto__" seqid)))
+           %)
         clauses))))
 
 (defn remove-pairs [xs ys]
@@ -582,7 +611,7 @@
 
 (defn rule-gen-guards [rule-clause used-args]
   (let [[rule & call-args] rule-clause
-        prev-call-args     (get used-args rule)]
+        prev-call-args (get used-args rule)]
     (for [prev-args prev-call-args
           :let [[call-args prev-args] (remove-pairs call-args prev-args)]]
       [(concat ['-differ?] call-args prev-args)])))
@@ -597,40 +626,40 @@
 
 (defn split-guards [clauses guards]
   (let [bound-vars (collect-vars clauses)
-        pred       (fn [[[_ & vars]]] (every? bound-vars vars))]
+        pred (fn [[[_ & vars]]] (every? bound-vars vars))]
     [(filter pred guards)
      (remove pred guards)]))
 
 (defn solve-rule [context clause]
-  (let [final-attrs     (filter free-var? clause)
+  (let [final-attrs (filter free-var? clause)
         final-attrs-map (zipmap final-attrs (range))
-;;         clause-cache    (atom {}) ;; TODO
-        solve           (fn [prefix-context clauses]
-                          (reduce -resolve-clause prefix-context clauses))
-        empty-rels?     (fn [context]
-                          (some #(empty? (:tuples %)) (:rels context)))]
+        ;;         clause-cache    (atom {}) ;; TODO
+        solve (fn [prefix-context clauses]
+                (reduce -resolve-clause prefix-context clauses))
+        empty-rels? (fn [context]
+                      (some #(empty? (:tuples %)) (:rels context)))]
     (loop [stack (list {:prefix-clauses []
                         :prefix-context context
                         :clauses        [clause]
                         :used-args      {}
                         :pending-guards {}})
-           rel   (Relation. final-attrs-map [])]
+           rel (Relation. final-attrs-map [])]
       (if-some [frame (first stack)]
         (let [[clauses [rule-clause & next-clauses]] (split-with #(not (rule? context %)) (:clauses frame))]
           (if (nil? rule-clause)
 
             ;; no rules -> expand, collect, sum
             (let [context (solve (:prefix-context frame) clauses)
-                  tuples  (-collect context final-attrs)
+                  tuples (-collect context final-attrs)
                   new-rel (Relation. final-attrs-map tuples)]
               (recur (next stack) (sum-rel rel new-rel)))
 
             ;; has rule -> add guards -> check if dead -> expand rule -> push to stack, recur
-            (let [[rule & call-args]     rule-clause
-                  guards                 (rule-gen-guards rule-clause (:used-args frame))
+            (let [[rule & call-args] rule-clause
+                  guards (rule-gen-guards rule-clause (:used-args frame))
                   [active-gs pending-gs] (split-guards (concat (:prefix-clauses frame) clauses)
                                                        (concat guards (:pending-guards frame)))]
-              (if (some #(= % '[(-differ?)]) active-gs) ;; trivial always false case like [(not= [?a ?b] [?a ?b])]
+              (if (some #(= % '[(-differ?)]) active-gs)     ;; trivial always false case like [(not= [?a ?b] [?a ?b])]
 
                 ;; this branch has no data, just drop it from stack
                 (recur (next stack) rel)
@@ -643,9 +672,9 @@
                     (recur (next stack) rel)
 
                     ;; need to expand rule to branches
-                    (let [used-args  (assoc (:used-args frame) rule
-                                       (conj (get (:used-args frame) rule []) call-args))
-                          branches   (expand-rule rule-clause context used-args)]
+                    (let [used-args (assoc (:used-args frame) rule
+                                                              (conj (get (:used-args frame) rule []) call-args))
+                          branches (expand-rule rule-clause context used-args)]
                       (recur (concat
                                (for [branch branches]
                                  {:prefix-clauses prefix-clauses
@@ -659,24 +688,25 @@
 
 (defn resolve-pattern-lookup-refs [source pattern]
   (if (satisfies? db/IDB source)
-    (let [[e a v tx] pattern]
+    (let [[e a v tx added] pattern]
       (->
         [(if (or (lookup-ref? e) (attr? e)) (db/entid-strict source e) e)
          a
          (if (and v (attr? a) (db/ref? source a) (or (lookup-ref? v) (attr? v))) (db/entid-strict source v) v)
-         (if (lookup-ref? tx) (db/entid-strict source tx) tx)]
+         (if (lookup-ref? tx) (db/entid-strict source tx) tx)
+         added]
         (subvec 0 (count pattern))))
     pattern))
 
 (defn dynamic-lookup-attrs [source pattern]
   (let [[e a v tx] pattern]
     (cond-> #{}
-      (free-var? e) (conj e)
-      (free-var? tx) (conj tx)
-      (and
-        (free-var? v)
-        (not (free-var? a))
-        (db/ref? source a)) (conj v))))
+            (free-var? e) (conj e)
+            (free-var? tx) (conj tx)
+            (and
+              (free-var? v)
+              (not (free-var? a))
+              (db/ref? source a)) (conj v))))
 
 (defn limit-rel [rel vars]
   (when-some [attrs' (not-empty (select-keys (:attrs rel) vars))]
@@ -698,75 +728,75 @@
 
 (defn -resolve-clause
   ([context clause]
-    (-resolve-clause context clause clause))
+   (-resolve-clause context clause clause))
   ([context clause orig-clause]
    (condp looks-like? clause
-     [[symbol? '*]] ;; predicate [(pred ?a ?b ?c)]
+     [[symbol? '*]]                                         ;; predicate [(pred ?a ?b ?c)]
      (filter-by-pred context clause)
-     
-     [[symbol? '*] '_] ;; function [(fn ?a ?b) ?res]
+
+     [[symbol? '*] '_]                                      ;; function [(fn ?a ?b) ?res]
      (bind-by-fn context clause)
-     
-     [source? '*] ;; source + anything
+
+     [source? '*]                                           ;; source + anything
      (let [[source-sym & rest] clause]
        (binding [*implicit-source* (get (:sources context) source-sym)]
          (-resolve-clause context rest clause)))
-     
-     '[or *] ;; (or ...)
+
+     '[or *]                                                ;; (or ...)
      (let [[_ & branches] clause
            contexts (map #(resolve-clause context %) branches)
-           rels     (map #(reduce hash-join (:rels %)) contexts)]
+           rels (map #(reduce hash-join (:rels %)) contexts)]
        (assoc (first contexts) :rels [(reduce sum-rel rels)]))
-     
-     '[or-join [[*] *] *] ;; (or-join [[req-vars] vars] ...)
+
+     '[or-join [[*] *] *]                                   ;; (or-join [[req-vars] vars] ...)
      (let [[_ [req-vars & vars] & branches] clause]
        (check-bound context req-vars orig-clause)
        (recur context (list* 'or-join (concat req-vars vars) branches) clause))
-     
-     '[or-join [*] *] ;; (or-join [vars] ...)
+
+     '[or-join [*] *]                                       ;; (or-join [vars] ...)
      ;; TODO required vars
      (let [[_ vars & branches] clause
-           vars         (set vars)
+           vars (set vars)
            join-context (limit-context context vars)
-           contexts     (map #(-> join-context (resolve-clause %) (limit-context vars)) branches)
-           rels         (map #(reduce hash-join (:rels %)) contexts)
-           sum-rel      (reduce sum-rel rels)]
+           contexts (map #(-> join-context (resolve-clause %) (limit-context vars)) branches)
+           rels (map #(reduce hash-join (:rels %)) contexts)
+           sum-rel (reduce sum-rel rels)]
        (update context :rels collapse-rels sum-rel))
-     
-     '[and *] ;; (and ...)
+
+     '[and *]                                               ;; (and ...)
      (let [[_ & clauses] clause]
        (reduce resolve-clause context clauses))
-     
-     '[not *] ;; (not ...)
+
+     '[not *]                                               ;; (not ...)
      (let [[_ & clauses] clause
-           bound-vars       (set (mapcat #(keys (:attrs %)) (:rels context)))
-           negation-vars    (collect-vars clauses)
-           _                (when (empty? (set/intersection bound-vars negation-vars))
-                              (raise "Insufficient bindings: none of " negation-vars " is bound in " orig-clause
-                                {:error :query/where
-                                 :form  orig-clause}))
-           context'         (assoc context :rels [(reduce hash-join (:rels context))])
+           bound-vars (set (mapcat #(keys (:attrs %)) (:rels context)))
+           negation-vars (collect-vars clauses)
+           _ (when (empty? (set/intersection bound-vars negation-vars))
+               (raise "Insufficient bindings: none of " negation-vars " is bound in " orig-clause
+                      {:error :query/where
+                       :form  orig-clause}))
+           context' (assoc context :rels [(reduce hash-join (:rels context))])
            negation-context (reduce resolve-clause context' clauses)
-           negation         (subtract-rel
-                              (single (:rels context'))
-                              (reduce hash-join (:rels negation-context)))]
+           negation (subtract-rel
+                      (single (:rels context'))
+                      (reduce hash-join (:rels negation-context)))]
        (assoc context' :rels [negation]))
-     
-     '[not-join [*] *] ;; (not-join [vars] ...)
+
+     '[not-join [*] *]                                      ;; (not-join [vars] ...)
      (let [[_ vars & clauses] clause
-           _                (check-bound context vars orig-clause)
-           context'         (assoc context :rels [(reduce hash-join (:rels context))])
-           join-context     (limit-context context' vars)
+           _ (check-bound context vars orig-clause)
+           context' (assoc context :rels [(reduce hash-join (:rels context))])
+           join-context (limit-context context' vars)
            negation-context (-> (reduce resolve-clause join-context clauses)
                                 (limit-context vars))
-           negation         (subtract-rel
-                              (single (:rels context'))
-                              (reduce hash-join (:rels negation-context)))]
+           negation (subtract-rel
+                      (single (:rels context'))
+                      (reduce hash-join (:rels negation-context)))]
        (assoc context' :rels [negation]))
-     
-     '[*] ;; pattern
-     (let [source   *implicit-source*
-           pattern  (resolve-pattern-lookup-refs source clause)
+
+     '[*]                                                   ;; pattern
+     (let [source *implicit-source*
+           pattern (resolve-pattern-lookup-refs source clause)
            relation (lookup-pattern source pattern)]
        (binding [*lookup-attrs* (if (satisfies? db/IDB source)
                                   (dynamic-lookup-attrs source pattern)
@@ -787,26 +817,26 @@
 
 (defn -collect
   ([context symbols]
-    (let [rels (:rels context)]
-      (-collect [(da/make-array (count symbols))] rels symbols)))
+   (let [rels (:rels context)]
+     (-collect [(da/make-array (count symbols))] rels symbols)))
   ([acc rels symbols]
-    (if-some [rel (first rels)]
-      (let [keep-attrs (select-keys (:attrs rel) symbols)]
-        (if (empty? keep-attrs)
-          (recur acc (next rels) symbols)
-          (let [copy-map (to-array (map #(get keep-attrs %) symbols))
-                len      (count symbols)]
-            (recur (for [#?(:cljs t1
-                            :clj ^{:tag "[[Ljava.lang.Object;"} t1) acc
-                         t2 (:tuples rel)]
-                     (let [res (aclone t1)]
-                       (dotimes [i len]
-                         (when-some [idx (aget copy-map i)]
-                           (aset res i (#?(:cljs da/aget :clj get) t2 idx))))
-                       res))
-                   (next rels)
-                   symbols))))
-      acc)))
+   (if-some [rel (first rels)]
+     (let [keep-attrs (select-keys (:attrs rel) symbols)]
+       (if (empty? keep-attrs)
+         (recur acc (next rels) symbols)
+         (let [copy-map (to-array (map #(get keep-attrs %) symbols))
+               len (count symbols)]
+           (recur (for [#?(:cljs t1
+                           :clj  ^{:tag "[[Ljava.lang.Object;"} t1) acc
+                        t2 (:tuples rel)]
+                    (let [res (aclone t1)]
+                      (dotimes [i len]
+                        (when-some [idx (aget copy-map i)]
+                          (aset res i (#?(:cljs da/aget :clj get) t2 idx))))
+                      res))
+                  (next rels)
+                  symbols))))
+     acc)))
 
 (defn collect [context symbols]
   (->> (-collect context symbols)
@@ -834,14 +864,14 @@
 (defn -aggregate [find-elements context tuples]
   (mapv (fn [element fixed-value i]
           (if (instance? Aggregate element)
-            (let [f    (-context-resolve (:fn element) context)
+            (let [f (-context-resolve (:fn element) context)
                   args (map #(-context-resolve % context) (butlast (:args element)))
                   vals (map #(nth % i) tuples)]
               (apply f (concat args [vals])))
             fixed-value))
-    find-elements
-    (first tuples)
-    (range)))
+        find-elements
+        (first tuples)
+        (range)))
 
 (defn- idxs-of [pred coll]
   (->> (map #(when (pred %1) %2) coll (range))
@@ -849,9 +879,9 @@
 
 (defn aggregate [find-elements context resultset]
   (let [group-idxs (idxs-of (complement #(instance? Aggregate %)) find-elements)
-        group-fn   (fn [tuple]
-                     (map #(nth tuple %) group-idxs))
-        grouped    (group-by group-fn resultset)]
+        group-fn (fn [tuple]
+                   (map #(nth tuple %) group-idxs))
+        grouped (group-by group-fn resultset)]
     (for [[_ tuples] grouped]
       (-aggregate find-elements context tuples))))
 
@@ -893,28 +923,28 @@
       qp)))
 
 (defn q [q & inputs]
-  (let [parsed-q      (memoized-parse-query q)
-        find          (:qfind parsed-q)
-        find-elements (dpip/find-elements find) 
-        find-vars     (dpi/find-vars find) 
-        result-arity  (count find-elements)
-        with          (:qwith parsed-q)
+  (let [parsed-q (memoized-parse-query q)
+        find (:qfind parsed-q)
+        find-elements (dpip/find-elements find)
+        find-vars (dpi/find-vars find)
+        result-arity (count find-elements)
+        with (:qwith parsed-q)
         ;; TODO utilize parser
-        all-vars      (concat find-vars (map :symbol with))
-        q             (cond-> q
-                        (sequential? q) dpi/query->map)
-        wheres        (:where q)
-        context       (-> (Context. [] {} {})
-                        (resolve-ins (:qin parsed-q) inputs))
-        resultset     (-> context
-                        (-q wheres)
-                        (collect all-vars))]
+        all-vars (concat find-vars (map :symbol with))
+        q (cond-> q
+                  (sequential? q) dpi/query->map)
+        wheres (:where q)
+        context (-> (Context. [] {} {})
+                    (resolve-ins (:qin parsed-q) inputs))
+        resultset (-> context
+                      (-q wheres)
+                      (collect all-vars))]
     (cond->> resultset
-      (:with q)
-        (mapv #(vec (subvec % 0 result-arity)))
-      (some #(instance? Aggregate %) find-elements)
-        (aggregate find-elements context)
-      (some #(instance? Pull %) find-elements)
-        (pull find-elements context)
-      true
-        (-post-process find))))
+             (:with q)
+             (mapv #(vec (subvec % 0 result-arity)))
+             (some #(instance? Aggregate %) find-elements)
+             (aggregate find-elements context)
+             (some #(instance? Pull %) find-elements)
+             (pull find-elements context)
+             true
+             (-post-process find))))

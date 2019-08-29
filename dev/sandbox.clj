@@ -1,11 +1,10 @@
 (ns sandbox
-  (:require [datahike.api :as d]
-            [datahike.core :as c]))
+  (:require [datahike.api :as d]))
 
 (comment
 
-  (def uri "datahike:mem://dev")
- ;;(def path "datahike:file:///tmp/local-db-0")
+  (def uri "datahike:mem://sandbox")
+
   (d/delete-database uri)
 
   (def schema [{:db/ident :name
@@ -20,21 +19,12 @@
                 :db/cardinality :db.cardinality/one
                 :db/valueType :db.type/long}])
 
-  (d/create-database {:uri uri :initial-tx schema})
-
-  #_(d/create-database {:uri uri :schema-on-read true})
+  (d/create-database uri :initial-tx schema)
 
   (def conn (d/connect uri))
 
-  (def db (d/db conn))
+  (def result (d/transact conn [{:name  "Alice", :age   25}
+                                {:name  "Bob", :age   35}
+                                {:name "Charlie", :age 45 :sibling [[:name "Alice"] [:name "Bob"]]}]))
 
-  (d/transact! conn [{:name  "Alice", :age   15}
-                     {:name  "Bob", :age   37}
-                     {:name  "Charlie", :age   37}
-                     {:name  "Daisy", :age   22 :sibling [:name "Alice"]}])
-
-  (d/transact! conn [{:db/id [:name "Alice"]
-                      :name "bob"}])
-
-
-  )
+  (d/q '[:find ?e ?v ?t :where [?e :name ?v ?t]] @conn))
