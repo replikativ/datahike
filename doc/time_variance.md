@@ -34,13 +34,13 @@ system. Use `db` for this view. The following example shows a simple interaction
 
 ;; define simple schema
 (def schema [{:db/ident :name
-                 :db/valueType :db.type/string
-                 :db/unique :db.unique/identity
-                 :db/index true
-                 :db/cardinality :db.cardinality/one}
-                {:db/ident :age
-                 :db/valueType :db.type/long
-                 :db/cardinality :db.cardinality/one}])
+              :db/valueType :db.type/string
+              :db/unique :db.unique/identity
+              :db/index true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident :age
+              :db/valueType :db.type/long
+              :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
 (d/create-database "datahike:mem://current-db" :initial-tx schema)
@@ -211,13 +211,13 @@ your purposes.
 
 ;; define simple schema
 (def schema [{:db/ident :name
-                 :db/valueType :db.type/string
-                 :db/unique :db.unique/identity
-                 :db/index true
-                 :db/cardinality :db.cardinality/one}
-                {:db/ident :age
-                 :db/valueType :db.type/long
-                 :db/cardinality :db.cardinality/one}])
+              :db/valueType :db.type/string
+              :db/unique :db.unique/identity
+              :db/index true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident :age
+              :db/valueType :db.type/long
+              :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
 (d/create-database "datahike:mem://since-db" :initial-tx schema)

@@ -44,7 +44,7 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 (d/transact! conn [{:db/ident :name 
                     :db/valueType :db.type/string
                     :db/cardinality :db.cardinality/one }
-                    {:db/ident :age 
+                   {:db/ident :age
                     :db/valueType :db.type/long
                     :db/cardinality :db.cardinality/one }])
 
