@@ -4,7 +4,7 @@ import clojure.java.api.Clojure;
 import datahike.java.Util;
 import datahike.java.Datahike;
 import static datahike.java.Util.k;
-import static datahike.java.Datahike.deref;
+import static datahike.java.Util.deref;
 
 // To run it: java -cp target/datahike-0.2.0-beta3-standalone.jar datahike.java.test.api.Main
 public class Main {

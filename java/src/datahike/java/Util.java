@@ -7,6 +7,7 @@ import clojure.lang.PersistentVector;
 import clojure.lang.RT;
 
 public class Util {
+    public  static final IFn deref = Clojure.var("clojure.core", "deref");
     private static final IFn hashMapFn = Clojure.var("clojure.core", "hash-map");
     private static final IFn vectorFn = Clojure.var("clojure.core", "vec");
 
