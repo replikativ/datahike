@@ -17,6 +17,7 @@ public class Util {
     }
 
     /** Creates a new clojure HashMap from the arguments of the form: key1, val1, key2, val2, ... */
+    // TODO: parse each arg and if it starts with : then convert it into a clj keyword
     public static PersistentHashMap map(Object... keyVals) {
         return (PersistentHashMap) hashMapFn.applyTo(RT.seq(keyVals));
     }

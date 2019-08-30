@@ -3,8 +3,11 @@ package datahike.java;
 import clojure.java.api.Clojure;
 import clojure.lang.IFn;
 import clojure.lang.PersistentVector;
+import clojure.lang.RT;
 
 import java.util.Set;
+
+import static datahike.java.Util.k;
 
 public class Datahike {
     static {
@@ -18,14 +21,15 @@ public class Datahike {
     private static final IFn transactFn = Clojure.var("datahike.api", "transact");
     private static final IFn dbFn = Clojure.var("datahike.api", "db");
     private static final IFn qFn = Clojure.var("datahike.api", "q");
+    private static final IFn historyFn = Clojure.var("datahike.api", "history");
 
 
     public static void deleteDatabase(String uri) {
         deleteDatabaseFn.invoke(uri);
     }
 
-    public static void createDatabase(String uri) {
-        createDatabaseFn.invoke(uri);
+    public static void createDatabase(Object... args) {
+        createDatabaseFn.applyTo(RT.seq(args));
     }
 
     public static Object connect(String uri) {
@@ -43,4 +47,7 @@ public class Datahike {
     public static Object transact(Object conn, PersistentVector txData) {
         return transactFn.invoke(conn, txData);
     }
+
+    /** dConn: the dereferenced conn object */
+    public static Object history(Object dConn) { return historyFn.invoke(dConn); };
 }
