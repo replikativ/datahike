@@ -1,4 +1,4 @@
-(ns examples.time-variance
+(ns examples.time-travel
   (:require [datahike.api :as d]))
 
 ;; define base uri we can connect to

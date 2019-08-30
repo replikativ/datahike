@@ -52,7 +52,6 @@
 (defn release [conn]
   (ds/release-store (get-in @conn [:config :storage]) (:store @conn)))
 
-
 (defmulti transact!
   "Transacts new data to database"
   {:arglists '([conn tx-data])}

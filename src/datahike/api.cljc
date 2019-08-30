@@ -15,7 +15,7 @@
     :doc
               "Connects to a datahike database via URI. URI contains storage backend type
             and additional information for backends like database name, credentials, or
-            location. Refer to the store project in the examples folder or the documention
+            location. Refer to the store project in the examples folder or the documentation
             in the config markdown file in the doc folder.
 
             Usage:
@@ -38,12 +38,12 @@
 
                 `(create-database \"datahike:mem://example\")`
 
-              Initial data after creation may be added using the `:initial-tx` parameter:
+              Initial data after creation may be added using the `:initial-tx` parameter, which in this example adds a schema:
 
                 (create-database \"datahike:mem://example\" :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])
 
-              Datahike has a strict schema validation (schema-on-write) policy per default,
-              that only allows data that has been defined via schema definition in advance.
+              Datahike has a strict schema validation (schema-on-write) policy by default,
+              that only allows transaction of data that that has been pre-defined by a schema.
               You may influence this behaviour using the `:schema-on-read` parameter:
 
                 (create-database \"datahike:mem://example\" :schema-on-read true)
@@ -67,7 +67,7 @@
   dc/transact)
 
 (def ^{:arglists '([conn tx-data tx-meta])
-       :doc      "Applies transaction the underlying database value and atomically updates connection reference to point to the result of that transaction, new db value."}
+       :doc      "Applies transaction to the underlying database value and atomically updates connection reference to point to the result of that transaction, new db value."}
   transact!
   dc/transact!)
 
@@ -129,6 +129,82 @@
                (:args query-map)
                arg-list)]
     (apply dq/q query args)))
+(defn datoms
+  "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components (e, a, v) match passed arguments.
+
+   Datoms are sorted in index sort order. Possible `index` values are: `:eavt`, `:aevt`, `:avet`.
+
+   Usage:
+
+       ; find all datoms for entity id == 1 (any attrs and values)
+       ; sort by attribute, then value
+       (datoms db :eavt 1)
+       ; => (#datahike/Datom [1 :friends 2]
+       ;     #datahike/Datom [1 :likes \"fries\"]
+       ;     #datahike/Datom [1 :likes \"pizza\"]
+       ;     #datahike/Datom [1 :name \"Ivan\"])
+
+       ; find all datoms for entity id == 1 and attribute == :likes (any values)
+       ; sorted by value
+       (datoms db :eavt 1 :likes)
+       ; => (#datahike/Datom [1 :likes \"fries\"]
+       ;     #datahike/Datom [1 :likes \"pizza\"])
+
+       ; find all datoms for entity id == 1, attribute == :likes and value == \"pizza\"
+       (datoms db :eavt 1 :likes \"pizza\")
+       ; => (#datahike/Datom [1 :likes \"pizza\"])
+
+       ; find all datoms for attribute == :likes (any entity ids and values)
+       ; sorted by entity id, then value
+       (datoms db :aevt :likes)
+       ; => (#datahike/Datom [1 :likes \"fries\"]
+       ;     #datahike/Datom [1 :likes \"pizza\"]
+       ;     #datahike/Datom [2 :likes \"candy\"]
+       ;     #datahike/Datom [2 :likes \"pie\"]
+       ;     #datahike/Datom [2 :likes \"pizza\"])
+
+       ; find all datoms that have attribute == `:likes` and value == `\"pizza\"` (any entity id)
+       ; `:likes` must be a unique attr, reference or marked as `:db/index true`
+       (datoms db :avet :likes \"pizza\")
+       ; => (#datahike/Datom [1 :likes \"pizza\"]
+       ;     #datahike/Datom [2 :likes \"pizza\"])
+
+       ; find all datoms sorted by entity id, then attribute, then value
+       (datoms db :eavt) ; => (...)
+
+   Useful patterns:
+
+       ; get all values of :db.cardinality/many attribute
+       (->> (datoms db :eavt eid attr) (map :v))
+
+       ; lookup entity ids by attribute value
+       (->> (datoms db :avet attr value) (map :e))
+
+       ; find all entities with a specific attribute
+       (->> (datoms db :aevt attr) (map :e))
+
+       ; find “singleton” entity by its attr
+       (->> (datoms db :aevt attr) first :e)
+
+       ; find N entities with lowest attr value (e.g. 10 earliest posts)
+       (->> (datoms db :avet attr) (take N))
+
+       ; find N entities with highest attr value (e.g. 10 latest posts)
+       (->> (datoms db :avet attr) (reverse) (take N))
+
+   Gotchas:
+
+   - Index lookup is usually more efficient than doing a query with a single clause.
+   - Resulting iterator is calculated in constant time and small constant memory overhead.
+   - Iterator supports efficient `first`, `next`, `reverse`, `seq` and is itself a sequence.
+   - Will not return datoms that are not part of the index (e.g. attributes with no `:db/index` in schema when querying `:avet` index).
+     - `:eavt` and `:aevt` contain all datoms.
+     - `:avet` only contains datoms for references, `:db/unique` and `:db/index` attributes."
+  ([db index]             {:pre [(db/db? db)]} (db/-datoms db index []))
+  ([db index c1]          {:pre [(db/db? db)]} (db/-datoms db index [c1]))
+  ([db index c1 c2]       {:pre [(db/db? db)]} (db/-datoms db index [c1 c2]))
+  ([db index c1 c2 c3]    {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3]))
+  ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3 c4])))
 
 (defn seek-datoms
   "Similar to [[datoms]], but will return datoms starting from specified components and including rest of the database until the end of the index.
