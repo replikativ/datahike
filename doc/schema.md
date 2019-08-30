@@ -97,7 +97,7 @@ The following types are currently support in datahike:
 | Value Type        | Corresponding Type   |
 | ----------------- | -------------------- |
 | `db.type/bigdec`  | java.math.BigDecimal |
-| `db.type/bigint`  | java.mathBigInteger  |
+| `db.type/bigint`  | java.math.BigInteger |
 | `db.type/boolean` | Boolean              |
 | `db.type/double`  | Double               |
 | `db.type/float`   | Double or Float      |

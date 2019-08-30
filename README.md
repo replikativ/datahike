@@ -41,17 +41,17 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 
 ;; the first transaction will be the schema we are using
 (d/transact conn [{:db/ident :name
-                    :db/valueType :db.type/string
-                    :db/cardinality :db.cardinality/one }
-                    {:db/ident :age
-                    :db/valueType :db.type/long
-                    :db/cardinality :db.cardinality/one }])
+                   :db/valueType :db.type/string
+                   :db/cardinality :db.cardinality/one }
+                  {:db/ident :age
+                   :db/valueType :db.type/long
+                   :db/cardinality :db.cardinality/one }])
 
 ;; lets add some data and wait for the transaction
 (d/transact conn [{:name  "Alice", :age   20 }
-                   {:name  "Bob", :age   30 }
-                   {:name  "Charlie", :age   40 }
-                   {:age 15 }])
+                  {:name  "Bob", :age   30 }
+                  {:name  "Charlie", :age   40 }
+                  {:age 15 }])
 
 ;; search the data
 (d/q '[:find ?e ?n ?a
