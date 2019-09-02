@@ -62,12 +62,91 @@
   dc/delete-database)
 
 (def ^{:arglists '([conn tx-data])
-       :doc      "Same as [[transact!]] but returns realized value directly."}
+       :doc      "Applies transaction the underlying database value and atomically updates connection reference to point to the result of that transaction, new db value.
+  Returns transaction report, a map:
+
+       { :db-before ...       ; db value before transaction
+         :db-after  ...       ; db value after transaction
+         :tx-data   [...]     ; plain datoms that were added/retracted from db-before
+         :tempids   {...}     ; map of tempid from tx-data => assigned entid in db-after
+         :tx-meta   tx-meta } ; the exact value you passed as `tx-meta`
+
+  Note! `conn` will be updated in-place and is not returned from [[transact]].
+  
+  Usage:
+
+      ; add a single datom to an existing entity (1)
+      (transact conn [[:db/add 1 :name \"Ivan\"]])
+  
+      ; retract a single datom
+      (transact conn [[:db/retract 1 :name \"Ivan\"]])
+  
+      ; retract single entity attribute
+      (transact conn [[:db.fn/retractAttribute 1 :name]])
+      
+      ; retract all entity attributes (effectively deletes entity)
+      (transact conn [[:db.fn/retractEntity 1]])
+  
+      ; create a new entity (`-1`, as any other negative value, is a tempid
+      ; that will be replaced with DataScript to a next unused eid)
+      (transact conn [[:db/add -1 :name \"Ivan\"]])
+  
+      ; check assigned id (here `*1` is a result returned from previous `transact` call)
+      (def report *1)
+      (:tempids report) ; => {-1 296}
+  
+      ; check actual datoms inserted
+      (:tx-data report) ; => [#datahike/Datom [296 :name \"Ivan\"]]
+  
+      ; tempid can also be a string
+      (transact conn [[:db/add \"ivan\" :name \"Ivan\"]])
+      (:tempids *1) ; => {\"ivan\" 297}
+  
+      ; reference another entity (must exist)
+      (transact conn [[:db/add -1 :friend 296]])
+  
+      ; create an entity and set multiple attributes (in a single transaction
+      ; equal tempids will be replaced with the same unused yet entid)
+      (transact conn [[:db/add -1 :name \"Ivan\"]
+                       [:db/add -1 :likes \"fries\"]
+                       [:db/add -1 :likes \"pizza\"]
+                       [:db/add -1 :friend 296]])
+  
+      ; create an entity and set multiple attributes (alternative map form)
+      (transact conn [{:db/id  -1
+                        :name   \"Ivan\"
+                        :likes  [\"fries\" \"pizza\"]
+                        :friend 296}])
+      
+      ; update an entity (alternative map form). Can’t retract attributes in
+      ; map form. For cardinality many attrs, value (fish in this example)
+      ; will be added to the list of existing values
+      (transact conn [{:db/id  296
+                        :name   \"Oleg\"
+                        :likes  [\"fish\"]}])
+
+      ; ref attributes can be specified as nested map, that will create netsed entity as well
+      (transact conn [{:db/id  -1
+                        :name   \"Oleg\"
+                        :friend {:db/id -2
+                                 :name \"Sergey\"}])
+                                 
+      ; reverse attribute name can be used if you want created entity to become
+      ; a value in another entity reference
+      (transact conn [{:db/id  -1
+                        :name   \"Oleg\"
+                        :_friend 296}])
+      ; equivalent to
+      (transact conn [{:db/id  -1, :name   \"Oleg\"}
+                       {:db/id 296, :friend -1}])
+      ; equivalent to
+      (transact conn [[:db/add  -1 :name   \"Oleg\"]
+                       {:db/add 296 :friend -1]])"}
   transact
   dc/transact)
 
 (def ^{:arglists '([conn tx-data tx-meta])
-       :doc      "Applies transaction to the underlying database value and atomically updates connection reference to point to the result of that transaction, new db value."}
+       :doc      "The same as [[transact]] but returns Future to be realized."}
   transact!
   dc/transact!)
 
@@ -345,7 +424,7 @@
       (instance? SinceDB x)))
 
 (defn with
-  "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
+  "Same as [[transact]], but applies to an immutable database value. Returns transaction report (see [[transact]])."
   ([db tx-data] (with db tx-data nil))
   ([db tx-data tx-meta]
    {:pre [(db/db? db)]}
