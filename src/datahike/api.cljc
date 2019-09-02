@@ -437,6 +437,12 @@
                              :tempids   {}
                              :tx-meta   tx-meta}) tx-data))))
 
+(defn db-with
+  "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
+  [db tx-data]
+  {:pre [(db/db? db)]}
+  (:db-after (with db tx-data)))
+
 (defn db
   "Returns the current state of the database you may interact with."
   [conn]
