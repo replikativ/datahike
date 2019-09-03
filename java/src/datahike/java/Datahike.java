@@ -5,9 +5,9 @@ import clojure.lang.IFn;
 import clojure.lang.PersistentVector;
 import clojure.lang.RT;
 
-import java.util.Set;
+import java.util.*;
 
-import static datahike.java.Util.k;
+import static clojure.lang.RT.toArray;
 
 public class Datahike {
     static {
@@ -28,8 +28,14 @@ public class Datahike {
         deleteDatabaseFn.invoke(uri);
     }
 
-    public static void createDatabase(Object... args) {
-        createDatabaseFn.applyTo(RT.seq(args));
+    public static void createDatabase(String uri) {
+        createDatabaseFn.invoke(uri);
+    }
+
+    public static void createDatabase(String uri, Object... args) {
+        List argsCopy = new ArrayList(Arrays.asList(args));
+        argsCopy.add(0, uri);
+        createDatabaseFn.applyTo(RT.seq(argsCopy));
     }
 
     public static Object connect(String uri) {

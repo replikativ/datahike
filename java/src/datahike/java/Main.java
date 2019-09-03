@@ -1,8 +1,6 @@
 package datahike.java;
 
 import clojure.java.api.Clojure;
-import datahike.java.Util;
-import datahike.java.Datahike;
 
 import java.util.Set;
 
