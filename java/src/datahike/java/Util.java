@@ -23,7 +23,7 @@ public class Util {
     }
 
     /** Creates a new clojure vector */
-    public static PersistentVector vector(Object... items) {
+    public static PersistentVector vec(Object... items) {
         // No need to use 'applyTo here, as 'vectorFn taking a collection as an argument will produce a clj vector
         // containing *each* of the collection elements.
         return (PersistentVector) vectorFn.invoke(items);

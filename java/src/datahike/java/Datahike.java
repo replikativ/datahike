@@ -7,7 +7,7 @@ import clojure.lang.RT;
 
 import java.util.*;
 
-import static clojure.lang.RT.toArray;
+import static datahike.java.Util.deref;
 
 public class Datahike {
     static {
@@ -22,7 +22,14 @@ public class Datahike {
     private static final IFn dbFn = Clojure.var("datahike.api", "db");
     private static final IFn qFn = Clojure.var("datahike.api", "q");
     private static final IFn historyFn = Clojure.var("datahike.api", "history");
+    private static final IFn asOfFn = Clojure.var("datahike.api", "as-of");
 
+    /**
+     * @return a de-referenced version of the connection
+     */
+    public static Object dConn(Object conn) {
+        return deref.invoke(conn);
+    };
 
     public static void deleteDatabase(String uri) {
         deleteDatabaseFn.invoke(uri);
@@ -56,4 +63,8 @@ public class Datahike {
 
     /** dConn: the dereferenced conn object */
     public static Object history(Object dConn) { return historyFn.invoke(dConn); };
+
+    public static Object asOf(Object dConn, Date date) {
+        return asOfFn.invoke(dConn, date);
+    }
 }
