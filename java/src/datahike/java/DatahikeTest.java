@@ -5,9 +5,7 @@ import clojure.lang.PersistentHashSet;
 import clojure.lang.PersistentVector;
 import org.junit.Test;
 
-import java.util.Arrays;
-import java.util.Date;
-import java.util.Set;
+import java.util.*;
 
 import static datahike.java.Datahike.dConn;
 import static datahike.java.Util.*;
@@ -27,7 +25,7 @@ public class DatahikeTest {
             "                 :db/valueType :db.type/long\n" +
             "                 :db/cardinality :db.cardinality/one}]");
     private Date firstDate;
-    private Object query;
+    private String query;
 
     @org.junit.Before
     public void setUp() throws Exception {
@@ -53,10 +51,10 @@ public class DatahikeTest {
 
         Object dConn = deref.invoke(conn);
 
-        Set res = Datahike.q(Clojure.read("[:find ?e :where [?e :name]]"), dConn);
+        Set res = Datahike.q("[:find ?e :where [?e :name]]", dConn);
         assertTrue(res.size() == 1);
 
-        res = Datahike.q(Clojure.read("[:find ?v :where [_ :name ?v]]"), dConn);
+        res = Datahike.q("[:find ?v :where [_ :name ?v]]", dConn);
         //Assert.assertEquals("Alice", ((List)res.toArray()[0]).iterator().next());
         assertEquals(PersistentHashSet.create(Arrays.asList(PersistentVector.create("Alice"))), res);
     }
@@ -65,7 +63,7 @@ public class DatahikeTest {
         Datahike.createDatabase(uri, k(":initial-tx"), schema);
 
         conn = Datahike.connect(uri);
-        query = Clojure.read("[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]");
+        query = "[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]";
 
         Datahike.transact(conn, vec(
                 map(k(":name"), "Alice", k(":age"), 25L),
@@ -76,7 +74,7 @@ public class DatahikeTest {
     public void history() {
         transactOnce();
 
-        Set res = Datahike.q(query, Datahike.history(dConn(conn)));
+        Set res = Datahike.q((String) query, Datahike.history(dConn(conn)));
         // TODO: add better assert
         assertEquals(2, res.size());
     }
@@ -98,4 +96,23 @@ public class DatahikeTest {
         // 0, because :name was transacted before the first date
         assertEquals(0, res.size());
     }
+
+    @Test
+    public void pull() {
+        transactOnce();
+
+        // TODO: does not work
+//        Datahike.pull(dConn(conn), "[*]", "[:name 'Alice']");
+
+        Datahike.transact(conn, vec(map(
+                                        k(":db/id"), 10,
+                                        k(":name"), "Joe",
+                                        k(":age"), 50L)));
+
+        Map res = Datahike.pull(dConn(conn), "[*]", 10);
+        assertEquals("Joe", res.get(k(":name")));
+    }
+
+    // TODO: datom function
+    // TODO: what else in core should be added?
 }

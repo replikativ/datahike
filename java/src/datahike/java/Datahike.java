@@ -24,6 +24,7 @@ public class Datahike {
     private static final IFn historyFn = Clojure.var("datahike.api", "history");
     private static final IFn asOfFn = Clojure.var("datahike.api", "as-of");
     private static final IFn sinceFn = Clojure.var("datahike.api", "since");
+    private static final IFn pullFn = Clojure.var("datahike.api", "pull");
 
     /**
      * @return a de-referenced version of the connection
@@ -54,8 +55,8 @@ public class Datahike {
         return dbFn.invoke(conn);
     }
 
-    public static Set q(Object query, Object db) {
-        return (Set)qFn.invoke(query, db);
+    public static Set q(String query, Object dConn) {
+        return (Set)qFn.invoke(Clojure.read(query), dConn);
     }
 
     public static Object transact(Object conn, PersistentVector txData) {
@@ -71,5 +72,15 @@ public class Datahike {
 
     public static Object since(Object dConn, Date date) {
         return sinceFn.invoke(dConn, date);
+    }
+
+    /**
+     * @param dConn
+     * @param selector
+     * @param eid        entity id - either a string describing an entity id or an integer id
+     * @return
+     */
+    public static Map pull(Object dConn, String selector, Object eid) {
+        return (Map) pullFn.invoke(dConn, Clojure.read(selector), Clojure.read(eid.toString()));
     }
 }

@@ -25,10 +25,10 @@ public class Main {
         
         Object dConn = deref.invoke(conn);
 
-        Set res = Datahike.q(Clojure.read("[:find ?e :where [?e :name]]"), dConn);
+        Set res = Datahike.q("[:find ?e :where [?e :name]]", dConn);
         System.out.println(res);
 
-        res = Datahike.q(Clojure.read("[:find ?v :where [_ :name ?v]]"), dConn);
+        res = Datahike.q("[:find ?v :where [_ :name ?v]]", dConn);
         System.out.println(res);
     }
 }
