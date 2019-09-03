@@ -23,6 +23,7 @@ public class Datahike {
     private static final IFn qFn = Clojure.var("datahike.api", "q");
     private static final IFn historyFn = Clojure.var("datahike.api", "history");
     private static final IFn asOfFn = Clojure.var("datahike.api", "as-of");
+    private static final IFn sinceFn = Clojure.var("datahike.api", "since");
 
     /**
      * @return a de-referenced version of the connection
@@ -66,5 +67,9 @@ public class Datahike {
 
     public static Object asOf(Object dConn, Date date) {
         return asOfFn.invoke(dConn, date);
+    }
+
+    public static Object since(Object dConn, Date date) {
+        return sinceFn.invoke(dConn, date);
     }
 }

@@ -61,7 +61,7 @@ public class DatahikeTest {
         assertEquals(PersistentHashSet.create(Arrays.asList(PersistentVector.create("Alice"))), res);
     }
 
-    private void historySetUp() {
+    private void transactOnce() {
         Datahike.createDatabase(uri, k(":initial-tx"), schema);
 
         conn = Datahike.connect(uri);
@@ -74,22 +74,28 @@ public class DatahikeTest {
 
     @org.junit.Test
     public void history() {
-        historySetUp();
+        transactOnce();
 
         Set res = Datahike.q(query, Datahike.history(dConn(conn)));
-        // TODO: assert the returned values
+        // TODO: add better assert
+        assertEquals(2, res.size());
     }
 
     @Test
-    public void asOf() {
-        historySetUp();
+    public void asOfAndSince() {
+        transactOnce();
 
         firstDate = new Date();
         Datahike.transact(conn, vec(map(
                 k(":db/id"), vec(k(":name"), "Alice"),
                 k(":age"), 30L)));
-        Set res = Datahike.q(query, Datahike.asOf(dConn(conn), firstDate));
-    }
 
-    
+        Set res = Datahike.q(query, Datahike.asOf(dConn(conn), firstDate));
+        // TODO: add better assert
+        assertEquals(2, res.size());
+
+        res = Datahike.q(query, Datahike.since(dConn(conn), firstDate));
+        // 0, because :name was transacted before the first date
+        assertEquals(0, res.size());
+    }
 }
