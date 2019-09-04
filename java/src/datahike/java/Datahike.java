@@ -25,6 +25,8 @@ public class Datahike {
     private static final IFn asOfFn = Clojure.var("datahike.api", "as-of");
     private static final IFn sinceFn = Clojure.var("datahike.api", "since");
     private static final IFn pullFn = Clojure.var("datahike.api", "pull");
+    private static final IFn releaseFn = Clojure.var("datahike.api", "release");
+    private static final IFn pullManyFn = Clojure.var("datahike.api", "pull-many");
 
     /**
      * @return a de-referenced version of the connection
@@ -82,5 +84,13 @@ public class Datahike {
      */
     public static Map pull(Object dConn, String selector, Object eid) {
         return (Map) pullFn.invoke(dConn, Clojure.read(selector), Clojure.read(eid.toString()));
+    }
+
+    public static List pullMany(Object dConn, String selector, String eids) {
+        return (List) pullManyFn.invoke(dConn, Clojure.read(selector), Clojure.read(eids));
+    }
+
+    public static void release(Object conn) {
+        releaseFn.invoke(conn);
     }
 }

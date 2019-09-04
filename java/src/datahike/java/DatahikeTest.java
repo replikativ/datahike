@@ -98,19 +98,31 @@ public class DatahikeTest {
     }
 
     @Test
-    public void pull() {
+    public void pullAndPullMany() {
         transactOnce();
 
         // TODO: does not work
 //        Datahike.pull(dConn(conn), "[*]", "[:name 'Alice']");
 
-        Datahike.transact(conn, vec(map(
-                                        k(":db/id"), 10,
+        Datahike.transact(conn, vec(map(k(":db/id"), 10,
                                         k(":name"), "Joe",
                                         k(":age"), 50L)));
 
         Map res = Datahike.pull(dConn(conn), "[*]", 10);
         assertEquals("Joe", res.get(k(":name")));
+
+        Datahike.transact(conn, vec(map(k(":db/id"), 20,
+                k(":name"), "Jane",
+                k(":age"), 25L)));
+        List list = Datahike.pullMany(dConn(conn), "[*]", "[10, 20]");
+        assertEquals(2, list.size());
+    }
+
+    @Test
+    public void release() {
+        Datahike.createDatabase(uri, k(":initial-tx"), schema);
+        conn = Datahike.connect(uri);
+        Datahike.release(conn);
     }
 
     // TODO: datom function
