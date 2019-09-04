@@ -93,4 +93,8 @@ public class Datahike {
     public static void release(Object conn) {
         releaseFn.invoke(conn);
     }
+
+    public static List seekdatoms(Object dConn, Keyword index, Object c1) {
+            return (List)seekDatomsFn.invoke(dConn, index, c1);
+    }
 }
