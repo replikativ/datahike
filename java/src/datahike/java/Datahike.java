@@ -86,8 +86,8 @@ public class Datahike {
         return (Map) pullFn.invoke(dConn, Clojure.read(selector), Clojure.read(eid.toString()));
     }
 
-    public static List pullMany(Object dConn, String selector, String eids) {
-        return (List) pullManyFn.invoke(dConn, Clojure.read(selector), Clojure.read(eids));
+    public static List pullMany(Object dConn, String selector, PersistentVector eids) {
+        return (List) pullManyFn.invoke(dConn, Clojure.read(selector), eids);
     }
 
     public static void release(Object conn) {
