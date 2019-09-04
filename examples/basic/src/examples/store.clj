@@ -1,4 +1,4 @@
-(ns example.core
+(ns examples.store
   (:require [datahike.api :as d]))
 
 (def schema [{:db/ident :name
@@ -14,8 +14,8 @@
   (d/connect uri))
 
 (defn transact-and-find [conn name]
-  (d/transact! conn [{:name name}])
-  (d/q query (d/db conn)))
+  (d/transact conn [{:name name}])
+  (d/q query @conn))
 
 ;; first let's have a look at the memory store which uses an atom internally to store data
 ;; only a simple identifier is needed, we use
@@ -66,3 +66,13 @@
      (d/db file-conn)
      (d/db level-conn)
      (d/db pg-conn))
+
+;; clean up
+;; LevelDB needs to be released
+(d/release level-conn)
+
+(do
+ (d/delete-database mem-uri)
+ (d/delete-database level-uri)
+ (d/delete-database file-uri)
+ (d/delete-database pg-uri))

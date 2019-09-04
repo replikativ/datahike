@@ -4,8 +4,7 @@
             [konserve-leveldb.core :as kl]
             [konserve-pg.core :as kp]
             [konserve.memory :as mem]
-            [superv.async :refer [<?? S]]
-            [konserve.core :as k]))
+            [superv.async :refer [<?? S]]))
 
 (defmulti empty-store
           "Creates an empty store"

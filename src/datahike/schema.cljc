@@ -1,5 +1,6 @@
 (ns datahike.schema
-  (:require [clojure.spec.alpha :as s]))
+  (:require [clojure.spec.alpha :as s])
+  (:import [datahike.datom Datom]))
 
 (s/def :db.type/id #(or (= (class %) java.lang.Long) string?))
 
@@ -69,7 +70,7 @@
                                    :db/isComponent {:db/valueType :db.type/boolean
                                                     :db/unique :db.unique/identity
                                                     :db/cardinality :db.cardinality/one}
-                                   :db/txInstant {:db/valueType :db.type/long
+                                   :db/txInstant {:db/valueType :db.type/instant
                                                   :db/unique :db.unique/identity
                                                   :db/index true
                                                   :db/cardinality :db.cardinality/one}
@@ -101,6 +102,13 @@
                  schema)
         value-type (get-in schema [a :db/valueType])]
     (s/valid? value-type v)))
+
+(defn instant? [^Datom datom schema]
+  (let [a (.-a datom)
+        schema (if (or (meta-attr? a) (schema-attr? a))
+                 implicit-schema-spec
+                 schema)]
+    (= (get-in schema [a :db/valueType]) :db.type/instant)))
 
 (defn schema-entity? [entity]
   (some #(contains? entity %) schema-keys))

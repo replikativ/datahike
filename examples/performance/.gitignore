@@ -10,3 +10,5 @@ pom.xml.asc
 /.nrepl-port
 .hgignore
 .hg/
+/data
+/plots

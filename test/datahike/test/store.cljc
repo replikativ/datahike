@@ -8,7 +8,7 @@
   (let [_ (d/delete-database uri)
         db (d/create-database uri :schema-on-read true)
         conn (d/connect uri)]
-    @(d/transact conn [{ :db/id 1, :name  "Ivan", :age   15 }
+    (d/transact conn [{ :db/id 1, :name  "Ivan", :age   15 }
                        { :db/id 2, :name  "Petr", :age   37 }
                        { :db/id 3, :name  "Ivan", :age   37 }
                        { :db/id 4, :age 15 }])

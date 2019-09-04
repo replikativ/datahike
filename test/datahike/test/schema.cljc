@@ -33,10 +33,10 @@
     (testing "transact without schema present"
       (is (thrown-msg?
            "No schema found in db."
-           (d/transact! conn tx))))
+           (d/transact conn tx))))
 
     (testing "transacting new schema"
-      (d/transact! conn [name-schema])
+      (d/transact conn [name-schema])
       (is (= #{[:name :db.type/string :db.cardinality/one]}
              (d/q find-schema-q (d/db conn))))
       (is (=  {:db/ident #:db{:unique :db.unique/identity}
@@ -47,44 +47,39 @@
               (dd/-schema (d/db conn)))))
 
     (testing "transacting data with schema present"
-      (d/transact! conn tx)
+      (d/transact conn tx)
       (is (=  #{["Alice"]}
               (d/q find-name-q (d/db conn)))))
 
     (testing "insert new data with wrong data type"
       (is (thrown-msg?
            "Bad entity value 42 at [:db/add 3 :name 42], value does not match schema definition. Must be conform to: string?"
-           (d/transact! conn [{:name 42}]))))
+           (d/transact conn [{:name 42}]))))
 
     (testing "insert new data with additional attributes not in schema"
       (is (thrown-msg?
            "Bad entity attribute :age at {:db/id 3, :age 42}, not defined in current schema"
-           (d/transact! conn [{:name "Bob" :age 42}]))))
-
-    (testing "insert incomplete schema :db/ident"
-      (is (thrown-msg?
-           "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-           (d/transact! conn [{:db/ident :phone}]))))
+           (d/transact conn [{:name "Bob" :age 42}]))))
 
     (testing "insert incomplete schema :db/valueType"
       (is (thrown-msg?
            "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-           (d/transact! conn [{:db/valueType :db.type/string}]))))
+           (d/transact conn [{:db/valueType :db.type/string}]))))
 
     (testing "insert incomplete schema :db/cardinality"
       (is (thrown-msg?
            "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-           (d/transact! conn [{:db/cardinality :db.cardinality/many}]))))
+           (d/transact conn [{:db/cardinality :db.cardinality/many}]))))
 
     (testing "insert incomplete schema :db/cardinality, :db/ident"
       (is (thrown-msg?
            "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-           (d/transact! conn [{:db/ident :phone :db/cardinality :db.cardinality/many}]))))
+           (d/transact conn [{:db/ident :phone :db/cardinality :db.cardinality/many}]))))
 
     (testing "insert schema with incorrect value type"
       (is (thrown-msg?
            "Bad entity value :string at [:db/add 3 :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/instant :db.type/boolean :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/symbol}"
-           (d/transact! conn [{:db/ident :phone
+           (d/transact conn [{:db/ident :phone
                                :db/cardinality :db.cardinality/one
                                :db/valueType :string}]))))))
 
@@ -105,11 +100,11 @@
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q db)))))
 
     (testing "insert new data according to schema"
-      (d/transact! conn [{:name "Alice"}])
+      (d/transact conn [{:name "Alice"}])
       (is (= #{["Alice"]} (d/q find-name-q (d/db conn)))))
 
     (testing "extend schema with :age"
-      (d/transact! conn [{:db/ident :age
+      (d/transact conn [{:db/ident :age
                           :db/valueType :db.type/long
                           :db/cardinality :db.cardinality/one}])
       (let [db (d/db conn)]
@@ -127,11 +122,11 @@
                (d/q find-schema-q db)))))
 
     (testing "insert new data"
-      (d/transact! conn [{:name "Bob" :age 42}])
+      (d/transact conn [{:name "Bob" :age 42}])
       (is (= #{["Alice"] ["Bob"]} (d/q find-name-q (d/db conn)))))
 
     (testing "change cardinality for :name"
-      (d/transact! conn [{:db/id 1
+      (d/transact conn [{:db/id 1
                           :db/cardinality :db.cardinality/many}])
       (let [db (d/db conn)]
         (is (= {:db/ident {:db/unique :db.unique/identity}
@@ -150,7 +145,7 @@
 (defn testing-type [conn type-name tx-val tx-id wrong-val]
   (testing type-name
     (let [schema-name (keyword "value" type-name)]
-      (d/transact! conn [{schema-name tx-val}])
+      (d/transact conn [{schema-name tx-val}])
       (is (= #{[tx-val]}
              (d/q '[:find ?v :in $ ?sn :where [?e ?sn ?v]] (d/db conn) schema-name)))
       (is (thrown-msg?
@@ -164,7 +159,7 @@
                  wrong-val
                  "], value does not match schema definition. Must be conform to: "
                  (ds/describe-type (keyword "db.type" type-name)))
-            (d/transact! conn [{schema-name wrong-val}]))))))
+            (d/transact conn [{schema-name wrong-val}]))))))
 
 (deftest test-schema-types
   (let [uri "datahike:mem://test-schema-types"
@@ -232,7 +227,7 @@
         conn (d/connect uri)]
 
     (testing "insert :owner and :cars one by one"
-      (d/transact! conn [{:db/id -1
+      (d/transact conn [{:db/id -1
                           :owner "Alice"}
                          {:db/id -1
                           :cars  :audi}
@@ -242,14 +237,14 @@
              (d/q '[:find ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
 
     (testing "insert :cars as list"
-      (d/transact! conn [{:db/id -2
+      (d/transact conn [{:db/id -2
                           :owner "Bob"
                           :cars [:chrysler :daimler]}])
       (is (= #{["Alice" :audi] ["Alice" :bmw] ["Bob" :chrysler] ["Bob" :daimler]}
              (d/q '[:find ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
 
     (testing "insert to cardinality one"
-      (d/transact! conn [{:db/id [:owner "Alice"]
+      (d/transact conn [{:db/id [:owner "Alice"]
                           :owner "Charlie"}])
       (is (= #{["Charlie" :audi] ["Charlie" :bmw] ["Bob" :chrysler] ["Bob" :daimler]}
              (d/q '[:find ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
@@ -257,7 +252,7 @@
     (testing "test  cardinality change if unique is set"
       (is (thrown-msg?
            "Update not supported for these schema attributes"
-           (d/transact! conn [{:db/id [:db/ident :owner]
+           (d/transact conn [{:db/id [:db/ident :owner]
                                :db/cardinality :db.cardinality/many}]))))))
 
 
@@ -291,8 +286,27 @@
           _ (d/create-database uri :schema-on-read true)
           conn (d/connect uri)]
       (testing "insert any data"
-        (d/transact! conn [{:name "Alice" :age 26} {:age "12" :car :bmw}])
+        (d/transact conn [{:name "Alice" :age 26} {:age "12" :car :bmw}])
         (is (= #{[1 "Alice" 26]}
                (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))))
         (is (= #{[2 "12" :bmw]}
                (d/q '[:find ?e ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn))))))))
+
+(deftest test-ident
+  (testing "use db/ident as enum"
+    (let [uri "datahike:mem://test-ident"
+          schema [{:db/ident :important}
+                  {:db/ident :archive}
+                  {:db/ident :message
+                   :db/valueType :db.type/string
+                   :db/cardinality :db.cardinality/one}
+                  {:db/ident :tag
+                   :db/valueType :db.type/ref
+                   :db/cardinality :db.cardinality/many}]
+          _ (d/delete-database uri)
+          _ (d/create-database uri :initial-tx schema)
+          conn (d/connect uri)]
+      (testing "insert data with enums"
+        (d/transact conn [{:message "important" :tag :important} {:message "archive" :tag [:important :archive] }])
+        (is (= #{["important" :important] ["archive" :important] ["archive" :archive]}
+               (d/q '[:find ?m ?t :where [?e :message ?m] [?e :tag ?te] [?te :db/ident ?t]] (d/db conn))))))))

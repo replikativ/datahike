@@ -1,4 +1,4 @@
-(ns example.core
+(ns examples.schema
   (:require [datahike.api :as d]))
 
 ;; The first example assumes you know your data model in advanve,
@@ -33,12 +33,17 @@
               :db/cardinality :db.cardinality/one
               :db/doc "toggle whether the repository is public"}
              {:db/ident :repository/tags
-              :db/valueType :db.type/keyword
+              :db/valueType :db.type/ref
               :db/cardinality :db.cardinality/many
-              :db/doc "the repository's tags"}])
+              :db/doc "the repository's tags"}
+             {:db/ident :language/clojure}
+             {:db/ident :language/rust}])
 
 ;; define uri
 (def uri "datahike:mem://schema-intro")
+
+;; cleanup previous database
+(d/delete-database uri)
 
 ;; create the in-memory database
 (d/create-database uri :initial-tx schema)
@@ -47,67 +52,67 @@
 (def conn (d/connect uri))
 
 ;; let's insert our first user
-(d/transact! conn [{:contributor/name "alice" :contributor/email "alice@exam.ple"}])
+(d/transact conn [{:contributor/name "alice" :contributor/email "alice@exam.ple"}])
 
 ;; let's find her with a query
 (def find-name-email '[:find ?e ?n ?em :where [?e :contributor/name ?n] [?e :contributor/email ?em]])
 
-(d/q find-name-email (d/db conn))
+(d/q find-name-email @conn)
 
 ;; let's find her directly, as contributior/name is a unique, indexed identity
-(d/pull (d/db conn) '[*] [:contributor/name "alice"])
+(d/pull @conn '[*] [:contributor/name "alice"])
 
 ;; add a second email, as we have a many cardinality, we can have serveral one's as a user
-(d/transact! conn [{:db/id 7 :contributor/email "alice@test.test"}])
+(d/transact conn [{:db/id [:contributor/name "alice"] :contributor/email "alice@test.test"}])
 
 ;; let's see both emails
-(d/q find-name-email (d/db conn))
+(d/q find-name-email @conn)
 
 ;; try to add something completely not defined in the schema
-(d/transact! conn [{:something "different"}])
+(d/transact conn [{:something "different"}])
 ;; => error occurs
 
 ;; try to add wrong contributor values
-(d/transact! conn [{:contributor/email :alice}])
+(d/transact conn [{:contributor/email :alice}])
 
 ;; add another contributor
-(d/transact! conn [{:contributor/name "bob" :contributor/email "bob@ac.me"}])
+(d/transact conn [{:contributor/name "bob" :contributor/email "bob@ac.me"}])
 
-(d/q find-name-email (d/db conn))
+(d/q find-name-email @conn)
 
-(d/pull (d/db conn) '[*] [:contributor/name "bob"])
+(d/pull @conn '[*] [:contributor/name "bob"])
 
 ;; change bobs name to bobby
-(d/transact! conn [{:db/id 8 :contributor/name "bobby"}])
+(d/transact conn [{:db/id [:contributor/name "bob"] :contributor/name "bobby"}])
 
 ;; check it
-(d/q find-name-email (d/db conn))
+(d/q find-name-email @conn)
 
-(d/pull (d/db conn) '[*] [:contributor/name "bobby"])
+(d/pull @conn '[*] [:contributor/name "bobby"])
 
 ;; bob is not related anymore as index
-(d/pull (d/db conn) '[*] [:contributor/name "bob"])
+(d/pull @conn '[*] [:contributor/name "bob"])
 
-;; create a repository, with refs from uniques
-(d/transact! conn [{:repository/name "top secret"
-                    :repository/public false
-                    :repository/contributors [[:contributor/name "bobby"] [:contributor/name "alice"]]
-                    :repository/tags :clojure}])
+;; create a repository, with refs from uniques, and an ident as enum
+(d/transact conn [{:repository/name "top secret"
+                   :repository/public false
+                   :repository/contributors [[:contributor/name "bobby"] [:contributor/name "alice"]]
+                   :repository/tags :language/clojure}])
 
 ;; let's search with pull inside the query
 (def find-repositories '[:find (pull ?e [*]) :where [?e :repository/name ?n]])
 
 ;; looks good
-(d/q find-repositories (d/db conn))
+(d/q find-repositories @conn)
 
 ;; let's go further and fetch the related contributor data as well
-(def find-repositories-with-contributors '[:find (pull ?e [* {:repository/contributors [*]}]) :where [?e :repository/name ?n]])
+(def find-repositories-with-contributors '[:find (pull ?e [* {:repository/contributors [*] :repository/tags [*]}]) :where [?e :repository/name ?n]])
 
-(d/q find-repositories-with-contributors (d/db conn))
+(d/q find-repositories-with-contributors @conn)
 
 ;; the schema is part of the index, so we can query them too.
 ;; Let's find all attribute names and their description.
-(d/q '[:find ?a ?d :where [?e :db/ident ?a] [?e :db/doc ?d]] (d/db conn))
+(d/q '[:find ?a ?d :where [?e :db/ident ?a] [?e :db/doc ?d]] @conn)
 
 ;; cleanup the database
 (d/delete-database uri)
@@ -124,18 +129,18 @@
 (def conn (d/connect uri))
 
 ;; now we can go wild and transact anything
-(d/transact! conn [{:any "thing"}])
+(d/transact conn [{:any "thing"}])
 
 ;; use simple query on this data
-(d/q '[:find ?v :where [_ :any ?v]] (d/db conn))
+(d/q '[:find ?v :where [_ :any ?v]] @conn)
 
 ;; be aware: although there is no schema, you should tell the database if some
 ;; attributes can have specific cardinality or indices.
 ;; You may add that as schema transactions like before
-(d/transact! conn [{:db/ident :any :db/cardinality :db.cardinality/many}])
+(d/transact conn [{:db/ident :any :db/cardinality :db.cardinality/many}])
 
 ;; let's add more data to the first any entity
-(def any-eid (d/q '[:find ?e . :where [?e :any "thing"]] (d/db conn)))
-(d/transact! conn [{:db/id any-eid :any "thing else"}])
+(def any-eid (d/q '[:find ?e . :where [?e :any "thing"]] @conn))
+(d/transact conn [{:db/id any-eid :any "thing else"}])
 
-(d/q '[:find ?v :where [_ :any ?v]] (d/db conn))
+(d/q '[:find ?v :where [_ :any ?v]] @conn)

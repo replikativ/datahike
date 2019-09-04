@@ -4,6 +4,7 @@
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     [datahike.core :as d]
     [datahike.db :as db]
+    [datahike.constants :refer [tx0]]
     [datahike.test.core :as tdc]))
 
 (def test-schema
@@ -23,7 +24,6 @@
              :db/isComponent true
             :db/cardinality :db.cardinality/one }})
 
-(def tx0 (datahike.tools/get-time))
 
 (def test-datoms
   (->>

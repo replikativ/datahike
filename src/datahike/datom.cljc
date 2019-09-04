@@ -1,8 +1,8 @@
 (ns datahike.datom
   (:require  [clojure.walk]
              [clojure.data]
-             [datahike.tools :refer [combine-hashes get-time]]
-             [datahike.constants :refer [tx0 txmax e0 emax]]))
+             [datahike.tools :refer [combine-hashes ]]
+             [datahike.constants :refer [tx0]]))
 
 (declare hash-datom equiv-datom seq-datom nth-datom assoc-datom val-at-datom)
 

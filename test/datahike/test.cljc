@@ -17,6 +17,7 @@
     datahike.test.lookup-refs
     datahike.test.lru
     datahike.test.pull-api
+    datahike.test.purge
     datahike.test.query
     datahike.test.query-aggregates
     datahike.test.query-find-specs
@@ -29,7 +30,7 @@
     datahike.test.schema
     datahike.test.serialization
     datahike.test.store
-    datahike.test.temporal-index
+    datahike.test.time-variance
     datahike.test.transact
     datahike.test.validation
     datahike.test.upsert
