@@ -28,6 +28,7 @@ public class Datahike {
     private static final IFn pullFn = Clojure.var("datahike.api", "pull");
     private static final IFn releaseFn = Clojure.var("datahike.api", "release");
     private static final IFn pullManyFn = Clojure.var("datahike.api", "pull-many");
+    private static final IFn seekDatomsFn = Clojure.var("datahike.api", "seek-datoms");
 
     /**
      * @return a de-referenced version of the connection

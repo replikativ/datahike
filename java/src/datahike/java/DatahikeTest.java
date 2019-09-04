@@ -125,6 +125,17 @@ public class DatahikeTest {
         Datahike.release(conn);
     }
 
+    @Test
+    public void seekDatoms() {
+        transactOnce();
+        Datahike.transact(conn, vec(map(k(":db/id"), 10,
+                                        k(":name"), "Joe",
+                                        k(":age"), 50L)));
+
+        List res = Datahike.seekdatoms(dConn(conn), k(":eavt"), 10);
+        // TODO: Add assertion
+    }
+
     // TODO: datom function
     // TODO: what else in core should be added?
 }
