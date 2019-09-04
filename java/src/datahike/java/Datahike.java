@@ -2,6 +2,7 @@ package datahike.java;
 
 import clojure.java.api.Clojure;
 import clojure.lang.IFn;
+import clojure.lang.Keyword;
 import clojure.lang.PersistentVector;
 import clojure.lang.RT;
 
