@@ -101,14 +101,15 @@ public class DatahikeTest {
     public void pullAndPullMany() {
         transactOnce();
 
-        // TODO: does not work
-        //        Datahike.pull(dConn(conn), "[*]", "[:name  'Alice']");
-
         Datahike.transact(conn, vec(map(k(":db/id"), 10,
                                         k(":name"), "Joe",
                                         k(":age"), 50L)));
         Map res = Datahike.pull(dConn(conn), "[*]", 10);
         assertEquals("Joe", res.get(k(":name")));
+
+        res = Datahike.pull(dConn(conn), "[*]", vec(k(":name"), "Alice"));
+        assertEquals("Alice", res.get(k(":name")));
+
 
         Datahike.transact(conn, vec(map(k(":db/id"), 20,
                 k(":name"), "Jane",

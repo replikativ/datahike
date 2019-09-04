@@ -76,15 +76,14 @@ public class Datahike {
         return sinceFn.invoke(dConn, date);
     }
 
-    /**
-     * @param dConn
-     * @param selector
-     * @param eid        entity id - either a string describing an entity id or an integer id
-     * @return
-     */
-    public static Map pull(Object dConn, String selector, Object eid) {
-        return (Map) pullFn.invoke(dConn, Clojure.read(selector), Clojure.read(eid.toString()));
+    public static Map pull(Object dConn, String selector, int eid) {
+        return (Map) pullFn.invoke(dConn, Clojure.read(selector), eid);
     }
+
+    public static Map pull(Object dConn, String selector, PersistentVector eid) {
+        return (Map) pullFn.invoke(dConn, Clojure.read(selector), eid);
+    }
+
 
     public static List pullMany(Object dConn, String selector, PersistentVector eids) {
         return (List) pullManyFn.invoke(dConn, Clojure.read(selector), eids);
