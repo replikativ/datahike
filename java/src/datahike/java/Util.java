@@ -13,8 +13,8 @@ public class Util {
     private static final IFn vectorFn = Clojure.var("clojure.core", "vec");
 
     /** Converts a keyword given as a string into a clojure keyword */
-    public static Object k(String str) {
-        return Clojure.read(str);
+    public static Keyword k(String str) {
+        return (Keyword)Clojure.read(str);
     }
 
     /** Creates a new clojure HashMap from the arguments of the form: key1, val1, key2, val2, ... */
