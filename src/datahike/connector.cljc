@@ -73,7 +73,8 @@
 (defprotocol IConfiguration
   (connect [config])
   (-create-database [config opts])
-  (delete-database [config]))
+  (delete-database [config])
+  (database-exists? [config]))
 
 (extend-protocol IConfiguration
   String
@@ -86,12 +87,32 @@
   (delete-database [uri]
     (delete-database (dc/uri->config uri)))
 
+  (database-exists? [uri]
+    (database-exists? (dc/uri->config uri)))
   
   clojure.lang.PersistentArrayMap
+  (database-exists? [config]
+    (let [raw-store (ds/connect-store config)]
+      (if (not (nil? raw-store)) 
+          (let [store (kons/add-hitchhiker-tree-handlers
+                       (kc/ensure-cache
+                        raw-store
+                        (atom (cache/lru-cache-factory {} :threshold 1000))))
+                stored-db (<?? S (k/get-in store [:db]))]
+            (ds/release-store config store)
+            (not (nil? stored-db)))
+        (do
+          (ds/release-store config raw-store)
+          false))))
+
   (connect [config]
-    (let [store (kons/add-hitchhiker-tree-handlers
+    (let [raw-store (ds/connect-store config)
+          _ (when-not raw-store
+              (throw (ex-info "Backend does not exist." {:type :backend-does-not-exist
+                                                          :config config})))
+          store (kons/add-hitchhiker-tree-handlers
                  (kc/ensure-cache
-                  (ds/connect-store config)
+                  raw-store
                   (atom (cache/lru-cache-factory {} :threshold 1000))))
           stored-db (<?? S (k/get-in store [:db]))
           _ (when-not stored-db
