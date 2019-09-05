@@ -1325,8 +1325,21 @@
                     (contains? tempids old-eid)
                     (not= upserted-eid (get tempids old-eid)))
              (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
-             (recur (allocate-eid report old-eid upserted-eid)
-                    (concat (explode db (assoc entity :db/id upserted-eid)) entities)))
+             (do
+               ;; schema tx
+               (when (ds/schema-entity? entity)
+                   (if-let [attr-name (get-in db [:schema upserted-eid])]
+                     (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
+                       (when-not (empty? invalid-updates)
+                         (raise "Update not supported for these schema attributes"
+                                {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
+                     (when-not (get-in db [:config :schema-on-read])
+                       (when (or (:db/cardinality entity) (:db/valueType entity))
+                         (when-not (ds/schema? entity)
+                           (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                                  {:error :transact/schema :entity entity}))))))
+                 (recur (allocate-eid report old-eid upserted-eid)
+                        (concat (explode db (assoc entity :db/id upserted-eid)) entities))))
 
             ;; resolved | allocated-tempid | tempid | nil => explode
            (or (number? old-eid)
@@ -1338,7 +1351,6 @@
                                                  (next-eid db))
                            :else old-eid)
                  new-entity (assoc entity :db/id new-eid)]
-              ;; schema tx
              (when (ds/schema-entity? entity)
                (if-let [attr-name (get-in db [:schema new-eid])]
                  (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
