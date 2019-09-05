@@ -35,7 +35,7 @@ above looks like:
 ```
 
 At the moment we support four different backends: [in-memory](#in-memory) ,[file-based](#file-based),
-[LevelDB](#leveldb), and [PosgreSQL](#postgresl).
+[LevelDB](#leveldb), and [PostgreSQL](#postgresl).
 
 ### in-memory
 
@@ -71,7 +71,7 @@ At the moment we support four different backends: [in-memory](#in-memory) ,[file
 
 ## Schema Flexibility
 
-By default the datahike api uses a `schema-on-write` appoach with strict value
+By default the datahike api uses a `schema-on-write` approach with strict value
 types that need to be defined in advance. If you are not sure how your data
 model looks like and you want to transact any kind of data into the database you
 can set `schema-on-read` to `true` by adding it as optional parameter at
@@ -83,7 +83,7 @@ database creation. You may add basic schema definitions like `:db/unique`,
 (d/create-database "datahike:mem://example" :schema-on-read true)
 ```
 
-Have a look at the [schema documation](./schema.md) for more information.
+Have a look at the [schema documentation](./schema.md) for more information.
 
 ## Time Variance
 
