@@ -95,7 +95,7 @@
                   (atom (cache/lru-cache-factory {} :threshold 1000))))
           stored-db (<?? S (k/get-in store [:db]))
           _ (when-not stored-db
-              (ds/release-store config)
+              (ds/release-store config store)
               (throw (ex-info "Database does not exist." {:type :db-does-not-exist
                                                           :config config})))
           {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx]} stored-db
