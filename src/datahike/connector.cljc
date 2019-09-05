@@ -14,44 +14,6 @@
 
 (s/def ::connection #(instance? clojure.lang.Atom %))
 
-(defmulti connect
-  "Connects to existing database"
-  {:arglists '([config & opts])}
-  (fn [config] (type config)))
-
-(defmethod connect String [uri]
-  (connect (dc/uri->config uri)))
-
-(defmethod connect clojure.lang.PersistentArrayMap [config]
-  (let [store (kons/add-hitchhiker-tree-handlers
-               (kc/ensure-cache
-                (ds/connect-store config)
-               (atom (cache/lru-cache-factory {} :threshold 1000))))
-        stored-db (<?? S (k/get-in store [:db]))
-        _ (when-not stored-db
-            (ds/release-store config)
-            (throw (ex-info "Database does not exist." {:type :db-does-not-exist
-                                                        :config config})))
-        {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx]} stored-db
-        empty (db/empty-db nil :datahike.index/hitchhiker-tree :config config)]
-    (d/conn-from-db
-      (assoc empty
-        :max-tx max-tx
-        :config config
-        :schema schema
-        :max-eid (db/init-max-eid eavt-key)
-        :eavt eavt-key
-        :aevt aevt-key
-        :avet avet-key
-        :temporal-eavt temporal-eavt-key
-        :temporal-aevt temporal-aevt-key
-        :temporal-avet temporal-avet-key
-        :rschema rschema
-        :store store))))
-
-(defn release [conn]
-  (ds/release-store (get-in @conn [:config :storage]) (:store @conn)))
-
 (defmulti transact!
   "Transacts new data to database"
   {:arglists '([conn tx-data])}
@@ -105,20 +67,58 @@
     (catch Exception e
       (throw (.getCause e)))))
 
-(defmulti create-database
-  "Creates a new database"
-  {:arglists '([config & opts])}
-  (fn [config & opts] (type config)))
+(defn release [conn]
+  (ds/release-store (get-in @conn [:config :storage]) (:store @conn)))
 
-(defmethod create-database String
-  [uri & opts]
-  (apply create-database (dc/uri->config uri) opts))
+(defprotocol IConfiguration
+  (connect [config])
+  (-create-database [config opts])
+  (delete-database [config]))
 
-(defmethod create-database clojure.lang.PersistentArrayMap
-  [store-config
-   & {:keys [initial-tx schema-on-read temporal-index]
-      :or {schema-on-read false temporal-index true}
-      :as opt-config}]
+(extend-protocol IConfiguration
+  String
+  (connect [uri]
+    (connect (dc/uri->config uri)))
+
+  (-create-database [uri & opts]
+    (apply -create-database (dc/uri->config uri) opts))
+
+  (delete-database [uri]
+    (delete-database (dc/uri->config uri)))
+
+  
+  clojure.lang.PersistentArrayMap
+  (connect [config]
+    (let [store (kons/add-hitchhiker-tree-handlers
+                 (kc/ensure-cache
+                  (ds/connect-store config)
+                  (atom (cache/lru-cache-factory {} :threshold 1000))))
+          stored-db (<?? S (k/get-in store [:db]))
+          _ (when-not stored-db
+              (ds/release-store config)
+              (throw (ex-info "Database does not exist." {:type :db-does-not-exist
+                                                          :config config})))
+          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx]} stored-db
+          empty (db/empty-db nil :datahike.index/hitchhiker-tree :config config)]
+      (d/conn-from-db
+       (assoc empty
+              :max-tx max-tx
+              :config config
+              :schema schema
+              :max-eid (db/init-max-eid eavt-key)
+              :eavt eavt-key
+              :aevt aevt-key
+              :avet avet-key
+              :temporal-eavt temporal-eavt-key
+              :temporal-aevt temporal-aevt-key
+              :temporal-avet temporal-avet-key
+              :rschema rschema
+              :store store))))
+
+  (-create-database [store-config
+                    {:keys [initial-tx schema-on-read temporal-index]
+                     :or {schema-on-read false temporal-index true}
+                     :as opt-config}]
   (dc/validate-config store-config)
   (dc/validate-config-attribute :datahike.config/schema-on-read schema-on-read opt-config)
   (dc/validate-config-attribute :datahike.config/temporal-index temporal-index opt-config)
@@ -155,5 +155,8 @@
         (transact conn initial-tx)
         (release conn)))))
 
-(defn delete-database [uri]
-  (ds/delete-store (dc/uri->config uri)))
+  (delete-database [config]
+    (ds/delete-store config)))
+
+(defn create-database [config & opts]
+  (-create-database config opts))
