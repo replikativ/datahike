@@ -147,6 +147,39 @@ public class DatahikeTest {
         assertEquals(-10000L, (long)id);
     }
 
+    @Test
+    public void entity() {
+        transactOnce();
+        Datahike.transact(conn, vec(map(k(":db/id"), 10,
+                k(":name"), "Joe",
+                k(":age"), 50L)));
+
+        Object res = Datahike.entity(dConn(conn), 10);
+        assertNotNull(res);
+    }
+
+    @Test
+    public void entityDb() {
+        transactOnce();
+        Datahike.transact(conn, vec(map(k(":db/id"), 10,
+                k(":name"), "Joe",
+                k(":age"), 50L)));
+        Object entity = Datahike.entity(dConn(conn), 10);
+
+        Object db = Datahike.entityDb(entity);
+        assertNotNull(db);
+    }
+
+    @Test
+    public void isFiltered() {
+        Datahike.createDatabase(uri, k(":initial-tx"), schema);
+        conn = Datahike.connect(uri);
+        assertFalse(Datahike.isFiltered(dConn(conn)));
+
+ /*       Datahike.filter(dConn(conn), Clojure.read("XXXXX"));
+        assertTrue(Datahike.isFiltered(dConn(conn)));*/
+    }
+
     // TODO: datom function
     // TODO: what else in core should be added?
 }

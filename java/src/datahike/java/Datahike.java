@@ -30,6 +30,9 @@ public class Datahike {
     private static final IFn pullManyFn = Clojure.var("datahike.api", "pull-many");
     private static final IFn seekDatomsFn = Clojure.var("datahike.api", "seek-datoms");
     private static final IFn tempIdFn = Clojure.var("datahike.api", "tempid");
+    private static final IFn entityFn = Clojure.var("datahike.api", "entity");
+    private static final IFn entityDbFn = Clojure.var("datahike.api", "entity-db");
+    private static final IFn isFilteredFn = Clojure.var("datahike.api", "is-filtered");
 
     /**
      * @return a de-referenced version of the connection
@@ -118,5 +121,19 @@ public class Datahike {
 
     public static Long tempId(Keyword k, Long i) {
         return (Long)tempIdFn.invoke(k, i);
+    }
+
+    // TODO: We need to expose Entity as an Interface
+    public static Object entity(Object dConn, int eid) {
+        return entityFn.invoke(dConn, eid);
+    }
+
+    // TODO: this would also benefit from an Entity interface
+    public static Object entityDb(Object entity) {
+        return entityDbFn.invoke(entity);
+    }
+
+    public static boolean isFiltered(Object dConn) {
+        return (Boolean)isFilteredFn.invoke(dConn);
     }
 }
