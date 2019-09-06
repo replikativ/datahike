@@ -139,6 +139,14 @@ public class DatahikeTest {
         // TODO: Add assertion
     }
 
+    @Test
+    public void tempId() {
+        Long id = Datahike.tempId(k(":db.part/user"));
+        assertTrue(id < 0);
+        id = Datahike.tempId(k(":db.part/user"), -10000L);
+        assertEquals(-10000L, (long)id);
+    }
+
     // TODO: datom function
     // TODO: what else in core should be added?
 }

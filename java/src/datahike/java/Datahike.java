@@ -29,6 +29,7 @@ public class Datahike {
     private static final IFn releaseFn = Clojure.var("datahike.api", "release");
     private static final IFn pullManyFn = Clojure.var("datahike.api", "pull-many");
     private static final IFn seekDatomsFn = Clojure.var("datahike.api", "seek-datoms");
+    private static final IFn tempIdFn = Clojure.var("datahike.api", "tempid");
 
     /**
      * @return a de-referenced version of the connection
@@ -109,5 +110,13 @@ public class Datahike {
 
     public static List seekdatoms(Object dConn, Keyword index, Object c1, Object c2, Object c3, Object c4) {
         return (List)seekDatomsFn.invoke(dConn, index, c1, c2, c3, c4);
+    }
+
+    public static Long tempId(Keyword k) {
+        return (Long) tempIdFn.invoke(k);
+    }
+
+    public static Long tempId(Keyword k, Long i) {
+        return (Long)tempIdFn.invoke(k, i);
     }
 }
