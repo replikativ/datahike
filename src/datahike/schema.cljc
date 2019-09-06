@@ -85,13 +85,9 @@
                                                            :db/cardinality :db.cardinality/one}})
 
 (def schema-keys #{:db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
-(def meta-keys #{:db/txInstant :db/retracted})
 
 (defn meta-attr? [attr]
   (s/valid? ::meta-attribute attr))
-
-(defn meta-entity? [entity]
-  (some #(contains? entity %) meta-keys))
 
 (defn schema-attr? [attr]
   (s/valid? ::schema-attribute attr))
@@ -133,4 +129,6 @@
            :db/unique (when-not (get-in attr-schema [:db/unique])
                         (when-not (= (get-in attr-schema [:db/cardinality]) :db.cardinality/one)
                           (assoc m attr-def [old-value new-value])))
-           (assoc m attr-def [old-value new-value]))))) {} (dissoc entity :db/id)))
+           (assoc m attr-def [old-value new-value])))))
+   {}
+   (dissoc entity :db/id)))

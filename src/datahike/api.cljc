@@ -13,7 +13,7 @@
 (def
   ^{:arglists '([uri])
     :doc
-              "Connects to a datahike database via URI. URI contains storage backend type
+              "Connects to a datahike database via URI or configuration. URI contains storage backend type
             and additional information for backends like database name, credentials, or
             location. Refer to the store project in the examples folder or the documentation
             in the config markdown file in the doc folder.
@@ -22,6 +22,14 @@
 
               (connect \"datahike:mem://example\")"}
   connect dc/connect)
+
+(def
+  ^{:arglists '([config])
+    :doc "Checks if a database exists given a configuration URI or hash map.
+          Usage:
+
+            (database-exists? \"datahike:mem://example\")"}
+  database-exists? dc/database-exists?)
 
 (def
   ^{:arglists '([config & opts])

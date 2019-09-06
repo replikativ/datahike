@@ -202,7 +202,7 @@ database:
 With each transaction a meta entity is added to the index that stores the
 current point in time in the `:db/txInstant` attribute.
 
-With this data present in the current index, you can search and analyse them for
+With this data present in the current index, you can search and analyze them for
 your purposes.
 
 ```clojure
@@ -238,7 +238,7 @@ your purposes.
 
 Since retraction only moves the datoms from the current index to a history, data
 is in that way never completely deleted. If your use case (for instance related
-to GDPR compliancy) requires complete data removal use the `db.purge` functions
+to GDPR compliance) requires complete data removal use the `db.purge` functions
 available in transactions:
 
 - `:db/purge`: removes a datom with given entity identifier, attribute and value

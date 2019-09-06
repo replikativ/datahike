@@ -3,10 +3,10 @@
 In databases there are two approaches for imposing integrity constraints on
 structured data collections: _schema-on-read_ or _schema-on-write_.
 The _schema-on-read_ approach assumes an implicit structure of the data where
-the structure is only intepreted at read level. Document databases like
+the structure is only interpreted at read level. Document databases like
 [MongoDB](https://www.mongodb.com/) or key value stores like
 [Redis](https://redis.io/) are examples for this kind of schema flexibility. In
-contrast the _schema-on-write_ approach has an explit assumption of the data
+contrast the _schema-on-write_ approach has an explicit assumption of the data
 model where the database ensures that all data written is conform to a defined
 data model. The traditional relational databases like
 [PostgreSQL](https://www.postgresql.org/) as well as modern column-based
@@ -24,9 +24,9 @@ example configuration and transactions.
 By inheriting most of the code from
 [datascript](https://github.com/tonsky/datascript) the default approach was
 _schema-on-read_ where you could add any arbitrary Clojure data structures to
-the database with a small set of helper definitions that added informations
+the database with a small set of helper definitions that added information
 about references and cardinality. Even though datahike's API moved to a
-_schema-on-write_ approach, the schemaless behaviour is still supported. On
+_schema-on-write_ approach, the schema-less behavior is still supported. On
 database creation you may opt out by setting the `:schema-on-read` parameter to `true`.
 
 ```clojure
@@ -111,3 +111,12 @@ The following types are currently support in datahike:
 
 The schema is validated using [clojure.spec](https://clojure.org/guides/spec).
 See `src/datahike/schema.cljc` for the implementation details.
+
+### Migration
+
+Updating an existing schema is discouraged as it may lead to inconsistencies
+in your data. Therefore only schema updates for `db.cardinality` and `db.unique`
+are supported. Rather updating an existing attribute it is recommended to create
+a new attribute and migrate data accordingly. Alternatively if you want to maintain your
+old attribute names, export your data except the schema, transform it to the new
+schema, create a new database with the new schema and import the transformed data.
