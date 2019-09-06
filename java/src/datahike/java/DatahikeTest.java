@@ -127,12 +127,15 @@ public class DatahikeTest {
 
     @Test
     public void seekDatoms() {
-        transactOnce();
-        Datahike.transact(conn, vec(map(k(":db/id"), 10,
-                                        k(":name"), "Joe",
-                                        k(":age"), 50L)));
+        Datahike.createDatabase(uri, k(":initial-tx"), schema);
+        conn = Datahike.connect(uri);
 
-        List res = Datahike.seekdatoms(dConn(conn), k(":eavt"), 10);
+        Datahike.transact(conn, (PersistentVector)Clojure.read("[{:db/id 10 :name \"Petr\" :age 44} {:db/id 20 :name \"Ivan\" :age 25} {:db/id 30 :name \"Sergey\" :age 11}]"));
+        List res = Datahike.seekdatoms(dConn( conn), k(":eavt"), 10);
+        // TODO: Add assertion
+        res = Datahike.seekdatoms(dConn( conn), k(":eavt"), 10, k(":name"));
+        // TODO: Add assertion
+        res = Datahike.seekdatoms(dConn( conn), k(":eavt"), 30, k(":name"), "Sergey");
         // TODO: Add assertion
     }
 

@@ -96,6 +96,18 @@ public class Datahike {
     }
 
     public static List seekdatoms(Object dConn, Keyword index, Object c1) {
-            return (List)seekDatomsFn.invoke(dConn, index, c1);
+        return (List)seekDatomsFn.invoke(dConn, index, c1);
+    }
+
+    public static List seekdatoms(Object dConn, Keyword index, Object c1, Object c2) {
+        return (List)seekDatomsFn.invoke(dConn, index, c1, c2);
+    }
+
+    public static List seekdatoms(Object dConn, Keyword index, Object c1, Object c2, Object c3) {
+        return (List)seekDatomsFn.invoke(dConn, index, c1, c2, c3);
+    }
+
+    public static List seekdatoms(Object dConn, Keyword index, Object c1, Object c2, Object c3, Object c4) {
+        return (List)seekDatomsFn.invoke(dConn, index, c1, c2, c3, c4);
     }
 }
