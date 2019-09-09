@@ -171,15 +171,26 @@ public class DatahikeTest {
     }
 
     @Test
-    public void isFiltered() {
+    public void filterAndIsFiltered() {
         Datahike.createDatabase(uri, k(":initial-tx"), schema);
         conn = Datahike.connect(uri);
         assertFalse(Datahike.isFiltered(dConn(conn)));
 
- /*       Datahike.filter(dConn(conn), Clojure.read("XXXXX"));
-        assertTrue(Datahike.isFiltered(dConn(conn)));*/
+        Datahike.transact(conn, (PersistentVector)Clojure.read("[{:db/id 10 :name \"Petr\" :age 44} {:db/id 20 :name \"Ivan\" :age 25} {:db/id 30 :name \"Sergey\" :age 11}]"));
+        Object filteredDB = Datahike.filter(dConn(conn), Clojure.read("(fn [_ datom] (not= :age (:a datom)))"));
+        assertTrue(Datahike.isFiltered(filteredDB));
     }
 
-    // TODO: datom function
-    // TODO: what else in core should be added?
+    @Test
+    public void with() {
+        Datahike.createDatabase(uri, k(":initial-tx"), schema);
+        conn = Datahike.connect(uri);
+
+        PersistentVector txData = (PersistentVector)Clojure.read("[{:db/id 10 :name \"Petr\" :age 44} {:db/id 20 :name \"Ivan\" :age 25} {:db/id 30 :name \"Sergey\" :age 11}]");
+        Object res = Datahike.with(dConn(conn), txData);
+        // TODO: assert
+    }
+
+    // TODO: datom? Create an Java Interface for it?
+    // TODO: Try to use java streams to visit the (query) results
 }

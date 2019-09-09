@@ -33,6 +33,8 @@ public class Datahike {
     private static final IFn entityFn = Clojure.var("datahike.api", "entity");
     private static final IFn entityDbFn = Clojure.var("datahike.api", "entity-db");
     private static final IFn isFilteredFn = Clojure.var("datahike.api", "is-filtered");
+    private static final IFn filterFn = Clojure.var("datahike.api", "filter");
+    private static final IFn withFn = Clojure.var("datahike.api", "with");
 
     /**
      * @return a de-referenced version of the connection
@@ -135,5 +137,13 @@ public class Datahike {
 
     public static boolean isFiltered(Object dConn) {
         return (Boolean)isFilteredFn.invoke(dConn);
+    }
+
+    public static Object filter(Object dConn, Object pred) {
+        return filterFn.invoke(dConn, pred);
+    }
+
+    public static Object with(Object dConn, Object pred) {
+        return withFn.invoke(dConn, pred);
     }
 }
