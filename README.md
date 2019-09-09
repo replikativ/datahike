@@ -16,62 +16,95 @@ There is a [video presentation with a walkthrough](https://www.youtube.com/watch
 
 The overall vision is described in this [presentation](https://www.youtube.com/watch?v=A2CZwOHOb6U).
 
-
 ## Usage
 
 Add to your leiningen dependencies:
 
 [![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
 
-
 We provide a small stable API for the JVM at the moment, but the on-disk schema
 is not fixed yet. We will provide a migration guide until we have reached a
 stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 
-~~~clojure
-(require '[datahike.api :refer :all])
+```clojure
+(require '[datahike.api :as d])
 
 
 ;; use the filesystem as storage medium
-(def uri #_"datahike:mem:///test"
-    "datahike:file:///tmp/api-test"
-    #_"datahike:level:///tmp/api-test1")
-	
-;; create a database at this place
-(create-database uri)
-	
-(def conn (connect uri))
+(def uri "datahike:file:///tmp/example")
+
+;; create a database at this place, by default configuration we have a strict
+;; schema and temporal index
+(d/create-database uri)
+
+(def conn (d/connect uri))
+
+;; the first transaction will be the schema we are using
+(d/transact conn [{:db/ident :name
+                   :db/valueType :db.type/string
+                   :db/cardinality :db.cardinality/one }
+                  {:db/ident :age
+                   :db/valueType :db.type/long
+                   :db/cardinality :db.cardinality/one }])
 
 ;; lets add some data and wait for the transaction
-@(transact conn [{ :db/id 1, :name  "Ivan", :age   15 }
-                 { :db/id 2, :name  "Petr", :age   37 }
-                 { :db/id 3, :name  "Ivan", :age   37 }
-                 { :db/id 4, :age 15 }])
-				 
-				 
-(q '[:find ?e
-     :where [?e :name]]
-  @conn)			 
-  
-;; => #{[3] [2] [1]}
+(d/transact conn [{:name  "Alice", :age   20 }
+                  {:name  "Bob", :age   30 }
+                  {:name  "Charlie", :age   40 }
+                  {:age 15 }])
+
+;; search the data
+(d/q '[:find ?e ?n ?a
+       :where
+       [?e :name ?n]
+       [?e :age ?a]]
+  @conn)
+;; => #{[3 "Alice" 20] [4 "Bob" 30] [5 "Charlie" 40]}
+
+;; add new entity data using a hash map
+(d/transact conn {:tx-data [{:db/id 3 :age 25}]})
+
+;; if you want to work with queries like in
+;; https://grishaev.me/en/datomic-query/,
+;; you may use a hashmap
+(d/q {:query '{:find [?e ?n ?a ]
+               :where [[?e :name ?n]
+                       [?e :age ?a]]}
+      :args [@conn]})
+;; => #{[5 "Charlie" 40] [4 "Bob" 30] [3 "Alice" 25]}
+
+;; query the history of the data
+(d/q '[:find ?a
+       :where
+       [?e :name "Alice"]
+       [?e :age ?a]]
+  (d/history @conn))
+;; => #{[20] [25]}
 
 ;; you might need to release the connection, e.g. for leveldb
-(release conn)
+(d/release conn)
 
-(delete-database uri)
-~~~
+;; clean up the database if it is not need any more
+(d/delete-database uri)
+```
 
 The API namespace provides compatibility to a subset of Datomic functionality
 and should work as a drop-in replacement on the JVM. The rest of datahike will
 be ported to core.async to coordinate IO in a platform-neutral manner.
 
+Refer to the docs for more information:
+
+- [configuration](./blob/master/doc/configuration.md)
+- [schema flexibility](./blob/master/doc/schema.md)
+- [time variance](./blob/master/doc/time_variance.md)
+
+For simple examples have a look at the projects in the `examples` folder.
 
 ## Example projects
 
 - [Invoice creation](https://gitlab.com/replikativ/datahike-invoice)
   demonstrated at the [Dutch Clojure
   Meetup](https://www.meetup.com/de-DE/The-Dutch-Clojure-Meetup/events/trmqnpyxjbrb/).
-
 
 ## Relationship to Datomic and datascript
 
@@ -95,7 +128,6 @@ Some differences are:
   access the index datastructures (hitchhiker-tree) and leverage their
   persistent nature for replication. These internals are not guaranteed to stay
   stable, but provide useful insight into what is going on and can be optimized.
-- datahike does not provide historical information out of the box yet
 - Datomic has a REST interface and a Java API
 - Datomic provides timeouts
 
@@ -107,7 +139,6 @@ datahike's query engine and most of its codebase come from
 [datascript](https://github.com/tonsky/datascript). Without the work on
 datascript datahike would not have been possible. Differences to Datomic with
 respect to the query engine are documented there.
-
 
 ## When should I pick what?
 
@@ -142,26 +173,25 @@ documentation](https://github.com/tonsky/datascript/wiki/Getting-started)
 applies for namespaces beyond `datahike.api`. We are working towards a portable
 version of datahike on top of `core.async`. Feel free to provide some help :).
 
-
 ## Migration & Backup
 
 The database can be exported to a flat file with:
 
-~~~clojure
+```clojure
 (require '[datahike.migrate :refer [export-db import-db]])
 (export-db @conn "/tmp/eavt-dump")
-~~~
+```
 
 You must do so before upgrading to a datahike version that has changed the
 on-disk format. This can happen as long as we are arriving at version `1.0.0`
 and will always be communicated through the Changelog. After you have bumped the
 datahike version you can use
 
-~~~clojure
+```clojure
 ;; ... setup new-conn (recreate with correct schema)
 
 (import-db new-conn "/tmp/eavt-dump")
-~~~
+```
 
 to reimport your data into the new format.
 
@@ -173,53 +203,33 @@ If you are upgrading from pre `0.1.2` where we have not had the migration code
 yet, then just evaluate the `datahike.migrate` namespace manually in your
 project before exporting.
 
-
-## Changelog
-
-### 0.1.3
-
-- fixed null pointer exceptions in the compare relation of the hitchhiker-tree
-
-
-### 0.1.2
-
-- *disk layout change, migration needed*
-- write root nodes of indices efficiently; reduces garbage by ~40 times and
-  halves transaction times
-- support export/import functionality
-
-
-### 0.1.1
-
-- preliminary support for datascript style schemas through
-  `create-database-with-schema`
-- support storage of BigDecimal and BigInteger values
-
-### 0.1.0
-
-- small, but stable JVM API
-- caching for fast query performance in konserve
-
-
-- reactive reflection warnings?
-- schema support
-- remove eavt-durable
-- remove redundant slicing code
-- generalize interface to indices
-- integration factui/reactive?
+Have a look at the [change log](./CHANGELOG.md) for recent updates.
 
 ## Roadmap
 
-### 0.2.0
+### 0.3.0
 
-- cleanup interface to hitchhiker-tree
+- clojure.spec for api functions
+- conceptualize schema upgrades
+- Java API
+- remote HTTP interface
+- Docker image
+- further schema types: bytes, tuples
+
+### 0.4.0
+
+- identity and access management
+- CRDT type schema support
+- fast redis backend support
+- query planner and optimizer
+- transaction monitoring
+
+### 0.5.0
+
 - optionally use core.async to handle storage IO
 - ClojureScript support both in the browser and on node
-- conceptualize schema upgrades
-- fast redis backend support
-- explore support for other index structures, e.g. FoundationDB
 
-### 0.3.0
+### 0.5.0
 
 - support GC or eager deletion of fragments
 - use hitchhiker-tree synchronization for replication
@@ -230,10 +240,7 @@ project before exporting.
 
 - support optimistic write support through attributes with conflict resolution
   (CRDT-like)
-- reactive datalog for materialized views
-- provide some network access
 - investigate https://github.com/usethesource/capsule for faster hh-tree durability
- 
 
 ## Commercial support
 
@@ -243,6 +250,6 @@ feature, please let us know.
 
 ## License
 
-Copyright © 2014–2019 Christian Weilbach, Nikita Prokopov, Konrad Kühne
+Copyright © 2014–2019 Konrad Kühne, Christian Weilbach, Nikita Prokopov
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).

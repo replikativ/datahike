@@ -5,6 +5,7 @@
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     [datahike.core :as d]
     [datahike.db :as db]
+    [datahike.datom :as dd]
     [datahike.test.core :as tdc])
     #?(:clj
       (:import [clojure.lang ExceptionInfo])))
@@ -20,11 +21,11 @@
 (deftest test-pr-read
   (doseq [[r read-fn] readers]
     (testing r
-      (let [d (db/datom 1 :name "Oleg" 17 true)]
+      (let [d (dd/datom 1 :name "Oleg" 17 true)]
         (is (= (pr-str d) "#datahike/Datom [1 :name \"Oleg\" 17 true]"))
         (is (= d (read-fn (pr-str d)))))
       
-      (let [d (db/datom 1 :name 3)]
+      (let [d (dd/datom 1 :name 3)]
         (is (= (pr-str d) "#datahike/Datom [1 :name 3 536870912 true]"))
         (is (= d (read-fn (pr-str d)))))
       
@@ -34,7 +35,8 @@
                    (d/db-with [ [:db/add 2 :name "Ivan"] ]))]
         (is (= (pr-str db)
                (str "#datahike/DB {"
-                    ":schema {:name {:db/unique :db.unique/identity}}, "
+                    ":schema {:name {:db/unique :db.unique/identity}, "
+                    ":db/ident {:db/unique :db.unique/identity}}, "
                     ":datoms ["
                       "[1 :age 44 536870913] "
                       "[1 :name \"Petr\" 536870913] "

@@ -2,8 +2,10 @@
   (:refer-clojure :exclude [filter])
   (:require
     [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
+    [datahike.datom :as dd]
     [datahike.pull-api :as dp]
     [datahike.query :as dq]
+    [datahike.constants :as dc]
     [datahike.impl.entity :as de])
   #?(:clj
     (:import
@@ -12,7 +14,7 @@
       [java.util UUID])))
 
 
-(def ^:const ^:no-doc tx0 db/tx0)
+(def ^:const ^:no-doc tx0 dc/tx0)
 
 
 ; Entities
@@ -172,12 +174,12 @@
              Optionally with transaction id (number) and `added` flag (`true` for addition, `false` for retraction).
 
              See also [[init-db]]."}
-  datom db/datom)
+  datom dd/datom)
 
 
 (def ^{:arglists '([x])
        :doc "Returns `true` if the given value is a datom, `false` otherwise."}
-  datom? db/datom?)
+  datom? dd/datom?)
 
 
 (def ^{:arglists '([datoms] [datoms schema])
@@ -199,12 +201,13 @@
 
 (defn filter
   "Returns a view over database that has same interface but only includes datoms for which the `(pred db datom)` is true. Can be applied multiple times.
-   
+
    Filtered DB gotchas:
 
    - All operations on filtered database are proxied to original DB, then filter pred is applied.
    - Not cached. You pay filter penalty every time.
    - Supports entities, pull, queries, index access.
+   - Does not support hashing of DB.
    - Does not support [[with]] and [[db-with]]."
   [db pred]
   {:pre [(db/db? db)]}
@@ -212,8 +215,8 @@
     (let [^FilteredDB fdb db
           orig-pred (.-pred fdb)
           orig-db   (.-unfiltered-db fdb)]
-      (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %)) (atom 0)))
-    (FilteredDB. db #(pred db %) (atom 0))))
+      (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
+    (FilteredDB. db #(pred db %))))
 
 
 ; Changing DB
@@ -572,20 +575,6 @@
   (swap! (:listeners (meta conn)) dissoc key))
 
 
-; Data Readers
-
-(def ^{:doc "Data readers for EDN readers. In CLJS they’re registered automatically. In CLJ, if `data_readers.clj` do not work, you can always do
-
-             ```
-             (clojure.edn/read-string {:readers data-readers} \"...\")
-             ```"}
-  data-readers {'datahike/Datom db/datom-from-reader
-                'datahike/DB    db/db-from-reader})
-
-#?(:cljs
-   (doseq [[tag cb] data-readers] (cljs.reader/register-tag-parser! tag cb)))
-
-
 ;; Datomic compatibility layer
 
 (def ^:private last-tempid (atom -1000000))
@@ -593,7 +582,7 @@
 
 (defn tempid
   "Allocates and returns an unique temporary id (a negative integer). Ignores `part`. Returns `x` if it is specified.
-  
+
    Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
   ([part]
     (if (= part :db.part/tx)
@@ -603,6 +592,21 @@
     (if (= part :db.part/tx)
       :db/current-tx
       x)))
+
+
+;; Data Readers
+
+(def ^{:doc "Data readers for EDN readers. In CLJS they’re registered automatically. In CLJ, if `data_readers.clj` do not work, you can always do
+
+             ```
+             (clojure.edn/read-string {:readers data-readers} \"...\")
+             ```"}
+  data-readers {'datahike/Datom dd/datom-from-reader
+                'db/id tempid
+                'datahike/DB    db/db-from-reader})
+
+#?(:cljs
+   (doseq [[tag cb] data-readers] (cljs.reader/register-tag-parser! tag cb)))
 
 
 (defn resolve-tempid
