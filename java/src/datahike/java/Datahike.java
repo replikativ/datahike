@@ -126,8 +126,8 @@ public class Datahike {
     }
 
     // TODO: We need to expose Entity as an Interface
-    public static Object entity(Object dConn, int eid) {
-        return entityFn.invoke(dConn, eid);
+    public static IEntity entity(Object dConn, int eid) {
+        return (IEntity)entityFn.invoke(dConn, eid);
     }
 
     // TODO: this would also benefit from an Entity interface

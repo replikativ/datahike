@@ -155,8 +155,9 @@ public class DatahikeTest {
                 k(":name"), "Joe",
                 k(":age"), 50L)));
 
-        Object res = Datahike.entity(dConn(conn), 10);
-        assertNotNull(res);
+        IEntity entity = Datahike.entity(dConn(conn), 10);
+        Object res = entity.valAt(k(":name"));
+        assertEquals("Joe", res);
     }
 
     @Test
