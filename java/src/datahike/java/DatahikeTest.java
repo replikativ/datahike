@@ -6,6 +6,7 @@ import clojure.lang.PersistentVector;
 import org.junit.Test;
 
 import java.util.*;
+import java.util.stream.Stream;
 
 import static datahike.java.Datahike.dConn;
 import static datahike.java.Util.*;
@@ -74,9 +75,9 @@ public class DatahikeTest {
     public void history() {
         transactOnce();
 
-        Set res = Datahike.q((String) query, Datahike.history(dConn(conn)));
-        // TODO: add better assert
-        assertEquals(2, res.size());
+        Set<PersistentVector> res = Datahike.q((String) query, Datahike.history(dConn(conn)));
+        Object[] names = res.stream().map(pv -> pv.get(0)).toArray();
+        assertEquals(new String[] {"Alice", "Bob"}, names);
     }
 
     @Test
