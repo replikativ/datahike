@@ -97,6 +97,7 @@ Refer to the docs for more information:
 - [configuration](./doc/config.md)
 - [schema flexibility](./doc/schema.md)
 - [time variance](./doc/time_variance.md)
+- [differences from Datomic](./doc/datomic_differences.md)
 
 For simple examples have a look at the projects in the `examples` folder.
 
