@@ -94,9 +94,10 @@ be ported to core.async to coordinate IO in a platform-neutral manner.
 
 Refer to the docs for more information:
 
-- [configuration](./blob/master/doc/configuration.md)
-- [schema flexibility](./blob/master/doc/schema.md)
-- [time variance](./blob/master/doc/time_variance.md)
+- [configuration](./doc/config.md)
+- [schema flexibility](./doc/schema.md)
+- [time variance](./doc/time_variance.md)
+- [differences from Datomic](./doc/datomic_differences.md)
 
 For simple examples have a look at the projects in the `examples` folder.
 
