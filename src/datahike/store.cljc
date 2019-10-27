@@ -1,5 +1,5 @@
 (ns datahike.store
-  (:require [hitchhiker.konserve :as kons]
+  (:require [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.filestore :as fs]
             [konserve-leveldb.core :as kl]
             [konserve-pg.core :as kp]
