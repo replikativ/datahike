@@ -1,8 +1,6 @@
 (ns datahike.store
   (:require [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.filestore :as fs]
-            [konserve-leveldb.core :as kl]
-            [konserve-pg.core :as kp]
             [konserve.memory :as mem]
             [superv.async :refer [<?? S]]))
 
@@ -75,41 +73,5 @@
   (<?? S (fs/new-fs-store path)))
 
 (defmethod scheme->index :file [_]
-  :datahike.index/hitchhiker-tree)
-
-;; postgresql
-
-(defn pg-path [{:keys [username password host port path]}]
-  (clojure.string/join ["postgres://" username ":" password "@" host ":" port path]))
-
-(defmethod empty-store :pg [config]
-  (kons/add-hitchhiker-tree-handlers
-    (<?? S (kp/new-pg-store (pg-path config)))))
-
-(defmethod delete-store :pg [config]
-  (kp/delete-store (pg-path config)))
-
-(defmethod connect-store :pg [config]
-  (<?? S (kp/new-pg-store (pg-path config))))
-
-(defmethod scheme->index :pg [_]
-  :datahike.index/hitchhiker-tree)
-
-;; level
-
-(defmethod empty-store :level [{:keys [path]}]
-  (kons/add-hitchhiker-tree-handlers
-    (<?? S (kl/new-leveldb-store path))))
-
-(defmethod delete-store :level [{:keys [path]}]
-  (kl/delete-store path))
-
-(defmethod connect-store :level [{:keys [path]}]
-  (<?? S (kl/new-leveldb-store path)))
-
-(defmethod release-store :level [_ store]
-  (kl/release store))
-
-(defmethod scheme->index :level [_]
   :datahike.index/hitchhiker-tree)
 
