@@ -48,14 +48,13 @@ public class DatahikeTest {
                 map(k(":name"), "Bob", k(":age"), 30L)));
     }
 
-   /* @org.junit.Test
+    @org.junit.Test
     public void queryWithDBAndInput() {
         transactOnce();
-
-        String input = "[[1 :name 'Ivan'] [1 :age  19] [1 :aka  \"dragon_killer_94\"] [1 :aka  '-=autobot=-']]";
-        Set res = Datahike.q("[:find  ?n ?a :where [?e :aka \"dragon_killer_94\"] [?e :name ?n] [?e :age  ?a]]", input);
+        query = "[:find ?n ?a :in $db ?n :where [?e :name ?n] [?e :age ?a]]";
+        Set res = Datahike.q(query, dConn(conn), "Alice");
         assertTrue(res.size() == 1);
-    }*/
+    }
 
     @org.junit.Test
     public void queryWithLocalInputDB() {
