@@ -37,8 +37,35 @@ public class DatahikeTest {
     public void tearDown() throws Exception {
     }
 
+    private void transactOnce() {
+        Datahike.createDatabase(uri, k(":initial-tx"), schema);
+
+        conn = Datahike.connect(uri);
+        query = "[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]";
+
+        Datahike.transact(conn, vec(
+                map(k(":name"), "Alice", k(":age"), 25L),
+                map(k(":name"), "Bob", k(":age"), 30L)));
+    }
+
     @org.junit.Test
-    public void q() {
+    public void queryWithDBAndInput() {
+        transactOnce();
+        query = "[:find ?n ?a :in $ [?n] :where [?e :name ?n] [?e :age ?a]]";
+        Set<PersistentVector> res = Datahike.q(query, dConn(conn), "[\"Alice\"]");
+        Object[] names = res.stream().map(vec -> vec.get(0)).toArray();
+        assertTrue(names[0].equals("Alice"));
+    }
+
+    @org.junit.Test
+    public void queryWithLocalInputDB() {
+        String input = "[[1 :name 'Ivan'] [1 :age  19] [1 :aka  \"dragon_killer_94\"] [1 :aka  '-=autobot=-']]";
+        Set res = Datahike.q("[:find  ?n ?a :where [?e :aka \"dragon_killer_94\"] [?e :name ?n] [?e :age  ?a]]", input);
+        assertTrue(res.size() == 1);
+    }
+
+    @org.junit.Test
+    public void queryWithDB() {
         Datahike.createDatabase(uri);
         conn = Datahike.connect(uri);
 
@@ -58,17 +85,6 @@ public class DatahikeTest {
         res = Datahike.q("[:find ?v :where [_ :name ?v]]", dConn);
         //Assert.assertEquals("Alice", ((List)res.toArray()[0]).iterator().next());
         assertEquals(PersistentHashSet.create(Arrays.asList(PersistentVector.create("Alice"))), res);
-    }
-
-    private void transactOnce() {
-        Datahike.createDatabase(uri, k(":initial-tx"), schema);
-
-        conn = Datahike.connect(uri);
-        query = "[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]";
-
-        Datahike.transact(conn, vec(
-                map(k(":name"), "Alice", k(":age"), 25L),
-                map(k(":name"), "Bob", k(":age"), 30L)));
     }
 
     @org.junit.Test
