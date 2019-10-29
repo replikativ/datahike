@@ -51,9 +51,10 @@ public class DatahikeTest {
     @org.junit.Test
     public void queryWithDBAndInput() {
         transactOnce();
-        query = "[:find ?n ?a :in $db ?n :where [?e :name ?n] [?e :age ?a]]";
-        Set res = Datahike.q(query, dConn(conn), "Alice");
-        assertTrue(res.size() == 1);
+        query = "[:find ?n ?a :in $ [?n] :where [?e :name ?n] [?e :age ?a]]";
+        Set<PersistentVector> res = Datahike.q(query, dConn(conn), "[\"Alice\"]");
+        Object[] names = res.stream().map(vec -> vec.get(0)).toArray();
+        assertTrue(names[0].equals("Alice"));
     }
 
     @org.junit.Test
