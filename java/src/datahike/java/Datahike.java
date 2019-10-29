@@ -69,6 +69,21 @@ public class Datahike {
         return (Set)qFn.invoke(Clojure.read(query), dConn);
     }
 
+    public static Set q(String query, String inputs) {
+        List argsCopy = new ArrayList();
+        argsCopy.add(Clojure.read(query));
+        argsCopy.add(Clojure.read(inputs));
+        return (Set)qFn.applyTo(RT.seq(argsCopy));
+    }
+
+    public static Set q(String query, Object dConn, String inputs) {
+        List argsCopy = new ArrayList();
+        argsCopy.add(Clojure.read(query));
+        argsCopy.add(dConn);
+        argsCopy.add(Clojure.read(inputs));
+        return (Set)qFn.applyTo(RT.seq(argsCopy));
+    }
+
     public static Object transact(Object conn, PersistentVector txData) {
         return transactFn.invoke(conn, txData);
     }
