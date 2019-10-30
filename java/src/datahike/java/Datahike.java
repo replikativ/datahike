@@ -134,7 +134,6 @@ public class Datahike {
         return (Long)tempIdFn.invoke(k, i);
     }
 
-    // TODO: We need to expose Entity as an Interface
     public static IEntity entity(Object dConn, int eid) {
         return (IEntity)entityFn.invoke(dConn, eid);
     }
