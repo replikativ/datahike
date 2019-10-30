@@ -65,10 +65,6 @@ public class Datahike {
         return dbFn.invoke(conn);
     }
 
-    public static Set q(String query, Object dConn) {
-        return (Set)qFn.invoke(Clojure.read(query), dConn);
-    }
-
     public static Set q(String query, String inputs) {
         List argsCopy = new ArrayList();
         argsCopy.add(Clojure.read(query));
@@ -76,11 +72,9 @@ public class Datahike {
         return (Set)qFn.applyTo(RT.seq(argsCopy));
     }
 
-    public static Set q(String query, Object dConn, String inputs) {
-        List argsCopy = new ArrayList();
-        argsCopy.add(Clojure.read(query));
-        argsCopy.add(dConn);
-        argsCopy.add(Clojure.read(inputs));
+    public static Set q(String query, Object... inputs) {
+        List argsCopy = new ArrayList(Arrays.asList(inputs));
+        argsCopy.add(0, Clojure.read(query));
         return (Set)qFn.applyTo(RT.seq(argsCopy));
     }
 

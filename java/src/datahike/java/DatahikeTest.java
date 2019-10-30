@@ -52,7 +52,7 @@ public class DatahikeTest {
     public void queryWithDBAndInput() {
         transactOnce();
         query = "[:find ?n ?a :in $ [?n] :where [?e :name ?n] [?e :age ?a]]";
-        Set<PersistentVector> res = Datahike.q(query, dConn(conn), "[\"Alice\"]");
+        Set<PersistentVector> res = Datahike.q(query, dConn(conn), Clojure.read("[\"Alice\"]"));
         Object[] names = res.stream().map(vec -> vec.get(0)).toArray();
         assertTrue(names[0].equals("Alice"));
     }
@@ -83,7 +83,6 @@ public class DatahikeTest {
         assertTrue(res.size() == 1);
 
         res = Datahike.q("[:find ?v :where [_ :name ?v]]", dConn);
-        //Assert.assertEquals("Alice", ((List)res.toArray()[0]).iterator().next());
         assertEquals(PersistentHashSet.create(Arrays.asList(PersistentVector.create("Alice"))), res);
     }
 
