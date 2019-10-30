@@ -58,6 +58,15 @@ public class DatahikeTest {
     }
 
     @org.junit.Test
+    public void queryWithJavaArrayInput() {
+        transactOnce();
+        query = "[:find ?n ?a :in $ [?n] :where [?e :name ?n] [?e :age ?a]]";
+        Set<PersistentVector> res = Datahike.q(query, dConn(conn), new String[] {"Alice"});
+        Object[] names = res.stream().map(vec -> vec.get(0)).toArray();
+        assertTrue(names[0].equals("Alice"));
+    }
+
+    @org.junit.Test
     public void queryWithLocalInputDB() {
         String input = "[[1 :name 'Ivan'] [1 :age  19] [1 :aka  \"dragon_killer_94\"] [1 :aka  '-=autobot=-']]";
         Set res = Datahike.q("[:find  ?n ?a :where [?e :aka \"dragon_killer_94\"] [?e :name ?n] [?e :age  ?a]]", input);
