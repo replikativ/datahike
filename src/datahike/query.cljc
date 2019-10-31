@@ -424,15 +424,15 @@
         hash (hash-attrs key-fn1 tuples1)
         key-fn2 (tuple-key-fn common-gtrs2)
         new-tuples (->>
-                     (reduce (fn [acc tuple2]
-                               (let [key (key-fn2 tuple2)]
-                                 (if-some [tuples1 (get hash key)]
-                                   (reduce (fn [acc tuple1]
-                                             (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                           acc tuples1)
-                                   acc)))
-                             (transient []) tuples2)
-                     (persistent!))]
+                    (reduce (fn [acc tuple2]
+                              (let [key (key-fn2 tuple2)]
+                                (if-some [tuples1 (get hash key)]
+                                  (reduce (fn [acc tuple1]
+                                            (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
+                                          acc tuples1)
+                                  acc)))
+                            (transient []) tuples2)
+                    (persistent!))]
     (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
                new-tuples)))
 
