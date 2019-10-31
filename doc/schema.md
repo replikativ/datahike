@@ -1,30 +1,32 @@
 # Schema
+
 In databases there are two approaches for imposing integrity constraints on
-structured data collections: *schema-on-read* or *schema-on-write*. 
-The *schema-on-read* approach assumes an implicit structure of the data where
-the structure is only intepreted at read level. Document databases like 
-[MongoDB](https://www.mongodb.com/) or key value stores like 
+structured data collections: _schema-on-read_ or _schema-on-write_.
+The _schema-on-read_ approach assumes an implicit structure of the data where
+the structure is only interpreted at read level. Document databases like
+[MongoDB](https://www.mongodb.com/) or key value stores like
 [Redis](https://redis.io/) are examples for this kind of schema flexibility. In
-contrast the *schema-on-write* approach has an explit assumption of the data 
-model where the database ensures that all data written is conform to a defined 
-data model. The traditional relational databases like 
-[PostgreSQL](https://www.postgresql.org/) as well as modern column-based 
-databases like [Cassandra](https://cassandra.apache.org/) fall under this 
+contrast the _schema-on-write_ approach has an explicit assumption of the data
+model where the database ensures that all data written is conform to a defined
+data model. The traditional relational databases like
+[PostgreSQL](https://www.postgresql.org/) as well as modern column-based
+databases like [Cassandra](https://cassandra.apache.org/) fall under this
 category.
 
 Datahike supports both approaches which can be chosen at creation time but which can
 not be changed afterwards.
 
 Have a look at the `core`-namespace in the `examples/store-intro` folder for
-example configuration and transactions. 
+example configuration and transactions.
 
 ## Schema-on-read
+
 By inheriting most of the code from
 [datascript](https://github.com/tonsky/datascript) the default approach was
-*schema-on-read* where you could add any arbitrary Clojure data structures to
-the database with a small set of helper definitions that added informations
+_schema-on-read_ where you could add any arbitrary Clojure data structures to
+the database with a small set of helper definitions that added information
 about references and cardinality. Even though datahike's API moved to a
-*schema-on-write* approach, the schemaless behaviour is still supported. On
+_schema-on-write_ approach, the schema-less behavior is still supported. On
 database creation you may opt out by setting the `:schema-on-read` parameter to `true`.
 
 ```clojure
@@ -41,10 +43,10 @@ database creation you may opt out by setting the `:schema-on-read` parameter to 
 (d/transact! conn [{:any "Data"}])
 ```
 
-
 ## Schema-on-write
-With the release of version `0.2.0` datahike enforces per default an explicit
-schema where you have to define your expected data shapes in advance. The 
+
+With the release of version `0.2.0` datahike enforces by default an explicit
+schema where you have to define your expected data shapes in advance. The
 schema itself is present in the database index, so you can simply transact it
 like any other datom.
 
@@ -53,7 +55,7 @@ like any other datom.
 
 (def uri "datahike:mem://schema-on-write")
 
-;; per default we have schema-on-write settings
+;; by default we have schema-on-write settings
 (d/create-database uri)
 
 (def conn (d/connect uri))
@@ -68,9 +70,10 @@ like any other datom.
 (d/transact! conn [{:name "Alice"}])
 ```
 
-The schema definition is compliant with Datomic's 
-[approach](https://docs.datomic.com/on-prem/schema.html). Required are three 
-attributes: 
+The schema definition is compliant with Datomic's
+[approach](https://docs.datomic.com/on-prem/schema.html). Required are three
+attributes:
+
 - `:db/ident`: the name of the attribute, defined as a keyword with optional
   namespace, e.g. `:user/name`
 - `:db/valueType`: the type of the value associated with an attribute, e.g. `db.type/string`, see
@@ -79,6 +82,7 @@ attributes:
   value or a set of values, can be either `:db.cardinality/one` or `db.cardinality/many`
 
 Additionally the following optional attributes are supported:
+
 - `db/doc`: the documentation for the attribute as a string
 - `db/unique`: a uniqueness constraint on the attribute for a given value, can
   be either `db.unique/value` (only one entity with this attribute can have the same value) or `db.unique/identity`(only one entity can have
@@ -87,23 +91,32 @@ Additionally the following optional attributes are supported:
   created as a boolean
 
 ### Supported value types
+
 The following types are currently support in datahike:
 
-| Value Type | Corresponding Type |
-| --- | --- |
-| `db.type/bigdec` | java.math.BigDecimal | 
-| `db.type/bigint` | java.mathBigInteger |
-| `db.type/boolean` | Boolean |
-| `db.type/double` | Double |
-| `db.type/float` | Double or Float |
-| `db.type/instant` | java.util.Date |
+| Value Type        | Corresponding Type   |
+| ----------------- | -------------------- |
+| `db.type/bigdec`  | java.math.BigDecimal |
+| `db.type/bigint`  | java.math.BigInteger |
+| `db.type/boolean` | Boolean              |
+| `db.type/double`  | Double               |
+| `db.type/float`   | Double or Float      |
+| `db.type/instant` | java.util.Date       |
 | `db.type/keyword` | clojure.lang.Keyword |
-| `db.type/long` | java.lang.Long|
-| `db.type/ref` | java.lang.Long |
-| `db.type/string` | String |
-| `db.type/symbol` | clojure.lang.Symbol |
-| `db.type/uuid` | java.util.UUID |
+| `db.type/long`    | java.lang.Long       |
+| `db.type/ref`     | java.lang.Long       |
+| `db.type/string`  | String               |
+| `db.type/symbol`  | clojure.lang.Symbol  |
+| `db.type/uuid`    | java.util.UUID       |
 
 The schema is validated using [clojure.spec](https://clojure.org/guides/spec).
 See `src/datahike/schema.cljc` for the implementation details.
 
+### Migration
+
+Updating an existing schema is discouraged as it may lead to inconsistencies
+in your data. Therefore only schema updates for `db.cardinality` and `db.unique`
+are supported. Rather updating an existing attribute it is recommended to create
+a new attribute and migrate data accordingly. Alternatively if you want to maintain your
+old attribute names, export your data except the schema, transform it to the new
+schema, create a new database with the new schema and import the transformed data.

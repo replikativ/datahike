@@ -1,4 +1,4 @@
-(ns datahike.test.time_variance
+(ns datahike.test.time-variance
   (:require
     #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])

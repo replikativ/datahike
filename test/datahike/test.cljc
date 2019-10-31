@@ -30,7 +30,7 @@
     datahike.test.schema
     datahike.test.serialization
     datahike.test.store
-    datahike.test.time_variance
+    datahike.test.time-variance
     datahike.test.transact
     datahike.test.validation
     datahike.test.upsert
