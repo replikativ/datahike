@@ -41,7 +41,7 @@
         (are [x y] (= x y)
                    true (nil? (find-age @conn name))
                    25 (find-age (d/history @conn) name))))
-    (testing "purge datom from current index"
+    (testing "purge datom from current index and from history"
       (let [name "Bob"]
         (d/transact conn [[:db/purge [:name "Bob"] :age 35]])
         (are [x y] (= x y)

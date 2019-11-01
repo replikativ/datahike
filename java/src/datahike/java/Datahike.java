@@ -65,12 +65,12 @@ public class Datahike {
         return dbFn.invoke(conn);
     }
 
-    public static Set q(String query, String inputs) {
+    /*public static Set q(String query, String inputs) {
         List argsCopy = new ArrayList();
         argsCopy.add(Clojure.read(query));
         argsCopy.add(Clojure.read(inputs));
         return (Set)qFn.applyTo(RT.seq(argsCopy));
-    }
+    }*/
 
     public static Set q(String query, Object... inputs) {
         List argsCopy = new ArrayList(Arrays.asList(inputs));

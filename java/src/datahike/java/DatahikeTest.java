@@ -81,7 +81,7 @@ public class DatahikeTest {
 
     @org.junit.Test
     public void queryWithLocalInputDB() {
-        String input = "[[1 :name 'Ivan'] [1 :age  19] [1 :aka  \"dragon_killer_94\"] [1 :aka  '-=autobot=-']]";
+        Object input = Clojure.read("[[1 :name 'Ivan'] [1 :age  19] [1 :aka  \"dragon_killer_94\"] [1 :aka  '-=autobot=-']]");
         Set res = Datahike.q("[:find  ?n ?a :where [?e :aka \"dragon_killer_94\"] [?e :name ?n] [?e :age  ?a]]", input);
         assertTrue(res.size() == 1);
     }

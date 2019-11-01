@@ -13,15 +13,23 @@
 (def
   ^{:arglists '([uri])
     :doc
-              "Connects to a datahike database via URI. URI contains storage backend type
+              "Connects to a datahike database via URI or configuration. URI contains storage backend type
             and additional information for backends like database name, credentials, or
-            location. Refer to the store project in the examples folder or the documention
+            location. Refer to the store project in the examples folder or the documentation
             in the config markdown file in the doc folder.
 
             Usage:
 
               (connect \"datahike:mem://example\")"}
   connect dc/connect)
+
+(def
+  ^{:arglists '([config])
+    :doc "Checks if a database exists given a configuration URI or hash map.
+          Usage:
+
+            (database-exists? \"datahike:mem://example\")"}
+  database-exists? dc/database-exists?)
 
 (def
   ^{:arglists '([config & opts])
@@ -38,12 +46,12 @@
 
                 `(create-database \"datahike:mem://example\")`
 
-              Initial data after creation may be added using the `:initial-tx` parameter:
+              Initial data after creation may be added using the `:initial-tx` parameter, which in this example adds a schema:
 
                 (create-database \"datahike:mem://example\" :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])
 
-              Datahike has a strict schema validation (schema-on-write) policy per default,
-              that only allows data that has been defined via schema definition in advance.
+              Datahike has a strict schema validation (schema-on-write) policy by default,
+              that only allows transaction of data that that has been pre-defined by a schema.
               You may influence this behaviour using the `:schema-on-read` parameter:
 
                 (create-database \"datahike:mem://example\" :schema-on-read true)
@@ -62,12 +70,91 @@
   dc/delete-database)
 
 (def ^{:arglists '([conn tx-data])
-       :doc      "Same as [[transact!]] but returns realized value directly."}
+       :doc      "Applies transaction the underlying database value and atomically updates connection reference to point to the result of that transaction, new db value.
+  Returns transaction report, a map:
+
+       { :db-before ...       ; db value before transaction
+         :db-after  ...       ; db value after transaction
+         :tx-data   [...]     ; plain datoms that were added/retracted from db-before
+         :tempids   {...}     ; map of tempid from tx-data => assigned entid in db-after
+         :tx-meta   tx-meta } ; the exact value you passed as `tx-meta`
+
+  Note! `conn` will be updated in-place and is not returned from [[transact]].
+  
+  Usage:
+
+      ; add a single datom to an existing entity (1)
+      (transact conn [[:db/add 1 :name \"Ivan\"]])
+  
+      ; retract a single datom
+      (transact conn [[:db/retract 1 :name \"Ivan\"]])
+  
+      ; retract single entity attribute
+      (transact conn [[:db.fn/retractAttribute 1 :name]])
+      
+      ; retract all entity attributes (effectively deletes entity)
+      (transact conn [[:db.fn/retractEntity 1]])
+  
+      ; create a new entity (`-1`, as any other negative value, is a tempid
+      ; that will be replaced with DataScript to a next unused eid)
+      (transact conn [[:db/add -1 :name \"Ivan\"]])
+  
+      ; check assigned id (here `*1` is a result returned from previous `transact` call)
+      (def report *1)
+      (:tempids report) ; => {-1 296}
+  
+      ; check actual datoms inserted
+      (:tx-data report) ; => [#datahike/Datom [296 :name \"Ivan\"]]
+  
+      ; tempid can also be a string
+      (transact conn [[:db/add \"ivan\" :name \"Ivan\"]])
+      (:tempids *1) ; => {\"ivan\" 297}
+  
+      ; reference another entity (must exist)
+      (transact conn [[:db/add -1 :friend 296]])
+  
+      ; create an entity and set multiple attributes (in a single transaction
+      ; equal tempids will be replaced with the same unused yet entid)
+      (transact conn [[:db/add -1 :name \"Ivan\"]
+                       [:db/add -1 :likes \"fries\"]
+                       [:db/add -1 :likes \"pizza\"]
+                       [:db/add -1 :friend 296]])
+  
+      ; create an entity and set multiple attributes (alternative map form)
+      (transact conn [{:db/id  -1
+                        :name   \"Ivan\"
+                        :likes  [\"fries\" \"pizza\"]
+                        :friend 296}])
+      
+      ; update an entity (alternative map form). Can’t retract attributes in
+      ; map form. For cardinality many attrs, value (fish in this example)
+      ; will be added to the list of existing values
+      (transact conn [{:db/id  296
+                        :name   \"Oleg\"
+                        :likes  [\"fish\"]}])
+
+      ; ref attributes can be specified as nested map, that will create netsed entity as well
+      (transact conn [{:db/id  -1
+                        :name   \"Oleg\"
+                        :friend {:db/id -2
+                                 :name \"Sergey\"}])
+                                 
+      ; reverse attribute name can be used if you want created entity to become
+      ; a value in another entity reference
+      (transact conn [{:db/id  -1
+                        :name   \"Oleg\"
+                        :_friend 296}])
+      ; equivalent to
+      (transact conn [{:db/id  -1, :name   \"Oleg\"}
+                       {:db/id 296, :friend -1}])
+      ; equivalent to
+      (transact conn [[:db/add  -1 :name   \"Oleg\"]
+                       {:db/add 296 :friend -1]])"}
   transact
   dc/transact)
 
 (def ^{:arglists '([conn tx-data tx-meta])
-       :doc      "Applies transaction the underlying database value and atomically updates connection reference to point to the result of that transaction, new db value."}
+       :doc      "The same as [[transact]] but returns Future to be realized."}
   transact!
   dc/transact!)
 
@@ -129,6 +216,82 @@
                (:args query-map)
                arg-list)]
     (apply dq/q query args)))
+(defn datoms
+  "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components (e, a, v) match passed arguments.
+
+   Datoms are sorted in index sort order. Possible `index` values are: `:eavt`, `:aevt`, `:avet`.
+
+   Usage:
+
+       ; find all datoms for entity id == 1 (any attrs and values)
+       ; sort by attribute, then value
+       (datoms db :eavt 1)
+       ; => (#datahike/Datom [1 :friends 2]
+       ;     #datahike/Datom [1 :likes \"fries\"]
+       ;     #datahike/Datom [1 :likes \"pizza\"]
+       ;     #datahike/Datom [1 :name \"Ivan\"])
+
+       ; find all datoms for entity id == 1 and attribute == :likes (any values)
+       ; sorted by value
+       (datoms db :eavt 1 :likes)
+       ; => (#datahike/Datom [1 :likes \"fries\"]
+       ;     #datahike/Datom [1 :likes \"pizza\"])
+
+       ; find all datoms for entity id == 1, attribute == :likes and value == \"pizza\"
+       (datoms db :eavt 1 :likes \"pizza\")
+       ; => (#datahike/Datom [1 :likes \"pizza\"])
+
+       ; find all datoms for attribute == :likes (any entity ids and values)
+       ; sorted by entity id, then value
+       (datoms db :aevt :likes)
+       ; => (#datahike/Datom [1 :likes \"fries\"]
+       ;     #datahike/Datom [1 :likes \"pizza\"]
+       ;     #datahike/Datom [2 :likes \"candy\"]
+       ;     #datahike/Datom [2 :likes \"pie\"]
+       ;     #datahike/Datom [2 :likes \"pizza\"])
+
+       ; find all datoms that have attribute == `:likes` and value == `\"pizza\"` (any entity id)
+       ; `:likes` must be a unique attr, reference or marked as `:db/index true`
+       (datoms db :avet :likes \"pizza\")
+       ; => (#datahike/Datom [1 :likes \"pizza\"]
+       ;     #datahike/Datom [2 :likes \"pizza\"])
+
+       ; find all datoms sorted by entity id, then attribute, then value
+       (datoms db :eavt) ; => (...)
+
+   Useful patterns:
+
+       ; get all values of :db.cardinality/many attribute
+       (->> (datoms db :eavt eid attr) (map :v))
+
+       ; lookup entity ids by attribute value
+       (->> (datoms db :avet attr value) (map :e))
+
+       ; find all entities with a specific attribute
+       (->> (datoms db :aevt attr) (map :e))
+
+       ; find “singleton” entity by its attr
+       (->> (datoms db :aevt attr) first :e)
+
+       ; find N entities with lowest attr value (e.g. 10 earliest posts)
+       (->> (datoms db :avet attr) (take N))
+
+       ; find N entities with highest attr value (e.g. 10 latest posts)
+       (->> (datoms db :avet attr) (reverse) (take N))
+
+   Gotchas:
+
+   - Index lookup is usually more efficient than doing a query with a single clause.
+   - Resulting iterator is calculated in constant time and small constant memory overhead.
+   - Iterator supports efficient `first`, `next`, `reverse`, `seq` and is itself a sequence.
+   - Will not return datoms that are not part of the index (e.g. attributes with no `:db/index` in schema when querying `:avet` index).
+     - `:eavt` and `:aevt` contain all datoms.
+     - `:avet` only contains datoms for references, `:db/unique` and `:db/index` attributes."
+  ([db index]             {:pre [(db/db? db)]} (db/-datoms db index []))
+  ([db index c1]          {:pre [(db/db? db)]} (db/-datoms db index [c1]))
+  ([db index c1 c2]       {:pre [(db/db? db)]} (db/-datoms db index [c1 c2]))
+  ([db index c1 c2 c3]    {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3]))
+  ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3 c4])))
 
 (defn seek-datoms
   "Similar to [[datoms]], but will return datoms starting from specified components and including rest of the database until the end of the index.
@@ -269,7 +432,7 @@
       (instance? SinceDB x)))
 
 (defn with
-  "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
+  "Same as [[transact]], but applies to an immutable database value. Returns transaction report (see [[transact]])."
   ([db tx-data] (with db tx-data nil))
   ([db tx-data tx-meta]
    {:pre [(db/db? db)]}
@@ -281,6 +444,12 @@
                              :tx-data   []
                              :tempids   {}
                              :tx-meta   tx-meta}) tx-data))))
+
+(defn db-with
+  "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
+  [db tx-data]
+  {:pre [(db/db? db)]}
+  (:db-after (with db tx-data)))
 
 (defn db
   "Returns the current state of the database you may interact with."
