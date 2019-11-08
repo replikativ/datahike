@@ -72,10 +72,10 @@ public class Datahike {
         return (Set)qFn.applyTo(RT.seq(argsCopy));
     }*/
 
-    public static Set q(String query, Object... inputs) {
+    public static Set<PersistentVector> q(String query, Object... inputs) {
         List argsCopy = new ArrayList(Arrays.asList(inputs));
         argsCopy.add(0, Clojure.read(query));
-        return (Set)qFn.applyTo(RT.seq(argsCopy));
+        return (Set<PersistentVector>)qFn.applyTo(RT.seq(argsCopy));
     }
 
     public static Object transact(Object conn, PersistentVector txData) {
