@@ -113,3 +113,28 @@
 (defmethod scheme->index :level [_]
   :datahike.index/hitchhiker-tree)
 
+;; ddb
+
+#?(:clj
+   (do
+     (def ^:dynamic *ddb-client* nil)
+
+     (defn- ddb-merge-client
+       [config]
+       (merge config (some->> *ddb-client* (hash-map :ddb-client))))
+
+     (defmethod empty-store :ddb [config]
+       (let [f (requiring-resolve 'konserve-ddb.core/empty-store)]
+         (kons/add-hitchhiker-tree-handlers
+           (<?? S (f (ddb-merge-client config))))))
+
+     (defmethod delete-store :ddb [config]
+       (let [f (requiring-resolve 'konserve-ddb.core/delete-store)]
+         (<?? S (f (ddb-merge-client config)))))
+
+     (defmethod connect-store :ddb [config]
+       (let [f (requiring-resolve 'konserve-ddb.core/connect-store)]
+         (<?? S (f (ddb-merge-client config)))))
+
+     (defmethod scheme->index :ddb [_]
+       :datahike.index/hitchhiker-tree)))
