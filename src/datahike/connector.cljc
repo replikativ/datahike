@@ -3,7 +3,7 @@
             [datahike.core :as d]
             [datahike.index :as di]
             [datahike.store :as ds]
-            [hitchhiker.konserve :as kons]
+            [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
             [konserve.cache :as kc]
             [superv.async :refer [<?? S]]
