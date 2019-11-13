@@ -1014,6 +1014,9 @@
          (< eid tx0))                                 ;; do not trigger advance if transaction id was referenced
     (assoc :max-eid eid)))
 
+(defn- advance-max-tid [db tid]
+  (assoc db :max-tx tid))
+
 (defn- allocate-eid
   ([report eid]
    (update-in report [:db-after] advance-max-eid eid))
