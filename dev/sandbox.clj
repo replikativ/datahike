@@ -75,48 +75,40 @@
               db' (cond-> db
                     true (update-in [:eavt] #(di/-insert % meta-entity :eavt))
                     true (update-in [:aevt] #(di/-insert % meta-entity :aevt))
-                    true (advance-max-tid max-tx)
+                    true (ddb/advance-max-tid max-tx)
                     true (update :hash + (hash meta-entity)))]
           (swap! migration-state assoc-in [:tids e] max-tx)
           (recur (rest meta-entities) db')))))
 
-
-
-
-
-
-(defn migrate-data [db raw-entities]
+  (defn migrate-data [db raw-entities]
     (loop [entities (->> raw-entities
                          (remove (fn [[_ a _ _ _]] (#{:db/txInstant :db.install/attribute} a)))
                          (sort-by first))
            db db]
       (if (empty? entities)
-                  db
-                  (let [max-eid (ddb/next-eid db)
-                        [e a v t added] (first entities)
-                        temporal-index? (ddb/-temporal-index? db)
-                        entity ^datahike.datom.Datom (dd/datom max-eid a v (get-in @migration-state [:tids t]) added)
-                        db' (if (ddb/datom-added entity)
-                              (cond-> db
-                                true (update-in [:eavt] #(di/-insert % entity :eavt))
-                                true (update-in [:aevt] #(di/-insert % entity :aevt))
-                                true (advance-max-eid (.-e entity))
-                                true (update :hash + (hash entity)))
-                              (if-some [removing ^datahike.datom.Datom (first (ddb/-search db [(.-e entity) (.-a entity) (.-v entity)]))]
-                                (cond-> db
-                                  true (update-in [:eavt] #(di/-remove % removing :eavt))
-                                  true (update-in [:aevt] #(di/-remove % removing :aevt))
-                                  true (update :hash - (hash removing))
-                                  temporal-index? (update-in [:temporal-eavt] #(di/-insert % entity :eavt))
-                                  temporal-index? (update-in [:temporal-aevt] #(di/-insert % entity :aevt)))
-                                db))]
-                    (swap! migration-state assoc-in [:eids e] max-eid)
-                    (recur (rest entities) db')))))
+        db
+        (let [max-eid (ddb/next-eid db)
+              [e a v t added] (first entities)
+              temporal-index? (ddb/-temporal-index? db)
+              entity ^datahike.datom.Datom (dd/datom max-eid a v (get-in @migration-state [:tids t]) added)
+              db' (if (ddb/datom-added entity)
+                    (cond-> db
+                      true (update-in [:eavt] #(di/-insert % entity :eavt))
+                      true (update-in [:aevt] #(di/-insert % entity :aevt))
+                      true (ddb/advance-max-eid (.-e entity))
+                      true (update :hash + (hash entity)))
+                    (if-some [removing ^datahike.datom.Datom (first (ddb/-search db [(.-e entity) (.-a entity) (.-v entity)]))]
+                      (cond-> db
+                        true (update-in [:eavt] #(di/-remove % removing :eavt))
+                        true (update-in [:aevt] #(di/-remove % removing :aevt))
+                        true (update :hash - (hash removing))
+                        temporal-index? (update-in [:temporal-eavt] #(di/-insert % entity :eavt))
+                        temporal-index? (update-in [:temporal-aevt] #(di/-insert % entity :aevt)))
+                      db))]
+          (swap! migration-state assoc-in [:eids e] max-eid)
+          (recur (rest entities) db')))))
 
-(def new-db (-> (ddb/empty-db nil :datahike.index/hitchhiker-tree :config {:schema-on-read false
-                                                                 :temporal-index true})
+  (def new-db (-> (ddb/empty-db nil :datahike.index/hitchhiker-tree :config {:schema-on-read false
+                                                                             :temporal-index true})
                   (migrate-meta dt-entities)
-                  (migrate-data dt-entities)))
-
-
-  )
+                  (migrate-data dt-entities))))
