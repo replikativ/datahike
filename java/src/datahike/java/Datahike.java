@@ -11,6 +11,9 @@ import java.util.*;
 import static datahike.java.Util.deref;
 
 public class Datahike {
+    /**
+     * Imports the Clojure defined 'datahike.api' namespace.
+     */
     static {
         IFn require = Clojure.var("clojure.core", "require");
         require.invoke(Clojure.read("datahike.api"));
