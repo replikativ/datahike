@@ -65,20 +65,7 @@ public class DatahikeTest {
         Object[] names = res.stream().map(vec -> vec.get(0)).toArray();
         assertTrue(names[0].equals("Alice"));
     }
-
-    @org.junit.Test
-    public void queryWithJavaMapInput() {
-        transactOnce();
-        query = "[:find ?k ?v :in [[?k ?v] ...]]]";
-        Set<PersistentVector> res = Datahike.q(query,
-                new HashMap<String, Integer>() {{
-                    put("Paul", 1);
-                    put("Jean", 3);
-                }} );
-        Object[] names = res.stream().map(vec -> vec.get(0)).toArray();
-        assertTrue(names[0].equals("Jean"));
-    }
-
+    
     @org.junit.Test
     public void queryWithLocalInputDB() {
         Object input = Clojure.read("[[1 :name 'Ivan'] [1 :age  19] [1 :aka  \"dragon_killer_94\"] [1 :aka  '-=autobot=-']]");
