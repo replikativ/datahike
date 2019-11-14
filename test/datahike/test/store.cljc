@@ -2,7 +2,9 @@
   (:require
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [datahike.api :as d]))
+    [datahike.api :as d]
+    [datahike.level-store]
+    [datahike.postgres-store]))
 
 (defn test-store [uri]
   (let [_ (d/delete-database uri)]

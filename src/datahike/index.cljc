@@ -1,7 +1,7 @@
 (ns datahike.index
   (:require [datahike.index.hitchhiker-tree :as dih]
             [datahike.index.persistent-set :as dip])
-  #?(:clj (:import [hitchhiker.tree.core DataNode IndexNode]
+  #?(:clj (:import [hitchhiker.tree DataNode IndexNode]
                    [me.tonsky.persistent_sorted_set PersistentSortedSet])))
 
 ;; TODO add doc to each function
