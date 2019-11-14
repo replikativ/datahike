@@ -65,7 +65,7 @@ public class DatahikeTest {
         Object[] names = res.stream().map(vec -> vec.get(0)).toArray();
         assertTrue(names[0].equals("Alice"));
     }
-    
+
     @org.junit.Test
     public void queryWithLocalInputDB() {
         Object input = Clojure.read("[[1 :name 'Ivan'] [1 :age  19] [1 :aka  \"dragon_killer_94\"] [1 :aka  '-=autobot=-']]");
@@ -216,7 +216,4 @@ public class DatahikeTest {
         Object res = Datahike.with(dConn(conn), txData);
         // TODO: assert
     }
-
-    // TODO: datom? Create an Java Interface for it?
-    // TODO: Try to use java streams to visit the (query) results
 }
