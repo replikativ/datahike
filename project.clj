@@ -12,14 +12,15 @@
                  [io.replikativ/hitchhiker-tree "0.1.5-SNAPSHOT"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2" :scope "provided"]
-                 [io.lambdaforge/datalog-parser "0.1.0"]]
+                 [io.lambdaforge/datalog-parser "0.1.0"]
+                 [com.github.csm/konserve-ddb-s3 "0.1.1" :scope "provided"]]
 
   :plugins [[lein-cljsbuild "1.1.7"]]
 
   :global-vars {*warn-on-reflection*   true
-                *print-namespace-maps* false
+                *print-namespace-maps* false}
 ;;     *unchecked-math* :warn-on-boxed
-                }
+
   :jvm-opts ["-Xmx2g" "-server"]
 
   :aliases {"test-clj"     ["run" "-m" "datahike.test/test-clj"]
