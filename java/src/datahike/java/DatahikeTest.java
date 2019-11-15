@@ -170,7 +170,7 @@ public class DatahikeTest {
         res = Datahike.seekdatoms(dConn( conn), k(":eavt"), 30, k(":name"), "Sergey");
         res.stream().map(vec -> {
                 int entityId = (int)vec.get(0);
-                assertTrue(entityId == 30 && vec.get(1).equals(":name") && vec.get(2).equals("Sergey")||
+                assertTrue(entityId == 30 && vec.get(1).equals(":name") && vec.get(2).equals("Sergey") ||
                            entityId > 30);
                 return null;
             });
