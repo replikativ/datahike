@@ -156,12 +156,24 @@ public class DatahikeTest {
         conn = Datahike.connect(uri);
 
         Datahike.transact(conn, (PersistentVector)Clojure.read("[{:db/id 10 :name \"Petr\" :age 44} {:db/id 20 :name \"Ivan\" :age 25} {:db/id 30 :name \"Sergey\" :age 11}]"));
-        List res = Datahike.seekdatoms(dConn( conn), k(":eavt"), 10);
-        // TODO: Add assertion
+        List<PersistentVector> res = Datahike.seekdatoms(dConn( conn), k(":eavt"), 10);
+        res.stream().map(vec -> {assertTrue((int)vec.get(0) >= 10); return null;});
+
         res = Datahike.seekdatoms(dConn( conn), k(":eavt"), 10, k(":name"));
-        // TODO: Add assertion
+        res.stream().map(vec -> {
+                int entityId = (int)vec.get(0);
+                assertTrue(entityId == 10 && vec.get(1).equals(":name") ||
+                           entityId > 10);
+                return null;
+            });
+
         res = Datahike.seekdatoms(dConn( conn), k(":eavt"), 30, k(":name"), "Sergey");
-        // TODO: Add assertion
+        res.stream().map(vec -> {
+                int entityId = (int)vec.get(0);
+                assertTrue(entityId == 30 && vec.get(1).equals(":name") && vec.get(2).equals("Sergey")||
+                           entityId > 30);
+                return null;
+            });
     }
 
     @Test
