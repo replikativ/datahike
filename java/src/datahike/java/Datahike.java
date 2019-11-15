@@ -38,6 +38,7 @@ public class Datahike {
     private static final IFn isFilteredFn = Clojure.var("datahike.api", "is-filtered");
     private static final IFn filterFn = Clojure.var("datahike.api", "filter");
     private static final IFn withFn = Clojure.var("datahike.api", "with");
+    private static final IFn dbWithFn = Clojure.var("datahike.api", "db-with");
 
     /**
      * @return a de-referenced version of the connection
@@ -147,7 +148,13 @@ public class Datahike {
         return filterFn.invoke(dConn, pred);
     }
 
+    // TODO: Not fully usable right now. Needs the missing definition of an ITxReport and implementation of
+    // dbAfter, dbBefore, etc... on the Clojure side
     public static Object with(Object dConn, Object pred) {
         return withFn.invoke(dConn, pred);
+    }
+
+    public static Object dbWith(Object dConn, Object txData) {
+        return dbWithFn.invoke(dConn, txData);
     }
 }

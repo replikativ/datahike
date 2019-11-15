@@ -221,11 +221,22 @@ public class DatahikeTest {
 
     @Test
     public void with() {
+           Datahike.createDatabase(uri, k(":initial-tx"), schema);
+           conn = Datahike.connect(uri);
+
+           PersistentVector txData = (PersistentVector)Clojure.read("[{:db/id 10 :name \"Petr\" :age 44} {:db/id 20 :name \"Ivan\" :age 25} {:db/id 30 :name \"Sergey\" :age 11}]");
+           Object res = Datahike.with(dConn(conn), txData);
+           // TODO: assert. But needs to define an ITxReport first.
+       }
+
+    @Test
+    public void dbWith() {
         Datahike.createDatabase(uri, k(":initial-tx"), schema);
         conn = Datahike.connect(uri);
-
         PersistentVector txData = (PersistentVector)Clojure.read("[{:db/id 10 :name \"Petr\" :age 44} {:db/id 20 :name \"Ivan\" :age 25} {:db/id 30 :name \"Sergey\" :age 11}]");
-        Object res = Datahike.with(dConn(conn), txData);
-        // TODO: assert
+        Object dbAfter = Datahike.dbWith(dConn(conn), txData);
+        query = "[:find ?a :in $ :where [?e :age ?a]]";
+        Set<PersistentVector> res = Datahike.q(query, dbAfter);
+        assertTrue(res.size() == 3);
     }
 }
