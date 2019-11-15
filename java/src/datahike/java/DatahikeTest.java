@@ -202,7 +202,7 @@ public class DatahikeTest {
         Datahike.transact(conn, vec(map(k(":db/id"), 10,
                 k(":name"), "Joe",
                 k(":age"), 50L)));
-        Object entity = Datahike.entity(dConn(conn), 10);
+        IEntity entity = Datahike.entity(dConn(conn), 10);
 
         Object db = Datahike.entityDb(entity);
         assertNotNull(db);

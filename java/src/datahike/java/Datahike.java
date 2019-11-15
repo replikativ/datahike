@@ -135,8 +135,7 @@ public class Datahike {
         return (IEntity)entityFn.invoke(dConn, eid);
     }
 
-    // TODO: this would also benefit from an Entity interface
-    public static Object entityDb(Object entity) {
+    public static Object entityDb(IEntity entity) {
         return entityDbFn.invoke(entity);
     }
 
