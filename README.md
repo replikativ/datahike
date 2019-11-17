@@ -138,7 +138,7 @@ of professional support, you should definitely stick to Datomic.
 
 datahike's query engine and most of its codebase come from
 [datascript](https://github.com/tonsky/datascript). Without the work on
-datascript datahike would not have been possible. Differences to Datomic with
+datascript, datahike would not have been possible. Differences to Datomic with
 respect to the query engine are documented there.
 
 ## When should I pick what?
