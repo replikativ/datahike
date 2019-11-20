@@ -49,6 +49,13 @@ public class DatahikeTest {
     }
 
     @org.junit.Test
+    public void db() {
+        Datahike.createDatabase(uri, k(":initial-tx"), schema);
+        conn = Datahike.connect(uri);
+        assertEquals(Datahike.db(conn), dConn(conn));
+    }
+
+    @org.junit.Test
     public void queryWithDBAndInput() {
         transactOnce();
         query = "[:find ?n ?a :in $ [?n] :where [?e :name ?n] [?e :age ?a]]";
