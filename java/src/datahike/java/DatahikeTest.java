@@ -114,7 +114,6 @@ public class DatahikeTest {
                 k(":age"), 30L)));
 
         Set res = Datahike.q(query, Datahike.asOf(dConn(conn), firstDate));
-        // TODO: add better assert
         assertEquals(2, res.size());
 
         res = Datahike.q(query, Datahike.since(dConn(conn), firstDate));
