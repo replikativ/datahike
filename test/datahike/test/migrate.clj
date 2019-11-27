@@ -3,6 +3,19 @@
             [datahike.migrate :refer :all]
             [datahike.api :refer :all]))
 
+(def tx-data [[:db/add 1 :db/cardinality :db.cardinality/one 536870913 true]
+              [:db/add 1 :db/ident :name 536870913 true]
+              [:db/add 1 :db/index true 536870913 true]
+              [:db/add 1 :db/unique :db.unique/identity 536870913 true]
+              [:db/add 1 :db/valueType :db.type/string 536870913 true]
+              [:db/add 2 :db/cardinality :db.cardinality/one 536870913 true]
+              [:db/add 2 :db/ident :age 536870913 true]
+              [:db/add 2 :db/valueType :db.type/long 536870913 true]
+              [:db/add 3 :age 25 536870913 true]
+              [:db/add 3 :name "Alice" 536870913 true]
+              [:db/add 4 :age 35 536870913 true]
+              [:db/add 4 :name "Bob" 536870913 true]])
+
 (deftest export-import-test
   (testing "Test a roundtrip for exporting and importing."
     (let [uri "datahike:file:///tmp/export-db1"
