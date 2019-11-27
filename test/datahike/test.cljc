@@ -16,6 +16,7 @@
     datahike.test.listen
     datahike.test.lookup-refs
     datahike.test.lru
+    datahike.test.migrate
     datahike.test.pull-api
     datahike.test.purge
     datahike.test.query
