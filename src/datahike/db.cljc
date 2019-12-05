@@ -1475,10 +1475,9 @@
             (if (-temporal-index? db)
               (let [history (HistoricalDB. db)]
                 (if-some [e (entid history e)]
-                  (let [v (if (ref? history a) (entid-strict history v) v)]
-                    (if-some [old-datom (first (-search history [e a v]))]
-                      (recur (transact-purge-datom report old-datom) entities)
-                      (recur report entities)))
+                  (let [v (if (ref? history a) (entid-strict history v) v)
+                        old-datoms (-search history [e a v])]
+                    (recur (reduce transact-purge-datom report old-datoms) entities))
                   (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
               (raise "Purge is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
 
@@ -1507,7 +1506,7 @@
             (= op :db.history.purge/before)
             (if (-temporal-index? db)
               (let [history (HistoricalDB. db)
-                    e-datoms (-> (-search history [nil nil nil nil false]) vec (filter-before e db) vec)
+                    e-datoms (-> (search-temporal-indices db nil) vec (filter-before e db) vec)
                     retracted-comps (purge-components history e-datoms)]
                 (recur (reduce transact-purge-datom report e-datoms)
                        (concat retracted-comps entities)))
