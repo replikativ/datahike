@@ -12,7 +12,7 @@ import static datahike.java.Util.deref;
 
 public class Datahike {
     /**
-     * Imports the Clojure defined 'datahike.api' namespace.
+     * Imports the Clojure 'datahike.api' namespace.
      */
     static {
         IFn require = Clojure.var("clojure.core", "require");
@@ -41,20 +41,43 @@ public class Datahike {
     private static final IFn dbWithFn = Clojure.var("datahike.api", "db-with");
 
     /**
-     * @return a de-referenced version of the connection
+     * @return a dereferenced version of the database
      */
     public static Object dConn(Object conn) {
         return deref.invoke(conn);
     };
 
+    /**
+     * Deletes the database given as argument.
+     */
     public static void deleteDatabase(String uri) {
         deleteDatabaseFn.invoke(uri);
     }
 
+    /**
+     * Creates a database at the given 'uri'.
+     */
     public static void createDatabase(String uri) {
         createDatabaseFn.invoke(uri);
     }
 
+    /**
+     * Creates a database at the given 'uri' and parameterizes its creation through argument 'args'.
+     *
+     * @param uri
+     * the location of the database creation
+     *
+     * @param args
+     * If providing initial data to transact  pass the keyword 'k(":initial-tx")' as the first argument followed by the data. Data could be a schema as shown in the following example:
+     * Datahike.createDatabase(uri, k(":initial-tx"), schema);
+     *
+     * Use keyword 'k(":schema-on-read")' to define whether the database uses a schema or not. By default, the database requires a schema. Example:
+     * Datahike.createDatabase(uri, k(":schema-on-read"), false);
+     *
+     * With keyword k(':temporal-index') at true you can query the data from any point in time. To not use this feature, write:
+     * Datahike.createDatabase(uri, k(":temporal-index"), false);
+     *
+     */
     public static void createDatabase(String uri, Object... args) {
         List argsCopy = new ArrayList(Arrays.asList(args));
         argsCopy.add(0, uri);
