@@ -9,6 +9,7 @@
    [datahike.constants :refer [e0 tx0 emax txmax]]
    [datahike.tools :refer [get-time case-tree]]
    [datahike.schema :as ds]
+   [datahike.config :refer [complete-config]]
    [me.tonsky.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.db :refer [raise defrecord-updatable cond+]]
                             [datahike.datom :refer [combine-cmp]]
@@ -683,28 +684,28 @@
 (def ^:const br-sqrt (long (Math/sqrt br)))
 
 (defn ^DB empty-db
-  ([] (empty-db nil :datahike.index/hitchhiker-tree))
-  ([schema] (empty-db schema :datahike.index/hitchhiker-tree))
-  ([schema index & {config :config
-                    :or    {config {:schema-on-read true
-                                    :temporal-index false}}}]
+  ([] (empty-db nil))
+  ([schema] (empty-db schema {:schema-on-read true
+                              :temporal-index false}))
+  ([schema user-config]
    {:pre [(or (nil? schema) (map? schema))]}
    (validate-schema schema)
-   (map->DB
-    (merge
-     {:schema  (merge schema (when (:schema-on-read config) implicit-schema))
-      :rschema (rschema (merge implicit-schema schema))
-      :config  config
-      :eavt    (di/empty-index index :eavt)
-      :aevt    (di/empty-index index :aevt)
-      :avet    (di/empty-index index :avet)
-      :max-eid e0
-      :max-tx  tx0
-      :hash    0}
-     (when (:temporal-index config)
-       {:temporal-eavt (di/empty-index index :eavt)
-        :temporal-aevt (di/empty-index index :aevt)
-        :temporal-avet (di/empty-index index :avet)})))))
+   (let [config (complete-config user-config)]
+     (map->DB
+       (merge
+         {:schema  (merge schema (when (:schema-on-read config) implicit-schema))
+          :rschema (rschema (merge implicit-schema schema))
+          :config  config
+          :eavt    (di/empty-index (:index-type config) :eavt)
+          :aevt    (di/empty-index (:index-type config) :aevt)
+          :avet    (di/empty-index (:index-type config) :avet)
+          :max-tx  tx0
+          :max-eid e0
+          :hash    0}
+         (when (:temporal-index config)
+           {:temporal-eavt (di/empty-index (:index-type config) :eavt)
+            :temporal-aevt (di/empty-index (:index-type config) :aevt)
+            :temporal-avet (di/empty-index (:index-type config) :avet)}))))))
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
@@ -721,17 +722,16 @@
 
 (defn ^DB init-db
   ([datoms] (init-db datoms nil))
-  ([datoms schema & {index  :index
-                     config :config
-                     :or    {index  :datahike.index/hitchhiker-tree
-                             config {:schema-on-read true
-                                     :temporal-index false}}}]
+  ([datoms schema] (init-db datoms schema {:schema-on-read true
+                                           :temporal-index false}))
+  ([datoms schema user-config]
    (validate-schema schema)
    (let [rschema (rschema (merge implicit-schema schema))
+         config (complete-config user-config)
          indexed (:db/index rschema)
-         eavt (di/init-index index datoms indexed :eavt)
-         aevt (di/init-index index datoms indexed :aevt)
-         avet (di/init-index index datoms indexed :avet)
+         eavt (di/init-index (:index-type config) datoms indexed :eavt)
+         aevt (di/init-index (:index-type config) datoms indexed :aevt)
+         avet (di/init-index (:index-type config) datoms indexed :avet)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)]
      (map->DB (merge {:schema  (merge schema (when (:schema-on-read config) implicit-schema))
@@ -740,13 +740,13 @@
                       :eavt    eavt
                       :aevt    aevt
                       :avet    avet
-                      :max-eid max-eid
                       :max-tx  max-tx
+                      :max-eid max-eid
                       :hash    (hash-datoms datoms)}
                      (when (:temporal-index config)
-                       {:temporal-eavt (di/empty-index index :eavt)
-                        :temporal-aevt (di/empty-index index :aevt)
-                        :temporal-avet (di/empty-index index :avet)}))))))
+                       {:temporal-eavt (di/empty-index (:index-type config) :eavt)
+                        :temporal-aevt (di/empty-index (:index-type config) :aevt)
+                        :temporal-avet (di/empty-index (:index-type config) :avet)}))))))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)

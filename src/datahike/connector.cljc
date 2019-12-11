@@ -91,6 +91,20 @@
     (database-exists? (dc/uri->config uri)))
   
   clojure.lang.PersistentArrayMap
+  (connect [user-config]
+    (connect (dc/complete-config user-config)))
+
+  (-create-database [user-config & opts]
+    (apply -create-database (dc/complete-config user-config) opts))
+
+  (delete-database [user-config]
+    (delete-database (dc/complete-config user-config)))
+
+  (database-exists? [user-config]
+    (database-exists? (dc/complete-config user-config)))
+
+
+  dc/Configuration
   (database-exists? [config]
     (let [raw-store (ds/connect-store config)]
       (if (not (nil? raw-store)) 
@@ -120,61 +134,53 @@
               (throw (ex-info "Database does not exist." {:type :db-does-not-exist
                                                           :config config})))
           {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx]} stored-db
-          empty (db/empty-db nil :datahike.index/hitchhiker-tree :config config)]
+          empty (db/empty-db nil :config config)]
       (d/conn-from-db
        (assoc empty
               :max-tx max-tx
               :config config
               :schema schema
-              :max-eid (db/init-max-eid eavt-key)
               :eavt eavt-key
               :aevt aevt-key
               :avet avet-key
               :temporal-eavt temporal-eavt-key
               :temporal-aevt temporal-aevt-key
               :temporal-avet temporal-avet-key
+              :max-eid (db/init-max-eid eavt-key)
               :rschema rschema
               :store store))))
 
-  (-create-database [store-config
-                    {:keys [initial-tx schema-on-read temporal-index]
-                     :or {schema-on-read false temporal-index true}
-                     :as opt-config}]
-  (dc/validate-config store-config)
-  (dc/validate-config-attribute :datahike.config/schema-on-read schema-on-read opt-config)
-  (dc/validate-config-attribute :datahike.config/temporal-index temporal-index opt-config)
-  (let [store (kc/ensure-cache
-               (ds/empty-store store-config)
-               (atom (cache/lru-cache-factory {} :threshold 1000)))
-        stored-db (<?? S (k/get-in store [:db]))
-        _ (when stored-db
-            (throw (ex-info "Database already exists." {:type :db-already-exists :config store-config})))
-        db-config {:schema-on-read schema-on-read
-                   :temporal-index temporal-index
-                   :storage store-config}
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]}
-        (db/empty-db
-         {:db/ident {:db/unique :db.unique/identity}}
-         (ds/scheme->index store-config)
-         :config db-config)
-        backend (kons/->KonserveBackend store)]
-    (<?? S (k/assoc-in store [:db]
-                       (merge {:schema   schema
-                               :max-tx max-tx
-                               :rschema  rschema
-                               :config   db-config
-                               :eavt-key (di/-flush eavt backend)
-                               :aevt-key (di/-flush aevt backend)
-                               :avet-key (di/-flush avet backend)}
-                              (when temporal-index
-                                {:temporal-eavt-key (di/-flush temporal-eavt backend)
-                                 :temporal-aevt-key (di/-flush temporal-aevt backend)
-                                 :temporal-avet-key (di/-flush temporal-avet backend)}))))
-    (ds/release-store store-config store)
-    (when initial-tx
-      (let [conn (connect store-config)]
-        (transact conn initial-tx)
-        (release conn)))))
+  (-create-database [config {:keys [initial-tx]}]
+    (let [store (kc/ensure-cache
+                 (ds/empty-store config)
+                 (atom (cache/lru-cache-factory {} :threshold 1000)))
+          stored-db (<?? S (k/get-in store [:db]))
+          _ (when stored-db
+              (throw (ex-info "Database already exists." {:type :db-already-exists :config config})))
+
+          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]}
+          (db/empty-db
+           {:db/ident {:db/unique :db.unique/identity}}
+           (ds/scheme->index config)
+           :config config)
+          backend (kons/->KonserveBackend store)]
+      (<?? S (k/assoc-in store [:db]
+                         (merge {:schema   schema
+                                 :max-tx max-tx
+                                 :rschema  rschema
+                                 :config   config
+                                 :eavt-key (di/-flush eavt backend)
+                                 :aevt-key (di/-flush aevt backend)
+                                 :avet-key (di/-flush avet backend)}
+                                (when (:temporal-index config)
+                                  {:temporal-eavt-key (di/-flush temporal-eavt backend)
+                                   :temporal-aevt-key (di/-flush temporal-aevt backend)
+                                   :temporal-avet-key (di/-flush temporal-avet backend)}))))
+      (ds/release-store config store)
+      (when initial-tx
+        (let [conn (connect config)]
+          (transact conn initial-tx)
+          (release conn)))))
 
   (delete-database [config]
     (ds/delete-store config)))
