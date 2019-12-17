@@ -560,7 +560,7 @@
         filtered-tx-ids (filter-txInstant datoms since-pred db)]
     (->> datoms
          (filter datom-added)
-         (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))) ))))
+         (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d)))))))
 
 (defn- filter-before [datoms ^Date before-date db]
   (let [before-pred (fn [^Datom d] (.before ^Date (.-v d) before-date))
@@ -1001,7 +1001,7 @@
 (defn- current-tx [report]
   (inc (get-in report [:db-before :max-tx])))
 
-(defn- next-eid [db]
+(defn next-eid [db]
   (inc (:max-eid db)))
 
 (defn- #?@(:clj  [^Boolean tx-id?]
@@ -1017,13 +1017,13 @@
   [x]
   (or (and (number? x) (neg? x)) (string? x)))
 
-(defn- advance-max-eid [db eid]
+(defn advance-max-eid [db eid]
   (cond-> db
           (and (> eid (:max-eid db))
                (< eid tx0))                                 ;; do not trigger advance if transaction id was referenced
           (assoc :max-eid eid)))
 
-(defn- advance-max-tid [db tid]
+(defn advance-max-tid [db tid]
   (assoc db :max-tx tid))
 
 (defn- allocate-eid
@@ -1527,3 +1527,40 @@
         :else
         (raise "Bad entity type at " entity ", expected map or vector"
                {:error :transact/syntax, :tx-data entity})))))
+
+(defn migrate-tx-data [initial-report initial-es]
+  (loop [report (update initial-report :db-after persistent!)
+         es initial-es
+         migration-state {}]
+    (let [[entity & entities] es
+          db (:db-after report)
+          [e a v t op] entity
+          max-eid (next-eid db)
+          max-tid (inc (get-in report [:db-after :max-tx]))]
+      (cond
+        (empty? es)
+        (-> report
+            (update-in [:db-after :max-tx] inc)
+            (update :db-after persistent!))
+
+        (= :db.install/attribute a)
+        (recur report entities migration-state)
+
+        ;; meta entity
+        (ds/meta-attr? a)
+        (let [new-datom (dd/datom max-tid a v max-tid op)]
+          (recur (-> (transact-report report new-datom)
+                     (assoc-in [:db-after :max-tx] max-tid))
+                 entities
+                 (assoc-in migration-state [:tids e] (.-e new-datom))))
+
+        :else
+        (let [new-datom ^Datom (dd/datom
+                          (or (get-in migration-state [:eids e]) max-eid)
+                          a
+                          (if (multival? db a)
+                            (get-in migration-state [:eids v])
+                            v)
+                          (get-in migration-state [:tids t])
+                          op)]
+          (recur (transact-report report new-datom) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))

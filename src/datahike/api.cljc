@@ -158,6 +158,12 @@
   transact!
   dc/transact!)
 
+(def ^{:arglists '([conn tx-data])
+       :doc "Migrates data from Datomic"}
+  migrate
+  dc/migrate)
+
+
 (def ^{:arglists '([conn])
        :doc      "Releases a database connection"}
   release dc/release)

@@ -8,10 +8,10 @@
     [datahike.constants :as dc]
     [datahike.impl.entity :as de])
   #?(:clj
-    (:import
-      [datahike.db FilteredDB]
-      [datahike.impl.entity Entity]
-      [java.util UUID])))
+     (:import
+       [datahike.db FilteredDB]
+       [datahike.impl.entity Entity]
+       [java.util UUID])))
 
 
 (def ^:const ^:no-doc tx0 dc/tx0)
@@ -20,7 +20,8 @@
 ; Entities
 
 (def ^{:arglists '([db eid])
-       :doc "Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate DataScript database content.
+
+       :doc      "Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate DataScript database content.
 
              For `eid` pass entity id or lookup attr:
              
@@ -72,7 +73,7 @@
 
 
 (def ^{:arglists '([db eid])
-       :doc "Given lookup ref `[unique-attr value]`, returns numberic entity id.
+       :doc      "Given lookup ref `[unique-attr value]`, returns numberic entity id.
 
              If entity does not exist, returns `nil`.
 
@@ -88,7 +89,7 @@
 
 
 (def ^{:arglists '([e])
-       :doc "Forces all entity attributes to be eagerly fetched and cached. Only usable for debug output.
+       :doc      "Forces all entity attributes to be eagerly fetched and cached. Only usable for debug output.
 
              Usage:
 
@@ -102,7 +103,7 @@
 ; Pull
 
 (def ^{:arglists '([db selector eid])
-       :doc "Fetches data from database using recursive declarative description. See [docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html).
+       :doc      "Fetches data from database using recursive declarative description. See [docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html).
 
              Unlike [[entity]], returns plain Clojure map (not lazy).
 
@@ -117,7 +118,7 @@
 
 
 (def ^{:arglists '([db selector eids])
-       :doc "Same as [[pull]], but accepts sequence of ids and returns sequence of maps.
+       :doc      "Same as [[pull]], but accepts sequence of ids and returns sequence of maps.
 
              Usage:
 
@@ -133,7 +134,7 @@
 
 (def
   ^{:arglists '([query & inputs])
-    :doc "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
+    :doc      "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
 
           Usage:
           
@@ -149,7 +150,7 @@
 ; Creating DB
 
 (def ^{:arglists '([] [schema])
-       :doc "Creates an empty database with an optional schema.
+       :doc      "Creates an empty database with an optional schema.
 
              Usage:
              
@@ -164,12 +165,12 @@
 
 
 (def ^{:arglists '([x])
-       :doc "Returns `true` if the given value is an immutable database, `false` otherwise."}
+       :doc      "Returns `true` if the given value is an immutable database, `false` otherwise."}
   db? db/db?)
 
 
 (def ^{:arglists '([e a v] [e a v tx] [e a v tx added])
-       :doc "Low-level fn to create raw datoms.
+       :doc      "Low-level fn to create raw datoms.
 
              Optionally with transaction id (number) and `added` flag (`true` for addition, `false` for retraction).
 
@@ -178,12 +179,12 @@
 
 
 (def ^{:arglists '([x])
-       :doc "Returns `true` if the given value is a datom, `false` otherwise."}
+       :doc      "Returns `true` if the given value is a datom, `false` otherwise."}
   datom? dd/datom?)
 
 
 (def ^{:arglists '([datoms] [datoms schema])
-       :doc "Low-level fn for creating database quickly from a trusted sequence of datoms.
+       :doc      "Low-level fn for creating database quickly from a trusted sequence of datoms.
 
              Does no validation on inputs, so `datoms` must be well-formed and match schema.
 
@@ -214,7 +215,7 @@
   (if (is-filtered db)
     (let [^FilteredDB fdb db
           orig-pred (.-pred fdb)
-          orig-db   (.-unfiltered-db fdb)]
+          orig-db (.-unfiltered-db fdb)]
       (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
     (FilteredDB. db #(pred db %))))
 
@@ -225,16 +226,24 @@
   "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
   ([db tx-data] (with db tx-data nil))
   ([db tx-data tx-meta]
-    {:pre [(db/db? db)]}
-    (if (is-filtered db)
-      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
-      (db/transact-tx-data (db/map->TxReport
-                             { :db-before db
-                               :db-after  db
-                               :tx-data   []
-                               :tempids   {}
-                               :tx-meta   tx-meta}) tx-data))))
+   {:pre [(db/db? db)]}
+   (if (is-filtered db)
+     (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
+     (db/transact-tx-data (db/map->TxReport
+                            {:db-before db
+                             :db-after  db
+                             :tx-data   []
+                             :tempids   {}
+                             :tx-meta   tx-meta}) tx-data))))
 
+(defn migrate-with [db tx-data]
+  (db/migrate-tx-data
+    (db/map->TxReport {:db-before db
+                       :db-after  db
+                       :tx-data   []
+                       :tempids   {}
+                       :tx-meta []})
+    tx-data))
 
 (defn db-with
   "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
@@ -316,10 +325,10 @@
    - Will not return datoms that are not part of the index (e.g. attributes with no `:db/index` in schema when querying `:avet` index).
      - `:eavt` and `:aevt` contain all datoms.
      - `:avet` only contains datoms for references, `:db/unique` and `:db/index` attributes."
-  ([db index]             {:pre [(db/db? db)]} (db/-datoms db index []))
-  ([db index c1]          {:pre [(db/db? db)]} (db/-datoms db index [c1]))
-  ([db index c1 c2]       {:pre [(db/db? db)]} (db/-datoms db index [c1 c2]))
-  ([db index c1 c2 c3]    {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3]))
+  ([db index] {:pre [(db/db? db)]} (db/-datoms db index []))
+  ([db index c1] {:pre [(db/db? db)]} (db/-datoms db index [c1]))
+  ([db index c1 c2] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2]))
+  ([db index c1 c2 c3] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3]))
   ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3 c4])))
 
 
@@ -354,19 +363,19 @@
        (seek-datoms db :eavt 2 :likes \"fish\")
        ; => (#datahike/Datom [2 :likes \"pie\"]
        ;     #datahike/Datom [2 :likes \"pizza\"])"
-  ([db index]             {:pre [(db/db? db)]} (db/-seek-datoms db index []))
-  ([db index c1]          {:pre [(db/db? db)]} (db/-seek-datoms db index [c1]))
-  ([db index c1 c2]       {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2]))
-  ([db index c1 c2 c3]    {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2 c3]))
+  ([db index] {:pre [(db/db? db)]} (db/-seek-datoms db index []))
+  ([db index c1] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1]))
+  ([db index c1 c2] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2]))
+  ([db index c1 c2 c3] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2 c3]))
   ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2 c3 c4])))
 
 
 (defn rseek-datoms
   "Same as [[seek-datoms]], but goes backwards until the beginning of the index."
-  ([db index]             {:pre [(db/db? db)]} (db/-rseek-datoms db index []))
-  ([db index c1]          {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1]))
-  ([db index c1 c2]       {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1 c2]))
-  ([db index c1 c2 c3]    {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1 c2 c3]))
+  ([db index] {:pre [(db/db? db)]} (db/-rseek-datoms db index []))
+  ([db index c1] {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1]))
+  ([db index c1 c2] {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1 c2]))
+  ([db index c1 c2 c3] {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1 c2 c3]))
   ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1 c2 c3 c4])))
 
 
@@ -406,18 +415,18 @@
   [conn]
   (and #?(:clj  (instance? clojure.lang.IDeref conn)
           :cljs (satisfies? cljs.core/IDeref conn))
-    (db/db? @conn)))
+       (db/db? @conn)))
 
 
 (defn conn-from-db
   "Creates a mutable reference to a given immutable database. See [[create-conn]]."
   [db]
-  (atom db :meta { :listeners (atom {}) }))
+  (atom db :meta {:listeners (atom {})}))
 
 
 (defn conn-from-datoms
   "Creates an empty DB and a mutable reference to it. See [[create-conn]]."
-  ([datoms]        (conn-from-db (init-db datoms)))
+  ([datoms] (conn-from-db (init-db datoms)))
   ([datoms schema] (conn-from-db (init-db datoms schema))))
 
 
@@ -427,9 +436,8 @@
    Connections are lightweight in-memory structures (~atoms) with direct support of transaction listeners ([[listen!]], [[unlisten!]]) and other handy DataScript APIs ([[transact!]], [[reset-conn!]], [[db]]).
 
    To access underlying immutable DB value, deref: `@conn`."
-  ([]       (conn-from-db (empty-db)))
+  ([] (conn-from-db (empty-db)))
   ([schema] (conn-from-db (empty-db schema))))
-
 
 (defn ^:no-doc -transact! [conn tx-data tx-meta]
   {:pre [(conn? conn)]}
@@ -440,6 +448,13 @@
                     (:db-after r))))
     @report))
 
+(defn -migrate! [conn tx-data]
+  (let [report (atom nil)]
+    (swap! conn (fn [db]
+                  (let [r (migrate-with db tx-data)]
+                    (reset! report r)
+                    (:db-after r))))
+    @report))
 
 (defn transact!
   "Applies transaction the underlying database value and atomically updates connection reference to point to the result of that transaction, new db value.
@@ -525,28 +540,28 @@
                        {:db/add 296 :friend -1]])"
   ([conn tx-data] (transact! conn tx-data nil))
   ([conn tx-data tx-meta]
-    {:pre [(conn? conn)]}
-    (let [report (-transact! conn tx-data tx-meta)]
-      (doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
-        (callback report))
-      report)))
+   {:pre [(conn? conn)]}
+   (let [report (-transact! conn tx-data tx-meta)]
+     (doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
+       (callback report))
+     report)))
 
 
 (defn reset-conn!
   "Forces underlying `conn` value to become `db`. Will generate a tx-report that will remove everything from old value and insert everything from the new one."
   ([conn db] (reset-conn! conn db nil))
   ([conn db tx-meta]
-    (let [report (db/map->TxReport
-                  { :db-before @conn
-                    :db-after  db
-                    :tx-data   (concat
-                                 (map #(assoc % :added false) (datoms @conn :eavt))
-                                 (datoms db :eavt))
-                    :tx-meta   tx-meta})]
-      (reset! conn db)
-      (doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
-        (callback report))
-      db)))
+   (let [report (db/map->TxReport
+                  {:db-before @conn
+                   :db-after  db
+                   :tx-data   (concat
+                                (map #(assoc % :added false) (datoms @conn :eavt))
+                                (datoms db :eavt))
+                   :tx-meta   tx-meta})]
+     (reset! conn db)
+     (doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
+       (callback report))
+     db)))
 
 
 (defn- atom? [a]
@@ -563,9 +578,9 @@
    Returns the key under which this listener is registered. See also [[unlisten!]]."
   ([conn callback] (listen! conn (rand) callback))
   ([conn key callback]
-     {:pre [(conn? conn) (atom? (:listeners (meta conn)))]}
-     (swap! (:listeners (meta conn)) assoc key callback)
-     key))
+   {:pre [(conn? conn) (atom? (:listeners (meta conn)))]}
+   (swap! (:listeners (meta conn)) assoc key callback)
+   key))
 
 
 (defn unlisten!
@@ -585,13 +600,13 @@
 
    Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
   ([part]
-    (if (= part :db.part/tx)
-      :db/current-tx
-      (swap! last-tempid dec)))
+   (if (= part :db.part/tx)
+     :db/current-tx
+     (swap! last-tempid dec)))
   ([part x]
-    (if (= part :db.part/tx)
-      :db/current-tx
-      x)))
+   (if (= part :db.part/tx)
+     :db/current-tx
+     x)))
 
 
 ;; Data Readers
@@ -602,7 +617,7 @@
              (clojure.edn/read-string {:readers data-readers} \"...\")
              ```"}
   data-readers {'datahike/Datom dd/datom-from-reader
-                'db/id tempid
+                'db/id          tempid
                 'datahike/DB    db/db-from-reader})
 
 #?(:cljs
@@ -632,30 +647,40 @@
    Exists for Datomic API compatibility. Prefer using [[transact!]] if possible."
   ([conn tx-data] (transact conn tx-data nil))
   ([conn tx-data tx-meta]
-    {:pre [(conn? conn)]}
-    (let [res (transact! conn tx-data tx-meta)]
-      #?(:cljs
-         (reify
-           IDeref
-           (-deref [_] res)
-           IDerefWithTimeout
-           (-deref-with-timeout [_ _ _] res)
-           IPending
-           (-realized? [_] true))
-         :clj
-         (reify
-           clojure.lang.IDeref
-           (deref [_] res)
-           clojure.lang.IBlockingDeref
-           (deref [_ _ _] res)
-           clojure.lang.IPending
-           (isRealized [_] true))))))
+   {:pre [(conn? conn)]}
+   (let [res (transact! conn tx-data tx-meta)]
+     #?(:cljs
+        (reify
+          IDeref
+          (-deref [_] res)
+          IDerefWithTimeout
+          (-deref-with-timeout [_ _ _] res)
+          IPending
+          (-realized? [_] true))
+        :clj
+        (reify
+          clojure.lang.IDeref
+          (deref [_] res)
+          clojure.lang.IBlockingDeref
+          (deref [_ _ _] res)
+          clojure.lang.IPending
+          (isRealized [_] true))))))
 
+(defn migrate [conn tx-data]
+  {:pre [(conn? conn)]}
+  (let [res (-migrate! conn tx-data)]
+    (reify
+      clojure.lang.IDeref
+      (deref [_] res)
+      clojure.lang.IBlockingDeref
+      (deref [_ _ _] res)
+      clojure.lang.IPending
+      (isRealized [_] true))))
 
 ;; ersatz future without proper blocking
 #?(:cljs
    (defn- future-call [f]
-     (let [res      (atom nil)
+     (let [res (atom nil)
            realized (atom false)]
        (js/setTimeout #(do (reset! res (f)) (reset! realized true)) 0)
        (reify
@@ -673,8 +698,8 @@
    In CLJS, just calls [[transact!]] and returns a realized future."
   ([conn tx-data] (transact-async conn tx-data nil))
   ([conn tx-data tx-meta]
-    {:pre [(conn? conn)]}
-    (future-call #(transact! conn tx-data tx-meta))))
+   {:pre [(conn? conn)]}
+   (future-call #(transact! conn tx-data tx-meta))))
 
 
 (defn- rand-bits [pow]
@@ -682,13 +707,13 @@
 
 
 #?(:cljs
-  (defn- to-hex-string [n l]
-    (let [s (.toString n 16)
-          c (count s)]
-      (cond
-        (> c l) (subs s 0 l)
-        (< c l) (str (apply str (repeat (- l c) "0")) s)
-        :else   s))))
+   (defn- to-hex-string [n l]
+     (let [s (.toString n 16)
+           c (count s)]
+       (cond
+         (> c l) (subs s 0 l)
+         (< c l) (str (apply str (repeat (- l c) "0")) s)
+         :else s))))
 
 
 (defn squuid
@@ -696,35 +721,35 @@
   
    Consist of 64 bits of current UNIX timestamp (in seconds) and 64 random bits (2^64 different unique values per second)."
   ([]
-    (squuid #?(:clj  (System/currentTimeMillis)
-               :cljs (.getTime (js/Date.)))))
+   (squuid #?(:clj  (System/currentTimeMillis)
+              :cljs (.getTime (js/Date.)))))
   ([msec]
-  #?(:clj
-      (let [uuid     (UUID/randomUUID)
-            time     (int (/ msec 1000))
-            high     (.getMostSignificantBits uuid)
-            low      (.getLeastSignificantBits uuid)
+   #?(:clj
+      (let [uuid (UUID/randomUUID)
+            time (int (/ msec 1000))
+            high (.getMostSignificantBits uuid)
+            low (.getLeastSignificantBits uuid)
             new-high (bit-or (bit-and high 0x00000000FFFFFFFF)
-                             (bit-shift-left time 32)) ]
+                             (bit-shift-left time 32))]
         (UUID. new-high low))
-     :cljs
-       (uuid
-         (str
-               (-> (int (/ msec 1000))
-                   (to-hex-string 8))
-           "-" (-> (rand-bits 16) (to-hex-string 4))
-           "-" (-> (rand-bits 16) (bit-and 0x0FFF) (bit-or 0x4000) (to-hex-string 4))
-           "-" (-> (rand-bits 16) (bit-and 0x3FFF) (bit-or 0x8000) (to-hex-string 4))
-           "-" (-> (rand-bits 16) (to-hex-string 4))
-               (-> (rand-bits 16) (to-hex-string 4))
-               (-> (rand-bits 16) (to-hex-string 4)))))))
+      :cljs
+      (uuid
+        (str
+          (-> (int (/ msec 1000))
+              (to-hex-string 8))
+          "-" (-> (rand-bits 16) (to-hex-string 4))
+          "-" (-> (rand-bits 16) (bit-and 0x0FFF) (bit-or 0x4000) (to-hex-string 4))
+          "-" (-> (rand-bits 16) (bit-and 0x3FFF) (bit-or 0x8000) (to-hex-string 4))
+          "-" (-> (rand-bits 16) (to-hex-string 4))
+          (-> (rand-bits 16) (to-hex-string 4))
+          (-> (rand-bits 16) (to-hex-string 4)))))))
 
 (defn squuid-time-millis
   "Returns time that was used in [[squuid]] call, in milliseconds, rounded to the closest second."
   [uuid]
-  #?(:clj (-> (.getMostSignificantBits ^UUID uuid)
-              (bit-shift-right 32)
-              (* 1000))
+  #?(:clj  (-> (.getMostSignificantBits ^UUID uuid)
+               (bit-shift-right 32)
+               (* 1000))
      :cljs (-> (subs (str uuid) 0 8)
                (js/parseInt 16)
                (* 1000))))
