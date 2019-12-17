@@ -2,7 +2,7 @@
   (:require
     #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-    [datahike.config :refer [uri->config]]))
+    [datahike.config :refer [uri->config complete-config]]))
 
 (deftest config-test
   (let [mem-uri "datahike:mem://config-test"
@@ -10,7 +10,7 @@
         level-uri "datahike:level:///tmp/config-test"
         pg-uri "datahike:pg://alice:foo@localhost:5432/config-test"]
 
-    (are [x y] (= x (uri->config y))
+    (are [x y] (= (complete-config x) (uri->config y))
       {:backend :mem :host "config-test" :uri mem-uri}
       mem-uri
 
