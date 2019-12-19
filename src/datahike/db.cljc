@@ -1531,7 +1531,7 @@
 (defn migrate-tx-data [initial-report initial-es]
   (loop [report (update initial-report :db-after persistent!)
          es initial-es
-         migration-state {}]
+         migration-state (or (get-in initial-report [:db-before :migration]) {})]
     (let [[entity & entities] es
           db (:db-after report)
           [e a v t op] entity
@@ -1541,6 +1541,9 @@
         (empty? es)
         (-> report
             (update-in [:db-after :max-tx] inc)
+            (update-in [:db-after :migration] #(if %
+                                                 (merge % migration-state)
+                                                 migration-state))
             (update :db-after persistent!))
 
         (= :db.install/attribute a)
