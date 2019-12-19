@@ -2,6 +2,16 @@
   (:require [clojure.spec.alpha :as s])
   (:import [java.net URI]))
 
+(def default-config {:backend :mem
+                     :username ""
+                     :password ""
+                     :host ""
+                     :path ""
+                     :port ""
+                     :temporal-index true
+                     :schema-on-read false
+                     :index-type :datahike.index/hitchhiker-tree})
+
 
 ;; User configuration
 
@@ -33,21 +43,11 @@
 
 (defrecord Configuration [backend username password host path port temporal-index schema-on-read index-type])
 
-
 (defn complete-config
   ([] (complete-config {}))
   ([config]
    (validate-config config)
-   (Configuration. (or (:backend config) :mem)
-                   (:username config)
-                   (:password config)
-                   (:host config)
-                   (:path config)
-                   (:port config)
-                   (if (nil? (:temporal-index config)) true (:temporal-index config))
-                   (if (nil? (:schema-on-read config)) false (:schema-on-read config))
-                   (or (:index-type config) :datahike.index/hitchhiker-tree)
-                   )))
+   (map->Configuration (merge default-config config))))
 
 
 (defn uri->config [uri]
