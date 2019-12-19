@@ -1102,8 +1102,7 @@
                 temporal-index? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
                 temporal-index? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
                 (and temporal-index? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
-                (and temporal-index? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet))
-                )
+                (and temporal-index? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))
         db))))
 
 (defn- with-temporal-datom [db ^Datom datom]

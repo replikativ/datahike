@@ -48,7 +48,15 @@
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "find retracted values"
       (is (= #{["Alice" 25] ["Alice" 30]}
-             (d/q '[:find ?n ?a :where [?r :age ?a _ false] [?r :name ?n _ false]] (d/history @conn)))))))
+             (d/q '[:find ?n ?a :where [?r :age ?a _ false] [?r :name ?n _ false]] (d/history @conn)))))
+    (testing "find source transaction of retracted values"
+      (is (= #{[25 true] [25 false] [30 true] [30 false]}
+             (d/q '[:find ?a ?op
+                    :in $ ?e
+                    :where
+                    [?e :age ?a _ ?op]]
+                  (d/history @conn)
+                  [:name "Alice"]))))))
 
 (deftest test-historical-queries
   (let [uri "datahike:mem://test-historical-queries"
