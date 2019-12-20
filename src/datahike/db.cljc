@@ -770,11 +770,6 @@
      (-write w "#datahike/DB {")
      (-write w ":schema ")
      (pr-writer (-schema db) w opts)
-     (-write w ", :datoms ")
-     (pr-sequential-writer w
-                           (fn [d w opts]
-                             (pr-sequential-writer w pr-writer "[" " " "]" opts [(.-e d) (.-a d) (.-v d) (datom-tx d)]))
-                           "[" " " "]" opts (-datoms db :eavt []))
      (-write w "}")))
 
 #?(:clj
@@ -783,10 +778,8 @@
        (.write w (str "#datahike/DB {"))
        (.write w ":schema ")
        (binding [*out* w]
-         (pr (-schema db))
-         (.write w ", :datoms [")
-         (apply pr (map (fn [^Datom d] [(.-e d) (.-a d) (.-v d) (datom-tx d)]) (-datoms db :eavt []))))
-       (.write w "]}"))
+         (pr (-schema db)))
+       (.write w "}"))
 
      (defmethod print-method DB [db w] (pr-db db w))
      (defmethod print-method FilteredDB [db w] (pr-db db w))
@@ -812,21 +805,7 @@
                                  (pp/pprint-newline :linear)
                                  (pp/write-out (:schema db)))
                                 (.write w ", ")
-                                (pp/pprint-newline :linear)
-
-                                (pp/pprint-logical-block
-                                 (pp/write-out :datoms)
-                                 (.write w " ")
-                                 (pp/pprint-newline :linear)
-                                 (pp/pprint-logical-block :prefix "[" :suffix "]"
-                                                          (pp/print-length-loop [aseq (seq db)]
-                                                                                (when aseq
-                                                                                  (let [^Datom d (first aseq)]
-                                                                                    (pp/write-out [(.-e d) (.-a d) (.-v d) (datom-tx d)])
-                                                                                    (when (next aseq)
-                                                                                      (.write w " ")
-                                                                                      (pp/pprint-newline :linear)
-                                                                                      (recur (next aseq))))))))))
+                                (pp/pprint-newline :linear)))
 
      (defmethod pp/simple-dispatch DB [db] (pp-db db *out*))
      (defmethod pp/simple-dispatch FilteredDB [db] (pp-db db *out*))))

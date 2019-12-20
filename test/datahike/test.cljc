@@ -28,7 +28,6 @@
     datahike.test.query-rules
     datahike.test.query-v3
     datahike.test.schema
-    datahike.test.serialization
     datahike.test.store
     datahike.test.time-variance
     datahike.test.transact
