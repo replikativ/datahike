@@ -41,6 +41,11 @@ public class Datahike {
     private static final IFn dbWithFn = Clojure.var("datahike.api", "db-with");
 
     /**
+     * Forbids instances creation.
+     */
+    private Datahike() {}
+
+    /**
      * Returns the current state of the database.
      *
      * @param conn a connection to the database.
