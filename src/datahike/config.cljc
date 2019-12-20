@@ -2,20 +2,11 @@
   (:require [clojure.spec.alpha :as s])
   (:import [java.net URI]))
 
-(defn parse-uri [uri]
-  (let [base-uri (URI. uri)
-        scheme (.getScheme base-uri)
-        sub-uri (URI. (.getSchemeSpecificPart base-uri))
-        store-scheme (.getScheme sub-uri)
-        path (if (= store-scheme "pg")
-               (.getSchemeSpecificPart sub-uri)
-               (.getPath sub-uri))]
-    [scheme store-scheme path]))
 
 (s/def ::username string?)
 (s/def ::password string?)
 (s/def ::path string?)
-(s/def ::backend #{:mem :file :pg :level})
+(s/def ::backend keyword?)
 (s/def ::host string?)
 (s/def ::port int?)
 (s/def ::uri string?)
