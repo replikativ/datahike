@@ -41,14 +41,19 @@ public class Datahike {
     private static final IFn dbWithFn = Clojure.var("datahike.api", "db-with");
 
     /**
-     * @return a dereferenced version of the database
+     * Returns the current state of the database.
+     *
+     * @param conn a connection to the database.
+     * @return a dereferenced version of the database.
      */
     public static Object dConn(Object conn) {
         return deref.invoke(conn);
     };
 
     /**
-     * Deletes the database given as argument.
+     * Deletes a database.
+     *
+     * @param uri the database uri.
      */
     public static void deleteDatabase(String uri) {
         deleteDatabaseFn.invoke(uri);
@@ -56,6 +61,8 @@ public class Datahike {
 
     /**
      * Creates a database at the given 'uri'.
+     *
+     * @param uri the database uri.
      */
     public static void createDatabase(String uri) {
         createDatabaseFn.invoke(uri);
@@ -84,72 +91,205 @@ public class Datahike {
         createDatabaseFn.applyTo(RT.seq(argsCopy));
     }
 
+    /**
+     * Connects to the Datahike database given by 'uri'.
+     *
+     * Example: {@code conn = Datahike.connect("datahike:file:///Users/paul/temp/datahike-db");}
+     *
+     * @param uri the database uri
+     * @return a connection to the database.
+     */
     public static Object connect(String uri) {
         return connectFn.invoke(uri);
     }
 
+    /**
+     * Returns the current state of the database.
+     *
+     * @param conn the connection to the database
+     * @return the latest state of the database
+     */
     public static Object db(Object conn) {
         return dbFn.invoke(conn);
     }
 
+    /**
+     * Executes a query.
+     *
+     * @param query A string of the query expressed in Clojure syntax.
+     * @param inputs the arguments to the query, such as the database(s) and/or additional inputs.
+     * @return the result of the query
+     */
     public static Set<PersistentVector> q(String query, Object... inputs) {
         List argsCopy = new ArrayList(Arrays.asList(inputs));
         argsCopy.add(0, Clojure.read(query));
         return (Set<PersistentVector>)qFn.applyTo(RT.seq(argsCopy));
     }
 
+    /**
+     * Transacts data.
+     *
+     * @param conn the connection to the database.
+     * @param txData the data to be transacted.
+     * @return a transaction report.
+     */
     public static Object transact(Object conn, PersistentVector txData) {
         return transactFn.invoke(conn, txData);
     }
 
-    /** dConn: the dereferenced conn object */
+    /**
+     * Returns the full historical state of a database.
+     *
+     * @param dConn a database
+     * @return the full history of the database
+     */
     public static Object history(Object dConn) { return historyFn.invoke(dConn); };
 
+    /**
+     * Returns the database state at the given date.
+     *
+     * @param dConn the database
+     * @param date either java.util.Date or Epoch Time as long
+     * @return the database state at the given date
+     */
     public static Object asOf(Object dConn, Date date) {
         return asOfFn.invoke(dConn, date);
     }
 
+    /**
+     * Returns the state of the database since the given date.
+     * Be aware: the database contains only the datoms that were added since the date.
+     *
+     * @param dConn the database
+     * @param date either java.util.Date or Epoch Time as long
+     * @return  the state of the database since the given date.
+     */
     public static Object since(Object dConn, Date date) {
         return sinceFn.invoke(dConn, date);
     }
 
+    /**
+     * Fetches data from database using recursive declarative description.
+     * @see {@docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html)}
+     *
+     * @param dConn the database
+     * @param selector the criteria for the pull query
+     * @param eid the entity id
+     * @return the result of the query as map
+     */
     public static Map pull(Object dConn, String selector, int eid) {
         return (Map) pullFn.invoke(dConn, Clojure.read(selector), eid);
     }
 
+    /**
+     * Fetches data from database using recursive declarative description.
+     * @see {@docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html)}
+     *
+     * @param dConn the database
+     * @param selector the criteria for the pull query
+     * @param eid a vector representing an entity
+     * @return the result of the query as a map
+     */
     public static Map pull(Object dConn, String selector, PersistentVector eid) {
         return (Map) pullFn.invoke(dConn, Clojure.read(selector), eid);
     }
 
-
+    /**
+     * Same as pull but takes multiple entities as input.
+     *
+     * @param dConn the database
+     * @param selector the criteria for the pull query
+     * @param eid a vector representing an entity
+     * @return the result of the query as a list of maps
+     */
     public static List pullMany(Object dConn, String selector, PersistentVector eids) {
         return (List) pullManyFn.invoke(dConn, Clojure.read(selector), eids);
     }
 
+    /**
+     * Releases the connection to the database.
+     *
+     * @param conn the connection to the database.
+     */
     public static void release(Object conn) {
         releaseFn.invoke(conn);
     }
 
+    /**
+     * Returns datoms starting from specified components criteria and including rest of the database until the end of the index.
+     *
+     * @param dConn the database
+     * @param index a keyword describing the type of index. E.g. {@code k(":eavt")}
+     * @param c1 the first element of a datom used as the criteria for filtering
+     * @return the list of datoms
+     */
     public static List seekdatoms(Object dConn, Keyword index, Object c1) {
         return (List)seekDatomsFn.invoke(dConn, index, c1);
     }
 
+    /**
+     * Returns datoms starting from specified components criteria and including rest of the database until the end of the index.
+     *
+     * @param dConn the database
+     * @param index a keyword describing the type of index. E.g. {@code k(":eavt")}
+     * @param c1 the first element of a datom used as criteria for filtering
+     * @param c2 the second element of a datom used as criteria for filtering
+     * @return the list of datoms
+     */
     public static List seekdatoms(Object dConn, Keyword index, Object c1, Object c2) {
         return (List)seekDatomsFn.invoke(dConn, index, c1, c2);
     }
 
+    /**
+     * Returns datoms starting from specified components criteria and including rest of the database until the end of the index.
+     *
+     * @param dConn the database
+     * @param index a keyword describing the type of index. E.g. {@code k(":eavt")}
+     * @param c1 the first element of a datom used as criteria for filtering
+     * @param c2 the second element of a datom used as criteria for filtering
+     * @param c3 the third element of a datom used as criteria for filtering
+     * @return the list of datoms
+     */
     public static List seekdatoms(Object dConn, Keyword index, Object c1, Object c2, Object c3) {
         return (List)seekDatomsFn.invoke(dConn, index, c1, c2, c3);
     }
 
+    /**
+     * Returns datoms starting from specified components criteria and including rest of the database until the end of the index.
+     *
+     * @param dConn the database
+     * @param index a keyword describing the type of index. E.g. {@code k(":eavt")}
+     * @param c1 the first element of a datom used as criteria for filtering
+     * @param c2 the second element of a datom used as criteria for filtering
+     * @param c3 the third element of a datom used as criteria for filtering
+     * @param c4 the fourth element of a datom used as criteria for filtering
+     * @return the list of datoms
+     */
     public static List seekdatoms(Object dConn, Keyword index, Object c1, Object c2, Object c3, Object c4) {
         return (List)seekDatomsFn.invoke(dConn, index, c1, c2, c3, c4);
     }
 
+
+    /**
+     * Allocates and returns an unique temporary id (a negative integer). Ignores the keyword argument `k`.
+     * Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
+     *
+     * @param k an ignored argument
+     * @return a negative integer
+     */
     public static Long tempId(Keyword k) {
         return (Long) tempIdFn.invoke(k);
     }
 
+    /**
+     * Allocates and returns an unique temporary id (a negative integer). Ignores the keyword argument `k`.
+     * Returns the argument `i`.
+     * Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
+     *
+     * @param k an ignored argument
+     * @param i an integer
+     * @return 'i'
+     */
     public static Long tempId(Keyword k, Long i) {
         return (Long)tempIdFn.invoke(k, i);
     }
