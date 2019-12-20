@@ -312,9 +312,18 @@ public class Datahike {
 
     // TODO: Not fully usable right now. Needs the missing definition of an ITxReport and implementation of
     // dbAfter, dbBefore, etc... on the Clojure side
-    public static Object with(Object dConn, Object pred) {
-        return withFn.invoke(dConn, pred);
+    /**
+     * Applies transaction to an immutable db value, returning a transaction report.
+     *
+     * @param dConn a database
+     * @param txData the transaction data
+     * @return
+     */
+/*
+    public static Object with(Object dConn, Object txData) {
+        return withFn.invoke(dConn, txData);
     }
+*/
 
     public static Object dbWith(Object dConn, Object txData) {
         return dbWithFn.invoke(dConn, txData);
