@@ -10,6 +10,9 @@ import java.util.*;
 
 import static datahike.java.Util.deref;
 
+/**
+ * Defines methods for interacting with a Datahike database.
+ */
 public class Datahike {
     /**
      * Imports the Clojure 'datahike.api' namespace.
@@ -175,7 +178,7 @@ public class Datahike {
 
     /**
      * Fetches data from database using recursive declarative description.
-     * @see {@docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html)}
+     * @see <a href="https://docs.datomic.com/on-prem/pull.html">docs.datomic.com/on-prem/pull.html</a>
      *
      * @param dConn the database
      * @param selector the criteria for the pull query
@@ -188,7 +191,7 @@ public class Datahike {
 
     /**
      * Fetches data from database using recursive declarative description.
-     * @see {@docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html)}
+     * @see <a href="https://docs.datomic.com/on-prem/pull.html">docs.datomic.com/on-prem/pull.html</a>
      *
      * @param dConn the database
      * @param selector the criteria for the pull query
@@ -204,7 +207,7 @@ public class Datahike {
      *
      * @param dConn the database
      * @param selector the criteria for the pull query
-     * @param eid a vector representing an entity
+     * @param eids a vector representing an entity
      * @return the result of the query as a list of maps
      */
     public static List pullMany(Object dConn, String selector, PersistentVector eids) {
