@@ -443,7 +443,6 @@
 
   ISearch
   (-search [db pattern]
-    ()
     (temporal-search (.-origin-db db) pattern))
 
   IIndexAccess
