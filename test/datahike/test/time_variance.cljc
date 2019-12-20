@@ -54,7 +54,8 @@
              (d/q '[:find ?a ?op
                     :in $ ?e
                     :where
-                    [?e :age ?a _ ?op]]
+                    [?e :age ?a ?t ?op]
+                    [?t :db/txInstant ?d]]
                   (d/history @conn)
                   [:name "Alice"]))))))
 
