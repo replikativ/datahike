@@ -294,21 +294,50 @@ public class Datahike {
         return (Long)tempIdFn.invoke(k, i);
     }
 
+    /**
+     * Returns the entity corresponding to the entity id 'eid'.
+     *
+     * @param dConn the database
+     * @param eid an entity id
+     * @return an entity
+     */
     public static IEntity entity(Object dConn, int eid) {
         return (IEntity)entityFn.invoke(dConn, eid);
     }
 
+    /**
+     * Returns the db that created entity 'entity'.
+     *
+     * @param entity an entity
+     * @return the database that created the entity
+     */
     public static Object entityDb(IEntity entity) {
         return entityDbFn.invoke(entity);
     }
 
+    /**
+     * Returns true if the database is filtered using 'filter'.
+     *
+     * @param dConn a database
+     * @return true if database is filtered, false otherwise.
+     */
     public static boolean isFiltered(Object dConn) {
         return (Boolean)isFilteredFn.invoke(dConn);
     }
 
+    /**
+     * Filters the database given a predicate.
+     *
+     * Example: {@code Object filteredDB = Datahike.filter(dConn(conn), Clojure.read("(fn [_ datom] (not= :age (:a datom)))"));}
+     *
+     * @param dConn a database
+     * @param pred the predicate used for filtering
+     * @return a filtered version of the database
+     */
     public static Object filter(Object dConn, Object pred) {
         return filterFn.invoke(dConn, pred);
     }
+
 
     // TODO: Not fully usable right now. Needs the missing definition of an ITxReport and implementation of
     // dbAfter, dbBefore, etc... on the Clojure side
@@ -325,6 +354,13 @@ public class Datahike {
     }
 */
 
+    /**
+     * Applies transaction to an immutable db value, returning new immutable db value.
+     *
+     * @param dConn a database
+     * @param txData the transaction data
+     * @return a new immutable db value with the transaction applied.
+     */
     public static Object dbWith(Object dConn, Object txData) {
         return dbWithFn.invoke(dConn, txData);
     }
