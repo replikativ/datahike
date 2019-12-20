@@ -58,7 +58,7 @@
   (@memory host))
 
 (defmethod scheme->index :mem [_]
-  :datahike.index/persistent-set)
+  :datahike.index/hitchhiker-tree)
 
 ;; file
 
