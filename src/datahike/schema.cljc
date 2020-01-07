@@ -10,6 +10,7 @@
 (s/def :db.type/boolean boolean?)
 (s/def :db.type/double double?)
 (s/def :db.type/float float?)
+(s/def :db.type/number number?)
 (s/def :db.type/instant #(= (class %) java.util.Date))
 (s/def :db.type/keyword keyword?)
 (s/def :db.type/long #(= (class %) java.lang.Long))
@@ -24,6 +25,7 @@
     :db.type/boolean
     :db.type/double
     :db.type/float
+    :db.type/number
     :db.type/instant
     :db.type/keyword
     :db.type/long
