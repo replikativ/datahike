@@ -59,10 +59,10 @@
 
 (d/q find-name-email @conn)
 
-;; let's find her directly, as contributior/name is a unique, indexed identity
+;; let's find her directly, as contributor/name is a unique, indexed identity
 (d/pull @conn '[*] [:contributor/name "alice"])
 
-;; add a second email, as we have a many cardinality, we can have serveral one's as a user
+;; add a second email, as we have a many cardinality, we can have several ones as a user
 (d/transact conn [{:db/id [:contributor/name "alice"] :contributor/email "alice@test.test"}])
 
 ;; let's see both emails
@@ -82,7 +82,7 @@
 
 (d/pull @conn '[*] [:contributor/name "bob"])
 
-;; change bobs name to bobby
+;; change bob's name to bobby
 (d/transact conn [{:db/id [:contributor/name "bob"] :contributor/name "bobby"}])
 
 ;; check it
