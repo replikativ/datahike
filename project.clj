@@ -1,4 +1,4 @@
-(defproject io.replikativ/datahike "0.2.1-SNAPSHOT"
+(defproject io.replikativ/datahike "0.2.2-SNAPSHOT"
   :description "A durable datalog implementation adaptable for distribution."
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
