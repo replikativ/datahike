@@ -94,7 +94,7 @@ public class Datahike {
      * the location of the database creation
      *
      * @param args
-     * If providing initial data to transact  pass the keyword 'k(":initial-tx")' as the first argument followed by the data. Data could be a schema as shown in the following example:
+     * If providing initial data to transact  pass the keyword 'k(":initial-tx")' as the first argument followed by the data. Data could for instance be a schema as shown in the following example:
      * Datahike.createDatabase(uri, k(":initial-tx"), schema);
      *
      * Use keyword 'k(":schema-on-read")' to define whether the database uses a schema or not. By default, the database requires a schema. Example:
