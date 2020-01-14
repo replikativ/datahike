@@ -7,6 +7,10 @@
     [datahike.db :as dd]
     [datahike.test.core :as tdc]))
 
+#?(:clj
+   (defn random-uuid []
+     (java.util.UUID/randomUUID)))
+
 (def name-schema {:db/ident       :name
                   :db/valueType   :db.type/string
                   :db/cardinality :db.cardinality/one})
@@ -201,7 +205,7 @@
         conn (d/connect uri)]
 
     (testing-type conn "bigdec" (bigdec 1) 13 1)
-    (testing-type conn "bigint" (biginteger 1) 14 1)
+    (testing-type conn "bigint" (biginteger 1) 14 1.0)
     (testing-type conn "boolean" true 15 0)
     (testing-type conn "double" (double 1) 16 1)
     (testing-type conn "float" (float 1) 17 1)
@@ -210,7 +214,7 @@
     (testing-type conn "long" (long 2) 20 :2)
     (testing-type conn "string" "one" 21 :one)
     (testing-type conn "symbol" 'one 22 :one)
-    (testing-type conn "uuid" (java.util.UUID/randomUUID) 23 1)))
+    (testing-type conn "uuid" (random-uuid) 23 1)))
 
 (deftest test-schema-cardinality
   (let [uri "datahike:mem://test-schema-cardinality"

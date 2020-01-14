@@ -5,8 +5,8 @@
 (s/def :db.type/id #(or (= (class %) java.lang.Long) string?))
 
 ;; db types
-(s/def :db.type/bigdec #(= (class %) java.math.BigDecimal))
-(s/def :db.type/bigint #(= (class %) java.math.BigInteger))
+(s/def :db.type/bigdec decimal?)
+(s/def :db.type/bigint integer?)
 (s/def :db.type/boolean boolean?)
 (s/def :db.type/double double?)
 (s/def :db.type/float float?)
@@ -17,7 +17,7 @@
 (s/def :db.type/ref :db.type/id)
 (s/def :db.type/string string?)
 (s/def :db.type/symbol symbol?)
-(s/def :db.type/uuid #(= (class %) java.util.UUID))
+(s/def :db.type/uuid uuid?)
 
 (s/def :db.type/value
   #{:db.type/bigdec

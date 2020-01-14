@@ -24,9 +24,6 @@
 (deftest test-db-file-store
   (test-store "datahike:file:///tmp/api-fs"))
 
-(deftest test-db-level-store
-  (test-store "datahike:level:///tmp/api-leveldb"))
-
 (deftest test-db-mem-store
   (test-store "datahike:mem:///test-mem"))
 
