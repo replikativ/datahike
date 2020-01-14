@@ -56,6 +56,13 @@ public class DatahikeTest {
     }
 
     @org.junit.Test
+    public void databaseExists() {
+        Datahike.createDatabase(uri, k(":initial-tx"), schema);
+        assertTrue(Datahike.databaseExists(uri));
+        assertFalse(Datahike.databaseExists("datahike:mem://not-exists"));
+    }
+
+    @org.junit.Test
     public void queryWithDBAndInput() {
         transactOnce();
         query = "[:find ?n ?a :in $ [?n] :where [?e :name ?n] [?e :age ?a]]";

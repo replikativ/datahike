@@ -42,6 +42,7 @@ public class Datahike {
     private static final IFn filterFn = Clojure.var("datahike.api", "filter");
     private static final IFn withFn = Clojure.var("datahike.api", "with");
     private static final IFn dbWithFn = Clojure.var("datahike.api", "db-with");
+    private static final IFn databaseExistsFn = Clojure.var("datahike.api", "database-exists?");
 
     /**
      * Forbids instances creation.
@@ -56,6 +57,16 @@ public class Datahike {
      */
     public static Object dConn(Object conn) {
         return deref.invoke(conn);
+    };
+
+    /**
+     * Returns true if a database exists for the given map configuration or the given uri.
+     *
+     * @param uri_or_map an uri or a configuration map.
+     * @return true if database exists
+     */
+    public static boolean databaseExists(Object uri_or_map)  {
+        return (boolean) databaseExistsFn.invoke(uri_or_map);
     };
 
     /**
