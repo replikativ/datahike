@@ -179,7 +179,10 @@
           true))))
 
   (delete-database [config]
-    (ds/delete-store config)))
+    (if (database-exists? config)
+      (do (ds/delete-store config)
+          true)
+      false)))
 
 (defn create-database [config & opts]
   (-create-database config opts))
