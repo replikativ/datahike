@@ -140,41 +140,43 @@
                     {:keys [initial-tx schema-on-read temporal-index]
                      :or {schema-on-read false temporal-index true}
                      :as opt-config}]
-  (dc/validate-config store-config)
-  (dc/validate-config-attribute :datahike.config/schema-on-read schema-on-read opt-config)
-  (dc/validate-config-attribute :datahike.config/temporal-index temporal-index opt-config)
-  (let [store (kc/ensure-cache
-               (ds/empty-store store-config)
-               (atom (cache/lru-cache-factory {} :threshold 1000)))
-        stored-db (<?? S (k/get-in store [:db]))
-        _ (when stored-db
-            (throw (ex-info "Database already exists." {:type :db-already-exists :config store-config})))
-        db-config {:schema-on-read schema-on-read
-                   :temporal-index temporal-index
-                   :storage store-config}
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]}
-        (db/empty-db
-         {:db/ident {:db/unique :db.unique/identity}}
-         (ds/scheme->index store-config)
-         :config db-config)
-        backend (kons/->KonserveBackend store)]
-    (<?? S (k/assoc-in store [:db]
-                       (merge {:schema   schema
-                               :max-tx max-tx
-                               :rschema  rschema
-                               :config   db-config
-                               :eavt-key (di/-flush eavt backend)
-                               :aevt-key (di/-flush aevt backend)
-                               :avet-key (di/-flush avet backend)}
-                              (when temporal-index
-                                {:temporal-eavt-key (di/-flush temporal-eavt backend)
-                                 :temporal-aevt-key (di/-flush temporal-aevt backend)
-                                 :temporal-avet-key (di/-flush temporal-avet backend)}))))
-    (ds/release-store store-config store)
-    (when initial-tx
-      (let [conn (connect store-config)]
-        (transact conn initial-tx)
-        (release conn)))))
+    (dc/validate-config store-config)
+    (dc/validate-config-attribute :datahike.config/schema-on-read schema-on-read opt-config)
+    (dc/validate-config-attribute :datahike.config/temporal-index temporal-index opt-config)
+    (let [store (kc/ensure-cache
+                 (ds/empty-store store-config)
+                 (atom (cache/lru-cache-factory {} :threshold 1000)))
+          stored-db (<?? S (k/get-in store [:db]))]
+
+      (if stored-db
+        false
+        (let [db-config {:schema-on-read schema-on-read
+                         :temporal-index temporal-index
+                         :storage        store-config}
+              {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]}
+              (db/empty-db
+                {:db/ident {:db/unique :db.unique/identity}}
+                (ds/scheme->index store-config)
+                :config db-config)
+              backend (kons/->KonserveBackend store)]
+          (<?? S (k/assoc-in store [:db]
+                             (merge {:schema   schema
+                                     :max-tx   max-tx
+                                     :rschema  rschema
+                                     :config   db-config
+                                     :eavt-key (di/-flush eavt backend)
+                                     :aevt-key (di/-flush aevt backend)
+                                     :avet-key (di/-flush avet backend)}
+                                    (when temporal-index
+                                      {:temporal-eavt-key (di/-flush temporal-eavt backend)
+                                       :temporal-aevt-key (di/-flush temporal-aevt backend)
+                                       :temporal-avet-key (di/-flush temporal-avet backend)}))))
+          (ds/release-store store-config store)
+          (when initial-tx
+            (let [conn (connect store-config)]
+              (transact conn initial-tx)
+              (release conn)))
+          true))))
 
   (delete-database [config]
     (ds/delete-store config)))
