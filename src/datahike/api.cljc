@@ -151,7 +151,7 @@
       (transact conn [[:db/add  -1 :name   \"Oleg\"]
                        {:db/add 296 :friend -1]])"}
   transact
-  dc/transact)
+  dc/transact!)
 
 (def ^{:arglists '([conn tx-data tx-meta])
        :doc      "The same as [[transact]] but returns Future to be realized."}
