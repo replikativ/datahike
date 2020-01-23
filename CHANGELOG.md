@@ -1,3 +1,12 @@
+# 0.2.1
+
+- add numbers type
+- re-introduce import/export functionality
+- decouple backends from core
+- integrate improved hitchhiker tree
+- remove full eavt-index from db printing
+- fix missing history entities
+
 # 0.2.0
 
 - integrate latest code from `datascript`
