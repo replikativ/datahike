@@ -206,7 +206,7 @@ public class Datahike {
      *
      * @param dConn the database
      * @param selector the criteria for the pull query
-     * @param eid a vector representing an entity
+     * @param eid an entity id
      * @return the result of the query as a map
      */
     public static Map pull(Object dConn, String selector, PersistentVector eid) {
@@ -218,7 +218,7 @@ public class Datahike {
      *
      * @param dConn the database
      * @param selector the criteria for the pull query
-     * @param eids a vector representing an entity
+     * @param eids a vector of entity ids
      * @return the result of the query as a list of maps
      */
     public static List pullMany(Object dConn, String selector, PersistentVector eids) {
