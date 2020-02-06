@@ -10,13 +10,17 @@
                  [org.clojure/tools.reader "1.3.2"]
                  [io.replikativ/hitchhiker-tree "0.1.5"]
                  [io.replikativ/superv.async "0.2.9"]
-                 [io.lambdaforge/datalog-parser "0.1.1"]]
+                 [io.lambdaforge/datalog-parser "0.1.1"]
+                 [io.replikativ/konserve-carmine "0.1.2"]
+                 ]
 
   :plugins [[lein-cljsbuild "1.1.7"]]
 
+  
+
   :global-vars {*warn-on-reflection*   true
                 *print-namespace-maps* false
-;;     *unchecked-math* :warn-on-boxed
+                ;;     *unchecked-math* :warn-on-boxed
                 }
   :jvm-opts ["-Xmx2g" "-server"]
 
@@ -54,11 +58,11 @@
                         :compiler {:output-to     "target/datahike.js"
                                    :optimizations :advanced
                                    :source-map    "target/datahike.js.map"
-          ; :pretty-print  true
+                                        ; :pretty-print  true
                                    :recompile-dependents false
                                    :parallel-build true
                                    :checked-arrays :warn
-          ; :pseudo-names  true
+                                        ; :pseudo-names  true
                                    :fn-invoke-direct true
                                    :elide-asserts true}}
 

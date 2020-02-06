@@ -2,12 +2,17 @@
   (:require [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.filestore :as fs]
             [konserve.memory :as mem]
+            [konserve-carmine.core :as rs]
             [superv.async :refer [<?? S]]))
 
+(doseq [s ['empty-store 'delete-store 'connect-store]]
+  (ns-unmap (symbol (str  *ns*)) s))
+
+
 (defmulti empty-store
-          "Creates an empty store"
-          {:arglists '([config])}
-          :backend)
+  "Creates an empty store"
+  {:arglists '([config])}
+  :backend)
 
 (defmethod empty-store :default [{:keys [backend]}]
   (throw (IllegalArgumentException. (str "Can't create a store with scheme: " backend))))
@@ -73,5 +78,20 @@
   (<?? S (fs/new-fs-store path)))
 
 (defmethod scheme->index :file [_]
+  :datahike.index/hitchhiker-tree)
+
+;; redis
+
+(defmethod empty-store :redis [{:keys [password host port] :as opts}]
+  (kons/add-hitchhiker-tree-handlers
+   (<?? S (rs/new-carmine-store {:pool {} :spec {:password password :host host :port port}}))))
+
+(defmethod delete-store :redis [{:keys [password host port] :as opts}]
+  (throw (Exception. "Not implemented")))
+
+(defmethod connect-store :redis [{:keys [password host port] :as opts}]
+  (<?? S (rs/new-carmine-store {:pool {} :spec {:password password :host host :port port}})))
+
+(defmethod scheme->index :redis [_]
   :datahike.index/hitchhiker-tree)
 
