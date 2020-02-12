@@ -254,6 +254,6 @@ feature, please let us know.
 
 ## License
 
-Copyright © 2014–2019 Konrad Kühne, Christian Weilbach, Nikita Prokopov
+Copyright © 2014–2020 Konrad Kühne, Christian Weilbach, Nikita Prokopov
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).
