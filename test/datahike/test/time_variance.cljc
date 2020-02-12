@@ -103,10 +103,10 @@
     (testing "get values at specific time"
       (is (= #{[25]}
                (d/q query (d/as-of @conn first-date) [:name "Alice"]))))
-    (testing "use unix epoch time as long"
-      (let [epoch-date (.getTime first-date)]
+    (testing "use transaction ID"
+      (let [tx-id 536870914]
         (is (= #{[25]}
-                 (d/q query (d/as-of @conn epoch-date) [:name "Alice"])))))))
+                 (d/q query (d/as-of @conn tx-id) [:name "Alice"])))))))
 
 (deftest test-since-db
   (let [uri "datahike:mem://test-historical-queries"

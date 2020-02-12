@@ -477,15 +477,22 @@
                           datom-0
                           datom-1)) entities)])))))
 
-(defn filter-as-of-datoms [datoms ^Date as-of-date db]
-  (let [as-of-pred (fn [^Datom d] (.before ^Date (.-v d) as-of-date))
+(defn- date? [d]
+  #?(:cljs (instance? js/Date d)
+     :clj  (instance? Date d)))
+
+(defn filter-as-of-datoms [datoms time-point db]
+  (let [as-of-pred (fn [^Datom d]
+                     (if (date? time-point)
+                       (.before ^Date (.-v d) ^Date time-point)
+                       (<= (dd/datom-tx d) time-point)))
         filtered-tx-ids (filter-txInstant datoms as-of-pred db)
         filtered-datoms (->> datoms
                              (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
                              (get-current-values (-rschema db)))]
     filtered-datoms))
 
-(defrecord-updatable AsOfDB [origin-db as-of-date]
+(defrecord-updatable AsOfDB [origin-db time-point]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (-datoms db :eavt []))
@@ -531,31 +538,34 @@
   (-search [db pattern]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-search origin-db pattern)
-          (filter-as-of-datoms (.-as-of-date db) origin-db))))
+          (filter-as-of-datoms (.-time-point db) origin-db))))
 
   IIndexAccess
   (-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-datoms origin-db index-type cs)
-          (filter-as-of-datoms (.-as-of-date db) origin-db))))
+          (filter-as-of-datoms (.-time-point db) origin-db))))
 
   (-seek-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-seek-datoms origin-db index-type cs)
-          (filter-as-of-datoms (.-as-of-date db) origin-db))))
+          (filter-as-of-datoms (.-time-point db) origin-db))))
 
   (-rseek-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-rseek-datoms origin-db index-type cs)
-          (filter-as-of-datoms (.-as-of-date db) origin-db))))
+          (filter-as-of-datoms (.-time-point db) origin-db))))
 
   (-index-range [db attr start end]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-index-range origin-db db attr start end)
-          (filter-as-of-datoms (.-as-of-date db) origin-db)))))
+          (filter-as-of-datoms (.-time-point db) origin-db)))))
 
-(defn- filter-since [datoms ^Date since-date db]
-  (let [since-pred (fn [^Datom d] (.after ^Date (.-v d) since-date))
+(defn- filter-since [datoms time-point db]
+  (let [since-pred (fn [^Datom d]
+                     (if (date? time-point)
+                       (.after ^Date (.-v d) ^Date time-point)
+                       (>= (.-tx d) time-point)))
         filtered-tx-ids (filter-txInstant datoms since-pred db)]
     (->> datoms
          (filter datom-added)
@@ -566,7 +576,7 @@
         filtered-tx-ids (filter-txInstant datoms before-pred db)]
     (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))) datoms)))
 
-(defrecord-updatable SinceDB [origin-db since-date]
+(defrecord-updatable SinceDB [origin-db time-point]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (-datoms db :eavt []))
@@ -612,28 +622,28 @@
   (-search [db pattern]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-search origin-db pattern)
-          (filter-since (.-since-date db) origin-db))))
+          (filter-since (.-time-point db) origin-db))))
 
   IIndexAccess
   (-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-datoms origin-db index-type cs)
-          (filter-since (.-since-date db) origin-db))))
+          (filter-since (.-time-point db) origin-db))))
 
   (-seek-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-seek-datoms origin-db index-type cs)
-          (filter-since (.-since-date db) origin-db))))
+          (filter-since (.-time-point db) origin-db))))
 
   (-rseek-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-rseek-datoms origin-db index-type cs)
-          (filter-since (.-since-date db) origin-db))))
+          (filter-since (.-time-point db) origin-db))))
 
   (-index-range [db attr start end]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-index-range origin-db db attr start end)
-          (filter-since (.-since-date db) origin-db)))))
+          (filter-since (.-time-point db) origin-db)))))
 
 ;; ----------------------------------------------------------------------------
 

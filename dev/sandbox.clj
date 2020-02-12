@@ -7,24 +7,31 @@
 
   (d/delete-database uri)
 
-  (def schema [{:db/ident :name
+  (def schema [{:db/ident       :name
                 :db/cardinality :db.cardinality/one
-                :db/index true
-                :db/unique :db.unique/identity
-                :db/valueType :db.type/string}
-               {:db/ident :sibling
+                :db/index       true
+                :db/unique      :db.unique/identity
+                :db/valueType   :db.type/string}
+               {:db/ident       :sibling
                 :db/cardinality :db.cardinality/many
-                :db/valueType :db.type/ref}
-               {:db/ident :age
+                :db/valueType   :db.type/ref}
+               {:db/ident       :age
                 :db/cardinality :db.cardinality/one
-                :db/valueType :db.type/long}])
-
+                :db/valueType   :db.type/long}])
+  
   (d/create-database uri :initial-tx schema)
 
   (def conn (d/connect uri))
 
-  (def result (d/transact conn [{:name  "Alice", :age   25}
-                                {:name  "Bob", :age   35}
-                                {:name "Charlie", :age 45 :sibling [[:name "Alice"] [:name "Bob"]]}]))
+  (def result (d/transact conn [{:name "Alice"
+                                 :age  25}
+                                {:name "Bob"
+                                 :age  35}
+                                {:name    "Charlie"
+                                 :age     45
+                                 :sibling [[:name "Alice"] [:name "Bob"]]}]))
 
-  (d/q '[:find ?e ?v ?t :where [?e :name ?v ?t]] @conn))
+  (d/q '[:find ?e ?v ?t :where [?e :name ?v ?t]] @conn)
+
+  (d/transact conn [{:name "boofar"}])
+  )

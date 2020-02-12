@@ -478,7 +478,7 @@
   [db date]
   {:pre [(or (int? date) (date? date))]}
   (if (db/-temporal-index? db)
-    (AsOfDB. db (if (date? date) date (java.util.Date. ^long date)))
+    (AsOfDB. db date)
     (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn since
@@ -487,5 +487,5 @@
   [db date]
   {:pre [(or (int? date) (date? date))]}
   (if (db/-temporal-index? db)
-    (SinceDB. db (if (date? date) date (java.util.Date. ^long date)))
+    (SinceDB. db date)
     (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)}))))
