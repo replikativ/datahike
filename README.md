@@ -100,7 +100,7 @@ Refer to the docs for more information:
 - [schema flexibility](./doc/schema.md)
 - [time variance](./doc/time_variance.md)
 - [differences from Datomic](./doc/datomic_differences.md)
-- [backend development](./doc/backend-developmend.md)
+- [backend development](./doc/backend-development.md)
 
 For simple examples have a look at the projects in the `examples` folder.
 
