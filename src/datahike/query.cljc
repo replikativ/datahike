@@ -922,6 +922,16 @@
       (vswap! query-cache assoc q qp)
       qp)))
 
+(defn paginate [offset limit resultset]
+  (if (or offset limit)
+    (let [length (count resultset)
+          start (or offset 0)
+          limit (or limit length)
+          part (+ start limit)
+          end (if (< length part) limit part)]
+      (-> resultset vec (subvec start end) set))
+    resultset))
+
 (defn q [q & inputs]
   (let [parsed-q (memoized-parse-query q)
         find (:qfind parsed-q)
@@ -929,6 +939,8 @@
         find-vars (dpi/find-vars find)
         result-arity (count find-elements)
         with (:qwith parsed-q)
+        limit (:qlimit parsed-q)
+        offset (:qoffset parsed-q)
         ;; TODO utilize parser
         all-vars (concat find-vars (map :symbol with))
         q (cond-> q
@@ -947,4 +959,6 @@
              (some #(instance? Pull %) find-elements)
              (pull find-elements context)
              true
-             (-post-process find))))
+             (-post-process find)
+             true
+             (paginate offset limit))))
