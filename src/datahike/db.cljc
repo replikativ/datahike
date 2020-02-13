@@ -1395,20 +1395,25 @@
             (let [[_ e a ov nv] entity
                   e (entid-strict db e)
                   _ (validate-attr a entity db)
-                  ov (if (ref? db a) (entid-strict db ov) ov)
                   nv (if (ref? db a) (entid-strict db nv) nv)
-                  _ (validate-val nv entity db)
                   datoms (-search db [e a])]
-              (if (multival? db a)
-                (if (some (fn [^Datom d] (= (.-v d) ov)) datoms)
+              (if (nil? ov)
+                (if (empty? datoms)
                   (recur (transact-add report [:db/add e a nv]) entities)
-                  (raise ":db.fn/cas failed on datom [" e " " a " " (map :v datoms) "], expected " ov
-                         {:error :transact/cas, :old datoms, :expected ov, :new nv}))
-                (let [v (:v (first datoms))]
-                  (if (= v ov)
-                    (recur (transact-add report [:db/add e a nv]) entities)
-                    (raise ":db.fn/cas failed on datom [" e " " a " " v "], expected " ov
-                           {:error :transact/cas, :old (first datoms), :expected ov, :new nv})))))
+                  (raise ":db.fn/cas failed on datom [" e " " a " " (if (multival? db a) (map :v datoms) (:v (first datoms))) "], expected nil"
+                         {:error :transact/cas, :old (if (multival? db a) datoms (first datoms)), :expected ov, :new nv}))
+                (let [ov (if (ref? db a) (entid-strict db ov) ov)
+                      _ (validate-val nv entity db)]
+                  (if (multival? db a)
+                    (if (some (fn [^Datom d] (= (.-v d) ov)) datoms)
+                      (recur (transact-add report [:db/add e a nv]) entities)
+                      (raise ":db.fn/cas failed on datom [" e " " a " " (map :v datoms) "], expected " ov
+                             {:error :transact/cas, :old datoms, :expected ov, :new nv}))
+                    (let [v (:v (first datoms))]
+                      (if (= v ov)
+                        (recur (transact-add report [:db/add e a nv]) entities)
+                        (raise ":db.fn/cas failed on datom [" e " " a " " v "], expected " ov
+                               {:error :transact/cas, :old (first datoms), :expected ov, :new nv})))))))
 
             (tx-id? e)
             (recur (allocate-eid report e (current-tx report)) (cons [op (current-tx report) a v] entities))

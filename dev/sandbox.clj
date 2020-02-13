@@ -34,4 +34,6 @@
   (d/q '[:find ?e ?v ?t :where [?e :name ?v ?t]] @conn)
 
   (d/transact conn [{:name "boofar"}])
+  (d/q '[:find ?e ?v ?t :where [?e :name ?v ?t]] @conn)
+
   )
