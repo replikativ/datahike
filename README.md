@@ -12,9 +12,11 @@ building on the two projects and the storage backends for the hitchhiker-tree
 through [konserve](https://github.com/replikativ/konserve). We would like to
 hear experience reports and are happy if you join us.
 
-There is a [video presentation with a walkthrough](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
+Some presentations are available:
 
-The overall vision is described in this [presentation](https://www.youtube.com/watch?v=A2CZwOHOb6U).
+- [2019 scicloj online meetup](https://www.youtube.com/watch?v=Hjo4TEV81sQ).
+- [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
+- [2018 Dutch clojure meetup](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
 
 ## Usage
 
@@ -98,6 +100,7 @@ Refer to the docs for more information:
 - [schema flexibility](./doc/schema.md)
 - [time variance](./doc/time_variance.md)
 - [differences from Datomic](./doc/datomic_differences.md)
+- [backend development](./doc/backend-development.md)
 
 For simple examples have a look at the projects in the `examples` folder.
 
@@ -138,7 +141,7 @@ of professional support, you should definitely stick to Datomic.
 
 datahike's query engine and most of its codebase come from
 [datascript](https://github.com/tonsky/datascript). Without the work on
-datascript datahike would not have been possible. Differences to Datomic with
+datascript, datahike would not have been possible. Differences to Datomic with
 respect to the query engine are documented there.
 
 ## When should I pick what?
@@ -230,7 +233,7 @@ Have a look at the [change log](./CHANGELOG.md) for recent updates.
 - optionally use core.async to handle storage IO
 - ClojureScript support both in the browser and on node
 
-### 0.5.0
+### 0.6.0
 
 - support GC or eager deletion of fragments
 - use hitchhiker-tree synchronization for replication
@@ -246,7 +249,7 @@ Have a look at the [change log](./CHANGELOG.md) for recent updates.
 ## Commercial support
 
 We are happy to provide commercial support with
-[lambdaforge](http://lambdaforge.io). If you are interested in a particular
+[lambdaforge](https://lambdaforge.io). If you are interested in a particular
 feature, please let us know.
 
 ## License
