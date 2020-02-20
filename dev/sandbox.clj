@@ -31,9 +31,15 @@
                                  :age     45
                                  :sibling [[:name "Alice"] [:name "Bob"]]}]))
 
-  (d/q '[:find ?e ?v ?t :where [?e :name ?v ?t]] @conn)
+  (d/q '[:find ?e ?a ?v ?t :in $ ?a :where [?e :name ?v ?t] [?e :age ?a]] @conn 35)
 
-  (d/transact conn [{:name "boofar"}])
-  (d/q '[:find ?e ?v ?t :where [?e :name ?v ?t]] @conn)
+  (d/q {:query '{:find [?e ?n]
+                 :in [$ ?a]
+                 :where [[?e :name ?n] (not [?e :age ?a])]}
+        :args [@conn 35]
+        :limit 1
+        :offset 0})
+
+
 
   )

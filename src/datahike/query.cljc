@@ -926,39 +926,51 @@
   (if (or offset limit)
     (let [length (count resultset)
           start (or offset 0)
-          limit (or limit length)
+          limit (if (or (nil? limit)
+                        (< limit 0))
+                  length
+                  limit)
           part (+ start limit)
           end (if (< length part) limit part)]
       (-> resultset vec (subvec start end) set))
     resultset))
 
-(defn q [q & inputs]
-  (let [parsed-q (memoized-parse-query q)
+
+(defmulti q (fn [query & args] (type query)))
+
+(defmethod q clojure.lang.LazySeq [query & inputs]
+  (q {:query query :args inputs}))
+
+(defmethod q clojure.lang.PersistentVector [query & inputs]
+  (q {:query query :args inputs}))
+
+(defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
+  (let [query (if (contains? query-map :query) (:query query-map) query-map)
+        args (if (contains? query-map :args) (:args query-map) inputs)
+        parsed-q (memoized-parse-query query)
         find (:qfind parsed-q)
         find-elements (dpip/find-elements find)
         find-vars (dpi/find-vars find)
         result-arity (count find-elements)
         with (:qwith parsed-q)
-        limit (:qlimit parsed-q)
-        offset (:qoffset parsed-q)
         ;; TODO utilize parser
         all-vars (concat find-vars (map :symbol with))
-        q (cond-> q
-                  (sequential? q) dpi/query->map)
-        wheres (:where q)
+        query (cond-> query
+                (sequential? query) dpi/query->map)
+        wheres (:where query)
         context (-> (Context. [] {} {})
-                    (resolve-ins (:qin parsed-q) inputs))
+                    (resolve-ins (:qin parsed-q) args))
         resultset (-> context
                       (-q wheres)
                       (collect all-vars))]
     (cond->> resultset
-             (:with q)
-             (mapv #(vec (subvec % 0 result-arity)))
-             (some #(instance? Aggregate %) find-elements)
-             (aggregate find-elements context)
-             (some #(instance? Pull %) find-elements)
-             (pull find-elements context)
-             true
-             (-post-process find)
-             true
-             (paginate offset limit))))
+      (:with query)
+      (mapv #(vec (subvec % 0 result-arity)))
+      (some #(instance? Aggregate %) find-elements)
+      (aggregate find-elements context)
+      (some #(instance? Pull %) find-elements)
+      (pull find-elements context)
+      true
+      (-post-process find)
+      true
+      (paginate (:offset query-map) (:limit query-map)))))

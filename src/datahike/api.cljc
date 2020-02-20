@@ -211,7 +211,7 @@
 
 (defmethod q clojure.lang.PersistentVector
   [query & inputs]
-  (apply dq/q query inputs))
+  (dq/q {:query query :args inputs}))
 
 (defmethod q clojure.lang.PersistentArrayMap
   [query-map & arg-list]
@@ -220,8 +220,18 @@
                 query-map)
         args (if (contains? query-map :args)
                (:args query-map)
-               arg-list)]
-    (apply dq/q query args)))
+               arg-list)
+        limit (if (contains? query-map :limit)
+                (:limit query-map)
+                -1)
+        offset (if (contains? query-map :offset)
+                 (:offset query-map)
+                 0)]
+    (dq/q {:query query
+           :args args
+           :limit limit
+           :offset offset})))
+
 (defn datoms
   "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components (e, a, v) match passed arguments.
 
