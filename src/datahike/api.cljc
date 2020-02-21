@@ -221,12 +221,10 @@
         args (if (contains? query-map :args)
                (:args query-map)
                arg-list)
-        limit (if (contains? query-map :limit)
-                (:limit query-map)
-                -1)
-        offset (if (contains? query-map :offset)
-                 (:offset query-map)
-                 0)]
+        limit (when (contains? query-map :limit)
+                (:limit query-map))
+        offset (when (contains? query-map :offset)
+                 (:offset query-map))]
     (dq/q {:query query
            :args args
            :limit limit

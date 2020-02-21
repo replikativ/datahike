@@ -1550,11 +1550,15 @@
                  entities
                  (assoc-in migration-state [:tids e] (.-e new-datom))))
 
+        ;; ref not added yet
+        (and (ref? db a) (nil? (get-in migration-state [:eids v])))
+        (recur (allocate-eid report max-eid) es (assoc-in migration-state [:eids v] max-eid))
+
         :else
         (let [new-datom ^Datom (dd/datom
                           (or (get-in migration-state [:eids e]) max-eid)
                           a
-                          (if (multival? db a)
+                          (if (ref? db a)
                             (get-in migration-state [:eids v])
                             v)
                           (get-in migration-state [:tids t])

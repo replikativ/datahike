@@ -926,12 +926,13 @@
   (if (or offset limit)
     (let [length (count resultset)
           start (or offset 0)
-          limit (if (or (nil? limit)
-                        (< limit 0))
+          limit (if (or (nil? limit) (< limit 0))
                   length
                   limit)
           part (+ start limit)
-          end (if (< length part) limit part)]
+          end (if (< length part)
+                length
+                part)]
       (-> resultset vec (subvec start end) set))
     resultset))
 
