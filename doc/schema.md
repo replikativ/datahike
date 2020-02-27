@@ -116,7 +116,7 @@ See `src/datahike/schema.cljc` for the implementation details.
 
 Updating an existing schema is discouraged as it may lead to inconsistencies
 in your data. Therefore only schema updates for `db.cardinality` and `db.unique`
-are supported. Rather updating an existing attribute it is recommended to create
-a new attribute and migrate data accordingly. Alternatively if you want to maintain your
+are supported. Rather than updating an existing attribute, it is recommended to create
+a new attribute and migrate data accordingly. Alternatively, if you want to maintain your
 old attribute names, export your data except the schema, transform it to the new
-schema, create a new database with the new schema and import the transformed data.
+schema, create a new database with the new schema, and import the transformed data.
