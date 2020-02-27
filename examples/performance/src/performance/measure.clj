@@ -1,10 +1,10 @@
 (ns performance.measure
   (:require [datahike.api :as d]
+            [datomic.api :as da]
+            [incanter.stats :as is]
             [datahike-leveldb.core]
             [datahike-postgres.core]
-            [datomic.api :as da]
             [criterium.core :as c]
-            [incanter.stats :as s]
             [clojure.string :as str])
   (:import (java.io StringWriter)))
 
@@ -28,63 +28,48 @@
     [(:res res) (read-string (nth (str/split (:str res) #" ")
                                   2))]))
 
-(defn measure-tx-times [iteration-count datahike? conn tx-gen]
-  (vec (repeatedly iteration-count
-                   (fn [] (let [txs (tx-gen)]
-                            (if datahike?
-                              (e-time #(d/transact conn txs))
-                              (e-time #(deref (da/transact conn txs)))))))))
+(defn measure-tx-times [iteration-count lib conn tx-gen]
+  (let [t (vec (repeatedly iteration-count
+                         (fn [] (let [txs (tx-gen)]
+                                  (case lib
+                                    "datahike" (e-time #(d/transact conn txs))
+                                    "datomic" (e-time #(deref (da/transact conn txs))))))))]
+    {:samples t :mean (is/mean t) :sd (is/sd t)}))
 
-(defn measure-tx-times-auto [datahike? conn tx-gen]         ;; test !
+(defn measure-tx-times-auto [lib conn tx-gen]         ;; test !
   "Use criterium for measurements"
-  (let [txs (tx-gen)
-        res (if datahike?
-              (c/benchmark (d/transact conn txs) {:verbose false}) ;; creates out of memory exceptions when trying to measure asynchron function
-              (c/benchmark @(da/transact conn txs) {:verbose false}))]
-    (:samples res)))
+  (let [txs (tx-gen)]
+    (case lib
+      "datahike" (c/benchmark (d/transact conn txs) {:verbose false}) ;; creates out of memory exceptions when trying to measure asynchron function
+      "datomic" (c/benchmark @(da/transact conn txs) {:verbose false}))))
 
 
-(defn measure-connect-times [iteration-count datahike? uri]
-  (vec (repeatedly iteration-count
-                   (fn [] (if datahike?
-                            (do (let [[conn t] (e-time-with-res #(d/connect uri))]
-                                  (d/release conn)
-                                  t))
-                            (do (let [[conn t] (e-time-with-res #(da/connect uri))]
-                                  (da/release conn)
-                                  t)))))))
+(defn measure-connect-times [iteration-count lib uri]
+  (let [t (vec (repeatedly iteration-count
+                         (fn [] (case lib
+                                  "datahike" (do (let [[conn t] (e-time-with-res #(d/connect uri))]
+                                                   (d/release conn)
+                                                   t))
+                                  "datomic" (do (let [[conn t] (e-time-with-res #(da/connect uri))]
+                                                  (da/release conn)
+                                                  t))))))]
+    {:samples t :mean (is/mean t) :sd (is/sd t)}))
 
-(defn measure-connect-times-auto [datahike? uri]
-  (if datahike?
-    (c/benchmark (let [conn (d/connect uri)] (d/release conn)) {:verbose false})
-    (c/benchmark (let [conn (da/connect uri)] (da/release conn)) {:verbose false})))
+(defn measure-connect-times-auto [lib uri]
+  (case lib
+    "datahike" (c/benchmark (let [conn (d/connect uri)] (d/release conn)) {:verbose false})
+    "datomic" (c/benchmark (let [conn (da/connect uri)] (da/release conn)) {:verbose false})))
 
-(defn measure-query-times [iteration-count datahike? conn query]
-  (vec (repeatedly iteration-count
-                   (fn [] (if datahike?
-                            (e-time #(d/q conn query))
-                            (e-time #(da/q conn query)))))))
+(defn measure-query-times [iteration-count lib db query-gen]
+  (let [t (vec (repeatedly iteration-count
+                         (fn [] (let [query (query-gen)]
+                                  (case lib
+                                       "datahike" (e-time #(d/q query db))
+                                       "datomic" (e-time #(da/q query db)))))))]
+    {:samples t :mean (is/mean t) :sd (is/sd t)}))
 
-(defn measure-query-times-auto [iteration-count datahike? db query]
-  (if datahike?
-    (c/benchmark (d/q db query) {:verbose false})
-    (c/benchmark (da/q db query) {:verbose false})))
-
-;;(def schema [{:db/ident       :name :db/valueType   :db.type/string :db/cardinality :db.cardinality/one}])
-
-
-;;(def uri "datahike:level:///tmp/level-perf")
-
-
-
-;;(def dconn (let [uri "datahike:file:///tmp/file-perf"] (d/delete-database uri) (d/create-database uri :initial-tx schema) (d/connect uri)))
-
-;;(def cconn (let [uri "datomic:mem://datahike-vs-datomic"] (da/delete-database uri)  (da/create-database uri) (da/connect uri) ) )
-;;@(da/transact cconn schema)
-
-
-;;(first (:mean (measure-tx-times-auto true dconn 512)))
-;;(s/mean (measure-tx-times 100 true dconn 512))
-
-;;(measure-tx-times 10 true dconn #(create-n-transactions 512))
-;;(s/mean (measure-connect-times 10 true uri))
+(defn measure-query-times-auto [lib db query-gen]
+  (let [query (query-gen)]
+    (case lib
+      "datahike" (c/benchmark (d/q db query) {:verbose false})
+      "datomic" (c/benchmark (da/q db query) {:verbose false}))))

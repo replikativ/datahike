@@ -1,6 +1,8 @@
 (ns performance.schema)
 
-(def schemas {"simple" [{:db/ident :name
-                         :db/valueType :db.type/string
-                         :db/cardinality :db.cardinality/one}]
-              "complex" []})
+(defn make-col
+  ([name type] (make-col name type :db.cardinality/one))
+  ([name type cardinality]
+   {:db/ident       name
+    :db/valueType   type
+    :db/cardinality cardinality}))
