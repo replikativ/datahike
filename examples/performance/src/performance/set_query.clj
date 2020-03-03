@@ -1,8 +1,8 @@
 (ns performance.set-query
   (:require [performance.measure :refer [measure-query-times]]
             [performance.db :as db]
-            [performance.uri :as uri]
-            [performance.const :as c]
+            [performance.conf :as c]
+            [performance.error :as e]
             [performance.schema :refer [make-col]]
             [incanter.io]
             [incanter.core :as ic])
@@ -182,24 +182,26 @@
 (defn run-combinations [iterations]
   "Returns observations in following order:
    [:backend :schema-on-read :temporal-index ::entities :mean :sd]"
-  (let [uris [(first uri/all)]
+  (let [uris [(first c/uris)]
         header [:backend :schema-on-read :temporal-index :entities :category :specific :mean :sd]
         res (for [n-entities [1000]]                            ;; use at least 1 Mio
-              (let [connections (prepare-databases uris n-entities)]
-                (apply concat (for [[conn uri] (map vector connections uris)
-                                    :let [sor (:schema-on-read uri)
-                                          ti (:temporal-index uri)
-                                          db (db/db (:lib uri) conn)]]
-                                (map (fn [query] (let [t (measure-query-times iterations (:lib uri) db #(identity (:query query)))]
-                                                   (db/release (:lib uri) conn)
-                                                   [(:name uri) sor ti n-entities (:category query) (:specific query) (:mean t) (:sd t)]))
-                                     set-queries)))))]
+              (try
+                (let [connections (prepare-databases uris n-entities)]
+                  (apply concat (for [[conn uri] (map vector connections uris)
+                                      :let [sor (:schema-on-read uri)
+                                            ti (:temporal-index uri)
+                                            db (db/db (:lib uri) conn)]]
+                                  (map (fn [query] (let [t (measure-query-times iterations (:lib uri) db #(identity (:query query)))]
+                                                     (db/release (:lib uri) conn)
+                                                     [(:name uri) sor ti n-entities (:category query) (:specific query) (:mean t) (:sd t)]))
+                                       set-queries))))
+                (catch Exception e (e/short-report e))))]
     [header (apply concat res)]))
 
 
 (defn get-set-query-times [file-suffix]
   (let [[header res] (run-combinations 10)
-        data (ic/dataset header res)]
+        data (ic/dataset header (remove nil? res))]
     (ic/save data (str c/data-dir "/" (.format c/date-formatter (Date.)) "-" file-suffix ".dat"))))
 
 

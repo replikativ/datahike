@@ -1,0 +1,21 @@
+version: "3.7"
+services:
+  bench-postgresql:
+    image: postgres:9.6.2
+    ports:
+      - "5440:5432"
+    volumes:
+      - ./docker-postgresql-databases:/docker-entrypoint-initdb.d
+    environment:
+      - POSTGRES_DATABASES="performance-s0-t0", "performance-s0-t1", "performance-s1-t0", "performance-s1-t1"
+      - POSTGRES_USER=datahike
+      - POSTGRES_PASSWORD=clojure
+
+  bench-datomic:
+    image: akiel/datomic-free:0.9.5703-2
+    ports:
+      - "4334-4336:4334-4336"
+    environment:
+      - ADMIN_PASSWORD=clojure
+      - DATOMIC_PASSWORD=clojure
+

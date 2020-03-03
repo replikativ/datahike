@@ -2,8 +2,8 @@
   (:require [performance.db :as db]
             [performance.schema :refer [make-col]]
             [performance.measure :refer [measure-query-times]]
-            [performance.uri :as uri]
-            [performance.const :as c]
+            [performance.conf :as c]
+            [performance.error :as e]
             [incanter.io]
             [incanter.core :as ic])
   (:import (java.util Date)
@@ -107,7 +107,7 @@
 (defn run-combinations [iterations]
   "Returns observations in following order:
    [:backend :schema-on-read :temporal-index ::entities :mean :sd]"
-  (let [uris [(first uri/all)]
+  (let [uris [(first c/uris)]
         header [:backend :schema-on-read :temporal-index :n-attr :entities :n-clauses :n-joins :n-direct :mean :sd]
         res (for [n-entities [1000]                                      ;; use at least 1 Mio
                   n-ref-attr [5 10 50 100]                               ;; until?
@@ -120,17 +120,19 @@
                       n-joins (range n-clauses)
                       :let [sor (:schema-on-read uri)
                             ti (:temporal-index uri)
-                            db (db/db (:lib uri) conn)
                             n-direct-clauses (- n-clauses n-joins)]]
-                  (let [t (measure-query-times iterations (:lib uri) db #(create-query n-direct-clauses n-joins n-ref-attr))]
-                    (db/release (:lib uri) conn)
-                    [(:name uri) sor ti n-attr n-entities n-clauses n-joins n-direct-clauses (:mean t) (:sd t)]))))]
+                  (try
+                    (let [db (db/db (:lib uri) conn)
+                          t (measure-query-times iterations (:lib uri) db #(create-query n-direct-clauses n-joins n-ref-attr))]
+                      (db/release (:lib uri) conn)
+                      [(:name uri) sor ti n-attr n-entities n-clauses n-joins n-direct-clauses (:mean t) (:sd t)])
+                    (catch Exception e (e/short-report e))))))]
     [header (apply concat res)]))
 
 
 (defn get-rand-query-times [file-suffix]
   (let [[header res] (run-combinations 10)
-        data (ic/dataset header res)]
+        data (ic/dataset header (remove nil? res))]
     (ic/save data (str c/data-dir "/" (.format c/date-formatter (Date.)) "-" file-suffix ".dat"))))
 
 

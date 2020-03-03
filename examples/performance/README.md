@@ -7,9 +7,22 @@ See `core` namespace for more information
 ## Usage
 
 Make sure a `PostgreSQL` and `Datomic` instance is running, adjust configuration
-accordingly. Build the project and run it locally for best performance results:
+accordingly. 
 
-``` clojure
+Set up databases using `docker-compose`:
+``` bash
+docker-compose up
+```
+
+You can clean up the containers with:
+``` bash
+docker-compose down --volumes
+```
+
+
+Build the project and run it locally for best performance results:
+
+``` bash
 lein uberjar
 java -jar -Xmx2g -server target/performance-0.1.0-SNAPSHOT-standalone.jar
 ```

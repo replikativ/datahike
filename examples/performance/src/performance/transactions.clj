@@ -1,10 +1,10 @@
 (ns performance.transactions
   (:require [performance.measure :refer [measure-tx-times]]
-            [performance.uri :as uri]
             [performance.db :as db]
+            [performance.error :as e]
             [incanter.core :as ic]
             [incanter.io]
-            [performance.const :as c])
+            [performance.conf :as c])
   (:import (java.util Date UUID)
            (java.text SimpleDateFormat)))
 
@@ -25,20 +25,22 @@
    [:backend :schema-on-read :temporal-index :datoms :mean :sd]"
   (let [header [:backend :schema-on-read :temporal-index :datoms :mean :sd]
         res (for [d-count [1 2 4 8 16 32 64 128 256 512 1024]
-                  uri uri/all
-                  :let [_ (println "Datoms " d-count " " uri)
-                        sor (:schema-on-read uri)
-                        ti (:temporal-index uri)
-                        conn (db/init-schema-and-connect (:lib uri) (:uri uri) (if sor [] schema) :schema-on-read sor :temporal-index ti)
-                        t (measure-tx-times iterations (:lib uri) conn #(create-n-transactions d-count))]]
-              (do (db/release (:lib uri) conn)
-                  [(:name uri) sor ti d-count (:mean t) (:sd t)]))]
+                  uri c/uris]
+              (try
+                (let [_ (println "Datoms " d-count " " uri)
+                      sor (:schema-on-read uri)
+                      ti (:temporal-index uri)
+                      conn (db/init-schema-and-connect (:lib uri) (:uri uri) (if sor [] schema) :schema-on-read sor :temporal-index ti)
+                      t (measure-tx-times iterations (:lib uri) conn #(create-n-transactions d-count))]
+                  (db/release (:lib uri) conn)
+                  [(:name uri) sor ti d-count (:mean t) (:sd t)])
+                (catch Exception e (e/short-report e))))]
     [header res]))
 
 
 (defn get-tx-times [file-suffix]
-  (let [[header result] (run-combinations 256)
-        data (ic/dataset header result)]
+  (let [[header result] (run-combinations 10)
+        data (ic/dataset header (remove nil? result))]
     (ic/save data (str c/data-dir "/" (.format c/date-formatter (Date.)) "-" file-suffix ".dat"))))
 
 
