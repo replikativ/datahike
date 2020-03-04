@@ -10,7 +10,7 @@
                  [org.clojure/tools.reader "1.3.2"]
                  [io.replikativ/hitchhiker-tree "0.1.5"]
                  [io.replikativ/superv.async "0.2.9"]
-                 [io.lambdaforge/datalog-parser "0.1.2-SNAPSHOT"]]
+                 [io.lambdaforge/datalog-parser "0.1.1"]]
 
   :plugins [[lein-cljsbuild "1.1.7"]]
 
