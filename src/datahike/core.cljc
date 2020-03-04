@@ -113,7 +113,7 @@
                  ; => {:db/id   1,
                  ;     :name    \"Ivan\"
                  ;     :likes   [:pizza]
-                 ;     :friends [{:db/id 2, :name \"Oleg\"}]"}
+                 ;     :friends [{:db/id 2, :name \"Oleg\"}]}"}
   pull dp/pull)
 
 
