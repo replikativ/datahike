@@ -210,5 +210,54 @@
          #{[:a 2] [:a 4] [:a 6]
            [:b 2]})))
 
+(deftest test-offset
+  (let [db (-> (d/empty-db)
+               (d/db-with [{:db/id 1, :name  "Alice", :age   15}
+                           {:db/id 2, :name  "Bob", :age   37}
+                           {:db/id 3, :name  "Charlie", :age   37}]))]
+    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
+                        :args [db]}))
+           3))
+    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
+                        :args [db]
+                        :offset 1
+                        :limit 1}))
+           1))
+    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
+                        :args [db]
+                        :limit 2}))
+           2))
+    (is (= (count  (d/q {:query '[:find ?e :where [?e :name _]]
+                         :args [db]
+                         :offset 1
+                         :limit 2}))
+           2))
+    (is (= (count  (d/q {:query '[:find ?e :where [?e :name _]]
+                         :args [db]
+                         :offset 2
+                         :limit 2}))
+           1))
+    (is (not (= (d/q {:query '[:find ?e :where [?e :name _]]
+                      :args [db]
+                      :limit 2})
+                (d/q {:query '[:find ?e :where [?e :name _]]
+                      :args [db]
+                      :offset 1
+                      :limit 2}))))
+    (is (= (d/q {:query '[:find ?e :where [?e :name _]]
+                         :args [db]
+                 :offset 4})
+           #{}))
+    (is (= (d/q {:query '[:find ?e :where [?e :name _]]
+                         :args [db]
+                 :offset 10
+                 :limit 5})
+           #{}))
+    (is (= (d/q {:query '[:find ?e :where [?e :name _]]
+                         :args [db]
+                 :offset 1
+                 :limit 0})
+           #{}))))
+
 #_(require 'datahike.test.query :reload)
 #_(clojure.test/test-ns 'datahike.test.query)

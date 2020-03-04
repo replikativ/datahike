@@ -214,17 +214,9 @@
   (dq/q {:query query :args inputs}))
 
 (defmethod q clojure.lang.PersistentArrayMap
-  [query-map & arg-list]
-  (let [query (if (contains? query-map :query)
-                (:query query-map)
-                query-map)
-        args (if (contains? query-map :args)
-               (:args query-map)
-               arg-list)
-        limit (when (contains? query-map :limit)
-                (:limit query-map))
-        offset (when (contains? query-map :offset)
-                 (:offset query-map))]
+  [{:keys [query args limit offset] :as query-map} & arg-list]
+  (let [query (or query query-map)
+        args (or args arg-list)]
     (dq/q {:query query
            :args args
            :limit limit

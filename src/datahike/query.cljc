@@ -933,9 +933,10 @@
           end (if (< length part)
                 length
                 part)]
-      (-> resultset vec (subvec start end) set))
+      (if (< start end)
+        (-> resultset vec (subvec start end) set)
+        #{}))
     resultset))
-
 
 (defmulti q (fn [query & args] (type query)))
 
