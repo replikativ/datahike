@@ -40,3 +40,18 @@
                   @new-conn)
                #{[3] [4]}))
         (delete-database uri)))))
+
+
+(deftest migrate-tx-test
+  (testing "Test migrate simple datoms"
+    (let [source-datoms (->> tx-data
+                             (mapv #(-> % rest vec))
+                             (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))]
+      (let [cfg {:backend :mem
+                 :path "/target"}
+            _ (delete-database cfg)
+            _ (create-database cfg)
+            conn (connect cfg)]
+        @(migrate conn source-datoms)
+        (is (= (into #{} source-datoms)
+               (q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))))))

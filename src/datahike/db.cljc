@@ -1556,11 +1556,11 @@
 
         :else
         (let [new-datom ^Datom (dd/datom
-                          (or (get-in migration-state [:eids e]) max-eid)
-                          a
-                          (if (ref? db a)
-                            (get-in migration-state [:eids v])
-                            v)
-                          (get-in migration-state [:tids t])
-                          op)]
+                                (or (get-in migration-state [:eids e]) max-eid)
+                                a
+                                (if (ref? db a)
+                                  (get-in migration-state [:eids v])
+                                  v)
+                                (get-in migration-state [:tids t])
+                                op)]
           (recur (transact-report report new-datom) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))

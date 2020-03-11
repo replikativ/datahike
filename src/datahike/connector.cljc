@@ -23,43 +23,47 @@
   [connection tx-data]
   (transact! connection {:tx-data tx-data}))
 
+(defn update-and-flush-db [connection tx-data update-fn]
+  (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
+        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]} db-after
+        store (:store @connection)
+        backend (kons/->KonserveBackend store)
+        eavt-flushed (di/-flush eavt backend)
+        aevt-flushed (di/-flush aevt backend)
+        avet-flushed (di/-flush avet backend)
+        temporal-index? (:temporal-index config)
+        temporal-eavt-flushed (when temporal-index? (di/-flush temporal-eavt backend))
+        temporal-aevt-flushed (when temporal-index? (di/-flush temporal-aevt backend))
+        temporal-avet-flushed (when temporal-index? (di/-flush temporal-avet backend))]
+    (<?? S (k/assoc-in store [:db]
+                       (merge
+                         {:schema   schema
+                          :rschema  rschema
+                          :config   config
+                          :max-tx max-tx
+                          :eavt-key eavt-flushed
+                          :aevt-key aevt-flushed
+                          :avet-key avet-flushed}
+                         (when temporal-index?
+                           {:temporal-eavt-key temporal-eavt-flushed
+                            :temporal-aevt-key temporal-aevt-flushed
+                            :temporal-avet-key temporal-avet-flushed}))))
+    (reset! connection (assoc db-after
+                         :eavt eavt-flushed
+                         :aevt aevt-flushed
+                         :avet avet-flushed
+                         :temporal-eavt temporal-eavt-flushed
+                         :temporal-aevt temporal-aevt-flushed
+                         :temporal-avet temporal-avet-flushed))
+    tx-report)
+  )
+
 (defmethod transact! clojure.lang.PersistentArrayMap
   [connection {:keys [tx-data]}]
   {:pre [(d/conn? connection)]}
   (future
     (locking connection
-      (let [{:keys [db-after] :as tx-report} @(d/transact connection tx-data)
-            {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]} db-after
-            store (:store @connection)
-            backend (kons/->KonserveBackend store)
-            eavt-flushed (di/-flush eavt backend)
-            aevt-flushed (di/-flush aevt backend)
-            avet-flushed (di/-flush avet backend)
-            temporal-index? (:temporal-index config)
-            temporal-eavt-flushed (when temporal-index? (di/-flush temporal-eavt backend))
-            temporal-aevt-flushed (when temporal-index? (di/-flush temporal-aevt backend))
-            temporal-avet-flushed (when temporal-index? (di/-flush temporal-avet backend))]
-        (<?? S (k/assoc-in store [:db]
-                           (merge
-                            {:schema   schema
-                             :rschema  rschema
-                             :config   config
-                             :max-tx max-tx
-                             :eavt-key eavt-flushed
-                             :aevt-key aevt-flushed
-                             :avet-key avet-flushed}
-                            (when temporal-index?
-                              {:temporal-eavt-key temporal-eavt-flushed
-                               :temporal-aevt-key temporal-aevt-flushed
-                               :temporal-avet-key temporal-avet-flushed}))))
-        (reset! connection (assoc db-after
-                             :eavt eavt-flushed
-                             :aevt aevt-flushed
-                             :avet avet-flushed
-                             :temporal-eavt temporal-eavt-flushed
-                             :temporal-aevt temporal-aevt-flushed
-                             :temporal-avet temporal-avet-flushed))
-        tx-report))))
+      (update-and-flush-db connection tx-data d/transact))))
 
 (defn transact [connection tx-data]
   (try
@@ -67,42 +71,10 @@
     (catch Exception e
       (throw (.getCause e)))))
 
-
 (defn migrate [connection tx-data]
   (future
     (locking connection
-      (let [{:keys [db-after] :as tx-report} @(d/migrate connection tx-data)
-            {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]} db-after
-            store (:store @connection)
-            backend (kons/->KonserveBackend store)
-            eavt-flushed (di/-flush eavt backend)
-            aevt-flushed (di/-flush aevt backend)
-            avet-flushed (di/-flush avet backend)
-            temporal-index? (:temporal-index config)
-            temporal-eavt-flushed (when temporal-index? (di/-flush temporal-eavt backend))
-            temporal-aevt-flushed (when temporal-index? (di/-flush temporal-aevt backend))
-            temporal-avet-flushed (when temporal-index? (di/-flush temporal-avet backend))]
-        (<?? S (k/assoc-in store [:db]
-                           (merge
-                             {:schema   schema
-                              :rschema  rschema
-                              :config   config
-                              :max-tx max-tx
-                              :eavt-key eavt-flushed
-                              :aevt-key aevt-flushed
-                              :avet-key avet-flushed}
-                             (when temporal-index?
-                               {:temporal-eavt-key temporal-eavt-flushed
-                                :temporal-aevt-key temporal-aevt-flushed
-                                :temporal-avet-key temporal-avet-flushed}))))
-        (reset! connection (assoc db-after
-                             :eavt eavt-flushed
-                             :aevt aevt-flushed
-                             :avet avet-flushed
-                             :temporal-eavt temporal-eavt-flushed
-                             :temporal-aevt temporal-aevt-flushed
-                             :temporal-avet temporal-avet-flushed))
-        tx-report))))
+      (update-and-flush-db connection tx-data d/migrate))))
 
 (defn release [conn]
   (ds/release-store (get-in @conn [:config :storage]) (:store @conn)))
