@@ -1,9 +1,10 @@
 (ns performance.conf
-  (:import (java.text SimpleDateFormat)))
+  (:import (java.text SimpleDateFormat)
+           (java.lang Integer)))
 
 
 ;; constant for integer databases
-(def max-int 2000000000)
+(def max-int Integer/MAX_VALUE)
 
 ;; output files
 
@@ -24,7 +25,7 @@
 
 
 (def datomic-uris [{:lib "datomic" :name "Datomic Mem" :uri "datomic:mem://performance" :schema-on-read false :temporal-index false} ;; not working on connect
-                   {:lib "datomic" :name "Datomic" :uri "datomic:free://localhost:4334/performance?password=clojure" :schema-on-read false :temporal-index false}])
+                   {:lib "datomic" :name "Datomic Free" :uri "datomic:free://localhost:4334/performance?password=clojure" :schema-on-read false :temporal-index false}])
 
 
 (def uris (into [] (concat datahike-uris datomic-uris)))

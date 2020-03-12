@@ -30,8 +30,7 @@
   (let [attr-names (map #(keyword (str "A" %)) (take n-clauses (shuffle (range n-attr))))
         attr-symbols (map #(symbol (str "?ares" %)) (take n-clauses (range n-attr)))
         attr-clauses (map (fn [a v] (conj '[?e] a v)) attr-names attr-symbols)]
-    (println attr-clauses)
-
+    ;;(println " Clauses:" attr-clauses)
     (reduce (fn [query [res attr-clause]]
               (-> query
                   (update :find conj res)
@@ -42,7 +41,7 @@
 
 (defn create-value [type]
   (case type
-    :db.type/bigint (rand-int c/max-int)
+    :db.type/long (long (rand-int c/max-int))
     :db.type/string (str (rand-int c/max-int))))
 
 
@@ -77,43 +76,52 @@
        - m direct attributes
        - m reference attributes
        - 1 attribute identifying it as non-schema entity"
-  ([uris type value-generator n e]                          ;; n=m -> entities have all attributes
-   (create-value-ref-dbs uris type value-generator n n e))
-  ([uris type value-generator n m e]
+  ([uris type n e]                          ;; n=m -> entities have all possible attributes
+   (create-value-ref-dbs uris type n n e))
+  ([uris type n m e]
+   (println "Set up databases...")
+   (println " Type:" type)
+   (println " Number of different attributes:" (inc (* 2 n)))
+   (println " Number of entities:" e)
+   (println " Number of attributes per entity:" (inc (* 2 m)))
    (let [schema (into [(make-col :randomEntity :db.type/boolean)]
                       (concat (make-hom-schema "A" type :db.cardinality/one n)
                               (make-hom-schema "R" :db.type/ref :db.cardinality/one n)))
          entities (mapv (fn [_] (make-entity {:randomEntity true} "A" m n
-                                             (repeatedly m value-generator)))
+                                             (repeatedly m  #(create-value type))))
                         (range e))]
-     (println entities)
+     (println " Schema:" schema)
+     (println " Entities:" entities)
      (for [uri uris
            :let [sor (:schema-on-read uri)
                  ti (:temporal-index uri)]]
-       (let [conn (db/prepare-db-and-connect (:lib uri) (:uri uri) (if sor [] schema) entities :schema-on-read sor :temporal-index ti)
-             ids (map first (db/q (:lib uri)
-                                  '[:find ?e :where [?e :randomEntity]]
-                                  (db/db (:lib uri) conn)))
-             _ (println ids)
-             add-to-entity (mapv (fn [id] (make-entity {:db/id id} "R" m n
-                                                       (take m (shuffle (filter #(not= id %) ids)))))
-                                 ids)]
-         (println add-to-entity)
-         (db/transact (:lib uri) conn add-to-entity)
-         conn
-         )))))
+       (time
+         (let [_ (println " Uri:" uri)
+               conn (db/prepare-db-and-connect (:lib uri) (:uri uri) (if sor [] schema) entities :schema-on-read sor :temporal-index ti)
+               ids (map first (db/q (:lib uri)
+                                    '[:find ?e :where [?e :randomEntity]]
+                                    (db/db (:lib uri) conn)))
+                _ (println "  IDs:" ids)
+               add-to-entity (mapv (fn [id] (make-entity {:db/id id} "R" m n
+                                                         (take m (shuffle (filter #(not= id %) ids)))))
+                                   ids)]
+           (println "  Values to add:" add-to-entity)
+           (db/transact (:lib uri) conn add-to-entity)
+           (print "   ")
+           conn))))))
 
 
-(defn run-combinations [iterations]
+(defn run-combinations [uris iterations]
   "Returns observations in following order:
-   [:backend :schema-on-read :temporal-index ::entities :mean :sd]"
-  (let [uris [(first c/uris)]
-        header [:backend :schema-on-read :temporal-index :n-attr :entities :n-clauses :n-joins :n-direct :mean :sd]
-        res (for [n-entities [1000]                                      ;; use at least 1 Mio
-                  n-ref-attr [5 10 50 100]                               ;; until?
-                  type [:db.type/bigint :db.type/string]
+   [:backend :schema-on-read :temporal-index :n-attr :entities :n-clauses :n-joins :n-direct :mean :sd]"
+  (println "Getting random query times...")
+  (let [header [:backend :schema-on-read :temporal-index :n-attr :entities :n-clauses :n-joins :n-direct :mean :sd]
+        res (for [n-entities [10000]                                      ;; use at least 1 Mio, but takes too long
+                  n-ref-attr [5 10 50 100]                            ;;[5 10 50 100]                               ;; until?
+                  type [:db.type/long :db.type/string]
                   :let [n-attr (+ 1 (* 2 n-ref-attr))]]
-              (let [connections (create-value-ref-dbs uris type #(create-value type) n-ref-attr n-entities)]
+              (let [connections (create-value-ref-dbs uris type n-ref-attr n-entities)]
+                (println " Connections established for:" " n-entities;" n-entities " n-ref-attr:" n-ref-attr)
                 (println connections)
                 (for [[conn uri] (map vector connections uris)
                       n-clauses [(* 2 (min n-ref-attr 5))]  ;; max 10 clauses
@@ -122,21 +130,27 @@
                             ti (:temporal-index uri)
                             n-direct-clauses (- n-clauses n-joins)]]
                   (try
-                    (let [db (db/db (:lib uri) conn)
+                    (let [_ (println " Type:" type "Attributes per entity:" n-attr " Clauses with joins:" n-joins "of" n-clauses " Number of datoms:" n-entities  " Uri:" uri)
+                          db (db/db (:lib uri) conn)
                           t (measure-query-times iterations (:lib uri) db #(create-query n-direct-clauses n-joins n-ref-attr))]
                       (db/release (:lib uri) conn)
+                      (println "  Mean Time:" (:mean t) "ms")
+                      (println "  Standard deviation:" (:sd t) "ms")
                       [(:name uri) sor ti n-attr n-entities n-clauses n-joins n-direct-clauses (:mean t) (:sd t)])
-                    (catch Exception e (e/short-report e))))))]
+                    (catch Exception e (e/short-report e)
+                      )))))]
     [header (apply concat res)]))
 
 
 (defn get-rand-query-times [file-suffix]
-  (let [[header res] (run-combinations 10)
+  (let [[header res] (run-combinations (remove #(contains? #{"LevelDB" "Datomic Mem" "Datomic Free"} (:name %)) c/uris) 10) ;; error "connection released" for datomic
         data (ic/dataset header (remove nil? res))]
-    (ic/save data (str c/data-dir "/" (.format c/date-formatter (Date.)) "-" file-suffix ".dat"))))
+    (print "Save random query times...")
+    (ic/save data (str c/data-dir "/" (.format c/date-formatter (Date.)) "-" file-suffix ".dat"))
+    (print " saved\n")))
 
 
-;;(get-rand-query-times "rand-query")
+(get-rand-query-times "rand-query")
 
 
 

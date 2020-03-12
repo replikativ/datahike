@@ -28,3 +28,15 @@ java -jar -Xmx2g -server target/performance-0.1.0-SNAPSHOT-standalone.jar
 ```
 
 Wait and see the results as csv in `./data` and as charts in `./plots`.
+
+## Execution Problems
+
+connect.clj
+- "Datomic Mem" cannot be measured since reconnection after db/release not possible
+
+rand-query.clj
+- "Datomic Mem" and "Datomic Free" cannot be measured
+   - reason: java.lang.IllegalStateException: :db.error/connection-released The connection has been released.
+- "LevelDB" cannot be measured since IOerror occcurs, saying "lock already held by different process" 
+
+

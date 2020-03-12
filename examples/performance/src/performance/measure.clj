@@ -40,7 +40,7 @@
   "Use criterium for measurements"
   (let [txs (tx-gen)]
     (case lib
-      "datahike" (c/benchmark (d/transact conn txs) {:verbose false}) ;; creates out of memory exceptions when trying to measure asynchron function
+      "datahike" (c/benchmark (d/transact conn txs) {:verbose false}) ;; creates out of memory exceptions when trying to measure asynchronous function
       "datomic" (c/benchmark @(da/transact conn txs) {:verbose false}))))
 
 
