@@ -24,19 +24,20 @@
    [:backend :schema-on-read :temporal-index :datoms :mean :sd]"
   (println "Getting connection times...")
   (let [header [:backend :schema-on-read :temporal-index :datoms :mean :sd]
-        res (for [d-count [1 2 4 8 16 32 64 128 256 512 1024]
+        res (for [d-count [1 2 4 8 16 32 64 128 256 512 1024 2048 4096] ;; for 8192 memory exception
                   uri uris]
-              (try
-                (let [_ (println " Number of datoms:" d-count " Uri:" uri)
-                      tx (create-n-transactions d-count)
-                      sor (:schema-on-read uri)
-                      ti (:temporal-index uri)]
-                  (db/prepare-db (:lib uri) (:uri uri) (if sor [] schema) tx :schema-on-read sor :temporal-index ti)
-                  (let [t (measure-connect-times iterations (:lib uri) (:uri uri))]
-                    (println "  Mean Time:" (:mean t) "ms")
-                    (println "  Standard deviation:" (:sd t) "ms")
-                    [(:name uri) sor ti d-count (:mean t) (:sd t)]))
-                (catch Exception e (e/short-report e))))]
+              (do
+                (println " Number of datoms:" d-count " Uri:" uri)
+                (try
+                  (let [tx (create-n-transactions d-count)
+                        sor (:schema-on-read uri)
+                        ti (:temporal-index uri)]
+                    (db/prepare-db (:lib uri) (:uri uri) (if sor [] schema) tx :schema-on-read sor :temporal-index ti)
+                    (let [t (measure-connect-times iterations (:lib uri) (:uri uri))]
+                      (println "  Mean Time:" (:mean t) "ms")
+                      (println "  Standard deviation:" (:sd t) "ms")
+                      [(:name uri) sor ti d-count (:mean t) (:sd t)]))
+                  (catch Exception e (e/short-report e)))))]
     [header res]))
 
 
@@ -48,4 +49,4 @@
     (print " saved\n")))
 
 
-;;(get-connect-times "conn-times")
+(get-connect-times "conn-times")

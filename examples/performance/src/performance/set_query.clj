@@ -15,24 +15,26 @@
    ['[?e :K100 ?v1]
     '[(< 80 ?v1)]]
    ['[?e :K10000 ?v2]
-    '[(< 2000 ?v2 3000)]]
+    '[(< 2000 ?v2)]
+    '[(< ?v2 3000)]]
    ['[?e :K5 3]]
-   ['[(or [?e :K25 11]
-          [?e :K25 19])]]
+   ['(or [?e :K25 11]
+         [?e :K25 19])]
    ['[?e :K4 3]]
    ['[?e :K100 ?v5]
     '[(< ?v5 41)]]
    ['[?e :K1000 ?v4]
-    '[(< 850 ?v4 950)]]
+    '[(< 850 ?v4)]
+    '[(< ?v4 950)]]
    ['[?e :K10 7]]
-   ['[(or [?e :K25 3]
-          [?e :K25 4])]]])
+   ['(or [?e :K25 3]
+         [?e :K25 4])]])
 
 
 (def set-queries
   (let [count-query '{:find [(count ?e)] :in [$] :where []}
         sum-query '{:find [(sum ?s)] :with [?e] :in [$] :where []}
-        res2-query '{:find [?res1 ?res2] :in [$] :where []}
+        res2-query '{:find [?res1 ?res2] :with [?e] :in [$] :where []}
         res2-count-query '{:find [?res1 ?res2 (count ?e)] :in [$] :where []}] ;; implicit grouping
 
     (concat
@@ -71,7 +73,8 @@
               :query    (update sum-query :where conj
                                 '[?e :K1000 ?s]
                                 '[?e :KSEQ ?v]
-                                '[(< 400000 ?v 500000)]
+                                '[(< 400000 ?v)]
+                                '[(< ?v 500000)] ;; [(< 400000 ?v 500000)] not possible in datomic
                                 (conj '[?e] (keyword (str "K" %)) 3)))
            [500000 250000 100000 40000 10000 1000 100 25 10 5 4])
 
@@ -81,11 +84,17 @@
               :query    (update sum-query :where conj
                                 '[?e :K1000 ?s]
                                 '[?e :KSEQ ?v]
-                                '[(or (< 400000 ?v 410000)
-                                      (< 420000 ?v 430000)
-                                      (< 440000 ?v 450000)
-                                      (< 460000 ?v 470000)
-                                      (< 480000 ?v 500000))]
+                                '(or
+                                   (and [(< 400000 ?v)]
+                                        [(< ?v 410000)])
+                                   (and [(< 420000 ?v)]
+                                        [(< ?v 430000)])
+                                   (and [(< 440000 ?v)]
+                                        [(< ?v 450000)])
+                                   (and [(< 460000 ?v)]
+                                        [(< ?v 470000)])
+                                   (and [(< 480000 ?v)]
+                                        [(< ?v 500000)]))
                                 (conj '[?e] (keyword (str "K" %)) 3)))
            [500000 250000 100000 40000 10000 1000 100 25 10 5 4])
 
@@ -179,31 +188,63 @@
       (db/prepare-db-and-connect (:lib uri) (:uri uri) (if sor [] schema) entities :schema-on-read sor :temporal-index ti))))
 
 
-(defn run-combinations [uris iterations]
+(defn run-combinations-same-db [uris iterations]            ;; can easily cause out-of-memory exceptions
   "Returns observations in following order:
    [:backend :schema-on-read :temporal-index ::entities :mean :sd]"
   (println "Getting set query times...")
   (let [header [:backend :schema-on-read :temporal-index :entities :category :specific :mean :sd]
         res (for [n-entities [1000000]]                            ;; use at least 1 Mio
               (try
-                (let [connections (prepare-databases uris n-entities)]
-                  (for [[conn uri] (map vector connections uris)
-                        query set-queries
-                        :let [sor (:schema-on-read uri)
-                              ti (:temporal-index uri)]]
-                    (let [_ (println " Query:" (:category query) " Number of datoms:" n-entities  " Uri:" uri)
-                          db (db/db (:lib uri) conn)
-                          t (measure-query-times iterations (:lib uri) db #(identity (:query query)))]
-                      (db/release (:lib uri) conn)
-                      (println "  Mean Time:" (:mean t) "ms")
-                      (println "  Standard deviation:" (:sd t) "ms")
-                      [(:name uri) sor ti n-entities (:category query) (:specific query) (:mean t) (:sd t)])))
+                (let [conn-uri-map (map vector (prepare-databases uris n-entities) uris)
+                      db-res (doall (for [[conn uri] conn-uri-map
+                                          query set-queries
+                                          :let [sor (:schema-on-read uri)
+                                                ti (:temporal-index uri)
+                                                db (db/db (:lib uri) conn)]]
+                                      (do
+                                        (println " Query:" (:category query) " Number of datoms:" n-entities " Uri:" uri)
+                                        (try
+                                          (let [t (measure-query-times iterations (:lib uri) db #(identity (:query query)))]
+                                            (println "  Mean Time:" (:mean t) "ms")
+                                            (println "  Standard deviation:" (:sd t) "ms")
+                                            [(:name uri) sor ti n-entities (:category query) (:specific query) (:mean t) (:sd t)])
+                                          (catch Exception e (e/short-report e))))))]
+                  (doall (apply map #(db/release (:lib %2) %1) conn-uri-map))
+                  db-res)
                 (catch Exception e (e/short-report e))))]
+    [header (apply concat res)]))
+
+(defn run-combinations [uris iterations]
+  "Returns observations in following order:
+   [:backend :schema-on-read :temporal-index ::entities :mean :sd]"
+  (println "Getting set query times...")
+  (let [header [:backend :schema-on-read :temporal-index :entities :category :specific :mean :sd]
+        schema (make-set-query-schema)
+        res (doall (for [n-entities [1000]  ;; use at least 1 Mio ;; 1000 plausible
+                         uri uris
+                         :let [sor (:schema-on-read uri)
+                               ti (:temporal-index uri)]]
+                     (try
+                       (let [entities (mapv #(make-set-query-entity %) (range n-entities))
+                             conn (db/prepare-db-and-connect (:lib uri) (:uri uri) (if sor [] schema) entities :schema-on-read sor :temporal-index ti)
+                             db (db/db (:lib uri) conn)
+                             db-res (doall (for [query set-queries]
+                                             (do
+                                               (println " Query:" (:category query) "(" (:specific query) ")" " Number of datoms:" n-entities " Uri:" uri)
+                                               (try
+                                                 (let [t (measure-query-times iterations (:lib uri) db #(identity (:query query)))]
+                                                   (println "  Mean Time:" (:mean t) "ms")
+                                                   (println "  Standard deviation:" (:sd t) "ms")
+                                                   [(:name uri) sor ti n-entities (:category query) (:specific query) (:mean t) (:sd t)])
+                                                 (catch Exception e (e/short-report e))))))]
+                         (db/release (:lib uri) conn)
+                         db-res)
+                       (catch Exception e (e/short-report e)))))]
     [header (apply concat res)]))
 
 
 (defn get-set-query-times [file-suffix]
-  (let [[header res] (run-combinations (remove #(contains? #{"LevelDB" "Datomic Mem" "Datomic Free"} (:name %)) c/uris) 100)
+  (let [[header res] (run-combinations c/uris 100)
         data (ic/dataset header (remove nil? res))]
     (print "Save set query times...")
     (ic/save data (str c/data-dir "/" (.format c/date-formatter (Date.)) "-" file-suffix ".dat"))
