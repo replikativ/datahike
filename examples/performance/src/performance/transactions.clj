@@ -43,7 +43,8 @@
 
 
 (defn get-tx-times [file-suffix]
-  (let [[header result] (run-combinations c/uris 100)
+  (let [[header result] (run-combinations (concat c/hitchhiker-configs c/uris)
+                                          100)
         data (ic/dataset header (remove nil? result))]
     (print "Save transaction times...")
     (ic/save data (str c/data-dir "/" (.format c/date-formatter (Date.)) "-" file-suffix ".dat"))

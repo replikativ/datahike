@@ -27,5 +27,8 @@
 (def datomic-uris [{:lib "datomic" :name "Datomic Mem" :uri "datomic:mem://performance" :schema-on-read false :temporal-index false} ;; not working on connect
                    {:lib "datomic" :name "Datomic Free" :uri "datomic:free://localhost:4334/performance?password=clojure" :schema-on-read false :temporal-index false}])
 
+(def hitchhiker-configs [{:lib "hitchhiker" :name " Hitchhiker Tree (Datoms)" :uri "datoms" :schema-on-read false :temporal-index false}
+                         {:lib "hitchhiker" :name " Hitchhiker Tree (Values)" :uri "values" :schema-on-read false :temporal-index false}])
+
 
 (def uris (into [] (concat datahike-uris datomic-uris)))

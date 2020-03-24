@@ -1,6 +1,7 @@
 (ns performance.measure
   (:require [datahike.api :as d]
             [datomic.api :as da]
+            [performance.hitchhiker :as hh]
             [incanter.stats :as is]
             [datahike-leveldb.core]
             [datahike-postgres.core]
@@ -33,7 +34,13 @@
                          (fn [] (let [txs (tx-gen)]
                                   (case lib
                                     "datahike" (e-time #(d/transact conn txs))
-                                    "datomic" (e-time #(deref (da/transact conn txs))))))))]
+                                    "datomic" (e-time #(deref (da/transact conn txs)))
+                                    "hitchhiker" (let [values (if (= (:config conn) "values")
+                                                                (hh/entities->values txs)
+                                                                (hh/entities->datoms txs))
+                                                       tree (:tree conn)]
+                                                   (e-time #(hh/insert-many tree values)))
+                                    )))))]
     {:samples t :mean (is/mean t) :sd (is/sd t)}))
 
 (defn measure-tx-times-auto [lib conn tx-gen]         ;; test !
