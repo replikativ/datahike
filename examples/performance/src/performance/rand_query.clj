@@ -1,13 +1,11 @@
 (ns performance.rand-query
-  (:require [performance.db :as db]
-            [performance.schema :refer [make-col]]
+  (:require [performance.db.api :as db]
+            [performance.common :refer [make-attr short-error-report]]
             [performance.measure :refer [measure-query-times]]
-            [performance.conf :as c]
-            [performance.error :as e]
+            [performance.config :as c]
             [incanter.io]
-            [incanter.core :as ic])
-  (:import (java.util Date)
-           (java.text SimpleDateFormat)))
+            [incanter.core :as ic]
+            [clojure.string :refer [split]]))
 
 
 (defn add-join-clauses [initital-query n-joins n-attr]
@@ -30,7 +28,6 @@
   (let [attr-names (map #(keyword (str "A" %)) (take n-clauses (shuffle (range n-attr))))
         attr-symbols (map #(symbol (str "?ares" %)) (take n-clauses (range n-attr)))
         attr-clauses (map (fn [a v] (conj '[?e] a v)) attr-names attr-symbols)]
-    ;;(println " Clauses:" attr-clauses)
     (reduce (fn [query [res attr-clause]]
               (-> query
                   (update :find conj res)
@@ -45,16 +42,18 @@
     :db.type/string (str (rand-int c/max-int))))
 
 
-(defn create-query [n-direct-vals n-ref-vals m]
+(defn create-query
   "Assumes database with entities of m direct and m reference attributes"
+  [n-direct-vals n-ref-vals m]
   (let [initial-query '{:find [?e] :where []}]
     (-> initial-query
         (add-direct-clauses n-direct-vals m)
         (add-join-clauses n-ref-vals m))))
 
-(defn make-hom-schema [ident-prefix type cardinality n-attributes]
+(defn make-hom-schema
   "Creates homogeneous database schema with attributes of a single type"
-  (mapv (fn [i] (make-col (keyword (str ident-prefix i)) type cardinality))
+  [ident-prefix type cardinality n-attributes]
+  (mapv (fn [i] (make-attr (keyword (str ident-prefix i)) type cardinality))
         (range n-attributes)))
 
 
@@ -87,7 +86,7 @@
    (println " Number of attributes per entity:" (inc (* 2 m)))
    (println " - thereof reference attributes:" m)
    (println " Number of entities:" e)
-   (let [schema (into [(make-col :randomEntity :db.type/boolean)]
+   (let [schema (into [(make-attr :randomEntity :db.type/boolean)]
                       (concat (make-hom-schema "A" type :db.cardinality/one n)
                               (make-hom-schema "R" :db.type/ref :db.cardinality/one n)))
          entities (mapv (fn [_] (make-entity {:randomEntity true} "A" m n
@@ -136,7 +135,7 @@
    (println " - thereof reference attributes:" m)
    (println " Number of entities:" e)
    (time
-     (let [schema (into [(make-col :randomEntity :db.type/boolean)]
+     (let [schema (into [(make-attr :randomEntity :db.type/boolean)]
                         (concat (make-hom-schema "A" type :db.cardinality/one n)
                                 (make-hom-schema "R" :db.type/ref :db.cardinality/one n)))
            entities (mapv (fn [_] (make-entity {:randomEntity true} "A" m n
@@ -157,9 +156,10 @@
 
 
 
-(defn run-combinations-same-db [uris iterations]                    ;; direct comparison on the same database across backends; causes out-of-memory exceptions
+(defn run-combinations-same-db                     ;; direct comparison on the same database across backends; causes out-of-memory exceptions
   "Returns observations in following order:
    [:backend :schema-on-read :temporal-index :n-attr :entities :dtype :n-clauses :n-joins :n-direct :mean :sd]"
+  [uris iterations]
   (println "Getting random query times...")
   (let [header [:backend :schema-on-read :temporal-index :n-attr :entities :dtype :n-clauses :n-joins :n-direct :mean :sd]
         res (for [n-entities [1000]                                      ;; use at least 1 Mio, but takes too long
@@ -172,7 +172,7 @@
                                  n-joins (range n-clauses)
                                  :let [sor (:schema-on-read uri)
                                        ti (:temporal-index uri)
-                                       dtype (last (clojure.string/split (str type) #"/"))
+                                       dtype (last (split (str type) #"/"))
                                        n-direct-clauses (- n-clauses n-joins)
                                        db (db/db (:lib uri) conn)]]
                              (do
@@ -182,15 +182,16 @@
                                    (println "  Mean Time:" (:mean t) "ms")
                                    (println "  Standard deviation:" (:sd t) "ms")
                                    [(:name uri) sor ti n-attr n-entities dtype n-clauses n-joins n-direct-clauses (:mean t) (:sd t)])
-                                 (catch Exception e (e/short-report e)))))]
+                                 (catch Exception e (short-error-report e)))))]
                 (doall (apply map #(db/release (:lib %2) %1) conn-uri-map))
                 db-res))]
     [header (apply concat res)]))
 
 
-(defn run-combinations [uris iterations]
+(defn run-combinations
   "Returns observations in following order:
    [:backend :schema-on-read :temporal-index :n-attr :entities :dtype :n-clauses :n-joins :n-direct :mean :sd]"
+  [uris iterations]
   (println "Getting random query times...")
   (let [header [:backend :schema-on-read :temporal-index :n-attr :entities :dtype :n-clauses :n-joins :n-direct :mean :sd]
         res (doall (for [n-entities [100]                   ;; use at least 1 Mio, but takes too long, 100 ok, 1000 to much
@@ -198,7 +199,7 @@
                          type [:db.type/long :db.type/string]
                          uri uris
                          :let [n-attr (+ 1 (* 2 n-ref-attr))
-                               dtype (last (clojure.string/split (str type) #"/"))
+                               dtype (last (split (str type) #"/"))
                                sor (:schema-on-read uri)
                                ti (:temporal-index uri)]]
                      (do
@@ -216,10 +217,10 @@
                                                      (println "   Mean Time:" (:mean t) "ms")
                                                      (println "   Standard deviation:" (:sd t) "ms")
                                                      [(:name uri) sor ti n-attr n-entities dtype n-clauses n-joins n-direct-clauses (:mean t) (:sd t)])
-                                                   (catch Exception e (e/short-report e))))))]
+                                                   (catch Exception e (short-error-report e))))))]
                            (db/release (:lib uri) conn)
                            db-res)
-                         (catch Exception e (e/short-report e))))))]
+                         (catch Exception e (short-error-report e))))))]
     [header (apply concat res)]
     ))
 
@@ -228,35 +229,5 @@
   (let [[header res] (run-combinations c/uris 100)
         data (ic/dataset header (remove nil? res))]
     (print "Save random query times...")
-    (ic/save data (str c/data-dir "/" (.format c/date-formatter (Date.)) "-" file-suffix ".dat"))
+    (ic/save data (c/filename file-suffix))
     (print " saved\n")))
-
-
-;;(get-rand-query-times "rand-query")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

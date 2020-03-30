@@ -1,8 +1,8 @@
-(ns performance.hitchhiker
+(ns performance.db.hitchhiker
   (:require [hitchhiker.tree.utils.async :as async]
             [hitchhiker.tree.messaging :as hmsg]
-            [hitchhiker.tree :as tree]))
-
+            [hitchhiker.tree :as tree]
+            [performance.db.interface :as db]))
 
 
 ;; Hitchhiker functions
@@ -11,9 +11,6 @@
 (def ^:const br-sqrt (long (Math/sqrt br)))                 ;; same as in datahike
 
 (def memory (atom {}))
-
-(defn connect [uri]
-  {:tree (get @memory uri) :config uri})
 
 (defn create [uri]
   (swap! memory assoc uri (async/<?? (tree/b-tree (tree/->Config br-sqrt br (- br br-sqrt))))))
@@ -34,9 +31,26 @@
 (defn entities->values [entities]
   (apply concat (map #(map second %) entities)) )
 
-(defn transact [conn tx]
-  (let [values (if (= (:config conn) "values")
-                 (entities->values tx)
-                 (entities->datoms tx)) ;; tx to datoms
-        new-tree (insert-many (:tree conn) values)]
+(defn entities->nodes [conn entities]
+  (if (= (:config conn) "values")
+    (entities->values entities)
+    (entities->datoms entities)))
+
+
+;; Multimethods
+
+(defmethod db/connect :hitchhiker [_ uri]
+  {:tree (get @memory uri) :config uri})
+
+(defmethod db/release :hitchhiker [_ _] nil)
+
+(defmethod db/transact :hitchhiker [_ conn tx]
+  (let [new-tree (insert-many (:tree conn) (entities->nodes conn tx))]
     (assoc conn :tree new-tree)))
+
+(defmethod db/init :hitchhiker [_ uri _]
+  (delete uri)
+  (create uri))
+
+
+

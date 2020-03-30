@@ -1,13 +1,11 @@
 (ns performance.set-query
   (:require [performance.measure :refer [measure-query-times]]
-            [performance.db :as db]
-            [performance.conf :as c]
-            [performance.error :as e]
-            [performance.schema :refer [make-col]]
+            [performance.db.api :as db]
+            [performance.config :as c]
+            [performance.common :refer [make-attr short-error-report]]
             [incanter.io]
             [incanter.core :as ic])
-  (:import (java.util Date)
-           (java.text SimpleDateFormat)))
+  (:import (java.util Date)))
 
 
 (def q4-conds
@@ -155,11 +153,11 @@
 
 
 (defn make-set-query-schema []
-  (let [int-cols (mapv #(make-col (keyword (str "K" %)) :db.type/long)
+  (let [int-cols (mapv #(make-attr (keyword (str "K" %)) :db.type/long)
                        [500000 250000 100000 40000 10000 1000 100 25 10 5 4 2])
-        str-cols (mapv #(make-col (keyword (str "S" %)) :db.type/string)
+        str-cols (mapv #(make-attr (keyword (str "S" %)) :db.type/string)
                        [1 2 3 4 5 6 7 8])]
-    (into [(make-col :KSEQ :db.type/long)]
+    (into [(make-attr :KSEQ :db.type/long)]
           (concat int-cols str-cols))))
 
 
@@ -173,13 +171,14 @@
           (concat int-cols [first-str-col] str-cols))))
 
 
-(defn prepare-databases [uris n-entities]
+(defn prepare-databases
   "Creates set query dbs and queries after 91 paper with entities of 21 attributes:
   - 1 attribute of sequential integers
   - 12 attributes of random integers within specified range
   - 8 attributes of random strings
     - 1 of length 8
     - 7 of length 20"
+  [uris n-entities]
   (let [schema (make-set-query-schema)
         entities (mapv #(make-set-query-entity %) (range n-entities))]
     (for [uri uris
@@ -188,9 +187,10 @@
       (db/prepare-db-and-connect (:lib uri) (:uri uri) (if sor [] schema) entities :schema-on-read sor :temporal-index ti))))
 
 
-(defn run-combinations-same-db [uris iterations]            ;; can easily cause out-of-memory exceptions
+(defn run-combinations-same-db             ;; can easily cause out-of-memory exceptions
   "Returns observations in following order:
    [:backend :schema-on-read :temporal-index ::entities :mean :sd]"
+  [uris iterations]
   (println "Getting set query times...")
   (let [header [:backend :schema-on-read :temporal-index :entities :category :specific :mean :sd]
         res (for [n-entities [1000000]]                            ;; use at least 1 Mio
@@ -208,15 +208,16 @@
                                             (println "  Mean Time:" (:mean t) "ms")
                                             (println "  Standard deviation:" (:sd t) "ms")
                                             [(:name uri) sor ti n-entities (:category query) (:specific query) (:mean t) (:sd t)])
-                                          (catch Exception e (e/short-report e))))))]
+                                          (catch Exception e (short-error-report e))))))]
                   (doall (apply map #(db/release (:lib %2) %1) conn-uri-map))
                   db-res)
-                (catch Exception e (e/short-report e))))]
+                (catch Exception e (short-error-report e))))]
     [header (apply concat res)]))
 
-(defn run-combinations [uris iterations]
+(defn run-combinations
   "Returns observations in following order:
    [:backend :schema-on-read :temporal-index ::entities :mean :sd]"
+  [uris iterations]
   (println "Getting set query times...")
   (let [header [:backend :schema-on-read :temporal-index :entities :category :specific :mean :sd]
         schema (make-set-query-schema)
@@ -236,10 +237,10 @@
                                                    (println "  Mean Time:" (:mean t) "ms")
                                                    (println "  Standard deviation:" (:sd t) "ms")
                                                    [(:name uri) sor ti n-entities (:category query) (:specific query) (:mean t) (:sd t)])
-                                                 (catch Exception e (e/short-report e))))))]
+                                                 (catch Exception e (short-error-report e))))))]
                          (db/release (:lib uri) conn)
                          db-res)
-                       (catch Exception e (e/short-report e)))))]
+                       (catch Exception e (short-error-report e)))))]
     [header (apply concat res)]))
 
 
@@ -247,8 +248,5 @@
   (let [[header res] (run-combinations c/uris 100)
         data (ic/dataset header (remove nil? res))]
     (print "Save set query times...")
-    (ic/save data (str c/data-dir "/" (.format c/date-formatter (Date.)) "-" file-suffix ".dat"))
+    (ic/save data (c/filename file-suffix))
     (print " saved\n")))
-
-
-;;(get-set-query-times "set-query")
