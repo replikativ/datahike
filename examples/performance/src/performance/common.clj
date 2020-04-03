@@ -21,8 +21,7 @@
     :db/cardinality cardinality}))
 
 (defn linspace [start end point-count]
-  (range start (inc end) (/ (- end start) (dec point-count))))
-
+  (vec (range start (inc end) (/ (- end start) (dec point-count)))))
 
 (defn int-linspace [start end point-count]
-  (map int (linspace start end point-count)))
+  (mapv int (linspace start end point-count)))

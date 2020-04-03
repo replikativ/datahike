@@ -5,7 +5,11 @@
             :url "https://www.eclipse.org/legal/epl-2.0/"}
   :main performance.core
   :aot [performance.core]
+
+  ;; -XMx2g -> max 2GB Heap size, default usually 1GB
+  ;; -server -> faster operting speed, vs. -client smaller memory footprint and faster startup time
   :jvm-opts ["-Xmx2g" "-server"]
+
   :dependencies [[org.clojure/clojure "1.10.0"]
 
                  [io.replikativ/datahike "0.2.1"]

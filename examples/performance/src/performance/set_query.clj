@@ -204,7 +204,7 @@
                                       (do
                                         (println " Query:" (:category query) " Number of datoms:" n-entities " Uri:" uri)
                                         (try
-                                          (let [t (measure-query-times iterations (:lib uri) db #(identity (:query query)))]
+                                          (let [t (measure-query-times (:lib uri) db #(identity (:query query)) iterations)]
                                             (println "  Mean Time:" (:mean t) "ms")
                                             (println "  Standard deviation:" (:sd t) "ms")
                                             [(:name uri) sor ti n-entities (:category query) (:specific query) (:mean t) (:sd t)])
@@ -233,7 +233,7 @@
                                              (do
                                                (println " Query:" (:category query) "(" (:specific query) ")" " Number of datoms:" n-entities " Uri:" uri)
                                                (try
-                                                 (let [t (measure-query-times iterations (:lib uri) db #(identity (:query query)))]
+                                                 (let [t (measure-query-times (:lib uri) db #(identity (:query query)) iterations)]
                                                    (println "  Mean Time:" (:mean t) "ms")
                                                    (println "  Standard deviation:" (:sd t) "ms")
                                                    [(:name uri) sor ti n-entities (:category query) (:specific query) (:mean t) (:sd t)])
@@ -244,8 +244,8 @@
     [header (apply concat res)]))
 
 
-(defn get-set-query-times [file-suffix]
-  (let [[header res] (run-combinations c/uris 100)
+(defn get-set-query-times [file-suffix iterations]
+  (let [[header res] (run-combinations c/uris iterations)
         data (ic/dataset header (remove nil? res))]
     (print "Save set query times...")
     (ic/save data (c/filename file-suffix))

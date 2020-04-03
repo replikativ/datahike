@@ -1,6 +1,5 @@
-(ns performance.transactions
+(ns performance.transaction
   (:require [performance.measure :refer [measure-transaction-times]]
-            [performance.db.api :as db]
             [performance.common :refer [short-error-report int-linspace]]
             [incanter.core :as ic]
             [incanter.io]
@@ -24,26 +23,25 @@
    [:backend :schema-on-read :temporal-index :datoms :mean :sd]"
   [uris iterations]
   (println "Getting transaction times...")
-  (let [header [:backend :schema-on-read :temporal-index :datoms :mean :sd]
-        res (for [d-count (int-linspace 0 1000 17)
+  (let [header [:backend :schema-on-read :temporal-index :datoms :db-size :mean :sd]
+        res (for [db-datom-count (int-linspace 0 1000 11)
+                  tx-datom-count (assoc (int-linspace 0 1000 11) 0 1)
                   uri uris]
               (do
-                (println " Number of datoms:" d-count " Uri:" uri)
+                (println " TRANSACT: Number of datoms in db:" db-datom-count " Number of datoms per transaction:" tx-datom-count " Uri:" uri)
                 (try
                   (let [sor (:schema-on-read uri)
                         ti (:temporal-index uri)
-                        conn (db/init-schema-and-connect (:lib uri) (:uri uri) (if sor [] schema) :schema-on-read sor :temporal-index ti)
-                        t (measure-transaction-times iterations (:lib uri) conn #(create-n-transactions d-count))]
-                    (db/release (:lib uri) conn)
+                        t (measure-transaction-times (:lib uri) uri schema create-n-transactions tx-datom-count db-datom-count iterations)]
                     (println "  Mean Time:" (:mean t) "ms")
                     (println "  Standard deviation:" (:sd t) "ms")
-                    [(:name uri) sor ti d-count (:mean t) (:sd t)])
+                    [(:name uri) sor ti tx-datom-count db-datom-count (:mean t) (:sd t)])
                   (catch Exception e (short-error-report e)))))]
     [header res]))
 
 
-(defn get-tx-times [file-suffix]
-  (let [[header result] (run-combinations (concat c/hitchhiker-configs c/uris) 100)
+(defn get-transaction-times [file-suffix iterations]
+  (let [[header result] (run-combinations (concat c/hitchhiker-configs c/uris) iterations)
         data (ic/dataset header (remove nil? result))]
     (print "Save transaction times...")
     (ic/save data (c/filename file-suffix))

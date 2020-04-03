@@ -18,31 +18,35 @@
        (mapv (fn [id] {:name id}))))
 
 
-(defn run-combinations
+(defn run-connection-measurements
   "Returns observation in following order:
    [:backend :schema-on-read :temporal-index :datoms :mean :sd]"
   [uris iterations]
   (println "Getting connection times...")
   (let [header [:backend :schema-on-read :temporal-index :datoms :mean :sd]
-        res (for [d-count (int-linspace 0 5000 17) ;; for 8192 memory exception
+        res (for [d-count                                   ;;(int-linspace 0 5000 17)
+                          (int-linspace 0 5000 21) ;; for 8192 memory exception
                   uri uris]
               (do
-                (println " Number of datoms:" d-count " Uri:" uri)
+                (println " CONNECT: Number of datoms in db:" d-count " Uri:" uri)
                 (try
                   (let [tx (create-n-transactions d-count)
                         sor (:schema-on-read uri)
                         ti (:temporal-index uri)]
                     (db/prepare-db (:lib uri) (:uri uri) (if sor [] schema) tx :schema-on-read sor :temporal-index ti)
-                    (let [t (measure-connection-times iterations (:lib uri) (:uri uri))]
+                    (let [t (measure-connection-times (:lib uri) (:uri uri) iterations)]
                       (println "  Mean Time:" (:mean t) "ms")
                       (println "  Standard deviation:" (:sd t) "ms")
                       [(:name uri) sor ti d-count (:mean t) (:sd t)]))
-                  (catch Exception e (short-error-report e)))))]
+                  (catch Exception e (short-error-report e))
+                  (catch AssertionError e (short-error-report e))
+
+                  )))]
     [header res]))
 
 
-(defn get-connect-times [file-suffix]
-  (let [[header res] (run-combinations (remove #(= "Datomic Mem" (:name %)) c/uris) 100)
+(defn get-connection-times [file-suffix iterations]
+  (let [[header res] (run-connection-measurements (remove #(= "Datomic Mem" (:name %)) c/uris) iterations)
         data (ic/dataset header (remove nil? res))]
     (print "Save connection times...")
     (ic/save data (c/filename file-suffix))

@@ -178,7 +178,7 @@
                              (do
                                (println " Type:" dtype "Attributes per entity:" n-attr " Clauses with joins:" n-joins "of" n-clauses " Number of datoms:" n-entities " Uri:" uri)
                                (try
-                                 (let [t (measure-query-times iterations (:lib uri) db #(create-query n-direct-clauses n-joins n-ref-attr))]
+                                 (let [t (measure-query-times (:lib uri) db #(create-query n-direct-clauses n-joins n-ref-attr) iterations)]
                                    (println "  Mean Time:" (:mean t) "ms")
                                    (println "  Standard deviation:" (:sd t) "ms")
                                    [(:name uri) sor ti n-attr n-entities dtype n-clauses n-joins n-direct-clauses (:mean t) (:sd t)])
@@ -203,7 +203,7 @@
                                sor (:schema-on-read uri)
                                ti (:temporal-index uri)]]
                      (do
-                       (println " Type:" dtype "Attributes per entity:" n-attr " Number of datoms:" n-entities " Uri:" uri)
+                       (println " QUERY: Data type:" dtype "Attributes per entity:" n-attr " Number of datoms:" n-entities " Uri:" uri)
                        (try
                          (let [conn (create-value-ref-db uri type n-ref-attr n-entities)
                                db (db/db (:lib uri) conn)
@@ -213,7 +213,7 @@
                                                (do
                                                  (println "  Clauses with joins:" n-joins "of" n-clauses)
                                                  (try
-                                                   (let [t (measure-query-times iterations (:lib uri) db #(create-query n-direct-clauses n-joins n-ref-attr))]
+                                                   (let [t (measure-query-times (:lib uri) db #(create-query n-direct-clauses n-joins n-ref-attr) iterations)]
                                                      (println "   Mean Time:" (:mean t) "ms")
                                                      (println "   Standard deviation:" (:sd t) "ms")
                                                      [(:name uri) sor ti n-attr n-entities dtype n-clauses n-joins n-direct-clauses (:mean t) (:sd t)])
@@ -225,8 +225,8 @@
     ))
 
 
-(defn get-rand-query-times [file-suffix]
-  (let [[header res] (run-combinations c/uris 100)
+(defn get-rand-query-times [file-suffix iterations]
+  (let [[header res] (run-combinations c/uris iterations)
         data (ic/dataset header (remove nil? res))]
     (print "Save random query times...")
     (ic/save data (c/filename file-suffix))

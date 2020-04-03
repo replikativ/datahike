@@ -15,7 +15,7 @@
 (def date-format "yyyy-MM-dd_HH-mm-ss")
 
 (defn filename [file-suffix]
-  (str data-dir "/" (.format (SimpleDateFormat. date-format) (Date.)) "-" file-suffix ".png"))
+  (str data-dir "/" (.format (SimpleDateFormat. date-format) (Date.)) "_" file-suffix ".csv"))
 
 
 ;; Benchmark uris
@@ -23,7 +23,9 @@
 (def datahike-uris
   (for [sor [false true]
         ti [false true]
-        base-uri [{:lib :datahike :name "In-Memory" :uri "datahike:mem://performance"}
+        base-uri [
+                  {:lib :datahike :name "In-Memory" :uri "datahike:mem://performance-ht"}
+                  ;;{:lib :datahike :name "In-Memory" :uri "datahike:mem://performance-ps"}
                   {:lib :datahike :name "LevelDB" :uri "datahike:level:///tmp/lvl-performance"}
                   {:lib :datahike :name "PostgreSQL" :uri "datahike:pg://datahike:clojure@localhost:5440/performance"}
                   {:lib :datahike :name "File-based" :uri "datahike:file:///tmp/file-performance"}]]
