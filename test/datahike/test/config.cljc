@@ -15,9 +15,9 @@
   (is (bool-from-env :foo true)))
 
 (deftest deep-merge-test
-  (is (= (Configuration. (Store. :pg "foobar" nil "/tmp/testfoo" nil nil)
+  (is (= (Configuration. (Store. :pg "foobar" nil "/tmp/testfoo" nil nil nil nil nil)
                          true true)
-         (deep-merge (Configuration. (Store. :file nil nil "/tmp/testfoo" nil nil)
+         (deep-merge (Configuration. (Store. :file nil nil "/tmp/testfoo" nil nil nil nil nil)
                                      false true)
                      {:store {:backend :pg :username "foobar"}
                       :schema-on-read true}))))
@@ -45,13 +45,13 @@
 
 (deftest load-config-test
   (testing "Loading configuration defaults"
-    (is (= (Configuration. (Store. :mem nil nil nil nil nil)
+    (is (= (Configuration. (Store. :mem nil nil nil nil nil nil false nil)
                            false true)
            (reload-config)))))
 
 (deftest reload-config-test
   (testing "Reloading configuration"
-    (is (= (Configuration. (Store. :file nil nil "/tmp/testfoo" nil nil)
+    (is (= (Configuration. (Store. :file nil nil "/tmp/testfoo" nil nil nil false nil)
                            true true)
            (reload-config {:store {:backend :file
                                    :path "/tmp/testfoo"}

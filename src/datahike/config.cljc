@@ -7,15 +7,18 @@
 (s/def ::backend #{:mem :file :level :pg})
 (s/def ::username (s/nilable string?))
 (s/def ::password (s/nilable string?))
-(s/def ::path (s/nilable string?))
 (s/def ::host (s/nilable string?))
 (s/def ::port (s/nilable int?))
+(s/def ::path (s/nilable string?))
+(s/def ::dbname (s/nilable string?))
+(s/def ::ssl (s/nilable boolean?))
+(s/def ::sslfactory (s/nilable string?))
 
 (s/def ::schema-on-read boolean?)
 (s/def ::temporal-index boolean?)
 
 (s/def :datahike/store (s/keys :req-un [::backend]
-                               :opt-un [::username ::password ::path ::host ::port]))
+                               :opt-un [::username ::password ::host ::port ::path ::dbname ::ssl ::sslfactory]))
 (s/def :datahike/config (s/keys :req-un [:datahike/store]
                                 :opt-un [::schema-on-read ::temporal-index]))
 
@@ -23,7 +26,7 @@
   :args (s/cat :config-str string?)
   :ret :datahike/config)
 
-(defrecord Store [backend username password path host port])
+(defrecord Store [backend username password path host port dbname ssl sslfactory])
 (defrecord Configuration [store schema-on-read temporal-index])
 
 (defn int-from-env
@@ -69,7 +72,10 @@
                          (:datahike-store-password env)
                          (:datahike-store-path env)
                          (:datahike-store-host env)
-                         (int-from-env :datahike-store-port nil))
+                         (int-from-env :datahike-store-port nil)
+                         (:datahike-store-dbname env)
+                         (bool-from-env :datahike-store-ssl false)
+                         (:datahike-store-sslfactory env))
                         (bool-from-env :datahike-schema-on-read false)
                         (bool-from-env :datahike-temporal-index true))
          merged-config (deep-merge config config-as-arg)

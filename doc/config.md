@@ -22,14 +22,17 @@ The sources are resolved in following order:
 That means passing a config as argument overwrites java system properties and using java system properties overwrite environment variables etc. Currently the configuration map looks like this per default:
 
 ```
-{:store {:backend  :mem     ;keyword
-         :username nil      ;string
-         :password nil      ;string
-         :path     nil      ;string
-         :host     nil      ;string
-         :port     nil}     ;int
- :schema-on-read   false    ;boolean
- :temporal-index   true}}   ;boolean
+{:store {:backend    :mem     ;keyword
+         :username   nil      ;string
+         :password   nil      ;string
+         :path       nil      ;string
+         :host       nil      ;string
+         :port       nil      ;int
+         :dbname     nil      ;string
+         :ssl        false    ;boolean
+         :sslfactory nil      ;string
+ :schema-on-read     false    ;boolean
+ :temporal-index     true}}   ;boolean
 ```
 
 Please refer to the documentation of the [environ library](https://github.com/weavejester/environ) on how to use it. When you want to pass a map to the configuration you can pass the above map or parts of it to the reload-config function in the datahike.config namespace like this:
@@ -54,6 +57,21 @@ datahike.temporal.index | DATAHIKE_TEMPORAL_INDEX
 etc.
 
 *Do not use `:` in the keyword strings, it will be added automatically.*
+
+Example configuration for connecting to postgresql locally with ssl:
+```
+{:store {:backend    :pg
+         :username   "datahike"
+         :password   "password"
+         :path       nil
+         :host       "localhost"
+         :port       5432
+         :dbname     "datahike"
+         :ssl        true
+         :sslfactory "org.postgresql.ssl.NonValidatingFactory"}
+ :schema-on-read     false
+ :temporal-index     true}}
+```
 
 ## Storage Backend
 
