@@ -8,30 +8,62 @@ flexibility](#schema-flexibility), and the
 Be aware: all these features can be set at database creation
 but can not be changed afterwards.
 
+## Configuration
+
+Configuring datahike is now possible via the [environ library made by weavejester](https://github.com/weavejester/environ). That means you can use the lein-environ plugins for leiningen or boot to read variables from `.lein-env` or `.boot.env`. Without using the plugins you can use environment variables, java system properties and passing a config-map as argument.
+
+The sources are resolved in following order:
+1. A .lein-env file in the project directory
+2. A .boot-env file on the classpath
+3. Environment variables
+4. Java system properties
+5. Argument to load-config
+
+That means passing a config as argument overwrites java system properties and using java system properties overwrite environment variables etc. Currently the configuration map looks like this per default:
+
+```
+{:store {:backend  :mem     ;keyword
+         :username nil      ;string
+         :password nil      ;string
+         :path     nil      ;string
+         :host     nil      ;string
+         :port     nil}     ;int
+ :schema-on-read   false    ;boolean
+ :temporal-index   true}}   ;boolean
+```
+
+Please refer to the documentation of the [environ library](https://github.com/weavejester/environ) on how to use it. When you want to pass a map to the configuration you can pass the above map or parts of it to the reload-config function in the datahike.config namespace like this:
+```
+(require '[datahike.api :as d]
+         '[datahike.config :as c])
+(c/reload-config {:store
+                  {:backend :file
+                   :path "/tmp/datahike"}})
+(d/create-database)
+```
+
+This is best done before creating the database so that the database does not have to be recreated and dataloss is avoided. If you want to pass the config as environment variables or Java system properties you need to name them like following:
+
+properties              | envvar
+--------------------------|--------------------------
+datahike.store.backend  | DATAHIKE_STORE_BACKEND
+datahike.store.username | DATAHIKE_STORE_USERNAME
+datahike.schema.on.read | DATAHIKE_SCHEMA_ON_READ
+datahike.temporal.index | DATAHIKE_TEMPORAL_INDEX
+
+etc.
+
+*Do not use `:` in the keyword strings, it will be added automatically.*
+
 ## Storage Backend
-
-The backend configuration can be encoded within a base uri we can connect to. It has the
-following scheme:
-
-`datahike:<backend>://(<username>:<password>@)<host>:<port><path>`
 
 Each backend needs a different set of provided parameters. See definition
 [below](#storage-backend) for further information. For simple and fast creation
-you can simple type:
+you can simply use the defaults which creates an in-memory database:
 
 ```clojure
-(:require '[datahike.api :as d])
-(def uri "datahike:mem://example")
-(d/create-database uri)
-```
-
-If you prefer data structures for configuration you may use a hash map. The example
-above looks like:
-
-```clojure
-(:require '[datahike.api :as d])
-(def config {:backend :mem :host "example"})
-(d/create-database config)
+(require '[datahike.api :as d])
+(d/create-database)
 ```
 
 At the moment we support four different backends: [in-memory](#in-memory) ,[file-based](#file-based),
@@ -79,8 +111,10 @@ database creation. You may add basic schema definitions like `:db/unique`,
 `:db/cardinality` or `db.type/ref` where these kind of structure is needed.
 
 ```clojure
-(:require '[datahike.api :as d])
-(d/create-database "datahike:mem://example" :schema-on-read true)
+(require '[datahike.api :as d]
+         '[datahike.config :as c])
+(c/reload-config {:schema {:schema-on-read true}})
+(d/create-database)
 ```
 
 Have a look at the [schema documentation](./schema.md) for more information.
@@ -92,8 +126,10 @@ indices. If your application does not require any temporal data, you may
 set `:temporal-index` to `false`.
 
 ```clojure
-(:require '[datahike.api :as d])
-(d/create-database "datahike:mem://example" :temporal-index false)
+(require '[datahike.api :as d]
+         '[datahike.config :as c])
+(c/reload-config {:schema {:temporal-index false}})
+(d/create-database)
 ```
 
 Be aware: when deactivating the temporal index you may not use any temporal databases like `history`, `as-of`, or

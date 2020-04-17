@@ -32,7 +32,7 @@
   database-exists? dc/database-exists?)
 
 (def
-  ^{:arglists '([config & opts])
+  ^{:arglists '([& opts])
     :doc
               "Creates a database using backend configuration with optional database configuration
             by providing either a URI that encodes storage backend data like database name,
@@ -51,7 +51,7 @@
                 (create-database \"datahike:mem://example\" :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])
 
               Datahike has a strict schema validation (schema-on-write) policy by default,
-              that only allows transaction of data that that has been pre-defined by a schema.
+              that only allows transaction of data that has been pre-defined by a schema.
               You may influence this behaviour using the `:schema-on-read` parameter:
 
                 (create-database \"datahike:mem://example\" :schema-on-read true)
@@ -60,7 +60,17 @@
               querying data from any point in time. You may control this feature using the
               `:temporal-index` parameter:
 
-                (create-database \"datahike:mem://example\" :temporal-index false)"}
+                (create-database \"datahike:mem://example\" :temporal-index false)
+
+              The new way of configuring datahike is using environment variables and system properties that can be set before creating
+              the database. Altering the configuration via arguments is possible via e.g.
+
+                `(datahike.config/reload-config {:store {:backend :file :path \"/tmp/mydb\"}})
+                 (create-database)`
+
+              Initial data after creation may be added using the `:initial-tx` parameter, which in this example adds a schema:
+
+                `(create-database :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])`"}
   create-database
   dc/create-database)
 
