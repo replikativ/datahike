@@ -659,6 +659,7 @@
         (case k
           :db/isComponent [:db/isComponent]
           :db/index [:db/index]
+          :db/noHistory [:db/noHistory]
           [])))))
 
 (defn- rschema [schema]
@@ -876,6 +877,10 @@
           :cljs [^boolean indexing?]) [db attr]
   (is-attr? db attr :db/index))
 
+(defn #?@(:clj [^Boolean no-history?]
+          :cljs [^boolean indexing]) [db attr]
+  (is-attr? db attr :db/noHistory))
+
 (defn entid [db eid]
   {:pre [(db? db)]}
   (cond
@@ -1072,7 +1077,8 @@
   (validate-datom db datom)
   (let [indexing? (indexing? db (.-a datom))
         schema? (ds/schema-attr? (.-a datom))
-        temporal-index? (-temporal-index? db)]
+        temporal-index? (and (-temporal-index? db)
+                             (not (no-history? db (.-a datom))))]
     (if (datom-added datom)
       (cond-> db
               true (update-in [:eavt] #(di/-insert % datom :eavt))
