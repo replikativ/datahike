@@ -12,6 +12,12 @@ import static datahike.java.Datahike.dConn;
 import static datahike.java.Util.*;
 import static org.junit.Assert.*;
 
+import org.junit.runner.JUnitCore;
+import org.junit.runner.Result;
+import org.junit.runner.notification.Failure;
+
+
+
 public class DatahikeTest {
 
     private String uri = "datahike:mem://test-empty-db";
@@ -252,5 +258,22 @@ public class DatahikeTest {
         query = "[:find ?a :in $ :where [?e :age ?a]]";
         Set<PersistentVector> res = Datahike.q(query, dbAfter);
         assertTrue(res.size() == 3);
+
+
+
+    /**
+     * Called by Datahike's Clojure tests and runs the above Junit tests.
+     */
+    public static boolean run() {
+        Result result = JUnitCore.runClasses(DatahikeTest.class);
+
+        System.out.println("\n");
+        List<Failure> failures = result.getFailures();
+        for (Failure failure : failures) {
+            System.out.println("Junit Failure: " + failure.toString());
+        }
+        System.out.println("Java Bindings test failure count: " + failures.size());
+
+        return result.wasSuccessful();
     }
 }
