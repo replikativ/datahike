@@ -258,7 +258,7 @@ public class DatahikeTest {
         query = "[:find ?a :in $ :where [?e :age ?a]]";
         Set<PersistentVector> res = Datahike.q(query, dbAfter);
         assertTrue(res.size() == 3);
-
+    }
 
 
     /**
