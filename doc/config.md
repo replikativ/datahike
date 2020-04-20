@@ -35,7 +35,7 @@ above looks like:
 ```
 
 At the moment we support four different backends: [in-memory](#in-memory) ,[file-based](#file-based),
-[LevelDB](#leveldb), and [PostgreSQL](#postgresl).
+[LevelDB](#leveldb), and [PostgreSQL](#postgresql).
 
 ### in-memory
 
