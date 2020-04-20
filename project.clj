@@ -11,7 +11,8 @@
                  [environ "1.1.0"]
                  [io.replikativ/hitchhiker-tree "0.1.5"]
                  [io.replikativ/superv.async "0.2.9"]
-                 [io.lambdaforge/datalog-parser "0.1.1"]]
+                 [io.lambdaforge/datalog-parser "0.1.1"]
+                 [junit/junit "4.12"]]
 
   :plugins [[lein-cljsbuild "1.1.7"]]
 
@@ -20,6 +21,8 @@
 ;;     *unchecked-math* :warn-on-boxed
                 }
   :jvm-opts ["-Xmx2g" "-server"]
+
+  :java-source-paths ["java/src"]
 
   :aliases {"test-clj"     ["run" "-m" "datahike.test/test-clj"]
             "test-cljs"    ["do" ["cljsbuild" "once" "release" "advanced"]
