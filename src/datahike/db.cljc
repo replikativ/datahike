@@ -1521,7 +1521,7 @@
         (raise "Bad entity type at " entity ", expected map or vector"
                {:error :transact/syntax, :tx-data entity})))))
 
-(defn migrate-tx-data [initial-report initial-es]
+(defn transact-entities-directly [initial-report initial-es]
   (loop [report (update initial-report :db-after persistent!)
          es initial-es
          migration-state (or (get-in initial-report [:db-before :migration]) {})]

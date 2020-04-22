@@ -236,14 +236,14 @@
                              :tempids   {}
                              :tx-meta   tx-meta}) tx-data))))
 
-(defn migrate-with [db tx-data]
-  (db/migrate-tx-data
+(defn load-entities-with [db entities]
+  (db/transact-entities-directly
     (db/map->TxReport {:db-before db
                        :db-after  db
                        :tx-data   []
                        :tempids   {}
                        :tx-meta []})
-    tx-data))
+    entities))
 
 (defn db-with
   "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
@@ -448,10 +448,10 @@
                     (:db-after r))))
     @report))
 
-(defn -migrate! [conn tx-data]
+(defn -load-entities! [conn entities]
   (let [report (atom nil)]
     (swap! conn (fn [db]
-                  (let [r (migrate-with db tx-data)]
+                  (let [r (load-entities-with db entities)]
                     (reset! report r)
                     (:db-after r))))
     @report))
@@ -666,9 +666,9 @@
           clojure.lang.IPending
           (isRealized [_] true))))))
 
-(defn migrate [conn tx-data]
+(defn load-entities [conn entities]
   {:pre [(conn? conn)]}
-  (let [res (-migrate! conn tx-data)]
+  (let [res (-load-entities! conn entities)]
     (reify
       clojure.lang.IDeref
       (deref [_] res)

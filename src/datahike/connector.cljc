@@ -56,8 +56,7 @@
                          :temporal-eavt temporal-eavt-flushed
                          :temporal-aevt temporal-aevt-flushed
                          :temporal-avet temporal-avet-flushed))
-    tx-report)
-  )
+    tx-report))
 
 (defmethod transact! clojure.lang.PersistentArrayMap
   [connection {:keys [tx-data]}]
@@ -72,10 +71,10 @@
     (catch Exception e
       (throw (.getCause e)))))
 
-(defn migrate [connection tx-data]
+(defn load-entities [connection entities]
   (future
     (locking connection
-      (update-and-flush-db connection tx-data d/migrate))))
+      (update-and-flush-db connection entities d/load-entities))))
 
 (defn release [connection]
   (ds/release-store (get-in @connection [:config :storage]) (:store @connection)))
