@@ -62,10 +62,7 @@
         tx-report))))
 
 (defn transact [connection tx-data]
-  (try
-    (deref (transact! connection tx-data))
-    (catch Exception e
-      (throw (.getCause e)))))
+  (transact! connection tx-data))
 
 (defn release [conn]
   (ds/release-store (get-in @conn [:config :storage]) (:store @conn)))
@@ -108,8 +105,8 @@
   (connect [config]
     (let [raw-store (ds/connect-store config)
           _ (when-not raw-store
-              (throw (ex-info "Backend does not exist." {:type :backend-does-not-exist
-                                                          :config config})))
+              (throw (ex-info "Backend database does not exist." {:type :backend-does-not-exist
+                                                                  :config config})))
           store (kons/add-hitchhiker-tree-handlers
                  (kc/ensure-cache
                   raw-store
