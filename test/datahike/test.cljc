@@ -16,6 +16,7 @@
     datahike.test.listen
     datahike.test.lookup-refs
     datahike.test.lru
+    datahike.test.migrate
     datahike.test.pull-api
     datahike.test.purge
     datahike.test.query
@@ -28,7 +29,6 @@
     datahike.test.query-rules
     datahike.test.query-v3
     datahike.test.schema
-    datahike.test.serialization
     datahike.test.store
     datahike.test.time-variance
     datahike.test.transact

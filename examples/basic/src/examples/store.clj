@@ -1,5 +1,7 @@
 (ns examples.store
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d]
+            [datahike-postgres.core]
+            [datahike-leveldb.core]))
 
 (def schema [{:db/ident :name
               :db/valueType :db.type/string

@@ -152,6 +152,8 @@
 
 (deftest test-db-fn-cas
   (let [conn (d/create-conn)]
+    (d/transact! conn [[:db/cas 1 :weight nil 100]])
+    (is (= (:weight (d/entity @conn 1)) 100))
     (d/transact! conn [[:db/add 1 :weight 200]])
     (d/transact! conn [[:db.fn/cas 1 :weight 200 300]])
     (is (= (:weight (d/entity @conn 1)) 300))
