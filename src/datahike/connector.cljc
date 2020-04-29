@@ -181,7 +181,7 @@
 
   (-delete-database [config]
     ;; TODO log deprecation notice #54
-    (if (database-exists? config)
+    (if (-database-exists? config)
       (do (ds/delete-store config)
           true)
       false)))
