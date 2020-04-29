@@ -1,7 +1,5 @@
 # Datomic Differences
 
-for more information as the
-
 Although datahike supports a part of [Datomic's
 API](https://docs.datomic.com/client-api/datomic.client.api.html), some
 behavior is different using the different functions. Datahike supports part of the `datomic.client.api`:

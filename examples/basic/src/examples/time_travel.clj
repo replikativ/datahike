@@ -76,7 +76,23 @@
 ;; Let's have a look at the history, Bob should be there
 (d/q query (d/history @conn))
 
-;; let's find the retracted entity ID, its attribute and value, and the date of the retraction
+;; now we can find when Bob was added and when he was removed
+(d/q '[:find ?d ?op
+       :in $ ?e
+       :where
+       [?e _ _ ?t ?op]
+       [?t :db/txInstant ?d]]
+     (d/history @conn)
+     [:name "Bob"])
+
+;; let's see who else was added with Bob
+(d/q '[:find ?n
+       :in $ ?e
+       :where
+       [?e _ _ ?t true]
+       [?e2 :name ?n]] (d/history @conn) [:name "Bob"])
+
+;; let's find the retracted entity ID, its attribute, value, and the date of the changes
 (d/q '[:find ?e ?a ?v ?tx
        :where
        [?e ?a ?v ?r false]
