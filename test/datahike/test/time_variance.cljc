@@ -31,7 +31,7 @@
              (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] @conn))))
 
     (testing "historical values"
-      (d/transact conn [{:db/id [:name "Alice"] :age 30}])
+      (deref (d/transact conn [{:db/id [:name "Alice"] :age 30}]))
       (are [x y]
           (= x y)
         #{[30]}
@@ -39,7 +39,7 @@
         #{[30] [25]}
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
-      (d/transact conn [[:db/retractEntity [:name "Alice"]]])
+      (deref (d/transact conn [[:db/retractEntity [:name "Alice"]]]))
       (are [x y]
           (= x y)
         #{}
@@ -66,11 +66,11 @@
         conn (d/connect uri)]
 
     (testing "get all values before specific time"
-      (let [_ (d/transact conn [{:db/id [:name "Alice"] :age 30}])
+      (let [_ (deref (d/transact conn [{:db/id [:name "Alice"] :age 30}]))
             _ (Thread/sleep 100)
             date (java.util.Date.)
             _ (Thread/sleep 100)
-            _ (d/transact conn [{:db/id [:name "Alice"] :age 35}])
+            _ (deref (d/transact conn [{:db/id [:name "Alice"] :age 35}]))
             history-db (d/history @conn)
             current-db @conn
             current-query '[:find ?a :in $ ?e :where [?e :age ?a]]
@@ -120,6 +120,6 @@
             (d/q query (d/since @conn first-date)))))
     (testing "added new value"
       (let [new-age 30
-            _ (d/transact conn [{:db/id [:name "Alice"] :age new-age}])]
+            _ (deref (d/transact conn [{:db/id [:name "Alice"] :age new-age}]))]
         (is (= #{[new-age]}
                (d/q query (d/since @conn first-date))))))))

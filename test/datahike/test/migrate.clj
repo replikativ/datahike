@@ -22,7 +22,7 @@
           _ (delete-database uri)
           _ (create-database uri)
           conn (connect uri)]
-      (transact conn tx-data)
+      (deref (transact conn tx-data))
 
       (export-db @conn "/tmp/eavt-dump")
 

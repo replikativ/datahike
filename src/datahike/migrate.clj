@@ -21,4 +21,4 @@
                         (map read-string)
                         (partition 1000 1000 nil)
                         )]
-     (api/transact conn (vec datoms))))
+     (deref (api/transact conn (vec datoms)))))
