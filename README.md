@@ -115,6 +115,7 @@ Refer to the docs for more information:
 - [time variance](./doc/time_variance.md)
 - [differences from Datomic](./doc/datomic_differences.md)
 - [backend development](./doc/backend-development.md)
+- [logging and error handling](./doc/logging_and_error_handling.md)
 - [releasing Datahike](./doc/release.md)
 
 For simple examples have a look at the projects in the `examples` folder.
