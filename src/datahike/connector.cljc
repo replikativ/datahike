@@ -122,7 +122,7 @@
               (throw (ex-info "Database does not exist." {:type :db-does-not-exist
                                                           :config config})))
           {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx]} stored-db
-          empty (db/empty-db nil :datahike.index/hitchhiker-tree :config config)]
+          empty (db/empty-db nil (:index config :datahike.index/hitchhiker-tree) :config config)]
       (d/conn-from-db
        (assoc empty
               :max-tx max-tx
@@ -139,12 +139,13 @@
               :store store))))
 
   (-create-database [store-config
-                    {:keys [initial-tx schema-on-read temporal-index]
-                     :or {schema-on-read false temporal-index true}
+                    {:keys [initial-tx schema-on-read temporal-index index]
+                     :or {schema-on-read false temporal-index true index :datahike.index/hitchhiker-tree}
                      :as opt-config}]
   (dc/validate-config-depr store-config)
   (dc/validate-config-attribute :datahike.config/schema-on-read schema-on-read opt-config)
   (dc/validate-config-attribute :datahike.config/temporal-index temporal-index opt-config)
+    (dc/validate-config-attribute :datahike.config/index index opt-config)
   (let [store (kc/ensure-cache
                (ds/empty-store store-config)
                (atom (cache/lru-cache-factory {} :threshold 1000)))
@@ -153,11 +154,12 @@
             (throw (ex-info "Database already exists." {:type :db-already-exists :config store-config})))
         db-config {:schema-on-read schema-on-read
                    :temporal-index temporal-index
+                   :index index
                    :storage store-config}
         {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]}
         (db/empty-db
          {:db/ident {:db/unique :db.unique/identity}}
-         (ds/scheme->index store-config)
+         (or index (ds/scheme->index store-config))
          :config db-config)
         backend (kons/->KonserveBackend store)]
     (<?? S (k/assoc-in store [:db]
@@ -199,7 +201,7 @@
              (throw (ex-info "Database does not exist." {:type :db-does-not-exist
                                                          :config dc/config})))
          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx]} stored-db
-         empty (db/empty-db nil :datahike.index/hitchhiker-tree :config config)]
+         empty (db/empty-db nil (:index config :datahike.index/hitchhiker-tree) :config config)]
      (d/conn-from-db
       (assoc empty
              :max-tx max-tx
@@ -224,7 +226,7 @@
   ;; ugly hack to keep deprecated and new configuration in one function
   (if (or (= (first opts) :initial-tx) (= (first opts) nil))
     (let [{:keys [initial-tx]} opts
-          {:keys [schema-on-read temporal-index]} dc/config
+          {:keys [schema-on-read temporal-index index]} dc/config
           store-config  (:store dc/config)
           store         (kc/ensure-cache
                          (ds/empty-store store-config)
@@ -234,10 +236,11 @@
                           (throw (ex-info "Database already exists." {:type :db-already-exists :config store-config})))
           db-config     {:schema-on-read schema-on-read
                          :temporal-index temporal-index
+                         :index index
                          :storage store-config}
           db            (db/empty-db
                          {:db/ident {:db/unique :db.unique/identity}}
-                         (ds/scheme->index store-config)
+                         (or index (ds/scheme->index store-config))
                          :config db-config)
           {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]} db
           backend       (kons/->KonserveBackend store)]

@@ -16,9 +16,9 @@
 
 (deftest deep-merge-test
   (is (= (Configuration. (Store. :pg "foobar" nil "/tmp/testfoo" nil nil)
-                         true true)
+                         true true :datahike.index/hitchhiker-tree)
          (deep-merge (Configuration. (Store. :file nil nil "/tmp/testfoo" nil nil)
-                                     false true)
+                                     false true :datahike.index/hitchhiker-tree)
                      {:store {:backend :pg :username "foobar"}
                       :schema-on-read true}))))
 
@@ -46,13 +46,13 @@
 (deftest load-config-test
   (testing "Loading configuration defaults"
     (is (= (Configuration. (Store. :mem nil nil nil nil nil)
-                           false true)
+                           false true :datahike.index/hitchhiker-tree)
            (reload-config)))))
 
 (deftest reload-config-test
   (testing "Reloading configuration"
     (is (= (Configuration. (Store. :file nil nil "/tmp/testfoo" nil nil)
-                           true true)
+                           true true :datahike.index/hitchhiker-tree)
            (reload-config {:store {:backend :file
                                    :path "/tmp/testfoo"}
                            :schema-on-read true})))))
