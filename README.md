@@ -170,12 +170,14 @@ separately and use the fast in-memory index datastructure of datascript then.
 datahike also at the moment does not support ClojureScript anymore, although we
 plan to recover this functionality.
 
-## ClojureScript support
-
 In general all [datascript
 documentation](https://github.com/tonsky/datascript/wiki/Getting-started)
 applies for namespaces beyond `datahike.api`. We are working towards a portable
 version of datahike on top of `core.async`. Feel free to provide some help :).
+
+## ClojureScript support
+
+ClojureScript support is planned. Please see [Roadmap](https://github.com/replikativ/datahike#roadmap).
 
 ## Migration & Backup
 
