@@ -12,6 +12,7 @@
 
 
 (defn assert-vec-conversion
+  "Checks that given a 'vect we get the same vect back after going through fdb"
   [index-type vect]
   (let [buff       (k/->byteBuffer index-type vect)
         buff->vect (k/byteBuffer->vect index-type buff)
@@ -76,6 +77,7 @@
 
 
 (deftest illegal-argument
+  "wrong index descriptor"
   (is (thrown? IllegalArgumentException (k/->byteBuffer :vrt [:hello 9223372036854775807 (long 234) 3]))))
 
 
