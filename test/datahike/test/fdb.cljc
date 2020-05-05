@@ -1,4 +1,4 @@
-(ns datahike.test.fdb-test
+(ns datahike.test.fdb
   (:import (com.apple.foundationdb KeySelector
                                    FDB))
   (:require [datahike.db :as dh-db :refer [with-datom slice]]
