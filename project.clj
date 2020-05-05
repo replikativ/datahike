@@ -13,7 +13,7 @@
                  [io.replikativ/hitchhiker-tree "0.1.4"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/konserve-leveldb "0.1.2"]
-                 [com.apple.foundationdb/fdb-java "5.1.7"]
+                 [org.foundationdb/fdb-java "5.2.5"]
                  [byte-streams "0.2.3"]
                  [funcool/octet "1.1.2"]]
 
