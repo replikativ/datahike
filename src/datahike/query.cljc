@@ -2,6 +2,7 @@
   (:require
     [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
     [clojure.set :as set]
+    [clojure.string :as str]
     [clojure.walk :as walk]
     [datahike.db :as db #?(:cljs :refer-macros :clj :refer) [raise]]
     [me.tonsky.persistent-sorted-set.arrays :as da]
@@ -15,10 +16,12 @@
     [datahike.pull-api :as dpa]
     [datalog.parser :refer [parse]]
     [datalog.parser.pull :as dpp])
-  #?(:clj (:import [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
+  #?(:clj (:import [clojure.lang Reflector]
+                   [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
                                         Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                                         RulesVar SrcVar Variable]
                    [datahike.datom Datom]
+                   [java.lang.reflect Method]
                    [java.util Date])))
 
 
@@ -539,11 +542,44 @@
      :clj  (when (namespace sym)
              (when-some [v (resolve sym)] @v))))
 
+(def ^:private find-method
+  #?(:cljs nil
+     :clj (memoize
+           (fn find-method-impl [^Class this-class method-name args-classes]
+             (or (->> this-class
+                      .getMethods
+                      (some (fn [^Method method]
+                              (when (and (= method-name (.getName method))
+                                         (= (count args-classes)
+                                            (.getParameterCount method))
+                                         (every? true? (map #(Reflector/paramArgTypeMatch %1 %2)
+                                                            (.getParameterTypes method)
+                                                            args-classes)))
+                                method))))
+                 (throw (ex-info (str (.getName this-class) "."
+                                      method-name "("
+                                      (str/join "," (map #(.getName ^Class %) args-classes))
+                                      ") not found")
+                                 {:this-class this-class
+                                  :method-name method-name
+                                  :args-classes args-classes})))))))
+
+
+(defn- resolve-method [method-sym]
+  #?(:cljs nil
+     :clj (let [method-str (name method-sym)]
+            (when (= \. (.charAt method-str 0))
+              (let [method-name (subs method-str 1)]
+                (fn [this & args]
+                  (let [^Method method (find-method (class this) method-name (mapv class args))]
+                    (Reflector/prepRet (.getReturnType method) (.invoke method this (into-array Object args))))))))))
+
 (defn filter-by-pred [context clause]
   (let [[[f & args]] clause
         pred (or (get built-ins f)
                  (context-resolve-val context f)
                  (resolve-sym f)
+                 (resolve-method f)
                  (when (nil? (rel-with-attr context f))
                    (raise "Unknown predicate '" f " in " clause
                           {:error :query/where, :form clause, :var f})))
@@ -560,6 +596,7 @@
         fun (or (get built-ins f)
                 (context-resolve-val context f)
                 (resolve-sym f)
+                (resolve-method f)
                 (when (nil? (rel-with-attr context f))
                   (raise "Unknown function '" f " in " clause
                          {:error :query/where, :form clause, :var f})))

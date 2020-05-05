@@ -23,6 +23,7 @@
     datahike.test.query-aggregates
     datahike.test.query-find-specs
     datahike.test.query-fns
+    datahike.test.query-interop
     datahike.test.query-not
     datahike.test.query-or
     datahike.test.query-pull
