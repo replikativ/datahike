@@ -6,7 +6,7 @@
             [fdb.core :as fdb]
             [fdb.keys :as k]
             ;;[hitchhiker.tree.messaging :as hmsg]
-            [datahike.db :refer [datom]]))
+            [datahike.datom :refer [datom]]))
 
 ;;---- FDB Keys -----
 
@@ -82,11 +82,33 @@
 
 
 
-;;----- FDB integration -----
+
+
+;;----- FDB Dathike integration -----
+;;
+
+(defn empty-db []
+  (dh-db/empty-db nil :datahike.index/fdb))
+
+
+
+(comment
+  (def db  (empty-db))
+  (-> (with-datom db (datom 123 :likes "Hans" 1 true))
+    (with-datom (datom 124 :likes "GG" 1 true)))
+  )
+
+
+
+
+
+(deftest empty-db-creation
+  "empty db creation"
+  (is (empty-db)))
 
 (deftest fdb-using-with-datom
   "get"
-  (let [db                          (dh-db/empty-db)
+  (let [db                          (dh-db/empty-db nil :datahike.index/fdb)
         {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 :likes "Hans" 1 true))
                                         (with-datom (datom 124 :likes "GG" 1 true)))]
 
@@ -282,9 +304,9 @@
 (deftest fdb-using-init-db
   (testing "init-db on the simplest example"
     (let [db (dh-db/empty-db)]
-      (dh-db/init-db [(dh-db/datom 1000 :a/b 3)
+      (dh-db/init-db [(datom 1000 :a/b 3)
                       ;; TODO: weird if we use "5" instead of 5, it does not work
-                      (dh-db/datom 4 :shared/policy "hello")])))
+                      (datom 4 :shared/policy "hello")])))
   ;; TODO: test that what's inserted in fdb through init-db above is really inside fdb
   )
 

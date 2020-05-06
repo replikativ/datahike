@@ -1,6 +1,7 @@
 (ns datahike.index
   (:require [datahike.index.hitchhiker-tree :as dih]
-            [datahike.index.persistent-set :as dip])
+            [datahike.index.persistent-set :as dip]
+            [datahike.index.fdb :as dif])
   #?(:clj (:import [hitchhiker.tree DataNode IndexNode]
                    [me.tonsky.persistent_sorted_set PersistentSortedSet])))
 
@@ -83,6 +84,28 @@
                 (dip/-persistent! set)))
 
 
+(extend-type com.apple.foundationdb.FDBDatabase
+  IIndex
+  (-all [eavt-set]
+        (dif/-all eavt-set))
+  (-seq [eavt-set]
+        (dif/-seq eavt-set))
+  (-count [eavt-set]
+          (dif/-count eavt-set))
+  (-insert [set datom index-type]
+           (dif/-insert set datom index-type))
+  (-remove [set datom index-type]
+           (dif/-remove set datom index-type))
+  (-slice [set from to _]
+          (dif/-slice set from to))
+  (-flush [set _]
+          (dif/-flush set))
+  (-transient [set]
+              (dif/-transient set))
+  (-persistent! [set]
+                (dif/-persistent! set))
+  )
+
 
 (defmulti empty-index
   "Creates empty index"
@@ -94,6 +117,9 @@
 
 (defmethod empty-index ::persistent-set [_ index-type]
   (dip/empty-set index-type))
+
+(defmethod empty-index ::fdb [_ index-type]
+  (dif/empty-db index-type))
 
 
 (defmulti init-index
