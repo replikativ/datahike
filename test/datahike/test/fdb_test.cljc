@@ -96,6 +96,7 @@
 (defn empty-db []
   (dh-db/empty-db nil :datahike.index/fdb))
 
+
 (comment
   (def db  (empty-db))
   (-> (with-datom db (datom 123 :likes "Hans" 1 true))

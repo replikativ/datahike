@@ -13,13 +13,12 @@
 
 (def -flush identity)
 
-(def -transient transient)
+(def -transient identity)
 
-(def -persistent! persistent!)
+(def -persistent! identity)
 
 
 (defn -insert [db datom index-type]
-  (println "About to insert into fdb")
   (f/insert index-type datom))
 
 (defn -remove [db datom index-type]
