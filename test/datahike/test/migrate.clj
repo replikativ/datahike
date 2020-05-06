@@ -42,7 +42,7 @@
         (delete-database uri)))))
 
 
-(deftest migrate-tx-test
+(deftest load-entities-test
   (testing "Test migrate simple datoms"
     (let [source-datoms (->> tx-data
                              (mapv #(-> % rest vec))
@@ -52,6 +52,6 @@
             _ (delete-database cfg)
             _ (create-database cfg)
             conn (connect cfg)]
-        @(migrate conn source-datoms)
+        @(load-entities conn source-datoms)
         (is (= (into #{} source-datoms)
                (q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))))))

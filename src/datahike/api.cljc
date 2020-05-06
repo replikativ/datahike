@@ -169,9 +169,9 @@
   dc/transact!)
 
 (def ^{:arglists '([conn tx-data])
-       :doc "Migrates data from Datomic"}
-  migrate
-  dc/migrate)
+       :doc "Load entities directly"}
+  load-entities
+  dc/load-entities)
 
 
 (def ^{:arglists '([conn])
@@ -477,7 +477,7 @@
   [db]
   (if (db/-temporal-index? db)
     (HistoricalDB. db)
-    (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
+    (throw (ex-info "history is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn- date? [d]
   #?(:cljs (instance? js/Date d)
