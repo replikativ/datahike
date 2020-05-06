@@ -26,5 +26,4 @@
 
 (defn empty-db [index-type]
   ;; TODO: Check why it goes here 3 times !?
-  (println "About to create fdb db")
   (f/empty-db))
