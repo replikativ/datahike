@@ -1,7 +1,8 @@
 (ns ^:no-doc datahike.impl.entity
   (:refer-clojure :exclude [keys get])
   (:require [#?(:cljs cljs.core :clj clojure.core) :as c]
-            [datahike.db :as db]))
+            [datahike.db :as db])
+  (:import [datahike.java IEntity]))
 
 (declare entity ->Entity equiv-entity lookup-entity touch)
 
@@ -118,6 +119,7 @@
 
       :clj
       [Object
+       IEntity
        (toString [e]      (pr-str (assoc @cache :db/id eid)))
        (hashCode [e]      (hash eid)) ; db?
        (equals [e o]      (equiv-entity e o))
