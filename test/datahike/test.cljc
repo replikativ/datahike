@@ -7,7 +7,7 @@
     datahike.test.components
     datahike.test.config
     datahike.test.conn
-    datahike.test.fdb
+    datahike.test.fdb-test
     datahike.test.db
     datahike.test.entity
     datahike.test.explode
