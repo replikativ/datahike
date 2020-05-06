@@ -136,7 +136,6 @@
   (assert (some #{:eavt :aevt :avet} [index-type]))
   (let [buffer          (buf/allocate buf-len {:impl :nio :type :direct})
         index-type-code (index-type->code index-type)]
-(println e a v)
     (when a (assert (instance? clojure.lang.Keyword a)))
     (assert (and (<= 0 index-type-code) (>= 2 index-type-code)))
     ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.

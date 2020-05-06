@@ -2,6 +2,7 @@
   (:import (com.apple.foundationdb KeySelector
              FDB))
   (:require [datahike.db :as dh-db :refer [with-datom]]
+            [datahike.core :as d]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [fdb.core :as fdb]
             [fdb.keys :as k]
@@ -98,15 +99,29 @@
 
 
 (comment
-  (def db  (empty-db))
-  (-> (with-datom db (datom 123 :likes "Hans" 1 true))
-    (with-datom (datom 124 :likes "GG" 1 true)))
+  (def db (-> (empty-db)
+            (with-datom (datom 123 :likes "Hans" 1 true))
+            (with-datom (datom 124 :likes "GG" 1 true))))
+  (d/datoms db :eavt)
   )
 
 
 (deftest empty-db-creation
   "empty db creation"
   (is (empty-db)))
+
+
+(deftest datoms
+  (let [db (-> (empty-db)
+             (with-datom (datom 123 :likes "Hans" 1 true))
+             (with-datom (datom 124 :likes "GG" 1 true)))]
+    (testing "datoms works"
+      (is (= [[123 :likes "Hans" 1]
+              [124 :likes "GG" 1]]
+            (d/datoms db :eavt))))
+    ))
+
+
 
 (deftest using-with-datom
   "get"
@@ -125,7 +140,6 @@
 
   (testing "simple range :eavt"
     (let [db (empty-db)
-          _  (fdb/clear-all)
           _  (-> (with-datom db (datom 123 :likes "Hans" 1 true))
                (with-datom (datom 124 :likes "GG" 1 true))
                (with-datom (datom 125 :likes "GG" 1 true))
@@ -152,7 +166,6 @@
   ;; whereas the code expects from now on to always be eavt. See function ->bytebuffer
   #_(testing "simple range :aevt"
       (let [db (empty-db)
-            _  (fdb/clear-all)
             _  (-> (with-datom db (datom 123 :a "Hans" 1 true))
                  (with-datom (datom 124 :b "GG" 1 true))
                  (with-datom (datom 125 :c "GG" 1 true))
@@ -181,7 +194,6 @@
 
   #_(testing "simple range :avet"
       (let [db (empty-db)
-            _  (fdb/clear-all)
             _  (-> (with-datom db (datom 123 :a "Hans" 1 true))
                  (with-datom (datom 124 :b "GG" 1 true))
                  (with-datom (datom 125 :c "GG" 1 true))
@@ -211,7 +223,6 @@
 
   "large range"
   (let [db (empty-db)
-        _  (fdb/clear-all)
         _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 1 true)) db (range 100))]
     (is (= 51
           (count (fdb/get-range :eavt [1 :likes "Hans" 1 true]
@@ -223,7 +234,6 @@
   ;; Could it be that the same key is allowed to be reinserted multiple
   ;; times and appears multiple times?
   (let [db (empty-db)
-        ;;        _  (fdb/clear-all)
         _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 1 true)) db (range 10))]
     (is (= 3
           (count (fdb/get-range :eavt [1 :likes "Hans" 1 true]
@@ -260,7 +270,6 @@
 #_(deftest slice-simple
   "slice-simple"
   (let [db                          (empty-db)
-        _                           (fdb/clear-all)
         datom-1                     (datom 123 :likes "Hans" 1 true)
         datom-2                     (datom 124 :likes "Hans" 1 true)
         datom-3                     (datom 125 :likes "Hans" 1 true)
@@ -288,7 +297,6 @@
 #_(deftest slice-large-range
   "slice-large"
   (let [db                          (empty-db)
-        _                           (fdb/clear-all)
         {:keys [eavt eavt-durable]} (reduce #(with-datom %1
                                                (datom %2 :likes "Hans" 1 true))
                                             db

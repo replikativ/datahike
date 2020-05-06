@@ -16,21 +16,30 @@
            (apply [this tr]
              ~@actions))))
 
-(defn empty-db
+
+(defn db
   []
   (let [fd (FDB/selectAPIVersion 510)]
     (with-open [db (.open fd)]
       db)))
 
 
-(defn clear-all
-  "Clear all  keys from the database"
+;; TODO: Currently there is only one and only one instance of FDB ever created.
+;; I.e. I can't create multiple instances of the db with giving each a name for instance.
+(defn empty-db
+  "Clear all keys from the database. Thus returns an empty db."
   []
   (let [fd    (FDB/selectAPIVersion 510)
         begin (byte-array [])
         end   (byte-array [0xFF])]
     (with-open [db (.open fd)]
-      (tr! db (.clear tr (Range. begin end))))))
+      (tr! db (.clear tr (Range. begin end)))
+      db)))
+
+
+(defn clear-all []
+  (empty-db))
+
 
 ;; TODO?: remove the db arg
 (defn get
