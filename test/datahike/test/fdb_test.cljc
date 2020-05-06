@@ -122,7 +122,6 @@
     ))
 
 
-
 (deftest using-with-datom
   "get"
   (let [db                          (empty-db)

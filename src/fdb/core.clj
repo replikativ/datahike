@@ -4,7 +4,7 @@
                                    Range
                                    KeySelector)
            (java.util List))
-  (:require [fdb.keys :refer [key ->byteArr]]))
+  (:require [fdb.keys :refer [key ->byteArr key->vect]]))
 
 (defmacro tr!
   "Transaction macro to perform actions. Always use tr for actions inside
@@ -79,8 +79,8 @@
                          (.set tr k v))))))))
 
 
-(defn get-range
-  "Returns fdb keys in the range [begin end]. `begin` and `end` are vectors.
+(defn- get-range-as-byte-array
+  "Returns fdb keys in the range [begin end] as a collection of byte-arrays. `begin` and `end` are vectors.
   index-type is `:eavt`, `:aevt` and `:avet`"
   [index-type begin end]
   (let [fd        (FDB/selectAPIVersion 510)
@@ -100,6 +100,13 @@
       (tr! db
            (mapv #(.getKey %)
                  (.getRange tr begin-key end-key))))))
+
+
+(defn get-range
+  "Returns fdb keys in the range [begin end]. `begin` and `end` are vectors.
+  index-type is `:eavt`, `:aevt` and `:avet`"
+  [index-type begin end]
+  (map (partial key->vect index-type) (get-range-as-byte-array index-type begin end)))
 
 ;;------------ KeySelectors and iterations
 

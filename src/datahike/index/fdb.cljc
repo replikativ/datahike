@@ -1,10 +1,11 @@
 (ns datahike.index.fdb
   (:require [datahike.datom :as dd]
-            [fdb.core :as f])
+            [fdb.core :as fc]
+            [fdb.keys :as fk])
   )
 
 (defn -slice [db from to index-type]
-  (f/get-range index-type from to))
+  (fc/get-range index-type from to))
 
 (def -seq seq)
 
@@ -20,11 +21,11 @@
 
 
 (defn -insert [db datom index-type]
-  (f/insert index-type datom))
+  (fc/insert index-type datom))
 
 (defn -remove [db datom index-type]
   )
 
 (defn empty-db [index-type]
   ;; TODO: Check why it goes here 3 times !?
-  (f/empty-db))
+  (fc/empty-db))
