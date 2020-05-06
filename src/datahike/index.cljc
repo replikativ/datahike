@@ -96,8 +96,8 @@
            (dif/-insert db datom index-type))
   (-remove [db datom index-type]
            (dif/-remove db datom index-type))
-  (-slice [db from to _]
-          (dif/-slice db from to))
+  (-slice [db from to index-type]
+          (dif/-slice db from to index-type))
   (-flush [db _]
           (dif/-flush db))
   (-transient [db]

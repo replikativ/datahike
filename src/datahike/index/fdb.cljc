@@ -3,7 +3,8 @@
             [fdb.core :as f])
   )
 
-(def -slice identity)
+(defn -slice [db from to index-type]
+  (f/get-range index-type from to))
 
 (def -seq seq)
 
