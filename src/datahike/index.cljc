@@ -86,25 +86,24 @@
 
 (extend-type com.apple.foundationdb.FDBDatabase
   IIndex
-  (-all [eavt-set]
-        (dif/-all eavt-set))
-  (-seq [eavt-set]
-        (dif/-seq eavt-set))
-  (-count [eavt-set]
-          (dif/-count eavt-set))
-  (-insert [set datom index-type]
-           (dif/-insert set datom index-type))
-  (-remove [set datom index-type]
-           (dif/-remove set datom index-type))
-  (-slice [set from to _]
-          (dif/-slice set from to))
-  (-flush [set _]
-          (dif/-flush set))
-  (-transient [set]
-              (dif/-transient set))
-  (-persistent! [set]
-                (dif/-persistent! set))
-  )
+  (-all [eavt-db]
+        (dif/-all eavt-db))
+  (-seq [eavt-db]
+        (dif/-seq eavt-db))
+  (-count [eavt-db]
+          (dif/-count eavt-db))
+  (-insert [db datom index-type]
+           (dif/-insert db datom index-type))
+  (-remove [db datom index-type]
+           (dif/-remove db datom index-type))
+  (-slice [db from to _]
+          (dif/-slice db from to))
+  (-flush [db _]
+          (dif/-flush db))
+  (-transient [db]
+              (dif/-transient db))
+  (-persistent! [db]
+                (dif/-persistent! db)))
 
 
 (defmulti empty-index
