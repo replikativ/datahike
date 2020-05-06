@@ -1,6 +1,6 @@
 (ns datahike.test.fdb-test
   (:import (com.apple.foundationdb KeySelector
-                                   FDB))
+             FDB))
   (:require [datahike.db :as dh-db :refer [with-datom]]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [fdb.core :as fdb]
@@ -78,7 +78,7 @@
 
 (deftest illegal-argument
   "wrong index descriptor"
-  (is (thrown? IllegalArgumentException (k/->byteBuffer :vrt [:hello 9223372036854775807 (long 234) 3]))))
+  (is (thrown? AssertionError (k/->byteBuffer :vrt [:hello 9223372036854775807 (long 234) 3]))))
 
 
 
@@ -90,16 +90,11 @@
 (defn empty-db []
   (dh-db/empty-db nil :datahike.index/fdb))
 
-
-
 (comment
   (def db  (empty-db))
   (-> (with-datom db (datom 123 :likes "Hans" 1 true))
     (with-datom (datom 124 :likes "GG" 1 true)))
   )
-
-
-
 
 
 (deftest empty-db-creation
@@ -108,109 +103,111 @@
 
 (deftest fdb-using-with-datom
   "get"
-  (let [db                          (dh-db/empty-db nil :datahike.index/fdb)
+  (let [db                          (empty-db)
         {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 :likes "Hans" 1 true))
-                                        (with-datom (datom 124 :likes "GG" 1 true)))]
+                                      (with-datom (datom 124 :likes "GG" 1 true)))]
 
     ;; get :e-end
     (is (== (nth (fdb/get (:eavt-scalable db) :eavt
-                          [123 :likes "Hans" 1 true])
-                 (k/position :eavt :e-end))
-            123))
+                   [123 :likes "Hans" 1 true])
+              (k/position :eavt :e-end))
+          123))
     (is (== (nth (fdb/get (:eavt-scalable db) :eavt
-                          [124 :likes "GG" 1 true]) (k/position :eavt :e-end))
-            124)))
+                   [124 :likes "GG" 1 true]) (k/position :eavt :e-end))
+          124)))
 
   (testing "simple range :eavt"
-    (let [db (dh-db/empty-db)
+    (let [db (empty-db)
           _  (fdb/clear-all)
           _  (-> (with-datom db (datom 123 :likes "Hans" 1 true))
-                 (with-datom (datom 124 :likes "GG" 1 true))
-                 (with-datom (datom 125 :likes "GG" 1 true))
-                 (with-datom (datom 1 :likes "GG" 1 true))
-                 (with-datom (datom 2 :likes "GG" 1 true))
-                 (with-datom (datom 3 :likes "GG" 1 true))
-                 (with-datom (datom 3 :likes "HH" 1 true)))]
+               (with-datom (datom 124 :likes "GG" 1 true))
+               (with-datom (datom 125 :likes "GG" 1 true))
+               (with-datom (datom 1 :likes "GG" 1 true))
+               (with-datom (datom 2 :likes "GG" 1 true))
+               (with-datom (datom 3 :likes "GG" 1 true))
+               (with-datom (datom 3 :likes "HH" 1 true)))]
       ;; :eavt
       (is (= 3
-             (count (fdb/get-range :eavt
-                                   [123 :likes "Hans" 1 true]
-                                   [125 :likes "GG" 1 true]))))
+            (count (fdb/get-range :eavt
+                     [123 :likes "Hans" 1 true]
+                     [125 :likes "GG" 1 true]))))
       (is (= 2 ;; Not 3 because [125] does not exist in the db.
-             (count (fdb/get-range :eavt [123] [125]))))
+            (count (fdb/get-range :eavt [123] [125]))))
       (is (= 0
-             (count (fdb/get-range :eavt [3] [3]))))
+            (count (fdb/get-range :eavt [3] [3]))))
       (is (= 1
-             (count (fdb/get-range :eavt
-                                   [3 :likes "HH" 1 true]
-                                   [3 :likes "HH" 1 true]))))
+            (count (fdb/get-range :eavt
+                     [3 :likes "HH" 1 true]
+                     [3 :likes "HH" 1 true]))))
       ))
 
-  (testing "simple range :aevt"
-    (let [db (dh-db/empty-db)
-          _  (fdb/clear-all)
-          _  (-> (with-datom db (datom 123 :a "Hans" 1 true))
+  ;; 06-05.2020: Will not work for now as here we send datoms in aevt format
+  ;; whereas the code expects from now on to always be eavt. See function ->bytebuffer
+  #_(testing "simple range :aevt"
+      (let [db (empty-db)
+            _  (fdb/clear-all)
+            _  (-> (with-datom db (datom 123 :a "Hans" 1 true))
                  (with-datom (datom 124 :b "GG" 1 true))
                  (with-datom (datom 125 :c "GG" 1 true))
                  (with-datom (datom 1 :d "GG" 1 true))
                  (with-datom (datom 2 :e "GG" 1 true))
                  (with-datom (datom 3 :f "GG" 1 true))
                  (with-datom (datom 4 :f "GG" 1 true)))]
-      ;; :aevt
-      (is (= 3
-             (count (fdb/get-range :aevt
-                                   [:a 123 "Hans" 1 true]
-                                   [:c 125 "GG" 1 true]))))
-      (is (= 3
-             (count (fdb/get-range :aevt
-                                   [:a 123 "Hans" 1 true]
-                                   [:c 9999999 "GG" 1 true]))))
-      (is (= 2
-             (count (fdb/get-range :aevt
-                                   [:a 123 "Hans" 1 true]
-                                   [:c 0 "GG" 1 true]))))
-      (is (= 3
-             (count (fdb/get-range :aevt [:e] [:g]))))
-      (is (= 0
-             (count (fdb/get-range :aevt [:f] [:f]))))))
+        ;; :aevt
+        (is (= 3
+              (count (fdb/get-range :aevt
+                       [:a 123 "Hans" 1 true]
+                       [:c 125 "GG" 1 true]))))
+        (is (= 3
+              (count (fdb/get-range :aevt
+                       [:a 123 "Hans" 1 true]
+                       [:c 9999999 "GG" 1 true]))))
+        (is (= 2
+              (count (fdb/get-range :aevt
+                       [:a 123 "Hans" 1 true]
+                       [:c 0 "GG" 1 true]))))
+        (is (= 3
+              (count (fdb/get-range :aevt [:e] [:g]))))
+        (is (= 0
+              (count (fdb/get-range :aevt [:f] [:f]))))))
 
 
   #_(testing "simple range :avet"
-      (let [db (dh-db/empty-db)
+      (let [db (empty-db)
             _  (fdb/clear-all)
             _  (-> (with-datom db (datom 123 :a "Hans" 1 true))
-                   (with-datom (datom 124 :b "GG" 1 true))
-                   (with-datom (datom 125 :c "GG" 1 true))
-                   (with-datom (datom 1 :d "GG" 1 true))
-                   (with-datom (datom 2 :e "GG" 1 true))
-                   (with-datom (datom 3 :f "GG" 1 true))
-                   (with-datom (datom 4 :f "GG" 1 true)))]
+                 (with-datom (datom 124 :b "GG" 1 true))
+                 (with-datom (datom 125 :c "GG" 1 true))
+                 (with-datom (datom 1 :d "GG" 1 true))
+                 (with-datom (datom 2 :e "GG" 1 true))
+                 (with-datom (datom 3 :f "GG" 1 true))
+                 (with-datom (datom 4 :f "GG" 1 true)))]
         ;; :aevt
         (is (= 3
-               (count (fdb/get-range :avet
-                                     [:a "Hans" 123  1 true]
-                                     [:c "GG" 125  1 true]))))
+              (count (fdb/get-range :avet
+                       [:a "Hans" 123  1 true]
+                       [:c "GG" 125  1 true]))))
         (is (= 3
-               (count (fdb/get-range :avet
-                                     [:a "Hans" 123 1 true]
-                                     [:c "GG" 9999999 1 true]))))
+              (count (fdb/get-range :avet
+                       [:a "Hans" 123 1 true]
+                       [:c "GG" 9999999 1 true]))))
         (is (= 2
-               (count (fdb/get-range :avet
-                                     [:a "Hans" 123 1 true]
-                                     [:c "GG" 0  1 true]))))
+              (count (fdb/get-range :avet
+                       [:a "Hans" 123 1 true]
+                       [:c "GG" 0  1 true]))))
         #_(is (= 3
-                 (count (fdb/get-range :avet [:e] [:g]))))
+                (count (fdb/get-range :avet [:e] [:g]))))
         #_(is (= 0
-                 (count (fdb/get-range :avet [:f] [:f]))))))
+                (count (fdb/get-range :avet [:f] [:f]))))))
 
 
 
   "large range"
-  (let [db (dh-db/empty-db)
+  (let [db (empty-db)
         _  (fdb/clear-all)
         _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 1 true)) db (range 100))]
     (is (= 51
-           (count (fdb/get-range :eavt [1 :likes "Hans" 1 true]
+          (count (fdb/get-range :eavt [1 :likes "Hans" 1 true]
                                  [51 :likes "Hans" 1 true])))))
 
   "large range"
@@ -218,7 +215,7 @@
   ;; check as the following might not work for instance.
   ;; Could it be that the same key is allowed to be reinserted multiple
   ;; times and appears multiple times?
-  (let [db (dh-db/empty-db)
+  (let [db (empty-db)
         ;;        _  (fdb/clear-all)
         _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 1 true)) db (range 10))]
     (is (= 3
@@ -227,7 +224,7 @@
 
   "iterate-from"
   ;; TODO: iterate-from no longer works so commenting out for now
-  #_(let [db         (dh-db/empty-db)
+  #_(let [db         (empty-db)
           datom-1    (datom 123 :likes "Hans" 1 true)
           datom-2    (datom 124 :likes "GG" 1 true)
           datoms     (-> (with-datom db datom-1)
@@ -255,7 +252,7 @@
 
 #_(deftest slice-simple
   "slice-simple"
-  (let [db                          (dh-db/empty-db)
+  (let [db                          (empty-db)
         _                           (fdb/clear-all)
         datom-1                     (datom 123 :likes "Hans" 1 true)
         datom-2                     (datom 124 :likes "Hans" 1 true)
@@ -283,7 +280,7 @@
 
 #_(deftest slice-large-range
   "slice-large"
-  (let [db                          (dh-db/empty-db)
+  (let [db                          (empty-db)
         _                           (fdb/clear-all)
         {:keys [eavt eavt-durable]} (reduce #(with-datom %1
                                                (datom %2 :likes "Hans" 1 true))
@@ -303,7 +300,7 @@
 
 (deftest fdb-using-init-db
   (testing "init-db on the simplest example"
-    (let [db (dh-db/empty-db)]
+    (let [db (empty-db)]
       (dh-db/init-db [(datom 1000 :a/b 3)
                       ;; TODO: weird if we use "5" instead of 5, it does not work
                       (datom 4 :shared/policy "hello")])))

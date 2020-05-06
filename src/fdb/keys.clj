@@ -124,17 +124,19 @@
 
 ;; TODO: add validations that each of e a v t does not overflow.
 ;;
+;; 06-05-2020: 'index-type' is a useless arg for now as we only one copy of the datom in
+;; the [e a v t] form. But if later we decide to store the data in another order than eavt,
+;; we will need the argument.
 (defn ->byteBuffer
-  "Converts a vector into a bytebuffer"
-  [index-type [p1 p2 p3 t]]
+  "Converts a vector into a bytebuffer.
+  Whatever the index-type, expects the datom in the [e a v t] format.
+  (Datahike code will always send [e a v t] and only the index-type will vary.)"
+  [index-type [e a v t]]
   (assert (s/valid? keyword? index-type))
+  (assert (some #{:eavt :aevt :avet} [index-type]))
   (let [buffer          (buf/allocate buf-len {:impl :nio :type :direct})
-        index-type-code (index-type->code index-type)
-        [e a v]         (case index-type
-                          :eavt [p1 p2 p3]
-                          :aevt [p2 p1 p3]
-                          :avet [p3 p1 p2]
-                          (throw (IllegalArgumentException. (str "Unknow index type: " index-type))))]
+        index-type-code (index-type->code index-type)]
+(println e a v)
     (when a (assert (instance? clojure.lang.Keyword a)))
     (assert (and (<= 0 index-type-code) (>= 2 index-type-code)))
     ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.
@@ -150,17 +152,17 @@
 (defn- read-int
   [buffer section-end shift-left-val]
   (first (buf/read buffer (buf/spec buf/int32)
-                   {:offset (shift-left section-end shift-left-val)})))
+           {:offset (shift-left section-end shift-left-val)})))
 
 (defn- read-long
   [buffer section-end]
   (first (buf/read buffer (buf/spec buf/int64)
-                   {:offset (shift-left section-end 11)})))
+           {:offset (shift-left section-end 11)})))
 (defn- read-str
   [buffer section-end]
   (let [size (read-int buffer section-end 7)]
     (first (buf/read buffer (buf/spec buf/string*)
-                     {:offset (str-offset size section-end)}))))
+             {:offset (str-offset size section-end)}))))
 
 (defn- read
   [buffer section-end]
@@ -185,11 +187,11 @@
   "Converts a bytebuffer representation of a fdb key into a datom vector"
   [index-type buffer]
   (let [e (first (buf/read buffer (buf/spec buf/int64)
-                           {:offset (shift-left (position index-type :e-end) 7)}))
+                   {:offset (shift-left (position index-type :e-end) 7)}))
         a (keyword (read-str buffer (position index-type :a-end)))
         v (read buffer (position index-type :v-end))
         t (first (buf/read buffer (buf/spec buf/int64)
-                           {:offset (shift-left (position index-type :t-end) 7)}))]
+                   {:offset (shift-left (position index-type :t-end) 7)}))]
     (case index-type
       :eavt [e a v t]
       :aevt [a e v t]
