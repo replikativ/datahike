@@ -13,6 +13,7 @@
 
 (s/def ::schema-on-read boolean?)
 (s/def ::temporal-index boolean?)
+(s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 
 (s/def :datahike/store (s/keys :req-un [::backend]
                                :opt-un [::username ::password ::path ::host ::port]))
@@ -24,7 +25,7 @@
   :ret :datahike/config)
 
 (defrecord Store [backend username password path host port])
-(defrecord Configuration [store schema-on-read temporal-index])
+(defrecord Configuration [store schema-on-read temporal-index index])
 
 (defn int-from-env
   [key default]
@@ -71,13 +72,15 @@
                          (:datahike-store-host env)
                          (int-from-env :datahike-store-port nil))
                         (bool-from-env :datahike-schema-on-read false)
-                        (bool-from-env :datahike-temporal-index true))
+                        (bool-from-env :datahike-temporal-index true)
+                        (keyword (bool-from-env :datahike-index :datahike.index/hitchhiker-tree)))
          merged-config (deep-merge config config-as-arg)
          {:keys [backend username password path host port] :as store} (:store merged-config)
-         {:keys [schema-on-read temporal-index]} merged-config
+         {:keys [schema-on-read temporal-index index]} merged-config
          _             (validate-config-attribute ::backend backend store)
          _             (validate-config-attribute ::schema-on-read schema-on-read merged-config)
          _             (validate-config-attribute ::temporal-index temporal-index merged-config)
+         _ (validate-config-attribute ::index index merged-config)
          _             (validate-config merged-config)]
      merged-config)))
 
