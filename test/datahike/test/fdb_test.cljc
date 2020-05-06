@@ -107,7 +107,7 @@
   "empty db creation"
   (is (empty-db)))
 
-(deftest fdb-using-with-datom
+(deftest using-with-datom
   "get"
   (let [db                          (empty-db)
         {:keys [eavt eavt-durable]} (-> (with-datom db (datom 123 :likes "Hans" 1 true))
