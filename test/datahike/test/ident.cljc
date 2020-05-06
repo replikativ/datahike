@@ -9,7 +9,6 @@
                   [:db/add 2 :db/ident :ent2]
                   [:db/add 2 :ref 1]])))
 
-
 (deftest test-q
   (is (= 1 (d/q '[:find ?v .
                   :where [:ent2 :ref ?v]] db)))

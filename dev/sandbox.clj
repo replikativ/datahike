@@ -1,33 +1,32 @@
 (ns sandbox
-  (:require [datahike.api :as d]
-            [datahike.core :as c]))
-
+  (:require [datahike.api :as d]))
 
 (comment
 
-  (def path "datahike:file:///tmp/local-db-0")
+  (def uri "datahike:mem://sandbox")
 
-  (d/delete-database path)
+  (d/delete-database uri)
 
-  (d/create-database path)
+  (def schema [{:db/ident :name
+                :db/cardinality :db.cardinality/one
+                :db/index true
+                :db/unique :db.unique/identity
+                :db/valueType :db.type/string}
+               {:db/ident :sibling
+                :db/cardinality :db.cardinality/many
+                :db/valueType :db.type/ref}
+               {:db/ident :age
+                :db/cardinality :db.cardinality/one
+                :db/valueType :db.type/long}])
 
-  (def conn (d/connect path) )
+  (d/create-database uri :initial-tx schema)
 
-  @(d/transact conn [{ :db/id 1, :name  "Ivan", :age   15 }
-                     { :db/id 2, :name  "Petr", :age   37 }
-                     { :db/id 3, :name  "Ivan", :age   37 }
-                     { :db/id 4, :age 15 }
-                     { :db/id 5, :name  "Wanja", :age   22 }
-                     ])
+  (def conn (d/connect uri))
 
-  (def query '[:find ?e ?tx :where [?e :name "Wanja" ?tx]] )
+  (def result (d/transact conn [{:name  "Alice", :age   25}
+                                {:name  "Bob", :age   35}
+                                {:name "Charlie", :age 45 :sibling [[:name "Alice"] [:name "Bob"]]}]))
 
-  (c/q query @conn)
-
-  (c/datoms @conn :eavt)
-
-  (c/seek-datoms @conn :eavt)
-
-  (c/rseek-datoms @conn :eavt)
+  (d/q '[:find ?e ?v ?t :where [?e :name ?v ?t]] @conn)
 
   )

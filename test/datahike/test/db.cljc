@@ -19,15 +19,6 @@
 (deftest test-defrecord-updatable
   (is (= 0xBEEF (-> (map->HashBeef {:x :ignored}) hash))))
 
-
-
-;; whitebox test to confirm that hash cache caches
-(deftest test-db-hash-cache
-  (let [db (db/empty-db)]
-    (is (= 0         @(.-hash db)))
-    (let [h (hash db)]
-      (is (= h @(.-hash db))))))
-
 (defn- now []
   #?(:clj  (System/currentTimeMillis)
      :cljs (.getTime (js/Date.))))
@@ -51,3 +42,16 @@
          (clojure.data/diff
            (d/db-with (d/empty-db) [{:a 1 :b 2 :c 4} {:a 1}])
            (d/db-with (d/empty-db) [{:a 1 :b 3 :d 5}])))))
+
+(deftest test-fn-hash-changes
+  (let [db (d/db-with (d/empty-db)
+                      [{:db/id 1 :name "Konrad"}])
+        r1 (d/db-with db [[:db.fn/retractEntity 1]])
+        r2 (d/db-with db [[:db.fn/retractEntity 1]])]
+    (is (= (hash r1) (hash r2)))))
+
+(deftest test-equiv-db-hash
+  (let [db (d/db-with (d/empty-db)
+                      [{:db/id 1 :name "Konrad"}])
+        r1 (d/db-with db [[:db.fn/retractEntity 1]])]
+    (is (= (hash (d/empty-db)) (hash r1)))))

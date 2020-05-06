@@ -5,6 +5,7 @@
     #?(:clj [clojure.java.shell :as sh])
     datahike.test.core
     datahike.test.components
+    datahike.test.config
     datahike.test.conn
     datahike.test.fdb
     datahike.test.db
@@ -16,26 +17,26 @@
     datahike.test.listen
     datahike.test.lookup-refs
     datahike.test.lru
-    datahike.test.parser
-    datahike.test.parser-find
-    datahike.test.parser-rules
-    datahike.test.parser-query
-    datahike.test.parser-where
+    datahike.test.migrate
     datahike.test.pull-api
-    datahike.test.pull-parser
+    datahike.test.purge
     datahike.test.query
     datahike.test.query-aggregates
     datahike.test.query-find-specs
     datahike.test.query-fns
+    datahike.test.query-interop
     datahike.test.query-not
     datahike.test.query-or
     datahike.test.query-pull
     datahike.test.query-rules
     datahike.test.query-v3
-    datahike.test.serialization
+    datahike.test.schema
+    datahike.test.store
+    datahike.test.time-variance
     datahike.test.transact
     datahike.test.validation
-    datahike.test.upsert))
+    datahike.test.upsert
+    ))
 
 (defn ^:export test-clj []
   (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\..*")))
@@ -50,3 +51,9 @@
     (binding [*out* *err*]
       (println (:err res)))
     (System/exit (:exit res)))))
+
+(comment
+
+  (test-clj)
+
+  )

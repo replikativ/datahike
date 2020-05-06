@@ -62,14 +62,7 @@
              (d/filter db remove-ivan)))
       (is (= empty-db
              (d/filter empty-db (constantly true))
-             (d/filter db (constantly false)))))
-    
-    (testing "hash"
-      (is (= (hash (d/db-with db [[:db.fn/retractEntity 2]]))
-             (hash (d/filter db remove-ivan))))
-      (is (= (hash empty-db)
-             (hash (d/filter empty-db (constantly true)))
-             (hash (d/filter db (constantly false)))))))
+             (d/filter db (constantly false))))))
   
   (testing "double filtering"
     (let [db       (d/db-with (d/empty-db {})
