@@ -111,7 +111,7 @@
   (is (empty-db)))
 
 
-(deftest datoms
+(deftest datoms-fn
   (let [db (-> (empty-db)
              (with-datom (datom 123 :likes "Hans" 1 true))
              (with-datom (datom 124 :likes "GG" 1 true)))]
@@ -120,6 +120,26 @@
               [124 :likes "GG" 1]]
             (d/datoms db :eavt))))
     ))
+
+
+(deftest db-with
+  (let [dvec #(vector (:e %) (:a %) (:v %))
+        db (-> ;;(d/empty-db {:age {:db/index true}} :datahike.index/fdb)
+             (empty-db)
+             (d/db-with [ [:db/add 1 :name "Petr"]
+                         [:db/add 1 :age 44]
+                         [:db/add 2 :name "Ivan"]
+                         [:db/add 2 :age 25]
+                         [:db/add 3 :name "Sergey"]
+                         [:db/add 3 :age 11] ]))]
+    (testing "datoms in :eavt order"
+      (is (= [[1 :age 44]
+              [1 :name "Petr"]
+              [2 :age 25]
+              [2 :name "Ivan"]
+              [3 :age 11]
+              [3 :name "Sergey"]]
+            (map dvec (d/datoms db :eavt)))))))
 
 
 (deftest using-with-datom

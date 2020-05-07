@@ -4,8 +4,18 @@
             [fdb.keys :as fk])
   )
 
+
+(defn- index-type->datom-fn [index-type]
+  (case index-type
+    :aevt (fn [[a e v tx]] (dd/datom e a v tx true))
+    :avet (fn [[a v e tx]] (dd/datom e a v tx true))
+    (fn [[e a v tx]] (dd/datom e a v tx true))))
+
+
+
 (defn -slice [db from to index-type]
-  (fc/get-range index-type from to))
+  (map (index-type->datom-fn index-type)
+    (fc/get-range index-type from to)))
 
 (def -seq seq)
 
