@@ -477,15 +477,22 @@
                           datom-0
                           datom-1)) entities)])))))
 
-(defn filter-as-of-datoms [datoms ^Date as-of-date db]
-  (let [as-of-pred (fn [^Datom d] (.before ^Date (.-v d) as-of-date))
+(defn- date? [d]
+  #?(:cljs (instance? js/Date d)
+     :clj  (instance? Date d)))
+
+(defn filter-as-of-datoms [datoms time-point db]
+  (let [as-of-pred (fn [^Datom d]
+                     (if (date? time-point)
+                       (.before ^Date (.-v d) ^Date time-point)
+                       (<= (dd/datom-tx d) time-point)))
         filtered-tx-ids (filter-txInstant datoms as-of-pred db)
         filtered-datoms (->> datoms
                              (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
                              (get-current-values (-rschema db)))]
     filtered-datoms))
 
-(defrecord-updatable AsOfDB [origin-db as-of-date]
+(defrecord-updatable AsOfDB [origin-db time-point]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (-datoms db :eavt []))
@@ -531,42 +538,45 @@
   (-search [db pattern]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-search origin-db pattern)
-          (filter-as-of-datoms (.-as-of-date db) origin-db))))
+          (filter-as-of-datoms (.-time-point db) origin-db))))
 
   IIndexAccess
   (-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-datoms origin-db index-type cs)
-          (filter-as-of-datoms (.-as-of-date db) origin-db))))
+          (filter-as-of-datoms (.-time-point db) origin-db))))
 
   (-seek-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-seek-datoms origin-db index-type cs)
-          (filter-as-of-datoms (.-as-of-date db) origin-db))))
+          (filter-as-of-datoms (.-time-point db) origin-db))))
 
   (-rseek-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-rseek-datoms origin-db index-type cs)
-          (filter-as-of-datoms (.-as-of-date db) origin-db))))
+          (filter-as-of-datoms (.-time-point db) origin-db))))
 
   (-index-range [db attr start end]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-index-range origin-db db attr start end)
-          (filter-as-of-datoms (.-as-of-date db) origin-db)))))
+          (filter-as-of-datoms (.-time-point db) origin-db)))))
 
-(defn- filter-since [datoms ^Date since-date db]
-  (let [since-pred (fn [^Datom d] (.after ^Date (.-v d) since-date))
+(defn- filter-since [datoms time-point db]
+  (let [since-pred (fn [^Datom d]
+                     (if (date? time-point)
+                       (.after ^Date (.-v d) ^Date time-point)
+                       (>= (.-tx d) time-point)))
         filtered-tx-ids (filter-txInstant datoms since-pred db)]
     (->> datoms
          (filter datom-added)
-         (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))) ))))
+         (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d)))))))
 
 (defn- filter-before [datoms ^Date before-date db]
   (let [before-pred (fn [^Datom d] (.before ^Date (.-v d) before-date))
         filtered-tx-ids (filter-txInstant datoms before-pred db)]
     (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))) datoms)))
 
-(defrecord-updatable SinceDB [origin-db since-date]
+(defrecord-updatable SinceDB [origin-db time-point]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (-datoms db :eavt []))
@@ -612,28 +622,28 @@
   (-search [db pattern]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-search origin-db pattern)
-          (filter-since (.-since-date db) origin-db))))
+          (filter-since (.-time-point db) origin-db))))
 
   IIndexAccess
   (-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-datoms origin-db index-type cs)
-          (filter-since (.-since-date db) origin-db))))
+          (filter-since (.-time-point db) origin-db))))
 
   (-seek-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-seek-datoms origin-db index-type cs)
-          (filter-since (.-since-date db) origin-db))))
+          (filter-since (.-time-point db) origin-db))))
 
   (-rseek-datoms [db index-type cs]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-rseek-datoms origin-db index-type cs)
-          (filter-since (.-since-date db) origin-db))))
+          (filter-since (.-time-point db) origin-db))))
 
   (-index-range [db attr start end]
     (let [origin-db (.-origin-db db)]
       (-> (temporal-index-range origin-db db attr start end)
-          (filter-since (.-since-date db) origin-db)))))
+          (filter-since (.-time-point db) origin-db)))))
 
 ;; ----------------------------------------------------------------------------
 
@@ -980,7 +990,7 @@
 (defn- current-tx [report]
   (inc (get-in report [:db-before :max-tx])))
 
-(defn- next-eid [db]
+(defn next-eid [db]
   (inc (:max-eid db)))
 
 (defn- #?@(:clj  [^Boolean tx-id?]
@@ -996,11 +1006,14 @@
   [x]
   (or (and (number? x) (neg? x)) (string? x)))
 
-(defn- advance-max-eid [db eid]
+(defn advance-max-eid [db eid]
   (cond-> db
           (and (> eid (:max-eid db))
                (< eid tx0))                                 ;; do not trigger advance if transaction id was referenced
           (assoc :max-eid eid)))
+
+(defn advance-max-tid [db tid]
+  (assoc db :max-tx tid))
 
 (defn- allocate-eid
   ([report eid]
@@ -1507,3 +1520,47 @@
         :else
         (raise "Bad entity type at " entity ", expected map or vector"
                {:error :transact/syntax, :tx-data entity})))))
+
+(defn transact-entities-directly [initial-report initial-es]
+  (loop [report (update initial-report :db-after persistent!)
+         es initial-es
+         migration-state (or (get-in initial-report [:db-before :migration]) {})]
+    (let [[entity & entities] es
+          db (:db-after report)
+          [e a v t op] entity
+          max-eid (next-eid db)
+          max-tid (inc (get-in report [:db-after :max-tx]))]
+      (cond
+        (empty? es)
+        (-> report
+            (update-in [:db-after :max-tx] inc)
+            (update-in [:db-after :migration] #(if %
+                                                 (merge % migration-state)
+                                                 migration-state))
+            (update :db-after persistent!))
+
+        (= :db.install/attribute a)
+        (recur report entities migration-state)
+
+        ;; meta entity
+        (ds/meta-attr? a)
+        (let [new-datom (dd/datom max-tid a v max-tid op)]
+          (recur (-> (transact-report report new-datom)
+                     (assoc-in [:db-after :max-tx] max-tid))
+                 entities
+                 (assoc-in migration-state [:tids e] (.-e new-datom))))
+
+        ;; ref not added yet
+        (and (ref? db a) (nil? (get-in migration-state [:eids v])))
+        (recur (allocate-eid report max-eid) es (assoc-in migration-state [:eids v] max-eid))
+
+        :else
+        (let [new-datom ^Datom (dd/datom
+                                (or (get-in migration-state [:eids e]) max-eid)
+                                a
+                                (if (ref? db a)
+                                  (get-in migration-state [:eids v])
+                                  v)
+                                (get-in migration-state [:tids t])
+                                op)]
+          (recur (transact-report report new-datom) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))

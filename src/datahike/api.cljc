@@ -168,6 +168,12 @@
   transact!
   dc/transact!)
 
+(def ^{:arglists '([conn tx-data])
+       :doc "Load entities directly"}
+  load-entities
+  dc/load-entities)
+
+
 (def ^{:arglists '([conn])
        :doc      "Releases a database connection"}
   release dc/release)
@@ -215,17 +221,17 @@
 
 (defmethod q clojure.lang.PersistentVector
   [query & inputs]
-  (apply dq/q query inputs))
+  (dq/q {:query query :args inputs}))
 
 (defmethod q clojure.lang.PersistentArrayMap
-  [query-map & arg-list]
-  (let [query (if (contains? query-map :query)
-                (:query query-map)
-                query-map)
-        args (if (contains? query-map :args)
-               (:args query-map)
-               arg-list)]
-    (apply dq/q query args)))
+  [{:keys [query args limit offset] :as query-map} & arg-list]
+  (let [query (or query query-map)
+        args (or args arg-list)]
+    (dq/q {:query query
+           :args args
+           :limit limit
+           :offset offset})))
+
 (defn datoms
   "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components (e, a, v) match passed arguments.
 
@@ -471,7 +477,7 @@
   [db]
   (if (db/-temporal-index? db)
     (HistoricalDB. db)
-    (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
+    (throw (ex-info "history is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn- date? [d]
   #?(:cljs (instance? js/Date d)
@@ -482,7 +488,7 @@
   [db date]
   {:pre [(or (int? date) (date? date))]}
   (if (db/-temporal-index? db)
-    (AsOfDB. db (if (date? date) date (java.util.Date. ^long date)))
+    (AsOfDB. db date)
     (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn since
@@ -491,5 +497,5 @@
   [db date]
   {:pre [(or (int? date) (date? date))]}
   (if (db/-temporal-index? db)
-    (SinceDB. db (if (date? date) date (java.util.Date. ^long date)))
+    (SinceDB. db date)
     (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)}))))
