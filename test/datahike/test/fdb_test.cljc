@@ -14,28 +14,29 @@
 
 (defn assert-vec-conversion
   "Checks that given a 'vect we get the same vect back after going through fdb"
-  [index-type vect]
-  (let [buff       (k/->byteBuffer index-type vect)
+  [index-type from-vect to-vect]
+  (let [buff       (k/->byteBuffer index-type from-vect)
         buff->vect (k/byteBuffer->vect index-type buff)
         ]
-    (is (= vect buff->vect))))
+    (is (= to-vect buff->vect))))
 
 (deftest eavt
-  "->byteArr and back"
   (let [vect [20 :hello "some analysis" 3]]
-    (is (= (k/key->vect :eavt (k/->byteArr :eavt vect)) vect)))
+    "->byteArr and back"
+    (is (= (k/key->vect :eavt (k/->byteArr :eavt vect)) vect))
 
-  "basic vector conversion and inserting a string value"
-  (assert-vec-conversion :eavt [20 :hello "some analysis" 3])
+    "basic vector conversion and inserting a string value"
+    (assert-vec-conversion :eavt [20 :hello "some analysis" 3] [20 :hello "some analysis" 3])
 
-  "int value"
-  (assert-vec-conversion :eavt [20 :hello (int 2356) 3])
+    "int value"
+    (assert-vec-conversion :eavt [20 :hello (int 2356) 3] [20 :hello (int 2356) 3])
 
-  "long value"
-  (assert-vec-conversion :eavt [20 :hello (long 234) 3])
+    "long value"
+    (assert-vec-conversion :eavt [20 :hello (long 234) 3] [20 :hello (long 234) 3])
 
-  "biggest 'e' value"
-  (assert-vec-conversion :eavt [9223372036854775807 :hello (long 234) 3])
+    "biggest 'e' value"
+    (assert-vec-conversion :eavt [9223372036854775807 :hello (long 234) 3]
+      [9223372036854775807 :hello (long 234) 3]))
 
   ;; TODO: what happens when we try to insert something like :eavt [12 nil nil]
   ;; TODO: this raises the question of 'can we pass a vector with only subelements in get range when we do a search? e.g. get-range [125]? Shall we convert that automatically to [125 nil nil]?
@@ -43,30 +44,30 @@
 
   )
 
-;; 06-05.2020: Will not work for now as here we send datoms in aevt format
-;; whereas the code expects from now on to always be eavt. See function ->bytebuffer
-;;
+
 ;; --------- :aevt indices
-#_(deftest aevt
+(deftest aevt
   "simple insert and retrieval"
-  (let [vect [:hello 20 "some data" 3]]
-    (is (= vect (k/key->vect :aevt (k/->byteArr :aevt vect)))))
+  (let [vect [20 :hello "some data" 3]]
+    (is (= [:hello 20 "some data" 3] (k/key->vect :aevt (k/->byteArr :aevt vect)))))
 
   "basic vector conversion"
-  (assert-vec-conversion :aevt [:hello 20 "some analysis" 3])
+  (assert-vec-conversion :aevt [20 :hello  "some analysis" 3] [:hello 20 "some analysis" 3])
 
   "int value"
-  (assert-vec-conversion :aevt [:hello 20 (int 2356) 3])
+  (assert-vec-conversion :aevt [20 :hello  (int 2356) 3] [:hello 20 (int 2356) 3])
 
   "biggest 'e' value"
-  (assert-vec-conversion :aevt [:hello 9223372036854775807 (long 234) 3])
-  )
+  (assert-vec-conversion :aevt [9223372036854775807 :hello (long 234) 3]
+    [:hello 9223372036854775807 (long 234) 3]))
 
 
-;; 06-05.2020: Will not work for now as here we send datoms in aevt format
-;; whereas the code expects from now on to always be eavt. See function ->bytebuffer
-;; 
-;; --------- :avet indices
+
+  ;; 06-05.2020: Will not work for now as here we send datoms in aevt format
+  ;; whereas the code expects from now on to always be eavt. See function ->bytebuffer
+  ;;
+  ;; --------- :avet indices
+
 #_(deftest avet
     "simple insert and retrieval"
     (let [vect [:hello "some values" 20  3]]
@@ -139,7 +140,16 @@
               [2 :name "Ivan"]
               [3 :age 11]
               [3 :name "Sergey"]]
-            (map dvec (d/datoms db :eavt)))))))
+            (map dvec (d/datoms db :eavt)))))
+
+    #_(testing "datoms in :aevt order"
+      (is (= [[1 :age 44]
+              [1 :name "Petr"]
+              [2 :age 25]
+              [2 :name "Ivan"]
+              [3 :age 11]
+              [3 :name "Sergey"]]
+            (map dvec (d/datoms db :avet)))))))
 
 
 (deftest using-with-datom
