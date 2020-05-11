@@ -63,11 +63,7 @@
 
 
 
-  ;; 06-05.2020: Will not work for now as here we send datoms in aevt format
-  ;; whereas the code expects from now on to always be eavt. See function ->bytebuffer
-  ;;
-  ;; --------- :avet indices
-
+;; --------- :avet indices
 (deftest avet
     "simple insert and retrieval"
     (let [vect [20 :hello "some values" 3]]
@@ -80,8 +76,8 @@
     (assert-vec-conversion :avet [20 :hello (int 2356) 3] [:hello (int 2356) 20 3])
 
     "biggest 'e' value"
-    (assert-vec-conversion :avet [9223372036854775807 :hello (long 234) 3] [:hello (long 234) 9223372036854775807 3])
-    )
+  (assert-vec-conversion :avet [9223372036854775807 :hello (long 234) 3] [:hello (long 234) 9223372036854775807 3]))
+
 
 
 (deftest illegal-argument
