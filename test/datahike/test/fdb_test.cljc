@@ -68,19 +68,19 @@
   ;;
   ;; --------- :avet indices
 
-#_(deftest avet
+(deftest avet
     "simple insert and retrieval"
-    (let [vect [:hello "some values" 20  3]]
-      (is (= vect (k/key->vect :avet (k/->byteArr :avet vect)))))
+    (let [vect [20 :hello "some values" 3]]
+      (is (= [:hello "some values" 20 3] (k/key->vect :avet (k/->byteArr :avet vect)))))
 
     "basic vector conversion"
-    (assert-vec-conversion :avet [:hello "some analysis" 20 3])
+    (assert-vec-conversion :avet [20 :hello "some analysis" 3] [:hello "some analysis" 20 3])
 
     "int value"
-    (assert-vec-conversion :avet [:hello (int 2356) 20 3])
+    (assert-vec-conversion :avet [20 :hello (int 2356) 3] [:hello (int 2356) 20 3])
 
     "biggest 'e' value"
-    (assert-vec-conversion :avet [:hello (long 234) 9223372036854775807 3])
+    (assert-vec-conversion :avet [9223372036854775807 :hello (long 234) 3] [:hello (long 234) 9223372036854775807 3])
     )
 
 
