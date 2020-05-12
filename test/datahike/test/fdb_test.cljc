@@ -65,17 +65,17 @@
 
 ;; --------- :avet indices
 (deftest avet
-    "simple insert and retrieval"
-    (let [vect [20 :hello "some values" 3]]
-      (is (= [:hello "some values" 20 3] (k/key->vect :avet (k/->byteArr :avet vect)))))
+  "simple insert and retrieval"
+  (let [vect [20 :hello "some values" 3]]
+    (is (= [:hello "some values" 20 3] (k/key->vect :avet (k/->byteArr :avet vect)))))
 
-    "basic vector conversion"
-    (assert-vec-conversion :avet [20 :hello "some analysis" 3] [:hello "some analysis" 20 3])
+  "basic vector conversion"
+  (assert-vec-conversion :avet [20 :hello "some analysis" 3] [:hello "some analysis" 20 3])
 
-    "int value"
-    (assert-vec-conversion :avet [20 :hello (int 2356) 3] [:hello (int 2356) 20 3])
+  "int value"
+  (assert-vec-conversion :avet [20 :hello (int 2356) 3] [:hello (int 2356) 20 3])
 
-    "biggest 'e' value"
+  "biggest 'e' value"
   (assert-vec-conversion :avet [9223372036854775807 :hello (long 234) 3] [:hello (long 234) 9223372036854775807 3]))
 
 
@@ -97,7 +97,8 @@
 (comment
   (def db (-> (empty-db)
             (with-datom (datom 123 :likes "Hans" 1 true))
-            (with-datom (datom 124 :likes "GG" 1 true))))
+            ;; (with-datom (datom 124 :likes "GG" 1 true))
+            ))
   (d/datoms db :eavt)
   )
 
@@ -119,15 +120,21 @@
 
 
 (deftest db-with
+  (testing  "simple insertion"
+    (let [db (-> (empty-db)
+               (d/db-with [ [:db/add 1 :name "Petr"]]))]
+      (is (= 1
+            (count (fdb/get-range :aevt [1 :name "Petr"] [20 :name "Petr"]))))))
+  
   (let [dvec #(vector (:e %) (:a %) (:v %))
-        db (-> ;;(d/empty-db {:age {:db/index true}} :datahike.index/fdb)
-             (empty-db)
+        db (-> (empty-db)
              (d/db-with [ [:db/add 1 :name "Petr"]
                          [:db/add 1 :age 44]
                          [:db/add 2 :name "Ivan"]
                          [:db/add 2 :age 25]
                          [:db/add 3 :name "Sergey"]
-                         [:db/add 3 :age 11] ]))]
+                         [:db/add 3 :age 11]
+                         ]))]
     (testing "datoms in :eavt order"
       (is (= [[1 :age 44]
               [1 :name "Petr"]
@@ -137,14 +144,32 @@
               [3 :name "Sergey"]]
             (map dvec (d/datoms db :eavt)))))
 
-    #_(testing "datoms in :aevt order"
+    (testing "datoms in :aevt order"
       (is (= [[1 :age 44]
-              [1 :name "Petr"]
               [2 :age 25]
-              [2 :name "Ivan"]
               [3 :age 11]
+              [1 :name "Petr"]
+              [2 :name "Ivan"]
               [3 :name "Sergey"]]
-            (map dvec (d/datoms db :avet)))))))
+            (map dvec (d/datoms db :aevt)))))))
+
+
+(comment
+  (def db (-> (empty-db)
+            (d/db-with [ [:db/add 1 :name "Petr"]
+                         ;; [:db/add 1 :age 44]
+                         ;; [:db/add 2 :name "Ivan"]
+                         ;; [:db/add 2 :age 25]
+                         ;; [:db/add 3 :name "Sergey"]
+                         ;; [:db/add 3 :age 11]
+                        ])))
+  (fdb/get-range :aevt [1 :name "Petr"] [20 :name "Petr"])
+  (fdb/get-range :aevt [0 nil  nil] [13 nil 30])
+  (fdb/get-range :aevt [0 nil nil 536870912 true] [2147483647 nil nil 2147483647 true])
+  (d/datoms db :aevt)
+  )
+
+
 
 
 (deftest using-with-datom
