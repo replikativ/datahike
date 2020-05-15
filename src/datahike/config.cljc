@@ -4,21 +4,34 @@
             [environ.core :refer [env]])
   (:import [java.net URI]))
 
-(s/def ::backend #{:mem :file :level :pg})
-(s/def ::username (s/nilable string?))
-(s/def ::password (s/nilable string?))
-(s/def ::path (s/nilable string?))
-(s/def ::host (s/nilable string?))
-(s/def ::port (s/nilable int?))
-
-(s/def ::schema-on-read boolean?)
-(s/def ::temporal-index boolean?)
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
+(s/def ::keep-history? boolean?)
+(s/def ::schema-flexibility #{:read :write})
+(s/def ::entity (s/or :map associative? :vec vector?))
+(s/def ::initial-tx (s/or :data (s/coll-of ::entity) :path string?))
+(s/def ::name string?)
+
+(s/def ::backend #{:mem :file :level :pg})
+(s/def ::username (s/nilable string?)) ;;pg
+(s/def ::password (s/nilable string?)) ;; :pg
+(s/def ::path (s/nilable string?)) ;; :file, :leveldb, :pg
+(s/def ::host (s/nilable string?)) ;; :pg
+(s/def ::port (s/nilable int?)) ;; :pg
+(s/def ::id (s/nilable string?)) ;; :mem
+
 
 (s/def :datahike/store (s/keys :req-un [::backend]
-                               :opt-un [::username ::password ::path ::host ::port]))
+                               :opt-un [::username ::password ::path ::host ::port ::id]))
 (s/def :datahike/config (s/keys :req-un [:datahike/store]
-                                :opt-un [::schema-on-read ::temporal-index]))
+                                :opt-un [::index
+                                         ::keep-history?
+                                         ::schema-flexibility
+                                         ::initial-tx
+                                         ::name]))
+
+(s/def :deprecated/schema-on-read boolean?)
+(s/def :deprecated/temporal-index boolean?)
+
 
 (s/fdef datahike.config/validate-edn
   :args (s/cat :config-str string?)
@@ -26,6 +39,26 @@
 
 (defrecord Store [backend username password path host port])
 (defrecord Configuration [store schema-on-read temporal-index index])
+
+(defn from-deprecated [{:keys [backend username password path host port] :as backend-cfg}
+                       {:keys [schema-on-read temporal-index index]
+                        :as index-cfg
+                        :or {schema-on-read true
+                             index :datahike.index/hitchhiker-tree
+                             temporal-index true}}]
+  {:store (merge {:backend backend}
+                 (case backend
+                   :mem {:id host}
+                   :pg {:username username
+                        :password password
+                        :path path
+                        :host host
+                        :port port}
+                   :level {:path path}
+                   :file {:path path}))
+   :index index
+   :keep-history? temporal-index
+   :schema-flexibility (if schema-on-read :read :write)})
 
 (defn int-from-env
   [key default]
@@ -104,7 +137,10 @@
 (s/def ::uri-depr string?)
 
 (s/def :datahike/config-depr (s/keys :req-un [::backend]
-                               :opt-un [::username ::password ::path ::host ::port]))
+                                     :opt-un [::username ::password ::path ::host ::port]))
+
+(defn deprecated? [config]
+  ())
 
 (defn uri->config [uri]
   (let [base-uri (URI. uri)

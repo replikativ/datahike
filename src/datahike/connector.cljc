@@ -99,11 +99,11 @@
 
   (-database-exists? [uri]
     (-database-exists? (dc/uri->config uri)))
-  
+
   clojure.lang.PersistentArrayMap
   (-database-exists? [config]
     (let [raw-store (ds/connect-store config)]
-      (if (not (nil? raw-store)) 
+      (if (not (nil? raw-store))
           (let [store (kons/add-hitchhiker-tree-handlers
                        (kc/ensure-cache
                         raw-store

@@ -1,9 +1,12 @@
 (ns sandbox
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d]
+            [datahike.config :as dc]))
 
 (comment
 
   (def uri "datahike:mem://sandbox")
+
+  (-> uri dc/uri->config (dc/from-deprecated {}))
 
   (d/delete-database uri)
 
@@ -18,7 +21,7 @@
                {:db/ident       :age
                 :db/cardinality :db.cardinality/one
                 :db/valueType   :db.type/long}])
-  
+
   (d/create-database uri :initial-tx schema)
 
   (def conn (d/connect uri))
@@ -29,7 +32,7 @@
                                  :age  35}
                                 {:name    "Charlie"
                                  :age     45
-                                 :sibling [[:name "Alice"] [:name "Bob"]]}]))
+                                 :sibling [[:name "Alice"] [:name "Bob"]]}]) )
 
   (d/q '[:find ?e ?a ?v ?t :in $ ?a :where [?e :name ?v ?t] [?e :age ?a]] @conn 35)
 
