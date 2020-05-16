@@ -574,12 +574,19 @@
                   (let [^Method method (find-method (class this) method-name (mapv class args))]
                     (Reflector/prepRet (.getReturnType method) (.invoke method this (into-array Object args))))))))))
 
+
+(def ^:dynamic *allow-function-or-method-resolution?*
+  "This is *experimental support* to provide a safe query engine interpretation excluding external function or method resolution to loaded namespaces. Provided the safeguard holds the query engine can be openly exposed without risk of compromise."
+  true)
+
 (defn filter-by-pred [context clause]
   (let [[[f & args]] clause
         pred (or (get built-ins f)
                  (context-resolve-val context f)
-                 (resolve-sym f)
-                 (resolve-method f)
+                 (and *allow-function-or-method-resolution?*
+                      (resolve-sym f))
+                 (and *allow-function-or-method-resolution?*
+                      (resolve-method f))
                  (when (nil? (rel-with-attr context f))
                    (raise "Unknown predicate '" f " in " clause
                           {:error :query/where, :form clause, :var f})))
@@ -590,13 +597,16 @@
                   (assoc production :tuples []))]
     (update context :rels conj new-rel)))
 
+
 (defn bind-by-fn [context clause]
   (let [[[f & args] out] clause
         binding (dpi/parse-binding out)
         fun (or (get built-ins f)
                 (context-resolve-val context f)
-                (resolve-sym f)
-                (resolve-method f)
+                (and *allow-function-or-method-resolution?*
+                     (resolve-sym f))
+                (and *allow-function-or-method-resolution?*
+                     (resolve-method f))
                 (when (nil? (rel-with-attr context f))
                   (raise "Unknown function '" f " in " clause
                          {:error :query/where, :form clause, :var f})))
@@ -893,7 +903,8 @@
   PlainSymbol
   (-context-resolve [var _]
     (or (get built-in-aggregates (.-symbol var))
-        (resolve-sym (.-symbol var))))
+        (and *allow-function-or-method-resolution?*
+             (resolve-sym (.-symbol var)))))
   Constant
   (-context-resolve [var _]
     (.-value var)))

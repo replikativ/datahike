@@ -3,6 +3,7 @@
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     [datahike.core :as d]
+    [datahike.query :as query]
     [datahike.db :as db]
     [datahike.test.core :as tdc])
 #?(:clj
@@ -270,6 +271,27 @@
            :in   [?e ...]
            :where [(fun ?e) ?x]]
          [1]))))
+
+(deftest test-function-or-method-resolution-safeguard
+  (is (= (binding [query/*allow-function-or-method-resolution?* false]
+           (d/q '[:find ?e
+                  :in   [?e ...]
+                  :where [(+ ?e) ?foo]]
+                [1]))
+         #{[1]}))
+  (is (thrown-with-msg? ExceptionInfo #"Unknown predicate 'clojure.core/\+ in \[\(clojure.core/\+ \?e\)\]"
+                        (binding [query/*allow-function-or-method-resolution?* false]
+                          (d/q '[:find ?e
+                                 :in   [?e ...]
+                                 :where [(clojure.core/+ ?e)]]
+                               [1]))))
+
+  (is (thrown-with-msg? ExceptionInfo #"Unknown function 'clojure.core/\+ in \[\(clojure.core/\+ \?e\) \?foo\]"
+                        (binding [query/*allow-function-or-method-resolution?* false]
+                          (d/q '[:find ?e
+                                 :in   [?e ...]
+                                 :where [(clojure.core/+ ?e) ?foo]]
+                               [1])))))
 
 (deftest test-issue-180
   (is (= #{}
