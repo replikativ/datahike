@@ -46,16 +46,16 @@
 
 (def memory (atom {}))
 
-(defmethod empty-store :mem [{:keys [host]}]
+(defmethod empty-store :mem [{:keys [db-name]}]
   (let [store (<?? S (mem/new-mem-store))]
-    (swap! memory assoc host store)
+    (swap! memory assoc name store)
     store))
 
-(defmethod delete-store :mem [{:keys [host]}]
-  (swap! memory dissoc host))
+(defmethod delete-store :mem [{:keys [db-name]}]
+  (swap! memory dissoc name))
 
-(defmethod connect-store :mem [{:keys [host]}]
-  (@memory host))
+(defmethod connect-store :mem [{:keys [db-name]}]
+  (@memory name))
 
 (defmethod scheme->index :mem [_]
   :datahike.index/hitchhiker-tree)

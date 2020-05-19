@@ -230,49 +230,44 @@
 ;;deprecation end
 
 (defn create-database
-  [& opts]
-  ;; ugly hack to keep deprecated and new configuration in one function
-  (if (or (= (first opts) :initial-tx) (= (first opts) nil))
-    (let [{:keys [initial-tx]} opts
-          {:keys [schema-on-read temporal-index index]} dc/config
-          store-config  (:store dc/config)
-          store         (kc/ensure-cache
-                         (ds/empty-store store-config)
-                         (atom (cache/lru-cache-factory {} :threshold 1000)))
-          stored-db     (<?? S (k/get-in store [:db]))
-          _             (when stored-db
-                          (throw (ex-info "Database already exists." {:type :db-already-exists :config store-config})))
-          db-config     {:schema-on-read schema-on-read
-                         :temporal-index temporal-index
-                         :index index
-                         :storage store-config}
-          db            (db/empty-db
-                         {:db/ident {:db/unique :db.unique/identity}}
-                         (or index (ds/scheme->index store-config))
-                         :config db-config)
-          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]} db
-          backend       (kons/->KonserveBackend store)]
-      (<?? S (k/assoc-in store [:db]
-                         (merge {:schema   schema
-                                 :max-tx max-tx
-                                 :rschema  rschema
-                                 :config   db-config
-                                 :eavt-key (di/-flush eavt backend)
-                                 :aevt-key (di/-flush aevt backend)
-                                 :avet-key (di/-flush avet backend)}
-                                (when temporal-index
-                                  {:temporal-eavt-key (di/-flush temporal-eavt backend)
-                                   :temporal-aevt-key (di/-flush temporal-aevt backend)
-                                   :temporal-avet-key (di/-flush temporal-avet backend)}))))
-      (ds/release-store store-config store)
-      (when initial-tx
-        (let [conn (connect)]
-          (transact conn initial-tx)
-          (release conn))))
-    ;; deprecated
-    (let [[config & rest-opts] opts]
-      ;; TODO log deprecation notice with #54
-      (-create-database config rest-opts))))
+  ([]
+   (let [{:keys [schema-on-read temporal-index index]} dc/config
+         store-config  (:store dc/config)
+         store         (kc/ensure-cache
+                        (ds/empty-store store-config)
+                        (atom (cache/lru-cache-factory {} :threshold 1000)))
+         stored-db     (<?? S (k/get-in store [:db]))
+         _             (when stored-db
+                         (throw (ex-info "Database already exists." {:type :db-already-exists :config store-config})))
+         db-config     {:schema-on-read schema-on-read
+                        :temporal-index temporal-index
+                        :index index
+                        :storage store-config}
+         db            (db/empty-db
+                        {:db/ident {:db/unique :db.unique/identity}}
+                        (or index (ds/scheme->index store-config))
+                        :config db-config)
+         {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]} db
+         backend       (kons/->KonserveBackend store)]
+     (<?? S (k/assoc-in store [:db]
+                        (merge {:schema   schema
+                                :max-tx max-tx
+                                :rschema  rschema
+                                :config   db-config
+                                :eavt-key (di/-flush eavt backend)
+                                :aevt-key (di/-flush aevt backend)
+                                :avet-key (di/-flush avet backend)}
+                               (when temporal-index
+                                 {:temporal-eavt-key (di/-flush temporal-eavt backend)
+                                  :temporal-aevt-key (di/-flush temporal-aevt backend)
+                                  :temporal-avet-key (di/-flush temporal-avet backend)}))))
+     (ds/release-store store-config store)
+     (when initial-tx
+       (let [conn (connect)]
+         (transact conn initial-tx)
+         (release conn)))))
+   ([config & opts]
+    (-create-database config opts)))
 
 (defn delete-database
   ([]

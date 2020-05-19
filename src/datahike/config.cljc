@@ -22,7 +22,7 @@
 
 (s/def :datahike/store (s/keys :req-un [::backend]
                                :opt-un [::username ::password ::path ::host ::port ::id]))
-(s/def :datahike/config (s/keys :req-un [:datahike/store]
+(s/def :datahike/config (s/keys :req-un [:datahike/store ]
                                 :opt-un [::index
                                          ::keep-history?
                                          ::schema-flexibility
@@ -31,7 +31,8 @@
 
 (s/def :deprecated/schema-on-read boolean?)
 (s/def :deprecated/temporal-index boolean?)
-
+(s/def :deprecated/config (s/keys :req-un [:datahike/store]
+                                  :opt-un [:deprecated/temporal-index :deprecated/schema-on-read]))
 
 (s/fdef datahike.config/validate-edn
   :args (s/cat :config-str string?)
@@ -91,41 +92,31 @@
   (when-not (s/valid? :datahike/config config)
     (throw (ex-info "Invalid datahike configuration." config))))
 
-(defn- load-config
+(defn load-config
   "Loading config from Configuration-record passed as argument."
   ([]
    (load-config nil))
   ([config-as-arg]
-   (let [config        (Configuration.
-                        (Store.
-                         (keyword (:datahike-store-backend env :mem))
-                         (:datahike-store-username env)
-                         (:datahike-store-password env)
-                         (:datahike-store-path env)
-                         (:datahike-store-host env)
-                         (int-from-env :datahike-store-port nil))
-                        (bool-from-env :datahike-schema-on-read false)
-                        (bool-from-env :datahike-temporal-index true)
-                        (keyword (bool-from-env :datahike-index :datahike.index/hitchhiker-tree)))
+   (let [config {:store {:backend (keyword (:datahike-store-backend env :mem))
+                         :username (:datahike-store-username env)
+                         :password (:datahike-store-password env)
+                         :path (:datahike-store-path env)
+                         :host (:datahike-store-host env)
+                         :port (int-from-env :datahike-store-port nil)
+                         :name (:datahike-name env (str(java.util.UUID/randomUUID)))
+                         }
+                 :keep-history? (bool-from-env :datahike-keep-history true)
+                 :schema-flexibility (keyword (:datahike-schema-flexibility env :read))
+                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}
          merged-config (deep-merge config config-as-arg)
          {:keys [backend username password path host port] :as store} (:store merged-config)
-         {:keys [schema-on-read temporal-index index]} merged-config
-         _             (validate-config-attribute ::backend backend store)
-         _             (validate-config-attribute ::schema-on-read schema-on-read merged-config)
-         _             (validate-config-attribute ::temporal-index temporal-index merged-config)
-         _ (validate-config-attribute ::index index merged-config)
-         _             (validate-config merged-config)]
+         {:keys [keep-history? name schema-flexibility index]} merged-config]
+     (validate-config-attribute ::backend backend store)
+     (validate-config-attribute ::keep-history? keep-history? merged-config)
+     (validate-config-attribute ::schema-flexibility schema-flexibility merged-config)
+     (validate-config-attribute ::index index merged-config)
+     (validate-config merged-config)
      merged-config)))
-
-(defonce
-  ^{:doc "A record of the current configuration."}
-  config (load-config))
-
-(defn reload-config
-  ([]
-   (reload-config nil))
-  ([additional-config]
-   (alter-var-root #'config (fn [_] (load-config additional-config)))))
 
 ;; deprecation begin
 (s/def ::backend-depr keyword?)
@@ -138,9 +129,6 @@
 
 (s/def :datahike/config-depr (s/keys :req-un [::backend]
                                      :opt-un [::username ::password ::path ::host ::port]))
-
-(defn deprecated? [config]
-  ())
 
 (defn uri->config [uri]
   (let [base-uri (URI. uri)
