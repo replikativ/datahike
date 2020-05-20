@@ -3,13 +3,6 @@
             [datahike.config :as dc]))
 
 (comment
-
-  (def uri "datahike:mem://sandbox")
-
-  (-> uri dc/uri->config (dc/from-deprecated {}))
-
-  (d/delete-database uri)
-
   (def schema [{:db/ident       :name
                 :db/cardinality :db.cardinality/one
                 :db/index       true
@@ -22,9 +15,17 @@
                 :db/cardinality :db.cardinality/one
                 :db/valueType   :db.type/long}])
 
-  (d/create-database uri :initial-tx schema)
+  (def cfg {:store  {:backend :mem
+                     :id "sandbox"}
+            :keep-history? true
+            :schema-flexibility :write
+            :name "sandbox-0"})
 
-  (def conn (d/connect uri))
+  (d/delete-database cfg)
+
+  (d/create-database cfg)
+
+  (def conn (d/connect cfg))
 
   (def result (d/transact conn [{:name "Alice"
                                  :age  25}
@@ -35,12 +36,5 @@
                                  :sibling [[:name "Alice"] [:name "Bob"]]}]) )
 
   (d/q '[:find ?e ?a ?v ?t :in $ ?a :where [?e :name ?v ?t] [?e :age ?a]] @conn 35)
-
-  (d/q {:query '{:find [?e ?n]
-                 :in [$ ?a]
-                 :where [[?e :name ?n] (not [?e :age ?a])]}
-        :args [@conn 35]
-        :limit 1
-        :offset 0})
 
 )

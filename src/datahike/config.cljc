@@ -8,7 +8,7 @@
 (s/def ::keep-history? boolean?)
 (s/def ::schema-flexibility #{:read :write})
 (s/def ::entity (s/or :map associative? :vec vector?))
-(s/def ::initial-tx (s/or :data (s/coll-of ::entity) :path string?))
+(s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
 (s/def ::name string?)
 
 (s/def ::backend #{:mem :file :level :pg})
@@ -19,6 +19,7 @@
 (s/def ::port (s/nilable int?)) ;; :pg
 (s/def ::id (s/nilable string?)) ;; :mem
 
+(s/def ::name string?)
 
 (s/def :datahike/store (s/keys :req-un [::backend]
                                :opt-un [::username ::password ::path ::host ::port ::id]))
@@ -41,12 +42,13 @@
 (defrecord Store [backend username password path host port])
 (defrecord Configuration [store schema-on-read temporal-index index])
 
-(defn from-deprecated [{:keys [backend username password path host port] :as backend-cfg}
-                       {:keys [schema-on-read temporal-index index]
-                        :as index-cfg
-                        :or {schema-on-read true
-                             index :datahike.index/hitchhiker-tree
-                             temporal-index true}}]
+(defn from-deprecated
+  [{:keys [backend username password path host port] :as backend-cfg}
+   & {:keys [schema-on-read temporal-index index initial-tx]
+      :as index-cfg
+      :or {schema-on-read false
+           index :datahike.index/hitchhiker-tree
+           temporal-index true}}]
   {:store (merge {:backend backend}
                  (case backend
                    :mem {:id host}
@@ -54,12 +56,14 @@
                         :password password
                         :path path
                         :host host
-                        :port port}
+                        :port port
+                        :id (str (java.util.UUID/randomUUID))}
                    :level {:path path}
                    :file {:path path}))
    :index index
    :keep-history? temporal-index
-   :schema-flexibility (if schema-on-read :read :write)})
+   :initial-tx initial-tx
+   :schema-flexibility (if (true? schema-on-read) :read :write)})
 
 (defn int-from-env
   [key default]
@@ -92,31 +96,54 @@
   (when-not (s/valid? :datahike/config config)
     (throw (ex-info "Invalid datahike configuration." config))))
 
+(defn storeless-config []
+  {:store nil
+   :keep-history? false
+   :schema-flexibility :read
+   :name (str (java.util.UUID/randomUUID))
+   :index :datahike.index/hitchhiker-tree})
+
+(defn remove-nil [m]
+  (into {} (remove (comp nil? second) m)))
+
 (defn load-config
   "Loading config from Configuration-record passed as argument."
   ([]
-   (load-config nil))
+   (load-config nil nil))
   ([config-as-arg]
-   (let [config {:store {:backend (keyword (:datahike-store-backend env :mem))
-                         :username (:datahike-store-username env)
-                         :password (:datahike-store-password env)
-                         :path (:datahike-store-path env)
-                         :host (:datahike-store-host env)
-                         :port (int-from-env :datahike-store-port nil)
-                         :name (:datahike-name env (str(java.util.UUID/randomUUID)))
-                         }
+   (load-config config-as-arg nil))
+  ([config-as-arg opts]
+   (let [config-as-arg (if (s/valid? :datahike/config-depr config-as-arg)
+                         (apply from-deprecated config-as-arg (first opts))
+                         config-as-arg)
+         id (str (java.util.UUID/randomUUID))
+         backend (keyword (:datahike-store-backend env :mem))
+         store-config {:backend backend
+                       :username (:datahike-store-username env)
+                       :password (:datahike-store-password env)
+                       :path (:datahike-store-path env)
+                       :host (:datahike-store-host env)
+                       :port (int-from-env :datahike-store-port nil)
+                       :id (:datahike-store-id env id)}
+         config {:store (remove-nil store-config)
+                 :initial-tx (:datahike-intial-tx env)
                  :keep-history? (bool-from-env :datahike-keep-history true)
-                 :schema-flexibility (keyword (:datahike-schema-flexibility env :read))
+                 :name (:datahike-name env id)
+                 :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
                  :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}
-         merged-config (deep-merge config config-as-arg)
+         merged-config ((comp remove-nil deep-merge) config config-as-arg)
          {:keys [backend username password path host port] :as store} (:store merged-config)
-         {:keys [keep-history? name schema-flexibility index]} merged-config]
+         {:keys [keep-history? name schema-flexibility index initial-tx]} merged-config]
      (validate-config-attribute ::backend backend store)
      (validate-config-attribute ::keep-history? keep-history? merged-config)
      (validate-config-attribute ::schema-flexibility schema-flexibility merged-config)
      (validate-config-attribute ::index index merged-config)
+     (validate-config-attribute ::name name merged-config)
+     (validate-config-attribute ::initial-tx initial-tx merged-config)
      (validate-config merged-config)
-     merged-config)))
+     (if (string? initial-tx)
+       (update merged-config :initial-tx (fn [path] (-> path slurp read-string)))
+       merged-config))))
 
 ;; deprecation begin
 (s/def ::backend-depr keyword?)

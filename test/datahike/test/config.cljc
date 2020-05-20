@@ -43,13 +43,13 @@
        :uri pg-uri}
       pg-uri)))
 
-(deftest load-config-test
+#_(deftest load-config-test
   (testing "Loading configuration defaults"
     (is (= (Configuration. (Store. :mem nil nil nil nil nil)
                            false true :datahike.index/hitchhiker-tree)
            (reload-config)))))
 
-(deftest reload-config-test
+#_(deftest reload-config-test
   (testing "Reloading configuration"
     (is (= (Configuration. (Store. :file nil nil "/tmp/testfoo" nil nil)
                            true true :datahike.index/hitchhiker-tree)
