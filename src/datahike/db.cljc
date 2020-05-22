@@ -877,8 +877,8 @@
           :cljs [^boolean indexing?]) [db attr]
   (is-attr? db attr :db/index))
 
-(defn #?@(:clj [^Boolean no-history?]
-          :cljs [^boolean indexing]) [db attr]
+(defn #?@(:clj  [^Boolean no-history?]
+          :cljs [^boolean no-history?]) [db attr]
   (is-attr? db attr :db/noHistory))
 
 (defn entid [db eid]
