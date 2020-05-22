@@ -2,10 +2,7 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-   [datahike.config :refer :all])
-  (:import
-   (datahike.config Configuration
-                    Store)))
+   [datahike.config :refer :all]))
 
 (deftest int-from-env-test
   (is (= 1000
@@ -14,15 +11,7 @@
 (deftest bool-from-env-test
   (is (bool-from-env :foo true)))
 
-(deftest deep-merge-test
-  (is (= (Configuration. (Store. :pg "foobar" nil "/tmp/testfoo" nil nil)
-                         true true :datahike.index/hitchhiker-tree)
-         (deep-merge (Configuration. (Store. :file nil nil "/tmp/testfoo" nil nil)
-                                     false true :datahike.index/hitchhiker-tree)
-                     {:store {:backend :pg :username "foobar"}
-                      :schema-on-read true}))))
-
-(deftest config-test
+(deftest uri-test
   (let [mem-uri "datahike:mem://config-test"
         file-uri "datahike:file:///tmp/config-test"
         level-uri "datahike:level:///tmp/config-test"
@@ -43,16 +32,30 @@
        :uri pg-uri}
       pg-uri)))
 
-#_(deftest load-config-test
-  (testing "Loading configuration defaults"
-    (is (= (Configuration. (Store. :mem nil nil nil nil nil)
-                           false true :datahike.index/hitchhiker-tree)
-           (reload-config)))))
+(deftest deprecated-test
+  (let [mem-cfg {:backend :mem
+                 :host "deprecated-test"}
+        file-cfg {:backend :file
+                  :path "/deprecated/test"}
+        default-new-cfg {:keep-history? true
+                         :initial-tx nil
+                         :index :datahike.index/hitchhiker-tree
+                         :schema-flexibility :write}]
+    (is (= (merge default-new-cfg
+                  {:store {:backend :mem :id "deprecated-test"}})
+           (from-deprecated mem-cfg)))
+    (is (= (merge default-new-cfg
+                  {:store {:backend :file
+                           :path "/deprecated/test"}})
+           (from-deprecated file-cfg)))))
 
-#_(deftest reload-config-test
-  (testing "Reloading configuration"
-    (is (= (Configuration. (Store. :file nil nil "/tmp/testfoo" nil nil)
-                           true true :datahike.index/hitchhiker-tree)
-           (reload-config {:store {:backend :file
-                                   :path "/tmp/testfoo"}
-                           :schema-on-read true})))))
+(deftest load-config-test
+  (testing "configuration defaults"
+    (let [{:keys [store name] :as config} (load-config)]
+      (is (= {:store {:backend :mem
+                      :id "default"}
+              :keep-history? true
+              :schema-flexibility :write
+              :index :datahike.index/hitchhiker-tree}
+             (-> config (dissoc :name)))))))
+

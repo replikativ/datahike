@@ -10,8 +10,7 @@
             [datahike.config :as dc]
             [clojure.spec.alpha :as s]
             [clojure.core.cache :as cache])
-  (:import [java.net URI]
-           [datahike.config Configuration]))
+  (:import [java.net URI]))
 
 (s/def ::connection #(instance? clojure.lang.Atom %))
 

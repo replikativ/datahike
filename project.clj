@@ -12,6 +12,7 @@
                  [io.replikativ/hitchhiker-tree "0.1.5"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.lambdaforge/datalog-parser "0.1.1"]
+                 [io.replikativ/zufall "0.1.0"]
                  [junit/junit "4.12"]]
 
   :plugins [[lein-cljsbuild "1.1.7"]]

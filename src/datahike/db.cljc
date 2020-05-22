@@ -747,10 +747,9 @@
 (defn ^DB init-db
   ([datoms] (init-db datoms nil (dc/storeless-config)))
   ([datoms schema] (init-db datoms schema (dc/storeless-config)))
-  ([datoms schema config]
+  ([datoms schema {:keys [index schema-flexibility keep-history?] :as config}]
    (validate-schema schema)
-   (let [{:keys [index schema-flexibility keep-history?]} (dc/load-config config)
-         rschema (rschema (merge implicit-schema schema))
+   (let [rschema (rschema (merge implicit-schema schema))
          indexed (:db/index rschema)
          eavt (di/init-index index datoms indexed :eavt)
          aevt (di/init-index index datoms indexed :aevt)
