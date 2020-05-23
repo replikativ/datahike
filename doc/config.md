@@ -123,3 +123,18 @@ Be aware: when deactivating the temporal index you may not use any temporal data
 `since`.
 
 Refer to the [time variance documentation](./time_variance.md) for more information.
+
+
+## Deprecation Notice
+Starting from version `0.3.0` it is encouraged to use the new hashmap configuration since it is more flexible than the previously used URI scheme. Datahike still supports the old configuration so you don't need to migrate yourself. The differences for the configuration are as following:
+
+- optional parameters are added in the configuration map instead of optional parameters
+- `:temporal-index` renamed to `:keep-history?`
+- `:schema-on-read` renamed to `:schema-flexibility` with values `:read` and `:write`
+- store configuration for backends moved into `:store` atttribute
+- `:initial-tx` also added as attribute in configuration
+- the store configuration is now more flexible, so it fits better with its backends
+- all backend configuration remains the same except for `:mem`
+- naming attribute for `:mem` backend is moved to `:id` from `:host` or `:path`
+- optional `clojure.spec` validation has been added
+
