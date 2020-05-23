@@ -120,8 +120,9 @@
          merged-config ((comp remove-nils deep-merge) config config-as-arg)
          {:keys [keep-history? name schema-flexibility index initial-tx store]} merged-config
          config-spec (ds/config-spec store)]
-     (when-not (s/valid? config-spec store)
-       (throw (ex-info "Invalid store configuration." (s/explain-data config-spec store))))
+     (when config-spec
+       (when-not (s/valid? config-spec store)
+         (throw (ex-info "Invalid store configuration." (s/explain-data config-spec store)))))
      (when-not (s/valid? :datahike/config merged-config)
        (throw (ex-info "Invalid Datahike configuration." (s/explain-data :datahike/config merged-config))))
      (if (string? initial-tx)
