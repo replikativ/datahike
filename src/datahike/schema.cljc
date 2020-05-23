@@ -43,11 +43,11 @@
 ;; only for old datomic compliance, will be part of partioning in the future
 (s/def :db.type.install/_attribute #{:db.part/tx :db.part/db :db.part/user})
 
-(s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
+(s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
 (s/def ::meta-attribute #{:db/txInstant :db/retracted})
 
-(s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality ]
-                        :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc]))
+(s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality]
+                        :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
 
 (def required-keys #{:db/ident :db/valueType :db/cardinality})
 
@@ -72,6 +72,9 @@
                                    :db/isComponent {:db/valueType :db.type/boolean
                                                     :db/unique :db.unique/identity
                                                     :db/cardinality :db.cardinality/one}
+                                   :db/noHistory {:db/valueType :db.type/boolean
+                                                  :db/unique :db.unique/identity
+                                                  :db/cardinality :db.cardinality/one}
                                    :db/txInstant {:db/valueType :db.type/instant
                                                   :db/unique :db.unique/identity
                                                   :db/index true
@@ -86,7 +89,7 @@
                                                            :db/unique      :db.unique/identity
                                                            :db/cardinality :db.cardinality/one}})
 
-(def schema-keys #{:db/ident :db/isComponent :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
+(def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
 
 (defn meta-attr? [attr]
   (s/valid? ::meta-attribute attr))
