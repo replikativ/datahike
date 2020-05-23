@@ -3,10 +3,9 @@
 At database creation _datahike_ supports features that can be
 configured based on the application's requirements. As of version `0.2.0`
 configuration for the [storage backend](#storage-backend), the [schema
-flexibility](#schema-flexibility), and the
-[time variance](#time-variance) is supported.
+flexibility](#schema-flexibility), and [time variance](#time-variance) is supported.
 Be aware: all these features can be set at database creation
-but can not be changed afterwards.
+but can not be changed afterwards. You can still migrate the data to a new configuration.
 
 ## Configuration
 
@@ -22,35 +21,25 @@ The sources are resolved in following order:
 That means passing a config as argument overwrites java system properties and using java system properties overwrite environment variables etc. Currently the configuration map looks like this per default:
 
 ```
-{:store {:backend  :mem     ;keyword
-         :username nil      ;string
-         :password nil      ;string
-         :path     nil      ;string
-         :host     nil      ;string
-         :port     nil}     ;int
- :schema-on-read   false    ;boolean
- :temporal-index   true}}   ;boolean
+{:store {:backend  :mem        ;keyword
+         :id       "default"   ;string
+         :username nil         ;string
+         :password nil         ;string
+         :path     nil         ;string
+         :host     nil         ;string
+         :port     nil}        ;int
+ :schema-flexibility :write    ;keyword
+ :keep-history?      true}}    ;boolean
 ```
 
-Please refer to the documentation of the [environ library](https://github.com/weavejester/environ) on how to use it. When you want to pass a map to the configuration you can pass the above map or parts of it to the reload-config function in the datahike.config namespace like this:
-```
-(require '[datahike.api :as d]
-         '[datahike.config :as c])
-(c/reload-config {:store
-                  {:backend :file
-                   :path "/tmp/datahike"}})
-(d/create-database)
-```
-
-This is best done before creating the database so that the database does not have to be recreated and dataloss is avoided. If you want to pass the config as environment variables or Java system properties you need to name them like following:
+Please refer to the documentation of the [environ library](https://github.com/weavejester/environ) on how to use it. If you want to pass the config as environment variables or Java system properties you need to name them like following:
 
 properties              | envvar
 --------------------------|--------------------------
 datahike.store.backend  | DATAHIKE_STORE_BACKEND
 datahike.store.username | DATAHIKE_STORE_USERNAME
 datahike.schema.on.read | DATAHIKE_SCHEMA_ON_READ
-datahike.temporal.index | DATAHIKE_TEMPORAL_INDEX
-
+datahike.keep.history    DATAHIKE_KEEP_HISTORY
 etc.
 
 *Do not use `:` in the keyword strings, it will be added automatically.*
@@ -59,38 +48,40 @@ etc.
 
 Each backend needs a different set of provided parameters. See definition
 [below](#storage-backend) for further information. For simple and fast creation
-you can simply use the defaults which creates an in-memory database:
+you can simply use the defaults which creates an in-memory database with ID `"default"`, write schema flexibility, and history support:
 
 ```clojure
 (require '[datahike.api :as d])
 (d/create-database)
 ```
 
-At the moment we support four different backends: [in-memory](#in-memory) ,[file-based](#file-based),
-[LevelDB](#leveldb), and [PostgreSQL](#postgresql).
+At the moment we support two different backends from within Datahike: [in-memory](#in-memory) and [file-based](#file-based). 
+[LevelDB](#leveldb) and [PostgreSQL](#postgresql) is supported via external libraries: [datahike-postgres](https://github.com/replikativ/datahike-postgres/) and [datahike-leveldb](https://github.com/replikativ/datahike-leveldb)
 
 ### in-memory
 
 - `<backend>`: `mem`
-- `host`: name of the database
-- uri example: `datahike:mem://mem-example`
-- hash map example: `{:backend :mem :host "mem-example"}`
+- `id`: ID of the database
+- example: `{:store {backend :mem :id "mem-example"}}`
+- uri example (deprecated): `datahike:mem://mem-example`
 
 ### file-based
 
 - `<backend>`: `file`
 - `path`: absolute path to the storage folder
-- uri example: `datahike:file:///tmp/file-example`
-- hash map example: `{:backend :file :path "/tmp/file-example"}`
+- example: `{:store {:backend :file :path "/tmp/file-example"}}`
+- uri example (deprecated): `datahike:file:///tmp/file-example`
 
-### LevelDB
+### Supported External Backends
+
+#### LevelDB
 
 - `<backend>`: `level`
 - `path`: absolute path to the LevelDB instance
-- uri example: `datahike:level:///tmp/level-example`
-- hash map example: `{:backend :level :path "/tmp/level-example"}`
+- example: `{:store {:backend :level :path "/tmp/level-example"}}`
+- uri example (deprecated): `datahike:level:///tmp/level-example`
 
-### PostgreSQL
+#### PostgreSQL
 
 - `<backend>`: `pg`
 - `username`: PostgreSQL instance username
@@ -98,38 +89,34 @@ At the moment we support four different backends: [in-memory](#in-memory) ,[file
 - `host`: PostgreSQL instance host
 - `port`: PostgreSQL instance port
 - `path`: name of the PostgreSQL database, must be present in the instance
+- example: `{:store {:backend :pg :host "localhost" :port 5432 :username "alice" :password "foobar" :path "/pg_example"}}`
 - uri example: `datahike:pg://alice:foobar@localhost:5432/pg_example`
-- hash map example: `{:backend :pg :host "localhost" :port 5432 :username "alice" :password "foobar" :path "/pg_example"}`
 
 ## Schema Flexibility
 
-By default the datahike api uses a `schema-on-write` approach with strict value
+By default the datahike api uses a schema on `:write` approach with strict value
 types that need to be defined in advance. If you are not sure how your data
 model looks like and you want to transact any kind of data into the database you
-can set `schema-on-read` to `true` by adding it as optional parameter at
-database creation. You may add basic schema definitions like `:db/unique`,
+can set `:schema-flexibility` to `read`. You may add basic schema definitions like `:db/unique`,
 `:db/cardinality` or `db.type/ref` where these kind of structure is needed.
 
 ```clojure
-(require '[datahike.api :as d]
-         '[datahike.config :as c])
-(c/reload-config {:schema {:schema-on-read true}})
-(d/create-database)
+(require '[datahike.api :as d])
+         
+(d/create-database {:schema-flexibility :read})
 ```
 
 Have a look at the [schema documentation](./schema.md) for more information.
 
-## Time Variance
+## Historical Data
 
 Datahike has the capability to inspect and query historical data within temporal
 indices. If your application does not require any temporal data, you may
-set `:temporal-index` to `false`.
+set `:keep-history?` to `false`.
 
 ```clojure
-(require '[datahike.api :as d]
-         '[datahike.config :as c])
-(c/reload-config {:schema {:temporal-index false}})
-(d/create-database)
+(require '[datahike.api :as d])
+(d/create-database {:keep-history? true})
 ```
 
 Be aware: when deactivating the temporal index you may not use any temporal databases like `history`, `as-of`, or
