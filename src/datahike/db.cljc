@@ -460,14 +460,15 @@
   (-index-range [db attr start end] (temporal-index-range (.-origin-db db) db attr start end)))
 
 (defn filter-txInstant [datoms pred db]
-  (->> datoms
-       (map (fn [^Datom d] (datom-tx d)))
-       (into #{})
-       (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
-       (reduce (fn [results ^Datom d]
-                 (if (pred d)
-                   (conj results (.-e d))
-                   results)) #{})))
+  (into #{}
+        (comp
+          (map datom-tx)
+          (distinct)
+          (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
+          (keep (fn [^Datom d]
+                  (when (and (= :db/txInstant (.-a d)) (pred d))
+                    (.-e d)))))
+        datoms))
 
 (defn get-current-values [rschema datoms]
   (->> datoms
@@ -666,6 +667,7 @@
         (case k
           :db/isComponent [:db/isComponent]
           :db/index [:db/index]
+          :db/noHistory [:db/noHistory]
           [])))))
 
 (defn- rschema [schema]
@@ -880,6 +882,10 @@
           :cljs [^boolean indexing?]) [db attr]
   (is-attr? db attr :db/index))
 
+(defn #?@(:clj  [^Boolean no-history?]
+          :cljs [^boolean no-history?]) [db attr]
+  (is-attr? db attr :db/noHistory))
+
 (defn entid [db eid]
   {:pre [(db? db)]}
   (cond
@@ -1076,7 +1082,7 @@
   (validate-datom db datom)
   (let [indexing? (indexing? db (.-a datom))
         schema? (ds/schema-attr? (.-a datom))
-        keep-history? (-keep-history? db)]
+        keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom))))]
     (if (datom-added datom)
       (cond-> db
               true (update-in [:eavt] #(di/-insert % datom :eavt))
