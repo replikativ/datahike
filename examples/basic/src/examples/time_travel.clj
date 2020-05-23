@@ -1,8 +1,6 @@
 (ns examples.time-travel
   (:require [datahike.api :as d]))
 
-;; define base uri we can connect to
-(def uri "datahike:mem://temporal-index")
 
 ;; define schema
 (def schema-tx [{:db/ident :name
@@ -14,14 +12,17 @@
                  :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}])
 
+;; define base configuration we can connect to
+(def cfg {:store {:backend :mem :id "time-travel"} :initial-tx schema-tx})
+
 ;; cleanup any previous data
-(d/delete-database uri)
+(d/delete-database cfg)
 
 ;; create the database with default configuration and above schema
-(d/create-database uri :initial-tx schema-tx)
+(d/create-database cfg)
 
 ;; connect to the database
-(def conn (d/connect uri))
+(def conn (d/connect cfg))
 
 ;; transact age and name data
 (d/transact conn [{:name "Alice" :age 25} {:name "Bob" :age 30}])

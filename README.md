@@ -35,13 +35,15 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 ;; use the filesystem as storage medium
 (def cfg {:store {:backend :file :path "/tmp/example"}})
 
-;; create a database at this place, per default configuration we have a strict
-;; schema and keep history
+;; create a database at this place, per default configuration we enforce a strict
+;; schema and keep all historical data
 (d/create-database cfg)
 
 (def conn (d/connect cfg))
 
 ;; the first transaction will be the schema we are using
+;; you may also add this within database creation by adding :initial-tx
+;; to the configuration
 (d/transact conn [{:db/ident :name
                    :db/valueType :db.type/string
                    :db/cardinality :db.cardinality/one }
@@ -87,7 +89,7 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 (d/release conn)
 
 ;; clean up the database if it is not need any more
-(d/delete-database uri)
+(d/delete-database cfg)
 ```
 
 The API namespace provides compatibility to a subset of Datomic functionality
