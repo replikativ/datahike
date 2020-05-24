@@ -21,10 +21,9 @@ building on the two projects and the storage backends for the hitchhiker-tree
 through [konserve](https://github.com/replikativ/konserve). We would like to
 hear experience reports and are happy if you join us.
 
-You may find articles on Datahike on our company's [blog page](https://lambdaforge.io/articles)
+You may find articles on Datahike on our company's [blog page](https://lambdaforge.io/articles).
 
-
-A selection of Datahike presentation can be found at:
+We presented Datahike also at meetups,for example at:
 
 - [2019 scicloj online meetup](https://www.youtube.com/watch?v=Hjo4TEV81sQ).
 - [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
@@ -260,7 +259,7 @@ Have a look at the [change log](./CHANGELOG.md) for recent updates.
 ## Commercial support
 
 We are happy to provide commercial support with
-[Lambdaforge](https://lambdaforge.io). If you are interested in a particular
+[lambdaforge](https://lambdaforge.io). If you are interested in a particular
 feature, please let us know.
 
 ## License
