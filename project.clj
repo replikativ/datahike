@@ -1,4 +1,4 @@
-(defproject io.replikativ/datahike "0.2.1"
+(defproject io.replikativ/datahike "0.3.0"
   :description "A durable datalog implementation adaptable for distribution."
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
@@ -8,9 +8,12 @@
                  [org.clojure/clojurescript "1.10.597" :scope "provided"]
                  [persistent-sorted-set     "0.1.2"]
                  [org.clojure/tools.reader "1.3.2"]
-                 [io.replikativ/hitchhiker-tree "0.1.5"]
+                 [environ "1.1.0"]
+                 [io.replikativ/hitchhiker-tree "0.1.7"]
                  [io.replikativ/superv.async "0.2.9"]
-                 [io.lambdaforge/datalog-parser "0.1.1"]]
+                 [io.lambdaforge/datalog-parser "0.1.3"]
+                 [io.replikativ/zufall "0.1.0"]
+                 [junit/junit "4.12"]]
 
   :plugins [[lein-cljsbuild "1.1.7"]]
 
@@ -19,6 +22,8 @@
 ;;     *unchecked-math* :warn-on-boxed
                 }
   :jvm-opts ["-Xmx2g" "-server"]
+
+  :java-source-paths ["java/src"]
 
   :aliases {"test-clj"     ["run" "-m" "datahike.test/test-clj"]
             "test-cljs"    ["do" ["cljsbuild" "once" "release" "advanced"]

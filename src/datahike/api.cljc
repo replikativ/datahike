@@ -32,7 +32,7 @@
   database-exists? dc/database-exists?)
 
 (def
-  ^{:arglists '([config & opts])
+  ^{:arglists '([& opts])
     :doc
               "Creates a database using backend configuration with optional database configuration
             by providing either a URI that encodes storage backend data like database name,
@@ -51,7 +51,7 @@
                 (create-database \"datahike:mem://example\" :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])
 
               Datahike has a strict schema validation (schema-on-write) policy by default,
-              that only allows transaction of data that that has been pre-defined by a schema.
+              that only allows transaction of data that has been pre-defined by a schema.
               You may influence this behaviour using the `:schema-on-read` parameter:
 
                 (create-database \"datahike:mem://example\" :schema-on-read true)
@@ -60,7 +60,17 @@
               querying data from any point in time. You may control this feature using the
               `:temporal-index` parameter:
 
-                (create-database \"datahike:mem://example\" :temporal-index false)"}
+                (create-database \"datahike:mem://example\" :temporal-index false)
+
+              The new way of configuring datahike is using environment variables and system properties that can be set before creating
+              the database. Altering the configuration via arguments is possible via e.g.
+
+                `(datahike.config/reload-config {:store {:backend :file :path \"/tmp/mydb\"}})
+                 (create-database)`
+
+              Initial data after creation may be added using the `:initial-tx` parameter, which in this example adds a schema:
+
+                `(create-database :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])`"}
   create-database
   dc/create-database)
 
@@ -158,6 +168,12 @@
   transact!
   dc/transact!)
 
+(def ^{:arglists '([conn tx-data])
+       :doc "Load entities directly"}
+  load-entities
+  dc/load-entities)
+
+
 (def ^{:arglists '([conn])
        :doc      "Releases a database connection"}
   release dc/release)
@@ -205,17 +221,17 @@
 
 (defmethod q clojure.lang.PersistentVector
   [query & inputs]
-  (apply dq/q query inputs))
+  (dq/q {:query query :args inputs}))
 
 (defmethod q clojure.lang.PersistentArrayMap
-  [query-map & arg-list]
-  (let [query (if (contains? query-map :query)
-                (:query query-map)
-                query-map)
-        args (if (contains? query-map :args)
-               (:args query-map)
-               arg-list)]
-    (apply dq/q query args)))
+  [{:keys [query args limit offset] :as query-map} & arg-list]
+  (let [query (or query query-map)
+        args (or args arg-list)]
+    (dq/q {:query query
+           :args args
+           :limit limit
+           :offset offset})))
+
 (defn datoms
   "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components (e, a, v) match passed arguments.
 
@@ -461,7 +477,7 @@
   [db]
   (if (db/-temporal-index? db)
     (HistoricalDB. db)
-    (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
+    (throw (ex-info "history is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn- date? [d]
   #?(:cljs (instance? js/Date d)
@@ -472,7 +488,7 @@
   [db date]
   {:pre [(or (int? date) (date? date))]}
   (if (db/-temporal-index? db)
-    (AsOfDB. db (if (date? date) date (java.util.Date. ^long date)))
+    (AsOfDB. db date)
     (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn since
@@ -481,5 +497,5 @@
   [db date]
   {:pre [(or (int? date) (date? date))]}
   (if (db/-temporal-index? db)
-    (SinceDB. db (if (date? date) date (java.util.Date. ^long date)))
+    (SinceDB. db date)
     (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)}))))

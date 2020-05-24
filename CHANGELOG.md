@@ -1,3 +1,18 @@
+# 0.3.0
+
+- overhaul configuration while still supporting the old one
+- support of environment variables for configuration 
+- added better default configuration
+- adjust time points in history functions to match Datomic's API
+- add load-entities capabilities
+- add cas support for nil 
+- add support for non-date tx attributes 
+- add Java API
+- add Java interop in queries
+- add basic pagination
+- add noHistory support
+- multiple bugfixes including downstream dependencies
+
 # 0.2.1
 
 - add numbers type

@@ -10,10 +10,10 @@
 (def query '[:find ?n :where [?e :name ?n]])
 
 ;; let's cleanup, create, and connect all in one
-(defn cleanup-and-create-conn [uri]
-  (d/delete-database uri)
-  (d/create-database uri :initial-tx schema)
-  (d/connect uri))
+(defn cleanup-and-create-conn [cfg]
+  (d/delete-database cfg)
+  (d/create-database (assoc cfg :inital-tx cfg))
+  (d/connect cfg))
 
 (defn transact-and-find [conn name]
   (d/transact conn [{:name name}])
@@ -21,38 +21,44 @@
 
 ;; first let's have a look at the memory store which uses an atom internally to store data
 ;; only a simple identifier is needed, we use
-(def mem-uri "datahike:mem://example")
+(def mem-cfg {:store {:backend :mem :id "mem-example"}})
 
 ;; create it
-(def mem-conn (cleanup-and-create-conn mem-uri))
+(def mem-conn (cleanup-and-create-conn mem-cfg))
 
 ;; add and find data
 (transact-and-find mem-conn "Alice")
 
 ;; next we try out file based store which can be used as the simplest form of persistence
 ;; the datoms are serialized at `/tmp/file_example`
-(def file-uri "datahike:file:///tmp/file_example")
+(def file-cfg {:store {:backend :file :path "/tmp/file_example"}})
 
-(def file-conn (cleanup-and-create-conn file-uri))
+(def file-conn (cleanup-and-create-conn file-cfg))
 
 (transact-and-find file-conn "Bob")
 
+;; External backends
+;; make sure you add `datahike-postgres` and `datahike-leveldb` as dependency
 
 ;; another simple alternative is using leveldb at `/tmp/level_example`
-(def level-uri "datahike:level:///tmp/level_example")
+(def level-cfg  {:store {:backend :level :path "/tmp/level_example"}})
 
-(def level-conn (cleanup-and-create-conn level-uri))
+(def level-conn (cleanup-and-create-conn level-cfg))
 
 (transact-and-find level-conn "Charlie")
-
 
 ;; for a more conservative and remote store you can connect to a postgresql instance
 ;; you can create a simple instance using docker and docker-compose with `docker-compose.yml` in this project
 ;; See README for infos on starting
 ;; we connect to a postgresql instance with username datahike, password clojure, at the localhost with port 5434 and a datahike database
-(def pg-uri "datahike:pg://datahike:clojure@localhost:5434/datahike")
+(def pg-cfg {:store {:backend :pg
+                     :username "datahike"
+                     :password "clojure"
+                     :host "localhost"
+                     :port 5434
+                     :path "/datahike"}})
 
-(def pg-conn (cleanup-and-create-conn pg-uri))
+(def pg-conn (cleanup-and-create-conn pg-cfg))
 
 (transact-and-find pg-conn "Daisy")
 
@@ -74,7 +80,7 @@
 (d/release level-conn)
 
 (do
- (d/delete-database mem-uri)
- (d/delete-database level-uri)
- (d/delete-database file-uri)
- (d/delete-database pg-uri))
+  (d/delete-database mem-cfg)
+  (d/delete-database file-cfg)
+  (d/delete-database level-cfg)
+  (d/delete-database pg-cfg))

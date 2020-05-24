@@ -2,7 +2,8 @@
   (:require
     #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-    [datahike.api :as d]))
+    [datahike.api :as d])
+  (:import [java.util Date]))
 
 (def schema-tx [{:db/ident       :name
                  :db/valueType   :db.type/string
@@ -19,6 +20,9 @@
 
 (defn create-test-db [uri]
   (d/create-database uri :initial-tx schema-tx))
+
+(defn now []
+  (Date.))
 
 (deftest test-base-history
   (let [uri "datahike:mem://test-base-history"
@@ -68,7 +72,7 @@
     (testing "get all values before specific time"
       (let [_ (d/transact conn [{:db/id [:name "Alice"] :age 30}])
             _ (Thread/sleep 100)
-            date (java.util.Date.)
+            date (now)
             _ (Thread/sleep 100)
             _ (d/transact conn [{:db/id [:name "Alice"] :age 35}])
             history-db (d/history @conn)
@@ -98,22 +102,22 @@
         _ (d/delete-database uri)
         _ (create-test-db uri)
         conn (d/connect uri)
-        first-date (java.util.Date.)
+        first-date (now)
         query '[:find ?a :in $ ?e :where [?e :age ?a ?tx]]]
     (testing "get values at specific time"
       (is (= #{[25]}
                (d/q query (d/as-of @conn first-date) [:name "Alice"]))))
-    (testing "use unix epoch time as long"
-      (let [epoch-date (.getTime first-date)]
+    (testing "use transaction ID"
+      (let [tx-id 536870914]
         (is (= #{[25]}
-                 (d/q query (d/as-of @conn epoch-date) [:name "Alice"])))))))
+                 (d/q query (d/as-of @conn tx-id) [:name "Alice"])))))))
 
 (deftest test-since-db
   (let [uri "datahike:mem://test-historical-queries"
         _ (d/delete-database uri)
         _ (create-test-db uri)
         conn (d/connect uri)
-        first-date (java.util.Date.)
+        first-date (now)
         query '[:find ?a :where [?e :age ?a]]]
     (testing "empty after first insertion"
       (is (= #{}
@@ -123,3 +127,31 @@
             _ (d/transact conn [{:db/id [:name "Alice"] :age new-age}])]
         (is (= #{[new-age]}
                (d/q query (d/since @conn first-date))))))))
+
+(deftest test-no-history
+  (let [uri "datahike:mem://test-no-history"
+        _ (d/delete-database uri)
+        _ (d/create-database uri :initial-tx [{:db/ident :name
+                                               :db/cardinality :db.cardinality/one
+                                               :db/valueType :db.type/string
+                                               :db/unique :db.unique/identity
+                                               }
+                                              {:db/ident :age
+                                               :db/cardinality :db.cardinality/one
+                                               :db/valueType :db.type/long
+                                               :db/noHistory true}
+                                              {:name "Alice" :age 25}
+                                              {:name "Bob" :age 35}])
+        conn (d/connect uri)
+        query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+        first-date (now)]
+    (testing "all names and ages are present in history"
+      (is (= #{["Alice" 25] ["Bob" 35]}
+             (d/q query (d/history @conn)))))
+    (d/transact conn [[:db/retractEntity [:name "Alice"]]])
+    (testing "no-history attributes are not present in history"
+      (is (= #{["Bob" 35]}
+             (d/q query (d/history @conn)))))
+    (testing "all other attributes are present in history"
+      (is (= #{["Alice"] ["Bob"]}
+             (d/q '[:find ?n :where [?e :name ?n]] (d/history @conn)))))))

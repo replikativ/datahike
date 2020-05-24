@@ -27,22 +27,21 @@ Additionally, datahike supports also almost all functions from
 
 ## connect
 
-Connects to an existing database given a `URL` or host configuration hash-map. The schema for
-the `URL` and hash-map can be found [here](./config.md).
+Connects to an existing database given a configuration hash-map or URI (deprecated). 
+The specification for the configuration can be found [here](./config.md).
 
 ```clojure
-(connect "datahike:mem://datomic-diff")
+(create-database {:store {:backend :file :path "/tmp/datomic-diff"}})
 ```
 
 ## create-database
 
-Creates a new database given a `URL` or configuration hash-map with additional
-optional parameters for `schema-on-read` and `temporal-index` capabilities. Have
+Creates a new database given configuration hash-map or an URI (deprecated) with additional
+optional parameters for `schema-flexibility` and `keep-history?` capabilities. Have
 a look at the [configuration documentation](./config.md) for details.
 
 ```clojure
-(create-database "datahike:mem://datomic-diff" :schema-on-read true
-:temporal-index false)
+(create-database {:store {:backend :mem :id "datomic-diff"} :keep-history? false :schema-flexibility :read})
 ```
 
 ## datoms

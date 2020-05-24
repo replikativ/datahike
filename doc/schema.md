@@ -32,12 +32,9 @@ database creation you may opt out by setting the `:schema-on-read` parameter to 
 ```clojure
 (require '[datahike.api :as d])
 
-(def uri "datahike:mem://schemaless")
+(def cfg {:store {:backend :mem :id "schemaless"} :schema-flexibility :read})
 
-;; use the optional parameter to control the schema flexibility
-(d/create-database uri :schema-on-read true)
-
-(def conn (d/connect uri))
+(def conn (d/connect cfg))
 
 ;; now you can add any arbitrary data
 (d/transact! conn [{:any "Data"}])
@@ -53,12 +50,12 @@ like any other datom.
 ```clojure
 (require '[datahike.api :as d])
 
-(def uri "datahike:mem://schema-on-write")
+;; since the :write approach is the default value we may also skip the setting
+(def cfg {:store {:backend :mem :id "schema-on-write"} :schema-flexibility :write})
 
-;; by default we have schema-on-write settings
-(d/create-database uri)
+(d/create-database cfg)
 
-(def conn (d/connect uri))
+(def conn (d/connect cfg))
 
 ;; define a simple schema
 (def schema [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
@@ -70,7 +67,7 @@ like any other datom.
 (d/transact! conn [{:name "Alice"}])
 ```
 
-The schema definition is compliant with Datomic's
+The schema definition is for the most part compliant with Datomic's
 [approach](https://docs.datomic.com/on-prem/schema.html). Required are three
 attributes:
 

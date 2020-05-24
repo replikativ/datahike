@@ -39,17 +39,17 @@
              {:db/ident :language/clojure}
              {:db/ident :language/rust}])
 
-;; define uri
-(def uri "datahike:mem://schema-intro")
+;; define configuration
+(def cfg {:store {:backend :mem :id "schema-intro"} :initial-tx schema})
 
 ;; cleanup previous database
-(d/delete-database uri)
+(d/delete-database cfg)
 
 ;; create the in-memory database
-(d/create-database uri :initial-tx schema)
+(d/create-database cfg)
 
 ;; connect to it
-(def conn (d/connect uri))
+(def conn (d/connect cfg))
 
 ;; let's insert our first user
 (d/transact conn [{:contributor/name "alice" :contributor/email "alice@exam.ple"}])
@@ -115,18 +115,17 @@
 (d/q '[:find ?a ?d :where [?e :db/ident ?a] [?e :db/doc ?d]] @conn)
 
 ;; cleanup the database
-(d/delete-database uri)
+(d/delete-database cfg)
 
 ;; Schema On Read
 
 ;; let's create another database that can hold any arbitrary data
 
-(def uri "datahike:mem://schemaless")
+(def cfg {:store {:backend :mem :id "schemaless"} :schema-flexibility :read})
 
-;; we have set the parameter `:schema-on-read` to true at database creation
-(d/create-database uri :schema-on-read true)
+(d/create-database cfg)
 
-(def conn (d/connect uri))
+(def conn (d/connect cfg))
 
 ;; now we can go wild and transact anything
 (d/transact conn [{:any "thing"}])
