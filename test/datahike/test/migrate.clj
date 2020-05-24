@@ -47,8 +47,8 @@
     (let [source-datoms (->> tx-data
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))]
-      (let [cfg {:backend :mem
-                 :path "/target"}
+      (let [cfg {:store {:backend :mem
+                         :id "target"}}
             _ (delete-database cfg)
             _ (create-database cfg)
             conn (connect cfg)]

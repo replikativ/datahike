@@ -1,31 +1,54 @@
 (ns datahike.config
   (:require [clojure.edn :as edn]
             [clojure.spec.alpha :as s]
-            [environ.core :refer [env]])
+            [zufall.core :as z]
+            [environ.core :refer [env]]
+            [datahike.store :as ds])
   (:import [java.net URI]))
 
-(s/def ::backend #{:mem :file :level :pg})
-(s/def ::username (s/nilable string?))
-(s/def ::password (s/nilable string?))
-(s/def ::path (s/nilable string?))
-(s/def ::host (s/nilable string?))
-(s/def ::port (s/nilable int?))
-
-(s/def ::schema-on-read boolean?)
-(s/def ::temporal-index boolean?)
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
+(s/def ::keep-history? boolean?)
+(s/def ::schema-flexibility #{:read :write})
+(s/def ::entity (s/or :map associative? :vec vector?))
+(s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
+(s/def ::name string?)
 
-(s/def :datahike/store (s/keys :req-un [::backend]
-                               :opt-un [::username ::password ::path ::host ::port]))
+(s/def ::store map?)
+
 (s/def :datahike/config (s/keys :req-un [:datahike/store]
-                                :opt-un [::schema-on-read ::temporal-index]))
+                                :opt-un [::index
+                                         ::keep-history?
+                                         ::schema-flexibility
+                                         ::initial-tx
+                                         ::name]))
 
-(s/fdef datahike.config/validate-edn
-  :args (s/cat :config-str string?)
-  :ret :datahike/config)
+(s/def :deprecated/schema-on-read boolean?)
+(s/def :deprecated/temporal-index boolean?)
+(s/def :deprecated/config (s/keys :req-un [:datahike/store]
+                                  :opt-un [:deprecated/temporal-index :deprecated/schema-on-read]))
 
-(defrecord Store [backend username password path host port])
-(defrecord Configuration [store schema-on-read temporal-index index])
+(defn from-deprecated
+  [{:keys [backend username password path host port] :as backend-cfg}
+   & {:keys [schema-on-read temporal-index index initial-tx]
+      :as index-cfg
+      :or {schema-on-read false
+           index :datahike.index/hitchhiker-tree
+           temporal-index true}}]
+  {:store (merge {:backend backend}
+                 (case backend
+                   :mem {:id (or host path)}
+                   :pg {:username username
+                        :password password
+                        :path path
+                        :host host
+                        :port port
+                        :id (str (java.util.UUID/randomUUID))}
+                   :level {:path path}
+                   :file {:path path}))
+   :index index
+   :keep-history? temporal-index
+   :initial-tx initial-tx
+   :schema-flexibility (if (true? schema-on-read) :read :write)})
 
 (defn int-from-env
   [key default]
@@ -58,41 +81,53 @@
   (when-not (s/valid? :datahike/config config)
     (throw (ex-info "Invalid datahike configuration." config))))
 
-(defn- load-config
-  "Loading config from Configuration-record passed as argument."
+(defn storeless-config []
+  {:store nil
+   :keep-history? false
+   :schema-flexibility :read
+   :name (z/rand-german-mammal)
+   :index :datahike.index/hitchhiker-tree})
+
+(defn remove-nils
+  "Thanks to https://stackoverflow.com/a/34221816"
+  [m]
+  (let [f (fn [x]
+            (if (map? x)
+              (let [kvs (filter (comp not nil? second) x)]
+                (if (empty? kvs) nil (into {} kvs)))
+              x))]
+    (clojure.walk/postwalk f m)))
+
+(defn load-config
+  "Load and validate configuration with defaults from the store."
   ([]
-   (load-config nil))
+   (load-config nil nil))
   ([config-as-arg]
-   (let [config        (Configuration.
-                        (Store.
-                         (keyword (:datahike-store-backend env :mem))
-                         (:datahike-store-username env)
-                         (:datahike-store-password env)
-                         (:datahike-store-path env)
-                         (:datahike-store-host env)
-                         (int-from-env :datahike-store-port nil))
-                        (bool-from-env :datahike-schema-on-read false)
-                        (bool-from-env :datahike-temporal-index true)
-                        (keyword (bool-from-env :datahike-index :datahike.index/hitchhiker-tree)))
-         merged-config (deep-merge config config-as-arg)
-         {:keys [backend username password path host port] :as store} (:store merged-config)
-         {:keys [schema-on-read temporal-index index]} merged-config
-         _             (validate-config-attribute ::backend backend store)
-         _             (validate-config-attribute ::schema-on-read schema-on-read merged-config)
-         _             (validate-config-attribute ::temporal-index temporal-index merged-config)
-         _ (validate-config-attribute ::index index merged-config)
-         _             (validate-config merged-config)]
-     merged-config)))
-
-(defonce
-  ^{:doc "A record of the current configuration."}
-  config (load-config))
-
-(defn reload-config
-  ([]
-   (reload-config nil))
-  ([additional-config]
-   (alter-var-root #'config (fn [_] (load-config additional-config)))))
+   (load-config config-as-arg nil))
+  ([config-as-arg opts]
+   (let [config-as-arg (if (s/valid? :datahike/config-depr config-as-arg)
+                         (apply from-deprecated config-as-arg (first opts))
+                         config-as-arg)
+         store-config (ds/default-config (merge
+                                          {:backend (keyword (:datahike-store-backend env :mem))}
+                                          (:store config-as-arg)))
+         config {:store store-config
+                 :initial-tx (:datahike-intial-tx env)
+                 :keep-history? (bool-from-env :datahike-keep-history true)
+                 :name (:name config-as-arg (z/rand-german-mammal))
+                 :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
+                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}
+         merged-config ((comp remove-nils deep-merge) config config-as-arg)
+         {:keys [keep-history? name schema-flexibility index initial-tx store]} merged-config
+         config-spec (ds/config-spec store)]
+     (when config-spec
+       (when-not (s/valid? config-spec store)
+         (throw (ex-info "Invalid store configuration." (s/explain-data config-spec store)))))
+     (when-not (s/valid? :datahike/config merged-config)
+       (throw (ex-info "Invalid Datahike configuration." (s/explain-data :datahike/config merged-config))))
+     (if (string? initial-tx)
+       (update merged-config :initial-tx (fn [path] (-> path slurp read-string)))
+       merged-config))))
 
 ;; deprecation begin
 (s/def ::backend-depr keyword?)
@@ -104,7 +139,7 @@
 (s/def ::uri-depr string?)
 
 (s/def :datahike/config-depr (s/keys :req-un [::backend]
-                               :opt-un [::username ::password ::path ::host ::port]))
+                                     :opt-un [::username ::password ::path ::host ::port]))
 
 (defn uri->config [uri]
   (let [base-uri (URI. uri)
@@ -130,7 +165,6 @@
                   {:path path})
                 (when (<= 0 port)
                   {:port port}))]
-    (validate-config-attribute ::backend backend config)
     config))
 
 (defn validate-config-depr [config]

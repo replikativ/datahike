@@ -29,25 +29,27 @@
 
 
 (deftest test-persistent-set-index
-  (c/reload-config {:store {:backend :mem :host "/test-persistent-set"}
-                    :schema-on-read true
-                    :temporal-index false
-                    :index :datahike.index/persistent-set})
-  (d/delete-database)
-  (d/create-database)
-  (let [conn (d/connect)]
-    (d/transact conn [{:db/id 1, :name "Alice"}])
-    (is (= me.tonsky.persistent_sorted_set.PersistentSortedSet
-           (-> @conn :eavt type)))))
+  (let [config {:store {:backend :mem
+                        :id "test-persistent-set"}
+                :schema-flexibility :read
+                :keep-history? false
+                :index :datahike.index/persistent-set}]
+    (d/delete-database config)
+    (d/create-database config)
+    (let [conn (d/connect config)]
+      (d/transact conn [{:db/id 1, :name "Alice"}])
+      (is (= me.tonsky.persistent_sorted_set.PersistentSortedSet
+             (-> @conn :eavt type))))))
 
 (deftest test-hitchhiker-tree-index
-  (c/reload-config {:store {:backend :mem :host "/test-hitchhiker-tree"}
-                    :schema-on-read true
-                    :temporal-index false
-                    :index :datahike.index/hitchhiker-tree})
-  (d/delete-database)
-  (d/create-database)
-  (let [conn (d/connect)]
-    (d/transact conn [{:db/id 1, :name "Alice"}])
-    (is (= hitchhiker.tree.DataNode
-           (-> @conn :eavt type)))))
+  (let [config {:store {:backend :mem
+                        :id "test-hitchhiker-tree"}
+                :schema-flexibility :read
+                :keep-history? false
+                :index :datahike.index/hitchhiker-tree}]
+    (d/delete-database config)
+    (d/create-database config)
+    (let [conn (d/connect config)]
+      (d/transact conn [{:db/id 1, :name "Alice"}])
+      (is (= hitchhiker.tree.DataNode
+             (-> @conn :eavt type))))))

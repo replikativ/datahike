@@ -3,10 +3,6 @@
 
 (comment
 
-  (def uri "datahike:mem://sandbox")
-
-  (d/delete-database uri)
-
   (def schema [{:db/ident       :name
                 :db/cardinality :db.cardinality/one
                 :db/index       true
@@ -19,18 +15,29 @@
                 :db/cardinality :db.cardinality/one
                 :db/valueType   :db.type/long}])
 
-  (d/create-database uri :initial-tx schema)
+  (def cfg {:store  {:backend :mem :id "sandbox"}
+            :keep-history? true
+            :schema-flexibility :write
+            :initial-tx schema})
 
-  (def conn (d/connect uri))
+  (d/delete-database cfg)
 
-  (def result (d/transact conn [{:name "Alice"
-                                 :age  25}
-                                {:name "Bob"
-                                 :age  35}
-                                {:name    "Charlie"
-                                 :age     45
-                                 :sibling [[:name "Alice"] [:name "Bob"]]}]))
+  (d/create-database cfg)
 
-  (d/q '[:find ?e ?a ?v ?t :in $ ?a :where [?e :name ?v ?t] [?e :age ?a]] (d/history @conn) 25)
+  (def conn (d/connect cfg))
 
-)
+  (d/transact conn [{:name "Alice"
+                     :age  25}
+                    {:name "Bob"
+                     :age  35}
+                    {:name    "Charlie"
+                     :age     45
+                     :sibling [[:name "Alice"] [:name "Bob"]]}])
+
+  (d/q '[:find ?e ?a ?v ?t
+         :in $ ?a
+         :where [?e :name ?v ?t] [?e :age ?a]]
+       @conn
+       35)
+
+  )

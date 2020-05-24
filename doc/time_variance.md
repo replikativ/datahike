@@ -12,13 +12,13 @@ in time](#db), [at a specific point in time](#as-of), [over the whole database
 existence](#history), or [since a specific point in time](#since).
 
 If the database does not require to be time variant you can choose to ignore the
-temporal data and set the `temporal-index` parameter to `false` at database
+temporal data and set the `keep-history?` parameter to `false` at database
 creation like so:
 
 ```clojure
 (require '[datahike.api :as d])
 
-(d/create-database "datahike:mem://time-invariant" :temporal-index false)
+(d/create-database {:store {:backend :mem :id "time-invariant"} :keep-history? true})
 
 ```
 
@@ -42,9 +42,13 @@ system. Use `db` for this view. The following example shows a simple interaction
              {:db/ident :age
               :db/valueType :db.type/long
               :db/cardinality :db.cardinality/one}])
+              
+(def cfg {:store {:backend :mem :id "current-db"} :initial-tx schema})
 
 ;; create our temporal database
-(d/create-database "datahike:mem://current-db" :initial-tx schema)
+(d/create-database cfg)
+
+(def conn (d/connect cfg))
 
 ;; add first data
 (d/transact conn [{:name "Alice" :age 25}])
@@ -81,7 +85,12 @@ You can query the database at a specific point in time using `as-of`:
               :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
-(d/create-database "datahike:mem://as-of-db" :initial-tx schema)
+(def cfg {:store {:backend :mem :id "as-of-db"} :initial-tx schema})
+
+(d/create-database cfg)
+
+(def conn (d/connect cfg))
+
 
 ;; add first data
 (d/transact conn [{:name "Alice" :age 25}])
@@ -124,7 +133,11 @@ current and all historical data:
               :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
-(d/create-database "datahike:mem://history-db" :initial-tx schema)
+(def cfg {:store {:backend :mem :id "history-db"} :initial-tx schema})
+
+(d/create-database cfg)
+
+(def conn (d/connect cfg))
 
 ;; add first data
 (d/transact conn [{:name "Alice" :age 25}])
@@ -163,7 +176,12 @@ database:
               :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
-(d/create-database "datahike:mem://since-db" :initial-tx schema)
+(def cfg {:store {:backend :mem :id "since-db"} :initial-tx schema})
+
+(d/create-database cfg)
+
+(def conn (d/connect cfg))
+
 
 ;; add first data
 (d/transact conn [{:name "Alice" :age 25}])
@@ -219,7 +237,11 @@ your purposes.
               :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
-(d/create-database "datahike:mem://since-db" :initial-tx schema)
+(def cfg {:store {:backend :mem :id "meta-db"} :initial-tx schema})
+
+(d/create-database cfg)
+
+(def conn (d/connect cfg))
 
 ;; add first data
 (d/transact conn [{:name "Alice" :age 25}])
@@ -260,7 +282,12 @@ available in transactions:
               :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
-(d/create-database "datahike:mem://purge-db" :initial-tx schema)
+(def cfg {:store {:backend :mem :id "purge-db"} :initial-tx schema})
+
+(d/create-database cfg)
+
+(def conn (d/connect cfg))
+
 
 ;; add data
 (d/transact conn [{:name "Alice" :age 25}])
