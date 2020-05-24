@@ -14,7 +14,7 @@ powered by an efficient Datalog query engine. This project started as a port of
 [DataScript](https://github.com/tonsky/DataScript) to the
 [hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
 DataScript tests are passing, but we are still working on the internals. Having
-said this we consider Datahike usable for medium projects, since DataScript is
+said this we consider Datahike usable for medium sized projects, since DataScript is
 very mature and deployed in many applications and the hitchhiker-tree
 implementation is heavily tested through generative testing. We are
 building on the two projects and the storage backends for the hitchhiker-tree
