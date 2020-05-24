@@ -3,19 +3,18 @@
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     [datahike.core :as d]
+    [datahike.query :as dq]
     [datahike.db :as db]
     [datahike.test.core :as tdc])
-    #?(:clj
-      (:import [clojure.lang ExceptionInfo])))
-
-
+  #?(:clj
+     (:import [clojure.lang ExceptionInfo])))
 
 (deftest test-joins
   (let [db (-> (d/empty-db)
-               (d/db-with [ { :db/id 1, :name  "Ivan", :age   15 }
-                            { :db/id 2, :name  "Petr", :age   37 }
-                            { :db/id 3, :name  "Ivan", :age   37 }
-                            { :db/id 4, :age 15 }]))]
+               (d/db-with [ {:db/id 1, :name  "Ivan", :age   15}
+                            {:db/id 2, :name  "Petr", :age   37}
+                            {:db/id 3, :name  "Ivan", :age   37}
+                            {:db/id 4, :age 15}]))]
     (is (= (d/q '[:find ?e
                   :where [?e :name]] db)
            #{[1] [2] [3]}))
@@ -44,7 +43,7 @@
                             [:db/add 1 :aka  "pi"]
                             [:db/add 2 :name "Petr"]
                             [:db/add 2 :aka  "porosenok"]
-                            [:db/add 2 :aka  "pi"] ]))]
+                            [:db/add 2 :aka  "pi"]]))]
     (is (= (d/q '[:find  ?n1 ?n2
                   :where [?e1 :aka ?x]
                          [?e2 :aka ?x]
@@ -60,7 +59,7 @@
   (let [db [ [1 :name "Ivan"]
              [1 :age  19]
              [1 :aka  "dragon_killer_94"]
-             [1 :aka  "-=autobot=-"] ] ]
+             [1 :aka  "-=autobot=-"]]]
     (is (= (d/q '[ :find  ?n ?a
                    :where [?e :aka "dragon_killer_94"]
                           [?e :name ?n]
@@ -69,7 +68,7 @@
 
   (testing "Query over long tuples"
     (let [db [ [1 :name "Ivan" 945 :db/add]
-               [1 :age  39     999 :db/retract]] ]
+               [1 :age  39     999 :db/retract]]]
       (is (= (d/q '[ :find  ?e ?v
                      :where [?e :name ?v]] db)
              #{[1 "Ivan"]}))
@@ -80,9 +79,9 @@
 
 (deftest test-q-in
   (let [db (-> (d/empty-db)
-               (d/db-with [ { :db/id 1, :name  "Ivan", :age   15 }
-                            { :db/id 2, :name  "Petr", :age   37 }
-                            { :db/id 3, :name  "Ivan", :age   37 }]))
+               (d/db-with [{:db/id 1, :name "Ivan", :age 15}
+                           {:db/id 2, :name "Petr", :age 37}
+                           {:db/id 3, :name "Ivan", :age 37}]))
         query '{:find  [?e]
                 :in    [$ ?attr ?value]
                 :where [[?e ?attr ?value]]}]
@@ -109,7 +108,7 @@
              #{[1 "ivan@mail.ru"]
                [2 "petr@gmail.com"]
                [3 "ivan@mail.ru"]})))
-    
+
     (testing "Query without DB"
       (is (= (d/q '[:find ?a ?b
                     :in   ?a ?b]
@@ -118,9 +117,9 @@
 
 (deftest test-bindings
   (let [db (-> (d/empty-db)
-             (d/db-with [ { :db/id 1, :name  "Ivan", :age   15 }
-                          { :db/id 2, :name  "Petr", :age   37 }
-                          { :db/id 3, :name  "Ivan", :age   37 }]))]
+             (d/db-with [{:db/id 1, :name "Ivan", :age 15}
+                         {:db/id 2, :name "Petr", :age 37}
+                         {:db/id 3, :name "Ivan", :age 37}]))]
     (testing "Relation binding"
       (is (= (d/q '[:find  ?e ?email
                     :in    $ [[?n ?email]]
@@ -162,7 +161,7 @@
                 [2 :name "Petr"]]
                [])
              #{})))
-    
+
     (testing "Placeholders"
       (is (= (d/q '[:find ?x ?z
                     :in [?x _ ?z]]
@@ -172,17 +171,17 @@
                     :in [[?x _ ?z]]]
                   [[:x :y :z] [:a :b :c]])
              #{[:x :z] [:a :c]})))
-    
+
     (testing "Error reporting"
       (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
             (d/q '[:find ?a ?b :in [?a ?b]] :a)))
       (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"
             (d/q '[:find ?a :in [?a ...]] :a)))
       (is (thrown-with-msg? ExceptionInfo #"Not enough elements in a collection \[:a\] to bind tuple \[\?a \?b\]"
-            (d/q '[:find ?a ?b :in [?a ?b]] [:a]))))
+            (d/q '[:find ?a ?b :in [?a ?b]] [:a]))))))
 
-))
-        
+
+
 (deftest test-nested-bindings
   (is (= (d/q '[:find  ?k ?v
                 :in    [[?k ?v] ...]
@@ -258,6 +257,88 @@
                  :offset 1
                  :limit 0})
            #{}))))
+
+(deftest test-return-maps
+  (let [db (-> (d/empty-db)
+               (d/db-with [{:db/id 1, :name  "Alice", :age   15}
+                           {:db/id 2, :name  "Bob", :age   37}
+                           {:db/id 3, :name  "Charlie", :age   37}]))]
+      (testing "returns map"
+          (is (map? (first (d/q {:query '[:find ?e :keys name :where [?e :name _]]
+                                 :args [db]})))))
+      (testing "returns set without return-map"
+          (is (= '#{["Charlie"] ["Alice"] ["Bob"]}
+                 (d/q {:query '[:find ?name :where [_ :name ?name]]
+                       :args [db]}))))
+      (testing "returns map with key return-map"
+          (is (= '[{:foo 3} {:foo 2} {:foo 1}]
+                 (d/q {:query '[:find ?e :keys foo :where [?e :name _]]
+                       :args [db]}))))
+      (testing "returns map with string return-map"
+          (is (= '[{"foo" "Charlie"} {"foo" "Alice"} {"foo" "Bob"}]
+                 (d/q {:query '[:find ?name :strs foo :where [?e :name ?name]]
+                       :args [db]}))))))
+
+(deftest test-memoized-parse-query
+  (testing "no map return"
+    (is (= nil
+           (:qreturnmap (dq/memoized-parse-query '[:find ?e :where [?e :name]])))))
+  (testing "key map return"
+    (is (= '#datalog.parser.type.ReturnMaps{:mapping-type :keys, :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo})}
+           (:qreturnmaps (dq/memoized-parse-query '[:find ?e :keys foo :where [?e :name]])))))
+  (testing "key map return multiple"
+    (is (= '#datalog.parser.type.ReturnMaps{:mapping-type :keys, :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo}, #datalog.parser.type.MappingKey{:mapping-key bar})}
+           (:qreturnmaps (dq/memoized-parse-query '[:find ?e ?f :keys foo bar :where [?e :name ?f]])))))
+  (testing "string map return multiple"
+    (is (= '#datalog.parser.type.ReturnMaps{:mapping-type :strs, :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo}, #datalog.parser.type.MappingKey{:mapping-key bar})}
+           (:qreturnmaps (dq/memoized-parse-query '[:find ?e ?f :strs foo bar :where [?e :name ?f]])))))
+  (testing "symbol map return multiple"
+    (is (= '#datalog.parser.type.ReturnMaps{:mapping-type :syms, :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo}, #datalog.parser.type.MappingKey{:mapping-key bar})}
+           (:qreturnmaps (dq/memoized-parse-query '[:find ?e ?f :syms foo bar :where [?e :name ?f]]))))))
+
+(deftest test-convert-to-return-maps
+  (testing "converting keys"
+    (is (= [{:foo 3} {:foo 2} {:foo 1}]
+           (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :keys,
+                                                                       :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo})}
+                                      #{[1] [2] [3]}))))
+  (testing "converting strs"
+    (is (= [{"foo" 3} {"foo" 2} {"foo" 1}]
+           (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :strs,
+                                                                       :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo})}
+                                      #{[1] [2] [3]}))))
+  (testing "converting syms"
+    (is (= [{'foo 3} {'foo 2} {'foo 1}]
+           (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :syms,
+                                                                       :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo})}
+                                      #{[1] [2] [3]}))))
+  (testing "converting keys"
+    (is (= '[{:foo 1, :bar 11, :baz "Ivan"} {:foo 3, :bar 21, :baz "Petr"} {:foo 3, :bar 31, :baz "Ivan"}]
+           (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :keys,
+                                                                       :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo},
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key bar},
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key baz})}
+                                      #{[1 11 "Ivan"]
+                                        [3 31 "Ivan"]
+                                        [3 21 "Petr"]}))))
+  (testing "converting strs"
+    (is (= '[{"foo" 1, "bar" 11, "baz" "Ivan"} {"foo" 3, "bar" 21, "baz" "Petr"} {"foo" 3, "bar" 31, "baz" "Ivan"}]
+           (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :strs,
+                                                                       :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo},
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key bar},
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key baz})}
+                                      #{[1 11 "Ivan"]
+                                        [3 31 "Ivan"]
+                                        [3 21 "Petr"]}))))
+  (testing "converting syms"
+    (is (= '[{foo 1, bar 11, baz "Ivan"} {foo 3, bar 21, baz "Petr"} {foo 3, bar 31, baz "Ivan"}]
+           (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :syms,
+                                                                       :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo},
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key bar},
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key baz})}
+                                      #{[1 11 "Ivan"]
+                                        [3 31 "Ivan"]
+                                        [3 21 "Petr"]})))))
 
 #_(require 'datahike.test.query :reload)
 #_(clojure.test/test-ns 'datahike.test.query)
