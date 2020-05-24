@@ -9,19 +9,22 @@
 <a href="https://github.com/replikativ/datahike/tree/development"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/development"/></a>
 </p>
 
-Datahike is a durable [datalog](https://en.wikipedia.org/wiki/Datalog) database
-powered by an efficient datalog query engine. This project is a port of
+Datahike is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
+powered by an efficient Datalog query engine. This project started as a port of
 [DataScript](https://github.com/tonsky/DataScript) to the
 [hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
 DataScript tests are passing, but we are still working on the internals. Having
-said this we consider Datahike usable for small projects, since DataScript is
+said this we consider Datahike usable for medium projects, since DataScript is
 very mature and deployed in many applications and the hitchhiker-tree
-implementation is at least heavily tested through generative testing. We are
+implementation is heavily tested through generative testing. We are
 building on the two projects and the storage backends for the hitchhiker-tree
 through [konserve](https://github.com/replikativ/konserve). We would like to
 hear experience reports and are happy if you join us.
 
-Some presentations are available:
+You may find articles on Datahike on our company's [blog page](https://lambdaforge.io/articles)
+
+
+A selection of Datahike presentation can be found at:
 
 - [2019 scicloj online meetup](https://www.youtube.com/watch?v=Hjo4TEV81sQ).
 - [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
@@ -130,7 +133,7 @@ to provide an open-source reimplementation of Datomic, but it is part of the
 data management solutions. We have spoken to many backend engineers and Clojure
 developers, who tried to stay away from Datomic just because of its proprietary
 nature and we think in this regard Datahike should make an approach to Datomic
-easier and vice-versa people who only want to use the goodness of datalog in
+easier and vice-versa people who only want to use the goodness of Datalog in
 small scale applications should not worry about setting up and depending on
 Datomic.
 
@@ -257,7 +260,7 @@ Have a look at the [change log](./CHANGELOG.md) for recent updates.
 ## Commercial support
 
 We are happy to provide commercial support with
-[lambdaforge](https://lambdaforge.io). If you are interested in a particular
+[Lambdaforge](https://lambdaforge.io). If you are interested in a particular
 feature, please let us know.
 
 ## License
