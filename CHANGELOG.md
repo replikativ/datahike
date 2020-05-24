@@ -11,6 +11,7 @@
 - add Java interop in queries
 - add basic pagination
 - add noHistory support
+- multiple bugfixes including downstream dependencies
 
 # 0.2.1
 
