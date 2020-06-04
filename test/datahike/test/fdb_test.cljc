@@ -13,7 +13,7 @@
 
 
 (defn assert-vec-conversion
-  "Checks that given a 'vect we get the same vect back after going through fdb"
+  "Checks that given a 'vect we get the same vect back after going through fdb key conversion"
   [index-type from-vect to-vect]
   (let [buff       (k/->byteBuffer index-type from-vect)
         buff->vect (k/byteBuffer->vect index-type buff)
