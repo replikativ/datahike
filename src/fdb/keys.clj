@@ -138,6 +138,7 @@
         index-type-code (index-type->code index-type)]
     (when a (assert (instance? clojure.lang.Keyword a)))
     (assert (and (<= 0 index-type-code) (>= 2 index-type-code)))
+    ;;(println "Writing: " index-type e a v t)
     ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.
     (buf/write! buffer [index-type-code] (buf/spec buf/byte))
     (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (position index-type :e-end) 7)})

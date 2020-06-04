@@ -55,8 +55,9 @@
   [index-type [e a v t]]
   (let [fd    (FDB/selectAPIVersion 510)
         key   (key index-type [e a v t])
-        ;; Putting the key also in the value
+        ;; The value is also the key
         value key]
+    (println "Insert: " (key->vect index-type key))
     (with-open [db (.open fd)]
       (tr! db (.set tr key value))
       db)))
@@ -89,7 +90,10 @@
         ;; What does it return?
         ;;
         begin-key (KeySelector/firstGreaterOrEqual (key index-type begin))
-        end-key (KeySelector/firstGreaterThan (key index-type end))
+        end-key   (KeySelector/firstGreaterThan #_(key index-type end)
+                    (if (= (first end) 2147483647)
+                      (byte-array [0xFF])
+                      (key index-type end)))
         #_(if (= begin end)
             ;; TODO: this is just a hack to force it to return something
             ;; when begin = end. Coz in this case getRange returns empty
@@ -98,15 +102,18 @@
             (KeySelector/firstGreaterThan (key index-type end)))]
     (with-open [db (.open fd)]
       (tr! db
-           (mapv #(.getKey %)
-                 (.getRange tr begin-key end-key))))))
+        (mapv #(.getKey %)
+          (.getRange tr begin-key end-key))))))
 
 
 (defn get-range
-  "Returns fdb keys in the range [begin end]. `begin` and `end` are vectors.
+  "Returns vectors in the range [begin end]. `begin` and `end` are vectors.
   index-type is `:eavt`, `:aevt` and `:avet`"
   [index-type begin end]
-  (map (partial key->vect index-type) (get-range-as-byte-array index-type begin end)))
+  (let [result (get-range-as-byte-array index-type begin end)]
+    ;;  (println "get-range: " index-type begin end)
+(println "Got from get-range: " result)
+    (map (partial key->vect index-type) result)))
 
 ;;------------ KeySelectors and iterations
 

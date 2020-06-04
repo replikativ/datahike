@@ -12,7 +12,6 @@
     (fn [[e a v tx]] (dd/datom e a v tx true))))
 
 
-
 (defn -slice [db from to index-type]
   (map (index-type->datom-fn index-type)
     (fc/get-range index-type from to)))
