@@ -137,7 +137,7 @@
               [3 :name "Sergey"]]
             (map dvec (d/datoms db :eavt)))))
 
-    #_(testing "datoms in :aevt order"
+    (testing "datoms in :aevt order"
       (is (= [[1 :age 44]
               [1 :name "Petr"]
               [2 :age 25]
