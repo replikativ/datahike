@@ -125,13 +125,13 @@
   [val buffer section-end]
   (assert (s/valid? integer? val))
   (buf/write! buffer [val] (buf/spec buf/int64)
-              {:offset (shift-left section-end 11)})
+    {:offset (shift-left section-end 11)})
   (buf/write! buffer [LONG] (buf/spec buf/int32)
-              {:offset (shift-left section-end 3)}))
+    {:offset (shift-left section-end 3)}))
 
 (defn- write
   [val buffer section-end]
-  "Write `val` into `buffer` given `section-end`, the end of the section where it should be written"
+  "Write `val` into `buffer` given `section-end`, the *end* of the section where it should be written"
   (let [type (type val)]
     (cond
       (= type java.lang.Integer) (write-int val buffer section-end)
@@ -149,7 +149,7 @@
 (defn ->byteBuffer
   "Converts a vector into a bytebuffer.
   Whatever the index-type, expects the datom in the [e a v t] format.
-  (Datahike code will always send [e a v t] and only the index-type will vary.)"
+  (Datahike will always send [e a v t] and only the index-type will vary.)"
   [index-type [e a v t]]
   (assert (s/valid? keyword? index-type))
   (assert (some #{:eavt :aevt :avet} [index-type]))
@@ -214,7 +214,7 @@
         t (first (buf/read buffer (buf/spec buf/int64)
                    {:offset (shift-left (position index-type :t-end) 7)}))]
 
-    ;; Can't ask for an index of type e.g. :eavt whereas the underlying bytebuffer contains an index of type :aevt.
+    ;; Don't allow reading an index of type e.g. :eavt whereas the underlying bytebuffer contains an index of type :aevt.
     (when-not (= index-type-code expected-index-type-code)
       (throw (RuntimeException. (str "Expecting to read an index of type: " expected-index-type-code ", but got type: " index-type-code))))
 
@@ -279,4 +279,11 @@
   (print-buf (->byteBuffer datom))
 
   (println "arr contains" (vec (->byteArr datom)))
+
+  (def buf (buf/allocate buf-len {:impl :nio :type :direct}))
+
+  (buf/write! buf (vec (take 99 (repeat 127))) (buf/repeat 1 buf/byte))
+
+  (max-key :eavt)
+  (print-buf (max-key :avet))
   )

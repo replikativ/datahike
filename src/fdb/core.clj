@@ -57,7 +57,7 @@
         key   (key index-type [e a v t])
         ;; The value is also the key
         value key]
-    (println "Insert: " (key->vect index-type key))
+    ;;(println "Insert: " index-type " - " (key->vect index-type key))
     (with-open [db (.open fd)]
       (tr! db (.set tr key value))
       db)))
@@ -94,17 +94,18 @@
 
 
 (defn get-range
-  "Returns vectors in the range [begin end]. `begin` and `end` are vectors.
-  index-type is `:eavt`, `:aevt` and `:avet`"
+  "Returns vectors in the range [begin end]. `begin` and `end` are vectors *in the [e a v t] form*. But it is really the index-type, i.e., `:eavt`, `:aevt` or `:avet` which sets the semantics of those vectors."
   [index-type begin end]
-  (let [result (get-range-as-byte-array index-type begin end)]
-    ;;  (println "get-range: " index-type begin end)
-(println "Got from get-range: " result)
-    (map (partial key->vect index-type) result)))
+  (let [res (get-range-as-byte-array index-type begin end)
+        result (map (partial key->vect index-type) res)]
+    ;; (println "Got from get-range: " (count res))
+    ;; (println "Got from get-range: " begin "----" end ".--res:" result)
+
+    result))
 
 ;;------------ KeySelectors and iterations
 
-(defn get-key
+(defn get-key 
   "Returns the key behind a key-selector"
   [key-selector]
   (let [fd (FDB/selectAPIVersion 510)]
