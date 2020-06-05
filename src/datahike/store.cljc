@@ -66,9 +66,11 @@
 (def memory (atom {}))
 
 (defmethod empty-store :mem [{:keys [id]}]
-  (let [store (<?? S (mem/new-mem-store))]
-    (swap! memory assoc id store)
-    store))
+  (if-let [store (get @memory id)]
+    store
+    (let [store (<?? S (mem/new-mem-store))]
+      (swap! memory assoc id store)
+      store)))
 
 (defmethod delete-store :mem [{:keys [id]}]
   (swap! memory dissoc id))

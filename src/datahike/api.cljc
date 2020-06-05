@@ -54,17 +54,15 @@ Connect to a database with persistent store:
   - `:schema-flexibility` can be set to either `:read` or `:write` setting the validation method for the data.
   - `:read` validates the data when your read data from the database, `:write` validates the data when you transact new data.
   - `:index` defines the data type of the index. Available are `:datahike.index/hitchhiker-tree`, `:datahike.index/persistent-set` (only available with in-memory storage)
+  - `:name` defines your database name optionally, if not set, a random name is created
 
   Default configuration has in-memory store, keeps history with write schema flexibility, and has no initial transaction:
   {:store {:backend :mem :id \"default\"} :keep-history? true :schema-flexibility :write}
 
   Usage:
 
-  ; create an empty database with default configuration:
-  (create-database {:store {:backend :mem :id \"example\"}})
-
-  ; initial data after creation may be added using the `:initial-tx` parameter, which in this example adds a schema:
-  (create-database {:store {:backend :mem :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})
+  ; create an empty database:
+  (create-database {:store {:backend :mem :id \"example\"} :name \"my-favourite-database\"})
 
   ; Datahike has a strict schema validation (schema-flexibility `:write`) policy by default, that only allows transaction of data that has been pre-defined by a schema.
   ; You may influence this behaviour using the `:schema-flexibility` attribute:
@@ -76,6 +74,7 @@ Connect to a database with persistent store:
 
   ; Initial data after creation may be added using the `:initial-tx` attribute, which in this example adds a schema:
   (create-database {:store {:backend :mem :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"}
+
   create-database
   dc/create-database)
 
