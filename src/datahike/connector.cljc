@@ -12,6 +12,7 @@
             [clojure.core.cache :as cache])
   (:import [java.net URI]))
 
+
 (s/def ::connection #(instance? clojure.lang.Atom %))
 
 (defmulti transact!
@@ -57,7 +58,8 @@
                          :temporal-avet temporal-avet-flushed))
     tx-report))
 
-(defmethod transact! clojure.lang.PersistentArrayMap
+
+(defmethod transact! clojure.lang.IPersistentMap
   [connection {:keys [tx-data]}]
   {:pre [(d/conn? connection)]}
   (future
@@ -99,7 +101,7 @@
   (-database-exists? [uri]
     (-database-exists? (dc/uri->config uri)))
 
-  clojure.lang.PersistentArrayMap
+  clojure.lang.IPersistentMap
   (-database-exists? [config]
     (let [config (dc/load-config config)
           store-config (:store config)
