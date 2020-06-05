@@ -195,6 +195,7 @@
         t (first (buf/read buffer (buf/spec buf/int64)
                    {:offset (shift-left (position index-type :t-end) 7)}))]
 
+    ;; Can't ask for an index of type e.g. :eavt whereas the underlying bytebuffer contains an index of type :aevt.
     (when-not (= index-type-code expected-index-type-code)
       (throw (RuntimeException. (str "Expecting to read an index of type: " expected-index-type-code ", but got type: " index-type-code))))
 
