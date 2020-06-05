@@ -4,7 +4,7 @@
                                    Range
                                    KeySelector)
            (java.util List))
-  (:require [fdb.keys :refer [key ->byteArr key->vect]]))
+  (:require [fdb.keys :refer [key ->byteArr key->vect max-key]]))
 
 (defmacro tr!
   "Transaction macro to perform actions. Always use tr for actions inside
@@ -85,21 +85,8 @@
   index-type is `:eavt`, `:aevt` and `:avet`"
   [index-type begin end]
   (let [fd        (FDB/selectAPIVersion 510)
-        ;; TODO: on the console: put (datom 124 :likes "Hans" 1 true) in an empty db and then
-        ;; do (KeySelector/firstGreaterOrEqual (key :eavt [124 nil nil nil]))
-        ;; What does it return?
-        ;;
         begin-key (KeySelector/firstGreaterOrEqual (key index-type begin))
-        end-key   (KeySelector/firstGreaterThan #_(key index-type end)
-                    (if (= (first end) 2147483647)
-                      (byte-array [0xFF])
-                      (key index-type end)))
-        #_(if (= begin end)
-            ;; TODO: this is just a hack to force it to return something
-            ;; when begin = end. Coz in this case getRange returns empty
-            (KeySelector/firstGreaterOrEqual (byte-array [0xFF]))
-            ;; 'GreaterThan' makes sure that `end` is in the returned interval
-            (KeySelector/firstGreaterThan (key index-type end)))]
+        end-key   (KeySelector/firstGreaterThan (max-key index-type))]
     (with-open [db (.open fd)]
       (tr! db
         (mapv #(.getKey %)

@@ -74,31 +74,50 @@
   ;; 4 more bytes: to store the encoding that we store a String
   (- section-end (+ string-size (* 2 4) 4)))
 
+
+;; ------- Keys with max values --------
+
+;; This function is memoized. See next def.
+(defn- max-key-impl [index-type]
+  "Returns the max value possible for a fdb key when the index is of type ìndex-type`"
+  (assert (some #{:eavt :aevt :avet} [index-type]))
+  (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})
+        index-type-code (index-type->code index-type)
+        arr (byte-array buf-len)]
+    (buf/write! buffer [index-type-code] (buf/spec buf/byte))
+    ;; TODO: weird that the max value for a byte is 127
+    (buf/write! buffer (vec (take (- buf-len 1) (repeat 127)))
+      (buf/repeat 1 buf/byte) {:offset 1})
+    (.get buffer arr)
+    arr))
+
+(def max-key (memoize max-key-impl))
+
 ;; ------- writing --------
 
 (defn- write-str
   [val buffer section-end]
   (assert (s/valid? string? val))
   (buf/write! buffer [val] (buf/spec buf/string*)
-              {:offset (str-offset (str-size val) section-end)})
+    {:offset (str-offset (str-size val) section-end)})
   (buf/write! buffer [(str-size val)] (buf/spec buf/int32)
-              {:offset (shift-left section-end 7)})
+    {:offset (shift-left section-end 7)})
   (buf/write! buffer [STRING] (buf/spec buf/int32)
-              {:offset (shift-left section-end 3)}))
+    {:offset (shift-left section-end 3)}))
 
 (defn- write-int
   [val buffer section-end]
   (assert (s/valid? int? val))
   (buf/write! buffer [val] (buf/spec buf/int32)
-              {:offset (shift-left section-end 7)})
+    {:offset (shift-left section-end 7)})
   (buf/write! buffer [INT] (buf/spec buf/int32)
-              {:offset (shift-left section-end 3)}))
+    {:offset (shift-left section-end 3)}))
 
 (defn- write-a
   "Write the `a` part in eavt"
   [a buffer a-end]
   (assert (s/valid? (s/alt :nil nil?
-                           :keyword keyword?) [a]))
+                      :keyword keyword?) [a]))
   (let [a-as-str (attribute-as-str a)]
     (write-str a-as-str buffer a-end)))
 
