@@ -710,16 +710,17 @@
 (def ^:const br-sqrt (long (Math/sqrt br)))
 
 (defn ^DB empty-db
-  ([] (empty-db nil (dc/storeless-config)))
-  ([schema] (empty-db schema (dc/storeless-config)))
-  ([schema {:keys [keep-history? index schema-flexibility] :as config}]
+  ([] (empty-db nil nil))
+  ([schema] (empty-db schema nil))
+  ([schema config]
    {:pre [(or (nil? schema) (map? schema))]}
    (validate-schema schema)
-   (map->DB
-     (merge
-      {:schema  (merge schema
-                       (when (= :read schema-flexibility)
-                         implicit-schema))
+   (let [{:keys [keep-history? index schema-flexibility] :as config} (merge (dc/storeless-config) config )]
+     (map->DB
+      (merge
+       {:schema  (merge schema
+                        (when (= :read schema-flexibility)
+                          implicit-schema))
         :rschema (rschema (merge implicit-schema schema))
         :config  config
         :eavt    (di/empty-index index :eavt)
@@ -731,7 +732,7 @@
        (when keep-history?
          {:temporal-eavt (di/empty-index index :eavt)
           :temporal-aevt (di/empty-index index :aevt)
-          :temporal-avet (di/empty-index index :avet)})))))
+          :temporal-avet (di/empty-index index :avet)}))))))
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
@@ -747,11 +748,12 @@
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
 
 (defn ^DB init-db
-  ([datoms] (init-db datoms nil (dc/storeless-config)))
-  ([datoms schema] (init-db datoms schema (dc/storeless-config)))
-  ([datoms schema {:keys [index schema-flexibility keep-history?] :as config}]
+  ([datoms] (init-db datoms nil nil))
+  ([datoms schema] (init-db datoms schema nil))
+  ([datoms schema config]
    (validate-schema schema)
-   (let [rschema (rschema (merge implicit-schema schema))
+   (let [{:keys [index schema-flexibility keep-history?] :as config} (merge (dc/storeless-config) config)
+         rschema (rschema (merge implicit-schema schema))
          indexed (:db/index rschema)
          eavt (di/init-index index datoms indexed :eavt)
          aevt (di/init-index index datoms indexed :aevt)
