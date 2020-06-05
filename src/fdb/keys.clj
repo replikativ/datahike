@@ -186,12 +186,18 @@
 (defn byteBuffer->vect
   "Converts a bytebuffer representation of a fdb key into a datom vector"
   [index-type buffer]
-  (let [e (first (buf/read buffer (buf/spec buf/int64)
+  (let [index-type-code (first (buf/read buffer (buf/spec buf/byte))) ;; offset: 0
+        expected-index-type-code (index-type->code index-type)
+        e (first (buf/read buffer (buf/spec buf/int64)
                    {:offset (shift-left (position index-type :e-end) 7)}))
         a (keyword (read-str buffer (position index-type :a-end)))
         v (read buffer (position index-type :v-end))
         t (first (buf/read buffer (buf/spec buf/int64)
                    {:offset (shift-left (position index-type :t-end) 7)}))]
+
+    (when-not (= index-type-code expected-index-type-code)
+      (throw (RuntimeException. (str "Expecting to read an index of type: " expected-index-type-code ", but got type: " index-type-code))))
+
     (case index-type
       :eavt [e a v t]
       :aevt [a e v t]
