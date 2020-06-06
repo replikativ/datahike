@@ -86,7 +86,11 @@
   [index-type begin end]
   (let [fd        (FDB/selectAPIVersion 510)
         begin-key (KeySelector/firstGreaterOrEqual (key index-type begin))
-        end-key   (KeySelector/firstGreaterThan (max-key index-type))]
+        end-key   (KeySelector/firstGreaterThan (if (= (first end) 2147483647)
+                                                  (max-key index-type)
+                                                  (key index-type end))
+                    #_(key index-type end) #_(max-key index-type)
+                    )]
     (with-open [db (.open fd)]
       (tr! db
         (mapv #(.getKey %)
