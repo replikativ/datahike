@@ -181,7 +181,7 @@
               [2 :name "Ivan"]
               [3 :age 11]
               [3 :name "Sergey"]]
-            (map dvec (d/datoms db :eavt)))))
+            (mapv dvec (d/datoms db :eavt)))))
 
     (testing "datoms in :aevt order"
       (is (= [[1 :age 44]
