@@ -68,7 +68,7 @@
   [string-size section-end]
   (assert (s/valid? int? string-size))
   (assert (s/valid? int? section-end))
-  ;; 2 * 4 bytes: as we store the string size twice:
+  ;; 2 * 4 bytes: as we store the string size twice i.e.:
   ;; - octet puts the size before the string
   ;; - we also put it again at the end
   ;; 4 more bytes: to store the encoding that we store a String
@@ -95,15 +95,24 @@
 
 ;; ------- writing --------
 
+;; The size has to be written at the end of the section,
+;; but the string itself has to be written at the begin of the section.
+;; Why? This is a way to preserve the alphabetical order of string.
+;; E.g. Even though aab's length is shorter than aaaa's,
+;; the former must be greater than aaaa in our ordering
 (defn- write-str
-  [val buffer section-end]
+  [val buffer index-type section-type] ;; section-type is :a-end or :v-end
   (assert (s/valid? string? val))
-  (buf/write! buffer [val] (buf/spec buf/string*)
-    {:offset (str-offset (str-size val) section-end)})
-  (buf/write! buffer [(str-size val)] (buf/spec buf/int32)
-    {:offset (shift-left section-end 7)})
-  (buf/write! buffer [STRING] (buf/spec buf/int32)
-    {:offset (shift-left section-end 3)}))
+  (assert (s/valid? keyword? index-type))
+  (assert (s/valid? keyword? section-type))
+  (let [section-end (position index-type section-type)]
+    (buf/write! buffer [val] (buf/spec buf/string*)
+      {:offset (str-offset (str-size val) section-end)})
+    (buf/write! buffer [(str-size val)] (buf/spec buf/int32)
+      {:offset (shift-left section-end 7)})
+    ;; TODO: Not sure this is needed. IT does not seem to used on the read side
+    (buf/write! buffer [STRING] (buf/spec buf/int32)
+      {:offset (shift-left section-end 3)})))
 
 (defn- write-int
   [val buffer section-end]
@@ -115,11 +124,12 @@
 
 (defn- write-a
   "Write the `a` part in eavt"
-  [a buffer a-end]
+  [a buffer index-type]
   (assert (s/valid? (s/alt :nil nil?
                       :keyword keyword?) [a]))
+  (assert (s/valid? keyword? index-type))
   (let [a-as-str (attribute-as-str a)]
-    (write-str a-as-str buffer a-end)))
+    (write-str a-as-str buffer index-type :a-end)))
 
 (defn- write-long
   [val buffer section-end]
@@ -129,14 +139,16 @@
   (buf/write! buffer [LONG] (buf/spec buf/int32)
     {:offset (shift-left section-end 3)}))
 
-(defn- write
-  [val buffer section-end]
+(defn- write-v
+  [val buffer index-type]
   "Write `val` into `buffer` given `section-end`, the *end* of the section where it should be written"
-  (let [type (type val)]
+  (assert (s/valid? keyword? index-type))
+  (let [type (type val)
+        section-end (position index-type :v-end)]
     (cond
       (= type java.lang.Integer) (write-int val buffer section-end)
       (= type java.lang.Long)    (write-long val buffer section-end)
-      (= type java.lang.String)  (write-str val buffer section-end))))
+      (= type java.lang.String)  (write-str val buffer index-type :v-end))))
 
 
 
@@ -161,8 +173,8 @@
     ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.
     (buf/write! buffer [index-type-code] (buf/spec buf/byte))
     (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (position index-type :e-end) 7)})
-    (write-a a buffer (position index-type :a-end))
-    (write v buffer (position index-type :v-end))
+    (write-a a buffer index-type)
+    (write-v v buffer index-type)
     (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (position index-type :t-end) 7)})
     buffer))
 
