@@ -30,13 +30,17 @@
 
 
 (defn -insert [db datom index-type]
-  (fc/insert index-type datom))
+  (let [db-after (fc/insert index-type datom)]
+    ;;(println ".----........db before - after insert: " db " ------ " db-after)
+    db))
 
 ;; TODO: implement
 (defn -remove [db datom index-type]
   ;;(println "....... remove called! " datom " ---- " index-type)
   db)
 
+;; Called 3 times, one for each index.
 (defn empty-db [index-type]
-  ;; TODO: Check why it goes here 3 times !?
-  (fc/empty-db))
+  (let [db (fc/empty-db)]
+    ;; (println "db is nil?:" db)
+    db))

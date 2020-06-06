@@ -79,7 +79,7 @@
                          ;; (println k)
                          (.set tr k v))))))))
 
-
+ 
 (defn- get-range-as-byte-array
   "Returns fdb keys in the range [begin end] as a collection of byte-arrays. `begin` and `end` are vectors.
   index-type is `:eavt`, `:aevt` and `:avet`"
@@ -92,7 +92,7 @@
                     #_(key index-type end) #_(max-key index-type)
                     )]
     (with-open [db (.open fd)]
-      (tr! db
+      (tr! db 
         (mapv #(.getKey %)
           (.getRange tr begin-key end-key))))))
 
