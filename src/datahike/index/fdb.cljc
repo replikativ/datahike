@@ -32,8 +32,10 @@
 (defn -insert [db datom index-type]
   (fc/insert index-type datom))
 
+;; TODO: implement
 (defn -remove [db datom index-type]
-  )
+  ;;(println "....... remove called! " datom " ---- " index-type)
+  db)
 
 (defn empty-db [index-type]
   ;; TODO: Check why it goes here 3 times !?
