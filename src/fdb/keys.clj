@@ -21,6 +21,16 @@
 
 (def index-type->code {:eavt 0 :aevt 1 :avet 2})
 
+(defn pred-section
+  "Given an index and a section, returns the previous section in the index."
+  [index-type section-type]
+  (get  {[:eavt :a-end] :e-end
+         [:eavt :v-end] :a-end
+         [:aevt :a-end] :code
+         [:aevt :v-end] :e-end
+         [:avet :a-end] :code
+         [:avet :v-end] :a-end}
+    [index-type section-type]))
 
 (defn- str-size
   [string]
@@ -98,19 +108,27 @@
 ;; The size has to be written at the end of the section,
 ;; but the string itself has to be written at the begin of the section.
 ;; Why? This is a way to preserve the alphabetical order of string.
-;; E.g. Even though aab's length is shorter than aaaa's,
+;; E.g. Even Bthough aab's length is shorter than aaaa's,
 ;; the former must be greater than aaaa in our ordering
 (defn- write-str
   [val buffer index-type section-type] ;; section-type is :a-end or :v-end
   (assert (s/valid? string? val))
   (assert (s/valid? keyword? index-type))
   (assert (s/valid? keyword? section-type))
-  (let [section-end (position index-type section-type)]
-    (buf/write! buffer [val] (buf/spec buf/string*)
-      {:offset (str-offset (str-size val) section-end)})
-    (buf/write! buffer [(str-size val)] (buf/spec buf/int32)
+  ;; TODO: assert that the string is not longer than the allowed size
+  (let [section-end (position index-type section-type)
+        str-bytes (.getBytes val)
+        size (count str-bytes)]
+
+
+    (buf/write! buffer str-bytes (buf/repeat size buf/byte)
+      {:offset (+ 1 (position index-type (pred-section index-type section-type)))})
+
+
+    (buf/write! buffer [size] (buf/spec buf/int32)
       {:offset (shift-left section-end 7)})
     ;; TODO: Not sure this is needed. IT does not seem to used on the read side
+
     (buf/write! buffer [STRING] (buf/spec buf/int32)
       {:offset (shift-left section-end 3)})))
 
@@ -189,19 +207,26 @@
   [buffer section-end]
   (first (buf/read buffer (buf/spec buf/int64)
            {:offset (shift-left section-end 11)})))
-(defn- read-str
-  [buffer section-end]
-  (let [size (read-int buffer section-end 7)]
-    (first (buf/read buffer (buf/spec buf/string*)
-             {:offset (str-offset size section-end)}))))
 
-(defn- read
-  [buffer section-end]
-  (let [type (cst->type (read-int buffer section-end 3))]
+
+(defn- read-str
+  [buffer index-type section-type]
+  (let [section-end (position index-type section-type)
+        size (read-int buffer section-end 7)
+        str-bytes (buf/read buffer (buf/repeat size buf/byte)
+                            {:offset (+ 1 (position index-type
+                                            (pred-section index-type section-type)))})]
+    ;;(println ":............" (type str-bytes))
+    (String. (byte-array str-bytes))))
+
+(defn- read-v
+  [buffer index-type section-type]
+  (let [section-end (position index-type :v-end)
+        type (cst->type (read-int buffer section-end 3))]
     (cond
       (= type java.lang.Integer) (read-int   buffer section-end 7)
       (= type java.lang.Long)    (read-long  buffer section-end)
-      (= type java.lang.String)  (read-str   buffer section-end))))
+      (= type java.lang.String)  (read-str   buffer index-type section-type))))
 
 
 (defn ->byteArr
@@ -221,8 +246,8 @@
         expected-index-type-code (index-type->code index-type)
         e (first (buf/read buffer (buf/spec buf/int64)
                    {:offset (shift-left (position index-type :e-end) 7)}))
-        a (keyword (read-str buffer (position index-type :a-end)))
-        v (read buffer (position index-type :v-end))
+        a (keyword (read-str buffer index-type :a-end))
+        v (read-v buffer index-type :v-end)
         t (first (buf/read buffer (buf/spec buf/int64)
                    {:offset (shift-left (position index-type :t-end) 7)}))]
 
