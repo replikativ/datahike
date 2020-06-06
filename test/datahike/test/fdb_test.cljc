@@ -97,7 +97,7 @@
 (comment
   (def db (-> (empty-db)
             (with-datom (datom 123 :likes "Hans" 1 true))
-            ;; (with-datom (datom 124 :likes "GG" 1 true))
+            (with-datom (datom 124 :likes "GG" 1 true))
             ))
   (d/datoms db :eavt)
   )
@@ -122,13 +122,52 @@
 (deftest db-with
   (testing  "simple insertion"
     (let [db (-> (empty-db)
-               (d/db-with [ [:db/add 1 :name "Petr"]]))]
+               ;: TODO: BUG: Does not work when there are 2 datoms for the same entity?
+               (d/db-with [ [:db/add 1 :name "Petr"]
+                           [:db/add 1 :ko "Ivan"]]))]
       (is (= 1
             (count (fdb/get-range :aevt [1 :name "Petr"] [20 :name "Petr"]))))))
-  
+
   (let [dvec #(vector (:e %) (:a %) (:v %))
         db (-> (empty-db)
-             (d/db-with [ [:db/add 1 :name "Petr"]
+             (d/db-with [[:db/add 1 :name "Petr"]
+                         [:db/add 1 :age 44]
+                         [:db/add 2 :name "Ivan"]
+                         [:db/add 2 :age 25]
+                         [:db/add 3 :name "Sergey"]
+                         [:db/add 3 :age 11]
+                         ]))]
+    (testing "datoms in :eavt order"
+      (is (= [[1 :age 44]
+              [1 :name "Petr"]
+              [2 :age 25]
+              [2 :name "Ivan"]
+              [3 :age 11]
+              [3 :name "Sergey"]]
+            (mapv dvec (d/datoms db :eavt)))))
+
+    (testing "datoms in :aevt order"
+      (is (= [[1 :age 44]
+              [2 :age 25]
+              [3 :age 11]
+              [1 :name "Petr"]
+              [2 :name "Ivan"]
+              [3 :name "Sergey"]]
+            (map dvec (d/datoms db :aevt)))))))
+
+
+(deftest db-with
+  (testing  "overriding"
+    (let [db (-> (empty-db)
+               ;: TODO: BUG: Does not work when there are 2 datoms for the same entity?
+               (d/db-with [ [:db/add 1 :name "Ivan"]
+                           [:db/add 1 :name "Petr"]]))]
+      (is (= 1
+            (count (fdb/get-range :aevt [1 :name "Petr"] [20 :name "Petr"]))))))
+
+  #_(let [dvec #(vector (:e %) (:a %) (:v %))
+        db (-> (empty-db)
+             (d/db-with [[:db/add 1 :name "Petr"]
                          [:db/add 1 :age 44]
                          [:db/add 2 :name "Ivan"]
                          [:db/add 2 :age 25]
@@ -156,6 +195,31 @@
 
 (comment
   (def db (-> (empty-db)
+                                        ;: TODO: BUG: Does not work when there are 2 datoms for the same entity?
+            (d/db-with [ [:db/add 1 :name "Ivan"]
+                        [:db/add 1 :name "Petr"]])))
+
+  (d/datoms db :eavt)
+  )
+
+
+(deftest test-transact!
+  (let [conn (d/create-conn {:aka { :db/cardinality :db.cardinality/many }})]
+    (d/transact! conn [[:db/add 1 :name "Ivan"]])
+    (d/transact! conn [[:db/add 1 :name "Petr"]])
+    (d/transact! conn [[:db/add 1 :aka  "Devil"]])
+    (d/transact! conn [[:db/add 1 :aka  "Tupen"]])
+
+    (is (= (d/q '[:find ?v
+                  :where [1 :name ?v]] @conn)
+           #{["Petr"]}))
+    #_(is (= (d/q '[:find ?v
+                  :where [1 :aka ?v]] @conn)
+           #{["Devil"] ["Tupen"]}))))
+
+
+(comment
+  (def db (-> (empty-db)
             (d/db-with [ [:db/add 1 :name "Petr"]
                          ;; [:db/add 1 :age 44]
                          ;; [:db/add 2 :name "Ivan"]
@@ -164,10 +228,54 @@
                          ;; [:db/add 3 :age 11]
                         ])))
   (fdb/get-range :aevt [1 :name "Petr"] [20 :name "Petr"])
-  (fdb/get-range :aevt [0 nil  nil] [13 nil 30])
+  (fdb/get-range :aevt [0 :a  nil] [13 :b 30])
+  (fdb/get-range :aevt [0 :name  nil] [13 :zzzz 30])
+  (fdb/get-range :aevt [3 :name  nil] [13 :zzzz 30])
+  (fdb/get-range :aevt [1 :name  nil] [13 :zzzz 30])
   (fdb/get-range :aevt [0 nil nil 536870912 true] [2147483647 nil nil 2147483647 true])
   (d/datoms db :aevt)
-  )
+
+
+  (def db (-> (empty-db)
+            (d/db-with [ [:db/add 1 :name "Petr"]
+                         ;; [:db/add 1 :age 44]
+                         ;; [:db/add 2 :name "Ivan"]
+                         ;; [:db/add 2 :age 25]
+                         ;; [:db/add 3 :name "Sergey"]
+                         ;; [:db/add 3 :age 11]
+                          ])))
+  (d/datoms db :eavt)
+  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647]) ;; KO
+  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Q" 2147483647]) ;; KO
+  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Pf" 2147483647]);; KO
+  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Petr" 2147483647]);; OK
+  ;; => Pblm with nil
+  ;; => Pblm with orders of String.
+
+  (fdb/get-range :eavt [1 :name "P" nil] [1 :name "Petr" 2147483647])
+
+  (fdb/get-range :eavt [0 nil  nil] [13 nil 30])
+  (fdb/get-range :eavt [0 nil nil 536870912 true] [2147483647 nil nil 2147483647 true])
+  ;;
+  (k/key->vect :aevt (fdb/get nil :eavt [1 :name "Petr" 536870913]))
+
+
+
+
+  (def conn (d/create-conn {:aka { :db/cardinality :db.cardinality/many }}))
+
+  (do
+    (d/transact! conn [[:db/add 1 :name "Ivan"]])
+    (d/transact! conn [[:db/add 1 :name "Petr"]])
+    (d/transact! conn [[:db/add 1 :aka  "Devil"]])
+    (d/transact! conn [[:db/add 1 :aka  "Tupen"]]))
+
+  (is (= (d/q '[:find ?v
+                :where [1 :name ?v]] @conn)
+        #{["Petr"]})))
+(is (= (d/q '[:find ?v
+              :where [1 :eeee ?v]] @conn)
+      #{["Devil"] ["Tupen"]}))
 
 
 
