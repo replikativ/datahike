@@ -108,6 +108,40 @@
   (is (empty-db)))
 
 
+;; Strings order are preserved
+;;
+
+(deftest string-order
+  (testing ""
+    (let [db (-> (empty-db)
+               (d/db-with [ [:db/add 1 :name "Petr"]]))]
+      (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Q" 2147483647]))))
+      (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Pf" 2147483647]))))
+      (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Petr" 2147483647])))))))
+
+
+(deftest nil-meaning
+  (let [db (-> (empty-db)
+             (d/db-with [ [:db/add 1 :name "Petr"]]))]
+    ;; In get-range queries nil must mean max_value
+    (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647]))))))
+
+(comment
+  (def db (-> (empty-db)
+            (d/db-with [ [:db/add 1 :name "Petr"]
+                        ;; [:db/add 1 :age 44]
+                        ;; [:db/add 2 :name "Ivan"]
+                        ;; [:db/add 2 :age 25]
+                        ;; [:db/add 3 :name "Sergey"]
+                        ;; [:db/add 3 :age 11]
+                        ])))
+  (is (not (empty?  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647])))) ;; KO
+  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Q" 2147483647]) ;; KO
+  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Pf" 2147483647]);; KO
+  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Petr" 2147483647]));; OK
+
+
+
 (deftest datoms-fn
   (let [db (-> (empty-db)
              (with-datom (datom 123 :likes "Hans" 1 true))
@@ -122,7 +156,6 @@
 (deftest db-with
   (testing  "simple insertion"
     (let [db (-> (empty-db)
-               ;: TODO: BUG: Does not work when there are 2 datoms for the same entity?
                (d/db-with [ [:db/add 1 :name "Petr"]
                            [:db/add 1 :ko "Ivan"]]))]
       (is (= 1
@@ -159,38 +192,37 @@
 (deftest db-with
   (testing  "overriding"
     (let [db (-> (empty-db)
-               ;: TODO: BUG: Does not work when there are 2 datoms for the same entity?
                (d/db-with [ [:db/add 1 :name "Ivan"]
                            [:db/add 1 :name "Petr"]]))]
       (is (= 1
             (count (fdb/get-range :aevt [1 :name "Petr"] [20 :name "Petr"]))))))
 
   #_(let [dvec #(vector (:e %) (:a %) (:v %))
-        db (-> (empty-db)
-             (d/db-with [[:db/add 1 :name "Petr"]
-                         [:db/add 1 :age 44]
-                         [:db/add 2 :name "Ivan"]
-                         [:db/add 2 :age 25]
-                         [:db/add 3 :name "Sergey"]
-                         [:db/add 3 :age 11]
-                         ]))]
-    (testing "datoms in :eavt order"
-      (is (= [[1 :age 44]
-              [1 :name "Petr"]
-              [2 :age 25]
-              [2 :name "Ivan"]
-              [3 :age 11]
-              [3 :name "Sergey"]]
-            (mapv dvec (d/datoms db :eavt)))))
+          db (-> (empty-db)
+               (d/db-with [[:db/add 1 :name "Petr"]
+                           [:db/add 1 :age 44]
+                           [:db/add 2 :name "Ivan"]
+                           [:db/add 2 :age 25]
+                           [:db/add 3 :name "Sergey"]
+                           [:db/add 3 :age 11]
+                           ]))]
+      (testing "datoms in :eavt order"
+        (is (= [[1 :age 44]
+                [1 :name "Petr"]
+                [2 :age 25]
+                [2 :name "Ivan"]
+                [3 :age 11]
+                [3 :name "Sergey"]]
+              (mapv dvec (d/datoms db :eavt)))))
 
-    (testing "datoms in :aevt order"
-      (is (= [[1 :age 44]
-              [2 :age 25]
-              [3 :age 11]
-              [1 :name "Petr"]
-              [2 :name "Ivan"]
-              [3 :name "Sergey"]]
-            (map dvec (d/datoms db :aevt)))))))
+      (testing "datoms in :aevt order"
+        (is (= [[1 :age 44]
+                [2 :age 25]
+                [3 :age 11]
+                [1 :name "Petr"]
+                [2 :name "Ivan"]
+                [3 :name "Sergey"]]
+              (map dvec (d/datoms db :aevt)))))))
 
 
 (comment
@@ -212,20 +244,20 @@
 
     (is (= (d/q '[:find ?v
                   :where [1 :name ?v]] @conn)
-           #{["Petr"]}))
+          #{["Petr"]}))
     #_(is (= (d/q '[:find ?v
-                  :where [1 :aka ?v]] @conn)
-           #{["Devil"] ["Tupen"]}))))
+                    :where [1 :aka ?v]] @conn)
+            #{["Devil"] ["Tupen"]}))))
 
 
 (comment
   (def db (-> (empty-db)
             (d/db-with [ [:db/add 1 :name "Petr"]
-                         ;; [:db/add 1 :age 44]
-                         ;; [:db/add 2 :name "Ivan"]
-                         ;; [:db/add 2 :age 25]
-                         ;; [:db/add 3 :name "Sergey"]
-                         ;; [:db/add 3 :age 11]
+                        ;; [:db/add 1 :age 44]
+                        ;; [:db/add 2 :name "Ivan"]
+                        ;; [:db/add 2 :age 25]
+                        ;; [:db/add 3 :name "Sergey"]
+                        ;; [:db/add 3 :age 11]
                         ])))
   (fdb/get-range :aevt [1 :name "Petr"] [20 :name "Petr"])
   (fdb/get-range :aevt [0 :a  nil] [13 :b 30])
@@ -238,12 +270,12 @@
 
   (def db (-> (empty-db)
             (d/db-with [ [:db/add 1 :name "Petr"]
-                         ;; [:db/add 1 :age 44]
-                         ;; [:db/add 2 :name "Ivan"]
-                         ;; [:db/add 2 :age 25]
-                         ;; [:db/add 3 :name "Sergey"]
-                         ;; [:db/add 3 :age 11]
-                          ])))
+                        ;; [:db/add 1 :age 44]
+                        ;; [:db/add 2 :name "Ivan"]
+                        ;; [:db/add 2 :age 25]
+                        ;; [:db/add 3 :name "Sergey"]
+                        ;; [:db/add 3 :age 11]
+                        ])))
   (d/datoms db :eavt)
   (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647]) ;; KO
   (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Q" 2147483647]) ;; KO
@@ -272,10 +304,11 @@
 
   (is (= (d/q '[:find ?v
                 :where [1 :name ?v]] @conn)
-        #{["Petr"]})))
-(is (= (d/q '[:find ?v
-              :where [1 :eeee ?v]] @conn)
-      #{["Devil"] ["Tupen"]}))
+        #{["Petr"]}))
+  
+  (is (= (d/q '[:find ?v
+                :where [1 :eeee ?v]] @conn)
+        #{["Devil"] ["Tupen"]})))
 
 
 
