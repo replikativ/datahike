@@ -135,15 +135,6 @@
   (buf/write! buffer [INT] (buf/spec buf/int32)
     {:offset (shift-left section-end 3)}))
 
-(defn- write-a
-  "Write the `a` part in eavt"
-  [a buffer index-type]
-  (assert (s/valid? (s/alt :nil nil?
-                      :keyword keyword?) [a]))
-  (assert (s/valid? keyword? index-type))
-  (let [a-as-str (attribute-as-str a)]
-    (write-str a-as-str buffer index-type :a-end)))
-
 (defn- write-long
   [val buffer section-end]
   (assert (s/valid? integer? val))
@@ -151,6 +142,16 @@
     {:offset (shift-left section-end 11)})
   (buf/write! buffer [LONG] (buf/spec buf/int32)
     {:offset (shift-left section-end 3)}))
+
+
+(defn- write-a
+  "Write the `a` part of an index."
+  [a buffer index-type]
+  (assert (s/valid? (s/alt :nil nil?
+                      :keyword keyword?) [a]))
+  (assert (s/valid? keyword? index-type))
+  (let [a-as-str (attribute-as-str a)]
+    (write-str a-as-str buffer index-type :a-end)))
 
 (defn- write-v
   [val buffer index-type]
