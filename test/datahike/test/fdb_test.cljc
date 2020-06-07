@@ -250,6 +250,36 @@
             #{["Devil"] ["Tupen"]}))))
 
 
+;; What is sent by Datahike to 'getRange' (depending of type of the query)
+(comment
+  (def conn (d/create-conn {:aka { :db/cardinality :db.cardinality/many }}))
+
+  (do
+    (d/transact! conn [[:db/add 1 :name "Ivan"]])
+    (d/transact! conn [[:db/add 1 :name "Petr"]])
+    (d/transact! conn [[:db/add 1 :aka  "Devil"]])
+    (d/transact! conn [[:db/add 1 :aka  "Tupen"]]))
+
+  ;; :eavt #datahike/Datom [1 :name nil 536870912 true] ---- #datahike/Datom [1 :name nil 2147483647 true]
+  (d/q '[:find ?v
+         :where [1 :name ?v]] @conn)
+
+  ;; :aevt  --  #datahike/Datom [0 :name nil 536870912 true] ---- #datahike/Datom [2147483647 :name nil 2147483647 true]
+  (d/q '[:find ?e
+         :where [?e :name "Ivan"]] @conn)
+
+  ;; :eavt  --  #datahike/Datom [1 nil nil 536870912 true] ---- #datahike/Datom [1 nil nil 2147483647 true]
+  (d/q '[:find ?a
+         :where [1 ?a _]] @conn)
+
+  ;; :eavt  --  #datahike/Datom [1 nil nil 536870912 true] ---- #datahike/Datom [1 nil nil 2147483647 true] 
+  (d/q '[:find ?a
+             :where [1 ?a "Ivan"]] @conn)
+  )
+
+
+
+
 (comment
   (def db (-> (empty-db)
             (d/db-with [ [:db/add 1 :name "Petr"]
@@ -291,24 +321,7 @@
   ;;
   (k/key->vect :aevt (fdb/get nil :eavt [1 :name "Petr" 536870913]))
 
-
-
-
-  (def conn (d/create-conn {:aka { :db/cardinality :db.cardinality/many }}))
-
-  (do
-    (d/transact! conn [[:db/add 1 :name "Ivan"]])
-    (d/transact! conn [[:db/add 1 :name "Petr"]])
-    (d/transact! conn [[:db/add 1 :aka  "Devil"]])
-    (d/transact! conn [[:db/add 1 :aka  "Tupen"]]))
-
-  (is (= (d/q '[:find ?v
-                :where [1 :name ?v]] @conn)
-        #{["Petr"]}))
-  
-  (is (= (d/q '[:find ?v
-                :where [1 :eeee ?v]] @conn)
-        #{["Devil"] ["Tupen"]})))
+  )
 
 
 
