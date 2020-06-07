@@ -119,16 +119,11 @@
   (let [section-end (position index-type section-type)
         str-bytes (.getBytes val)
         size (count str-bytes)]
-
-
     (buf/write! buffer str-bytes (buf/repeat size buf/byte)
       {:offset (+ 1 (position index-type (pred-section index-type section-type)))})
-
-
     (buf/write! buffer [size] (buf/spec buf/int32)
       {:offset (shift-left section-end 7)})
     ;; TODO: Not sure this is needed. IT does not seem to used on the read side
-
     (buf/write! buffer [STRING] (buf/spec buf/int32)
       {:offset (shift-left section-end 3)})))
 
