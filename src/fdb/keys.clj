@@ -61,6 +61,8 @@
 (def INT 1)
 (def LONG 2)
 (def STRING 3)
+(def MAX-VAL 4)
+(def MIN-VAL 5)
 
 (defn- cst->type
   [int]
@@ -69,7 +71,9 @@
   (cond
     (= int INT)    java.lang.Integer
     (= int LONG)   java.lang.Long
-    (= int STRING) java.lang.String))
+    (= int STRING) java.lang.String
+    (= int MAX-VAL) :max-val
+    (= int MIN-VAL) :min-val))
 
 (defn- str-offset
   "Returns the offset where to start writing a string
@@ -85,18 +89,20 @@
   (- section-end (+ string-size (* 2 4) 4)))
 
 
+(def max-byte-val 127)
+
 ;; ------- Keys with max values --------
 
 ;; This function is memoized. See next def.
 (defn- max-key-impl [index-type]
-  "Returns the max value possible for a fdb key when the index is of type ìndex-type`"
+  "Returns the max value possible for a (full) fdb key when the index is of type `index-type`"
   (assert (some #{:eavt :aevt :avet} [index-type]))
   (let [buffer (buf/allocate buf-len {:impl :nio :type :direct})
         index-type-code (index-type->code index-type)
         arr (byte-array buf-len)]
     (buf/write! buffer [index-type-code] (buf/spec buf/byte))
     ;; TODO: weird that the max value for a byte is 127
-    (buf/write! buffer (vec (take (- buf-len 1) (repeat 127)))
+    (buf/write! buffer (vec (take (- buf-len 1) (repeat max-byte-val)))
       (buf/repeat 1 buf/byte) {:offset 1})
     (.get buffer arr)
     arr))
@@ -123,7 +129,7 @@
       {:offset (+ 1 (position index-type (pred-section index-type section-type)))})
     (buf/write! buffer [size] (buf/spec buf/int32)
       {:offset (shift-left section-end 7)})
-    ;; TODO: Not sure this is needed. IT does not seem to used on the read side
+    ;; NEEDED, don't remove. It tells the reader the type to read.
     (buf/write! buffer [STRING] (buf/spec buf/int32)
       {:offset (shift-left section-end 3)})))
 
@@ -143,15 +149,40 @@
   (buf/write! buffer [LONG] (buf/spec buf/int32)
     {:offset (shift-left section-end 3)}))
 
+(defn write-min-val
+  [buffer index-type section-type]
+  "Writes the min possible value to the slot"
+  ;; TODO
+  ;; Can we do nothing, ie just leave the buffer blank with zeros?
+  (let [section-end (position index-type section-type)]
+    (println "in write-min-val")
+    (buf/write! buffer [MIN-VAL] (buf/spec buf/int32)
+      {:offset (shift-left section-end 3)})))
+
+(defn write-max-val
+  [buffer index-type section-type]
+  "Writes the max value possible into the slot"
+  (let [section-start (+ 1 (position index-type (pred-section index-type section-type)))
+        section-end (position index-type section-type)
+        size (- section-end section-start)]
+;;    (println "In write max: " section-start " - " section-end)
+    ;; Leave 4 bytes to write the type of the content
+    (println (buf/write! buffer (vec (take (- size 4) (repeat max-byte-val))) (buf/repeat 1 buf/byte)
+               {:offset section-start}))
+
+    (buf/write! buffer [MAX-VAL] (buf/spec buf/int32)
+      {:offset (shift-left section-end 3)}))
+  )
 
 (defn- write-a
   "Write the `a` part of an index."
   [a buffer index-type]
-  (assert (s/valid? (s/alt :nil nil?
-                      :keyword keyword?) [a]))
+  (assert (s/valid? keyword? a))
   (assert (s/valid? keyword? index-type))
-  (let [a-as-str (attribute-as-str a)]
-    (write-str a-as-str buffer index-type :a-end)))
+  (cond    
+    (= :min-val val) (write-min-val buffer index-type :a-end)
+    (= :max-val val) (write-max-val buffer index-type :a-end)
+    :else (write-str (attribute-as-str a) buffer index-type :a-end)))
 
 (defn- write-v
   [val buffer index-type]
@@ -160,9 +191,12 @@
   (let [type (type val)
         section-end (position index-type :v-end)]
     (cond
+      (= :min-val val) (write-min-val buffer index-type :v-end)
+      (= :max-val val) (write-max-val buffer index-type :v-end)
       (= type java.lang.Integer) (write-int val buffer section-end)
       (= type java.lang.Long)    (write-long val buffer section-end)
-      (= type java.lang.String)  (write-str val buffer index-type :v-end))))
+      (= type java.lang.String)  (write-str val buffer index-type :v-end)
+      :else (throw (IllegalStateException. (str "Trying to write-v: " val))))))
 
 
 
@@ -210,10 +244,28 @@
   (let [section-end (position index-type section-type)
         size (read-int buffer section-end 7)
         str-bytes (buf/read buffer (buf/repeat size buf/byte)
-                            {:offset (+ 1 (position index-type
-                                            (pred-section index-type section-type)))})]
+                    {:offset (+ 1 (position index-type
+                                    (pred-section index-type section-type)))})]
     ;;(println ":............" (type str-bytes))
     (String. (byte-array str-bytes))))
+
+(defn- read-min-val
+  [buffer index-type section-type]
+  ;; TODO
+  0
+  )
+
+(defn- read-max-val
+  [buffer index-type section-type]
+  (let [section-start (+ 1 (position index-type (pred-section index-type section-type)))
+        section-end (position index-type section-type)
+        size (- section-end section-start)
+        str-bytes (buf/read buffer (buf/repeat (- size 4) buf/byte)
+                    {:offset section-start})]
+    ;;(println ":............" (type str-bytes))
+    ;; !!! The max val is "translated" into a string.
+    (String. (byte-array str-bytes))))
+
 
 (defn- read-v
   [buffer index-type section-type]
@@ -222,7 +274,9 @@
     (cond
       (= type java.lang.Integer) (read-int   buffer section-end 7)
       (= type java.lang.Long)    (read-long  buffer section-end)
-      (= type java.lang.String)  (read-str   buffer index-type section-type))))
+      (= type java.lang.String)  (read-str   buffer index-type section-type)
+      (= type :max-val)          (read-max-val buffer index-type section-type)
+      (= type :min-val)          (read-min-val buffer index-type section-type))))
 
 
 (defn ->byteArr
@@ -242,6 +296,7 @@
         expected-index-type-code (index-type->code index-type)
         e (first (buf/read buffer (buf/spec buf/int64)
                    {:offset (shift-left (position index-type :e-end) 7)}))
+        ;; TODO: Deal with _max and :min-val for an attribute
         a (keyword (read-str buffer index-type :a-end))
         v (read-v buffer index-type :v-end)
         t (first (buf/read buffer (buf/spec buf/int64)
@@ -286,7 +341,7 @@
 (def vect [20 :hello "some analysis" 3])
 (def test-buff (->byteBuffer :eavt vect))
 (def buff->vect (byteBuffer->vect :eavt test-buff))
-;;(prn buff->vect)
+(prn buff->vect)
 (assert (= buff->vect vect))
 
 (assert (= (key->vect :eavt (->byteArr :eavt vect)) vect))
@@ -304,6 +359,16 @@
 (def buff->vect (byteBuffer->vect :eavt buff))
 ;;(prn buff->vect)
 (assert (=  buff->vect with-keyword))
+
+
+(def with-nil [20 :shared/policy :max-val 3])
+(def buff (->byteBuffer :eavt with-nil))
+(def buff->vect (byteBuffer->vect :eavt buff))
+(prn buff->vect)
+(prn with-nil)
+;;(assert (= buff->vect with-nil))
+
+
 
 (comment
 
