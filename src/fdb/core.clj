@@ -17,9 +17,11 @@
              ~@actions))))
 
 
+(def api-version 510)
+
 (defn db
   []
-  (let [fd (FDB/selectAPIVersion 510)]
+  (let [fd (FDB/selectAPIVersion api-version)]
     (with-open [db (.open fd)]
       db)))
 
@@ -29,7 +31,7 @@
 (defn empty-db
   "Clear all keys from the database. Thus returns an empty db."
   []
-  (let [fd    (FDB/selectAPIVersion 510)
+  (let [fd    (FDB/selectAPIVersion api-version)
         begin (byte-array [])
         end   (byte-array [0xFF])]
     (with-open [db (.open fd)]
@@ -44,7 +46,7 @@
 ;; TODO?: remove the db arg
 (defn get
   [db index-type [e a v t]]
-  (let [fd  (FDB/selectAPIVersion 510)
+  (let [fd  (FDB/selectAPIVersion api-version)
         key (key index-type [e a v t])]
     (with-open [db (.open fd)]
       (tr! db @(.get tr key)))))
@@ -53,11 +55,11 @@
 (defn insert
   "Inserts one vector"
   [index-type [e a v t]]
-  (let [fd    (FDB/selectAPIVersion 510)
+  (let [fd    (FDB/selectAPIVersion api-version)
         key   (key index-type [e a v t])
         ;; The value is also the key
         value key]
-    ;;(println "Insert: " index-type " - " (key->vect index-type key))
+(println "Insert: " index-type " - " (key->vect index-type key))
     (with-open [db (.open fd)]
       (tr! db (.set tr key value))
       db)))
@@ -66,7 +68,7 @@
 (defn batch-insert
   "Batch inserts multiple vectors. `index-type` is :eavt, etc..."
   [index-type vectors]
-  (let [fd   (FDB/selectAPIVersion 510)
+  (let [fd   (FDB/selectAPIVersion api-version)
         keys (map #(key index-type %) vectors)
         v    (byte-array [])]
     (with-open [db (.open fd)]
@@ -79,7 +81,7 @@
                          ;; (println k)
                          (.set tr k v))))))))
 
-;; What is sent by Datahike to 'getRange' (depending of type of the query)
+;; What is sent by Datahike to 'getRange' (depending on type of the query)?
 (comment
   (def conn (d/create-conn {:aka { :db/cardinality :db.cardinality/many }}))
 
@@ -119,7 +121,7 @@
   "Returns fdb keys in the range [begin end] as a collection of byte-arrays. `begin` and `end` are vectors.
   index-type is `:eavt`, `:aevt` and `:avet`"
   [index-type begin end]
-  (let [fd        (FDB/selectAPIVersion 510)
+  (let [fd        (FDB/selectAPIVersion api-version)
         begin-key (KeySelector/firstGreaterOrEqual (key index-type begin))
         end-key   (KeySelector/firstGreaterThan (if (= (first end) 2147483647)
                                                   (max-key index-type)
@@ -147,7 +149,7 @@
 (defn get-key 
   "Returns the key behind a key-selector"
   [key-selector]
-  (let [fd (FDB/selectAPIVersion 510)]
+  (let [fd (FDB/selectAPIVersion api-version)]
     (with-open [db (.open fd)]
       (tr! db
            @(.getKey tr key-selector)))))
@@ -174,7 +176,7 @@
 
 ;; (defn insert-int
 ;;   [db i]
-;;   (let [fd    (FDB/selectAPIVersion 510)
+;;   (let [fd    (FDB/selectAPIVersion api-version)
 ;;         key   (bArr i)
 ;;         ;; Putting the key also in the value
 ;;         value key]
@@ -185,7 +187,7 @@
 
 ;; (defn get-range-int
 ;;   [db begin end]
-;;   (let [fd        (FDB/selectAPIVersion 510)
+;;   (let [fd        (FDB/selectAPIVersion api-version)
 ;;         begin-key (bArr begin)
 ;;         end-key   (bArr end)]
 ;;    (with-open [db (.open fd)]
