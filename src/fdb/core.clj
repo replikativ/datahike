@@ -133,16 +133,20 @@
         (mapv #(.getKey %)
           (.getRange tr begin-key end-key))))))
 
-
 (defn get-range
-  "Returns vectors in the range [begin end]. `begin` and `end` are vectors *in the [e a v t] form*. But it is really the index-type, i.e., `:eavt`, `:aevt` or `:avet` which sets the semantics of those vectors."
+  "Returns vectors in the range [begin end]. `begin` and `end` are vectors *in the [e a v t] form*. But it is really the index-type, i.e., `:eavt`, `:aevt` or `:avet` which sets the semantics of those vectors.
+  Additionally, if nils are present in the `begin` vector they are replaced by :min-val to signal the system that we want the min. value at the spot. And conversely for `end` and :max-val."
   [index-type begin end]
-  (let [res (get-range-as-byte-array index-type begin end)
+  (let [replace-nil (fn [v new-val]
+                      "replace nil in vector v by new-val"
+                      (mapv #(if (nil? %) new-val %) v))
+        new-begin (replace-nil begin :min-val)
+        new-end (replace-nil end :max-val)
+        res (get-range-as-byte-array index-type new-begin new-end)
         result (map (partial key->vect index-type) res)]
     ;; (println "Got from get-range: " (count res))
-    ;; (println "Got from get-range: " begin "----" end ".--res:" result)
-
-    result))
+(println "*** In get-range: " index-type " -- " new-begin "----" new-end " --- RESULT: " result)
+    result)) 
 
 ;;------------ KeySelectors and iterations
 
