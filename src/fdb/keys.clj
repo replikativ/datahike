@@ -155,7 +155,7 @@
 
 (defn- write-v
   [val buffer index-type]
-  "Write `val` into `buffer` given `section-end`, the *end* of the section where it should be written"
+  "Write the `v` part of an index. Write `val` into `buffer` given `section-end`, the *end* of the section where it should be written"
   (assert (s/valid? keyword? index-type))
   (let [type (type val)
         section-end (position index-type :v-end)]
