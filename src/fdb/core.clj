@@ -52,13 +52,23 @@
       (tr! db @(.get tr key)))))
 
 
+(defn- key-part-only
+  [index-type [e a v t]]
+  ;; TODO: change max-val into min-val
+  (cond
+    (= :eavt index-type) (key index-type [e a :max-val 0])
+    (= :aevt index-type) (key index-type [e a :max-val 0])
+    ;; TODO: not sure about this case! CHECK IT OUT!
+    (= :avet index-type) (key index-type [:max-val a v 0]))
+  )
+
 (defn insert
   "Inserts one vector"
   [index-type [e a v t]]
   (let [fd    (FDB/selectAPIVersion api-version)
-        key   (key index-type [e a v t])
+        value   (key index-type [e a v t])
         ;; The value is also the key
-        value key]
+        key (key-part-only index-type [e a v t])]
 (println "Insert: " index-type " - " (key->vect index-type key))
     (with-open [db (.open fd)]
       (tr! db (.set tr key value))
@@ -120,28 +130,22 @@
 (defn- get-range-as-byte-array
   "Returns fdb keys in the range [begin end] as a collection of byte-arrays. `begin` and `end` are vectors.
   index-type is `:eavt`, `:aevt` and `:avet`"
-  [index-type begin end]
+  [index-type begin-key end-key]
   (let [fd        (FDB/selectAPIVersion api-version)
-        begin-key (KeySelector/firstGreaterOrEqual (key index-type begin))
-        end-key   (KeySelector/firstGreaterThan (if (= (first end) 2147483647)
-                                                  (max-key index-type)
-                                                  (key index-type end))
-                    #_(key index-type end) #_(max-key index-type)
+        b-key (KeySelector/firstGreaterOrEqual begin-key)
+        e-key   (KeySelector/firstGreaterThan end-key
                     )]
     (with-open [db (.open fd)]
       (tr! db 
-        (mapv #(.getKey %)
-          (.getRange tr begin-key end-key))))))
+        (mapv #(.getValue %)
+          (.getRange tr b-key e-key))))))
 
 (defn get-range
   "Returns vectors in the range [begin end]. `begin` and `end` are vectors *in the [e a v t] form*. But it is really the index-type, i.e., `:eavt`, `:aevt` or `:avet` which sets the semantics of those vectors.
   Additionally, if nils are present in the `begin` vector they are replaced by :min-val to signal the system that we want the min. value at the spot. And conversely for `end` and :max-val."
   [index-type begin end]
-  (let [replace-nil (fn [v new-val]
-                      "replace nil in vector v by new-val"
-                      (mapv #(if (nil? %) new-val %) v))
-        new-begin (replace-nil begin :min-val)
-        new-end (replace-nil end :max-val)
+  (let [new-begin (key-part-only index-type begin)
+        new-end (key-part-only index-type end)
         res (get-range-as-byte-array index-type new-begin new-end)
         result (map (partial key->vect index-type) res)]
     ;; (println "Got from get-range: " (count res))
