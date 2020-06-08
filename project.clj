@@ -25,12 +25,15 @@
 
   :java-source-paths ["java/src"]
 
+  :test-paths ["test/datahike/test.cljc" "test/datahike/test"]
+
   :aliases {"test-clj"     ["run" "-m" "datahike.test/test-clj"]
             "test-cljs"    ["do" ["cljsbuild" "once" "release" "advanced"]
                             ["run" "-m" "datahike.test/test-node" "--all"]]
             "node-repl"    ["run" "-m" "user/node-repl"]
             "browser-repl" ["run" "-m" "user/browser-repl"]
-            "test-all"     ["do" ["clean"] ["test-clj"] ["test-cljs"]]}
+            "test-all"     ["do" ["clean"] ["test-clj"] ["test-cljs"]]
+            "kaocha"       ["with-profile" "+kaocha" "run" "-m" "kaocha.runner"]}
 
   :cljsbuild {:builds [{:id "release"
                         :source-paths ["src"]
@@ -83,10 +86,12 @@
              :dev {:source-paths ["bench/src" "test" "dev"]
                    :dependencies [[org.clojure/tools.nrepl     "0.2.13"]
                                   [org.clojure/tools.namespace "0.3.1"]
-                                  [lambdaisland/kaocha         "0.0-565"]
-                                  [lambdaisland/kaocha-cljs    "0.0-68"]]}
+                                  [lambdaisland/kaocha         "1.0.632"]
+                                  [lambdaisland/kaocha-cljs    "0.0-71"]]}
              :aot {:aot [#"datahike\.(?!query-v3).*"]
-                   :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}}
+                   :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}
+             :kaocha {:dependencies [[lambdaisland/kaocha "1.0.632"]
+                                     [io.replikativ/datahike-postgres "0.3.1-SNAPSHOT"]]}}
 
   :clean-targets ^{:protect false} ["target"
                                     "release-js/datahike.bare.js"
