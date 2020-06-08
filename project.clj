@@ -87,10 +87,13 @@
                    :dependencies [[org.clojure/tools.nrepl     "0.2.13"]
                                   [org.clojure/tools.namespace "0.3.1"]
                                   [lambdaisland/kaocha         "1.0.632"]
-                                  [lambdaisland/kaocha-cljs    "0.0-71"]]}
+                                  [lambdaisland/kaocha-cljs    "0.0-71"]
+                                  [io.replikativ/datahike-leveldb "0.2.0"]
+                                  [io.replikativ/datahike-postgres "0.3.1-SNAPSHOT"]]}
              :aot {:aot [#"datahike\.(?!query-v3).*"]
                    :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}
              :kaocha {:dependencies [[lambdaisland/kaocha "1.0.632"]
+                                     [io.replikativ/datahike-leveldb "0.2.0"]
                                      [io.replikativ/datahike-postgres "0.3.1-SNAPSHOT"]]}}
 
   :clean-targets ^{:protect false} ["target"

@@ -76,7 +76,7 @@
       (update-and-flush-db connection entities d/load-entities))))
 
 (defn release [connection]
-  (ds/release-store (get-in @connection [:config :storage]) (:store @connection)))
+  (ds/release-store (get-in @connection [:config :store]) (:store @connection)))
 
 ;; deprecation begin
 (defprotocol IConfiguration
