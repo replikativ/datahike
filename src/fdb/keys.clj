@@ -26,10 +26,17 @@
   [index-type section-type]
   (get  {[:eavt :a-end] :e-end
          [:eavt :v-end] :a-end
+         [:eavt :t-end] :v-end
+         [:eavt :e-end] :code
          [:aevt :a-end] :code
          [:aevt :v-end] :e-end
+         [:aevt :t-end] :v-end
+         [:aevt :e-end] :a-end
          [:avet :a-end] :code
-         [:avet :v-end] :a-end}
+         [:avet :v-end] :a-end
+         [:avet :t-end] :e-end
+         [:avet :e-end] :v-end
+         }
     [index-type section-type]))
 
 (defn- str-size
@@ -155,7 +162,7 @@
   ;; TODO
   ;; Can we do nothing, ie just leave the buffer blank with zeros?
   (let [section-end (position index-type section-type)]
-    (println "in write-min-val")
+    ;;(println "in write-min-val")
     (buf/write! buffer [MIN-VAL] (buf/spec buf/int32)
       {:offset (shift-left section-end 3)})))
 
@@ -165,11 +172,10 @@
   (let [section-start (+ 1 (position index-type (pred-section index-type section-type)))
         section-end (position index-type section-type)
         size (- section-end section-start)]
-;;    (println "In write max: " section-start " - " section-end)
+    ;;    (println "In write max: " section-start " - " section-end)
     ;; Leave 4 bytes to write the type of the content
-    (println (buf/write! buffer (vec (take (- size 4) (repeat max-byte-val))) (buf/repeat 1 buf/byte)
-               {:offset section-start}))
-
+    (buf/write! buffer (vec (take (- size 4) (repeat max-byte-val))) (buf/repeat 1 buf/byte)
+      {:offset section-start})
     (buf/write! buffer [MAX-VAL] (buf/spec buf/int32)
       {:offset (shift-left section-end 3)}))
   )
@@ -177,9 +183,10 @@
 (defn- write-a
   "Write the `a` part of an index."
   [a buffer index-type]
+  ;;  (println "---..-- a:" a)
   (assert (s/valid? keyword? a))
   (assert (s/valid? keyword? index-type))
-  (cond    
+  (cond
     (= :min-val val) (write-min-val buffer index-type :a-end)
     (= :max-val val) (write-max-val buffer index-type :a-end)
     :else (write-str (attribute-as-str a) buffer index-type :a-end)))
@@ -196,9 +203,31 @@
       (= type java.lang.Integer) (write-int val buffer section-end)
       (= type java.lang.Long)    (write-long val buffer section-end)
       (= type java.lang.String)  (write-str val buffer index-type :v-end)
+      (keyword? val)   (write-str (attribute-as-str val) buffer index-type :v-end)
       :else (throw (IllegalStateException. (str "Trying to write-v: " val))))))
 
 
+
+(defn- write-t
+  "Write the `t` part of an index."
+  [t buffer index-type]
+  ;;(println--- "..-- t:" t)
+  ;; TODO: add an asser that t is either an int or either the :max and :min-val keywords
+  (cond
+    (= :min-val t) (write-min-val buffer index-type :t-end)
+    (= :max-val t) (write-max-val buffer index-type :t-end)
+    :else (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (position index-type :t-end) 7)})))
+
+
+(defn- write-e
+  "Write the `e` part of an index."
+  [e buffer index-type]
+  ;;  (println "---..-- e:" e)
+  ;; TODO: add an asser that e is either an int or either the :max and :min-val keywords
+  (cond
+    (= :min-val e) (write-min-val buffer index-type :e-end)
+    (= :max-val e) (write-max-val buffer index-type :e-end)
+    :else (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (position index-type :e-end) 7)})))
 
 
 ;; TODO: add validations that each of e a v t does not overflow.
@@ -217,13 +246,13 @@
         index-type-code (index-type->code index-type)]
     (when a (assert (instance? clojure.lang.Keyword a)))
     (assert (and (<= 0 index-type-code) (>= 2 index-type-code)))
-    ;;(println "Writing: " index-type e a v t)
+    ;; (println "Writing: " index-type e a v t)
     ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.
     (buf/write! buffer [index-type-code] (buf/spec buf/byte))
-    (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (position index-type :e-end) 7)})
+    (write-e e buffer index-type)
     (write-a a buffer index-type)
     (write-v v buffer index-type)
-    (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (position index-type :t-end) 7)})
+    (write-t t buffer index-type)
     buffer))
 
 ;; ------- reading --------
