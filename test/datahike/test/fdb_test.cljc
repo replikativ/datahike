@@ -225,11 +225,23 @@
               (map dvec (d/datoms db :aevt)))))))
 
 
+
+
+(deftest clear
+  (let [db (-> (empty-db)
+               (d/db-with [[:db/add 1 :name "Ivan"]]))]
+      (is (= 1
+            (count (fdb/get-range :eavt [1 :name "Ivan"] [20 :name "Ivan"]))))
+      (is (= 0
+            (count (fdb/clear :eavt [1 :name "Ivan"]))))))
+
 (comment
   (def db (-> (empty-db)
                                         ;: TODO: BUG: Does not work when there are 2 datoms for the same entity?
             (d/db-with [ [:db/add 1 :name "Ivan"]
                         [:db/add 1 :name "Petr"]])))
+
+  (fdb/clear :eavt [1 :name "Ivan"])
 
   (d/datoms db :eavt)
   )

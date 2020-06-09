@@ -43,6 +43,14 @@
   (empty-db))
 
 
+(defn clear
+  [index-type [e a v t]]
+  (let [fd  (FDB/selectAPIVersion api-version)
+        key (key index-type [e a v t])]
+    (with-open [db (.open fd)]
+      (tr! db (.clear tr key)))))
+
+
 ;; TODO?: remove the db arg
 (defn get
   [db index-type [e a v t]]
@@ -52,7 +60,7 @@
       (tr! db @(.get tr key)))))
 
 
-(defn- key-part-only
+#_(defn- key-part-only
   [index-type [e a v t]]
   ;; TODO: change max-val into min-val
   (cond
@@ -66,10 +74,9 @@
   "Inserts one vector"
   [index-type [e a v t]]
   (let [fd    (FDB/selectAPIVersion api-version)
-        value   (key index-type [e a v t])
-        ;; The value is also the key
-        key (key-part-only index-type [e a v t])]
-(println "Insert: " index-type " - " (key->vect index-type key))
+        key   (key index-type [e a v t])
+        value key]
+;;(println "Insert: " index-type " - " (key->vect index-type key))
     (with-open [db (.open fd)]
       (tr! db (.set tr key value))
       db)))
@@ -137,7 +144,7 @@
                     )]
     (with-open [db (.open fd)]
       (tr! db 
-        (mapv #(.getValue %)
+        (mapv #(.getKey %)
           (.getRange tr b-key e-key))))))
 
 (defn get-range
@@ -148,12 +155,12 @@
   (let [replace-nil (fn [v new-val]
                       "replace nil in vector v by new-val"
                       (mapv #(if (nil? %) new-val %) v))
-        new-begin (replace-nil (key-part-only index-type begin) :min-val)
-        new-end (replace-nil (key-part-only index-type end) :max-val)
+        new-begin (replace-nil begin :min-val)
+        new-end (replace-nil end :max-val)
   ;;_ (println "*** In get-range: " index-type " -- " new-begin "----" new-end)
         res (get-range-as-byte-array index-type new-begin new-end)
         result (map (partial key->vect index-type) res)]
-;;(println "*** In get-range: " index-type " -- " new-begin "----" new-end " --- RESULT: " result)
+(println "*** In get-range: " index-type " -- " new-begin "----" new-end " --- RESULT: " result)
     result)) 
 
 ;;------------ KeySelectors and iterations
