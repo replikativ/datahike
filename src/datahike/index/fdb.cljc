@@ -36,8 +36,9 @@
 
 ;; TODO: implement
 (defn -remove [db datom index-type]
-  ;;(println "....... remove called! " datom " ---- " index-type)
-  db)
+  (let [_ (fc/clear index-type datom)]
+    (println "....... remove called! " datom " ---- " index-type)
+    db))
 
 ;; Called 3 times, one for each index.
 (defn empty-db [index-type]
