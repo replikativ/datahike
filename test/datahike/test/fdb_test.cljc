@@ -143,13 +143,14 @@
 
 
 (deftest datoms-fn
-  (let [db (-> (empty-db)
+  (let [dvec #(vector (:e %) (:a %) (:v %))
+        db (-> (empty-db)
              (with-datom (datom 123 :likes "Hans" 1 true))
              (with-datom (datom 124 :likes "GG" 1 true)))]
     (testing "datoms works"
-      (is (= [[123 :likes "Hans" 1]
-              [124 :likes "GG" 1]]
-            (d/datoms db :eavt))))
+      (is (= [[123 :likes "Hans"]
+              [124 :likes "GG"]]
+            (map dvec (d/datoms db :eavt)))))
     ))
 
 
@@ -235,6 +236,7 @@
       (is (= 0
             (count (fdb/clear :eavt [1 :name "Ivan"]))))))
 
+
 (comment
   (def db (-> (empty-db)
                                         ;: TODO: BUG: Does not work when there are 2 datoms for the same entity?
@@ -257,10 +259,22 @@
     (is (= (d/q '[:find ?v
                   :where [1 :name ?v]] @conn)
           #{["Petr"]}))
-    #_(is (= (d/q '[:find ?v
+    (is (= (d/q '[:find ?v
                     :where [1 :aka ?v]] @conn)
             #{["Devil"] ["Tupen"]}))))
 
+
+(comment
+  (def conn (d/create-conn {:aka { :db/cardinality :db.cardinality/many }}))
+
+  (do
+    (d/transact! conn [[:db/add 1 :name "Ivan"]])
+    (d/transact! conn [[:db/add 1 :name "Petr"]])
+    (d/transact! conn [[:db/add 1 :aka  "Devil"]])
+    (d/transact! conn [[:db/add 1 :aka  "Tupen"]]))
+
+
+  )
 
 ;; What is sent by Datahike to 'getRange' (depending of type of the query)
 (comment
@@ -286,7 +300,14 @@
 
   ;; :eavt  --  #datahike/Datom [1 nil nil 536870912 true] ---- #datahike/Datom [1 nil nil 2147483647 true] 
   (d/q '[:find ?a
-             :where [1 ?a "Ivan"]] @conn)
+         :where [1 ?a "Ivan"]] @conn)
+
+  ;; :aevt  --  #datahike/Datom [0 :name nil 536870912 true] ---- #datahike/Datom [2147483647 :name nil 2147483647 true]
+  (d/q '[:find  ?n1 ?n2
+         :where [?e1 :aka ?x]
+         [?e2 :aka ?x]
+         [?e1 :name ?n1]
+         [?e2 :name ?n2]] @conn)
   )
 
 
