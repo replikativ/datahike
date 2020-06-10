@@ -68,8 +68,8 @@
 (def INT 1)
 (def LONG 2)
 (def STRING 3)
-(def MAX-VAL 4)
-(def MIN-VAL 5)
+(def MAX-VAL-TYPE 4)
+(def MIN-VAL-TYPE 5)
 
 (defn- cst->type
   [int]
@@ -79,8 +79,8 @@
     (= int INT)    java.lang.Integer
     (= int LONG)   java.lang.Long
     (= int STRING) java.lang.String
-    (= int MAX-VAL) :max-val
-    (= int MIN-VAL) :min-val))
+    (= int MAX-VAL-TYPE) :max-val
+    (= int MIN-VAL-TYPE) :min-val))
 
 (defn- str-offset
   "Returns the offset where to start writing a string
@@ -163,7 +163,7 @@
   ;; Can we do nothing, ie just leave the buffer blank with zeros?
   (let [section-end (position index-type section-type)]
     ;;(println "in write-min-val")
-    (buf/write! buffer [MIN-VAL] (buf/spec buf/int32)
+    (buf/write! buffer [MIN-VAL-TYPE] (buf/spec buf/int32)
       {:offset (shift-left section-end 3)})))
 
 (defn write-max-val
@@ -172,18 +172,18 @@
   (let [section-start (+ 1 (position index-type (pred-section index-type section-type)))
         section-end (position index-type section-type)
         size (- section-end section-start)]
-    ;;    (println "In write max: " section-start " - " section-end)
+(println "In write max: " section-start " - " section-end " , " index-type " , " section-type)
     ;; Leave 4 bytes to write the type of the content
     (buf/write! buffer (vec (take (- size 4) (repeat max-byte-val))) (buf/repeat 1 buf/byte)
       {:offset section-start})
-    (buf/write! buffer [MAX-VAL] (buf/spec buf/int32)
+    (buf/write! buffer [MAX-VAL-TYPE] (buf/spec buf/int32)
       {:offset (shift-left section-end 3)}))
   )
 
 (defn- write-a
   "Write the `a` part of an index."
   [a buffer index-type]
-  ;;  (println "---..-- a:" a)
+(println "---..-- a:" a )
   (assert (s/valid? keyword? a))
   (assert (s/valid? keyword? index-type))
   (cond
