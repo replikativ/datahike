@@ -187,8 +187,8 @@
   (assert (s/valid? keyword? a))
   (assert (s/valid? keyword? index-type))
   (cond
-    (= :min-val val) (write-min-val buffer index-type :a-end)
-    (= :max-val val) (write-max-val buffer index-type :a-end)
+    (= :min-val a) (write-min-val buffer index-type :a-end)
+    (= :max-val a) (write-max-val buffer index-type :a-end)
     :else (write-str (attribute-as-str a) buffer index-type :a-end)))
 
 (defn- write-v
