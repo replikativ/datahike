@@ -11,21 +11,23 @@
     :avet (fn [[a v e tx]] (dd/datom e a v tx true))
     (fn [[e a v tx]] (dd/datom e a v tx true))))
 
+(def -seq seq)
+
+(def -count count)
 
 (defn -slice [db from to index-type]
   (map (index-type->datom-fn index-type)
     (fc/get-range index-type from to)))
 
-(def -seq seq)
-
-(def -count count)
-
-(def -all identity)
+(defn -all
+  [db index-type]
+  (map (index-type->datom-fn index-type)
+       (fc/get-range index-type [0 :a 0 0] [:max-val :max-val :max-val :max-val])))
 
 (def -flush identity)
 
+;; TODO: implement? Ask about semantic!
 (def -transient identity)
-
 (def -persistent! identity)
 
 
