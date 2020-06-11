@@ -250,7 +250,12 @@
 
   (d/q '[:find ?e ?a  ?v  :where [?e ?a ?v]] @conn)
 
-  (d/datoms @conn :eavt))
+  (d/datoms @conn :eavt)
+
+  (fdb/get-range :eavt [:min-val :min-val :min-val :min-val] [:max-val :max-val :max-val :max-val])
+  (fdb/get-range :aevt [:min-val :min-val :min-val :min-val] [:max-val :max-val :max-val :max-val])
+  (fdb/get-range :avet [:min-val :min-val :min-val :min-val] [:max-val :max-val :max-val :max-val])
+  )
 
 ;; What is sent by Datahike to 'getRange' (depending of type of the query)
 (comment
@@ -403,7 +408,7 @@
           (count (fdb/get-range :eavt [1 :likes "Hans" 1 true]
                    [3 :likes "Hans" 1 true])))))
 
-  ;; TODO: iterate-from no longer works so commenting out for now
+  ;; iterate-from no longer works so commenting out for now
   #_"iterate-from"
   #_(let [db         (empty-db)
           datom-1    (datom 123 :likes "Hans" 1 true)
