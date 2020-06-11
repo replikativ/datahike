@@ -310,9 +310,9 @@
             (count (fdb/get-range :eavt
                      [123 :likes "Hans" 1 true]
                      [125 :likes "GG" 1 true]))))
-      (is (= 2 ;; Not 3 because [125] does not exist in the db.
+      (is (= 3
             (count (fdb/get-range :eavt [123] [125]))))
-      (is (= 0
+      (is (= 2
             (count (fdb/get-range :eavt [3] [3]))))
       (is (= 1
             (count (fdb/get-range :eavt
