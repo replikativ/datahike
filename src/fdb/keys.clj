@@ -70,6 +70,7 @@
 (def STRING 3)
 (def MAX-VAL-TYPE 4)
 (def MIN-VAL-TYPE 5)
+(def BOOL 6)
 
 (defn- cst->type
   [int]
@@ -80,7 +81,8 @@
     (= int LONG)   java.lang.Long
     (= int STRING) java.lang.String
     (= int MAX-VAL-TYPE) :max-val
-    (= int MIN-VAL-TYPE) :min-val))
+    (= int MIN-VAL-TYPE) :min-val
+    (= int BOOL)   java.lang.Boolean))
 
 (defn- str-offset
   "Returns the offset where to start writing a string
@@ -156,6 +158,14 @@
   (buf/write! buffer [LONG] (buf/spec buf/int32)
     {:offset (shift-left section-end 3)}))
 
+(defn- write-bool
+  [val buffer section-end]
+  (assert (s/valid? boolean? val))
+  (buf/write! buffer [val] (buf/spec buf/bool)
+    {:offset (shift-left section-end 4)})
+  (buf/write! buffer [BOOL] (buf/spec buf/int32)
+    {:offset (shift-left section-end 3)}))
+
 (defn write-min-val
   [buffer index-type section-type]
   "Writes the min possible value to the slot"
@@ -171,7 +181,7 @@
   (let [section-start (+ 1 (position index-type (pred-section index-type section-type)))
         section-end (position index-type section-type)
         size (- section-end section-start)]
-(println "In write max: " section-start " - " section-end " , " index-type " , " section-type)
+;;(println "In write max: " section-start " - " section-end " , " index-type " , " section-type)
     ;; Leave 4 bytes to write the type of the content
     (buf/write! buffer (vec (take (- size 4) (repeat max-byte-val))) (buf/repeat 1 buf/byte)
       {:offset section-start})
@@ -182,7 +192,7 @@
 (defn- write-a
   "Write the `a` part of an index."
   [a buffer index-type]
-(println "---..-- a:" a )
+  ;;(println "---..-- a:" a )
   (assert (s/valid? keyword? a))
   (assert (s/valid? keyword? index-type))
   (cond
@@ -197,12 +207,13 @@
   (let [type (type val)
         section-end (position index-type :v-end)]
     (cond
-      (= :min-val val) (write-min-val buffer index-type :v-end)
-      (= :max-val val) (write-max-val buffer index-type :v-end)
       (= type java.lang.Integer) (write-int val buffer section-end)
-      (= type java.lang.Long)    (write-long val buffer section-end)
       (= type java.lang.String)  (write-str val buffer index-type :v-end)
       (keyword? val)   (write-str (attribute-as-str val) buffer index-type :v-end)
+      (= :min-val val) (write-min-val buffer index-type :v-end)
+      (= :max-val val) (write-max-val buffer index-type :v-end)
+      (= type java.lang.Boolean) (write-bool val buffer section-end)
+      (= type java.lang.Long)    (write-long val buffer section-end)
       :else (throw (IllegalStateException. (str "Trying to write-v: " val))))))
 
 
@@ -266,6 +277,10 @@
   (first (buf/read buffer (buf/spec buf/int64)
            {:offset (shift-left section-end 11)})))
 
+(defn- read-bool
+  [buffer section-end]
+  (first (buf/read buffer (buf/spec buf/bool)
+           {:offset (shift-left section-end 4)})))
 
 (defn- read-str
   [buffer index-type section-type]
@@ -277,11 +292,10 @@
     ;;(println ":............" (type str-bytes))
     (String. (byte-array str-bytes))))
 
+;; NOT Really used.
 (defn- read-min-val
   [buffer index-type section-type]
-  ;; TODO
-  0
-  )
+  0)
 
 (defn- read-max-val
   [buffer index-type section-type]
@@ -299,18 +313,30 @@
   [buffer index-type section-type]
   (let [section-end (position index-type :v-end)
         type (cst->type (read-int buffer section-end 3))]
+    ;; TODO: Replace by a map so that dispatching is faster?
     (cond
       (= type java.lang.Integer) (read-int   buffer section-end 7)
-      (= type java.lang.Long)    (read-long  buffer section-end)
       (= type java.lang.String)  (read-str   buffer index-type section-type)
       (= type :max-val)          (read-max-val buffer index-type section-type)
+      (= type java.lang.Boolean) (read-bool  buffer section-end)
+      (= type java.lang.Long)    (read-long  buffer section-end)
       (= type :min-val)          (read-min-val buffer index-type section-type))))
+
+
+(defn print-buf
+  [buffer]
+  (for [x (range buf-len)]
+    (.get buffer x)))
 
 
 (defn ->byteArr
   [index-type [e a v t]]
-  (let [arr (byte-array buf-len)]
-    (.get (->byteBuffer index-type [e a v t]) arr)
+  (let [arr (byte-array buf-len)
+        byteBuffer (->byteBuffer index-type [e a v t])]
+
+;;(println  (print-buf byteBuffer))
+
+    (.get byteBuffer arr)
     arr))
 
 (defn byteArr->byteBuffer

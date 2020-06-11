@@ -12,6 +12,8 @@
 ;;---- FDB Keys -----
 
 
+;; Test as shown that you cannot insert a nil value in datahike: @(transact conn [{ :db/id 5, :name nil  }])
+
 (defn assert-vec-conversion
   "Checks that given a 'vect we get the same vect back after going through fdb key conversion"
   [index-type from-vect to-vect]
@@ -31,18 +33,16 @@
     "int value"
     (assert-vec-conversion :eavt [20 :hello (int 2356) 3] [20 :hello (int 2356) 3])
 
+    "boolean value"
+    (assert-vec-conversion :eavt [20 :hello true 3] [20 :hello true 3])
+    (assert-vec-conversion :eavt [20 :hello false 3] [20 :hello false 3])
+
     "long value"
     (assert-vec-conversion :eavt [20 :hello (long 234) 3] [20 :hello (long 234) 3])
 
     "biggest 'e' value"
     (assert-vec-conversion :eavt [9223372036854775807 :hello (long 234) 3]
-      [9223372036854775807 :hello (long 234) 3]))
-
-  ;; TODO: what happens when we try to insert something like :eavt [12 nil nil]
-  ;; TODO: this raises the question of 'can we pass a vector with only subelements in get range when we do a search? e.g. get-range [125]? Shall we convert that automatically to [125 nil nil]?
-  ;; Test as shown that you cannot insert a nil value in datahike: @(transact conn [{ :db/id 5, :name nil  }])
-
-  )
+      [9223372036854775807 :hello (long 234) 3])))
 
 
 ;; --------- :aevt indices
@@ -56,6 +56,9 @@
 
   "int value"
   (assert-vec-conversion :aevt [20 :hello  (int 2356) 3] [:hello 20 (int 2356) 3])
+
+  "boolean value"
+  (assert-vec-conversion :aevt [20 :hello true 3] [:hello 20 true 3])
 
   "biggest 'e' value"
   (assert-vec-conversion :aevt [9223372036854775807 :hello (long 234) 3]
@@ -74,6 +77,9 @@
 
   "int value"
   (assert-vec-conversion :avet [20 :hello (int 2356) 3] [:hello (int 2356) 20 3])
+
+  "boolean value"
+  (assert-vec-conversion :avet [20 :hello false 3] [:hello false 20 3])
 
   "biggest 'e' value"
   (assert-vec-conversion :avet [9223372036854775807 :hello (long 234) 3] [:hello (long 234) 9223372036854775807 3]))
