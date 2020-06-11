@@ -211,27 +211,11 @@
               (map dvec (d/datoms db :aevt)))))))
 
 
-
-
 (deftest clear
   (let [db (-> (empty-db)
                (d/db-with [[:db/add 1 :name "Ivan"]]))]
-      (is (= 1
-            (count (fdb/get-range :eavt [1 :name "Ivan"] [20 :name "Ivan"]))))
-      (is (= 0
-            (count (fdb/clear :eavt [1 :name "Ivan"]))))))
-
-
-(comment
-  (def db (-> (empty-db)
-                                        ;: TODO: BUG: Does not work when there are 2 datoms for the same entity?
-            (d/db-with [ [:db/add 1 :name "Ivan"]
-                        [:db/add 1 :name "Petr"]])))
-
-  (fdb/clear :eavt [1 :name "Ivan"])
-
-  (d/datoms db :eavt)
-  )
+      (is (= 1 (count (fdb/get-range :eavt [1 :name "Ivan"] [20 :name "Ivan"]))))
+      (is (= 0 (count (fdb/clear :eavt [1 :name "Ivan"]))))))
 
 
 (deftest test-transact!
@@ -258,8 +242,9 @@
     (d/transact! conn [[:db/add 1 :aka  "Devil"]])
     (d/transact! conn [[:db/add 1 :aka  "Tupen"]]))
 
+  (d/q '[:find ?e ?a  ?v  :where [?e ?a ?v]] @conn)
 
-  )
+  (d/datoms @conn :eavt))
 
 ;; What is sent by Datahike to 'getRange' (depending of type of the query)
 (comment
@@ -294,54 +279,6 @@
          [?e1 :name ?n1]
          [?e2 :name ?n2]] @conn)
   )
-
-
-
-
-(comment
-  (def db (-> (empty-db)
-            (d/db-with [ [:db/add 1 :name "Petr"]
-                        ;; [:db/add 1 :age 44]
-                        ;; [:db/add 2 :name "Ivan"]
-                        ;; [:db/add 2 :age 25]
-                        ;; [:db/add 3 :name "Sergey"]
-                        ;; [:db/add 3 :age 11]
-                        ])))
-  (fdb/get-range :aevt [1 :name "Petr"] [20 :name "Petr"])
-  (fdb/get-range :aevt [0 :a  nil] [13 :b 30])
-  (fdb/get-range :aevt [0 :name  nil] [13 :zzzz 30])
-  (fdb/get-range :aevt [3 :name  nil] [13 :zzzz 30])
-  (fdb/get-range :aevt [1 :name  nil] [13 :zzzz 30])
-  (fdb/get-range :aevt [0 nil nil 536870912 true] [2147483647 nil nil 2147483647 true])
-  (d/datoms db :aevt)
-
-
-  (def db (-> (empty-db)
-            (d/db-with [ [:db/add 1 :name "Petr"]
-                        ;; [:db/add 1 :age 44]
-                        ;; [:db/add 2 :name "Ivan"]
-                        ;; [:db/add 2 :age 25]
-                        ;; [:db/add 3 :name "Sergey"]
-                        ;; [:db/add 3 :age 11]
-                        ])))
-  (d/datoms db :eavt)
-  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647]) ;; KO
-  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Q" 2147483647]) ;; KO
-  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Pf" 2147483647]);; KO
-  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Petr" 2147483647]);; OK
-  ;; => Pblm with nil
-  ;; => Pblm with orders of String.
-
-  (fdb/get-range :eavt [1 :name "P" nil] [1 :name "Petr" 2147483647])
-
-  (fdb/get-range :eavt [0 nil  nil] [13 nil 30])
-  (fdb/get-range :eavt [0 nil nil 536870912 true] [2147483647 nil nil 2147483647 true])
-  ;;
-  (k/key->vect :aevt (fdb/get nil :eavt [1 :name "Petr" 536870913]))
-
-  )
-
-
 
 
 (deftest using-with-datom
@@ -542,6 +479,88 @@
                       (datom 4 :shared/policy "hello")])))
   ;; TODO: test that what's inserted in fdb through init-db above is really inside fdb
   )
+
+
+
+(comment
+  (def tx-tempid :db/current-tx
+    #_"datomic.tx"
+    #_"datahike.tx")
+
+  (def conn (d/create-conn {:created-at {:db/valueType :db.type/ref}}))
+
+  (d/transact! conn [{:name "X", :created-at tx-tempid}
+                                {:db/id tx-tempid, :prop1 "prop1"}
+                                [:db/add tx-tempid :prop2 "prop2"]
+                                [:db/add -1 :name "Y"]
+                     [:db/add -1 :created-at tx-tempid]])
+
+  (d/datoms @conn :eavt)
+
+  (d/q '[:find ?e ?a ?v :where [?e ?a ?v]] @conn)
+
+
+  #_(let [conn (d/create-conn {:created-at {:db/valueType :db.type/ref}})
+            tx1  (d/transact! conn [{:name "X", :created-at tx-tempid}
+                                    {:db/id tx-tempid, :prop1 "prop1"}
+                                    [:db/add tx-tempid :prop2 "prop2"]
+                                    [:db/add -1 :name "Y"]
+                                    [:db/add -1 :created-at tx-tempid]])]
+        (is (= (d/q '[:find ?e ?a ?v :where [?e ?a ?v]] @conn)
+              #{[1 :name "X"]
+                [1 :created-at (+ d/tx0 1)]
+                [(+ d/tx0 1) :prop1 "prop1"]
+                [(+ d/tx0 1) :prop2 "prop2"]
+                [2 :name "Y"]
+                [2 :created-at (+ d/tx0 1)]}))
+        (is (= (:tempids tx1) (assoc {-1 2, :db/current-tx (+ d/tx0 1)}
+                                     tx-tempid (+ d/tx0 1))))
+        (let [tx2   (d/transact! conn [[:db/add tx-tempid :prop3 "prop3"]])
+              tx-id (get-in tx2 [:tempids tx-tempid])]
+          (is (= (into {} (d/entity @conn tx-id))
+                 {:prop3 "prop3"})))
+        (let [tx3   (d/transact! conn [{:db/id tx-tempid, :prop4 "prop4"}])
+              tx-id (get-in tx3 [:tempids tx-tempid])]
+          (is (= tx-id (+ d/tx0 3)))
+          (is (= (into {} (d/entity @conn tx-id))
+                 {:prop4 "prop4"})))))
+
+
+
+(comment
+
+  (def test-db (d/db-with (d/empty-db)
+             [{:db/id 1 :name "Petr" :age 44}
+              {:db/id 2 :name "Ivan" :age 25}
+              {:db/id 3 :name "Oleg" :age 11}]))
+
+  (d/q {:find '[(pull ?e [*])]
+        :where '[[?e :age ?a]
+                 [(>= ?a 18)]]}
+    test-db)
+
+
+
+  (deftest test-basics
+    (are [find res] (= (set (d/q {:find find
+                                  :where '[[?e :age ?a]
+                                           [(>= ?a 18)]]}
+                              test-db))
+                      res)
+      '[(pull ?e [:name])]
+      #{[{:name "Ivan"}] [{:name "Petr"}]}
+
+      '[(pull ?e [*])]
+      #{[{:db/id 2 :age 25 :name "Ivan"}] [{:db/id 1 :age 44 :name "Petr"}]}
+
+      '[?e (pull ?e [:name])]
+      #{[2 {:name "Ivan"}] [1 {:name "Petr"}]}
+
+      '[?e ?a (pull ?e [:name])]
+      #{[2 25 {:name "Ivan"}] [1 44 {:name "Petr"}]}
+
+      '[?e (pull ?e [:name]) ?a]
+      #{[2 {:name "Ivan"} 25] [1 {:name "Petr"} 44]})))
 
 
 
