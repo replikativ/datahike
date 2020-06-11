@@ -159,12 +159,11 @@
 (defn write-min-val
   [buffer index-type section-type]
   "Writes the min possible value to the slot"
-  ;; TODO
-  ;; Can we do nothing, ie just leave the buffer blank with zeros?
-  (let [section-end (position index-type section-type)]
-    ;;(println "in write-min-val")
-    (buf/write! buffer [MIN-VAL-TYPE] (buf/spec buf/int32)
-      {:offset (shift-left section-end 3)})))
+   ;;    (println "In write min: "  section-end)
+
+   ;; NO-OP. Goal is to return an array of bytes filled with 0.
+   ;; Since it is what octet does (i.e create the buffer with zeros), it is a NO-OP here.
+  )
 
 (defn write-max-val
   [buffer index-type section-type]
