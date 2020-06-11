@@ -94,27 +94,16 @@
   (dh-db/empty-db nil :datahike.index/fdb))
 
 
-(comment
-  (def db (-> (empty-db)
-            (with-datom (datom 123 :likes "Hans" 1 true))
-            (with-datom (datom 124 :likes "GG" 1 true))
-            ))
-  (d/datoms db :eavt)
-  )
-
-
 (deftest empty-db-creation
   "empty db creation"
   (is (empty-db)))
 
 
 ;; Strings order are preserved
-;;
-
 (deftest string-order
   (testing ""
     (let [db (-> (empty-db)
-               (d/db-with [ [:db/add 1 :name "Petr"]]))]
+               (d/db-with [[:db/add 1 :name "Petr"]]))]
       (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Q" 2147483647]))))
       (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Pf" 2147483647]))))
       (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Petr" 2147483647])))))))
@@ -126,20 +115,6 @@
     ;; In get-range queries nil must mean max_value
     (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647]))))))
 
-(comment
-  (def db (-> (empty-db)
-            (d/db-with [ [:db/add 1 :name "Petr"]
-                        ;; [:db/add 1 :age 44]
-                        ;; [:db/add 2 :name "Ivan"]
-                        ;; [:db/add 2 :age 25]
-                        ;; [:db/add 3 :name "Sergey"]
-                        ;; [:db/add 3 :age 11]
-                        ])))
-  (is (not (empty?  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647])))) ;; KO
-  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Q" 2147483647]) ;; KO
-  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Pf" 2147483647]);; KO
-  (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Petr" 2147483647]));; OK
-
 
 
 (deftest datoms-fn
@@ -150,44 +125,54 @@
     (testing "datoms works"
       (is (= [[123 :likes "Hans"]
               [124 :likes "GG"]]
-            (map dvec (d/datoms db :eavt)))))
-    ))
+            (map dvec (d/datoms db :eavt)))))))
 
+;; TODO: replace with a real test
+(comment "Check :min-val and :max-val"
+         (k/print-buf (k/->byteBuffer :eavt [:min-val :min-val :min-val :min-val]))
+         (k/print-buf (k/->byteBuffer :eavt [:max-val :max-val :max-val :max-val]))
+         )
 
-(deftest db-with
-  (testing  "simple insertion"
+(deftest simple-insertions
+  ;; Careful with db-with. It does not have the same meaning on an immutable database than on FDB.
+  (testing "using db-with"
     (let [db (-> (empty-db)
-               (d/db-with [ [:db/add 1 :name "Petr"]
+               (d/db-with [[:db/add 1 :name "Petr"]
                            [:db/add 1 :ko "Ivan"]]))]
       (is (= 1
             (count (fdb/get-range :aevt [1 :name "Petr"] [20 :name "Petr"]))))))
 
   (let [dvec #(vector (:e %) (:a %) (:v %))
+        data [[:db/add 1 :name "Petr"]
+              [:db/add 1 :age 44]
+              [:db/add 2 :name "Ivan"]
+              [:db/add 2 :age 25]
+              [:db/add 3 :name "Sergey"]
+              [:db/add 3 :age 11]]
         db (-> (empty-db)
-             (d/db-with [[:db/add 1 :name "Petr"]
-                         [:db/add 1 :age 44]
-                         [:db/add 2 :name "Ivan"]
-                         [:db/add 2 :age 25]
-                         [:db/add 3 :name "Sergey"]
-                         [:db/add 3 :age 11]
-                         ]))]
-    (testing "datoms in :eavt order"
-      (is (= [[1 :age 44]
-              [1 :name "Petr"]
-              [2 :age 25]
-              [2 :name "Ivan"]
-              [3 :age 11]
-              [3 :name "Sergey"]]
-            (mapv dvec (d/datoms db :eavt)))))
+             (d/db-with data))]
 
-    (testing "datoms in :aevt order"
+    (testing ":eavt"
+      (is (= [[1 :age 44]
+              [1 :name "Petr"]
+              [2 :age 25]
+              [2 :name "Ivan"]
+              [3 :age 11]
+              [3 :name "Sergey"]]
+            (mapv dvec (d/datoms db :eavt))))
+      (is (= (count data)
+            (count (fdb/get-range :eavt [:min-val :min-val :min-val :min-val] [:max-val :max-val :max-val :max-val])))))
+
+    (testing ":aevt"
       (is (= [[1 :age 44]
               [2 :age 25]
               [3 :age 11]
               [1 :name "Petr"]
               [2 :name "Ivan"]
               [3 :name "Sergey"]]
-            (map dvec (d/datoms db :aevt)))))))
+            (map dvec (d/datoms db :aevt))))
+      (is (= (count data)
+            (count (fdb/get-range :eavt [:min-val :min-val :min-val :min-val] [:max-val :max-val :max-val :max-val])))))))
 
 
 (deftest db-with
