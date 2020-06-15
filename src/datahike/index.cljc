@@ -87,11 +87,15 @@
 (extend-type com.apple.foundationdb.FDBDatabase
   IIndex
   (-all [eavt-db]
-        (dif/-all eavt-db))
+    (dif/-all eavt-db :eavt))
+  ;; TODO: impelement! What is the semantic of seq?
   (-seq [eavt-db]
-        (dif/-seq eavt-db))
+    (println "----------- -seq:" eavt-db)
+    (dif/-seq eavt-db))
+  ;; TODO: implement
   (-count [eavt-db]
-          (dif/-count eavt-db))
+    (println "----------- -count:" eavt-db)
+    (dif/-count eavt-db))
   (-insert [db datom index-type]
            (dif/-insert db datom index-type))
   (-remove [db datom index-type]

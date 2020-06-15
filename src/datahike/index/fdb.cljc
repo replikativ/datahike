@@ -22,7 +22,7 @@
 (defn -all
   [db index-type]
   (map (index-type->datom-fn index-type)
-       (fc/get-range index-type [0 :a 0 0] [:max-val :max-val :max-val :max-val])))
+       (fc/get-range index-type [:min-val :min-val :min-val:min-val] [:max-val :max-val :max-val :max-val])))
 
 (def -flush identity)
 
@@ -36,10 +36,9 @@
     ;;(println ".----........db before - after insert: " db " ------ " db-after)
     db))
 
-;; TODO: implement
 (defn -remove [db datom index-type]
   (let [_ (fc/clear index-type datom)]
-    (println "....... remove called! " datom " ---- " index-type)
+    ;;(println "....... remove called! " datom " ---- " index-type)
     db))
 
 ;; Called 3 times, one for each index.

@@ -378,14 +378,9 @@
   "Converts a datom into a fdb key. `index-type` is keyword representing the index type."
   ;; Can take ^Datom object as input (as they are array) ;; <- TODO: careful here as Datom does not provide on e a v t.
   [index-type [a b c t]]
-  ;;(prn (str index-type  [a b c t])) ;; TODO
+  ;;(println (str "%%%%%%%" index-type  [a b c t]))
   (->byteArr index-type [a b c t]))
 
-
-(defn print-buf
-  [buffer]
-  (for [x (range buf-len)]
-    (.get buffer x)))
 
 
 ;; ---- Tests   ;; TODO: move into comments at the end

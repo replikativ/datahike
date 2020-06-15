@@ -60,23 +60,14 @@
       (tr! db @(.get tr key)))))
 
 
-#_(defn- key-part-only
-  [index-type [e a v t]]
-  ;; TODO: change max-val into min-val
-  (cond
-    (= :eavt index-type) [e a 0 0]
-    (= :aevt index-type) [e a 0 0]
-    ;; TODO: not sure about this case! CHECK IT OUT!
-    (= :avet index-type) [0 a v 0])
-  )
-
+;; Dh inserts :avet only when it is in indexing mode.
 (defn insert
   "Inserts one vector"
   [index-type [e a v t]]
   (let [fd    (FDB/selectAPIVersion api-version)
         key   (key index-type [e a v t])
         value key]
-;;(println "Insert: " index-type " - " (key->vect index-type key))
+      ;;(println "Insert: " index-type " - " (key->vect index-type key))
     (with-open [db (.open fd)]
       (tr! db (.set tr key value))
       db)))
@@ -161,7 +152,7 @@
         ;;_ (println "*** In get-range: " index-type " -- " new-begin "----" new-end)
         res (get-range-as-byte-array index-type new-begin new-end)
         result (map (partial key->vect index-type) res)]
-    ;;(println "*** In get-range: " index-type " -- " new-begin "----" new-end " --- RESULT: " result)
+;;(println "*** In get-range: " index-type " -- " new-begin "----" new-end " --- RESULT: " result)
     result)) 
 
 ;;------------ KeySelectors and iterations
