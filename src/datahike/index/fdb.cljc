@@ -36,16 +36,16 @@
 
 (defn -insert [db datom index-type]
   (let [db-after (fc/insert index-type datom)]
-    ;;(println ".----........db before - after insert: " db " ------ " db-after)
+    ;;(println "...after insert: " db " ------ " db-after)
     db))
 
 (defn -remove [db datom index-type]
   (let [_ (fc/clear index-type datom)]
-    ;;(println "....... remove called! " datom " ---- " index-type)
+    ;;(println "...remove called! " datom " ---- " index-type)
     db))
 
 ;; Called 3 times, one for each index.
 (defn empty-db [index-type]
   (let [db (fc/empty-db)]
-    ;; (println "db is nil?:" db)
+    ;; (println "...db is nil?:" db)
     db))
