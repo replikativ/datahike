@@ -94,7 +94,7 @@
     (dif/-seq eavt-db))
   ;; TODO: implement
   (-count [eavt-db]
-    (println "----------- -count:" eavt-db)
+    ;;(println "----------- -count:" eavt-db)
     (dif/-count eavt-db))
   (-insert [db datom index-type]
            (dif/-insert db datom index-type))

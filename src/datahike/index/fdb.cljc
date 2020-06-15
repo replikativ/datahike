@@ -13,8 +13,6 @@
 
 (def -seq seq)
 
-(def -count count)
-
 (defn -slice [db from to index-type]
   (map (index-type->datom-fn index-type)
     (fc/get-range index-type from to)))
@@ -23,6 +21,10 @@
   [db index-type]
   (map (index-type->datom-fn index-type)
        (fc/get-range index-type [:min-val :min-val :min-val:min-val] [:max-val :max-val :max-val :max-val])))
+
+(defn -count [db]
+  (count (-all db :eavt)))
+
 
 (def -flush identity)
 
