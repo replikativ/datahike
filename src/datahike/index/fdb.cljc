@@ -11,8 +11,6 @@
     :avet (fn [[a v e tx]] (dd/datom e a v tx true))
     (fn [[e a v tx]] (dd/datom e a v tx true))))
 
-(def -seq seq)
-
 (defn -slice [db from to index-type]
   (map (index-type->datom-fn index-type)
     (fc/get-range index-type from to)))
@@ -21,6 +19,9 @@
   [db index-type]
   (map (index-type->datom-fn index-type)
        (fc/get-range index-type [:min-val :min-val :min-val:min-val] [:max-val :max-val :max-val :max-val])))
+
+(defn -seq [db]
+  (seq (-all db :eavt)))
 
 (defn -count [db]
   (count (-all db :eavt)))
