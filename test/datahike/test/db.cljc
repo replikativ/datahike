@@ -55,3 +55,10 @@
                       [{:db/id 1 :name "Konrad"}])
         r1 (d/db-with db [[:db.fn/retractEntity 1]])]
     (is (= (hash (d/empty-db)) (hash r1)))))
+
+
+(deftest from-old-schema
+  (testing "Nil schema."
+    (is (= true (nil? (db/from-old-schema nil)))))
+  (testing "Empty schema."
+    (is (= [] (db/from-old-schema {})))))

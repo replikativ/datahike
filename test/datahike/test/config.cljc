@@ -2,7 +2,8 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-   [datahike.config :refer :all]))
+   [datahike.config :refer :all]
+   [datahike.core :as d]))
 
 (deftest int-from-env-test
   (is (= 1000
@@ -59,3 +60,15 @@
               :index :datahike.index/hitchhiker-tree}
              (-> config (dissoc :name)))))))
 
+(deftest core-config-test
+    (testing "Schema on write in core empty database"
+      (is (thrown-msg?
+           "No schema found in db."
+           (d/db-with (d/empty-db nil {:schema-flexibility :write})
+                      [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
+                       {:db/id 2 :name "Petr" :age 37 :huh? false}])))
+      (is (thrown-msg?
+           "Not schema for attribute"
+           (d/db-with (d/empty-db {:name {:db/cardinality :db.cardinality/one}} {:schema-flexibility :write})
+                      [{:db/id 1 :name "Alice"}
+                       {:db/id 2 :name "Bob"}])))))

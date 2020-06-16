@@ -709,13 +709,18 @@
 (def ^:const br 300)
 (def ^:const br-sqrt (long (Math/sqrt br)))
 
+(defn from-old-schema [old-schema]
+  (if (map? old-schema)
+    []
+    old-schema))
+
 (defn ^DB empty-db
   ([] (empty-db nil nil))
   ([schema] (empty-db schema nil))
   ([schema config]
    {:pre [(or (nil? schema) (map? schema))]}
    (validate-schema schema)
-   (let [{:keys [keep-history? index schema-flexibility] :as config} (merge (dc/storeless-config) config )]
+   (let [{:keys [keep-history? index schema-flexibility] :as config} (merge (dc/storeless-config) config)]
      (map->DB
       (merge
        {:schema  (merge schema
