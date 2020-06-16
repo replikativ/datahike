@@ -209,9 +209,11 @@
     (cond
       (= type java.lang.Integer) (write-int val buffer section-end)
       (= type java.lang.String)  (write-str val buffer index-type :v-end)
-      (keyword? val)   (write-str (attribute-as-str val) buffer index-type :v-end)
+      ;; TODO: Replace :min-val and :max-val by CSTs as they are keywords and could be used as is by user to model their domains. Or at least change them into namespaced keywords so that there is no clash.
       (= :min-val val) (write-min-val buffer index-type :v-end)
       (= :max-val val) (write-max-val buffer index-type :v-end)
+      ;; !!! DON'T move this before the :min-val or :max-val tests (as they are keywords!)
+      (keyword? val)   (write-str (attribute-as-str val) buffer index-type :v-end)
       (= type java.lang.Boolean) (write-bool val buffer section-end)
       (= type java.lang.Long)    (write-long val buffer section-end)
       :else (throw (IllegalStateException. (str "Trying to write-v: " val))))))
@@ -233,7 +235,7 @@
   "Write the `e` part of an index."
   [e buffer index-type]
   ;;  (println "---..-- e:" e)
-  ;; TODO: add an asser that e is either an int or either the :max and :min-val keywords
+  ;; TODO: add an assert that e is either an int or either the :max and :min-val keywords
   (cond
     (= :min-val e) (write-min-val buffer index-type :e-end)
     (= :max-val e) (write-max-val buffer index-type :e-end)
