@@ -98,7 +98,7 @@
 
 (s/def ::old-schema-key keyword?)
 
-(s/def ::old-schema (s/map-of ::old-schema-key ::old-schema-val))
+(s/def ::old-schema (s/nilable (s/map-of ::old-schema-key ::old-schema-val)))
 
 (defn old-schema-valid? [schema]
   (s/valid? ::old-schema schema))

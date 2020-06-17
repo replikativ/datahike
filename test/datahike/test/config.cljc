@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
    [datahike.config :refer :all]
+   [datahike.test.core]
    [datahike.core :as d]))
 
 (deftest int-from-env-test
@@ -68,7 +69,7 @@
                       [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
                        {:db/id 2 :name "Petr" :age 37 :huh? false}])))
       (is (thrown-msg?
-           "Not schema for attribute"
+           "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
            (d/db-with (d/empty-db {:name {:db/cardinality :db.cardinality/one}} {:schema-flexibility :write})
                       [{:db/id 1 :name "Alice"}
                        {:db/id 2 :name "Bob"}])))))

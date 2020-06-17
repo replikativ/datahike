@@ -737,7 +737,7 @@
              (validate-write-schema schema))]
      (map->DB
       (merge
-       {:schema  (merge schema (when on-read? implicit-schema))
+       {:schema  (merge implicit-schema schema)
         :rschema (rschema (merge implicit-schema schema))
         :config  config
         :eavt    (di/empty-index index :eavt)

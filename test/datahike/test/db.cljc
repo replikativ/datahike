@@ -62,10 +62,18 @@
     (is (thrown-msg?
          "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
          (d/empty-db {:name {:db/cardinality :db.cardinality/many}} {:schema-flexibility :write})))
-    (is (= {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}}
+    (is (= {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}
+            :db/ident {:db/unique :db.unique/identity}}
            (:schema (d/empty-db {:name {:db/cardinality :db.cardinality/one
                                         :db/valueType :db.type/string}}
-                                 {:schema-flexibility :write}))))))
+                                {:schema-flexibility :write}))))
+
+    (is (= {:name {:db/ident :name :db/cardinality :db.cardinality/one :db/valueType :db.type/string}
+            :db/ident {:db/unique :db.unique/identity}}
+           (:schema (d/empty-db [{:db/ident :name
+                                  :db/cardinality :db.cardinality/one
+                                  :db/valueType :db.type/string}]
+                                {:schema-flexibility :write}))))))
 
 
 
