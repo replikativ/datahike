@@ -91,6 +91,21 @@
 
 (def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
 
+
+(s/def ::old-schema-val (s/keys :req [:db/valueType :db/cardinality]
+                                :opt [:db/ident :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
+
+
+(s/def ::old-schema-key keyword?)
+
+(s/def ::old-schema (s/map-of ::old-schema-key ::old-schema-val))
+
+(defn old-schema-valid? [schema]
+  (s/valid? ::old-schema schema))
+
+(defn explain-old-schema [schema]
+  (s/explain-data ::old-schema schema))
+
 (defn meta-attr? [attr]
   (s/valid? ::meta-attribute attr))
 
