@@ -40,7 +40,11 @@
                "#datahike/Datom [1 :db/cardinality :db.cardinality/one 536870913 true]\r\n#datahike/Datom [1 :db/ident :name 536870913 true]\r\n#datahike/Datom [1 :db/index true 536870913 true]\r\n#datahike/Datom [1 :db/unique :db.unique/identity 536870913 true]\r\n#datahike/Datom [1 :db/valueType :db.type/string 536870913 true]\r\n#datahike/Datom [2 :db/cardinality :db.cardinality/one 536870913 true]\r\n#datahike/Datom [2 :db/ident :age 536870913 true]\r\n#datahike/Datom [2 :db/valueType :db.type/long 536870913 true]\r\n#datahike/Datom [3 :age 25 536870913 true]\r\n#datahike/Datom [3 :name \"Alice\" 536870913 true]\r\n#datahike/Datom [4 :age 35 536870913 true]\r\n#datahike/Datom [4 :name \"Bob\" 536870913 true]\r\n"
                "#datahike/Datom [1 :db/cardinality :db.cardinality/one 536870913 true]\n#datahike/Datom [1 :db/ident :name 536870913 true]\n#datahike/Datom [1 :db/index true 536870913 true]\n#datahike/Datom [1 :db/unique :db.unique/identity 536870913 true]\n#datahike/Datom [1 :db/valueType :db.type/string 536870913 true]\n#datahike/Datom [2 :db/cardinality :db.cardinality/one 536870913 true]\n#datahike/Datom [2 :db/ident :age 536870913 true]\n#datahike/Datom [2 :db/valueType :db.type/long 536870913 true]\n#datahike/Datom [3 :age 25 536870913 true]\n#datahike/Datom [3 :name \"Alice\" 536870913 true]\n#datahike/Datom [4 :age 35 536870913 true]\n#datahike/Datom [4 :name \"Bob\" 536870913 true]\n")))
 
-      (let [import-cfg {:store {:backend :file :path (str (System/getProperty "java.io.tmpdir") "reimport")}}
+      (let [import-path (case os
+                          "Windows 10" (str (System/getProperty "java.io.tmpdir") "reimport")
+                          "/tmp/reimport")
+            import-cfg {:store {:backend :file
+                                :path import-path}}
             _ (d/delete-database import-cfg)
             _ (d/create-database import-cfg)
             new-conn (d/connect import-cfg)]
