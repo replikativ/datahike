@@ -11,16 +11,26 @@
               [java.util Date])))
 
 (def
-  ^{:arglists '([uri])
-    :doc
-              "Connects to a datahike database via URI or configuration. URI contains storage backend type
-            and additional information for backends like database name, credentials, or
-            location. Refer to the store project in the examples folder or the documentation
-            in the config markdown file in the doc folder.
+  ^{:arglists '([] [config])
+    :doc "Connects to a datahike database via configuration. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
 
-            Usage:
+The configuration for a connection is a subset of the Datahike configuration with only the store necessary: `:store`.
 
-              (connect \"datahike:mem://example\")"}
+`:store` defines the backend configuration as hash-map with mandatory key: `:backend` and store dependent keys.
+
+Per default Datahike ships with `:mem` and `:file` backend.
+
+The default configuration:
+ `{:store {:backend :mem :id \"default\"}}`
+
+Usage:
+
+Connect to default in-memory configuration:
+ `(connect)`
+
+Connect to a database with persistent store:
+ `(connect {:store {:backend :file :path \"/tmp/example\"}})`"}
+
   connect dc/connect)
 
 (def
@@ -28,54 +38,49 @@
     :doc "Checks if a database exists given a configuration URI or hash map.
           Usage:
 
-            (database-exists? \"datahike:mem://example\")"}
+            (database-exists? {:store {:backend :mem :id \"example\"}})"}
   database-exists? dc/database-exists?)
 
 (def
-  ^{:arglists '([& opts])
-    :doc
-              "Creates a database using backend configuration with optional database configuration
-            by providing either a URI that encodes storage backend data like database name,
-            credentials, or location, or by providing a configuration hash map. Refer to the
-            store project in the examples folder or the documention in the config markdown
-            file of the doc folder.
+  ^{:arglists '([] [config & deprecated-opts])
+    :doc "Creates a database via configuration. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
 
-            Usage:
+  The configuration is a hash-map with keys: `:store`, `:initial-tx`, `:keep-history?`, `:schema-flexibility`, `:index`
 
-              Create an empty database with default configuration:
+  - `:store` defines the backend configuration as hash-map with mandatory key: `:backend` and store dependent keys.
+    Per default Datahike ships with `:mem` and `:file` backend.
+  - `:initial-tx` defines the first transaction into the database, often setting default data like the schema.
+  - `:keep-history?` is a boolean that toggles whether Datahike keeps historical data.
+  - `:schema-flexibility` can be set to either `:read` or `:write` setting the validation method for the data.
+  - `:read` validates the data when your read data from the database, `:write` validates the data when you transact new data.
+  - `:index` defines the data type of the index. Available are `:datahike.index/hitchhiker-tree`, `:datahike.index/persistent-set` (only available with in-memory storage)
+  - `:name` defines your database name optionally, if not set, a random name is created
 
-                `(create-database \"datahike:mem://example\")`
+  Default configuration has in-memory store, keeps history with write schema flexibility, and has no initial transaction:
+  {:store {:backend :mem :id \"default\"} :keep-history? true :schema-flexibility :write}
 
-              Initial data after creation may be added using the `:initial-tx` parameter, which in this example adds a schema:
+  Usage:
 
-                (create-database \"datahike:mem://example\" :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])
+  ; create an empty database:
+  (create-database {:store {:backend :mem :id \"example\"} :name \"my-favourite-database\"})
 
-              Datahike has a strict schema validation (schema-on-write) policy by default,
-              that only allows transaction of data that has been pre-defined by a schema.
-              You may influence this behaviour using the `:schema-on-read` parameter:
+  ; Datahike has a strict schema validation (schema-flexibility `:write`) policy by default, that only allows transaction of data that has been pre-defined by a schema.
+  ; You may influence this behaviour using the `:schema-flexibility` attribute:
+  (create-database {:store {:backend :mem :id \"example\"} :schema-flexibility :read})
 
-                (create-database \"datahike:mem://example\" :schema-on-read true)
+  ; By storing historical data in a separate index, datahike has the capability of querying data from any point in time.
+  ; You may control this feature using the `:keep-history?` attribute:
+  (create-database {:store {:backend :mem :id \"example\"} :keep-history? false})
 
-              By storing historical data in a separate index, datahike has the capability of
-              querying data from any point in time. You may control this feature using the
-              `:temporal-index` parameter:
+  ; Initial data after creation may be added using the `:initial-tx` attribute, which in this example adds a schema:
+  (create-database {:store {:backend :mem :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"}
 
-                (create-database \"datahike:mem://example\" :temporal-index false)
-
-              The new way of configuring datahike is using environment variables and system properties that can be set before creating
-              the database. Altering the configuration via arguments is possible via e.g.
-
-                `(datahike.config/reload-config {:store {:backend :file :path \"/tmp/mydb\"}})
-                 (create-database)`
-
-              Initial data after creation may be added using the `:initial-tx` parameter, which in this example adds a schema:
-
-                `(create-database :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}])`"}
   create-database
   dc/create-database)
 
-(def ^{:arglists '([uri])
-       :doc      "Deletes a database at given URI."}
+(def ^{:arglists '([config])
+       :doc      "Deletes a database given a database configuration. Storage configuration `:store` is mandatory.
+  For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
   delete-database
   dc/delete-database)
 
@@ -455,11 +460,11 @@
    (if (or (is-filtered db) (is-temporal? db))
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
      (db/transact-tx-data (db/map->TxReport
-                            {:db-before db
-                             :db-after  db
-                             :tx-data   []
-                             :tempids   {}
-                             :tx-meta   tx-meta}) tx-data))))
+                           {:db-before db
+                            :db-after  db
+                            :tx-data   []
+                            :tempids   {}
+                            :tx-meta   tx-meta}) tx-data))))
 
 (defn db-with
   "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
@@ -484,18 +489,18 @@
      :clj  (instance? Date d)))
 
 (defn as-of
-  "Returns the database state at given Date (you may use either java.util.Date or Epoch Time as long)."
-  [db date]
-  {:pre [(or (int? date) (date? date))]}
+  "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long)."
+  [db timepoint]
+  {:pre [(or (int? timepoint) (date? timepoint))]}
   (if (db/-temporal-index? db)
-    (AsOfDB. db date)
+    (AsOfDB. db timepoint)
     (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn since
-  "Returns the database state since a given Date (you may use either java.util.Date or Epoch Time as long).
+  "Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
   Be aware: the database contains only the datoms that were added since the date."
-  [db date]
-  {:pre [(or (int? date) (date? date))]}
+  [db timepoint]
+  {:pre [(or (int? timepoint) (date? timepoint))]}
   (if (db/-temporal-index? db)
-    (SinceDB. db date)
+    (SinceDB. db timepoint)
     (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)}))))

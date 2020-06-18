@@ -55,3 +55,26 @@
                       [{:db/id 1 :name "Konrad"}])
         r1 (d/db-with db [[:db.fn/retractEntity 1]])]
     (is (= (hash (d/empty-db)) (hash r1)))))
+
+
+(deftest empty-db-with-schema
+  (testing "Test old write schema"
+    (is (thrown-msg?
+         "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
+         (d/empty-db {:name {:db/cardinality :db.cardinality/many}} {:schema-flexibility :write})))
+    (is (= {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}
+            :db/ident {:db/unique :db.unique/identity}}
+           (:schema (d/empty-db {:name {:db/cardinality :db.cardinality/one
+                                        :db/valueType :db.type/string}}
+                                {:schema-flexibility :write}))))
+
+    (is (= {:name {:db/ident :name :db/cardinality :db.cardinality/one :db/valueType :db.type/string}
+            :db/ident {:db/unique :db.unique/identity}}
+           (:schema (d/empty-db [{:db/ident :name
+                                  :db/cardinality :db.cardinality/one
+                                  :db/valueType :db.type/string}]
+                                {:schema-flexibility :write}))))))
+
+
+
+
