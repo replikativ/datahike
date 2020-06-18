@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+set -o errexit
+set -o pipefail
+
 if [ -z ${CIRCLECI} ]; then
     CONTAINER_NAME=$(docker run --detach --publish 5432:5432 --env POSTGRES_DB=config-test --env POSTGRES_USER=alice --env POSTGRES_PASSWORD=foo postgres:alpine)
 fi
