@@ -122,7 +122,7 @@
     (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647]))))))
 
 
-
+;; TODO: with-datom is not a public class!
 (deftest datoms-fn
   (let [dvec #(vector (:e %) (:a %) (:v %))
         db (-> (empty-db)
@@ -292,6 +292,7 @@
   )
 
 
+;; TODO: with-datom is not a public class!
 (deftest using-with-datom
   "get"
   (let [db                          (empty-db)
