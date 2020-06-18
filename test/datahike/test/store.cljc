@@ -20,7 +20,6 @@
       (d/release conn)
       (is (d/database-exists? cfg)))))
 
-
 (deftest test-db-file-store
   (test-store {:store {:backend :file :path (case (System/getProperty "os.name")
                                               "Windows 10" (str (System/getProperty "java.io.tmpdir") "api-fs")

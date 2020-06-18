@@ -14,7 +14,7 @@
   ^{:arglists '([] [config])
     :doc "Connects to a datahike database via configuration. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
 
-The configuration for a connection is a subset of the database configuration with only the store necessary: `:store`.
+The configuration for a connection is a subset of the Datahike configuration with only the store necessary: `:store`.
 
 `:store` defines the backend configuration as hash-map with mandatory key: `:backend` and store dependent keys.
 
@@ -80,7 +80,7 @@ Connect to a database with persistent store:
 
 (def ^{:arglists '([config])
        :doc      "Deletes a database given a database configuration. Storage configuration `:store` is mandatory.
-  Fore more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
+  For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
   delete-database
   dc/delete-database)
 
@@ -460,11 +460,11 @@ Connect to a database with persistent store:
    (if (or (is-filtered db) (is-temporal? db))
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
      (db/transact-tx-data (db/map->TxReport
-                            {:db-before db
-                             :db-after  db
-                             :tx-data   []
-                             :tempids   {}
-                             :tx-meta   tx-meta}) tx-data))))
+                           {:db-before db
+                            :db-after  db
+                            :tx-data   []
+                            :tempids   {}
+                            :tx-meta   tx-meta}) tx-data))))
 
 (defn db-with
   "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
@@ -489,18 +489,18 @@ Connect to a database with persistent store:
      :clj  (instance? Date d)))
 
 (defn as-of
-  "Returns the database state at given Date (you may use either java.util.Date or Epoch Time as long)."
-  [db date]
-  {:pre [(or (int? date) (date? date))]}
+  "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long)."
+  [db timepoint]
+  {:pre [(or (int? timepoint) (date? timepoint))]}
   (if (db/-temporal-index? db)
-    (AsOfDB. db date)
+    (AsOfDB. db timepoint)
     (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn since
-  "Returns the database state since a given Date (you may use either java.util.Date or Epoch Time as long).
+  "Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
   Be aware: the database contains only the datoms that were added since the date."
-  [db date]
-  {:pre [(or (int? date) (date? date))]}
+  [db timepoint]
+  {:pre [(or (int? timepoint) (date? timepoint))]}
   (if (db/-temporal-index? db)
-    (SinceDB. db date)
+    (SinceDB. db timepoint)
     (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)}))))
