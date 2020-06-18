@@ -18,13 +18,18 @@
 
 (deftest export-import-test
   (testing "Test a roundtrip for exporting and importing."
-    (let [cfg {:store {:backend :file
-                       :path (str (System/getProperty "java.io.tmpdir") "export-db1")}}
+    (let [os (System/getProperty "os.name")
+          path (case os
+                 "Windows 10" (str (System/getProperty "java.io.tmpdir") "export-db1")
+                 "/tmp/export-db1")
+          cfg {:store {:backend :file
+                       :path path}}
           _ (d/delete-database cfg)
           _ (d/create-database cfg)
           conn (d/connect cfg)
-          export-path (str (System/getProperty "java.io.tmpdir") "eavt-dump")
-          os (System/getProperty "os.name")]
+          export-path (case os
+                        "Windows 10" (str (System/getProperty "java.io.tmpdir") "eavt-dump")
+                        "/tmp/eavt-dump")]
       (d/transact conn tx-data)
 
       (m/export-db @conn export-path)

@@ -22,7 +22,9 @@
 
 
 (deftest test-db-file-store
-  (test-store {:store {:backend :file :path (str (System/getProperty "java.io.tmpdir") "api-fs")}}))
+  (test-store {:store {:backend :file :path (case (System/getProperty "os.name")
+                                              "Windows 10" (str (System/getProperty "java.io.tmpdir") "api-fs")
+                                              "/tmp/api-fs")}}))
 
 (deftest test-db-mem-store
   (test-store {:store {:backend :mem :id "test-mem"}}))
