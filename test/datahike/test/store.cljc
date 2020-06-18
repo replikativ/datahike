@@ -1,31 +1,31 @@
 (ns datahike.test.store
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [datahike.api :as d]
-    [datahike.config :as c]))
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   [datahike.api :as d])
+  (:import [java.lang System]))
 
-(defn test-store [uri]
-  (let [_ (d/delete-database uri)]
-    (is (not (d/database-exists? uri)))
-    (let [db (d/create-database uri :schema-on-read true)
-          conn (d/connect uri)]
-      (d/transact conn [{ :db/id 1, :name  "Ivan", :age   15 }
-                        { :db/id 2, :name  "Petr", :age   37 }
-                        { :db/id 3, :name  "Ivan", :age   37 }
-                        { :db/id 4, :age 15 }])
+(defn test-store [cfg]
+  (let [_ (d/delete-database cfg)]
+    (is (not (d/database-exists? cfg)))
+    (let [_ (d/create-database (merge cfg {:schema-flexibility :read}))
+          conn (d/connect cfg)]
+      (d/transact conn [{:db/id 1, :name  "Ivan", :age   15}
+                        {:db/id 2, :name  "Petr", :age   37}
+                        {:db/id 3, :name  "Ivan", :age   37}
+                        {:db/id 4, :age 15}])
       (is (= (d/q '[:find ?e :where [?e :name]] @conn)
              #{[3] [2] [1]}))
 
       (d/release conn)
-      (is (d/database-exists? uri)))))
+      (is (d/database-exists? cfg)))))
 
 
 (deftest test-db-file-store
-  (test-store "datahike:file:///tmp/api-fs"))
+  (test-store {:store {:backend :file :path (str (System/getProperty "java.io.tmpdir") "api-fs")}}))
 
 (deftest test-db-mem-store
-  (test-store "datahike:mem:///test-mem"))
+  (test-store {:store {:backend :mem :id "test-mem"}}))
 
 
 (deftest test-persistent-set-index
