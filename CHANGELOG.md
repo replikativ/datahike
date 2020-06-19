@@ -1,3 +1,15 @@
+# 0.3.1
+- support returning maps (#149, #186)
+- support on-write schema for empty-db (#178)
+- add hashmap for transact! (#173)
+- cleanup old benchmarks (#181)
+- cleanup leftover code (#172)
+- fix index selection (#143)
+- fix in-memory database existence check (#180)
+- improve API docs
+- update dependencies
+- use java 1.8 for release build
+
 # 0.3.0
 
 - overhaul configuration while still supporting the old one
