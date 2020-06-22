@@ -20,23 +20,6 @@
     (tree/insert tree key value)))
 
 
-(defrecord UpsertOp [key value] ;; TODO add tx
-  op/IOperation
-  (-affects-key [_] key)
-  (-apply-op-to-coll [_ map]
-    #_(let [[e a] value
-          [_ _ v t] (get-in map [e a]) ;; TODO
-          ]
-      (if v
-        [e a v (if keep-history?  tx)]))
-    #_(update map key (fn [[_ _ v t] value]
-                      (datom e a (.-v old-datom)  false)
-                      ) value)
-
-    (assoc map key value))
-  (-apply-op-to-tree [_ tree]
-    (tree/insert tree key value)))
-
 (comment
 
 
@@ -222,8 +205,8 @@
                         :tag (h/uuid))]))
 
 (defn upsert
-  [tree key value]
-  (enqueue tree [(assoc (->UpsertOp key value) ;; move the def of UpsertOp into DH namespace. Then use a call such as dh/UpsertOp here. [This will send us to DH namespace and thus gives us access to the iterators we need to navigate inside the map/coll that -apply-op-to-coll will give us.
+  [tree key value upsertOp]
+  (enqueue tree [(assoc  upsertOp ;; move the def of UpsertOp into DH namespace. Then use a call such as dh/UpsertOp here. [This will send us to DH namespace and thus gives us access to the iterators we need to navigate inside the map/coll that -apply-op-to-coll will give us.
                    ;; Updated plaN: since we can't import DH project into this HH project, we will pass the UpsertOp as an argument to this upsert function.
                         :tag (h/uuid))]))
 

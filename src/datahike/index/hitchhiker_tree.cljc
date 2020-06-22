@@ -4,9 +4,33 @@
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
             [datahike.constants :refer [e0 tx0 emax txmax]]
-            [datahike.datom :as dd])
+            [datahike.datom :as dd]
+
+            [hitchhiker.tree.op :as op]
+            
+            )
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
+
+(defrecord UpsertOp [key value] ;; TODO add tx
+  op/IOperation
+  (-affects-key [_] key)
+  (-apply-op-to-coll [_ map]
+    #_(let [[e a] value
+            [_ _ v t] (get-in map [e a]) ;; TODO
+            ]
+        (if v
+          [e a v (if keep-history?  tx)]))
+    #_(update map key (fn [[_ _ v t] value]
+                        (datom e a (.-v old-datom)  false)
+                        ) value)
+
+    (assoc map key value))
+  (-apply-op-to-tree [_ tree]
+    (tree/insert tree key value)))
+
+(defn new-UpsertOp [key value]
+  (UpsertOp. key value))
 
 (extend-protocol kc/IKeyCompare
   clojure.lang.PersistentVector
