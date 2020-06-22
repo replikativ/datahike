@@ -9,7 +9,7 @@
                  [persistent-sorted-set     "0.1.2"]
                  [org.clojure/tools.reader "1.3.2"]
                  [environ "1.1.0"]
-                 [io.replikativ/hitchhiker-tree "0.1.7"]
+                 ;; [io.replikativ/hitchhiker-tree "0.1.7"] ;; Actually commenting this has no effect since hhtree is imported by some sub projects. But fortunetaly adding the source code of hhtree directly into this project works.
                  [io.replikativ/superv.async "0.2.9"]
                  [io.lambdaforge/datalog-parser "0.1.5"]
                  [io.replikativ/zufall "0.1.0"]
