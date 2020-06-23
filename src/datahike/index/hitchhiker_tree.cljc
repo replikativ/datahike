@@ -16,17 +16,21 @@
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
-    #_(let [[e a] value
-            [_ _ v t] (get-in map [e a]) ;; TODO
-            ]
-        (if v
-          [e a v (if keep-history?  tx)]))
-    #_(update map key (fn [[_ _ v t] value]
-                        (datom e a (.-v old-datom)  false)
-                        ) value)
+    ;;         (println "------- In UpsertOp projection/insert: " " dissocing ---  " key)
+    (if-let [matching-key (some (fn [old-key]
+                                  (let [[e a _ _] old-key
+                                        [ne na _ _] key]
+                                    (when (and (= (kc/-compare e ne) 0)
+                                            (= (kc/-compare a na) 0))
+                                      old-key)))
+                            (keys map))]
+      (-> map
+        (dissoc matching-key)
+        (assoc key value))
+      (assoc map key value)))
 
-    (assoc map key value))
   (-apply-op-to-tree [_ tree]
+;;    (println "------- In UpsertOp tree/insert: " key " :---- " map)
     (tree/insert tree key value)))
 
 (defn new-UpsertOp [key value]

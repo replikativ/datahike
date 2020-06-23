@@ -205,9 +205,8 @@
                         :tag (h/uuid))]))
 
 (defn upsert
-  [tree key value upsertOp]
-  (enqueue tree [(assoc  upsertOp ;; move the def of UpsertOp into DH namespace. Then use a call such as dh/UpsertOp here. [This will send us to DH namespace and thus gives us access to the iterators we need to navigate inside the map/coll that -apply-op-to-coll will give us.
-                   ;; Updated plaN: since we can't import DH project into this HH project, we will pass the UpsertOp as an argument to this upsert function.
+  [tree upsertOp]
+  (enqueue tree [(assoc upsertOp
                         :tag (h/uuid))]))
 
 (defn delete
