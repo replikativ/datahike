@@ -28,9 +28,7 @@
         (dissoc matching-key)
         (assoc key value))
       (assoc map key value)))
-
   (-apply-op-to-tree [_ tree]
-;;    (println "------- In UpsertOp tree/insert: " key " :---- " map)
     (tree/insert tree key value)))
 
 (defn new-UpsertOp [key value]
