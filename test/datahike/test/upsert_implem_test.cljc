@@ -43,7 +43,7 @@
   ;; TODO: why does it not work when we set the value to insert to nil
   (ha/<?? (msg/upsert t (ht/new-UpsertOp k k))))
 
-(deftest in-projections
+(deftest upsert
   (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
         projected-vec [4 :name "Marcel" 1]
         tree (reduce upsert-helper (ha/<?? new-tree)
@@ -64,8 +64,12 @@
       (let [new [5 :name "Jo" 3]
               tree-after (upsert-helper tree new)]
           ;; Is new in?
-          (is (= new (msg/lookup tree-after new)))))
-    (testing "old v <> new v"
+        (is (= new (msg/lookup tree-after new)))))
+    (testing "new = old"
+      (let [new [4 :name "Marcel" 2]
+            tree-after (upsert-helper tree new)]
+        (is (= new (msg/lookup tree-after new)))))
+    (testing "old v <> new v,"
       (testing "not keeping history"
         (let [new [4 :name "New-Name" 2]
               tree-after (upsert-helper tree new)]
