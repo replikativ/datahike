@@ -55,25 +55,36 @@
                    [3 :age 11 1]
                    [3 :name "Sergey" 1]
                    projected-vec}))]
-    (testing "we are in a projection"
-      (is (= (:key (first (:op-buf tree))) projected-vec)))
-    (testing "basic lookup works"
-      (is (= [1 :age 44 1]
-            (msg/lookup tree [1 :age 44 1]))))
-    (testing "a totally new entry is persisted"
-      (let [new [5 :name "Jo" 3]
+    (testing "Against an entry in the projection area,"
+      (testing "we are in a projection"
+        (is (= (:key (first (:op-buf tree))) projected-vec)))
+      (testing "basic lookup works"
+        (is (= [1 :age 44 1] (msg/lookup tree [1 :age 44 1]))))
+      (testing "a totally new entry is persisted"
+        (let [new [5 :name "Jo" 3]
               tree-after (upsert-helper tree new)]
           ;; Is new in?
-        (is (= new (msg/lookup tree-after new)))))
-    (testing "new = old"
-      (let [new [4 :name "Marcel" 2]
-            tree-after (upsert-helper tree new)]
-        (is (= new (msg/lookup tree-after new)))))
-    (testing "old v <> new v,"
-      (testing "not keeping history"
-        (let [new [4 :name "New-Name" 2]
+          (is (= new (msg/lookup tree-after new)))))
+      (testing "new = old"
+        (let [new [4 :name "Marcel" 2]
               tree-after (upsert-helper tree new)]
-          ;; Is new in?
-          (is (= new (msg/lookup tree-after new)))
-          ;; Is old deleted?
-          (is (= nil (msg/lookup tree-after projected-vec))))))))
+          (is (= new (msg/lookup tree-after new)))))
+      (testing "old v <> new v,"
+        (testing "not keeping history"
+          (let [new [4 :name "New-Name" 2]
+                tree-after (upsert-helper tree new)]
+            ;; Is new in?
+            (is (= new (msg/lookup tree-after new)))
+            ;; Is old deleted?
+            (is (= nil (msg/lookup tree-after projected-vec)))))
+        (testing "keeping history"
+          ;; TODO
+          )))
+
+    (testing "Against an entry already at the leaf level,"
+      (testing "basic lookup works"
+        (is (= [1 :age 44 1] (msg/lookup tree [1 :age 44 1]))))
+      (testing "re-inserting works"
+        (let [new [1 :age 44 1]
+              tree-after (upsert-helper tree new)]
+          (is (= new (msg/lookup tree-after new))))))))
