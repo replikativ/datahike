@@ -14,6 +14,7 @@
                  [io.replikativ/superv.async "0.2.9"]
                  [io.lambdaforge/datalog-parser "0.1.7"]
                  [io.replikativ/zufall "0.1.0"]
+                 [clj-http "3.10.1"]
                  [junit/junit "4.13"]]
 
   :plugins [[lein-cljsbuild "1.1.8"]]
