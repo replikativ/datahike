@@ -81,7 +81,7 @@
           ;; TODO
           )))
 
-    (testing "Against an entry already at the leaf level,"
+    (testing "Against an entry located at leaf level,"
       (testing "basic lookup works"
         (is (= [1 :age 44 1] (msg/lookup tree [1 :age 44 1]))))
       (testing "re-inserting works"
