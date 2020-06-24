@@ -1,3 +1,4 @@
+;; TODO: Move this into the hh-tree project and rename it to just 'upsert'
 (ns datahike.test.upsert-implem-test
   (:require
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
