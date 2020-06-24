@@ -46,5 +46,8 @@
 (defn -insert [set datom index-type]
   (set/conj set datom (index-type->cmp-quick index-type)))
 
+(defn -upsert [set datom index-type]
+  (set/conj set datom (index-type->cmp-quick index-type)))
+
 (defn -remove [set datom index-type]
   (set/disj set datom (index-type->cmp-quick index-type)))

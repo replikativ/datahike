@@ -1149,19 +1149,47 @@
       (update-in [:db-after] with-datom datom)
       (update-in [:tx-data] conj datom)))
 
+
+(defn- with-datom-upsert [db ^Datom datom]
+  ;;(validate-datom db datom) ;; Don't validate here
+  (let [indexing? (indexing? db (.-a datom))
+        schema? (ds/schema-attr? (.-a datom))
+        ;;keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom))))
+        unique? (and (datom-added datom)
+                  (is-attr? db (.-a datom) :db/unique)) ;; TODO: pass the argument down to the hh-tree so that it is the tree that checks if value is unique. As the ceck has to be done on [a v] this info should be sent to the tree as well, as the tree looses the order of the [a b c d].
+        ;; The goal is to do this check: (not-empty (-datoms db :avet [(.-a datom) (.-v datom)])) at the tree level.x
+        ]
+    (if (datom-added datom)
+      (cond-> db
+        true (update-in [:eavt] #(di/-upsert % datom :eavt))
+        true (update-in [:aevt] #(di/-upsert % datom :aevt))
+        indexing? (update-in [:avet] #(di/-upsert % datom :avet))
+        true (advance-max-eid (.-e datom))
+        true (update :hash + (hash datom))
+        schema? (-> (update-schema datom)
+                  update-rschema))
+      (throw (IllegalStateException. (str "Something wrong in upsert"))))))
+
+
+(defn- transact-report-upsert [report datom]
+;;  (prn "----- In transact-report-upsert: " datom)
+  (-> report
+    (update-in [:db-after] with-datom-upsert datom)
+    (update-in [:tx-data] conj datom)))
+
 (defn- check-upsert-conflict [entity acc]
   (let [[e a v] acc
         _e (:db/id entity)]
     (if (or (nil? _e)
-            (tempid? _e)
-            (nil? acc)
-            (== _e e))
+          (tempid? _e)
+          (nil? acc)
+          (== _e e))
       acc
       (raise "Conflicting upsert: " [a v] " resolves to " e
-             ", but entity already has :db/id " _e
-             {:error     :transact/upsert
-              :entity    entity
-              :assertion acc}))))
+        ", but entity already has :db/id " _e
+        {:error     :transact/upsert
+         :entity    entity
+         :assertion acc}))))
 
 (defn- upsert-eid [db entity]
   (when-let [idents (not-empty (-attrs-by db :db.unique/identity))]
@@ -1237,10 +1265,13 @@
         v (if (ref? db a) (entid-strict db v) v)
         new-datom (datom e a v tx)]
     (if (multival? db a)
-      (if (empty? (-search db [e a v]))
+      (if (empty? (-search db [e a v]));; TODO: Should be able to remove the search
         (transact-report report new-datom)
         report)
-      (if-some [^Datom old-datom (first (-search db [e a]))]
+      ;; TODO: il faut transacter l'old datom as false et ensuite inserer le nouveau datom
+      (transact-report-upsert report new-datom)
+
+      #_(if-some [^Datom old-datom (first (-search db [e a]))]
         (if (= (.-v old-datom) v)
           report
           (-> report

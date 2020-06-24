@@ -16,7 +16,7 @@
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
-    ;;         (println "------- In UpsertOp projection/insert: " " dissocing ---  " key)
+;;    (println "------- In UpsertOp projection/insert: " key " --- " value )
     (if-let [matching-key (some (fn [old-key]
                                   (let [[e a _ _] old-key
                                         [ne na _ _] key]
@@ -29,7 +29,17 @@
         (assoc key value))
       (assoc map key value)))
   (-apply-op-to-tree [_ tree]
-    (tree/insert tree key value)))
+    ;;  (println "------- In UpsertOp tree/insert: " key " --- " value )
+    (let [[a b c d] key
+          [oa ob oc od] (first (first (hmsg/lookup-fwd-iter tree [a b nil nil])))]
+      (if (and (= (kc/-compare a oa) 0)
+            (= (kc/-compare b ob) 0))
+        (do
+          (println a " - " b " - " c " - " d " -- " [oa ob oc od])
+          (-> tree
+            (tree/delete [oa ob oc od])
+            (tree/insert key value)))
+        (tree/insert tree key value)))))
 
 (defn new-UpsertOp [key value]
   (UpsertOp. key value))
@@ -139,6 +149,11 @@
 
 (defn -insert [tree ^Datom datom index-type]
   (hmsg/insert tree (datom->node datom index-type) nil))
+
+(defn -upsert [tree ^Datom datom index-type]
+  (async/<?? (hmsg/upsert tree (new-UpsertOp
+                                (datom->node datom index-type)
+                                (datom->node datom index-type)))))
 
 (defn init-tree
   "Create tree with datoms"

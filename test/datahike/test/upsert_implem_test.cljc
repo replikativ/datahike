@@ -48,12 +48,12 @@
         projected-vec [4 :name "Marcel" 1]
         tree (reduce upsert-helper (ha/<?? new-tree)
                (into (sorted-set)
-                 #{[1 :age 44 1]
+                 #{[1 :at "home" 1]
+                   [1 :age 44 1]
                    [1 :name "Petr" 1]
                    [2 :age 25 1]
                    [2 :name "Ivan" 1]
                    [3 :age 11 1]
-                   [3 :name "Sergey" 1]
                    projected-vec}))]
     (testing "Against an entry in the projection area,"
       (testing "we are in a projection"
@@ -87,4 +87,13 @@
       (testing "re-inserting works"
         (let [new [1 :age 44 1]
               tree-after (upsert-helper tree new)]
-          (is (= new (msg/lookup tree-after new))))))))
+          (is (= new (msg/lookup tree-after new)))))
+      (testing "old v <> new v"
+        (testing "not keeping history"
+          (let [new [1 :age 40 5]
+                tree-after (upsert-helper tree new)]
+            ;; Is new in?
+            (is (= new (msg/lookup tree-after new)))
+            ;; Is old deleted?
+            (is (= nil (msg/lookup tree-after [1 :age 44 1])))))
+        ))))
