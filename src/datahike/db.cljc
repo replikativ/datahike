@@ -681,7 +681,7 @@
               (fn [m prop]
                 (assoc m prop (conj (get m prop #{}) attr)))
               m (attr->properties key value)))
-          m keys->values)))
+          (update m :db/ident (fn [coll] (if coll (conj coll attr) #{attr}))) keys->values)))
     {} schema))
 
 (defn- validate-schema-key [a k v expected]
@@ -709,17 +709,35 @@
 (def ^:const br 300)
 (def ^:const br-sqrt (long (Math/sqrt br)))
 
+(defn to-old-schema [new-schema]
+  (if (or (vector? new-schema) (seq? new-schema))
+    (reduce
+     (fn [acc {:keys [:db/ident] :as schema-entity}]
+       (assoc acc ident schema-entity))
+     {}
+     new-schema)
+    new-schema))
+
+(defn- validate-write-schema [schema]
+  (when-not (ds/old-schema-valid? schema)
+    (raise "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
+           (ds/explain-old-schema schema))))
+
 (defn ^DB empty-db
-  ([] (empty-db nil (dc/storeless-config)))
-  ([schema] (empty-db schema (dc/storeless-config)))
-  ([schema {:keys [keep-history? index schema-flexibility] :as config}]
-   {:pre [(or (nil? schema) (map? schema))]}
-   (validate-schema schema)
-   (map->DB
-     (merge
-      {:schema  (merge schema
-                       (when (= :read schema-flexibility)
-                         implicit-schema))
+  "Prefer create-database in api, schema not in index."
+  ([] (empty-db nil nil))
+  ([schema] (empty-db schema nil))
+  ([schema config]
+   {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
+   (let [{:keys [keep-history? index schema-flexibility] :as config} (merge (dc/storeless-config) config)
+         on-read? (= :read schema-flexibility)
+         schema (to-old-schema schema)
+         _ (if on-read?
+             (validate-schema schema)
+             (validate-write-schema schema))]
+     (map->DB
+      (merge
+       {:schema  (merge implicit-schema schema)
         :rschema (rschema (merge implicit-schema schema))
         :config  config
         :eavt    (di/empty-index index :eavt)
@@ -731,7 +749,7 @@
        (when keep-history?
          {:temporal-eavt (di/empty-index index :eavt)
           :temporal-aevt (di/empty-index index :aevt)
-          :temporal-avet (di/empty-index index :avet)})))))
+          :temporal-avet (di/empty-index index :avet)}))))))
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
@@ -747,11 +765,12 @@
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
 
 (defn ^DB init-db
-  ([datoms] (init-db datoms nil (dc/storeless-config)))
-  ([datoms schema] (init-db datoms schema (dc/storeless-config)))
-  ([datoms schema {:keys [index schema-flexibility keep-history?] :as config}]
+  ([datoms] (init-db datoms nil nil))
+  ([datoms schema] (init-db datoms schema nil))
+  ([datoms schema config]
    (validate-schema schema)
-   (let [rschema (rschema (merge implicit-schema schema))
+   (let [{:keys [index schema-flexibility keep-history?] :as config} (merge (dc/storeless-config) config)
+         rschema (rschema (merge implicit-schema schema))
          indexed (:db/index rschema)
          eavt (di/init-index index datoms indexed :eavt)
          aevt (di/init-index index datoms indexed :aevt)
@@ -1106,6 +1125,7 @@
                 (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
                 (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))
         db))))
+
 
 (defn- with-temporal-datom [db ^Datom datom]
   (let [indexing? (indexing? db (.-a datom))

@@ -1,11 +1,12 @@
 (ns datahike.test.schema
   (:require
-    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-    [datahike.api :as d]
-    [datahike.schema :as ds]
-    [datahike.db :as dd]
-    [datahike.test.core :as tdc]))
+   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+   [datahike.api :as d]
+   [datahike.schema :as ds]
+   [datahike.db :as dd]
+   [datahike.test.core :as tdc])
+  (:import [java.lang System]))
 
 #?(:clj
    (defn random-uuid []
@@ -25,10 +26,10 @@
                      [?e :db/cardinality ?c]])
 
 (deftest test-empty-db
-  (let [uri "datahike:mem://test-empty-db"
-        _ (d/delete-database uri)
-        _ (d/create-database uri)
-        conn (d/connect uri)
+  (let [cfg "datahike:mem://test-empty-db"
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        conn (d/connect cfg)
         db (d/db conn)
         tx [{:name "Alice"}]]
 
@@ -36,8 +37,8 @@
 
     (testing "transact without schema present"
       (is (thrown-msg?
-            "No schema found in db."
-            (d/transact conn tx))))
+           "Bad entity attribute :name at {:db/id 1, :name \"Alice\"}, not defined in current schema"
+           (d/transact conn tx))))
 
     (testing "transacting new schema"
       (d/transact conn [name-schema])
@@ -57,46 +58,46 @@
 
     (testing "insert new data with wrong data type"
       (is (thrown-msg?
-            "Bad entity value 42 at [:db/add 3 :name 42], value does not match schema definition. Must be conform to: string?"
-            (d/transact conn [{:name 42}]))))
+           "Bad entity value 42 at [:db/add 3 :name 42], value does not match schema definition. Must be conform to: string?"
+           (d/transact conn [{:name 42}]))))
 
     (testing "insert new data with additional attributes not in schema"
       (is (thrown-msg?
-            "Bad entity attribute :age at {:db/id 3, :age 42}, not defined in current schema"
-            (d/transact conn [{:name "Bob" :age 42}]))))
+           "Bad entity attribute :age at {:db/id 3, :age 42}, not defined in current schema"
+           (d/transact conn [{:name "Bob" :age 42}]))))
 
     (testing "insert incomplete schema :db/valueType"
       (is (thrown-msg?
-            "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-            (d/transact conn [{:db/valueType :db.type/string}]))))
+           "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+           (d/transact conn [{:db/valueType :db.type/string}]))))
 
     (testing "insert incomplete schema :db/cardinality"
       (is (thrown-msg?
-            "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-            (d/transact conn [{:db/cardinality :db.cardinality/many}]))))
+           "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+           (d/transact conn [{:db/cardinality :db.cardinality/many}]))))
 
     (testing "insert incomplete schema :db/cardinality, :db/ident"
       (is (thrown-msg?
-            "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-            (d/transact conn [{:db/ident :phone :db/cardinality :db.cardinality/many}]))))
+           "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+           (d/transact conn [{:db/ident :phone :db/cardinality :db.cardinality/many}]))))
 
     (testing "insert schema with incorrect value type"
       (is (thrown-msg?
-            "Bad entity value :string at [:db/add 3 :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/number :db.type/instant :db.type/boolean :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/symbol}"
-            (d/transact conn [{:db/ident       :phone
-                               :db/cardinality :db.cardinality/one
-                               :db/valueType   :string}]))))))
+           "Bad entity value :string at [:db/add 3 :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/number :db.type/instant :db.type/boolean :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/symbol}"
+           (d/transact conn [{:db/ident       :phone
+                              :db/cardinality :db.cardinality/one
+                              :db/valueType   :string}]))))))
 
 (deftest test-db-with-initial-schema
-  (let [uri "datahike:mem://test-db-with-initial-schema"
-        _ (d/delete-database uri)
-        _ (d/create-database uri :initial-tx [name-schema])
-        conn (d/connect uri)]
+  (let [cfg "datahike:mem://test-db-with-initial-schema"
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg :initial-tx [name-schema])
+        conn (d/connect cfg)]
 
     (testing "schema existence"
       (let [db (d/db conn)]
         (is (= {:db/ident {:db/unique :db.unique/identity}
-                :name     #:db{:ident       :name,
+                :name     #:db{:ident       :name
                                :valueType   :db.type/string
                                :cardinality :db.cardinality/one}
                 1         :name}
@@ -113,13 +114,13 @@
                          :db/cardinality :db.cardinality/one}])
       (let [db (d/db conn)]
         (is (= {:db/ident {:db/unique :db.unique/identity}
-                :name     #:db{:ident       :name,
-                               :valueType   :db.type/string,
-                               :cardinality :db.cardinality/one},
-                1         :name,
-                :age      #:db{:ident       :age,
-                               :valueType   :db.type/long,
-                               :cardinality :db.cardinality/one},
+                :name     #:db{:ident       :name
+                               :valueType   :db.type/string
+                               :cardinality :db.cardinality/one}
+                1         :name
+                :age      #:db{:ident       :age
+                               :valueType   :db.type/long
+                               :cardinality :db.cardinality/one}
                 3         :age}
                (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one] [:age :db.type/long :db.cardinality/one]}
@@ -134,13 +135,13 @@
                          :db/cardinality :db.cardinality/many}])
       (let [db (d/db conn)]
         (is (= {:db/ident {:db/unique :db.unique/identity}
-                :name     #:db{:ident       :name,
-                               :valueType   :db.type/string,
-                               :cardinality :db.cardinality/many},
-                1         :name,
-                :age      #:db{:ident       :age,
-                               :valueType   :db.type/long,
-                               :cardinality :db.cardinality/one},
+                :name     #:db{:ident       :name
+                               :valueType   :db.type/string
+                               :cardinality :db.cardinality/many}
+                1         :name
+                :age      #:db{:ident       :age
+                               :valueType   :db.type/long
+                               :cardinality :db.cardinality/one}
                 3         :age}
                (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/many] [:age :db.type/long :db.cardinality/one]}
@@ -153,21 +154,21 @@
       (is (= #{[tx-val]}
              (d/q '[:find ?v :in $ ?sn :where [?e ?sn ?v]] (d/db conn) schema-name)))
       (is (thrown-msg?
-            (str "Bad entity value "
-                 wrong-val
-                 " at [:db/add "
-                 tx-id
-                 " "
-                 schema-name
-                 " "
-                 wrong-val
-                 "], value does not match schema definition. Must be conform to: "
-                 (ds/describe-type (keyword "db.type" type-name)))
-            (d/transact conn [{schema-name wrong-val}]))))))
+           (str "Bad entity value "
+                wrong-val
+                " at [:db/add "
+                tx-id
+                " "
+                schema-name
+                " "
+                wrong-val
+                "], value does not match schema definition. Must be conform to: "
+                (ds/describe-type (keyword "db.type" type-name)))
+           (d/transact conn [{schema-name wrong-val}]))))))
 
 (deftest test-schema-types
-  (let [uri "datahike:mem://test-schema-types"
-        _ (d/delete-database uri)
+  (let [cfg "datahike:mem://test-schema-types"
+        _ (d/delete-database cfg)
         schema-tx [{:db/ident       :value/bigdec
                     :db/valueType   :db.type/bigdec
                     :db/cardinality :db.cardinality/one}
@@ -201,8 +202,8 @@
                    {:db/ident       :value/uuid
                     :db/valueType   :db.type/uuid
                     :db/cardinality :db.cardinality/one}]
-        _ (d/create-database uri :initial-tx schema-tx)
-        conn (d/connect uri)]
+        _ (d/create-database cfg :initial-tx schema-tx)
+        conn (d/connect cfg)]
 
     (testing-type conn "bigdec" (bigdec 1) 13 1)
     (testing-type conn "bigint" (biginteger 1) 14 1.0)
@@ -217,8 +218,8 @@
     (testing-type conn "uuid" (random-uuid) 23 1)))
 
 (deftest test-schema-cardinality
-  (let [uri "datahike:mem://test-schema-cardinality"
-        _ (d/delete-database uri)
+  (let [cfg "datahike:mem://test-schema-cardinality"
+        _ (d/delete-database cfg)
         schema-tx [{:db/ident       :owner
                     :db/valueType   :db.type/string
                     :db/index       true
@@ -227,8 +228,8 @@
                    {:db/ident       :cars
                     :db/valueType   :db.type/keyword
                     :db/cardinality :db.cardinality/many}]
-        _ (d/create-database uri :initial-tx schema-tx)
-        conn (d/connect uri)]
+        _ (d/create-database cfg :initial-tx schema-tx)
+        conn (d/connect cfg)]
 
     (testing "insert :owner and :cars one by one"
       (d/transact conn [{:db/id -1
@@ -266,33 +267,39 @@
 
 (deftest test-schema-persistence
   (testing "test file persistence"
-    (let [uri (str "datahike:file:///tmp/dh-test-persistence")
-          _ (d/delete-database uri)
-          _ (d/create-database uri :initial-tx [name-schema])
-          conn (d/connect uri)]
+    (let [os (System/getProperty "os.name")
+          path (case os
+                 "Windows 10"  (str (System/getProperty "java.io.tmpdir") "dh-test-persistence")
+                 "/tmp/dh-test-persistence")
+          cfg {:store {:backend :file
+                       :path path}
+               :initial-tx [name-schema]}
+          _ (d/delete-database cfg)
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
       (testing "schema exists on creation and first connection"
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db conn)))))
       (testing "reconnect with db"
-        (let [new-conn (d/connect uri)]
+        (let [new-conn (d/connect cfg)]
           (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db new-conn))))))
-      (d/delete-database uri)))
+      (d/delete-database cfg)))
   (testing "test mem persistence"
-    (let [uri "datahike:mem://test-schema-persistence"
-          _ (d/create-database uri :initial-tx [name-schema])
-          conn (d/connect uri)]
+    (let [cfg "datahike:mem://test-schema-persistence"
+          _ (d/create-database cfg :initial-tx [name-schema])
+          conn (d/connect cfg)]
       (testing "schema exists on creation and first connection"
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db conn)))))
       (testing "reconnect with db"
-        (let [new-conn (d/connect uri)]
+        (let [new-conn (d/connect cfg)]
           (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db new-conn))))))
-      (d/delete-database uri))))
+      (d/delete-database cfg))))
 
 (deftest test-schema-on-read-db
   (testing "test database creation with schema-on-read"
-    (let [uri "datahike:mem://test-schemaless-db"
-          _ (d/delete-database uri)
-          _ (d/create-database uri :schema-on-read true)
-          conn (d/connect uri)]
+    (let [cfg "datahike:mem://test-schemaless-db"
+          _ (d/delete-database cfg)
+          _ (d/create-database cfg :schema-on-read true)
+          conn (d/connect cfg)]
       (testing "insert any data"
         (d/transact conn [{:name "Alice" :age 26} {:age "12" :car :bmw}])
         (is (= #{[1 "Alice" 26]}
@@ -302,7 +309,7 @@
 
 (deftest test-ident
   (testing "use db/ident as enum"
-    (let [uri "datahike:mem://test-ident"
+    (let [cfg "datahike:mem://test-ident"
           schema [{:db/ident :important}
                   {:db/ident :archive}
                   {:db/ident       :message
@@ -311,9 +318,9 @@
                   {:db/ident       :tag
                    :db/valueType   :db.type/ref
                    :db/cardinality :db.cardinality/many}]
-          _ (d/delete-database uri)
-          _ (d/create-database uri :initial-tx schema)
-          conn (d/connect uri)]
+          _ (d/delete-database cfg)
+          _ (d/create-database cfg :initial-tx schema)
+          conn (d/connect cfg)]
       (testing "insert data with enums"
         (d/transact conn [{:message "important" :tag :important} {:message "archive" :tag [:important :archive]}])
         (is (= #{["important" :important] ["archive" :important] ["archive" :archive]}

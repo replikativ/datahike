@@ -149,17 +149,18 @@
 
 ; Creating DB
 
-(def ^{:arglists '([] [schema])
-       :doc      "Creates an empty database with an optional schema.
+(def ^{:arglists '([] [schema] [schema config])
+       :doc      "Creates an empty database with an optional schema and configuration.
 
              Usage:
-             
              ```
              (empty-db) ; => #datahike/DB {:schema {}, :datoms []}
-  
+
              (empty-db {:likes {:db/cardinality :db.cardinality/many}})
              ; => #datahike/DB {:schema {:likes {:db/cardinality :db.cardinality/many}}
              ;                    :datoms []}
+
+             (empty-db {} {:keep-history? false :index datahike.index.hitchhiker-tree :schema-flexibility :write})
              ```"}
   empty-db db/empty-db)
 
@@ -183,7 +184,7 @@
   datom? dd/datom?)
 
 
-(def ^{:arglists '([datoms] [datoms schema])
+(def ^{:arglists '([datoms] [datoms schema] [datoms schema config])
        :doc      "Low-level fn for creating database quickly from a trusted sequence of datoms.
 
              Does no validation on inputs, so `datoms` must be well-formed and match schema.

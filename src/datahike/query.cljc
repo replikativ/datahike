@@ -160,8 +160,8 @@
              (reduce (fn [acc t2]
                        (conj! acc (join-tuples t1 idxs1 t2 idxs2)))
                      acc (:tuples rel2)))
-           (transient []) (:tuples rel1)))
-       ))))
+           (transient []) (:tuples rel1)))))))
+
 
 ;; built-ins
 
@@ -975,6 +975,16 @@
         #{}))
     resultset))
 
+
+(defn convert-to-return-maps [{:keys [mapping-type mapping-keys]} resultset]
+  (let [mapping-keys (map #(get % :mapping-key) mapping-keys)
+        convert-fn   (fn [mkeys]
+                       (mapv #(zipmap mkeys %) resultset))]
+    (condp = mapping-type
+      :keys (convert-fn (map keyword mapping-keys))
+      :strs (convert-fn (map str mapping-keys))
+      :syms (convert-fn (map symbol mapping-keys)))))
+
 (defmulti q (fn [query & args] (type query)))
 
 (defmethod q clojure.lang.LazySeq [query & inputs]
@@ -984,32 +994,30 @@
   (q {:query query :args inputs}))
 
 (defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
-  (let [query (if (contains? query-map :query) (:query query-map) query-map)
-        args (if (contains? query-map :args) (:args query-map) inputs)
-        parsed-q (memoized-parse-query query)
-        find (:qfind parsed-q)
+  (let [query         (if (contains? query-map :query) (:query query-map) query-map)
+        args          (if (contains? query-map :args) (:args query-map) inputs)
+        parsed-q      (memoized-parse-query query)
+        find          (:qfind parsed-q)
         find-elements (dpip/find-elements find)
-        find-vars (dpi/find-vars find)
-        result-arity (count find-elements)
-        with (:qwith parsed-q)
+        find-vars     (dpi/find-vars find)
+        result-arity  (count find-elements)
+        with          (:qwith parsed-q)
+        returnmaps    (:qreturnmaps parsed-q)
         ;; TODO utilize parser
-        all-vars (concat find-vars (map :symbol with))
-        query (cond-> query
-                (sequential? query) dpi/query->map)
-        wheres (:where query)
-        context (-> (Context. [] {} {})
-                    (resolve-ins (:qin parsed-q) args))
-        resultset (-> context
-                      (-q wheres)
-                      (collect all-vars))]
+        all-vars      (concat find-vars (map :symbol with))
+        query         (cond-> query
+                        (sequential? query) dpi/query->map)
+        wheres        (:where query)
+        context       (-> (Context. [] {} {})
+                          (resolve-ins (:qin parsed-q) args))
+        resultset     (-> context
+                          (-q wheres)
+                          (collect all-vars))]
     (cond->> resultset
-      (:with query)
-      (mapv #(vec (subvec % 0 result-arity)))
-      (some #(instance? Aggregate %) find-elements)
-      (aggregate find-elements context)
-      (some #(instance? Pull %) find-elements)
-      (pull find-elements context)
-      true
-      (-post-process find)
-      true
-      (paginate (:offset query-map) (:limit query-map)))))
+      (:with query)                                 (mapv #(vec (subvec % 0 result-arity)))
+      (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
+      (some #(instance? Pull %) find-elements)      (pull find-elements context)
+      true                                          (-post-process find)
+      true                                          (paginate (:offset query-map)
+                                                              (:limit query-map))
+      returnmaps                                    (convert-to-return-maps returnmaps))))
