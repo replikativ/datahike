@@ -124,6 +124,7 @@
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
                  :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}
          merged-config ((comp remove-nils deep-merge) config config-as-arg)
+         _             (log/info "Using config " merged-config)
          {:keys [keep-history? name schema-flexibility index initial-tx store]} merged-config
          config-spec (ds/config-spec store)]
      (when config-spec
