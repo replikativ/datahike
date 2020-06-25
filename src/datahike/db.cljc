@@ -1171,7 +1171,7 @@
                          true (update :hash + (hash datom))
                          schema? (-> (update-schema datom)
                                    update-rschema))]
-          (pp/pprint (:temporal-eavt final-db))
+          ;;(pp/pprint (:temporal-eavt final-db)) ;; TODO remove
           final-db))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (do
@@ -1188,7 +1188,7 @@
                            ;;keep-history? (update-in [:temporal-aevt] #(di/-upsert % datom :aevt))
                            (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-upsert % removing :avet))
                            (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-upsert % datom :avet)))]
-            (pp/pprint (:temporal-eavt final-db))
+            
             final-db))
         db))
     ))
@@ -1295,7 +1295,6 @@
         report)
       (if-some [^Datom old-datom (first (-search db [e a]))] ;; TODO: find a solution without this search
         (do
-          (println "BBBBBBB----" (datom-tx old-datom) tx)
           (-> report
             (transact-report-upsert
               (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))

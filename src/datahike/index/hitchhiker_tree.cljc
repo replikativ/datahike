@@ -35,7 +35,7 @@
       (if (and (= (kc/-compare a oa) 0)
             (= (kc/-compare b ob) 0))
         (do
-          (println a " - " b " - " c " - " d " -- " [oa ob oc od])
+          ;;(println a " - " b " - " c " - " d " -- " [oa ob oc od])
           (-> tree
             (tree/delete [oa ob oc od])
             (tree/insert key value)))
