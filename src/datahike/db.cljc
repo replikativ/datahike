@@ -1293,7 +1293,7 @@
       (if (empty? (-search db [e a v]));; TODO: Should be able to remove the search
         (transact-report report new-datom)
         report)
-      (if-some [^Datom old-datom (first (-search db [e a]))]
+      (if-some [^Datom old-datom (first (-search db [e a]))] ;; TODO: find a solution without this search
         (do
           (println "BBBBBBB----" (datom-tx old-datom) tx)
           (-> report
