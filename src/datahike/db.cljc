@@ -1154,28 +1154,53 @@
   ;;(validate-datom db datom) ;; Don't validate here
   (let [indexing? (indexing? db (.-a datom))
         schema? (ds/schema-attr? (.-a datom))
-        ;;keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom))))
+        keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom))))
         unique? (and (datom-added datom)
                   (is-attr? db (.-a datom) :db/unique)) ;; TODO: pass the argument down to the hh-tree so that it is the tree that checks if value is unique. As the ceck has to be done on [a v] this info should be sent to the tree as well, as the tree looses the order of the [a b c d].
         ;; The goal is to do this check: (not-empty (-datoms db :avet [(.-a datom) (.-v datom)])) at the tree level.x
         ]
+
     (if (datom-added datom)
-      (cond-> db
-        true (update-in [:eavt] #(di/-upsert % datom :eavt))
-        true (update-in [:aevt] #(di/-upsert % datom :aevt))
-        indexing? (update-in [:avet] #(di/-upsert % datom :avet))
-        true (advance-max-eid (.-e datom))
-        true (update :hash + (hash datom))
-        schema? (-> (update-schema datom)
-                  update-rschema))
-      (throw (IllegalStateException. (str "Something wrong in upsert"))))))
+      (do
+        (println "datom ADDDDDDEEEDDDDDD---- " datom)
+        (let [final-db (cond-> db
+                         true (update-in [:eavt] #(di/-upsert % datom :eavt))
+                         true (update-in [:aevt] #(di/-upsert % datom :aevt))
+                         indexing? (update-in [:avet] #(di/-upsert % datom :avet))
+                         true (advance-max-eid (.-e datom))
+                         true (update :hash + (hash datom))
+                         schema? (-> (update-schema datom)
+                                   update-rschema))]
+          (pp/pprint (:temporal-eavt final-db))
+          final-db))
+      (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
+        (do
+          (println "AAAAAAAAAAAAAAAAAAAAAAAAAAAA---- "  keep-history? " - removing: " removing " added: " datom " --- indexing?: " indexing?)
+          (let [final-db (cond-> db
+                           ;; true (update-in [:eavt] #(di/-remove % removing :eavt))
+                           ;; true (update-in [:aevt] #(di/-remove % removing :aevt))
+                           indexing? (update-in [:avet] #(di/-remove % removing :avet))
+                           true (update :hash - (hash removing))
+                           schema? (-> (remove-schema datom) update-rschema)
+                           keep-history? (update-in [:temporal-eavt] #(di/-upsert % removing :eavt))
+                           ;;keep-history? (update-in [:temporal-eavt] #(di/-upsert % datom :eavt))
+                           keep-history? (update-in [:temporal-aevt] #(di/-upsert % removing :aevt))
+                           ;;keep-history? (update-in [:temporal-aevt] #(di/-upsert % datom :aevt))
+                           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-upsert % removing :avet))
+                           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-upsert % datom :avet)))]
+            (pp/pprint (:temporal-eavt final-db))
+            final-db))
+        db))
+    ))
 
 
 (defn- transact-report-upsert [report datom]
-;;  (prn "----- In transact-report-upsert: " datom)
-  (-> report
-    (update-in [:db-after] with-datom-upsert datom)
-    (update-in [:tx-data] conj datom)))
+  ;; TODO: remove debugging code such as the let
+  (let [final-report (-> report
+                       (update-in [:db-after] with-datom-upsert datom)
+                       (update-in [:tx-data] conj datom))]
+    ;; (pp/pprint (:temporal-eavt (:db-after final-report)))
+    final-report))
 
 (defn- check-upsert-conflict [entity acc]
   (let [[e a v] acc
@@ -1268,16 +1293,24 @@
       (if (empty? (-search db [e a v]));; TODO: Should be able to remove the search
         (transact-report report new-datom)
         report)
-      ;; TODO: il faut transacter l'old datom as false et ensuite inserer le nouveau datom
-      (transact-report-upsert report new-datom)
+      (if-some [^Datom old-datom (first (-search db [e a]))]
+        (do
+          (println "BBBBBBB----" (datom-tx old-datom) tx)
+          (-> report
+            (transact-report-upsert
+              (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))
+            (transact-report-upsert new-datom))
+          )
+        (transact-report-upsert report new-datom))
 
       #_(if-some [^Datom old-datom (first (-search db [e a]))]
-        (if (= (.-v old-datom) v)
-          report
-          (-> report
-              (transact-report (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))
+          (if (= (.-v old-datom) v)
+            report
+            (-> report
+              (transact-report
+                (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))
               (transact-report new-datom)))
-        (transact-report report new-datom)))))
+          (transact-report report new-datom)))))
 
 (defn- transact-retract-datom [report ^Datom d]
   (transact-report report (datom (.-e d) (.-a d) (.-v d) (current-tx report) false)))
