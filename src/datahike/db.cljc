@@ -1177,15 +1177,15 @@
         (do
           ;;(println "AAAAAAAAAAAAAAAAAAAAAAAAAAAA---- "  keep-history? " - removing: " removing " added: " datom " --- indexing?: " indexing?)
           (let [final-db (cond-> db
-                           ;; true (update-in [:eavt] #(di/-remove % removing :eavt))
-                           ;; true (update-in [:aevt] #(di/-remove % removing :aevt))
+                           true (update-in [:eavt] #(di/-remove % removing :eavt))
+                           true (update-in [:aevt] #(di/-remove % removing :aevt))
                            indexing? (update-in [:avet] #(di/-remove % removing :avet))
                            true (update :hash - (hash removing))
                            schema? (-> (remove-schema datom) update-rschema)
                            keep-history? (update-in [:temporal-eavt] #(di/-upsert % removing :eavt))
-                           ;;keep-history? (update-in [:temporal-eavt] #(di/-upsert % datom :eavt))
+                           keep-history? (update-in [:temporal-eavt] #(di/-upsert % datom :eavt))
                            keep-history? (update-in [:temporal-aevt] #(di/-upsert % removing :aevt))
-                           ;;keep-history? (update-in [:temporal-aevt] #(di/-upsert % datom :aevt))
+                           keep-history? (update-in [:temporal-aevt] #(di/-upsert % datom :aevt))
                            (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-upsert % removing :avet))
                            (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-upsert % datom :avet)))]
             
