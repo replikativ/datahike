@@ -1162,7 +1162,7 @@
 
     (if (datom-added datom)
       (do
-        (println "datom ADDDDDDEEEDDDDDD---- " datom)
+        ;;(println "datom ADDDDDDEEEDDDDDD---- " datom) ;; TODO: remove all println around
         (let [final-db (cond-> db
                          true (update-in [:eavt] #(di/-upsert % datom :eavt))
                          true (update-in [:aevt] #(di/-upsert % datom :aevt))
@@ -1175,7 +1175,7 @@
           final-db))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (do
-          (println "AAAAAAAAAAAAAAAAAAAAAAAAAAAA---- "  keep-history? " - removing: " removing " added: " datom " --- indexing?: " indexing?)
+          ;;(println "AAAAAAAAAAAAAAAAAAAAAAAAAAAA---- "  keep-history? " - removing: " removing " added: " datom " --- indexing?: " indexing?)
           (let [final-db (cond-> db
                            ;; true (update-in [:eavt] #(di/-remove % removing :eavt))
                            ;; true (update-in [:aevt] #(di/-remove % removing :aevt))
