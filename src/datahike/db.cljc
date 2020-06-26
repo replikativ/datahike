@@ -1187,12 +1187,12 @@
                            indexing? (update-in [:avet] #(di/-remove % removing :avet))
                            true (update :hash - (hash removing))
                            schema? (-> (remove-schema datom) update-rschema)
-                           keep-history? (update-in [:temporal-eavt] #(di/-upsert % removing :eavt))
-                           keep-history? (update-in [:temporal-eavt] #(di/-upsert % datom :eavt))
-                           keep-history? (update-in [:temporal-aevt] #(di/-upsert % removing :aevt))
-                           keep-history? (update-in [:temporal-aevt] #(di/-upsert % datom :aevt))
-                           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-upsert % removing :avet))
-                           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-upsert % datom :avet)))]
+                           keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
+                           keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
+                           keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
+                           keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
+                           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
+                           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))]
             
             final-db))
         db))
