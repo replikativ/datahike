@@ -16,7 +16,7 @@
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
-;;    (println "------- In UpsertOp projection/insert: " key " --- " value )
+    ;;(println "------- In UpsertOp projection/insert: " key " --- " value )
     (if-let [matching-key (some (fn [old-key]
                                   (let [[e a _ _] old-key
                                         [ne na _ _] key]
@@ -24,12 +24,14 @@
                                             (= (kc/-compare a na) 0))
                                       old-key)))
                             (keys map))]
-      (-> map
-        (dissoc matching-key)
-        (assoc key value))
+      (do
+        ;;(println  "--- in projection " matching-key)
+        (-> map
+          (dissoc matching-key)
+          (assoc key value)))
       (assoc map key value)))
   (-apply-op-to-tree [_ tree]
-    ;;  (println "------- In UpsertOp tree/insert: " key " --- " value )
+    ;;(println "------- In UpsertOp tree/insert: " key " --- " value )
     (let [[a b c d] key
           [oa ob oc od] (first (first (hmsg/lookup-fwd-iter tree [a b nil nil])))]
       (if (and (= (kc/-compare a oa) 0)
