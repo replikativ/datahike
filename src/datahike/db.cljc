@@ -1166,7 +1166,12 @@
         (let [final-db (cond-> db
                          true (update-in [:eavt] #(di/-upsert % datom :eavt))
                          true (update-in [:aevt] #(di/-upsert % datom :aevt))
-                         indexing? (update-in [:avet] #(di/-upsert % datom :avet))
+                         ;; Insert because we are on :av here.
+                         ;; We have to force an upsert
+                         ;; (i.e. a delete of previous version if it exists) only on
+                         ;; :eavt and :aevt. We should definitely not delete an :av entry.
+                         ;; Test datahike.test/entity testing "backward navigation" shows this.
+                         indexing? (update-in [:avet] #(di/-insert % datom :avet))
                          true (advance-max-eid (.-e datom))
                          true (update :hash + (hash datom))
                          schema? (-> (update-schema datom)
