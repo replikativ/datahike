@@ -1159,36 +1159,40 @@
                   (is-attr? db (.-a datom) :db/unique)) ;; TODO: pass the argument down to the hh-tree so that it is the tree that checks if value is unique. As the ceck has to be done on [a v] this info should be sent to the tree as well, as the tree looses the order of the [a b c d].
         ;; The goal is to do this check: (not-empty (-datoms db :avet [(.-a datom) (.-v datom)])) at the tree level.x
         ]
+    #_(do
+           ;; (println "datom REMOVIIIIIN---- " ) ;; TODO: remove all println around
+           )
+    (cond-> db
+      ;; TODO (do not delete!!!): THIS IS A PBLM!!!!
+      ;; TO SOLVE IT, we need to get the previous/old datom that this upsert will replace.
+      ;; indexing? (update-in [:avet] #(di/-remove % removing :avet))
 
-    ;;(println "datom ADDDDDDEEEDDDDDD---- " datom) ;; TODO: remove all println around
-    ;;;;_ (println "AAAAAAAAAAAAAAAAAAAAAAAAAAAA---- "  keep-history? " - removing: " removing " added: " datom " --- indexing?: " indexing?)
-    (-> (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom)]))]
-          (cond-> db
-            ;; true (update-in [:eavt] #(di/-remove % removing :eavt))
-            ;; true (update-in [:aevt] #(di/-remove % removing :aevt))
-            indexing? (update-in [:avet] #(di/-remove % removing :avet))
-            true (update :hash - (hash removing))
-            schema? (-> (remove-schema datom) update-rschema)
-            keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
-            keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
-            keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
-            keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
-            (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
-            (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))
-          db)
-      (cond->
-          true (update-in [:eavt] #(di/-upsert % datom :eavt))
-          true (update-in [:aevt] #(di/-upsert % datom :aevt))
-          ;; Insert because we are on :av here.
-          ;; We have to force an upsert
-          ;; (i.e. a delete of previous version if it exists) only on
-          ;; :eavt and :aevt. We should definitely not delete an :av entry.
-          ;; Test datahike.test/entity testing "backward navigation" shows this.
-          indexing? (update-in [:avet] #(di/-insert % datom :avet))
-          true (advance-max-eid (.-e datom))
-          true (update :hash + (hash datom))
-          schema? (-> (update-schema datom)
-                    update-rschema)))))
+      ;; Doing an optimistic removel of the schema entry here
+      schema? (try
+                (-> db (remove-schema datom) update-rschema)
+                (catch clojure.lang.ExceptionInfo e
+                  ;;(prn "Optimistic removal of schema failed.
+                  ;;It is most likely what is expected ")
+                  db))
+      keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
+      keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
+      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet))
+
+      ;; Datom added part
+      ;;
+      true (update-in [:eavt] #(di/-upsert % datom :eavt))
+      true (update-in [:aevt] #(di/-upsert % datom :aevt))
+      ;; Insert because we are on :av here.
+      ;; We have to force an upsert
+      ;; (i.e. a delete of previous version if it exists) only on
+      ;; :eavt and :aevt. We should definitely not delete an :av entry.
+      ;; Test datahike.test/entity testing "backward navigation" shows this.
+      indexing? (update-in [:avet] #(di/-insert % datom :avet))
+      true (advance-max-eid (.-e datom))
+      true (update :hash + (hash datom))
+      schema? (-> (update-schema datom)
+                update-rschema))
+    ))
 
 
 (defn- transact-report-upsert [report datom]
@@ -1290,13 +1294,6 @@
       (if (empty? (-search db [e a v]));; TODO: As it also works without the test, check what is the fastest on the benchmark. (Note that we must use tr-report and not tr-report-upsert unless we prove that it is better to use tr-report-upsert)
         (transact-report report new-datom)
         report)
-      #_(if-some [^Datom old-datom (first (-search db [e a]))])
-      #_(do
-        (-> report
-          (transact-report-upsert
-            (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))
-          (transact-report-upsert new-datom))
-        )
       (transact-report-upsert report new-datom)
 
       #_(if-some [^Datom old-datom (first (-search db [e a]))]
@@ -1306,7 +1303,8 @@
               (transact-report
                 (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))
               (transact-report new-datom)))
-          (transact-report report new-datom)))))
+          (transact-report report new-datom))
+      )))
 
 (defn- transact-retract-datom [report ^Datom d]
   (transact-report report (datom (.-e d) (.-a d) (.-v d) (current-tx report) false)))

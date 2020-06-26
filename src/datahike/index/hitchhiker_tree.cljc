@@ -12,11 +12,13 @@
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
 
-(defrecord UpsertOp [key value] ;; TODO add tx
+(defrecord UpsertOp [key value]
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
-    ;;(println "------- In UpsertOp projection/insert: " key " --- " value )
+;;(println "------- In UpsertOp projection/insert: " key " --- " value " - " (count map))
+    
+    ;; Something here is super expensive
     (if-let [matching-key (some (fn [old-key]
                                   (let [[e a _ _] old-key
                                         [ne na _ _] key]
