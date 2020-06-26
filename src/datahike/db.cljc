@@ -1160,43 +1160,39 @@
         ;; The goal is to do this check: (not-empty (-datoms db :avet [(.-a datom) (.-v datom)])) at the tree level.x
         ]
 
-    (if (datom-added datom)
-      (do
-        ;;(println "datom ADDDDDDEEEDDDDDD---- " datom) ;; TODO: remove all println around
-        (let [final-db (cond-> db
-                         true (update-in [:eavt] #(di/-upsert % datom :eavt))
-                         true (update-in [:aevt] #(di/-upsert % datom :aevt))
-                         ;; Insert because we are on :av here.
-                         ;; We have to force an upsert
-                         ;; (i.e. a delete of previous version if it exists) only on
-                         ;; :eavt and :aevt. We should definitely not delete an :av entry.
-                         ;; Test datahike.test/entity testing "backward navigation" shows this.
-                         indexing? (update-in [:avet] #(di/-insert % datom :avet))
-                         true (advance-max-eid (.-e datom))
-                         true (update :hash + (hash datom))
-                         schema? (-> (update-schema datom)
-                                   update-rschema))]
-          ;;(pp/pprint (:temporal-eavt final-db)) ;; TODO remove
-          final-db))
-      (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
-        (do
-          ;;(println "AAAAAAAAAAAAAAAAAAAAAAAAAAAA---- "  keep-history? " - removing: " removing " added: " datom " --- indexing?: " indexing?)
-          (let [final-db (cond-> db
-                           true (update-in [:eavt] #(di/-remove % removing :eavt))
-                           true (update-in [:aevt] #(di/-remove % removing :aevt))
-                           indexing? (update-in [:avet] #(di/-remove % removing :avet))
-                           true (update :hash - (hash removing))
-                           schema? (-> (remove-schema datom) update-rschema)
-                           keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
-                           keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
-                           keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
-                           keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
-                           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
-                           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))]
-            
-            final-db))
-        db))
-    ))
+    (do
+      ;;(println "datom ADDDDDDEEEDDDDDD---- " datom) ;; TODO: remove all println around
+      (let [final-db (cond-> db
+                       true (update-in [:eavt] #(di/-upsert % datom :eavt))
+                       true (update-in [:aevt] #(di/-upsert % datom :aevt))
+                       ;; Insert because we are on :av here.
+                       ;; We have to force an upsert
+                       ;; (i.e. a delete of previous version if it exists) only on
+                       ;; :eavt and :aevt. We should definitely not delete an :av entry.
+                       ;; Test datahike.test/entity testing "backward navigation" shows this.
+                       indexing? (update-in [:avet] #(di/-insert % datom :avet))
+                       true (advance-max-eid (.-e datom))
+                       true (update :hash + (hash datom))
+                       schema? (-> (update-schema datom)
+                                 update-rschema))]
+        (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom)]))]
+          (do
+            ;;(println "AAAAAAAAAAAAAAAAAAAAAAAAAAAA---- "  keep-history? " - removing: " removing " added: " datom " --- indexing?: " indexing?)
+            (let [final-db-2 (cond-> db
+                             true (update-in [:eavt] #(di/-remove % removing :eavt))
+                             true (update-in [:aevt] #(di/-remove % removing :aevt))
+                             indexing? (update-in [:avet] #(di/-remove % removing :avet))
+                             true (update :hash - (hash removing))
+                             schema? (-> (remove-schema datom) update-rschema)
+                             keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
+                             keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
+                             keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
+                             keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
+                             (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
+                             (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))]
+
+              final-db-2))
+          final-db)))))
 
 
 (defn- transact-report-upsert [report datom]
@@ -1298,7 +1294,7 @@
       (if (empty? (-search db [e a v]));; TODO: Should be able to remove the search
         (transact-report report new-datom)
         report)
-      (if-some [^Datom old-datom (first (-search db [e a]))] ;; TODO: find a solution without this search
+      (if-some [^Datom old-datom (first (-search db [e a]))] 
         (do
           (-> report
             (transact-report-upsert
