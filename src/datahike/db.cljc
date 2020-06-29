@@ -1156,27 +1156,40 @@
         schema? (ds/schema-attr? (.-a datom))
         keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom))))
         unique? (and (datom-added datom)
-                  (is-attr? db (.-a datom) :db/unique)) ;; TODO: pass the argument down to the hh-tree so that it is the tree that checks if value is unique. As the ceck has to be done on [a v] this info should be sent to the tree as well, as the tree looses the order of the [a b c d].
-        ;; The goal is to do this check: (not-empty (-datoms db :avet [(.-a datom) (.-v datom)])) at the tree level.x
+                  (is-attr? db (.-a datom) :db/unique)) ;; TODO: pass the argument down to the hh-tree so that it is the tree that checks if value is unique. As the ceck has to be done on [a v] this info should be sent to the tree as well, as the tree looses the order of the [a b c d]. The goal is to do this check: (not-empty (-datoms db :avet [(.-a datom) (.-v datom)])) but at the tree level.
+        ndb (if (or keep-history? indexing?)
+              (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom)]))]
+                (do
+                  (println "----removeingddddd: " removing)
+                  (cond-> db
+                    indexing? (update-in [:avet] #(di/-remove % removing :avet))
+                    keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
+                    keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
+                    (and keep-history? indexing?) (update-in [:temporal-avet]
+                                                    #(di/-insert % removing :avet))))
+                (do
+                  (println "***** NOT removeinff: " datom)
+                  db))
+              db)
         ]
-    #_(do
-           ;; (println "datom REMOVIIIIIN---- " ) ;; TODO: remove all println around
-           )
-    (cond-> db
+
+    (cond-> ndb
+
       ;; TODO (do not delete!!!): THIS IS A PBLM!!!!
       ;; TO SOLVE IT, we need to get the previous/old datom that this upsert will replace.
       ;; indexing? (update-in [:avet] #(di/-remove % removing :avet))
 
       ;; Doing an optimistic removel of the schema entry here
       schema? (try
-                (-> db (remove-schema datom) update-rschema)
+                (-> ndb (remove-schema datom) update-rschema)
                 (catch clojure.lang.ExceptionInfo e
                   ;;(prn "Optimistic removal of schema failed.
                   ;;It is most likely what is expected ")
-                  db))
+                  ndb))
       keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
       keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
       (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet))
+
 
       ;; Datom added part
       ;;
