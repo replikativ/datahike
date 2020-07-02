@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [filter])
   (:require [datahike.connector :as dc]
             [datahike.pull-api :as dp]
+            [datahike.core :as c]
             [datahike.query :as dq]
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
             [datahike.impl.entity :as de])
@@ -173,11 +174,26 @@ Connect to a database with persistent store:
   transact!
   dc/transact!)
 
+
+(def ^{:arglists '([conn callback] [conn key callback])
+       :doc "Listen for changes on the given connection. Whenever a transaction is applied to the database via [[transact!]], the callback is called
+   with the transaction report. `key` is any opaque unique value.
+
+   Idempotent. Calling [[listen!]] with the same twice will override old callback with the new value.
+
+   Returns the key under which this listener is registered. See also [[unlisten!]]."}
+  listen!
+  c/listen!)
+
+(def ^{:arglists '([conn key])
+       :doc "Removes registered listener from connection. See also [[listen!]]."}
+  unlisten!
+  c/unlisten!)
+
 (def ^{:arglists '([conn tx-data])
        :doc "Load entities directly"}
   load-entities
   dc/load-entities)
-
 
 (def ^{:arglists '([conn])
        :doc      "Releases a database connection"}
@@ -504,3 +520,4 @@ Connect to a database with persistent store:
   (if (db/-temporal-index? db)
     (SinceDB. db timepoint)
     (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)}))))
+
