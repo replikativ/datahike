@@ -33,17 +33,46 @@
           (assoc key value)))
       (assoc map key value)))
   (-apply-op-to-tree [_ tree]
-    ;;(println "------- In UpsertOp tree/insert: " key " --- " value )
-    (let [[a b c d] key
-          [oa ob oc od] (first (first (hmsg/lookup-fwd-iter tree [a b nil nil])))]
-      (if (and (= (kc/-compare a oa) 0)
-            (= (kc/-compare b ob) 0))
-        (do
-          ;;(println a " - " b " - " c " - " d " -- " [oa ob oc od])
-          (-> tree
-            (tree/delete [oa ob oc od])
-            (tree/insert key value)))
-        (tree/insert tree key value)))))
+    ;; (println "------- In UpsertOp tree/insert: " key " --- " value )
+    ;;(clojure.stacktrace/print-stack-trace (Exception. "foo"))
+    ;;
+    ;;(tree/insert tree key value)
+
+    #_(when (not (= (type tree) hitchhiker.tree.DataNode))
+      (println "!!!!!!!! NOT DAtaNOde but:" (type  tree)))
+
+    ;; (println "-----Not DAtaNOde but:" (type (:children tree)) )
+
+    (let [map (:children tree)]
+      (assoc tree :children
+        (if-let [matching-key (some (fn [old-key]
+                                      (let [[e a _ _] old-key
+                                            [ne na _ _] key]
+                                        (when (and (= (kc/-compare e ne) 0)
+                                                (= (kc/-compare a na) 0))
+                                          old-key)))
+                                (keys map))]
+          (do
+            ;;(println  "--- in projection " matching-key)
+            (-> map
+              (dissoc matching-key)
+              (assoc key value)))
+          (assoc map key value))))
+
+
+    #_(let [[a b c d] key
+            [oa ob oc od] (first (first (hmsg/lookup-fwd-iter tree [a b nil nil])))]
+        (if (and (= (kc/-compare a oa) 0)
+              (= (kc/-compare b ob) 0))
+          (do
+            (if (= (kc/-compare c oc) 0)
+              tree
+              (do
+                ;;(println a " - " b " - " c " - " d " -- " [oa ob oc od])
+                (-> tree
+                  (tree/delete [oa ob oc od])
+                  (tree/insert key value)))))
+          (tree/insert tree key value)))))
 
 (defn new-UpsertOp [key value]
   (UpsertOp. key value))
