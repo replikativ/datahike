@@ -39,13 +39,12 @@
 
     (let [map       (:children tree)
           [a b _ _] key]
-      (if (or (empty? map) (not (instance? hitchhiker.tree.DataNode tree)))
-        (tree/insert tree key value)
-        (-> (or (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
+      (-> (or (when (and (seq map) (instance? hitchhiker.tree.DataNode tree))
+                (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
                   (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
-                    (tree/delete tree [oa ob oc od])))
-              tree)
-          (tree/insert key value))))
+                    (tree/delete tree [oa ob oc od]))))
+            tree)
+        (tree/insert key value)))
 
     #_(let [map (:children tree)
           [e a] key

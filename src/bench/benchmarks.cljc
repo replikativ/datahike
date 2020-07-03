@@ -61,6 +61,7 @@
   ;; -apply-op-to-tree: using lookup-fwd-iter: 100k: 29488
   ;; -apply-op-to-tree: naive map walk:         10k: 15634
   ;; -apply-op-to-tree: subseq and updating tree not map: 1M: 41550 40070 42991 37992 40323
+  ;; 38884 42418 41028
   (let [conn (d/create-conn {:aka { :db/cardinality :db.cardinality/one }})
         all-datoms (vec (map
                           #(vector :db/add (+ 1 %1) :aka %1 %1)
