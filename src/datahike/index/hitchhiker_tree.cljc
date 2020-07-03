@@ -37,15 +37,15 @@
     ;;(clojure.stacktrace/print-stack-trace (Exception. "foo"))
 
     (let [map   (:children tree)
-          [e a] key
+          [a b] key
           add   (fn [tree akey avalue]
                   (tree/insert tree akey avalue))]
       (if (or (empty? map) (not (instance? hitchhiker.tree.DataNode tree)))
         (add tree key value)
-        (-> (or (when-let [[[oe oa oc od] _] (first (subseq map >= [e a nil nil]))]
-                  (when (and (= (kc/-compare e oe) 0)
-                          (= (kc/-compare a oa) 0))
-                    (tree/delete tree [oe oa oc od])))
+        (-> (or (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
+                  (when (and (= (kc/-compare a oa) 0)
+                          (= (kc/-compare b ob) 0))
+                    (tree/delete tree [oa ob oc od])))
               tree)
           (add key value))))
 
