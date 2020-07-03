@@ -35,87 +35,48 @@
   (-apply-op-to-tree [_ tree]
     ;; (println "------- In UpsertOp tree/insert: " key " --- " value )
     ;;(clojure.stacktrace/print-stack-trace (Exception. "foo"))
-    ;;
-    ;;(tree/insert tree key value)
 
-    #_(when (not (= (type tree) hitchhiker.tree.DataNode))
-      (println "!!!!!!!! NOT DAtaNOde but:" (type  tree)))
+    (let [map   (:children tree)
+          [e a] key
+          add   (fn [tree akey avalue]
+                  (tree/insert tree akey avalue))]
+      (if (or (empty? map) (not (instance? hitchhiker.tree.DataNode tree)))
+        (add tree key value)
+        (-> (or (when-let [[[oe oa oc od] _] (first (subseq map >= [e a nil nil]))]
+                  (when (and (= (kc/-compare e oe) 0)
+                          (= (kc/-compare a oa) 0))
+                    (tree/delete tree [oe oa oc od])))
+              tree)
+          (add key value))))
 
-    (let [map (:children tree)
+    #_(let [map (:children tree)
           [e a] key
           ;;_ (println "-----Not DAtaNOde but:" (type (:children tree)) " --- ")
           add (fn [tree akey avalue]
-                (if (hitchhiker.tree.node/-overflow? tree)
-                  (do
-                    (println "------ OVERFLOOOOOOOOOOWWWWWWW")
-                    (tree/insert tree akey avalue))
-                  (do
-                    ;;(println "------ inserting: " akey " -- " avalue)
-                    (tree/insert tree akey avalue))))
+                (tree/insert tree akey avalue)
+                #_(when (hitchhiker.tree.node/-overflow? tree)
+                    (do
+                      ;;(println "------ OVERFLOOOOOOOOOOWWWWWWW")
+                      (tree/insert tree akey avalue))))
           ]
-      (if (or (empty? map) (not (instance? clojure.lang.PersistentTreeMap map)))
+      (if (or (empty? map) (not (instance? hitchhiker.tree.DataNode tree)))
         (do
-          (println "----- map being a vector!?:" map)
+          ;;(println "----- map being a vector!?:" map)
           (add tree key value))
         (do
           ;;(println  "- subseq: " (subseq map >= [e a nil nil]))
-          (if-let [[[oe oa oc od] _] (first (subseq map >= [e a nil nil]))]
-            (do
-              ;;(println "**** new:" key " --- old: " [oe oa oc od])
-              (if (and (= (kc/-compare e oe) 0)
-                    (= (kc/-compare a oa) 0))
-                (do
-                  ;;(println  "--- removing: " [oe oa oc od])
-                  (-> tree
-                    (tree/delete [oe oa oc od])
-                    (add key value)))
-                (add tree key value)))
-            (do
-              ;;(println  "--- did not find old datom: " tree)
-              (add tree key value))))))
+          (-> (or (when-let [[[oe oa oc od] _] (first (subseq map >= [e a nil nil]))]
+                    (do
+                      ;;(println "**** new:" key " --- old: " [oe oa oc od])
+                      (when (and (= (kc/-compare e oe) 0)
+                              (= (kc/-compare a oa) 0))
+                        (do
+                          ;;(println  "--- removing: " [oe oa oc od])
+                          (-> tree
+                            (tree/delete [oe oa oc od]))))))
+                tree)
+            (add key value)))))
 
-    ;; !!!! BUGGY: in the way the result of subseq is handled
-    #_(let [map (:children tree)
-          [e a] key
-          ;;_ (println "-----Not DAtaNOde but:" (:children tree) " --- " (keys map))
-          add (fn [amap akey avalue]
-                (if (hitchhiker.tree.node/-overflow? tree)
-                  (do
-                    (println "------ OVERFLOOOOOOOOOOWWWWWWW")
-                    amap)
-                  (assoc amap akey avalue)))
-          ]
-      (assoc tree :children
-        (if (empty? map)
-          (add map key value)
-          (do
-            ;; (println  "*** In projection: " key)
-            ;; (println  "- full map: " map)
-            ;; (println  "- subseq: " (subseq map >= [e a nil nil]))
-            (if-let [old-key (first (subseq map >= [e a nil nil]))]
-              (do
-                ;; (println  "--- removing: " old-key)
-                (-> map
-                  (dissoc (first old-key))
-                  (add key value)))
-              (add map key value))))))
-
-
-    #_(let [map (:children tree)]
-        (assoc tree :children
-          (if-let [matching-key (some (fn [old-key]
-                                        (let [[e a _ _] old-key
-                                              [ne na _ _] key]
-                                          (when (and (= (kc/-compare e ne) 0)
-                                                  (= (kc/-compare a na) 0))
-                                            old-key)))
-                                  (keys map))]
-            (do
-              ;;(println  "--- in projection " matching-key)
-              (-> map
-                (dissoc matching-key)
-                (assoc key value)))
-            (assoc map key value))))
 
 
     #_(let [[a b c d] key
