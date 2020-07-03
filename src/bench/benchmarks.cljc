@@ -44,6 +44,8 @@
   ;; - For 1000000:
   ;; new version: 18614.990438 msecs
   ;; ;; -apply-op-to-tree: naive map walk: 1M: 13543
+  ;; ;; -apply-op-to-tree: subseq;         1M:  18818
+  ;;
   ;; stdrd version: 30206.95185 msecs
   ;;
   ;;For 2M
@@ -51,7 +53,7 @@
   (let [conn (d/create-conn {:aka { :db/cardinality :db.cardinality/one }})
         all-datoms (vec (map
                           #(vector :db/add 1 :aka %1 %1)
-                          (range 100000)))]
+                          (range 1000000)))]
     (time
       #_prof/profile
       (doall (d/transact! conn all-datoms))))
@@ -60,7 +62,7 @@
   ;; DON'T DELETE
   ;; -apply-op-to-tree: using lookup-fwd-iter: 100k: 29488
   ;; -apply-op-to-tree: naive map walk:         10k: 15634
-  ;; -apply-op-to-tree: subseq and updating tree not map: 1M: 41550 40070 42991 37992 40323
+  ;; -apply-op-to-tree: subseq:                  1M: 41550 40070 42991 37992 40323
   ;; 38884 42418 41028
   (let [conn (d/create-conn {:aka { :db/cardinality :db.cardinality/one }})
         all-datoms (vec (map
