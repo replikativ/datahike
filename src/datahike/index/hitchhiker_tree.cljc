@@ -37,10 +37,10 @@
     ;; (println "------- In UpsertOp tree/insert: " key " --- " value )
     ;;(clojure.stacktrace/print-stack-trace (Exception. "foo"))
 
-    (let [map   (:children tree)
-          [a b] key
-          add   (fn [tree akey avalue]
-                  (tree/insert tree akey avalue))]
+    (let [map       (:children tree)
+          [a b _ _] key
+          add       (fn [tree akey avalue]
+                      (tree/insert tree akey avalue))]
       (if (or (empty? map) (not (instance? hitchhiker.tree.DataNode tree)))
         (add tree key value)
         (-> (or (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
