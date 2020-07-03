@@ -17,8 +17,9 @@
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
-    ;; (println "------- In UpsertOp projection/insert: " key " --- " value " - " (count map))
+    ;;(println "------- In UpsertOp projection/insert: " key " --- " value " - " (count map))
 
+    ;; TODO: To gain a lot of speed, Use subseq as in -apply-op-to-tree below.
     (if-let [matching-key (some (fn [old-key]
                                   (let [[e a _ _] old-key
                                         [ne na _ _] key]
