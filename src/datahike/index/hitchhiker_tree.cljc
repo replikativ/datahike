@@ -74,6 +74,7 @@
               ;;(println  "--- did not find old datom: " tree)
               (add tree key value))))))
 
+    ;; !!!! BUGGY: in the way the result of subseq is handled
     #_(let [map (:children tree)
           [e a] key
           ;;_ (println "-----Not DAtaNOde but:" (:children tree) " --- " (keys map))
