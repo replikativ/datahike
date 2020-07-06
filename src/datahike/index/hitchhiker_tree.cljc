@@ -39,7 +39,7 @@
 
     (let [map       (:children tree)
           [a b _ _] key]
-      (-> (or (when (and (seq map) (instance? hitchhiker.tree.DataNode tree))
+      (-> (or (when (seq map)
                 (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
                   (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
                     (tree/delete tree [oa ob oc od]))))
