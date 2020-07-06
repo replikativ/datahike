@@ -29,15 +29,20 @@
    7)
 
   ;;;;;;
-  (reduce upsert-helper (ha/<?? tree) (into (sorted-set)
-                                        #{[1 :age 44]
-                                          [1 :name "Petr"]
-                                          [2 :age 25]
-                                          [2 :name "Ivan"]
-                                          [3 :age 11]
-                                          [3 :name "Sergey"]
-                                          [4 :name "Marcel"]}))
-  )
+  (msg/lookup
+    (reduce upsert-helper (ha/<?? tree) (into (sorted-set)
+                                          #{[1 :age 44]
+                                            [1 :name "Petr"]
+                                            [2 :age 25]
+                                            [2 :name "Ivan"]
+                                            [3 :age 11]
+                                            [4 :age 12]
+                                            [4 :age 20]
+                                            [4 :name "Paulo"]
+                                            [4 :age 40]
+                                            }))
+    [4 :age 12]))
+
 
 (defn upsert-helper
   [t k]
@@ -45,7 +50,7 @@
   (ha/<?? (msg/upsert t (ht/new-UpsertOp k k))))
 
 (deftest upsert
-  (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
+  #_(let [new-tree (tree/b-tree (tree/->Config 3 3 2))
         projected-vec [4 :name "Marcel" 1]
         tree (reduce upsert-helper (ha/<?? new-tree)
                (into (sorted-set)
@@ -97,4 +102,25 @@
             (is (= new (msg/lookup tree-after new)))
             ;; Is old deleted?
             (is (= nil (msg/lookup tree-after [1 :age 44 1])))))
-        ))))
+        )))
+
+  (testing "when it overflows"
+    ;; I.e. testing that we handle correctly the case where a deferred-op is sitting on
+    ;; an index-node and now has to be handled.
+    (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
+          tree (reduce upsert-helper (ha/<?? new-tree)
+                 (into (sorted-set)
+                   #{[1 :age 44 1]
+                     [1 :name "Petr" 1]
+                     [2 :age 25 1]
+                     [2 :name "Ivan" 1]
+                     [3 :age 11 1]
+                     [4 :age 12 1]
+                     [4 :age 20 1]
+                     [4 :name "Paulo" 1]
+                     [4 :age 40 1]  ;; <---- triggers the overflow
+                     }))]
+      (is (= nil         (msg/lookup tree [4 :age 12 1])))
+      (is (= nil         (msg/lookup tree [4 :age 20 1])))
+      (is (= [4 :age 40 1] (msg/lookup tree [4 :age 40 1]))))
+    ))
