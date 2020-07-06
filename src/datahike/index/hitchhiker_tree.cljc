@@ -56,9 +56,14 @@
                       ;;(println "------ OVERFLOOOOOOOOOOWWWWWWW")
                       (tree/insert tree akey avalue))))
           ]
+
+      #_(when (tree/index-node? tree)
+        (println "aaa--------- INDEX Node: " #_tree))
+      ;;(println "aaa--------- Node type: "  #_(type tree))
       (if (or (empty? map) (not (instance? hitchhiker.tree.DataNode tree)))
         (do
-          ;;(println "----- map being a vector!?:" map)
+          ;;(println "--------- Node type: " (type tree))
+
           (add tree key value))
         (do
           ;;(println  "- subseq: " (subseq map >= [e a nil nil]))
