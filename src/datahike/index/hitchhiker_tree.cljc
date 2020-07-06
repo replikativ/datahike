@@ -17,7 +17,7 @@
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
-    ;;(println "------- In UpsertOp projection/insert: " key " --- " value " - " (count map))
+    ;;(println "------- In UpsertOp projection/insert: " key " --- " map)
 
     ;; TODO: To gain a lot of speed, Use subseq as in -apply-op-to-tree below.
     (if-let [matching-key (some (fn [old-key]
@@ -37,7 +37,9 @@
     ;; (println "------- In UpsertOp tree/insert: " key " --- " value )
     ;;(clojure.stacktrace/print-stack-trace (Exception. "foo"))
 
-    (let [children       (:children tree)
+    (let [children  (cond
+                      (tree/data-node? tree) (:children tree)
+                      :else (:children (peek (tree/lookup-path tree key))))
           [a b _ _] key]
       (-> (or (when (seq children)
                 (when-let [[[oa ob oc od] _] (first (subseq children >= [a b nil nil]))]
