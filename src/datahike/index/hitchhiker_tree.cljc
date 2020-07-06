@@ -37,63 +37,48 @@
     ;; (println "------- In UpsertOp tree/insert: " key " --- " value )
     ;;(clojure.stacktrace/print-stack-trace (Exception. "foo"))
 
-    (let [map       (:children tree)
+    (let [children       (:children tree)
           [a b _ _] key]
-      (-> (or (when (seq map)
-                (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
+      (-> (or (when (seq children)
+                (when-let [[[oa ob oc od] _] (first (subseq children >= [a b nil nil]))]
                   (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
                     (tree/delete tree [oa ob oc od]))))
             tree)
         (tree/insert key value)))
 
     #_(let [map (:children tree)
-          [e a] key
-          ;;_ (println "-----Not DAtaNOde but:" (type (:children tree)) " --- ")
-          add (fn [tree akey avalue]
-                (tree/insert tree akey avalue)
-                #_(when (hitchhiker.tree.node/-overflow? tree)
-                    (do
-                      ;;(println "------ OVERFLOOOOOOOOOOWWWWWWW")
-                      (tree/insert tree akey avalue))))
-          ]
+            [e a] key
+            ;;_ (println "-----Not DAtaNOde but:" (type (:children tree)) " --- ")
+            add (fn [tree akey avalue]
+                  (tree/insert tree akey avalue)
+                  #_(when (hitchhiker.tree.node/-overflow? tree)
+                      (do
+                        ;;(println "------ OVERFLOOOOOOOOOOWWWWWWW")
+                        (tree/insert tree akey avalue))))
+            ]
 
-      #_(when (tree/index-node? tree)
-        (println "aaa--------- INDEX Node: " #_tree))
-      ;;(println "aaa--------- Node type: "  #_(type tree))
-      (if (or (empty? map) (not (instance? hitchhiker.tree.DataNode tree)))
-        (do
-          ;;(println "--------- Node type: " (type tree))
-
-          (add tree key value))
-        (do
-          ;;(println  "- subseq: " (subseq map >= [e a nil nil]))
-          (-> (or (when-let [[[oe oa oc od] _] (first (subseq map >= [e a nil nil]))]
-                    (do
-                      ;;(println "**** new:" key " --- old: " [oe oa oc od])
-                      (when (and (= (kc/-compare e oe) 0)
-                              (= (kc/-compare a oa) 0))
-                        (do
-                          ;;(println  "--- removing: " [oe oa oc od])
-                          (-> tree
-                            (tree/delete [oe oa oc od]))))))
-                tree)
-            (add key value)))))
-
-
-
-    #_(let [[a b c d] key
-            [oa ob oc od] (first (first (hmsg/lookup-fwd-iter tree [a b nil nil])))]
-        (if (and (= (kc/-compare a oa) 0)
-              (= (kc/-compare b ob) 0))
+        (when (tree/index-node? tree)
+          (println "aaa--------- INDEX Node: " tree))
+        ;;(println "aaa--------- Node type: "  #_(type tree))
+        (if (or (empty? map) (not (instance? hitchhiker.tree.DataNode tree)))
           (do
-            (if (= (kc/-compare c oc) 0)
-              tree
-              (do
-                ;;(println a " - " b " - " c " - " d " -- " [oa ob oc od])
-                (-> tree
-                  (tree/delete [oa ob oc od])
-                  (tree/insert key value)))))
-          (tree/insert tree key value)))))
+            ;;(println "--------- Node type: " (type tree))
+            (println "--------- Adding without removing : " key)
+            (add tree key value))
+          (do
+            ;;(println  "- subseq: " (subseq map >= [e a nil nil]))
+            (-> (or (when-let [[[oe oa oc od] _] (first (subseq map >= [e a nil nil]))]
+                      (do
+                        ;;(println "**** new:" key " --- old: " [oe oa oc od])
+                        (when (and (= (kc/-compare e oe) 0)
+                                (= (kc/-compare a oa) 0))
+                          (do
+                            (println  "--- removing: " [oe oa oc od])
+                            (-> tree
+                              (tree/delete [oe oa oc od]))))))
+                  tree)
+              (add key value)))))
+    ))
 
 (defn new-UpsertOp [key value]
   (UpsertOp. key value))
