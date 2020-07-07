@@ -1202,8 +1202,7 @@
       indexing? (update-in [:avet] #(di/-insert % datom :avet))
       true (advance-max-eid (.-e datom))
       true (update :hash + (hash datom))
-      schema? (-> (update-schema datom)
-                update-rschema))
+      schema? (-> (update-schema datom) update-rschema))
     ))
 
 
