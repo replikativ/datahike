@@ -1151,26 +1151,29 @@
 
 
 (defn- with-datom-upsert [db ^Datom datom]
-  ;;(validate-datom db datom) ;; Don't validate here
   (let [indexing? (indexing? db (.-a datom))
         schema? (ds/schema-attr? (.-a datom))
         keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom))))
         unique? (and (datom-added datom)
                   (is-attr? db (.-a datom) :db/unique)) ;; TODO: pass the argument down to the hh-tree so that it is the tree that checks if value is unique. As the ceck has to be done on [a v] this info should be sent to the tree as well, as the tree looses the order of the [a b c d]. The goal is to do this check: (not-empty (-datoms db :avet [(.-a datom) (.-v datom)])) but at the tree level.
-        ndb (if (or keep-history? indexing?)
-              (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom)]))]
-                (do
-                  (println "----removeingddddd: " removing)
-                  (cond-> db
-                    indexing? (update-in [:avet] #(di/-remove % removing :avet))
-                    keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
-                    keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
-                    (and keep-history? indexing?) (update-in [:temporal-avet]
-                                                    #(di/-insert % removing :avet))))
-                (do
-                  (println "***** NOT removeinff: " datom)
-                  db))
-              db)
+
+        ;; The commented off 'if' part does not have any impact on the tests so leaving out for now
+        ndb   #_db   (if (or keep-history? indexing?)
+                       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom)]))]
+                         (do
+                           (println "----removeingddddd: " removing)
+                           (cond-> db
+                             indexing? (update-in [:avet] #(di/-remove % removing :avet))
+                             keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
+                             keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
+                             keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
+                             keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
+                             (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet))
+                             (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))))
+                         (do
+                           ;;(println "***** NOT removeinff: " datom)
+                           db))
+                       db)
         ]
 
     (cond-> ndb
@@ -1186,10 +1189,6 @@
                   ;;(prn "Optimistic removal of schema failed.
                   ;;It is most likely what is expected ")
                   ndb))
-      keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
-      keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
-      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet))
-
 
       ;; Datom added part
       ;;
