@@ -1166,9 +1166,6 @@
                              indexing? (update-in [:avet] #(di/-remove % removing :avet))
                              keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
                              keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
-                             keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
-                             keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
-                             (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet))
                              (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))))
                          (do
                            ;;(println "***** NOT removeinff: " datom)
