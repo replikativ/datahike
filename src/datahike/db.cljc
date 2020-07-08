@@ -1181,12 +1181,7 @@
         ]
 
     (cond-> ndb
-
-      ;; TODO (do not delete!!!): THIS IS A PBLM!!!!
-      ;; TO SOLVE IT, we need to get the previous/old datom that this upsert will replace.
-      ;; indexing? (update-in [:avet] #(di/-remove % removing :avet))
-
-      ;; Doing an optimistic removel of the schema entry here
+      ;; Doing an optimistic remove of the schema entry here
       schema? (try
                 (-> ndb (remove-schema datom) update-rschema)
                 (catch clojure.lang.ExceptionInfo e
