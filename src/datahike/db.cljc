@@ -1160,13 +1160,20 @@
         ;; The commented off 'if' part does not have any impact on the tests so leaving out for now
         ndb   #_db   (if (or keep-history? indexing?)
                        (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom)]))]
-                         (do
-                           (println "----removeingddddd: " removing)
+                         (let [[e a v t _] removing
+                               ;; TODO: there is the case where keep-history? = false that we do not handle. I.e., this is not fully handled yet: (transact-report (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))
+
+                               ;; 
+                               ^Datom removing-false (dd/datom e a v t false)]
+                           ;;(println "    -------- removing " removing)
                            (cond-> db
                              indexing? (update-in [:avet] #(di/-remove % removing :avet))
                              keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
+                             keep-history? (update-in [:temporal-eavt] #(di/-insert % removing-false :eavt))
                              keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
-                             (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))))
+                             keep-history? (update-in [:temporal-aevt] #(di/-insert % removing-false :eavt))
+                             (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
+                             (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing-false :avet))))
                          (do
                            ;;(println "***** NOT removeinff: " datom)
                            db))
