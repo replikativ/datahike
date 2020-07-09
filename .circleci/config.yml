@@ -1,37 +1,137 @@
-version: 2.0
-jobs:
-  build:
-    working_directory: ~/datahike
+version: 2.1
 
+executors:
+  leiningen:
     docker:
-      - image: circleci/clojure:lein-2.9.3
+      - image: circleci/clojure:openjdk-8-lein
+    environment:
+      LEIN_ROOT: nbd
+      JVM_OPTS: -Xmx3200m
+    working_directory: /home/circleci/datahike
+
+jobs:
+  setup:
+    executor: leiningen
+    steps:
+      - restore_cache:
+          keys:
+            - source-{{ .Branch }}-{{ .Revision }}
+            - source-{{ .Branch }}
+            - source-
+      - checkout
+      - save_cache:
+          key: source-{{ .Branch }}-{{ .Revision }}
+          paths:
+            - .git
+      - restore_cache:
+          keys:
+            - deps-{{ checksum "project.clj" }}
+            - deps-
+      - run: lein deps
+      - save_cache:
+          key: deps-{{ checksum "project.clj" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.lein
+      - persist_to_workspace:
+          root: /home/circleci/
+          paths:
+            - .m2
+            - datahike
+            - bin
+
+  unittest:
+    executor: leiningen
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run Unittests
+          command: ./bin/run-unit-tests
+          no_output_timeout: 5m
+
+  integrationtest:
+    executor: leiningen
+    docker:
+      - image: mopedtobias/cimg:1.10
       - image: circleci/postgres:11-alpine
         environment:
           POSTGRES_USER: alice
           POSTGRES_PASSWORD: foo
           POSTGRES_DB: config-test
-
-    filters:
-      branches:
-        only:
-          - master
-          - development
-
-    environment:
-      LEIN_ROOT: "true"
-      JVM_OPTS: -Xmx3200m
-
     steps:
-      - checkout
-      - restore_cache:
-          keys:
-            - datahike-{{ checksum "project.clj" }}
-      - run: lein deps
-      - save_cache:
-          paths:
-            - ~/.m2
-            - ~/.lein
-          key: datahike-{{ checksum "project.clj" }}
-      - run: ./bin/run-unit-tests
-      - run: lein uberjar
-      - run: ./bin/run-integration-tests
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run Integrationtests
+          command: ./bin/run-integration-tests
+          no_output_timeout: 5m
+
+  build:
+    executor: leiningen
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Build
+          command: lein uberjar
+          no_output_timeout: 5m
+
+  deploy-snapshot:
+    executor: leiningen
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          command: |
+            VERSION=$(head -n 1 project.clj | awk '{print $3}' | tr -d \")
+            if [[ ${VERSION} =~ .*-SNAPSHOT ]]; then
+                lein deploy clojars
+            else
+                exit 0
+            fi
+  deploy-release:
+    executor: leiningen
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Deploy Release to Clojars
+          command: |
+            VERSION=$(head -n 1 project.clj | awk '{print $3}' | tr -d \")
+            if [[ ${VERSION} =~ .*-SNAPSHOT ]]; then
+                exit 0
+            else
+                lein deploy clojars
+            fi
+workflows:
+  build_test_and_deploy:
+    jobs:
+      - setup
+      - unittest:
+          requires:
+            - setup
+      - integrationtest:
+          requires:
+            - setup
+      - build:
+          requires:
+            - setup
+      - deploy-snapshot:
+          filters:
+            branches:
+              only: development
+          requires:
+            - setup
+            - unittest
+            - integrationtest
+            - build
+      - deploy-release:
+          filters:
+            branches:
+              only: master
+          requires:
+            - setup
+            - unittest
+            - integrationtest
+            - build

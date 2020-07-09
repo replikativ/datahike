@@ -10,14 +10,13 @@
                  [org.clojure/tools.reader "1.3.2"]
                  [environ "1.2.0"]
                  [com.taoensso/timbre "4.10.0"]
-
                  [io.replikativ/hitchhiker-tree "0.1.7"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.lambdaforge/datalog-parser "0.1.7"]
                  [io.replikativ/zufall "0.1.0"]
                  [junit/junit "4.13"]]
 
-  :plugins [[lein-cljsbuild "1.1.7"]]
+  :plugins [[lein-cljsbuild "1.1.8"]]
 
   :global-vars {*warn-on-reflection*   true
                 *print-namespace-maps* false}
@@ -100,4 +99,9 @@
 
   :clean-targets ^{:protect false} ["target"
                                     "release-js/datahike.bare.js"
-                                    "release-js/datahike.js"])
+                                    "release-js/datahike.js"]
+
+  :deploy-repositories [["clojars" {:url "https://clojars.org/repo"
+                                    :username :env
+                                    :password :env
+                                    :sign-releases false}]])

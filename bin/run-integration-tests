@@ -3,14 +3,23 @@
 set -o errexit
 set -o pipefail
 
-if [ -z ${CIRCLECI} ]; then
-    CONTAINER_NAME=$(docker run --detach --publish 5432:5432 --env POSTGRES_DB=config-test --env POSTGRES_USER=alice --env POSTGRES_PASSWORD=foo postgres:alpine)
-fi
+trap teardown EXIT
+
+function setup() {
+    if [ -z ${CIRCLECI} ]; then
+        echo $(docker run --detach --publish 5432:5432 --env POSTGRES_DB=config-test --env POSTGRES_USER=alice --env POSTGRES_PASSWORD=foo postgres:alpine)
+    fi
+}
+
+function teardown() {
+    if [ -z ${CIRCLECI} ]; then
+        docker rm -f ${CONTAINER_NAME}
+    fi
+}
+
+CONTAINER_NAME=$(setup)
 
 lein kaocha integration
 
 DATAHIKE_STORE_BACKEND=pg DATAHIKE_STORE_HOST=localhost DATAHIKE_STORE_PORT=5432 DATAHIKE_STORE_USER=alice DATAHIKE_STORE_PASSWORD=foo DATAHIKE_STORE_DBNAME=config-test lein kaocha integration --focus datahike.integration-test.config-record-test
 
-if [ -z ${CIRCLECI} ]; then
-    docker rm -f ${CONTAINER_NAME}
-fi
