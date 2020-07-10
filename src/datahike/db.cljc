@@ -1150,12 +1150,27 @@
       (update-in [:tx-data] conj datom)))
 
 
+
+(defn validate-datom-upsert [db ^Datom datom]
+  (when (is-attr? db (.-a datom) :db/unique)
+    (when-let [old (first (-datoms db :avet [(.-a datom) (.-v datom)]))]
+      (when-not (= (.-e datom) (.-e old))
+        (raise "Cannot add " datom " because of unique constraint: " old
+          {:error     :transact/unique
+           :attribute (.-a datom)
+           :datom     datom})))))
+
+
 (defn- with-datom-upsert [db ^Datom datom]
+  ;; (println "-------- WITH_DATOM_UPSERT " datom)
+  ;; (clojure.stacktrace/print-stack-trace (Exception. "foo"))
+  (validate-datom-upsert db datom)
   (let [indexing? (indexing? db (.-a datom))
         schema? (ds/schema-attr? (.-a datom))
         keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom))))
-        unique? (and (datom-added datom)
-                  (is-attr? db (.-a datom) :db/unique)) ;; TODO: pass the argument down to the hh-tree so that it is the tree that checks if value is unique. As the ceck has to be done on [a v] this info should be sent to the tree as well, as the tree looses the order of the [a b c d]. The goal is to do this check: (not-empty (-datoms db :avet [(.-a datom) (.-v datom)])) but at the tree level.
+        ;; unique?
+        #_(and (is-attr? db (.-a datom) :db/unique)
+          (not-empty (-datoms db :avet [(.-a datom) (.-v datom)]))) ;; TODO: pass the argument down to the hh-tree so that it is the tree that checks if value is unique. As the ceck has to be done on [a v] this info should be sent to the tree as well, as the tree looses the order of the [a b c d]. The goal is to do this check: (not-empty (-datoms db :avet [(.-a datom) (.-v datom)])) but at the tree level.
 
         ;; The commented off 'if' part does not have any impact on the tests so leaving out for now
         ndb   #_db   (if (or keep-history? indexing?)
@@ -1171,7 +1186,7 @@
                              keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
                              keep-history? (update-in [:temporal-eavt] #(di/-insert % removing-false :eavt))
                              keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
-                             keep-history? (update-in [:temporal-aevt] #(di/-insert % removing-false :eavt))
+                             keep-history? (update-in [:temporal-aevt] #(di/-insert % removing-false :aevt))
                              (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
                              (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing-false :avet))))
                          (do
