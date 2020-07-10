@@ -3,6 +3,7 @@
             [clojure.spec.alpha :as s]
             [zufall.core :as z]
             [environ.core :refer [env]]
+            [taoensso.timbre :as log]
             [datahike.store :as ds])
   (:import [java.net URI]))
 
@@ -62,6 +63,11 @@
     (Boolean/parseBoolean (get env key default))
     (catch Exception _ default)))
 
+(defn map-from-env [key default]
+  (try
+    (edn/read-string (get env key (str default)))
+    (catch Exception _ default)))
+
 (defn deep-merge
   "Recursively merges maps and records."
   [& maps]
@@ -118,6 +124,7 @@
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
                  :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}
          merged-config ((comp remove-nils deep-merge) config config-as-arg)
+         _             (log/info "Using config " merged-config)
          {:keys [keep-history? name schema-flexibility index initial-tx store]} merged-config
          config-spec (ds/config-spec store)]
      (when config-spec

@@ -681,7 +681,7 @@
               (fn [m prop]
                 (assoc m prop (conj (get m prop #{}) attr)))
               m (attr->properties key value)))
-          m keys->values)))
+          (update m :db/ident (fn [coll] (if coll (conj coll attr) #{attr}))) keys->values)))
     {} schema))
 
 (defn- validate-schema-key [a k v expected]
