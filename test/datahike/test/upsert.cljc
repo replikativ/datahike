@@ -4,13 +4,10 @@
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     [datahike.core :as d]
     [datahike.db :as db]
-    [datahike.test.core :as tdc])
-  ;;(:import [datahike.index.hitchhiker-tree UpsertOp])
-  )
+    [datahike.test.core :as tdc]))
 
 #?(:cljs
    (def Throwable js/Error))
-
 
 (deftest test-upsert
   (let [db (d/db-with (d/empty-db {:name  { :db/unique :db.unique/identity }
