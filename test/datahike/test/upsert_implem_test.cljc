@@ -50,7 +50,7 @@
   (ha/<?? (msg/upsert t (ht/new-UpsertOp k k))))
 
 (deftest upsert
-  #_(let [new-tree (tree/b-tree (tree/->Config 3 3 2))
+  (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
         projected-vec [4 :name "Marcel" 1]
         tree (reduce upsert-helper (ha/<?? new-tree)
                (into (sorted-set)
@@ -105,8 +105,7 @@
         )))
 
   (testing "when it overflows"
-    ;; I.e. testing that we handle correctly the case where a deferred-op is sitting on
-    ;; an index-node and now has to be handled.
+    ;; I.e. testing the projection of a deferred-op sitting on an index-node.
     (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
           tree (reduce upsert-helper (ha/<?? new-tree)
                  (into (sorted-set)
@@ -118,9 +117,8 @@
                      [4 :age 12 1]
                      [4 :age 20 1]
                      [4 :name "Paulo" 1]
-                     [4 :age 40 1]  ;; <---- triggers the overflow
+                     [4 :age 40 1] ;; triggers the overflow
                      }))]
-      (is (= nil         (msg/lookup tree [4 :age 12 1])))
-      (is (= nil         (msg/lookup tree [4 :age 20 1])))
-      (is (= [4 :age 40 1] (msg/lookup tree [4 :age 40 1]))))
-    ))
+      (is (= nil           (msg/lookup tree [4 :age 12 1])))
+      (is (= nil           (msg/lookup tree [4 :age 20 1])))
+      (is (= [4 :age 40 1] (msg/lookup tree [4 :age 40 1]))))))

@@ -17,26 +17,14 @@
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
-    ;;(println "------- In UpsertOp projection/insert: " key " --- " map)
-
-    ;; TODO: To gain a lot of speed, Use subseq as in -apply-op-to-tree below.
-    (if-let [matching-key (some (fn [old-key]
-                                  (let [[e a _ _] old-key
-                                        [ne na _ _] key]
-                                    (when (and (= (kc/-compare e ne) 0)
-                                            (= (kc/-compare a na) 0))
-                                      old-key)))
-                            (keys map))]
-      (do
-        ;;(println  "--- in projection " matching-key)
-        (-> map
-          (dissoc matching-key)
-          (assoc key value)))
-      (assoc map key value)))
+    (let [[a b _ _] key]
+         (-> (or (when (seq map)
+                   (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
+                     (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
+                       (dissoc map [oa ob oc od]))))
+               map)
+           (assoc key value))))
   (-apply-op-to-tree [_ tree]
-    ;; (println "------- In UpsertOp tree/insert: " key " --- " value )
-    ;;(clojure.stacktrace/print-stack-trace (Exception. "foo"))
-
     (let [children  (cond
                       (tree/data-node? tree) (:children tree)
                       :else (:children (peek (tree/lookup-path tree key))))
@@ -46,44 +34,12 @@
                   (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
                     (tree/delete tree [oa ob oc od]))))
             tree)
-        (tree/insert key value)))
+        (tree/insert key value)))))
 
-    #_(let [map (:children tree)
-            [e a] key
-            ;;_ (println "-----Not DAtaNOde but:" (type (:children tree)) " --- ")
-            add (fn [tree akey avalue]
-                  (tree/insert tree akey avalue)
-                  #_(when (hitchhiker.tree.node/-overflow? tree)
-                      (do
-                        ;;(println "------ OVERFLOOOOOOOOOOWWWWWWW")
-                        (tree/insert tree akey avalue))))
-            ]
-
-        (when (tree/index-node? tree)
-          (println "aaa--------- INDEX Node: " tree))
-        ;;(println "aaa--------- Node type: "  #_(type tree))
-        (if (or (empty? map) (not (instance? hitchhiker.tree.DataNode tree)))
-          (do
-            ;;(println "--------- Node type: " (type tree))
-            (println "--------- Adding without removing : " key)
-            (add tree key value))
-          (do
-            ;;(println  "- subseq: " (subseq map >= [e a nil nil]))
-            (-> (or (when-let [[[oe oa oc od] _] (first (subseq map >= [e a nil nil]))]
-                      (do
-                        ;;(println "**** new:" key " --- old: " [oe oa oc od])
-                        (when (and (= (kc/-compare e oe) 0)
-                                (= (kc/-compare a oa) 0))
-                          (do
-                            (println  "--- removing: " [oe oa oc od])
-                            (-> tree
-                              (tree/delete [oe oa oc od]))))))
-                  tree)
-              (add key value)))))
-    ))
 
 (defn new-UpsertOp [key value]
   (UpsertOp. key value))
+
 
 (extend-protocol kc/IKeyCompare
   clojure.lang.PersistentVector

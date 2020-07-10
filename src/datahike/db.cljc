@@ -1162,71 +1162,45 @@
 
 
 (defn- with-datom-upsert [db ^Datom datom]
-  ;; (println "-------- WITH_DATOM_UPSERT " datom)
-  ;; (clojure.stacktrace/print-stack-trace (Exception. "foo"))
   (validate-datom-upsert db datom)
-  (let [indexing? (indexing? db (.-a datom))
-        schema? (ds/schema-attr? (.-a datom))
-        keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom))))
-        ;; unique?
-        #_(and (is-attr? db (.-a datom) :db/unique)
-          (not-empty (-datoms db :avet [(.-a datom) (.-v datom)]))) ;; TODO: pass the argument down to the hh-tree so that it is the tree that checks if value is unique. As the ceck has to be done on [a v] this info should be sent to the tree as well, as the tree looses the order of the [a b c d]. The goal is to do this check: (not-empty (-datoms db :avet [(.-a datom) (.-v datom)])) but at the tree level.
-
-        ;; The commented off 'if' part does not have any impact on the tests so leaving out for now
-        ndb   #_db   (if (or keep-history? indexing?)
-                       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom)]))]
-                         (let [[e a v t _] removing
-                               ;; TODO: there is the case where keep-history? = false that we do not handle. I.e., this is not fully handled yet: (transact-report (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))
-
-                               ;; 
-                               ^Datom removing-false (dd/datom e a v t false)]
-                           ;;(println "    -------- removing " removing)
-                           (cond-> db
-                             indexing? (update-in [:avet] #(di/-remove % removing :avet))
-                             keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
-                             keep-history? (update-in [:temporal-eavt] #(di/-insert % removing-false :eavt))
-                             keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
-                             keep-history? (update-in [:temporal-aevt] #(di/-insert % removing-false :aevt))
-                             (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
-                             (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing-false :avet))))
-                         (do
-                           ;;(println "***** NOT removeinff: " datom)
-                           db))
-                       db)
-        ]
-
-    (cond-> ndb
-      ;; Doing an optimistic remove of the schema entry here
-      schema? (try
-                (-> ndb (remove-schema datom) update-rschema)
-                (catch clojure.lang.ExceptionInfo e
-                  ;;(prn "Optimistic removal of schema failed.
-                  ;;It is most likely what is expected ")
-                  ndb))
-
-      ;; Datom added part
-      ;;
-      true (update-in [:eavt] #(di/-upsert % datom :eavt))
-      true (update-in [:aevt] #(di/-upsert % datom :aevt))
-      ;; Insert because we are on :av here.
-      ;; We have to force an upsert
-      ;; (i.e. a delete of previous version if it exists) only on
-      ;; :eavt and :aevt. We should definitely not delete an :av entry.
-      ;; Test datahike.test/entity testing "backward navigation" shows this.
-      indexing? (update-in [:avet] #(di/-insert % datom :avet))
-      true (advance-max-eid (.-e datom))
-      true (update :hash + (hash datom))
-      schema? (-> (update-schema datom) update-rschema))
-    ))
+  (let [indexing?      (indexing? db (.-a datom))
+        schema?        (ds/schema-attr? (.-a datom))
+        keep-history?  (and (-keep-history? db) (not (no-history? db (.-a datom))))
+        db             (if (or keep-history? indexing?)
+                         (if-some [old ^Datom (first (-search db [(.-e datom) (.-a datom)]))]
+                           (let [[e a v t _] old
+                                 ^Datom old-retracted (dd/datom e a v
+                                                        (if keep-history? t (datom-tx datom))
+                                                        false)]
+                             (cond-> db
+                               indexing? (update-in [:avet] #(di/-remove % old :avet))
+                               keep-history? (update-in [:temporal-eavt] #(di/-insert % old :eavt))
+                               keep-history? (update-in [:temporal-eavt] #(di/-insert % old-retracted :eavt))
+                               keep-history? (update-in [:temporal-aevt] #(di/-insert % old :aevt))
+                               keep-history? (update-in [:temporal-aevt] #(di/-insert % old-retracted :aevt))
+                               (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % old :avet))
+                               (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % old-retracted :avet))))
+                           db)
+                         db)]
+    
+    (cond-> db
+      ;; Optimistic remove of the schema entry
+      schema?    (try
+                 (-> db (remove-schema datom) update-rschema)
+                 (catch clojure.lang.ExceptionInfo e
+                  db))
+      true       (update-in [:eavt] #(di/-upsert % datom :eavt))
+      true       (update-in [:aevt] #(di/-upsert % datom :aevt))
+      indexing?  (update-in [:avet] #(di/-insert % datom :avet))
+      true       (advance-max-eid (.-e datom))
+      true       (update :hash + (hash datom))
+      schema?    (-> (update-schema datom) update-rschema))))
 
 
 (defn- transact-report-upsert [report datom]
-  ;; TODO: remove debugging code such as the let
-  (let [final-report (-> report
-                       (update-in [:db-after] with-datom-upsert datom)
-                       (update-in [:tx-data] conj datom))]
-    ;; (pp/pprint (:temporal-eavt (:db-after final-report)))
-    final-report))
+  (-> report
+    (update-in [:db-after] with-datom-upsert datom)
+    (update-in [:tx-data] conj datom)))
 
 (defn- check-upsert-conflict [entity acc]
   (let [[e a v] acc
