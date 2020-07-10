@@ -1,4 +1,3 @@
-;; TODO: Move this into the hh-tree project and rename it to just 'upsert'
 (ns datahike.test.upsert-implem-test
   (:require
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
@@ -11,43 +10,11 @@
 #?(:cljs
    (def Throwable js/Error))
 
-(comment
-
-  (defn upsert-helper
-    [t k]
-    (ha/<?? (msg/upsert t (ht/new-UpsertOp k k))))
-
-
-  (def tree (tree/b-tree (tree/->Config 3 3 2)))
-
-  (:op-buf
-   (reduce upsert-helper (ha/<?? tree) (into (sorted-set) #{1 2 3 4 5 6 7}))
-   )
-
-  (msg/lookup
-   (reduce upsert-helper (ha/<?? tree) (into (sorted-set) #{1 2 3 4 5 6 7}))
-   7)
-
-  ;;;;;;
-  (msg/lookup
-    (reduce upsert-helper (ha/<?? tree) (into (sorted-set)
-                                          #{[1 :age 44]
-                                            [1 :name "Petr"]
-                                            [2 :age 25]
-                                            [2 :name "Ivan"]
-                                            [3 :age 11]
-                                            [4 :age 12]
-                                            [4 :age 20]
-                                            [4 :name "Paulo"]
-                                            [4 :age 40]
-                                            }))
-    [4 :age 12]))
-
 
 (defn upsert-helper
   [t k]
-  ;; TODO: why does it not work when we set the value to insert to nil
   (ha/<?? (msg/upsert t (ht/new-UpsertOp k k))))
+
 
 (deftest upsert
   (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
