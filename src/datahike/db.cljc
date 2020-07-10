@@ -1290,20 +1290,10 @@
         v (if (ref? db a) (entid-strict db v) v)
         new-datom (datom e a v tx)]
     (if (multival? db a)
-      (if (empty? (-search db [e a v]));; TODO: As it also works without the test, check what is the fastest on the benchmark. (Note that we must use tr-report and not tr-report-upsert unless we prove that it is better to use tr-report-upsert)
+      (if (empty? (-search db [e a v]))
         (transact-report report new-datom)
         report)
-      (transact-report-upsert report new-datom)
-
-      #_(if-some [^Datom old-datom (first (-search db [e a]))]
-          (if (= (.-v old-datom) v)
-            report
-            (-> report
-              (transact-report
-                (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))
-              (transact-report new-datom)))
-          (transact-report report new-datom))
-      )))
+      (transact-report-upsert report new-datom))))
 
 (defn- transact-retract-datom [report ^Datom d]
   (transact-report report (datom (.-e d) (.-a d) (.-v d) (current-tx report) false)))
