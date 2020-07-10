@@ -49,10 +49,7 @@
             ;; Is new in?
             (is (= new (msg/lookup tree-after new)))
             ;; Is old deleted?
-            (is (= nil (msg/lookup tree-after projected-vec)))))
-        (testing "keeping history"
-          ;; TODO
-          )))
+            (is (= nil (msg/lookup tree-after projected-vec)))))))
 
     (testing "Against an entry located at leaf level,"
       (testing "basic lookup works"
