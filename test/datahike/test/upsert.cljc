@@ -4,30 +4,13 @@
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     [datahike.core :as d]
     [datahike.db :as db]
-    [datahike.test.core :as tdc]
-
-    [hitchhiker.tree.utils.async :as ha]
-    [hitchhiker.tree :as tree]
-    [hitchhiker.tree.messaging :as msg]
-    [datahike.index.hitchhiker-tree :as ht]
-    )
+    [datahike.test.core :as tdc])
   ;;(:import [datahike.index.hitchhiker-tree UpsertOp])
   )
 
 #?(:cljs
    (def Throwable js/Error))
 
-(comment
-
-  (defn upsert-helper
-    [t k]
-    (ha/<?? (msg/upsert t k k (ht/new-UpsertOp k k))))
-
-
-  (:op-buf
-   (reduce upsert-helper (ha/<?? (tree/b-tree (tree/->Config 3 3 2))) (into (sorted-set) #{1 2 3 4 5 6 7})))
-
-  )
 
 (deftest test-upsert
   (let [db (d/db-with (d/empty-db {:name  { :db/unique :db.unique/identity }
