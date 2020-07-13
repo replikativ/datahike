@@ -1186,12 +1186,17 @@
     (cond-> db
       ;; Optimistic remove of the schema entry
       schema?    (try
-                 (-> db (remove-schema datom) update-rschema)
-                 (catch clojure.lang.ExceptionInfo e
-                  db))
-      true       (update-in [:eavt] #(di/-upsert % datom :eavt))
-      true       (update-in [:aevt] #(di/-upsert % datom :aevt))
+                   (-> db (remove-schema datom) update-rschema)
+                   (catch clojure.lang.ExceptionInfo e
+                     db))
+      ;; TODO: Need to do the implementation for temporals for persisentset as db as well
+      ;
+      true       (update-in [:eavt] #(di/-upsert % datom :eavt db))
+      true       (update-in [:aevt] #(di/-upsert % datom :aevt db))
+      ;; TODO: its temporal aspect should be done by :eavt
       indexing?  (update-in [:avet] #(di/-insert % datom :avet))
+
+
       true       (advance-max-eid (.-e datom))
       true       (update :hash + (hash datom))
       schema?    (-> (update-schema datom) update-rschema))))
