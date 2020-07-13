@@ -12,28 +12,29 @@
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
 
+(defn remove-old
+  "Removes old key from map using remove-fn function if new and old keys' first 2 entries match."
+  [map new remove-fn]
+  (let [[a b _ _] new]
+    (when (seq map)
+      (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
+        (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
+          (remove-fn [oa ob oc od]))))))
 
+;; Rajouter un argument db a upsertOp.
+;; une fois old retrieved, faire un di/insert sur le temporal tree equivelent; temporal treee que l'on recuperera par db.
+;;
 (defrecord UpsertOp [key value]
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
-    (let [[a b _ _] key]
-         (-> (or (when (seq map)
-                   (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
-                     (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
-                       (dissoc map [oa ob oc od]))))
-               map)
-           (assoc key value))))
+    (-> (or (remove-old map key (partial dissoc map)) map)
+      (assoc key value)))
   (-apply-op-to-tree [_ tree]
     (let [children  (cond
                       (tree/data-node? tree) (:children tree)
-                      :else (:children (peek (tree/lookup-path tree key))))
-          [a b _ _] key]
-      (-> (or (when (seq children)
-                (when-let [[[oa ob oc od] _] (first (subseq children >= [a b nil nil]))]
-                  (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
-                    (tree/delete tree [oa ob oc od]))))
-            tree)
+                      :else (:children (peek (tree/lookup-path tree key))))]
+      (-> (or (remove-old children key (partial tree/delete tree)) tree)
         (tree/insert key value)))))
 
 
