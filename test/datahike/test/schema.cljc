@@ -37,7 +37,7 @@
 
     (testing "transact without schema present"
       (is (thrown-msg?
-           "No schema found in db."
+           "Bad entity attribute :name at {:db/id 1, :name \"Alice\"}, not defined in current schema"
            (d/transact conn tx))))
 
     (testing "transacting new schema"

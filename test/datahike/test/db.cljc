@@ -1,11 +1,11 @@
 (ns datahike.test.db
   (:require
-    [clojure.data]
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [datahike.core :as d]
-    [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
-                                      :clj  [:refer [defrecord-updatable]])]))
+   [clojure.data]
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   [datahike.core :as d]
+   [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
+                           :clj  [:refer [defrecord-updatable]])]))
 
 ;;
 ;; verify that defrecord-updatable works with compiler/core macro configuration
@@ -40,8 +40,8 @@
           [(d/datom 1 :b 3) (d/datom 1 :d 5)]
           [(d/datom 1 :a 1)]]
          (clojure.data/diff
-           (d/db-with (d/empty-db) [{:a 1 :b 2 :c 4} {:a 1}])
-           (d/db-with (d/empty-db) [{:a 1 :b 3 :d 5}])))))
+          (d/db-with (d/empty-db) [{:a 1 :b 2 :c 4} {:a 1}])
+          (d/db-with (d/empty-db) [{:a 1 :b 3 :d 5}])))))
 
 (deftest test-fn-hash-changes
   (let [db (d/db-with (d/empty-db)
@@ -74,7 +74,3 @@
                                   :db/cardinality :db.cardinality/one
                                   :db/valueType :db.type/string}]
                                 {:schema-flexibility :write}))))))
-
-
-
-

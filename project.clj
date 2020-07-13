@@ -8,14 +8,15 @@
                  [org.clojure/clojurescript "1.10.597" :scope "provided"]
                  [persistent-sorted-set     "0.1.2"]
                  [org.clojure/tools.reader "1.3.2"]
-                 [environ "1.1.0"]
+                 [environ "1.2.0"]
+                 [com.taoensso/timbre "4.10.0"]
                  [io.replikativ/hitchhiker-tree "0.1.7"]
                  [io.replikativ/superv.async "0.2.9"]
-                 [io.lambdaforge/datalog-parser "0.1.5"]
+                 [io.lambdaforge/datalog-parser "0.1.7"]
                  [io.replikativ/zufall "0.1.0"]
-                 [junit/junit "4.12"]]
+                 [junit/junit "4.13"]]
 
-  :plugins [[lein-cljsbuild "1.1.7"]]
+  :plugins [[lein-cljsbuild "1.1.8"]]
 
   :global-vars {*warn-on-reflection*   true
                 *print-namespace-maps* false}
@@ -85,7 +86,7 @@
                                   [org.clojure/clojurescript   "1.10.520" :scope "provided"]]}
              :dev {:source-paths ["bench/src" "test" "dev"]
                    :dependencies [[org.clojure/tools.nrepl     "0.2.13"]
-                                  [org.clojure/tools.namespace "0.3.1"]
+                                  [org.clojure/tools.namespace "1.0.0"]
                                   [lambdaisland/kaocha         "1.0.632"]
                                   [lambdaisland/kaocha-cljs    "0.0-71"]
                                   [io.replikativ/datahike-leveldb "0.1.0"]
@@ -98,4 +99,9 @@
 
   :clean-targets ^{:protect false} ["target"
                                     "release-js/datahike.bare.js"
-                                    "release-js/datahike.js"])
+                                    "release-js/datahike.js"]
+
+  :deploy-repositories [["clojars" {:url "https://clojars.org/repo"
+                                    :username :env
+                                    :password :env
+                                    :sign-releases false}]])
