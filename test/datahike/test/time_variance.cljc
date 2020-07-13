@@ -5,6 +5,8 @@
     [datahike.api :as d])
   (:import [java.util Date]))
 
+(set! *print-namespace-maps* false)
+
 (def schema-tx [{:db/ident       :name
                  :db/valueType   :db.type/string
                  :db/unique      :db.unique/identity
@@ -20,6 +22,7 @@
 
 (defn create-test-db [uri]
   (d/create-database uri :initial-tx schema-tx))
+
 
 (defn now []
   (Date.))
@@ -95,7 +98,10 @@
         (is (= #{[25] [30]}
                (d/q query history-db [:name "Alice"] date)))
         (is (= #{[25] [30]}
-               (d/q query-with-< history-db [:name "Alice"] date)))))))
+               (d/q query-with-< history-db [:name "Alice"] date)))))
+    (testing "print DB"
+      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}}}"
+             (pr-str (d/history @conn)))))))
 
 (deftest test-as-of-db
   (let [uri "datahike:mem://test-historical-queries"
@@ -103,14 +109,24 @@
         _ (create-test-db uri)
         conn (d/connect uri)
         first-date (now)
+        tx-id 536870914
         query '[:find ?a :in $ ?e :where [?e :age ?a ?tx]]]
     (testing "get values at specific time"
       (is (= #{[25]}
                (d/q query (d/as-of @conn first-date) [:name "Alice"]))))
     (testing "use transaction ID"
-      (let [tx-id 536870914]
-        (is (= #{[25]}
-                 (d/q query (d/as-of @conn tx-id) [:name "Alice"])))))))
+      (is (= #{[25]}
+             (d/q query (d/as-of @conn tx-id) [:name "Alice"]))))
+    (testing "print DB"
+      (let [as-of-str (pr-str (d/as-of @conn tx-id))
+            origin-str (pr-str (datahike.db/-origin (d/as-of @conn tx-id)))]
+        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}} :time-point 536870914}"
+               as-of-str))
+        (is (= "#datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}}"
+               origin-str))
+        (is (not= as-of-str origin-str))
+        ))
+    ))
 
 (deftest test-since-db
   (let [uri "datahike:mem://test-historical-queries"
@@ -118,6 +134,7 @@
         _ (create-test-db uri)
         conn (d/connect uri)
         first-date (now)
+        tx-id 536870914
         query '[:find ?a :where [?e :age ?a]]]
     (testing "empty after first insertion"
       (is (= #{}
@@ -126,7 +143,12 @@
       (let [new-age 30
             _ (d/transact conn [{:db/id [:name "Alice"] :age new-age}])]
         (is (= #{[new-age]}
-               (d/q query (d/since @conn first-date))))))))
+               (d/q query (d/since @conn first-date))))
+        (is (= #{[new-age]}
+               (d/q query (d/since @conn tx-id))))))
+    (testing "print DB"
+      (is (= "#datahike/SinceDB {:origin #datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}} :time-point 536870914}"
+             (pr-str (d/since @conn tx-id)))))))
 
 (deftest test-no-history
   (let [uri "datahike:mem://test-no-history"
