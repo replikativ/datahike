@@ -86,23 +86,23 @@
 
 (defmulti empty-index
   "Creates empty index"
-  {:arglists '([index index-type])}
-  (fn [index index-type & opts] index))
+  {:arglists '([index index-type index-config])}
+  (fn [index index-type index-config] index))
 
-(defmethod empty-index ::hitchhiker-tree [_ _]
-  (dih/empty-tree))
+(defmethod empty-index ::hitchhiker-tree [_ {:keys [index-b-factor index-data-node-size index-log-size]}]
+  (dih/empty-tree index-b-factor index-data-node-size index-log-size))
 
-(defmethod empty-index ::persistent-set [_ index-type]
+(defmethod empty-index ::persistent-set [index-type {:keys [indexed]}]
   (dip/empty-set index-type))
 
 
 (defmulti init-index
   "Initialize index with datoms"
-  {:arglists '([index datoms indexed index-type])}
-  (fn [index datoms indexed index-type] index))
+  {:arglists '([index datoms index-type index-config])}
+  (fn [index datoms index-type index-config] index))
 
-(defmethod init-index ::hitchhiker-tree [_ datoms _ index-type]
-  (dih/init-tree datoms index-type))
+(defmethod init-index ::hitchhiker-tree [_ datoms index-type {:keys [index-b-factor index-data-node-size index-log-size]}]
+  (dih/init-tree datoms index-type index-b-factor index-data-node-size index-log-size))
 
-(defmethod init-index ::persistent-set [_ datoms indexed index-type]
-  (dip/init-set datoms indexed index-type))
+(defmethod init-index ::persistent-set [_ datoms index-type {:keys [indexed]}]
+  (dip/init-set datoms index-type indexed))

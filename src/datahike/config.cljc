@@ -14,10 +14,17 @@
 (s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
 (s/def ::name string?)
 
+(s/def ::index-b-factor long)
+(s/def ::index-log-size long)
+(s/def ::index-data-node-size long)
+
 (s/def ::store map?)
 
 (s/def :datahike/config (s/keys :req-un [:datahike/store]
                                 :opt-un [::index
+                                         ::index-b-factor
+                                         ::index-log-size
+                                         ::index-data-node-size
                                          ::keep-history?
                                          ::schema-flexibility
                                          ::initial-tx
@@ -92,7 +99,10 @@
    :keep-history? false
    :schema-flexibility :read
    :name (z/rand-german-mammal)
-   :index :datahike.index/hitchhiker-tree})
+   :index :datahike.index/hitchhiker-tree}
+   :index-b-factor 17
+   :index-log-size (- 300 17)
+   :index-data-node-size 300)
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -122,7 +132,10 @@
                  :keep-history? (bool-from-env :datahike-keep-history true)
                  :name (:name config-as-arg (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}
+                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
+                 :index-b-factor (int-from-env :datahike-b-factor 17)
+                 :index-log-size (int-from-env :datahike-log-size (- 300 17))
+                 :index-data-node-size (int-from-env :datahike-data-node-size 300)}
          merged-config ((comp remove-nils deep-merge) config config-as-arg)
          _             (log/info "Using config " merged-config)
          {:keys [keep-history? name schema-flexibility index initial-tx store]} merged-config

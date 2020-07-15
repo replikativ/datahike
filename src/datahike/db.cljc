@@ -706,9 +706,6 @@
     (validate-schema-key a :db/valueType (:db/valueType kv) #{:db.type/ref})
     (validate-schema-key a :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many})))
 
-(def ^:const br 300)
-(def ^:const br-sqrt (long (Math/sqrt br)))
-
 (defn to-old-schema [new-schema]
   (if (or (vector? new-schema) (seq? new-schema))
     (reduce
@@ -730,6 +727,9 @@
   ([schema config]
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
    (let [{:keys [keep-history? index schema-flexibility] :as config} (merge (dc/storeless-config) config)
+         rschema (rschema (merge implicit-schema schema))
+         index-config (merge (select-keys [:index-b-factor :index-data-node-size :index-log-size] config)
+                             {:indexed (:db/index rschema)})
          on-read? (= :read schema-flexibility)
          schema (to-old-schema schema)
          _ (if on-read?
@@ -738,18 +738,18 @@
      (map->DB
       (merge
        {:schema  (merge implicit-schema schema)
-        :rschema (rschema (merge implicit-schema schema))
+        :rschema rschema
         :config  config
-        :eavt    (di/empty-index index :eavt)
-        :aevt    (di/empty-index index :aevt)
-        :avet    (di/empty-index index :avet)
+        :eavt    (di/empty-index index :eavt index-config)
+        :aevt    (di/empty-index index :aevt index-config)
+        :avet    (di/empty-index index :avet index-config)
         :max-eid e0
         :max-tx  tx0
         :hash    0}
        (when keep-history?
-         {:temporal-eavt (di/empty-index index :eavt)
-          :temporal-aevt (di/empty-index index :aevt)
-          :temporal-avet (di/empty-index index :avet)}))))))
+         {:temporal-eavt (di/empty-index index :eavt index-config)
+          :temporal-aevt (di/empty-index index :aevt index-config)
+          :temporal-avet (di/empty-index index :avet index-config)}))))))
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
@@ -771,10 +771,11 @@
    (validate-schema schema)
    (let [{:keys [index schema-flexibility keep-history?] :as config} (merge (dc/storeless-config) config)
          rschema (rschema (merge implicit-schema schema))
-         indexed (:db/index rschema)
-         eavt (di/init-index index datoms indexed :eavt)
-         aevt (di/init-index index datoms indexed :aevt)
-         avet (di/init-index index datoms indexed :avet)
+         index-config (merge (select-keys [:index-b-factor :index-data-node-size :index-log-size] config)
+                             {:indexed (:db/index rschema)})
+         eavt (di/init-index index datoms :eavt index-config)
+         aevt (di/init-index index datoms :aevt index-config)
+         avet (di/init-index index datoms :avet index-config)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)]
      (map->DB (merge {:schema  (merge schema (when (= :read schema-flexibility) implicit-schema))
@@ -787,9 +788,9 @@
                       :max-tx  max-tx
                       :hash    (hash-datoms datoms)}
                      (when keep-history?
-                       {:temporal-eavt (di/empty-index index :eavt)
-                        :temporal-aevt (di/empty-index index :aevt)
-                        :temporal-avet (di/empty-index index :avet)}))))))
+                       {:temporal-eavt (di/empty-index index :eavt index-config)
+                        :temporal-aevt (di/empty-index index :aevt index-config)
+                        :temporal-avet (di/empty-index index :avet index-config)}))))))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)

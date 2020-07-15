@@ -31,9 +31,6 @@
     (if (nil? key2)
       0 -1)))
 
-(def ^:const br 300) ;; TODO name better, total node size; maybe(!) make configurable
-(def ^:const br-sqrt (long (Math/sqrt br))) ;; branching factor
-
 (defn- index-type->datom-fn [index-type]
   (case index-type
     :aevt (fn [a e v tx] (dd/datom e a v tx true))
@@ -106,23 +103,8 @@
      (first %))
    (hmsg/lookup-fwd-iter tree [])))
 
-(defn empty-tree
-  "Create empty hichthiker tree"
-  []
-  (async/<?? (tree/b-tree (tree/->Config br-sqrt br (- br br-sqrt)))))
-
 (defn -insert [tree ^Datom datom index-type]
   (hmsg/insert tree (datom->node datom index-type) nil))
-
-(defn init-tree
-  "Create tree with datoms"
-  [datoms index-type]
-  (async/<??
-   (async/reduce<
-    (fn [tree datom]
-      (-insert tree datom index-type))
-    (empty-tree)
-    (seq datoms))))
 
 (defn -remove [tree ^Datom datom index-type]
   (async/<?? (hmsg/delete tree (datom->node datom index-type))))
@@ -133,3 +115,21 @@
 (def -persistent! identity)
 
 (def -transient identity)
+
+
+;; Functions used in multimethods defined in index.cljc
+
+(defn empty-tree
+  "Create empty hichthiker tree"
+  [b-factor data-node-size log-size]
+  (async/<?? (tree/b-tree (tree/->Config b-factor data-node-size log-size))))
+
+(defn init-tree
+  "Create tree with datoms"
+  [datoms index-type b-factor data-node-size log-size]
+  (async/<??
+    (async/reduce<
+      (fn [tree datom]
+        (-insert tree datom index-type))
+      (empty-tree b-factor data-node-size log-size)
+      (seq datoms))))
