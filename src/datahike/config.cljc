@@ -99,10 +99,10 @@
    :keep-history? false
    :schema-flexibility :read
    :name (z/rand-german-mammal)
-   :index :datahike.index/hitchhiker-tree}
+   :index :datahike.index/hitchhiker-tree
    :index-b-factor 17
    :index-log-size (- 300 17)
-   :index-data-node-size 300)
+   :index-data-node-size 300})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
