@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
    [datahike.config :as c]
+   [datahike.constants :as const]
    [datahike.test.core]
    [datahike.core :as d]))
 
@@ -43,6 +44,9 @@
                          :keep-history? true
                          :initial-tx nil
                          :index :datahike.index/hitchhiker-tree
+                         :index-config {:index-b-factor       const/default-index-b-factor
+                                        :index-log-size       const/default-index-log-size
+                                        :index-data-node-size const/default-index-data-node-size}
                          :schema-flexibility :write
                          :cache-size 100000}]
     (is (= (merge default-new-cfg
@@ -62,6 +66,9 @@
               :keep-history? true
               :schema-flexibility :write
               :index :datahike.index/hitchhiker-tree
+              :index-config       {:index-b-factor       const/default-index-b-factor
+                                   :index-log-size       const/default-index-log-size
+                                   :index-data-node-size const/default-index-data-node-size}
               :cache-size 100000}
              (-> config (dissoc :name)))))))
 

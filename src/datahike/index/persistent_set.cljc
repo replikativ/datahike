@@ -31,10 +31,20 @@
     :avet dd/cmp-datoms-avet-quick
     dd/cmp-datoms-eavt-quick))
 
+(defn -insert [set datom index-type]
+  (set/conj set datom (index-type->cmp-quick index-type)))
+
+(defn -remove [set datom index-type]
+  (set/disj set datom (index-type->cmp-quick index-type)))
+
+
+;; Functions defined in multimethods in index.cljc
+
+
 (defn empty-set [index-type]
   (set/sorted-set-by (index-type->cmp index-type)))
 
-(defn init-set [datoms indexed index-type]
+(defn init-set [datoms index-type indexed]
   (let [arr (if (= index-type :avet)
               (let [avet-datoms (filter (fn [^Datom d] (contains? indexed (.-a d))) datoms)]
                 (to-array avet-datoms))
