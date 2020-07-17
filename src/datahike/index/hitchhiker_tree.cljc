@@ -21,9 +21,6 @@
         (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
           (remove-fn [oa ob oc od]))))))
 
-;; Rajouter un argument db a upsertOp.
-;; une fois old retrieved, faire un di/insert sur le temporal tree equivelent; temporal treee que l'on recuperera par db.
-;;
 (defrecord UpsertOp [key value]
   op/IOperation
   (-affects-key [_] key)
