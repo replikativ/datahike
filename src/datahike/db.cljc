@@ -1189,8 +1189,8 @@
                  (-> db (remove-schema datom) update-rschema)
                  (catch clojure.lang.ExceptionInfo e
                   db))
-      true       (update-in [:eavt] #(di/-upsert % datom :eavt))
-      true       (update-in [:aevt] #(di/-upsert % datom :aevt))
+      true       (update-in [:eavt] #(di/-upsert % datom false :eavt))
+      true       (update-in [:aevt] #(di/-upsert % datom false :aevt))
       indexing?  (update-in [:avet] #(di/-insert % datom :avet))
       true       (advance-max-eid (.-e datom))
       true       (update :hash + (hash datom))

@@ -35,9 +35,8 @@
         (tree/insert key value)))))
 
 
-(defn new-UpsertOp [key value]
-  (UpsertOp. key value))
-
+(defn new-UpsertOp [key value temporal?]
+  (UpsertOp. key value temporal?))
 
 (extend-protocol kc/IKeyCompare
   clojure.lang.PersistentVector
@@ -145,10 +144,11 @@
 (defn -insert [tree ^Datom datom index-type]
   (hmsg/insert tree (datom->node datom index-type) nil))
 
-(defn -upsert [tree ^Datom datom index-type]
+(defn -upsert [tree ^Datom datom temporal? index-type]
   (async/<?? (hmsg/upsert tree (new-UpsertOp
                                 (datom->node datom index-type)
-                                (datom->node datom index-type)))))
+                                (datom->node datom index-type)
+                                temporal?))))
 
 (defn init-tree
   "Create tree with datoms"
