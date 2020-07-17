@@ -12,27 +12,53 @@
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
 
-(defn remove-old
+
+(defn old-key
   "Removes old key from map using remove-fn function if new and old keys' first 2 entries match."
-  [map new remove-fn]
+  [map new]
   (let [[a b _ _] new]
     (when (seq map)
       (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
         (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
-          (remove-fn [oa ob oc od]))))))
+          [oa ob oc od])))))
 
-(defrecord UpsertOp [key value]
+
+
+(defn *apply-op-to-tree [tree key value temporal?]
+  (let [children  (cond
+                    (tree/data-node? tree) (:children tree)
+                    :else (:children (peek (tree/lookup-path tree key))))
+        old (old-key children key)]
+    (-> (if temporal?
+          (if old
+            (let [[a b c ot]     old
+                  [_ _ _ nt]     key
+                  old-retracted [a b c (- ot)]]
+              (tree/insert tree old-retracted old-retracted))
+            tree)
+          (if old
+            (tree/delete tree old)
+            tree))
+      (tree/insert key value))))
+
+(defrecord UpsertOp [key value temporal?]
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
-    (-> (or (remove-old map key (partial dissoc map)) map)
-      (assoc key value)))
+    (let [old (old-key map key)]
+      (-> (if temporal?
+             (if old
+               (let [[a b c ot]     old
+                     [_ _ _ nt]     key
+                     old-retracted [a b c (- ot)]]
+                 (assoc map old-retracted old-retracted))
+               map)
+             (if old
+               (dissoc map old)
+               map))
+        (assoc key value))))
   (-apply-op-to-tree [_ tree]
-    (let [children  (cond
-                      (tree/data-node? tree) (:children tree)
-                      :else (:children (peek (tree/lookup-path tree key))))]
-      (-> (or (remove-old children key (partial tree/delete tree)) tree)
-        (tree/insert key value)))))
+    (*apply-op-to-tree tree key value temporal?)))
 
 
 (defn new-UpsertOp [key value temporal?]

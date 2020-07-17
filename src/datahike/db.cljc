@@ -1174,24 +1174,35 @@
                                                         false)]
                              (cond-> db
                                indexing? (update-in [:avet] #(di/-remove % old :avet))
-                               keep-history? (update-in [:temporal-eavt] #(di/-insert % old :eavt))
-                               keep-history? (update-in [:temporal-eavt] #(di/-insert % old-retracted :eavt))
-                               keep-history? (update-in [:temporal-aevt] #(di/-insert % old :aevt))
-                               keep-history? (update-in [:temporal-aevt] #(di/-insert % old-retracted :aevt))
-                               (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % old :avet))
-                               (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % old-retracted :avet))))
+                               ;; keep-history? (update-in [:temporal-eavt] #(di/-insert % old :eavt))
+                               ;; keep-history? (update-in [:temporal-eavt] #(di/-insert % old-retracted :eavt))
+
+                               ;; keep-history? (update-in [:temporal-aevt] #(di/-insert % old :aevt))
+                               ;; keep-history? (update-in [:temporal-aevt] #(di/-insert % old-retracted :aevt))
+
+
+                               ;; (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % old :avet))
+                               ;; (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % old-retracted :avet))
+                               ))
                            db)
                          db)]
     
     (cond-> db
       ;; Optimistic remove of the schema entry
       schema?    (try
-                 (-> db (remove-schema datom) update-rschema)
-                 (catch clojure.lang.ExceptionInfo e
-                  db))
+                   (-> db (remove-schema datom) update-rschema)
+                   (catch clojure.lang.ExceptionInfo e
+                     db))
+
+      keep-history? (update-in [:temporal-eavt] #(di/-upsert % datom true :eavt))
       true       (update-in [:eavt] #(di/-upsert % datom false :eavt))
+
+      keep-history? (update-in [:temporal-aevt] #(di/-upsert % datom true :aevt))
       true       (update-in [:aevt] #(di/-upsert % datom false :aevt))
+
+      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-upsert % datom true :avet))
       indexing?  (update-in [:avet] #(di/-insert % datom :avet))
+
       true       (advance-max-eid (.-e datom))
       true       (update :hash + (hash datom))
       schema?    (-> (update-schema datom) update-rschema))))
