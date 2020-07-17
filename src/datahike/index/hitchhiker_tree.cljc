@@ -31,7 +31,7 @@
 ;; Rajouter un argument db a upsertOp.
 ;; une fois old retrieved, faire un di/insert sur le temporal tree equivelent; temporal treee que l'on recuperera par db.
 ;;
-(defrecord UpsertOp [key value index-type db]
+(defrecord UpsertOp [key value db]
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
@@ -51,14 +51,13 @@
         (tree/insert key value)))))
 
 
-(defn new-UpsertOp [key value index-type db]
-  (UpsertOp. key value index-type db))
+(defn new-UpsertOp [key value db]
+  (UpsertOp. key value db))
 
 (defn -upsert [tree ^Datom datom index-type db]
   (async/<?? (hmsg/upsert tree (new-UpsertOp
                                  (datom->node datom index-type)
                                  (datom->node datom index-type)
-                                 index-type
                                  db))))
 
 (extend-protocol kc/IKeyCompare
