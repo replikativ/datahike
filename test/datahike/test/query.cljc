@@ -278,14 +278,14 @@
           (is (= [{"foo" "Charlie"} {"foo" "Alice"} {"foo" "Bob"}]
                  (d/q {:query '[:find ?name :strs foo :where [?e :name ?name]]
                        :args [db]}))))
-      (testing "return map with multiple find vars"
+      (testing "return map with keys using multiple find vars"
         (is (= #{["Bob" {:age 37 :db/id 2}]
                  ["Charlie" {:age 37 :db/id 3}]
                  ["Alice" {:age 15 :db/id 1}]}
                (into #{} (d/q {:find '[?name (pull ?e ?p)]
                               :args [db '[:age :db/id]]
                               :in '[$ ?p]
-                              :where '[[?e :name ?name]]})))))))
+                               :where '[[?e :name ?name]]})))))))
 
 (deftest test-memoized-parse-query
   (testing "no map return"
