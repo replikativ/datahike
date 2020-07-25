@@ -91,6 +91,7 @@
                                   [lambdaisland/kaocha-cljs    "0.0-71"]
                                   [io.replikativ/datahike-leveldb "0.1.0"]
                                   [io.replikativ/datahike-postgres "0.3.1-SNAPSHOT"]]}
+             :benchmark {:source-paths ["benchmark/src" "src"]}
              :aot {:aot [#"datahike\.(?!query-v3).*"]
                    :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}
              :kaocha {:dependencies [[lambdaisland/kaocha "1.0.632"]
