@@ -1,17 +1,10 @@
 version: 2.1
 
-executors:
-  leiningen:
-    docker:
-      - image: circleci/clojure:openjdk-8-lein
-    environment:
-      LEIN_ROOT: nbd
-      JVM_OPTS: -Xmx3200m
-    working_directory: /home/circleci/datahike
-
+orbs:
+  tools: replikativ/clj-tools@0
 jobs:
   setup:
-    executor: leiningen
+    executor: tools/clojurecli
     steps:
       - restore_cache:
           keys:
@@ -25,113 +18,76 @@ jobs:
             - .git
       - restore_cache:
           keys:
-            - deps-{{ checksum "project.clj" }}
+            - deps-{{ checksum "deps.edn" }}
             - deps-
-      - run: lein deps
+      - run: clojure -e nil
       - save_cache:
-          key: deps-{{ checksum "project.clj" }}
+          key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
-            - /home/circleci/.lein
+      - restore_cache:
+          keys:
+            - pom-{{ checksum "pom.xml" }}
+            - pom-
+      - run: sudo apt-get install maven --yes
+      - run: mvn compile
+      - save_cache:
+          key: pom-{{ checksum "pom.xml" }}
+          paths:
+            - /home/circleci/.m2
       - persist_to_workspace:
           root: /home/circleci/
           paths:
             - .m2
-            - datahike
-            - bin
+            - replikativ
 
-  unittest:
-    executor: leiningen
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Run Unittests
-          command: ./bin/run-unit-tests
-          no_output_timeout: 5m
-
-  integrationtest:
-    executor: leiningen
-    docker:
-      - image: mopedtobias/cimg:1.10
-      - image: circleci/postgres:11-alpine
-        environment:
-          POSTGRES_USER: alice
-          POSTGRES_PASSWORD: foo
-          POSTGRES_DB: config-test
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Run Integrationtests
-          command: ./bin/run-integration-tests
-          no_output_timeout: 5m
-
-  build:
-    executor: leiningen
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Build
-          command: lein uberjar
-          no_output_timeout: 5m
-
-  deploy-snapshot:
-    executor: leiningen
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          command: |
-            VERSION=$(head -n 1 project.clj | awk '{print $3}' | tr -d \")
-            if [[ ${VERSION} =~ .*-SNAPSHOT ]]; then
-                lein deploy clojars
-            else
-                exit 0
-            fi
-  deploy-release:
-    executor: leiningen
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Deploy Release to Clojars
-          command: |
-            VERSION=$(head -n 1 project.clj | awk '{print $3}' | tr -d \")
-            if [[ ${VERSION} =~ .*-SNAPSHOT ]]; then
-                exit 0
-            else
-                lein deploy clojars
-            fi
 workflows:
-  build_test_and_deploy:
+  build-test-and-deploy:
     jobs:
-      - setup
-      - unittest:
+      - setup:
+          context: dockerhub-deploy
+      - tools/format:
+          context: dockerhub-deploy
           requires:
             - setup
-      - integrationtest:
+      - tools/unittest:
+          context: dockerhub-deploy
           requires:
             - setup
-      - build:
+      - tools/integrationtest-postgresql:
+          context: dockerhub-deploy
           requires:
             - setup
-      - deploy-snapshot:
+      - tools/build:
+          jarname: "datahike"
+          context: dockerhub-deploy
+          requires:
+            - setup
+      - tools/deploy-snapshot:
+          jarname: "datahike"
+          context:
+            - clojars-deploy
+            - dockerhub-deploy
           filters:
             branches:
               only: development
           requires:
             - setup
-            - unittest
-            - integrationtest
-            - build
-      - deploy-release:
+            - tools/format
+            - tools/unittest
+            - tools/integrationtest-postgresql
+            - tools/build
+      - tools/deploy-release:
+          jarname: "datahike"
+          context:
+            - clojars-deploy
+            - dockerhub-deploy
           filters:
             branches:
               only: master
           requires:
             - setup
-            - unittest
-            - integrationtest
-            - build
+            - tools/format
+            - tools/unittest
+            - tools/integrationtest-postgresql
+            - tools/build
