@@ -1568,11 +1568,14 @@
 
         ;; meta entity
         (ds/meta-attr? a)
-        (let [new-datom (dd/datom max-tid a v max-tid op)]
+        (let [new-datom (dd/datom max-tid a v max-tid op)
+              new-e (.-e new-datom)]
           (recur (-> (transact-report report new-datom)
                      (assoc-in [:db-after :max-tx] max-tid))
                  entities
-                 (assoc-in migration-state [:tids e] (.-e new-datom))))
+                 (-> migration-state
+                     (assoc-in [:tids e] new-e)
+                     (assoc-in [:eids e] new-e))))
 
         ;; ref not added yet
         (and (ref? db a) (nil? (get-in migration-state [:eids v])))
