@@ -1086,7 +1086,7 @@
         (raise (str "Schema with attribute " v " does not exist")
                {:error :retract/schema :attribute v})
         (-> (assoc-in db [:schema e] (dissoc (schema v) a))
-            (assoc-in [:schema] #(dissoc % v))))
+            (update-in [:schema] #(dissoc % v))))
       (if-let [schema-entry (schema e)]
         (if (schema schema-entry)
           (update-in db [:schema schema-entry] #(dissoc % a))
