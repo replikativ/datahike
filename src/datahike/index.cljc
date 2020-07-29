@@ -57,6 +57,8 @@
     (dih/-insert tree datom index-type))
   (-upsert [tree datom temporal? index-type]
     (dih/-upsert tree datom temporal? index-type))
+  (-temporal-upsert [tree datom index-type]
+    (dih/-temporal-upsert tree datom index-type))
   (-remove [tree datom index-type]
            (dih/-remove tree datom index-type))
   (-slice [tree from to index-type]
