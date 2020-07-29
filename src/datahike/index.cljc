@@ -81,8 +81,10 @@
           (dip/-count eavt-set))
   (-insert [set datom index-type]
     (dip/-insert set datom index-type))
-  (-upsert [set datom temporal? index-type]
-           (dip/-insert set datom index-type))
+  (-upsert [set datom index-type]
+    (dip/-upsert set datom index-type))
+  (-temporal-upsert [set datom index-type]
+    (dip/-upsert set datom index-type))
   (-remove [set datom index-type]
            (dip/-remove set datom index-type))
   (-slice [set from to _]

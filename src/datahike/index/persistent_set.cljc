@@ -1,7 +1,8 @@
 (ns datahike.index.persistent-set
   (:require [me.tonsky.persistent-sorted-set :as set]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
-            [datahike.datom :as dd])
+            [datahike.datom :as dd]
+            [datahike.constants :refer [e0 tx0 emax txmax]])
   #?(:clj (:import [datahike.datom Datom])))
 
 (def -slice set/slice)
@@ -46,8 +47,13 @@
 (defn -insert [set datom index-type]
   (set/conj set datom (index-type->cmp-quick index-type)))
 
-(defn -upsert [set datom index-type]
-  (set/conj set datom (index-type->cmp-quick index-type)))
-
 (defn -remove [set datom index-type]
   (set/disj set datom (index-type->cmp-quick index-type)))
+
+(defn -upsert [set datom index-type]
+  (-> (or (when-let [old (first (-slice set
+                                  (dd/datom (.-e datom) (.-a datom) nil tx0)
+                                  (dd/datom (.-e datom) (.-a datom) nil txmax)))]
+            (-remove set old index-type))
+        set)
+    (set/conj datom (index-type->cmp-quick index-type))))
