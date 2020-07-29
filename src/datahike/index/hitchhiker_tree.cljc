@@ -5,10 +5,7 @@
             [hitchhiker.tree :as tree]
             [datahike.constants :refer [e0 tx0 emax txmax]]
             [datahike.datom :as dd]
-
-            [hitchhiker.tree.op :as op]
-            
-            )
+            [hitchhiker.tree.op :as op])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
 
