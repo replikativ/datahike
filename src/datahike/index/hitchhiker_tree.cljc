@@ -12,9 +12,14 @@
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
 
+(defn- datom->node [^Datom datom index-type]
+  (case index-type
+    :aevt [(.-a datom) (.-e datom) (.-v datom) (.-tx datom)]
+    :avet [(.-a datom) (.-v datom) (.-e datom) (.-tx datom)]
+    [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
 
 (defn old-key
-  "Removes old key from map using remove-fn function if new and old keys' first 2 entries match."
+  "Returns an old version of the 'new' key if it exists in 'map'"
   [map new]
   (let [[a b _ _] new]
     (when (seq map)
@@ -22,47 +27,66 @@
         (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
           [oa ob oc od])))))
 
+(defn remove-old
+  "Removes old key from map using remove-fn function if new and old keys' first 2 entries match."
+  [map new remove-fn]
+  (when-let [old (old-key map new)]
+    (remove-fn old)))
 
-
-(defn *apply-op-to-tree [tree key value temporal?]
-  (let [children  (cond
-                    (tree/data-node? tree) (:children tree)
-                    :else (:children (peek (tree/lookup-path tree key))))
-        old (old-key children key)]
-    (-> (if temporal?
-          (if old
-            (let [[a b c ot]     old
-                  [_ _ _ nt]     key
-                  old-retracted [a b c (- ot)]]
-              (tree/insert tree old-retracted old-retracted))
-            tree)
-          (if old
-            (tree/delete tree old)
-            tree))
-      (tree/insert key value))))
-
-(defrecord UpsertOp [key value temporal?]
+(defrecord UpsertOp [key value]
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ map]
-    (let [old (old-key map key)]
-      (-> (if temporal?
-             (if old
-               (let [[a b c ot]     old
-                     [_ _ _ nt]     key
-                     old-retracted [a b c (- ot)]]
-                 (assoc map old-retracted old-retracted))
-               map)
-             (if old
-               (dissoc map old)
-               map))
+    (-> (or (remove-old map key (partial dissoc map)) map)
+      (assoc key value)))
+  (-apply-op-to-tree [_ tree]
+    (let [children  (cond
+                      (tree/data-node? tree) (:children tree)
+                      :else (:children (peek (tree/lookup-path tree key))))]
+      (-> (or (remove-old children key (partial tree/delete tree)) tree)
+        (tree/insert key value)))))
+
+
+(defn old-retracted [map key]
+  (when-let [old (old-key map key)]
+    (let [[a b c ot] old]
+      [a b c (- ot)])))
+
+(defrecord temporal-UpsertOp [key value]
+  op/IOperation
+  (-affects-key [_] key)
+  (-apply-op-to-coll [_ map]
+    (let [old-retracted  (old-retracted map key)]
+      (-> (if old-retracted
+            (assoc map old-retracted old-retracted)
+            map)
         (assoc key value))))
   (-apply-op-to-tree [_ tree]
-    (*apply-op-to-tree tree key value temporal?)))
+    (let [children  (cond
+                      (tree/data-node? tree) (:children tree)
+                      :else (:children (peek (tree/lookup-path tree key))))
+          old-retracted  (old-retracted children key)]
+      (-> (if old-retracted
+            (tree/insert tree old-retracted old-retracted)
+            tree)
+        (tree/insert key value)))))
 
 
-(defn new-UpsertOp [key value temporal?]
-  (UpsertOp. key value temporal?))
+(defn new-UpsertOp [key value]
+  (UpsertOp. key value))
+
+(defn new-temporal-UpsertOp [key value]
+  (temporal-UpsertOp. key value))
+
+(defn -upsert [tree ^Datom datom index-type]
+  (async/<?? (hmsg/upsert tree (new-UpsertOp
+                                (datom->node datom index-type)
+                                (datom->node datom index-type)))))
+
+(defn -temporal-upsert [tree ^Datom datom index-type]
+  (async/<?? (hmsg/upsert tree (new-temporal-UpsertOp
+                                (datom->node datom index-type)
+                                (datom->node datom index-type)))))
 
 (extend-protocol kc/IKeyCompare
   clojure.lang.PersistentVector
@@ -95,12 +119,6 @@
     :aevt (fn [a e v tx] (dd/datom e a v tx true))
     :avet (fn [a v e tx] (dd/datom e a v tx true))
     (fn [e a v tx] (dd/datom e a v tx true))))
-
-(defn- datom->node [^Datom datom index-type]
-  (case index-type
-    :aevt [(.-a datom) (.-e datom) (.-v datom) (.-tx datom)]
-    :avet [(.-a datom) (.-v datom) (.-e datom) (.-tx datom)]
-    [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
 
 (defn- from-datom [^Datom datom index-type]
   (let [datom-seq (case index-type
@@ -169,12 +187,6 @@
 
 (defn -insert [tree ^Datom datom index-type]
   (hmsg/insert tree (datom->node datom index-type) nil))
-
-(defn -upsert [tree ^Datom datom temporal? index-type]
-  (async/<?? (hmsg/upsert tree (new-UpsertOp
-                                (datom->node datom index-type)
-                                (datom->node datom index-type)
-                                temporal?))))
 
 (defn init-tree
   "Create tree with datoms"

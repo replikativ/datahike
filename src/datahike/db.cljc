@@ -1165,28 +1165,7 @@
   (validate-datom-upsert db datom)
   (let [indexing?      (indexing? db (.-a datom))
         schema?        (ds/schema-attr? (.-a datom))
-        keep-history?  (and (-keep-history? db) (not (no-history? db (.-a datom))))
-        db             (if (or keep-history? indexing?)
-                         (if-some [old ^Datom (first (-search db [(.-e datom) (.-a datom)]))]
-                           (let [[e a v t _] old
-                                 ^Datom old-retracted (dd/datom e a v
-                                                        (if keep-history? t (datom-tx datom))
-                                                        false)]
-                             (cond-> db
-                               indexing? (update-in [:avet] #(di/-remove % old :avet))
-                               ;; keep-history? (update-in [:temporal-eavt] #(di/-insert % old :eavt))
-                               ;; keep-history? (update-in [:temporal-eavt] #(di/-insert % old-retracted :eavt))
-
-                               ;; keep-history? (update-in [:temporal-aevt] #(di/-insert % old :aevt))
-                               ;; keep-history? (update-in [:temporal-aevt] #(di/-insert % old-retracted :aevt))
-
-
-                               ;; (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % old :avet))
-                               ;; (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % old-retracted :avet))
-                               ))
-                           db)
-                         db)]
-    
+        keep-history?  (and (-keep-history? db) (not (no-history? db (.-a datom))))]
     (cond-> db
       ;; Optimistic remove of the schema entry
       schema?    (try
@@ -1194,13 +1173,13 @@
                    (catch clojure.lang.ExceptionInfo e
                      db))
 
-      keep-history? (update-in [:temporal-eavt] #(di/-upsert % datom true :eavt))
-      true       (update-in [:eavt] #(di/-upsert % datom false :eavt))
+      keep-history?  (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt))
+      true       (update-in [:eavt] #(di/-upsert % datom :eavt))
 
-      keep-history? (update-in [:temporal-aevt] #(di/-upsert % datom true :aevt))
-      true       (update-in [:aevt] #(di/-upsert % datom false :aevt))
+      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt))
+      true       (update-in [:aevt] #(di/-upsert % datom :aevt))
 
-      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-upsert % datom true :avet))
+      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet))
       indexing?  (update-in [:avet] #(di/-insert % datom :avet))
 
       true       (advance-max-eid (.-e datom))
@@ -1590,7 +1569,10 @@
             (= op :db.history.purge/before)
             (if (-keep-history? db)
               (let [history (HistoricalDB. db)
-                    e-datoms (-> (search-temporal-indices db nil) vec (filter-before e db) vec)
+                    e-datoms (mapcat
+                               (fn [d] [d (datom (.-e d) (.-a d) (.-v d) (.-tx d) true)])
+                               (-> (search-temporal-indices db [nil nil nil nil false])
+                                 vec (filter-before e db) vec))
                     retracted-comps (purge-components history e-datoms)]
                 (recur (reduce transact-purge-datom report e-datoms)
                        (concat retracted-comps entities)))
