@@ -63,7 +63,7 @@
   (-> (or (when-let [old (first (-slice set
                                   (dd/datom (.-e datom) (.-a datom) nil tx0)
                                   (dd/datom (.-e datom) (.-a datom) nil txmax)))]
-            ;; insert the retracted version of 'old'
-            (-insert set (dd/datom (.-e old) (.-a old) (.-v old) (.-tx old) false) index-type))
+            (set/conj set (dd/datom (.-e old) (.-a old) (.-v old) (.-tx old) false)
+              (index-type->cmp-quick index-type)))
         set)
     (set/conj datom (index-type->cmp-quick index-type))))
