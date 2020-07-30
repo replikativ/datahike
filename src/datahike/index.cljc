@@ -84,7 +84,7 @@
   (-upsert [set datom index-type]
     (dip/-upsert set datom index-type))
   (-temporal-upsert [set datom index-type]
-    (dip/-upsert set datom index-type))
+    (dip/-temporal-upsert set datom index-type))
   (-remove [set datom index-type]
            (dip/-remove set datom index-type))
   (-slice [set from to _]

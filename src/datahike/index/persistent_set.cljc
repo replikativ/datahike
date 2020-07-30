@@ -57,3 +57,13 @@
             (-remove set old index-type))
         set)
     (set/conj datom (index-type->cmp-quick index-type))))
+
+
+(defn -temporal-upsert [set datom index-type]
+  (-> (or (when-let [old (first (-slice set
+                                  (dd/datom (.-e datom) (.-a datom) nil tx0)
+                                  (dd/datom (.-e datom) (.-a datom) nil txmax)))]
+            ;; insert the retracted version of 'old'
+            (-insert set (dd/datom (.-e old) (.-a old) (.-v old) (.-tx old) false) index-type))
+        set)
+    (set/conj datom (index-type->cmp-quick index-type))))
