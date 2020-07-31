@@ -3,16 +3,18 @@
             [benchmark.config :as c]))
 
 
-(defn -main []
-  (let [measurements (for [config c/db-configs
-                           initial-size c/initial-datoms
-                           n c/datom-counts
-                           i c/iterations]
-                        (m/measure-performance-full initial-size n config))]
+(defn -main [& _]
+  (let [measurements (vec (for [config       c/db-configs
+                                initial-size c/initial-datoms
+                                n            c/datom-counts
+                                _            (range c/iterations)]
+                              (m/measure-performance-full initial-size n config)))]
+    (print measurements)
     (->> measurements
          (apply concat)
          (group-by :context)
-         (map (fn [context vals]
-                {:mean-time (/ (transduce :time + vals) (count vals))
-                 :context context}))
+         (mapv (fn [[context group]]
+                 {:context context
+                  :mean-time (/ (reduce (fn [x y] (+ x (:time y))) 0 group)
+                                (count group))}))
          clojure.pprint/pprint)))

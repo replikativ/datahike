@@ -17,42 +17,42 @@
   "Return result and execution time of function as vector [result time]"
   [f]
   (let [res (with-out-str-data-map (time (f)))]
-    [(:res res) (read-string (nth (str/split (:str res) #" ") 2))]))
+    [(:res res) (let [tokens (str/split (:str res) #" ")]
+                  (read-string (nth tokens (- (count tokens) 2))))]))
 
-(defn init-db [initial-size {:keys [store schema-on-read temporal-index index]}]
-  (d/delete-database store)
-  (d/create-database store :schema-on-read schema-on-read
-                           :temporal-index temporal-index
-                           :index          index)
+(defn init-db [initial-size config]
+  (d/delete-database config)
+  (d/create-database config)
 
   (let [entity-count (int (Math/floor (/ initial-size (count c/schema))))
-        tx (repeatedly entity-count c/rand-entity)
-        conn (d/connect store)]
+        tx           (vec (repeatedly entity-count c/rand-entity))
+        conn (d/connect config)]
      (d/transact conn c/schema)
+     (println "1")
      (when (pos? (count tx))
-        (d/transact conn tx)
+        (d/transact conn tx))
      (d/release conn)
-     tx)))
+     tx))
 
-(defn measure-performance-full [initial-size n-datoms {:keys [store] :as config}]
- (let [_ (init-db initial-size config)
-      [conn t-connection-0] (get-time-with-res #(d/connect store))
 
-      entity-count (int (Math/floor (/ n-datoms (count c/schema))))
-      tx (repeatedly entity-count c/rand-entity)
-      [conn t-transaction-n] (get-time-with-res #(d/transact store tx))
+(defn measure-performance-full [initial-size n-datoms config]
+  (init-db initial-size config)
+  (let [[conn t-connection-0] (get-time-with-res #(d/connect config))
+        entity-count (int (Math/ceil (/ n-datoms (count c/schema))))
+        tx           (vec (repeatedly entity-count c/rand-entity))
+        [_ t-transaction-n] (get-time-with-res #(d/transact conn tx))
 
-      _ (d/release store)
-      [conn t-connection-n] (get-time-with-res #(d/connect store))
+        _ (d/release conn)
+        [_ t-connection-n] (get-time-with-res #(d/connect config))
 
-      rand-s-val (rand-nth (map :s1 tx))
-      [res t-query1-n] (d/q (c/q1 rand-s-val))
+        rand-s-val (rand-nth (mapv :s1 tx))
+        [_ t-query1-n] (get-time-with-res #(d/q (c/q1 rand-s-val) @conn))
 
-      rand-i-val (rand-nth (map :i1 tx))
-      [res t-query2-n] (d/q (c/q2 rand-i-val))
+        rand-i-val (rand-nth (mapv :i1 tx))
+        [_ t-query2-n] (get-time-with-res #(d/q (c/q2 rand-i-val) @conn))
 
-      final-size (+ initial-size n-datoms)]
-    (d/release store)
+        final-size (+ initial-size n-datoms)]
+    (d/release conn)
     [{:time t-connection-0  :context {:db config :function :connection  :db-size initial-size}}
      {:time t-transaction-n :context {:db config :function :transaction :db-size initial-size :tx-size n-datoms}}
      {:time t-connection-n  :context {:db config :function :connection  :db-size final-size}}

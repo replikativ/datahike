@@ -1,21 +1,19 @@
 (ns benchmark.config)
 
 
-(def datom-counts [1 10 100 1000]) ;; later 100,000
+(def datom-counts [1 10 100 1000])                                                    ;; later 100,000
 (def iterations 10)
 (def max-int 1000000)
-(def initial-datoms [0 1000]) ;; later 100,000
+(def initial-datoms [0 1000])                                                         ;; later 100,000
 
 (def db-configs
-  [{:name          "In-memory (HHT)"
-    :store          {:backend :mem :path "performance-hht"}
-    :schema-on-read false
-    :temporal-index true
+  [{:store          {:backend :mem :id "performance-hht"}
+    :schema-flexibility :write
+    :keep-history? true
     :index          :datahike.index/hitchhiker-tree}
-   {:name           "File"
-    :store          {:backend :file :path "performance-hht"}
-    :schema-on-read false
-    :temporal-index true
+   {:store          {:backend :file :path "/tmp/performance-hht"}
+    :schema-flexibility :write
+    :keep-history? true
     :index          :datahike.index/hitchhiker-tree}])
 
 (def schema
@@ -23,7 +21,7 @@
      :db/valueType   :db.type/string
      :db/cardinality :db.cardinality/one}
     {:db/ident       :i1
-     :db/valueType   :db.type/long
+     :db/valueType   :db.type/bigint
      :db/cardinality :db.cardinality/one}])
 
 (defn rand-entity []
