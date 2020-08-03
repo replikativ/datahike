@@ -691,8 +691,12 @@
 (def ^:const br-sqrt (long (Math/sqrt br)))
 
 (defn ^DB empty-db
-  ([] (empty-db nil :datahike.index/hitchhiker-tree))
-  ([schema] (empty-db schema :datahike.index/hitchhiker-tree))
+  ([] (empty-db nil :datahike.index/fdb
+        ;;:datahike.index/hitchhiker-tree
+        ))
+  ([schema] (empty-db schema :datahike.index/fdb
+                            ;;:datahike.index/hitchhiker-tree
+              ))
   ([schema index & {config :config
                     :or    {config {:schema-on-read true
                                     :temporal-index false}}}]
