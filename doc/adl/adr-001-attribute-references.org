@@ -1,0 +1,15 @@
+#+TITLE: Attribute References
+* Context
+- attributes in Datoms are represented and stored as keywords
+- in Datomic all of the attributes are stores as references to the schema
+  definition of the attribute
+* Options
+** Bootstrap system schema in index
+*** Pro
+*** Contra
+** Create system refs only in record
+*** Pro
+*** Contra
+* Status
+* Decision
+* Consequences
