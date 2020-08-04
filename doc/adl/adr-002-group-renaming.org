@@ -1,0 +1,38 @@
+#+TITLE: Architecture Decision Record Template
+* Context
+- there are too many different entities: replikativ, Datahike, lambdaforge
+- each entity is not properly defined on github or elsewhere
+- Datahike is part of replikativ but is also its own product
+* Options
+** Distinguishment by proper documentation
+- all groups and entities are be described well and have their own branding
+- Datahike remains in replikativ since it is part of the replikativ vision of
+  building composable blocks for distributed systems
+*** Pro 
+- everything is under the replikativ branding
+- can be extended for more libraries to come
+- nothing needs to be refactored
+*** Contra
+- too many entities
+- relation of lambdaforge and/or cooperative unknown
+- Datahike is core product and should be the main marketing spot
+** Migrate from replikativ to Datahike group
+- since Datahike is core product, all branding and marketing should focus on it
+- replikativ is not well defined and exists for historical reasons
+*** Pro
+- clear, focused branding
+- only one branding needs to described now
+- later products can have their own branding
+- no confusion between entities
+*** Contra
+- clojars artifacts need to be renamed
+- can lead to inconsistencies
+- there is more than just Datahike
+- future might hold other products that could fit the replikativ narrative 
+** Move only Datahike, Datahike-JDBC out of replikativ
+*** Pro
+*** Contra
+* Status
+drafting
+* Decision 
+* Consequences
