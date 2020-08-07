@@ -86,8 +86,9 @@
        [?e :age  10])]
     #{[1 10] [5 10]}))
 
-  
-(deftest test-default-source
+
+;; Clearly side-effecting the db
+#_(deftest test-default-source
   (let [db1 (d/db-with (d/empty-db)
              [ [:db/add 1 :name "Ivan" ]
                [:db/add 2 :name "Oleg"] ])

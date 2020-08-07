@@ -51,6 +51,7 @@
                            [(missing? $ ?e :height)]] db)
              #{[1 15] [3 37]})))
 
+    ;; TODO: Not a sideeffect issue, most likely
     (testing "missing? back-ref"
       (is (= (d/q '[:find ?e
                     :in $
