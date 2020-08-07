@@ -264,6 +264,8 @@
   clojure.data/EqualityPartition
   (equality-partition [x] :datahike/db)
 
+  ;; NOTE: This cannot work with FDB because a and b are evaluated and the evaluation of
+  ;; b erases everything that was done by a in the FDB instance.
   clojure.data/Diff
   (diff-similar [a b]
     (let [datoms-a (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)

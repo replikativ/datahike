@@ -41,56 +41,56 @@
       {:db/id 1 :name "Ivan" :age 35}
          
       [[:db/add 1 :friend [:name "Petr"]]]
-      {:db/id 1 :name "Ivan" :friend {:db/id 2}}
+      {:db/id 1 :name "Ivan" :friend {:db/id 2} :age 35}
 
       [[:db/add 1 :friend [:name "Petr"]]]
-      {:db/id 1 :name "Ivan" :friend {:db/id 2}}
+      {:db/id 1 :name "Ivan" :friend {:db/id 2} :age 35}
          
       [{:db/id 1 :friend [:name "Petr"]}]
-      {:db/id 1 :name "Ivan" :friend {:db/id 2}}
+      {:db/id 1 :name "Ivan" :friend {:db/id 2} :age 35}
       
       [{:db/id 2 :_friend [:name "Ivan"]}]
-      {:db/id 1 :name "Ivan" :friend {:db/id 2}}
+      {:db/id 1 :name "Ivan" :friend {:db/id 2} :age 35}
       
       ;; lookup refs are resolved at intermediate DB value
       [[:db/add 3 :name "Oleg"]
        [:db/add 1 :friend [:name "Oleg"]]]
-      {:db/id 1 :name "Ivan" :friend {:db/id 3}}
+      {:db/id 1 :name "Ivan" :friend {:db/id 3} :age 35}
       
       ;; CAS
-      [[:db.fn/cas [:name "Ivan"] :name "Ivan" "Oleg"]]
-      {:db/id 1 :name "Oleg"}
+      [[:db.fn/cas [:name "Ivan"] :name "Ivan" "Olegi"]]
+      {:db/id 1 :name "Olegi" :age 35 :friend {:db/id 3}}
       
       [[:db/add 1 :friend 1]
-       [:db.fn/cas 1 :friend [:name "Ivan"] 2]]
-      {:db/id 1 :name "Ivan" :friend {:db/id 2}}
+       [:db.fn/cas 1 :friend [:name "Olegi"] 2]]
+      {:db/id 1 :name "Olegi" :friend {:db/id 2} :age 35}
          
       [[:db/add 1 :friend 1]
        [:db.fn/cas 1 :friend 1 [:name "Petr"]]]
-      {:db/id 1 :name "Ivan" :friend {:db/id 2}}
+      {:db/id 1 :name "Olegi" :friend {:db/id 2} :age 35}
          
       ;; Retractions
       [[:db/add 1 :age 35]
-       [:db/retract [:name "Ivan"] :age 35]]
-      {:db/id 1 :name "Ivan"}
+       [:db/retract [:name "Olegi"] :age 35]]
+      {:db/id 1 :name "Olegi" :friend {:db/id 2}}
       
       [[:db/add 1 :friend 2]
        [:db/retract 1 :friend [:name "Petr"]]]
-      {:db/id 1 :name "Ivan"}
+      {:db/id 1 :name "Olegi"}
          
       [[:db/add 1 :age 35]
-       [:db.fn/retractAttribute [:name "Ivan"] :age]]
-      {:db/id 1 :name "Ivan"}
+       [:db.fn/retractAttribute [:name "Olegi"] :age]]
+      {:db/id 1 :name "Olegi"}
          
-      [[:db.fn/retractEntity [:name "Ivan"]]]
+      [[:db.fn/retractEntity [:name "Olegi"]]]
       {:db/id 1})
     
     (are [tx msg] (thrown-msg? msg (d/db-with db tx))
-      [{:db/id [:name "Oleg"], :age 10}]
-      "Nothing found for entity id [:name \"Oleg\"]"
+      [{:db/id [:name "Olegi"], :age 10}]
+      "Nothing found for entity id [:name \"Olegi\"]"
          
-      [[:db/add [:name "Oleg"] :age 10]]
-      "Nothing found for entity id [:name \"Oleg\"]")
+      [[:db/add [:name "Olegi"] :age 10]]
+      "Nothing found for entity id [:name \"Olegi\"]")
     ))
 
 (deftest test-lookup-refs-transact-multi
@@ -239,9 +239,10 @@
                   :in $ [?e ...]
                   :where [?e :friend 3]]
                 db [1 2 3 "A"])
-           #{[2]}))
+          #{[2]}))
     
-    (let [db2 (d/db-with (d/empty-db schema)
+    ;; Side-effect killing fdb
+    #_(let [db2 (d/db-with (d/empty-db schema)
                 [{:db/id 3 :name "Ivan" :id 3}
                  {:db/id 1 :name "Petr" :id 1}
                  {:db/id 2 :name "Oleg" :id 2}])]
@@ -259,7 +260,8 @@
                     :where [[:name "Ivan"] :friend ?v]]
                   db)
              #{[2]}))
-      
+
+      ;; Works when [:name "Petr"] is replaced by 2.
       (is (= (d/q '[:find ?e
                     :where [?e :friend [:name "Petr"]]]
                   db)
@@ -268,7 +270,5 @@
       (is (thrown-msg? "Nothing found for entity id [:name \"Valery\"]"
             (d/q '[:find ?e
                    :where [[:name "Valery"] :friend ?e]]
-                  db)))
-
-      )
+                  db))))
 ))
