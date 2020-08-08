@@ -57,7 +57,8 @@
            [1 [:name] {:name "Petr"}]
            [1 [:age]  {:age 44}]})))
 
-(deftest test-multiple-sources
+;; Side-effecting, not supported by Fdb
+#_(deftest test-multiple-sources
   (let [db1 (d/db-with (d/empty-db) [{:db/id 1 :name "Ivan" :age 25}])
         db2 (d/db-with (d/empty-db) [{:db/id 1 :name "Petr" :age 25}])]
     (is (= (set (d/q '[:find ?e (pull $1 ?e [:name])

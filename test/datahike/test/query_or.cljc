@@ -106,7 +106,8 @@
              [[:a1 :b1 :c1]]
              [[:a2 :c2]]))))
 
-(deftest test-default-source
+;; Clearly side-effecting
+#_(deftest test-default-source
   (let [db1 (d/db-with (d/empty-db)
              [ [:db/add 1 :name "Ivan" ]
                [:db/add 2 :name "Oleg"] ])
