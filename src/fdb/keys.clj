@@ -71,18 +71,21 @@
 (def MAX-VAL-TYPE 4)
 (def MIN-VAL-TYPE 5)
 (def BOOL 6)
+(def KEYWORD 7)
 
 (defn- cst->type
   [int]
   "Returns the type corresponding to its encoding"
   (assert (s/valid? int? int))
   (cond
+    ;; TODO: isn't better to change all the java classes into :db-fdb/interger-long-string...
     (= int INT)    java.lang.Integer
     (= int LONG)   java.lang.Long
     (= int STRING) java.lang.String
     (= int MAX-VAL-TYPE) :max-val
     (= int MIN-VAL-TYPE) :min-val
-    (= int BOOL)   java.lang.Boolean))
+    (= int BOOL)   java.lang.Boolean
+    (= int KEYWORD) :dh-fdb/keyword))
 
 (defn- str-offset
   "Returns the offset where to start writing a string
@@ -110,7 +113,7 @@
         index-type-code (index-type->code index-type)
         arr (byte-array buf-len)]
     (buf/write! buffer [index-type-code] (buf/spec buf/byte))
-    ;; TODO: weird that the max value for a byte is 127
+    ;; Max value for a byte is 127. (Because it is signed?)
     (buf/write! buffer (vec (take (- buf-len 1) (repeat max-byte-val)))
       (buf/repeat 1 buf/byte) {:offset 1})
     (.get buffer arr)
@@ -140,6 +143,15 @@
       {:offset (shift-left section-end 7)})
     ;; NEEDED, don't remove. It tells the reader the type to read.
     (buf/write! buffer [STRING] (buf/spec buf/int32)
+      {:offset (shift-left section-end 3)})))
+
+(defn- write-keyword
+  [val buffer index-type section-type] ;; section-type is :a-end or :v-end
+  "Writes the keyword as if it was a string but just changes the type of what is written down into 'KEYWORD'"
+  (assert (s/valid? keyword? val))
+  (let [section-end (position index-type section-type)]
+    (write-str (attribute-as-str val) buffer index-type section-type)
+    (buf/write! buffer [KEYWORD] (buf/spec buf/int32)
       {:offset (shift-left section-end 3)})))
 
 (defn- write-int
@@ -213,7 +225,7 @@
       (= :min-val val) (write-min-val buffer index-type :v-end)
       (= :max-val val) (write-max-val buffer index-type :v-end)
       ;; !!! DON'T move this before the :min-val or :max-val tests (as they are keywords!)
-      (keyword? val)   (write-str (attribute-as-str val) buffer index-type :v-end)
+      (keyword? val)   (write-keyword val buffer index-type :v-end)
       (= type java.lang.Boolean) (write-bool val buffer section-end)
       (= type java.lang.Long)    (write-long val buffer section-end)
       :else (throw (IllegalStateException. (str "Trying to write-v: " val))))))
@@ -294,6 +306,11 @@
     ;;(println ":............" (type str-bytes))
     (String. (byte-array str-bytes))))
 
+
+(defn- read-keyword
+  [buffer index-type section-type]
+  (keyword (read-str buffer index-type section-type)))
+
 ;; NOT Really used.
 (defn- read-min-val
   [buffer index-type section-type]
@@ -322,7 +339,8 @@
       (= type :max-val)          (read-max-val buffer index-type section-type)
       (= type java.lang.Boolean) (read-bool  buffer section-end)
       (= type java.lang.Long)    (read-long  buffer section-end)
-      (= type :min-val)          (read-min-val buffer index-type section-type))))
+      (= type :min-val)          (read-min-val buffer index-type section-type)
+      (= type :dh-fdb/keyword)      (read-keyword buffer index-type section-type))))
 
 
 (defn print-buf
