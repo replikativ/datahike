@@ -181,7 +181,6 @@
   (let [section-start (+ 1 (position index-type (pred-section index-type section-type)))
         section-end (position index-type section-type)
         size (- section-end section-start)]
-;;(println "In write max: " section-start " - " section-end " , " index-type " , " section-type)
     ;; Leave 4 bytes to write the type of the content
     (buf/write! buffer (vec (take (- size 4) (repeat max-byte-val))) (buf/repeat 1 buf/byte)
       {:offset section-start})

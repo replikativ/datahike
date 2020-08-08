@@ -101,6 +101,8 @@
   (-remove [db datom index-type]
            (dif/-remove db datom index-type))
   (-slice [db from to index-type]
+    ;; TODO: remove
+    ;;    (println "-------------   -slice: " from " - " to " - " index-type)
           (dif/-slice db from to index-type))
   (-flush [db _]
           (dif/-flush db))

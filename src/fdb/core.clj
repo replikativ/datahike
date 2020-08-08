@@ -60,14 +60,13 @@
       (tr! db @(.get tr key)))))
 
 
-;; Dh inserts :avet only when it is in indexing mode.
 (defn insert
   "Inserts one vector"
   [index-type [e a v t]]
   (let [fd    (FDB/selectAPIVersion api-version)
         key   (key index-type [e a v t])
         value key]
-      ;;(println "Insert: " index-type " - " (key->vect index-type key))
+;;(println "Insert: " index-type " - " (key->vect index-type key))
     (with-open [db (.open fd)]
       (tr! db (.set tr key value))
       db)))
@@ -152,8 +151,17 @@
         ;;_ (println "*** In get-range: " index-type " -- " new-begin "----" new-end)
         res (get-range-as-byte-array index-type new-begin new-end)
         result (map (partial key->vect index-type) res)]
-;;(println "*** In get-range: " index-type " -- " new-begin "----" new-end " --- RESULT: " result)
+    ;; TODO remove all println
+    ;;  (println "*** In get-range: " index-type " -- " new-begin "----" new-end " --- RESULT: " result)
     result)) 
+
+
+;; TODO remove
+(comment
+  (do
+    (get-range :avet [0 :name "Petr" 536870912] [2147483647 :name "Petr" 2147483647])
+    (get-range :avet [0 :friend 2 536870912 true] [2147483647 :friend 2 2147483647 true]))
+  )
 
 ;;------------ KeySelectors and iterations
 

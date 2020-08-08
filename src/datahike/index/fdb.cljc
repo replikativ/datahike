@@ -15,6 +15,12 @@
   (map (index-type->datom-fn index-type)
     (fc/get-range index-type from to)))
 
+;; TODO: remove
+(comment
+  (-slice nil [0 :friend 2 536870913] [10003 :friend 2 536870913] :avet)
+  (-slice nil (dd/datom 0 :friend 2 536870912 true) [2147483647 :friend 2 2147483647 true] :avet)
+  (-slice nil (dd/datom 0 :friend 2 536870912 true) (dd/datom 2147483647 :friend 2 2147483647 true) :avet))
+
 (defn -all
   [db index-type]
   (map (index-type->datom-fn index-type)
