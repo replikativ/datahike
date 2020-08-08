@@ -56,11 +56,11 @@
       (d/db-with db0 [{:name "Sergey" :_parent 1}])))))
 
 (deftest test-explode-nested-maps
-  (let [schema { :profile { :db/valueType :db.type/ref }}
-        db     (d/empty-db schema)]
+  (let [schema { :profile { :db/valueType :db.type/ref }}]
     (are [tx res] (= (d/q '[:find ?e ?a ?v
                             :where [?e ?a ?v]]
-                          (d/db-with db tx)) res)
+                       ;; Added (d/empty-db schema) to make the test work with fdb
+                       (d/db-with (d/empty-db schema) tx)) res)
       [ {:db/id 5 :name "Ivan" :profile {:db/id 7 :email "@2"}} ]
       #{ [5 :name "Ivan"] [5 :profile 7] [7 :email "@2"] }
          
@@ -69,18 +69,17 @@
          
       [ {:profile {:email "@2"}} ] ;; issue #59
       #{ [1 :profile 2] [2 :email "@2"] }
-         
+
       [ {:email "@2" :_profile {:name "Ivan"}} ]
       #{ [1 :email "@2"] [2 :name "Ivan"] [2 :profile 1] }
     ))
   
   (testing "multi-valued"
     (let [schema { :profile { :db/valueType :db.type/ref
-                              :db/cardinality :db.cardinality/many }}
-          db     (d/empty-db schema)]
+                              :db/cardinality :db.cardinality/many }}]
       (are [tx res] (= (d/q '[:find ?e ?a ?v
                               :where [?e ?a ?v]]
-                            (d/db-with db tx)) res)
+                            (d/db-with (d/empty-db schema) tx)) res)
         [ {:db/id 5 :name "Ivan" :profile {:db/id 7 :email "@2"}} ]
         #{ [5 :name "Ivan"] [5 :profile 7] [7 :email "@2"] }
            

@@ -4,7 +4,7 @@
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]))
 
-(def test-db
+(defn test-db[]
   (d/db-with
    (d/empty-db)
    [[:db/add 1 :name "Vlad"]
@@ -12,7 +12,7 @@
     [:db/add 3 :name "Sergey"]]))
 
 (deftest test-filter
-  (are [q expected] (= (d/q q test-db) expected)
+  (are [q expected] (= (d/q q (test-db)) expected)
     '[:find ?v
       :where [_ :name ?v]
              [(.startsWith ?v "Ser")]]
@@ -29,7 +29,7 @@
     #{["Sergey"]}))
 
 (deftest test-bind
-  (are [q expected] (= (d/q q test-db) expected)
+  (are [q expected] (= (d/q q (test-db)) expected)
     '[:find ?V
       :where
       [?e :name ?v]
@@ -41,4 +41,4 @@
                                 :where
                                 [?e :name ?v]
                                 [(.thisMethodDoesNotExist ?v 1)]]
-                              test-db))))
+                              (test-db)))))
