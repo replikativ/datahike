@@ -13,7 +13,6 @@
                  [io.replikativ/superv.async "0.2.9"]
                  [io.lambdaforge/datalog-parser "0.1.1"]
                  [org.foundationdb/fdb-java "6.2.10"]
-                 [byte-streams "0.2.3"]
                  [funcool/octet "1.1.2"]
                  [junit/junit "4.12"]]
 

@@ -242,6 +242,11 @@
     :else (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (position index-type :e-end) 7)})))
 
 
+(defn print-buf
+  [buffer]
+  (for [x (range buf-len)]
+    (.get buffer x)))
+
 ;; TODO: add validations that each of e a v t does not overflow.
 ;;
 ;; 06-05-2020: 'index-type' is a useless arg for now as we only one copy of the datom in
@@ -265,6 +270,7 @@
     (write-a a buffer index-type)
     (write-v v buffer index-type)
     (write-t t buffer index-type)
+;;(prn (print-buf buffer))
     buffer))
 
 ;; ------- reading --------
@@ -324,19 +330,12 @@
       (= type java.lang.Long)    (read-long  buffer section-end)
       (= type :min-val)          (read-min-val buffer index-type section-type))))
 
-
-(defn print-buf
-  [buffer]
-  (for [x (range buf-len)]
-    (.get buffer x)))
-
-
 (defn ->byteArr
   [index-type [e a v t]]
   (let [arr (byte-array buf-len)
         byteBuffer (->byteBuffer index-type [e a v t])]
 
-;;(println  (print-buf byteBuffer))
+    ;;(println  (print-buf byteBuffer))
 
     (.get byteBuffer arr)
     arr))
