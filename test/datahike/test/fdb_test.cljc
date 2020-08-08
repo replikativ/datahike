@@ -11,9 +11,6 @@
 
 ;;---- FDB Keys -----
 
-
-;; Test as shown that you cannot insert a nil value in datahike: @(transact conn [{ :db/id 5, :name nil  }])
-
 (defn assert-vec-conversion
   "Checks that given a 'vect we get the same vect back after going through fdb key conversion"
   [index-type from-vect to-vect]
@@ -39,6 +36,9 @@
 
     "long value"
     (assert-vec-conversion :eavt [20 :hello (long 234) 3] [20 :hello (long 234) 3])
+
+    "keyword value"
+    (assert-vec-conversion :eavt [20 :hello :ns/a_keyword 3] [20 :hello :ns/a_keyword 3])
 
     "biggest 'e' value"
     (assert-vec-conversion :eavt [9223372036854775807 :hello (long 234) 3]
