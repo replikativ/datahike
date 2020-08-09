@@ -146,11 +146,11 @@
 
 (defn get-range
   "Returns vectors in the range [begin end]. `begin` and `end` are vectors *in the [e a v t] form*. But it is really the index-type, i.e., `:eavt`, `:aevt` or `:avet` which sets the semantics of those vectors.
-  Additionally, if nils are present in the `begin` vector they are replaced by :dh-fdb/min-val to signal the system that we want the min. value at the spot. And conversely for `end` and :max-val."
+  Additionally, if nils are present in the `begin` vector they are replaced by :dh-fdb/min-val to signal the system that we want the min. value at the spot. And conversely for `end` and :dh-fdb/max-val."
   [index-type begin end]
   ;;(println "*** In get-range: " index-type " -- " begin "----" end)
   (let [new-begin (replace-nil begin :dh-fdb/min-val)
-        new-end (replace-nil end :max-val)
+        new-end (replace-nil end :dh-fdb/max-val)
         ;;_ (println "*** In get-range: " index-type " -- " new-begin "----" new-end)
         res (get-range-as-byte-array index-type new-begin new-end)
         result (map (partial key->vect index-type) res)]

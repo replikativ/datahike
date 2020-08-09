@@ -26,7 +26,7 @@
   (map (index-type->datom-fn index-type)
     (fc/get-range index-type
       [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val]
-      [:max-val :max-val :max-val :max-val])))
+      [:dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val])))
 
 (defn -seq [db]
   (seq (-all db :eavt)))

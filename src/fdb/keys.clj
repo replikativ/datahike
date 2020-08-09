@@ -200,7 +200,7 @@
   (assert (s/valid? keyword? index-type))
   (cond
     (= :dh-fdb/min-val a) (write-min-val buffer index-type :a-end)
-    (= :max-val a) (write-max-val buffer index-type :a-end)
+    (= :dh-fdb/max-val a) (write-max-val buffer index-type :a-end)
     :else (write-str (attribute-as-str a) buffer index-type :a-end)))
 
 (defn- write-v
@@ -213,10 +213,10 @@
       ;; Integer, Long, Short etc... are all stored as long. TODO: might not work for BigInt
       (integer? val)    (write-long val buffer section-end)
       (= type java.lang.String)  (write-str val buffer index-type :v-end)
-      ;; TODO: Replace :dh-fdb/min-val and :max-val by CSTs as they are keywords and could be used as is by user to model their domains. Or at least change them into namespaced keywords so that there is no clash.
+      ;; TODO: Replace :dh-fdb/min-val and :dh-fdb/max-val by CSTs as they are keywords and could be used as is by user to model their domains. Or at least change them into namespaced keywords so that there is no clash.
       (= :dh-fdb/min-val val) (write-min-val buffer index-type :v-end)
-      (= :max-val val) (write-max-val buffer index-type :v-end)
-      ;; !!! DON'T move this before the :dh-fdb/min-val or :max-val tests (as they are keywords!)
+      (= :dh-fdb/max-val val) (write-max-val buffer index-type :v-end)
+      ;; !!! DON'T move this before the :dh-fdb/min-val or :dh-fdb/max-val tests (as they are keywords!)
       (keyword? val)   (write-keyword val buffer index-type :v-end)
       (= type java.lang.Boolean) (write-bool val buffer section-end)
       :else (throw (IllegalStateException. (str "Trying to write-v: " val))))))
@@ -230,7 +230,7 @@
   ;; TODO: add an asser that t is either an int or either the :max and :dh-fdb/min-val keywords
   (cond
     (= :dh-fdb/min-val t) (write-min-val buffer index-type :t-end)
-    (= :max-val t) (write-max-val buffer index-type :t-end)
+    (= :dh-fdb/max-val t) (write-max-val buffer index-type :t-end)
     :else (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (position index-type :t-end) 7)})))
 
 
@@ -241,7 +241,7 @@
   ;; TODO: add an assert that e is either an int or either the :max and :dh-fdb/min-val keywords
   (cond
     (= :dh-fdb/min-val e) (write-min-val buffer index-type :e-end)
-    (= :max-val e) (write-max-val buffer index-type :e-end)
+    (= :dh-fdb/max-val e) (write-max-val buffer index-type :e-end)
     :else (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (position index-type :e-end) 7)})))
 
 
@@ -334,10 +334,10 @@
       ;; No need to handle java.lang.Integer and co. because they were saved as Long
       (= type java.lang.Long)    (read-long  buffer section-end)
       (= type java.lang.String)  (read-str   buffer index-type section-type)
-      (= type :max-val)          (read-max-val buffer index-type section-type)
+      (= type :dh-fdb/max-val)          (read-max-val buffer index-type section-type)
       (= type java.lang.Boolean) (read-bool  buffer section-end)
       (= type :dh-fdb/min-val)   (read-min-val buffer index-type section-type)
-      ;; TODO: can this be move before :max-val case, as it might be more often used.
+      ;; TODO: can this be move before :dh-fdb/max-val case, as it might be more often used.
       (= type :dh-fdb/keyword)   (read-keyword buffer index-type section-type))))
 
 (defn ->byteArr
@@ -421,7 +421,7 @@
 (assert (=  buff->vect with-keyword))
 
 
-(def with-nil [20 :shared/policy :max-val 3])
+(def with-nil [20 :shared/policy :dh-fdb/max-val 3])
 (def buff (->byteBuffer :eavt with-nil))
 (def buff->vect (byteBuffer->vect :eavt buff))
 (prn buff->vect)

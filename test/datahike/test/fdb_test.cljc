@@ -134,9 +134,9 @@
             (map dvec (d/datoms db :eavt)))))))
 
 ;; TODO: replace with a real test
-(comment "Check :dh-fdb/min-val and :max-val"
+(comment "Check :dh-fdb/min-val and :dh-fdb/max-val"
          (k/print-buf (k/->byteBuffer :eavt [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val]))
-         (k/print-buf (k/->byteBuffer :eavt [:max-val :max-val :max-val :max-val]))
+         (k/print-buf (k/->byteBuffer :eavt [:dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val]))
          )
 
 (deftest simple-insertions
@@ -167,7 +167,7 @@
               [3 :name "Sergey"]]
             (mapv dvec (d/datoms db :eavt))))
       (is (= (count data)
-            (count (fdb/get-range :eavt [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val] [:max-val :max-val :max-val :max-val])))))
+            (count (fdb/get-range :eavt [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val] [:dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val])))))
 
     (testing ":aevt"
       (is (= [[1 :age 44]
@@ -178,7 +178,7 @@
               [3 :name "Sergey"]]
             (map dvec (d/datoms db :aevt))))
       (is (= (count data)
-            (count (fdb/get-range :eavt [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val] [:max-val :max-val :max-val :max-val])))))))
+            (count (fdb/get-range :eavt [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val] [:dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val])))))))
 
 
 (deftest db-with
@@ -252,9 +252,9 @@
 
   (d/datoms @conn :eavt)
 
-  (fdb/get-range :eavt [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val] [:max-val :max-val :max-val :max-val])
-  (fdb/get-range :aevt [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val] [:max-val :max-val :max-val :max-val])
-  (fdb/get-range :avet [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val] [:max-val :max-val :max-val :max-val])
+  (fdb/get-range :eavt [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val] [:dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val])
+  (fdb/get-range :aevt [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val] [:dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val])
+  (fdb/get-range :avet [:dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val :dh-fdb/min-val] [:dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val :dh-fdb/max-val])
   )
 
 ;; What is sent by Datahike to 'getRange' (depending of type of the query)
