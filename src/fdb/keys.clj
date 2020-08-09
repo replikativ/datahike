@@ -213,7 +213,6 @@
       ;; Integer, Long, Short etc... are all stored as long. TODO: might not work for BigInt
       (integer? val)    (write-long val buffer section-end)
       (= type java.lang.String)  (write-str val buffer index-type :v-end)
-      ;; TODO: Replace :dh-fdb/min-val and :dh-fdb/max-val by CSTs as they are keywords and could be used as is by user to model their domains. Or at least change them into namespaced keywords so that there is no clash.
       (= :dh-fdb/min-val val) (write-min-val buffer index-type :v-end)
       (= :dh-fdb/max-val val) (write-max-val buffer index-type :v-end)
       ;; !!! DON'T move this before the :dh-fdb/min-val or :dh-fdb/max-val tests (as they are keywords!)
@@ -226,8 +225,7 @@
 (defn- write-t
   "Write the `t` part of an index."
   [t buffer index-type]
-  ;;(println--- "..-- t:" t)
-  ;; TODO: add an asser that t is either an int or either the :max and :dh-fdb/min-val keywords
+  ;; TODO: add an assert that t is either an int or either the :max and :dh-fdb/min-val keywords
   (cond
     (= :dh-fdb/min-val t) (write-min-val buffer index-type :t-end)
     (= :dh-fdb/max-val t) (write-max-val buffer index-type :t-end)
@@ -361,7 +359,6 @@
         expected-index-type-code (index-type->code index-type)
         e (first (buf/read buffer (buf/spec buf/int64)
                    {:offset (shift-left (position index-type :e-end) 7)}))
-        ;; TODO: Deal with _max and :dh-fdb/min-val for an attribute
         a (keyword (read-str buffer index-type :a-end))
         v (read-v buffer index-type :v-end)
         t (first (buf/read buffer (buf/spec buf/int64)
@@ -387,7 +384,6 @@
 ;; TODO: what's corresponding to 'v' can not be of any type for now. As only some of the basic types are supported.
 (defn key
   "Converts a datom into a fdb key. `index-type` is keyword representing the index type."
-  ;; Can take ^Datom object as input (as they are array) ;; <- TODO: careful here as Datom does not provide on e a v t.
   [index-type [a b c t]]
   ;;(println (str "%%%%%%%" index-type  [a b c t]))
   (->byteArr index-type [a b c t]))
