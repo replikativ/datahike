@@ -88,28 +88,22 @@
   IIndex
   (-all [eavt-db]
     (dif/-all eavt-db :eavt))
-  ;; TODO: impelement! What is the semantic of seq?
   (-seq [eavt-db]
-    (println "----------- -seq:" eavt-db)
     (dif/-seq eavt-db))
-  ;; TODO: implement
   (-count [eavt-db]
-    ;;(println "----------- -count:" eavt-db)
     (dif/-count eavt-db))
   (-insert [db datom index-type]
-           (dif/-insert db datom index-type))
+    (dif/-insert db datom index-type))
   (-remove [db datom index-type]
-           (dif/-remove db datom index-type))
+    (dif/-remove db datom index-type))
   (-slice [db from to index-type]
-    ;; TODO: remove
-    ;;    (println "-------------   -slice: " from " - " to " - " index-type)
-          (dif/-slice db from to index-type))
+    (dif/-slice db from to index-type))
   (-flush [db _]
-          (dif/-flush db))
+    (dif/-flush db))
   (-transient [db]
-              (dif/-transient db))
+    (dif/-transient db))
   (-persistent! [db]
-                (dif/-persistent! db)))
+    (dif/-persistent! db)))
 
 
 (defmulti empty-index
