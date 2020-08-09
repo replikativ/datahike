@@ -126,7 +126,7 @@
 ;; but the string itself has to be written at the begin of the section.
 ;; Why? This is a way to preserve the alphabetical order of string.
 ;; E.g. Even though aab's length is shorter than aaaa's,
-;; the former must be greater than aaaa in our ordering
+;; the aab must be greater than aaaa in alphabetical ordering.
 (defn- write-str
   [val buffer index-type section-type] ;; section-type is :a-end or :v-end
   (assert (s/valid? string? val))
