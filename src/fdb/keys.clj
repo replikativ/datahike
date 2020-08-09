@@ -173,8 +173,6 @@
 (defn write-min-val
   [buffer index-type section-type]
   "Writes the min possible value to the slot"
-   ;;    (println "In write min: "  section-end)
-
    ;; NO-OP. Goal is to return an array of bytes filled with 0.
    ;; Since it is what octet does (i.e create the buffer with zeros), it is a NO-OP here.
   )
@@ -195,7 +193,6 @@
 (defn- write-a
   "Write the `a` part of an index."
   [a buffer index-type]
-  ;;(println "---..-- a:" a )
   (assert (s/valid? keyword? a))
   (assert (s/valid? keyword? index-type))
   (cond
@@ -235,7 +232,6 @@
 (defn- write-e
   "Write the `e` part of an index."
   [e buffer index-type]
-  ;;  (println "---..-- e:" e)
   ;; TODO: add an assert that e is either an int or either the :max and :dh-fdb/min-val keywords
   (cond
     (= :dh-fdb/min-val e) (write-min-val buffer index-type :e-end)
@@ -264,14 +260,12 @@
         index-type-code (index-type->code index-type)]
     (when a (assert (instance? clojure.lang.Keyword a)))
     (assert (and (<= 0 index-type-code) (>= 2 index-type-code)))
-    ;; (println "Writing: " index-type e a v t)
     ;; Write a code in the first byte to distinguish between the diff. indices. The code is like a namespace.
     (buf/write! buffer [index-type-code] (buf/spec buf/byte))
     (write-e e buffer index-type)
     (write-a a buffer index-type)
     (write-v v buffer index-type)
     (write-t t buffer index-type)
-;;(prn (print-buf buffer))
     buffer))
 
 ;; ------- reading --------
@@ -298,7 +292,6 @@
         str-bytes (buf/read buffer (buf/repeat size buf/byte)
                     {:offset (+ 1 (position index-type
                                     (pred-section index-type section-type)))})]
-    ;;(println ":............" (type str-bytes))
     (String. (byte-array str-bytes))))
 
 
@@ -318,7 +311,6 @@
         size (- section-end section-start)
         str-bytes (buf/read buffer (buf/repeat (- size 4) buf/byte)
                     {:offset section-start})]
-    ;;(println ":............" (type str-bytes))
     ;; !!! The max val is "translated" into a string.
     (String. (byte-array str-bytes))))
 
@@ -342,9 +334,6 @@
   [index-type [e a v t]]
   (let [arr (byte-array buf-len)
         byteBuffer (->byteBuffer index-type [e a v t])]
-
-    ;;(println  (print-buf byteBuffer))
-
     (.get byteBuffer arr)
     arr))
 
@@ -381,11 +370,10 @@
   (byteBuffer->vect index-type (byteArr->byteBuffer byteArr)))
 
 
-;; TODO: what's corresponding to 'v' can not be of any type for now. As only some of the basic types are supported.
+;; TODO: 'v' can not be of any type for now. As only some of the basic types are supported.
 (defn key
   "Converts a datom into a fdb key. `index-type` is keyword representing the index type."
   [index-type [a b c t]]
-  ;;(println (str "%%%%%%%" index-type  [a b c t]))
   (->byteArr index-type [a b c t]))
 
 
