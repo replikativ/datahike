@@ -198,7 +198,7 @@
   (assert (s/valid? keyword? a))
   (assert (s/valid? keyword? index-type))
   (cond
-    (= :min-val a) (write-min-val buffer index-type :a-end)
+    (= :dh-fdb/min-val a) (write-min-val buffer index-type :a-end)
     (= :max-val a) (write-max-val buffer index-type :a-end)
     :else (write-str (attribute-as-str a) buffer index-type :a-end)))
 
@@ -212,10 +212,10 @@
       ;; Integer, Long, Short etc... are all stored as long. TODO: might not work for BigInt
       (integer? val)    (write-long val buffer section-end)
       (= type java.lang.String)  (write-str val buffer index-type :v-end)
-      ;; TODO: Replace :min-val and :max-val by CSTs as they are keywords and could be used as is by user to model their domains. Or at least change them into namespaced keywords so that there is no clash.
-      (= :min-val val) (write-min-val buffer index-type :v-end)
+      ;; TODO: Replace :dh-fdb/min-val and :max-val by CSTs as they are keywords and could be used as is by user to model their domains. Or at least change them into namespaced keywords so that there is no clash.
+      (= :dh-fdb/min-val val) (write-min-val buffer index-type :v-end)
       (= :max-val val) (write-max-val buffer index-type :v-end)
-      ;; !!! DON'T move this before the :min-val or :max-val tests (as they are keywords!)
+      ;; !!! DON'T move this before the :dh-fdb/min-val or :max-val tests (as they are keywords!)
       (keyword? val)   (write-keyword val buffer index-type :v-end)
       (= type java.lang.Boolean) (write-bool val buffer section-end)
       :else (throw (IllegalStateException. (str "Trying to write-v: " val))))))
@@ -226,9 +226,9 @@
   "Write the `t` part of an index."
   [t buffer index-type]
   ;;(println--- "..-- t:" t)
-  ;; TODO: add an asser that t is either an int or either the :max and :min-val keywords
+  ;; TODO: add an asser that t is either an int or either the :max and :dh-fdb/min-val keywords
   (cond
-    (= :min-val t) (write-min-val buffer index-type :t-end)
+    (= :dh-fdb/min-val t) (write-min-val buffer index-type :t-end)
     (= :max-val t) (write-max-val buffer index-type :t-end)
     :else (buf/write! buffer [t] (buf/spec buf/int64) {:offset (shift-left (position index-type :t-end) 7)})))
 
@@ -237,9 +237,9 @@
   "Write the `e` part of an index."
   [e buffer index-type]
   ;;  (println "---..-- e:" e)
-  ;; TODO: add an assert that e is either an int or either the :max and :min-val keywords
+  ;; TODO: add an assert that e is either an int or either the :max and :dh-fdb/min-val keywords
   (cond
-    (= :min-val e) (write-min-val buffer index-type :e-end)
+    (= :dh-fdb/min-val e) (write-min-val buffer index-type :e-end)
     (= :max-val e) (write-max-val buffer index-type :e-end)
     :else (buf/write! buffer [e] (buf/spec buf/int64) {:offset (shift-left (position index-type :e-end) 7)})))
 
@@ -335,9 +335,9 @@
       (= type java.lang.String)  (read-str   buffer index-type section-type)
       (= type :max-val)          (read-max-val buffer index-type section-type)
       (= type java.lang.Boolean) (read-bool  buffer section-end)
-      (= type :min-val)          (read-min-val buffer index-type section-type)
+      (= type :dh-fdb/min-val)   (read-min-val buffer index-type section-type)
       ;; TODO: can this be move before :max-val case, as it might be more often used.
-      (= type :dh-fdb/keyword)      (read-keyword buffer index-type section-type))))
+      (= type :dh-fdb/keyword)   (read-keyword buffer index-type section-type))))
 
 (defn ->byteArr
   [index-type [e a v t]]
@@ -360,7 +360,7 @@
         expected-index-type-code (index-type->code index-type)
         e (first (buf/read buffer (buf/spec buf/int64)
                    {:offset (shift-left (position index-type :e-end) 7)}))
-        ;; TODO: Deal with _max and :min-val for an attribute
+        ;; TODO: Deal with _max and :dh-fdb/min-val for an attribute
         a (keyword (read-str buffer index-type :a-end))
         v (read-v buffer index-type :v-end)
         t (first (buf/read buffer (buf/spec buf/int64)
