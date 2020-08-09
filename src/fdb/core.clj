@@ -138,12 +138,9 @@
           (.getRange tr b-key e-key))))))
 
 
-
 (defn- replace-nil
   [[e a v t] new-val]
   "replace nil in [e a v t] by new-val"
-  ;; (println "*** In replace-nil: " [e a v t])
-  (println "*** v type : " (type v) " _--- " [e a v t])
   (mapv #(if (nil? %) new-val %) [e a v t]))
 
 
@@ -158,7 +155,7 @@
         res (get-range-as-byte-array index-type new-begin new-end)
         result (map (partial key->vect index-type) res)]
     ;; TODO remove all println
-    ;;  (println "*** In get-range: " index-type " -- " new-begin "----" new-end " --- RESULT: " result)
+;;(println "*** In get-range: " index-type " -- " begin "----" (type begin) " -- " end " -- " (type end) " --- RESULT: " result)
     result)) 
 
 
