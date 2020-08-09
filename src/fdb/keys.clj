@@ -35,8 +35,7 @@
          [:avet :a-end] :code
          [:avet :v-end] :a-end
          [:avet :t-end] :e-end
-         [:avet :e-end] :v-end
-         }
+         [:avet :e-end] :v-end}
     [index-type section-type]))
 
 (defn- str-size
@@ -154,14 +153,6 @@
     (buf/write! buffer [KEYWORD] (buf/spec buf/int32)
       {:offset (shift-left section-end 3)})))
 
-(defn- write-int
-  [val buffer section-end]
-  (assert (s/valid? int? val))
-  (buf/write! buffer [val] (buf/spec buf/int32)
-    {:offset (shift-left section-end 7)})
-  (buf/write! buffer [INT] (buf/spec buf/int32)
-    {:offset (shift-left section-end 3)}))
-
 (defn- write-long
   [val buffer section-end]
   (assert (s/valid? integer? val))
@@ -215,10 +206,11 @@
   [val buffer index-type]
   "Write the `v` part of an index. Write `val` into `buffer` given `section-end`, the *end* of the section where it should be written"
   (assert (s/valid? keyword? index-type))
-  (let [type (type val)
+  (let [type (type val) ;; TODO: stop using type and use boolean?, string? in this function? What is faster?
         section-end (position index-type :v-end)]
     (cond
-      (= type java.lang.Integer) (write-int val buffer section-end)
+      ;; Integer, Long, Short etc... are all stored as long. TODO: might not work for BigInt
+      (integer? val)    (write-long val buffer section-end)
       (= type java.lang.String)  (write-str val buffer index-type :v-end)
       ;; TODO: Replace :min-val and :max-val by CSTs as they are keywords and could be used as is by user to model their domains. Or at least change them into namespaced keywords so that there is no clash.
       (= :min-val val) (write-min-val buffer index-type :v-end)
@@ -226,7 +218,6 @@
       ;; !!! DON'T move this before the :min-val or :max-val tests (as they are keywords!)
       (keyword? val)   (write-keyword val buffer index-type :v-end)
       (= type java.lang.Boolean) (write-bool val buffer section-end)
-      (= type java.lang.Long)    (write-long val buffer section-end)
       :else (throw (IllegalStateException. (str "Trying to write-v: " val))))))
 
 
@@ -339,12 +330,13 @@
         type (cst->type (read-int buffer section-end 3))]
     ;; TODO: Replace by a map so that dispatching is faster?
     (cond
-      (= type java.lang.Integer) (read-int   buffer section-end 7)
+      ;; No need to handle java.lang.Integer and co. because they were saved as Long
+      (= type java.lang.Long)    (read-long  buffer section-end)
       (= type java.lang.String)  (read-str   buffer index-type section-type)
       (= type :max-val)          (read-max-val buffer index-type section-type)
       (= type java.lang.Boolean) (read-bool  buffer section-end)
-      (= type java.lang.Long)    (read-long  buffer section-end)
       (= type :min-val)          (read-min-val buffer index-type section-type)
+      ;; TODO: can this be move before :max-val case, as it might be more often used.
       (= type :dh-fdb/keyword)      (read-keyword buffer index-type section-type))))
 
 (defn ->byteArr
