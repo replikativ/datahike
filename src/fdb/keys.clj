@@ -63,7 +63,8 @@
         (str a-namespace (when a-namespace "/") (name a))))
     ""))
 
-;; TODO: Def. and implement the other types
+;; TODO: Define other types (such as BigInt)
+;; Defines an encoding for types
 (def INT 1)
 (def LONG 2)
 (def STRING 3)
@@ -72,19 +73,19 @@
 (def BOOL 6)
 (def KEYWORD 7)
 
-(defn- cst->type
-  [int]
+(defn- encoding->type
+  [encoding]
   "Returns the type corresponding to its encoding"
-  (assert (s/valid? int? int))
+  (assert (s/valid? int? encoding))
   (cond
     ;; TODO: isn't better to change all the java classes into :db-fdb/interger-long-string...
-    (= int INT)    java.lang.Integer
-    (= int LONG)   java.lang.Long
-    (= int STRING) java.lang.String
-    (= int MAX-VAL-TYPE) :max-val
-    (= int MIN-VAL-TYPE) :min-val
-    (= int BOOL)   java.lang.Boolean
-    (= int KEYWORD) :dh-fdb/keyword))
+    (= encoding INT)    java.lang.Integer
+    (= encoding LONG)   java.lang.Long
+    (= encoding STRING) java.lang.String
+    (= encoding MAX-VAL-TYPE) :dh-fdb/max-val
+    (= encoding MIN-VAL-TYPE) :dh-fdb/min-val
+    (= encoding BOOL)   java.lang.Boolean
+    (= encoding KEYWORD) :dh-fdb/keyword))
 
 (defn- str-offset
   "Returns the offset where to start writing a string
@@ -327,7 +328,7 @@
 (defn- read-v
   [buffer index-type section-type]
   (let [section-end (position index-type :v-end)
-        type (cst->type (read-int buffer section-end 3))]
+        type (encoding->type (read-int buffer section-end 3))]
     ;; TODO: Replace by a map so that dispatching is faster?
     (cond
       ;; No need to handle java.lang.Integer and co. because they were saved as Long
