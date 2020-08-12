@@ -78,17 +78,13 @@
 
 (defn -upsert [tree ^Datom datom index-type]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (new-UpsertOp
-                                            datom-as-vec
-                                            datom-as-vec)
+    (async/<?? (hmsg/enqueue tree [(assoc (new-UpsertOp datom-as-vec datom-as-vec)
                                      :tag (h/uuid))]))))
 
 (defn -temporal-upsert [tree ^Datom datom index-type]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [assoc (new-temporal-UpsertOp
-                                           datom-as-vec
-                                           datom-as-vec)
-                                   :tag (h/uuid)]))))
+    (async/<?? (hmsg/enqueue tree [(assoc (new-temporal-UpsertOp datom-as-vec datom-as-vec)
+                                     :tag (h/uuid))]))))
 
 (extend-protocol kc/IKeyCompare
   clojure.lang.PersistentVector
