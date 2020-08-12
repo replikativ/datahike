@@ -14,7 +14,7 @@
   (case index-type
     :aevt [(.-a datom) (.-e datom) (.-v datom) (.-tx datom)]
     :avet [(.-a datom) (.-v datom) (.-e datom) (.-tx datom)]
-    [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
+    :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
 
 (defn old-key
   "Returns an old version of the 'new' key if it exists in 'map'"
