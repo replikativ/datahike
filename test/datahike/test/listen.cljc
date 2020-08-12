@@ -30,8 +30,7 @@
            {:some-metadata 1}))
     (is (= (:tx-data (second @reports))
            [(dd/datom 5 :name "Fedor"  (+ d/tx0 3) true)
-            (dd/datom 1 :name "Alex"   (+ d/tx0 3) false)  ;; update -> retract
-            (dd/datom 1 :name "Alex2"  (+ d/tx0 3) true)   ;;         + add
+            (dd/datom 1 :name "Alex2"  (+ d/tx0 3) true)
             (dd/datom 4 :name "Evgeny" (+ d/tx0 3) false)]))
     (is (= (:tx-meta (second @reports))
            nil))
