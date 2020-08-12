@@ -5,6 +5,7 @@
    [datahike.db :as db]
    [datahike.query :as dq]
    [datahike.lru :as lru]
+   [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
    [me.tonsky.persistent-sorted-set.arrays :as da]
    #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple
                                           Constant DefaultSrc Pattern RulesVar SrcVar Variable
@@ -14,7 +15,7 @@
    [datalog.parser.impl.util :as dpiu]
    [datalog.parser.impl :as dpi])
   #?(:clj
-    (:import 
+    (:import
       [datalog.parser.type
         BindColl BindIgnore BindScalar BindTuple
         Constant DefaultSrc Pattern RulesVar SrcVar Variable
@@ -480,7 +481,7 @@
 
     BindColl
       (if (not (db/seqable? source))
-        (db/raise "Cannot bind value " source " to collection " (dpi/get-source binding)
+        (raise "Cannot bind value " source " to collection " (dpi/get-source binding)
                   {:error :query/binding, :value source, :binding (dpi/get-source binding)})
         (let [inner-binding (:binding binding)]
           (case (count source)
@@ -495,10 +496,10 @@
     BindTuple
     (let [bindings (:bindings binding)]
       (when-not (db/seqable? source)
-        (db/raise "Cannot bind value " source " to tuple " (dpi/get-source binding)
+        (raise "Cannot bind value " source " to tuple " (dpi/get-source binding)
                   {:error :query/binding, :value source, :binding (dpi/get-source binding)}))
       (when (< (count source) (count bindings))
-        (db/raise "Not enough elements in a collection " source " to bind tuple " (dpi/get-source binding)
+        (raise "Not enough elements in a collection " source " to bind tuple " (dpi/get-source binding)
                   {:error :query/binding, :value source, :binding (dpi/get-source binding)}))
       (reduce (fn [ts [b s]]
                 (bind! ts b s indexes))
@@ -506,7 +507,7 @@
               (zip bindings source)))
     
     :else
-      (db/raise "Unknown binding form " (dpi/get-source binding)
+      (raise "Unknown binding form " (dpi/get-source binding)
                {:error :query/binding, :value source, :binding (dpi/get-source binding)})))
 
 
@@ -539,7 +540,7 @@
 
 (defn resolve-ins [context bindings values]
   (when (not= (count bindings) (count values))
-    (db/raise "Wrong number of arguments for bindings " (mapv dpi/get-source bindings)
+    (raise "Wrong number of arguments for bindings " (mapv dpi/get-source bindings)
            ", " (count bindings) " required, " (count values) " provided"
            {:error :query/binding, :binding (mapv dpi/get-source bindings)}))
   (reduce resolve-in context (zip bindings values)))
@@ -556,9 +557,9 @@
   (let [symbol (cond
                  (instance? SrcVar source)     (:symbol source)
                  (instance? DefaultSrc source) (:default-source-symbol context)
-                 :else (db/raise "Source expected, got " source))]
+                 :else (raise "Source expected, got " source))]
     (or (get (:sources context) symbol)
-        (db/raise "Source " symbol " is not defined"
+        (raise "Source " symbol " is not defined"
                {:error :query/where, :symbol symbol}))))
     
 
@@ -574,10 +575,10 @@
 
 (defn- matches-pattern? [idxs tuple] ;; TODO handle repeated vars
 ;;   (when-not (db/seqable? tuple)
-;;     (db/raise "Cannot match pattern " (dpi/get-source clause) " because tuple is not a collection: " tuple
+;;     (raise "Cannot match pattern " (dpi/get-source clause) " because tuple is not a collection: " tuple
 ;;            {:error :query/where, :value tuple, :binding (dpi/get-source clause)}))
 ;;   (when (< (count tuple) (count (:pattern clause)))
-;;     (db/raise "Not enough elements in a relation tuple " tuple " to match " (dpi/get-source clause)
+;;     (raise "Not enough elements in a relation tuple " tuple " to match " (dpi/get-source clause)
 ;;            {:error :query/where, :value tuple, :binding (dpi/get-source clause)}))
   (reduce-kv
     (fn [_ i v]
@@ -590,7 +591,7 @@
 
 (defn resolve-pattern-coll [coll clause]
   (when-not (db/seqable? coll)
-    (db/raise "Cannot match by pattern " (dpi/get-source clause) " because source is not a collection: " coll
+    (raise "Cannot match by pattern " (dpi/get-source clause) " because source is not a collection: " coll
        {:error :query/where, :value coll, :binding (dpi/get-source clause)}))
   (let [pattern (:pattern clause)
         idxs    (->> (map #(when (instance? Constant %1) [%2 (:value %1)]) pattern (range))
