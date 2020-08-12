@@ -34,8 +34,8 @@
     datahike.test.time-variance
     datahike.test.transact
     datahike.test.validation
-    datahike.test.upsert
-    ))
+    datahike.test.upsert))
+
 
 (defn ^:export test-clj []
   (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\..*")))
@@ -44,15 +44,15 @@
   (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\..*")))
 
 #?(:clj
-(defn test-node [& args]
-  (let [res (apply sh/sh "node" "test_node.js" args)]
-    (println (:out res))
-    (binding [*out* *err*]
-      (println (:err res)))
-    (System/exit (:exit res)))))
+   (defn test-node [& args]
+     (let [res (apply sh/sh "node" "test_node.js" args)]
+       (println (:out res))
+       (binding [*out* *err*]
+         (println (:err res)))
+       (System/exit (:exit res)))))
 
 (comment
 
-  (test-clj)
+  (test-clj))
 
-  )
+

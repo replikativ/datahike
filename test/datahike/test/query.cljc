@@ -267,17 +267,25 @@
           (is (map? (first (d/q {:query '[:find ?e :keys name :where [?e :name _]]
                                  :args [db]})))))
       (testing "returns set without return-map"
-          (is (= '#{["Charlie"] ["Alice"] ["Bob"]}
+          (is (= #{["Charlie"] ["Alice"] ["Bob"]}
                  (d/q {:query '[:find ?name :where [_ :name ?name]]
                        :args [db]}))))
       (testing "returns map with key return-map"
-          (is (= '[{:foo 3} {:foo 2} {:foo 1}]
+          (is (= [{:foo 3} {:foo 2} {:foo 1}]
                  (d/q {:query '[:find ?e :keys foo :where [?e :name _]]
                        :args [db]}))))
       (testing "returns map with string return-map"
-          (is (= '[{"foo" "Charlie"} {"foo" "Alice"} {"foo" "Bob"}]
+          (is (= [{"foo" "Charlie"} {"foo" "Alice"} {"foo" "Bob"}]
                  (d/q {:query '[:find ?name :strs foo :where [?e :name ?name]]
-                       :args [db]}))))))
+                       :args [db]}))))
+      (testing "return map with keys using multiple find vars"
+        (is (= #{["Bob" {:age 37 :db/id 2}]
+                 ["Charlie" {:age 37 :db/id 3}]
+                 ["Alice" {:age 15 :db/id 1}]}
+               (into #{} (d/q {:find '[?name (pull ?e ?p)]
+                              :args [db '[:age :db/id]]
+                              :in '[$ ?p]
+                               :where '[[?e :name ?name]]})))))))
 
 (deftest test-memoized-parse-query
   (testing "no map return"
