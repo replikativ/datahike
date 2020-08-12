@@ -5,10 +5,8 @@
             [hitchhiker.tree :as tree]
             [datahike.constants :refer [e0 tx0 emax txmax]]
             [datahike.datom :as dd]
-
-            [hitchhiker.tree.op :as op]
-            
-            )
+            [hasch.core :as h]
+            [hitchhiker.tree.op :as op])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
 
@@ -55,11 +53,12 @@
   (UpsertOp. key value index-type db))
 
 (defn -upsert [tree ^Datom datom index-type db]
-  (async/<?? (hmsg/upsert tree (new-UpsertOp
-                                 (datom->node datom index-type)
-                                 (datom->node datom index-type)
-                                 index-type
-                                 db))))
+  (async/<?? (hmsg/enqueue tree [(assoc (new-UpsertOp
+                                          (datom->node datom index-type)
+                                          (datom->node datom index-type)
+                                          index-type
+                                          db)
+                                   :tag (h/uuid))])))
 
 (extend-protocol kc/IKeyCompare
   clojure.lang.PersistentVector

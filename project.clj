@@ -10,8 +10,9 @@
                  [org.clojure/tools.reader "1.3.2"]
                  [environ "1.2.0"]
                  [com.taoensso/timbre "4.10.0"]
-                 [io.replikativ/hitchhiker-tree "0.1.7"] ;; TODO: Change to the version of the hh-tree that has the upsert op.
+                 [io.replikativ/hitchhiker-tree "0.1.7"]
                  [io.replikativ/superv.async "0.2.9"]
+                 [io.replikativ/hasch "0.3.7"]
                  [io.lambdaforge/datalog-parser "0.1.7"]
                  [io.replikativ/zufall "0.1.0"]
                  [junit/junit "4.13"]]
