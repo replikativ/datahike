@@ -1,4 +1,4 @@
-(ns sandbox
+(ns user
   (:require [datahike.api :as d]))
 
 (comment
