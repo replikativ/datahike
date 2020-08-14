@@ -6,7 +6,7 @@
    #?(:clj [clojure.pprint :as pp])
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   [datahike.constants :refer [e0 tx0 emax txmax]]
+   [datahike.constants :refer [e0 tx0 emax txmax system-schema]]
    [datahike.tools :refer [get-time case-tree raise]]
    [datahike.schema :as ds]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
@@ -723,20 +723,29 @@
   ([schema] (empty-db schema nil))
   ([schema config]
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
-   (let [{:keys [keep-history? index schema-flexibility] :as config} (merge (dc/storeless-config) config)
+   (let [{:keys [keep-history? index schema-flexibility attribute-refs?] :as config} (merge (dc/storeless-config) config)
          on-read? (= :read schema-flexibility)
          schema (to-old-schema schema)
          _ (if on-read?
              (validate-schema schema)
-             (validate-write-schema schema))]
+             (validate-write-schema schema))
+         schema (merge implicit-schema schema)
+         rschema (rschema (merge implicit-schema schema))
+         indexed (:db/index rschema)]
      (map->DB
       (merge
-       {:schema  (merge implicit-schema schema)
-        :rschema (rschema (merge implicit-schema schema))
+       {:schema schema
+        :rschema rschema
         :config  config
-        :eavt    (di/empty-index index :eavt)
-        :aevt    (di/empty-index index :aevt)
-        :avet    (di/empty-index index :avet)
+        :eavt    (if attribute-refs?
+                   (di/init-index index (dd/coll->datoms system-schema) indexed :eavt)
+                   (di/empty-index index :eavt))
+        :aevt    (if attribute-refs?
+                   (di/empty-index index :aevt)
+                   (di/init-index index (dd/coll->datoms system-schema) indexed :aevt))
+        :avet    (if attribute-refs?
+                   (di/empty-index index :avet)
+                   (di/init-index index (dd/coll->datoms system-schema) indexed :avet))
         :max-eid e0
         :max-tx  tx0
         :hash    0}
@@ -758,12 +767,25 @@
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
 
+(defn advance-all-datoms [datoms offset]
+  (map
+   (fn [^Datom d]
+     (datom (+ (.-e d) offset) (.-a d) (.-v d) (.-tx d)))
+   datoms))
+
 (defn ^DB init-db
   ([datoms] (init-db datoms nil nil))
   ([datoms schema] (init-db datoms schema nil))
   ([datoms schema config]
    (validate-schema schema)
-   (let [{:keys [index schema-flexibility keep-history?] :as config} (merge (dc/storeless-config) config)
+   (let [{:keys [index schema-flexibility keep-history? attribute-refs?] :as config} (merge (dc/storeless-config) config)
+         datoms (if attribute-refs?
+                  (concat (dd/coll->datoms system-schema)
+                          (advance-all-datoms datoms (->> system-schema
+                                                          rest
+                                                          (map first)
+                                                          (apply max))))
+                  datoms)
          rschema (rschema (merge implicit-schema schema))
          indexed (:db/index rschema)
          eavt (di/init-index index datoms indexed :eavt)

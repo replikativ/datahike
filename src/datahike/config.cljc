@@ -92,6 +92,7 @@
    :keep-history? false
    :schema-flexibility :read
    :name (z/rand-german-mammal)
+   :attribute-refs? false
    :index :datahike.index/hitchhiker-tree})
 
 (defn remove-nils
