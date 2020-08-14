@@ -723,6 +723,20 @@
        (map first)
        (apply max)))
 
+(defn init-max-eid [eavt]
+  ;; solved with reserse slice first in datascript
+  (if-let [datoms (-slice
+                   eavt
+                   (datom e0 nil nil tx0)
+                   (datom (dec tx0) nil nil txmax)
+                   :eavt)]
+    (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
+    e0))
+
+(defn get-max-tx [eavt]
+  (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
+
+
 (defn ^DB empty-db
   "Prefer create-database in api, schema not in index."
   ([] (empty-db nil nil))
@@ -738,6 +752,8 @@
          schema (merge implicit-schema schema)
          rschema (rschema schema)
          indexed (:db/index rschema)
+         system-idents (->> system-schema
+                            (filter (fn [[_ a _ _]] (= 1 a))))
          eavt (if attribute-refs?
                 (di/init-index index (dd/coll->datoms system-schema) indexed :eavt)
                 (di/empty-index index :eavt))
@@ -745,7 +761,7 @@
                 (di/init-index index (dd/coll->datoms system-schema) indexed :aevt)
                 (di/empty-index index :aevt))
          avet (if attribute-refs?
-                (di/init-index index (dd/coll->datoms system-schema) indexed :avet)
+                (di/init-index index (dd/coll->datoms system-idents) indexed :avet)
                 (di/empty-index index :avet))
          max-eid (if attribute-refs?
                    (init-max-eid eavt)
@@ -768,19 +784,6 @@
          {:temporal-eavt (di/empty-index index :eavt)
           :temporal-aevt (di/empty-index index :aevt)
           :temporal-avet (di/empty-index index :avet)}))))))
-
-(defn init-max-eid [eavt]
-  ;; solved with reserse slice first in datascript
-  (if-let [datoms (-slice
-                    eavt
-                    (datom e0 nil nil tx0)
-                    (datom (dec tx0) nil nil txmax)
-                    :eavt)]
-    (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
-    e0))
-
-(defn get-max-tx [eavt]
-  (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
 
 (defn advance-all-datoms [datoms offset]
   (map
