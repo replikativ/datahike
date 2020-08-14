@@ -717,6 +717,12 @@
     (raise "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
            (ds/explain-old-schema schema))))
 
+(defn- max-system-eid []
+  (->> system-schema
+       rest
+       (map first)
+       (apply max)))
+
 (defn ^DB empty-db
   "Prefer create-database in api, schema not in index."
   ([] (empty-db nil nil))
@@ -730,24 +736,33 @@
              (validate-schema schema)
              (validate-write-schema schema))
          schema (merge implicit-schema schema)
-         rschema (rschema (merge implicit-schema schema))
-         indexed (:db/index rschema)]
+         rschema (rschema schema)
+         indexed (:db/index rschema)
+         eavt (if attribute-refs?
+                (di/init-index index (dd/coll->datoms system-schema) indexed :eavt)
+                (di/empty-index index :eavt))
+         aevt (if attribute-refs?
+                (di/init-index index (dd/coll->datoms system-schema) indexed :aevt)
+                (di/empty-index index :aevt))
+         avet (if attribute-refs?
+                (di/init-index index (dd/coll->datoms system-schema) indexed :avet)
+                (di/empty-index index :avet))
+         max-eid (if attribute-refs?
+                   (init-max-eid eavt)
+                   e0)
+         max-tx (if attribute-refs?
+                  (get-max-tx eavt)
+                  tx0)]
      (map->DB
       (merge
        {:schema schema
         :rschema rschema
         :config  config
-        :eavt    (if attribute-refs?
-                   (di/init-index index (dd/coll->datoms system-schema) indexed :eavt)
-                   (di/empty-index index :eavt))
-        :aevt    (if attribute-refs?
-                   (di/empty-index index :aevt)
-                   (di/init-index index (dd/coll->datoms system-schema) indexed :aevt))
-        :avet    (if attribute-refs?
-                   (di/empty-index index :avet)
-                   (di/init-index index (dd/coll->datoms system-schema) indexed :avet))
-        :max-eid e0
-        :max-tx  tx0
+        :eavt eavt
+        :aevt aevt
+        :avet avet
+        :max-eid max-eid
+        :max-tx max-tx
         :hash    0}
        (when keep-history?
          {:temporal-eavt (di/empty-index index :eavt)
