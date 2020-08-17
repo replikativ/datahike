@@ -63,8 +63,10 @@
         (str a-namespace (when a-namespace "/") (name a))))
     ""))
 
+
+;; Defines an encoding for types.
+;;
 ;; TODO: Define other types (such as BigInt)
-;; Defines an encoding for types
 (def INT 1)
 (def LONG 2)
 (def STRING 3)
@@ -97,13 +99,13 @@
   ;; 2 * 4 bytes: as we store the string size twice i.e.:
   ;; - octet puts the size before the string
   ;; - we also put it again at the end
-  ;; 4 more bytes: to store the encoding that we store a String
+  ;; 4 more bytes: to encode that it is a String
   (- section-end (+ string-size (* 2 4) 4)))
 
 
-(def max-byte-val 127)
-
 ;; ------- Keys with max values --------
+
+(def max-byte-val 127)
 
 ;; This function is memoized. See next def.
 (defn- max-key-impl [index-type]
@@ -121,13 +123,13 @@
 
 (def max-key (memoize max-key-impl))
 
-;; ------- writing --------
+;; ------- Writing --------
 
 ;; The size has to be written at the end of the section,
 ;; but the string itself has to be written at the begin of the section.
-;; Why? This is a way to preserve the alphabetical order of string.
-;; E.g. Even though aab's length is shorter than aaaa's,
-;; the aab must be greater than aaaa in alphabetical ordering.
+;; Why? To preserve the alphabetical order of strings.
+;; E.g., even though aab's length is shorter than aaaa's,
+;; aab must be greater than aaaa in alphabetical ordering.
 (defn- write-str
   [val buffer index-type section-type] ;; section-type is :a-end or :v-end
   (assert (s/valid? string? val))
@@ -147,7 +149,7 @@
 
 (defn- write-keyword
   [val buffer index-type section-type] ;; section-type is :a-end or :v-end
-  "Writes the keyword as if it was a string but just changes the type of what is written down into 'KEYWORD'"
+  "Writes the keyword as if it was a string but just changes the encoding into 'KEYWORD'"
   (assert (s/valid? keyword? val))
   (let [section-end (position index-type section-type)]
     (write-str (attribute-as-str val) buffer index-type section-type)
