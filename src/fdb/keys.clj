@@ -189,8 +189,7 @@
     (buf/write! buffer (vec (take (- size 4) (repeat max-byte-val))) (buf/repeat 1 buf/byte)
       {:offset section-start})
     (buf/write! buffer [MAX-VAL-TYPE] (buf/spec buf/int32)
-      {:offset (shift-left section-end 3)}))
-  )
+      {:offset (shift-left section-end 3)})))
 
 (defn- write-a
   "Write the `a` part of an index."
