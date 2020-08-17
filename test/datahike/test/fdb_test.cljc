@@ -293,64 +293,50 @@
         ;; :aevt
         (is (= 3
               (count (fdb/get-range :aevt
-                       [:a 123 "Hans" 1 true]
-                       [:c 125 "GG" 1 true]))))
+                       [123 :a "Hans" 1 true] 
+                       [125 :c "GG" 1 true]))))
         (is (= 3
               (count (fdb/get-range :aevt
-                       [:a 123 "Hans" 1 true]
-                       [:c 9999999 "GG" 1 true]))))
+                       [123 :a "Hans" 1 true]
+                       [9999999 :c "GG" 1 true]))))
         (is (= 2
               (count (fdb/get-range :aevt
-                       [:a 123 "Hans" 1 true]
-                       [:c 0 "GG" 1 true]))))
-        (is (= 3
-              (count (fdb/get-range :aevt [:e] [:g]))))
-        (is (= 0
-              (count (fdb/get-range :aevt [:f] [:f]))))))
+                       [123 :a "Hans" 1 true]
+                       [0 :c "GG" 1 true]))))))
 
 
+  ;; !!! When :avet only indexed attributes are saved.
   (testing "simple range :avet"
-      (let [db (empty-db)
-            _  (d/db-with db [(datom 123 :a "Hans" 1 true)
-                              (datom 124 :b "GG" 1 true)
-                              (datom 125 :c "GG" 1 true)
-                              (datom 1 :d "GG" 1 true)
-                              (datom 2 :e "GG" 1 true)
-                              (datom 3 :f "GG" 1 true)
-                              (datom 4 :f "GG" 1 true)])]
-        ;; :aevt
-        (is (= 3
-              (count (fdb/get-range :avet
-                       [:a "Hans" 123  1 true]
-                       [:c "GG" 125  1 true]))))
-        (is (= 3
-              (count (fdb/get-range :avet
-                       [:a "Hans" 123 1 true]
-                       [:c "GG" 9999999 1 true]))))
-        (is (= 2
-              (count (fdb/get-range :avet
-                       [:a "Hans" 123 1 true]
-                       [:c "GG" 0  1 true]))))
-        (is (= 3
-              (count (fdb/get-range :avet [:e] [:g]))))
-        (is (= 0
-              (count (fdb/get-range :avet [:f] [:f]))))))
+    (let [_ (d/db-with (dh-db/empty-db {:name {:db/index true}})
+              [(datom 123 :name "Hans" 1 true)
+               (datom 124 :name "GG" 1 true)
+               (datom 125 :name "Gigi" 1 true)
+               (datom 1 :d "GG" 1 true)
+               (datom 2 :e "GG" 1 true)
+               (datom 3 :f "GG" 1 true)
+               (datom 4 :x "GG" 1 true)])]
+      (is (= 3
+            (count (fdb/get-range :avet
+                     [123 :a "Hans" 1]
+                     [125 :x "GG" 1]))))
+      (is (= 3
+            (count (fdb/get-range :avet
+                     [123 :name "GG" 1]
+                     [9999999 :x "GG" 1]))))
+      (is (= 1
+            (count (fdb/get-range :avet
+                     [123 :name "Hans" 1]
+                     [0 :x "x" 1]))))))
+  (testing "large range"
+    (let [db (empty-db)
+          _  (reduce #(d/db-with %1 [(datom %2 :likes "Hans" 1 true)]) db (range 1 100))]
+      (is (= 51
+            (count (fdb/get-range :eavt [1 :likes "Hans" 1 true] [51 :likes "Hans" 1 true])))))
 
-
-
-  "large range"
-  (let [db (empty-db)
-        _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 1 true)) db (range 100))]
-    (is (= 51
-          (count (fdb/get-range :eavt [1 :likes "Hans" 1 true]
-                   [51 :likes "Hans" 1 true])))))
-
-  "large range"
-  (let [db (empty-db)
-        _  (reduce #(with-datom %1 (datom %2 :likes "Hans" 1 true)) db (range 10))]
-    (is (= 3
-          (count (fdb/get-range :eavt [1 :likes "Hans" 1 true]
-                   [3 :likes "Hans" 1 true]))))))
+    (let [db (empty-db)
+          _  (reduce #(d/db-with %1 [(datom %2 :likes "Hans" 1 true)]) db (range 1 10))]
+      (is (= 3
+            (count (fdb/get-range :eavt [1 :likes "Hans" 1 true] [3 :likes "Hans" 1 true])))))))
 
 
 
