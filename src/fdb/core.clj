@@ -26,7 +26,7 @@
       db)))
 
 
-;; TODO: Currently there is only one and only one instance of FDB ever created.
+;; Currently there is only one and only one instance of FDB ever created.
 ;; I.e. I can't create multiple instances of the db with giving each a name for instance.
 (defn empty-db
   "Clear all keys from the database. Thus returns an empty db."
