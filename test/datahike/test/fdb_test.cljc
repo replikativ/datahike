@@ -251,10 +251,10 @@
           {:keys [eavt eavt-durable]} (d/db-with db [(datom 123 :likes "Hans" 1 true)
                                                      (datom 124 :likes "GG" 1 true)])]
       ;; get :e-end
-      (is (== (nth (fdb/get (:eavt-scalable db) :eavt [123 :likes "Hans" 1 true])
+      (is (== (nth (fdb/get :eavt [123 :likes "Hans" 1 true])
                 (k/position :eavt :e-end))
             123))
-      (is (== (nth (fdb/get (:eavt-scalable db) :eavt [124 :likes "GG" 1 true])
+      (is (== (nth (fdb/get :eavt [124 :likes "GG" 1 true])
                 (k/position :eavt :e-end))
             124))))
 
@@ -332,7 +332,7 @@
           _  (reduce #(d/db-with %1 [(datom %2 :likes "Hans" 1 true)]) db (range 1 100))]
       (is (= 51
             (count (fdb/get-range :eavt [1 :likes "Hans" 1 true] [51 :likes "Hans" 1 true])))))
-
+    
     (let [db (empty-db)
           _  (reduce #(d/db-with %1 [(datom %2 :likes "Hans" 1 true)]) db (range 1 10))]
       (is (= 3

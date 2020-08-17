@@ -51,9 +51,8 @@
       (tr! db (.clear tr key)))))
 
 
-;; TODO?: remove the db arg
 (defn get
-  [db index-type [e a v t]]
+  [index-type [e a v t]]
   (let [fd  (FDB/selectAPIVersion api-version)
         key (key index-type [e a v t])]
     (with-open [db (.open fd)]
