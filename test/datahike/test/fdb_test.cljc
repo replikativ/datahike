@@ -105,7 +105,7 @@
   (is (empty-db)))
 
 
-;; Strings order are preserved
+;; Asserts strings order are preserved
 (deftest string-order
   (testing ""
     (let [db (-> (empty-db)
