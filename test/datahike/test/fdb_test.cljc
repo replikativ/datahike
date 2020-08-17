@@ -1,8 +1,8 @@
 (ns datahike.test.fdb-test
   (:import (com.apple.foundationdb KeySelector
              FDB))
-  (:require [datahike.db :as dh-db :refer [with-datom]]
-            [datahike.core :as d]
+  (:require [datahike.core :as d]
+            [datahike.db :as dh-db]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [fdb.core :as fdb]
             [fdb.keys :as k]
@@ -119,12 +119,10 @@
     (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647]))))))
 
 
-;; TODO: with-datom is not a public class!
-(deftest datoms-fn
+(deftest datom-fn
   (let [dvec #(vector (:e %) (:a %) (:v %))
-        db (-> (empty-db)
-             (with-datom (datom 123 :likes "Hans" 1 true))
-             (with-datom (datom 124 :likes "GG" 1 true)))]
+        db (d/db-with (empty-db) [(datom 123 :likes "Hans" 1 true)
+                                  (datom 124 :likes "GG" 1 true)])]
     (testing "datoms works"
       (is (= [[123 :likes "Hans"]
               [124 :likes "GG"]]
@@ -247,19 +245,18 @@
             #{["Devil"] ["Tupen"]}))))
 
 
-;; TODO: with-datom is not a public class!
-(deftest using-with-datom
-  "get"
-  (let [db                          (empty-db)
-        {:keys [eavt eavt-durable]} (d/db-with db [(datom 123 :likes "Hans" 1 true)
-                                                   (datom 124 :likes "GG" 1 true)])]
-    ;; get :e-end
-    (is (== (nth (fdb/get (:eavt-scalable db) :eavt [123 :likes "Hans" 1 true])
-              (k/position :eavt :e-end))
-          123))
-    (is (== (nth (fdb/get (:eavt-scalable db) :eavt [124 :likes "GG" 1 true])
-              (k/position :eavt :e-end))
-          124)))
+(deftest db-with
+  (testing "get :e-end"
+    (let [db                          (empty-db)
+          {:keys [eavt eavt-durable]} (d/db-with db [(datom 123 :likes "Hans" 1 true)
+                                                     (datom 124 :likes "GG" 1 true)])]
+      ;; get :e-end
+      (is (== (nth (fdb/get (:eavt-scalable db) :eavt [123 :likes "Hans" 1 true])
+                (k/position :eavt :e-end))
+            123))
+      (is (== (nth (fdb/get (:eavt-scalable db) :eavt [124 :likes "GG" 1 true])
+                (k/position :eavt :e-end))
+            124))))
 
   (testing "simple range :eavt"
     (let [db (empty-db)
