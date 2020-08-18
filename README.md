@@ -17,14 +17,14 @@ This is a preview release of [Datahike](https://github.com/replikativ/datahike) 
 
 ;; Populate the database
 (d/db-with db [ { :db/id 1, :name  "Ivan", :age   15 }
-                            { :db/id 2, :name  "Petr", :age   37 }
-                            { :db/id 3, :name  "Ivan", :age   37 }
-                                { :db/id 4, :age 15 }])
+                { :db/id 2, :name  "Petr", :age   37 }
+                { :db/id 3, :name  "Ivan", :age   37 }
+                { :db/id 4, :age 15 }])
 
 ;; Search the data
 (d/q '[:find  ?e ?v
-                  :where [?e :name "Ivan"]
-                         [?e :age ?v]] db)
+       :where [?e :name "Ivan"]
+              [?e :age ?v]] db)
 => #{[1 15] [3 37]}
 ```
 
