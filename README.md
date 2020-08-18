@@ -25,7 +25,8 @@ This is a preview release of [Datahike](https://github.com/replikativ/datahike) 
 (d/q '[:find  ?e ?v
                   :where [?e :name "Ivan"]
                          [?e :age ?v]] db)
-=> #{[1 15] [3 37]}                         
+=> #{[1 15] [3 37]}
+```
 
 
 
