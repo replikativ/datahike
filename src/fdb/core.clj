@@ -129,8 +129,7 @@
   [index-type begin-key end-key]
   (let [fd    (FDB/selectAPIVersion api-version)
         b-key (KeySelector/firstGreaterOrEqual (key index-type begin-key))
-        e-key   (KeySelector/firstGreaterThan (key index-type end-key)
-                  )]
+        e-key (KeySelector/firstGreaterThan (key index-type end-key))]
     (with-open [db (.open fd)]
       (tr! db 
         (mapv #(.getKey %)
