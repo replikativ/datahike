@@ -1,22 +1,6 @@
-# datahike <a href="https://gitter.im/replikativ/replikativ?utm_source=badge&amp;utm_medium=badge&amp;utm_campaign=pr-badge&amp;utm_content=badge"><img src="https://camo.githubusercontent.com/da2edb525cde1455a622c58c0effc3a90b9a181c/68747470733a2f2f6261646765732e6769747465722e696d2f4a6f696e253230436861742e737667" alt="Gitter" data-canonical-src="https://badges.gitter.im/Join%20Chat.svg" style="max-width:100%;"></a> <a href="https://clojars.org/io.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/io.replikativ/datahike.svg" /></a> [![CircleCI](https://circleci.com/gh/replikativ/datahike.svg?style=shield)](https://circleci.com/gh/replikativ/datahike)
+# datahike-fdb
 
-datahike is a durable [datalog](https://en.wikipedia.org/wiki/Datalog) database
-powered by an efficient datalog query engine. This project is a port of
-[datascript](https://github.com/tonsky/datascript) to the
-[hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
-datascript tests are passing, but we are still working on the internals. Having
-said this we consider datahike usable for small projects, since datascript is
-very mature and deployed in many applications and the hitchhiker-tree
-implementation is at least heavily tested through generative testing. We are
-building on the two projects and the storage backends for the hitchhiker-tree
-through [konserve](https://github.com/replikativ/konserve). We would like to
-hear experience reports and are happy if you join us.
-
-Some presentations are available:
-
-- [2019 scicloj online meetup](https://www.youtube.com/watch?v=Hjo4TEV81sQ).
-- [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
-- [2018 Dutch clojure meetup](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
+[Datahike](https://github.com/replikativ/datahike) with [FoundationDB](https://www.foundationdb.org) as data storage.
 
 ## Usage
 
