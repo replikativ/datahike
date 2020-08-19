@@ -115,19 +115,18 @@
       (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Petr" 2147483647])))))))
 
 
-(deftest nil-meaning
+(deftest test-nil
   (let [db (-> (empty-db)
              (d/db-with [ [:db/add 1 :name "Petr"]]))]
-    ;; In get-range queries nil must mean max_value
+    ;; In get-range queries nil must mean :max_value
     (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647]))))))
 
 
-;; TODO: with-datom is not a public class!
 (deftest datoms-fn
   (let [dvec #(vector (:e %) (:a %) (:v %))
         db (-> (empty-db)
-             (with-datom (datom 123 :likes "Hans" 1 true))
-             (with-datom (datom 124 :likes "GG" 1 true)))]
+             (d/db-with [(datom 123 :likes "Hans" 1 true)])
+             (d/db-with [(datom 124 :likes "GG" 1 true)]))]
     (testing "datoms works"
       (is (= [[123 :likes "Hans"]
               [124 :likes "GG"]]
