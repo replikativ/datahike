@@ -31,21 +31,17 @@
 
 (def -flush identity)
 
-;; TODO: implement? Ask about semantic!
 (def -transient identity)
 (def -persistent! identity)
 
 
 (defn -insert [db datom index-type]
-  (let [db-after (fc/insert index-type datom)]
-    db))
+  (fc/insert index-type datom)
+  db)
 
 (defn -remove [db datom index-type]
-  (let [_ (fc/clear index-type datom)]
-    db))
+  (fc/clear index-type datom)
+  db)
 
-;; Called 3 times, one for each index.
 (defn empty-db [index-type]
-  (let [db (fc/empty-db)]
-    ;; (println "...db is nil?:" db)
-    db))
+  (fc/empty-db))

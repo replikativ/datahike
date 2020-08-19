@@ -63,8 +63,10 @@
         (str a-namespace (when a-namespace "/") (name a))))
     ""))
 
+
+;; Defines an encoding for types.
+;;
 ;; TODO: Define other types (such as BigInt)
-;; Defines an encoding for types
 (def INT 1)
 (def LONG 2)
 (def STRING 3)
@@ -79,13 +81,13 @@
   (assert (s/valid? int? encoding))
   (cond
     ;; TODO: isn't better to change all the java classes into :db-fdb/interger-long-string...
-    (= encoding INT)    java.lang.Integer
-    (= encoding LONG)   java.lang.Long
-    (= encoding STRING) java.lang.String
+    (= encoding INT)          java.lang.Integer
+    (= encoding LONG)         java.lang.Long
+    (= encoding STRING)       java.lang.String
     (= encoding MAX-VAL-TYPE) :dh-fdb/max-val
     (= encoding MIN-VAL-TYPE) :dh-fdb/min-val
-    (= encoding BOOL)   java.lang.Boolean
-    (= encoding KEYWORD) :dh-fdb/keyword))
+    (= encoding BOOL)         java.lang.Boolean
+    (= encoding KEYWORD)      :dh-fdb/keyword))
 
 (defn- str-offset
   "Returns the offset where to start writing a string
@@ -97,13 +99,13 @@
   ;; 2 * 4 bytes: as we store the string size twice i.e.:
   ;; - octet puts the size before the string
   ;; - we also put it again at the end
-  ;; 4 more bytes: to store the encoding that we store a String
+  ;; 4 more bytes: to encode that it is a String
   (- section-end (+ string-size (* 2 4) 4)))
 
 
-(def max-byte-val 127)
-
 ;; ------- Keys with max values --------
+
+(def max-byte-val 127)
 
 ;; This function is memoized. See next def.
 (defn- max-key-impl [index-type]
@@ -121,13 +123,13 @@
 
 (def max-key (memoize max-key-impl))
 
-;; ------- writing --------
+;; ------- Writing --------
 
 ;; The size has to be written at the end of the section,
 ;; but the string itself has to be written at the begin of the section.
-;; Why? This is a way to preserve the alphabetical order of string.
-;; E.g. Even though aab's length is shorter than aaaa's,
-;; the aab must be greater than aaaa in alphabetical ordering.
+;; Why? To preserve the alphabetical order of strings.
+;; E.g., even though aab's length is shorter than aaaa's,
+;; aab must be greater than aaaa in alphabetical ordering.
 (defn- write-str
   [val buffer index-type section-type] ;; section-type is :a-end or :v-end
   (assert (s/valid? string? val))
@@ -147,7 +149,7 @@
 
 (defn- write-keyword
   [val buffer index-type section-type] ;; section-type is :a-end or :v-end
-  "Writes the keyword as if it was a string but just changes the type of what is written down into 'KEYWORD'"
+  "Writes the keyword as if it was a string but just changes the encoding into 'KEYWORD'"
   (assert (s/valid? keyword? val))
   (let [section-end (position index-type section-type)]
     (write-str (attribute-as-str val) buffer index-type section-type)
@@ -187,8 +189,7 @@
     (buf/write! buffer (vec (take (- size 4) (repeat max-byte-val))) (buf/repeat 1 buf/byte)
       {:offset section-start})
     (buf/write! buffer [MAX-VAL-TYPE] (buf/spec buf/int32)
-      {:offset (shift-left section-end 3)}))
-  )
+      {:offset (shift-left section-end 3)})))
 
 (defn- write-a
   "Write the `a` part of an index."
@@ -318,13 +319,13 @@
 (defn- read-v
   [buffer index-type section-type]
   (let [section-end (position index-type :v-end)
-        type (encoding->type (read-int buffer section-end 3))]
+        type        (encoding->type (read-int buffer section-end 3))]
     ;; TODO: Replace by a map so that dispatching is faster?
     (cond
       ;; No need to handle java.lang.Integer and co. because they were saved as Long
       (= type java.lang.Long)    (read-long  buffer section-end)
       (= type java.lang.String)  (read-str   buffer index-type section-type)
-      (= type :dh-fdb/max-val)          (read-max-val buffer index-type section-type)
+      (= type :dh-fdb/max-val)   (read-max-val buffer index-type section-type)
       (= type java.lang.Boolean) (read-bool  buffer section-end)
       (= type :dh-fdb/min-val)   (read-min-val buffer index-type section-type)
       ;; TODO: can this be move before :dh-fdb/max-val case, as it might be more often used.
@@ -377,40 +378,40 @@
   (->byteArr index-type [a b c t]))
 
 
+;; Uncomment when in DEV (to have live testing).
+(comment
+  (assert (== (str-offset (str-size "hello") 17) 0))
 
-;; ---- Tests   ;; TODO: move into comments at the end
-;;
-(assert (== (str-offset (str-size "hello") 17) 0))
+  (def vect [20 :hello "some analysis" 3])
+  (def test-buff (->byteBuffer :eavt vect))
+  (def buff->vect (byteBuffer->vect :eavt test-buff))
+  (prn buff->vect)
+  (assert (= buff->vect vect))
 
-(def vect [20 :hello "some analysis" 3])
-(def test-buff (->byteBuffer :eavt vect))
-(def buff->vect (byteBuffer->vect :eavt test-buff))
-(prn buff->vect)
-(assert (= buff->vect vect))
+  (assert (= (key->vect :eavt (->byteArr :eavt vect)) vect))
 
-(assert (= (key->vect :eavt (->byteArr :eavt vect)) vect))
-
-;; There are 64 bits for [e]. The last byte is at index 7.
-(assert (== (.get test-buff (position :eavt :e-end)) 20))
-;; ;; size of `hello` is 5
-;; (assert (== (.get test-buff (shift-left (:a-end eavt) 3)) 5))
-;; ;; the transaction id is ok
-;; (assert (== (.get test-buff (:t-end eavt)) 3))
-
-
-(def with-keyword [20 :shared/policy "some analysis" 3])
-(def buff (->byteBuffer :eavt with-keyword))
-(def buff->vect (byteBuffer->vect :eavt buff))
-;;(prn buff->vect)
-(assert (=  buff->vect with-keyword))
+  ;; There are 64 bits for [e]. The last byte is at index 7.
+  (assert (== (.get test-buff (position :eavt :e-end)) 20))
+  ;; ;; size of `hello` is 5
+  ;; (assert (== (.get test-buff (shift-left (:a-end eavt) 3)) 5))
+  ;; ;; the transaction id is ok
+  ;; (assert (== (.get test-buff (:t-end eavt)) 3))
 
 
-(def with-nil [20 :shared/policy :dh-fdb/max-val 3])
-(def buff (->byteBuffer :eavt with-nil))
-(def buff->vect (byteBuffer->vect :eavt buff))
-(prn buff->vect)
-(prn with-nil)
-;;(assert (= buff->vect with-nil))
+  (def with-keyword [20 :shared/policy "some analysis" 3])
+  (def buff (->byteBuffer :eavt with-keyword))
+  (def buff->vect (byteBuffer->vect :eavt buff))
+  ;;(prn buff->vect)
+  (assert (=  buff->vect with-keyword))
+
+
+  (def with-nil [20 :shared/policy :dh-fdb/max-val 3])
+  (def buff (->byteBuffer :eavt with-nil))
+  (def buff->vect (byteBuffer->vect :eavt buff))
+  (prn buff->vect)
+  (prn with-nil)
+  ;;(assert (= buff->vect with-nil))
+)
 
 
 

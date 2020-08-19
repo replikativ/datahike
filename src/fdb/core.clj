@@ -28,7 +28,7 @@
       db)))
 
 
-;; TODO: Currently there is only one and only one instance of FDB ever created.
+;; Currently there is only one and only one instance of FDB ever created.
 ;; I.e. I can't create multiple instances of the db with giving each a name for instance.
 (defn empty-db
   "Clear all keys from the database. Thus returns an empty db."
@@ -53,9 +53,8 @@
       (tr! db (.clear tr key)))))
 
 
-;; TODO?: remove the db arg
 (defn get
-  [db index-type [e a v t]]
+  [index-type [e a v t]]
   (let [fd  (FDB/selectAPIVersion api-version)
         key (key index-type [e a v t])]
     (with-open [db (.open fd)]
@@ -68,7 +67,7 @@
   (let [fd    (FDB/selectAPIVersion api-version)
         key   (key index-type [e a v t])
         value key]
-;;(println "Insert: " index-type " - " (key->vect index-type key))
+    ;;(println "Insert: " index-type " - " (key->vect index-type key))
     (with-open [db (.open fd)]
       (tr! db (.set tr key value))
       db)))
@@ -150,23 +149,14 @@
   "Returns vectors in the range [begin end]. `begin` and `end` are vectors *in the [e a v t] form*. But it is really the index-type, i.e., `:eavt`, `:aevt` or `:avet` which sets the semantics of those vectors.
   Additionally, if nils are present in the `begin` vector they are replaced by :dh-fdb/min-val to signal the system that we want the min. value at the spot. And conversely for `end` and :dh-fdb/max-val."
   [index-type begin end]
-  ;;(println "*** In get-range: " index-type " -- " begin "----" end)
   (let [new-begin (replace-nil begin :dh-fdb/min-val)
-        new-end (replace-nil end :dh-fdb/max-val)
-        ;;_ (println "*** In get-range: " index-type " -- " new-begin "----" new-end)
-        res (get-range-as-byte-array index-type new-begin new-end)
-        result (map (partial key->vect index-type) res)]
+        new-end   (replace-nil end :dh-fdb/max-val)
+        res       (get-range-as-byte-array index-type new-begin new-end)
+        result    (map (partial key->vect index-type) res)]
     ;; TODO remove all println
-;;(println "*** In get-range: " index-type " -- " begin "----" (type begin) " -- " end " -- " (type end) " --- RESULT: " result)
+    ;;(println "*** In get-range: " index-type " -- " begin "----" (type begin) " -- " end " -- " (type end) " --- RESULT: " result)
     result)) 
 
-
-;; TODO remove
-(comment
-  (do
-    (get-range :avet [0 :name "Petr" 536870912] [2147483647 :name "Petr" 2147483647])
-    (get-range :avet [0 :friend 2 536870912 true] [2147483647 :friend 2 2147483647 true]))
-  )
 
 ;;------------ KeySelectors and iterations
 
@@ -183,38 +173,7 @@
   "Lazily iterates through the keys starting from `begin` (a key in fdb format)"
   [index-type begin]
   (let [key-selector (KeySelector/firstGreaterOrEqual (key index-type begin))
-        key      (get-key key-selector)
-        next-key (get-key (.add key-selector 1))]
+        key          (get-key key-selector)
+        next-key     (get-key (.add key-selector 1))]
     (when-not (= (seq key) (seq next-key)) ;; seq makes [B comparable
       (lazy-seq (cons key (iterate-from index-type next-key))))))
-
-
-;;;;;;;;;;; Debug HELPER
-
-;; ;; debug
-;; (defn bArr
-;;   [i]
-;;   (let [arr (byte-array 1)]
-;;     (aset-byte arr 0 i)
-;;     arr))
-
-;; (defn insert-int
-;;   [db i]
-;;   (let [fd    (FDB/selectAPIVersion api-version)
-;;         key   (bArr i)
-;;         ;; Putting the key also in the value
-;;         value key]
-;;     (with-open [db (.open fd)]
-;;       (tr! db (.set tr key value))
-;;       db)))
-
-
-;; (defn get-range-int
-;;   [db begin end]
-;;   (let [fd        (FDB/selectAPIVersion api-version)
-;;         begin-key (bArr begin)
-;;         end-key   (bArr end)]
-;;    (with-open [db (.open fd)]
-;;      (tr! db ;;(.getRange tr (Range. (bArr 1) (bArr 2)))
-;;           (.getRange tr begin-key end-key)
-;;           ))))
