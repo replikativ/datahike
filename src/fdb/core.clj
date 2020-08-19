@@ -8,7 +8,9 @@
 
 (defmacro tr!
   "Transaction macro to perform actions. Always use tr for actions inside
-  each action since the transaction variable is bound to tr in the functions."
+  each action since the transaction variable is bound to tr in the functions.
+  See doc of method 'run' of 'com.apple.foundationdb.Transaction' API to better
+  understand this."
   [db & actions]
   `(.run ~db
          (reify
