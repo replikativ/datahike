@@ -89,41 +89,6 @@
                          ;; (println k)
                          (.set tr k v))))))))
 
-;; What is sent by Datahike to 'getRange' (depending on type of the query)?
-(comment
-  (def conn (d/create-conn {:aka { :db/cardinality :db.cardinality/many }}))
-
-  (do
-    (d/transact! conn [[:db/add 1 :name "Ivan"]])
-    (d/transact! conn [[:db/add 1 :name "Petr"]])
-    (d/transact! conn [[:db/add 1 :aka  "Devil"]])
-    (d/transact! conn [[:db/add 1 :aka  "Tupen"]]))
-
-  ;; :eavt  [1 :name nil 536870912 true] ----  [1 :name nil 2147483647 true]
-  (d/q '[:find ?v
-         :where [1 :name ?v]] @conn)
-
-  ;; :aevt  --   [0 :name nil 536870912 true] ----  [2147483647 :name nil 2147483647 true]
-  (d/q '[:find ?e
-         :where [?e :name "Ivan"]] @conn)
-
-  ;; :eavt  --   [1 nil nil 536870912 true] ----  [1 nil nil 2147483647 true]
-  (d/q '[:find ?a
-         :where [1 ?a _]] @conn)
-
-  ;; :eavt  --   [1 nil nil 536870912 true] ----  [1 nil nil 2147483647 true]
-  (d/q '[:find ?a
-         :where [1 ?a "Ivan"]] @conn)
-
-  ;; :aevt  --   [0 :name nil 536870912 true] ----  [2147483647 :name nil 2147483647 true]
-  (d/q '[:find  ?n1 ?n2
-         :where [?e1 :aka ?x]
-         [?e2 :aka ?x]
-         [?e1 :name ?n1]
-         [?e2 :name ?n2]] @conn)
-  )
-
-
 
 (defn- get-range-as-byte-array
   "Returns fdb keys in the range [begin end] as a collection of byte-arrays. `begin` and `end` are vectors.
@@ -131,8 +96,7 @@
   [index-type begin-key end-key]
   (let [fd    (FDB/selectAPIVersion api-version)
         b-key (KeySelector/firstGreaterOrEqual (key index-type begin-key))
-        e-key   (KeySelector/firstGreaterThan (key index-type end-key)
-                  )]
+        e-key (KeySelector/firstGreaterThan (key index-type end-key))]
     (with-open [db (.open fd)]
       (tr! db 
         (mapv #(.getKey %)
