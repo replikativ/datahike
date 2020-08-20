@@ -1,6 +1,7 @@
 (ns benchmark.core
   (:require [benchmark.measure :as m]
-            [benchmark.config :as c]))
+            [benchmark.config :as c]
+            [clojure.pprint :as pp]))
 
 
 (defn -main [& _]
@@ -9,7 +10,6 @@
                                 n            c/datom-counts
                                 _            (range c/iterations)]
                               (m/measure-performance-full initial-size n config)))]
-    (print measurements)
     (->> measurements
          (apply concat)
          (group-by :context)
@@ -17,4 +17,4 @@
                  {:context context
                   :mean-time (/ (reduce (fn [x y] (+ x (:time y))) 0 group)
                                 (count group))}))
-         clojure.pprint/pprint)))
+         pp/pprint)))

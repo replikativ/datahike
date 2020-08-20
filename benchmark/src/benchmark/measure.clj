@@ -1,24 +1,15 @@
 (ns benchmark.measure
   (:require [benchmark.config :as c]
-            [datahike.api :as d]
-            [clojure.string :as str])
-  (:import (java.io StringWriter)))
-
-(defmacro with-out-str-data-map
-  [& body]
-  `(let [s# (new StringWriter)]
-     (binding [*out* s#]
-       (let [r# ~@body]
-         {:res r#
-          :str (str s#)}))))
+            [datahike.api :as d]))
 
 
-(defn get-time-with-res
-  "Return result and execution time of function as vector [result time]"
-  [f]
-  (let [res (with-out-str-data-map (time (f)))]
-    [(:res res) (let [tokens (str/split (:str res) #" ")]
-                  (read-string (nth tokens (- (count tokens) 2))))]))
+(defmacro timed
+  "Evaluates expr. Returns the value of expr and the time in a map."
+  [expr]
+  `(let [start# (. System (nanoTime))
+         ret# ~expr]
+     {:res ret# :t (/ (double (- (. System (nanoTime)) start#)) 1000000.0)}))
+
 
 (defn init-db [initial-size config]
   (d/delete-database config)
@@ -28,7 +19,6 @@
         tx           (vec (repeatedly entity-count c/rand-entity))
         conn (d/connect config)]
      (d/transact conn c/schema)
-     (println "1")
      (when (pos? (count tx))
         (d/transact conn tx))
      (d/release conn)
@@ -37,19 +27,19 @@
 
 (defn measure-performance-full [initial-size n-datoms config]
   (init-db initial-size config)
-  (let [[conn t-connection-0] (get-time-with-res #(d/connect config))
+  (let [{conn :res t-connection-0 :t} (timed (d/connect config))
         entity-count (int (Math/ceil (/ n-datoms (count c/schema))))
         tx           (vec (repeatedly entity-count c/rand-entity))
-        [_ t-transaction-n] (get-time-with-res #(d/transact conn tx))
+        t-transaction-n (:t (timed (d/transact conn tx)))
 
         _ (d/release conn)
-        [_ t-connection-n] (get-time-with-res #(d/connect config))
+        t-connection-n (:t (timed (d/connect config)))
 
         rand-s-val (rand-nth (mapv :s1 tx))
-        [_ t-query1-n] (get-time-with-res #(d/q (c/q1 rand-s-val) @conn))
+         t-query1-n (:t (timed (d/q (c/q1 rand-s-val) @conn)))
 
         rand-i-val (rand-nth (mapv :i1 tx))
-        [_ t-query2-n] (get-time-with-res #(d/q (c/q2 rand-i-val) @conn))
+        t-query2-n   (:t (timed (d/q (c/q2 rand-i-val) @conn)))
 
         final-size (+ initial-size n-datoms)]
     (d/release conn)
