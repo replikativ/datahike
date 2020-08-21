@@ -85,6 +85,7 @@
   :profiles {:1.9 {:dependencies [[org.clojure/clojure         "1.10.1"   :scope "provided"]
                                   [org.clojure/clojurescript   "1.10.520" :scope "provided"]]}
              :dev {:source-paths ["bench/src" "test" "dev"]
+                   :repl-options {:init-ns sandbox}
                    :dependencies [[org.clojure/tools.nrepl     "0.2.13"]
                                   [org.clojure/tools.namespace "1.0.0"]
                                   [lambdaisland/kaocha         "1.0.632"]
