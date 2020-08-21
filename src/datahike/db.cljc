@@ -454,15 +454,15 @@
   (-index-range [db attr start end] (temporal-index-range (.-origin-db db) db attr start end)))
 
 (defn filter-txInstant [datoms pred db]
-  (into #{}
-        (comp
-          (map datom-tx)
-          (distinct)
-          (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
-          (keep (fn [^Datom d]
-                  (when (and (= :db/txInstant (.-a d)) (pred d))
-                    (.-e d)))))
-        datoms))
+  (let [xf (comp
+            (map datom-tx)
+            (distinct)
+            (mapcat #(temporal-datoms db :eavt [%]))
+            (keep (fn [^Datom d]
+                    (when (and (= :db/txInstant (.-a d))
+                               (pred d))
+                      (.-e d)))))]
+    (into #{} xf datoms)))
 
 (defn get-current-values [rschema datoms]
   (->> datoms
@@ -573,9 +573,13 @@
          (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d)))))))
 
 (defn- filter-before [datoms ^Date before-date db]
-  (let [before-pred (fn [^Datom d] (.before ^Date (.-v d) before-date))
+  (let [before-pred (fn [^Datom d]
+                      (.before ^Date (.-v d) before-date))
         filtered-tx-ids (filter-txInstant datoms before-pred db)]
-    (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))) datoms)))
+    (filter
+     (fn [^Datom d]
+       (contains? filtered-tx-ids (datom-tx d)))
+     datoms)))
 
 (defrecord-updatable SinceDB [origin-db time-point]
   #?@(:cljs
@@ -1255,9 +1259,10 @@
               (map (fn [^Datom d] [:db.fn/retractEntity (.-v d)]))) datoms))
 
 (defn- purge-components [db datoms]
-  (into #{} (comp
-              (filter (fn [^Datom d] (component? db (.-a d))))
-              (map (fn [^Datom d] [:db.purge/entity (.-v d)]))) datoms))
+  (let [xf (comp
+            (filter (fn [^Datom d] (component? db (.-a d))))
+            (map (fn [^Datom d] [:db.purge/entity (.-v d)])))]
+    (into #{} xf datoms)))
 
 #?(:clj
    (defmacro cond+ [& clauses]
@@ -1526,7 +1531,10 @@
             (= op :db.history.purge/before)
             (if (-keep-history? db)
               (let [history (HistoricalDB. db)
-                    e-datoms (-> (search-temporal-indices db nil) vec (filter-before e db) vec)
+                    e-datoms (-> (search-temporal-indices db nil)
+                                 vec
+                                 (filter-before e db)
+                                 vec)
                     retracted-comps (purge-components history e-datoms)]
                 (recur (reduce transact-purge-datom report e-datoms)
                        (concat retracted-comps entities)))
