@@ -124,6 +124,51 @@ For simple examples have a look at the projects in the `examples` folder.
 - [Invoice creation](https://gitlab.com/replikativ/datahike-invoice)
   demonstrated at the [Dutch Clojure
   Meetup](https://www.meetup.com/de-DE/The-Dutch-Clojure-Meetup/events/trmqnpyxjbrb/).
+  
+## Performance Measurement
+
+There is a small command line utility integrated in this project to measure the performance of our *in-memory* and our *file* backend.
+
+To run the benchmarks, navigate to the project folder in your terminal and run 
+
+```bash
+lein with-profile benchmark run 
+```
+
+You will receive a list containing information about what has been tested and the mean of measured times as follows:
+
+```clojure
+[ ;; ...
+ {:context
+  {:db
+   {:store {:backend :mem, :id "performance-hht"},
+    :schema-flexibility :write,
+    :keep-history? true,
+    :index :datahike.index/hitchhiker-tree},
+   :function :transaction,
+   :db-size 1000,
+   :tx-size 10},
+  :mean-time 5.0185512}
+  ;; ...
+]
+```
+
+The functions tested are
+- `connect` with keyword `:connection`
+  - `:dbsize` describes the number of datoms in the database the connection is being established to
+- `transact` with keyword `:transaction`
+  - `:txsize` describes the number of datoms inserted into the database
+  - `:dbsize` describes the number of datoms in the database before the transaction
+- `q` with keywords `:query1` and `:query2`
+  - `:dbsize` describes the number of datoms in the database
+  - queries are defined as following examples:
+```clojure
+ (def query1 '[:find ?e :where [?e :s1 "string"]])
+
+ (def query2 '[:find ?a :where [?e :s1 ?a]
+                               [?e :i1 42]])
+```
+
 
 ## Relationship to Datomic and DataScript
 

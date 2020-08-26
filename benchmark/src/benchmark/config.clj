@@ -34,6 +34,6 @@
         (conj '[?e :s1] string-val)))
 
 (defn q2 [int-val]
-  (conj '[:find ?e :where [?e :s1 ?a]]
+  (conj '[:find ?a :where [?e :s1 ?a]]
         (conj '[?e :i1] int-val)))
 
