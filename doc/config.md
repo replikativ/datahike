@@ -28,6 +28,7 @@ That means passing a config as argument overwrites java system properties and us
          :path     nil         ;string
          :host     nil         ;string
          :port     nil}        ;int
+ :name (generated)             ;string
  :schema-flexibility :write    ;keyword
  :keep-history?      true}}    ;boolean
 ```
@@ -40,6 +41,7 @@ datahike.store.backend      | DATAHIKE_STORE_BACKEND
 datahike.store.username     | DATAHIKE_STORE_USERNAME
 datahike.schema.flexibility | DATAHIKE_SCHEMA_FLEXIBILITY
 datahike.keep.history       | DATAHIKE_KEEP_HISTORY
+datahike.name               | DATAHIKE_NAME
 etc.
 
 *Do not use `:` in the keyword strings, it will be added automatically.*
@@ -92,6 +94,13 @@ At the moment we support two different backends from within Datahike: [in-memory
 - example: `{:store {:backend :pg :host "localhost" :port 5432 :username "alice" :password "foobar" :path "/pg_example"}}`
 - uri example: `datahike:pg://alice:foobar@localhost:5432/pg_example`
 
+## Name
+
+By default datahike generates a name for your database for you. If you want to set
+the name yourself just set a name for it in your config. It helps to specify the
+database you want to use, in case you are using multiple datahike databases in
+your application (to be seen in datahike-server).
+
 ## Schema Flexibility
 
 By default the datahike api uses a schema on `:write` approach with strict value
@@ -137,4 +146,3 @@ Starting from version `0.3.0` it is encouraged to use the new hashmap configurat
 - all backend configuration remains the same except for `:mem`
 - naming attribute for `:mem` backend is moved to `:id` from `:host` or `:path`
 - optional `clojure.spec` validation has been added
-
