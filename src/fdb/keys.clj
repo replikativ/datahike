@@ -183,8 +183,8 @@
   [buffer index-type section-type]
   "Writes the max value possible into the slot"
   (let [section-start (+ 1 (position index-type (pred-section index-type section-type)))
-        section-end (position index-type section-type)
-        size (- section-end section-start)]
+        section-end   (position index-type section-type)
+        size          (- section-end section-start)]
     ;; Leave 4 bytes to write the type of the content
     (buf/write! buffer (vec (take (- size 4) (repeat max-byte-val))) (buf/repeat 1 buf/byte)
       {:offset section-start})
@@ -199,24 +199,24 @@
   (cond
     (= :dh-fdb/min-val a) (write-min-val buffer index-type :a-end)
     (= :dh-fdb/max-val a) (write-max-val buffer index-type :a-end)
-    :else (write-str (attribute-as-str a) buffer index-type :a-end)))
+    :else                 (write-str (attribute-as-str a) buffer index-type :a-end)))
 
 (defn- write-v
   [val buffer index-type]
   "Write the `v` part of an index. Write `val` into `buffer` given `section-end`, the *end* of the section where it should be written"
   (assert (s/valid? keyword? index-type))
-  (let [type (type val) ;; TODO: stop using type and use boolean?, string? in this function? What is faster?
+  (let [type        (type val) ;; TODO: stop using type and use boolean?, string? in this function? What is faster?
         section-end (position index-type :v-end)]
     (cond
       ;; Integer, Long, Short etc... are all stored as long. TODO: might not work for BigInt
-      (integer? val)    (write-long val buffer section-end)
+      (integer? val)             (write-long val buffer section-end)
       (= type java.lang.String)  (write-str val buffer index-type :v-end)
-      (= :dh-fdb/min-val val) (write-min-val buffer index-type :v-end)
-      (= :dh-fdb/max-val val) (write-max-val buffer index-type :v-end)
+      (= :dh-fdb/min-val val)    (write-min-val buffer index-type :v-end)
+      (= :dh-fdb/max-val val)    (write-max-val buffer index-type :v-end)
       ;; !!! DON'T move this before the :dh-fdb/min-val or :dh-fdb/max-val tests (as they are keywords!)
-      (keyword? val)   (write-keyword val buffer index-type :v-end)
+      (keyword? val)             (write-keyword val buffer index-type :v-end)
       (= type java.lang.Boolean) (write-bool val buffer section-end)
-      :else (throw (IllegalStateException. (str "Trying to write-v: " val))))))
+      :else                      (throw (IllegalStateException. (str "Trying to write-v: " val))))))
 
 
 
