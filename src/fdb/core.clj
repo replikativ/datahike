@@ -130,7 +130,7 @@
       (tr! db
         @(.getKey tr key-selector)))))
 
-;; NOTE: Works but not used. Using range instead as it should be faster.
+;; NOTE: Works but not used. Using get-range instead as it should be faster.
 (defn iterate-from
   "Lazily iterates through the keys starting from `begin` (a key in fdb format)"
   [index-type begin]
