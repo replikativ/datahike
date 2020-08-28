@@ -113,7 +113,7 @@
       (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name "Petr" 2147483647])))))))
 
 
-(deftest nil-meaning
+(deftest test-nil
   (let [db (-> (empty-db)
              (d/db-with [ [:db/add 1 :name "Petr"]]))]
     (is (not (empty? (fdb/get-range :eavt [0 :name nil 536870912] [1 :name nil 2147483647]))))))
@@ -345,16 +345,19 @@
 
 ;; FoundationDB write 1 million keys with 10 parallel clients and 100k keys per client
 
-#_(let [fd (select-api-version 510)
-        kv (map #(vector (str %1) %1) (range 100000))]
+
+;; TODO: Does not work
+(comment
+  (let [fd (FDB/selectAPIVersion 510)
+        kv (map #(->> (vector %1 (keyword (str %1)) %1) (k/key :eavt)) (range 100000))]
     (time (let [clients (repeatedly 10 #(future
-                                          (with-open [db (open fd)]
-                                            (tr! db
-                                                 (doall (doseq [[k v] kv]
-                                                          (set-val tr k v)))))))]
+                                          (with-open [db (.open fd)]
+                                            (fdb/tr! db
+                                              (doall (doseq [[k v] kv]
+                                                       (.set tr k v)))))))]
             (doall (map deref clients))
             "Finished")))
-
+)
 ;; "Elapsed time: 27903.477365 msecs"
 
 
@@ -371,21 +374,26 @@
 
 ;; To test how quick inserting 100k datoms is
 (comment
-  (let [v  (byte-array [])
-        fd (FDB/selectAPIVersion 510)
-        all_kv (map #(vector (fdb.keys/key index-type [%1 (str ":attribute/" %1) %1 %1])  v)
-                (range 100000))]
+  (let [v      (byte-array [])
+        fd     (FDB/selectAPIVersion 510)
+        all_kv (map #(vector (fdb.keys/key :eavt [%1 (keyword (str "attribute/" %1)) %1 %1])  v)
+                 (range 100000))]
     (time (with-open [db (.open fd)]
             ;; with fdb key size of 500 bytes
             (doall (doseq [kv_200 (partition 5000 all_kv)]
                      ;;(println "a")
                      (fdb/tr! db (doseq [[k v] kv_200]
-                                   (.set tr k v)))))))))
+                                   (.set tr k v))))))))
+  )
 
+;; 2019
 ;; * With 100k datoms to store
 ;; - and with fdb key size of 500 bytes and 5000 datoms per transaction: "Elapsed time: 14517.359219 msecs"
 ;; storing 10000 datoms per transaction exceeds FDB limits
 ;; - and with fdb key size of 100 bytes and 20000 datoms per transaction: "Elapsed time: 13781.928804 msecs"
+;;
+;; 18 august 2020:
+;; 31072 msecs
 
 
 
