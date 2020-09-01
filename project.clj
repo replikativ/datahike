@@ -12,7 +12,7 @@
                  [com.taoensso/timbre "4.10.0"]
                  [io.replikativ/hitchhiker-tree "0.1.7"]
                  [io.replikativ/superv.async "0.2.9"]
-                 [io.lambdaforge/datalog-parser "0.1.7"]
+                 [io.lambdaforge/datalog-parser "0.1.8-SNAPSHOT"]
                  [io.replikativ/zufall "0.1.0"]
                  [junit/junit "4.13"]]
 
@@ -82,20 +82,22 @@
                                    :parallel-build true
                                    :checked-arrays :warn}}]}
 
-  :profiles {:1.9 {:dependencies [[org.clojure/clojure         "1.10.1"   :scope "provided"]
-                                  [org.clojure/clojurescript   "1.10.520" :scope "provided"]]}
-             :dev {:source-paths ["bench/src" "test" "dev"]
-                   :dependencies [[org.clojure/tools.nrepl     "0.2.13"]
-                                  [org.clojure/tools.namespace "1.0.0"]
-                                  [lambdaisland/kaocha         "1.0.632"]
-                                  [lambdaisland/kaocha-cljs    "0.0-71"]
-                                  [io.replikativ/datahike-leveldb "0.1.0"]
-                                  [io.replikativ/datahike-postgres "0.3.1-SNAPSHOT"]]}
-             :aot {:aot [#"datahike\.(?!query-v3).*"]
-                   :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}
-             :kaocha {:dependencies [[lambdaisland/kaocha "1.0.632"]
-                                     [io.replikativ/datahike-leveldb "0.1.0"]
-                                     [io.replikativ/datahike-postgres "0.3.1-SNAPSHOT"]]}}
+  :profiles {:1.9       {:dependencies [[org.clojure/clojure "1.10.1" :scope "provided"]
+                                        [org.clojure/clojurescript "1.10.520" :scope "provided"]]}
+             :dev       {:source-paths ["bench/src" "test" "dev"]
+                         :dependencies [[org.clojure/tools.nrepl "0.2.13"]
+                                        [org.clojure/tools.namespace "1.0.0"]
+                                        [lambdaisland/kaocha "1.0.632"]
+                                        [lambdaisland/kaocha-cljs "0.0-71"]
+                                        [io.replikativ/datahike-leveldb "0.1.0"]
+                                        [io.replikativ/datahike-postgres "0.3.1-SNAPSHOT"]]}
+             :benchmark {:main benchmark.core
+                         :source-paths ["benchmark/src" "src"]}
+             :aot       {:aot      [#"datahike\.(?!query-v3).*"]
+                         :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}
+             :kaocha    {:dependencies [[lambdaisland/kaocha "1.0.632"]
+                                        [io.replikativ/datahike-leveldb "0.1.0"]
+                                        [io.replikativ/datahike-postgres "0.3.1-SNAPSHOT"]]}}
 
   :clean-targets ^{:protect false} ["target"
                                     "release-js/datahike.bare.js"

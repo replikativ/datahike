@@ -1,0 +1,3 @@
+#TITLE: Architecture Decision Log
+This log captures all architectural decisions that are made throughout the
+development process. Have a look [[https://github.com/joelparkerhenderson/architecture_decision_record][here]] for more information.

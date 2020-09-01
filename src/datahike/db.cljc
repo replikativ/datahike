@@ -7,13 +7,13 @@
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    [datahike.constants :refer [e0 tx0 emax txmax]]
-   [datahike.tools :refer [get-time case-tree]]
+   [datahike.tools :refer [get-time case-tree raise]]
    [datahike.schema :as ds]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
    [datahike.config :as dc])
-  #?(:cljs (:require-macros [datahike.db :refer [raise defrecord-updatable cond+]]
+  #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable cond+]]
                             [datahike.datom :refer [combine-cmp]]
-                            [datahike.tools :refer [case-tree]]))
+                            [datahike.tools :refer [case-tree raise]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [java.util Date]
@@ -30,12 +30,6 @@
 (def ^:const implicit-schema {:db/ident {:db/unique :db.unique/identity}})
 
 ;; ----------------------------------------------------------------------------
-
-#?(:clj
-   (defmacro raise [& fragments]
-     (let [msgs (butlast fragments)
-           data (last fragments)]
-       `(throw (ex-info (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data)))))
 
 (defn #?@(:clj  [^Boolean seqable?]
           :cljs [^boolean seqable?])
@@ -1605,11 +1599,14 @@
 
         ;; meta entity
         (ds/meta-attr? a)
-        (let [new-datom (dd/datom max-tid a v max-tid op)]
+        (let [new-datom (dd/datom max-tid a v max-tid op)
+              new-e (.-e new-datom)]
           (recur (-> (transact-report report new-datom)
                      (assoc-in [:db-after :max-tx] max-tid))
                  entities
-                 (assoc-in migration-state [:tids e] (.-e new-datom))))
+                 (-> migration-state
+                     (assoc-in [:tids e] new-e)
+                     (assoc-in [:eids e] new-e))))
 
         ;; ref not added yet
         (and (ref? db a) (nil? (get-in migration-state [:eids v])))

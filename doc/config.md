@@ -28,18 +28,20 @@ That means passing a config as argument overwrites java system properties and us
          :path     nil         ;string
          :host     nil         ;string
          :port     nil}        ;int
+ :name (generated)             ;string
  :schema-flexibility :write    ;keyword
  :keep-history?      true}}    ;boolean
 ```
 
 Please refer to the documentation of the [environ library](https://github.com/weavejester/environ) on how to use it. If you want to pass the config as environment variables or Java system properties you need to name them like following:
 
-properties              | envvar
---------------------------|--------------------------
-datahike.store.backend  | DATAHIKE_STORE_BACKEND
-datahike.store.username | DATAHIKE_STORE_USERNAME
-datahike.schema.on.read | DATAHIKE_SCHEMA_ON_READ
-datahike.keep.history    DATAHIKE_KEEP_HISTORY
+properties                  | envvar
+----------------------------|--------------------------
+datahike.store.backend      | DATAHIKE_STORE_BACKEND
+datahike.store.username     | DATAHIKE_STORE_USERNAME
+datahike.schema.flexibility | DATAHIKE_SCHEMA_FLEXIBILITY
+datahike.keep.history       | DATAHIKE_KEEP_HISTORY
+datahike.name               | DATAHIKE_NAME
 etc.
 
 *Do not use `:` in the keyword strings, it will be added automatically.*
@@ -55,7 +57,7 @@ you can simply use the defaults which creates an in-memory database with ID `"de
 (d/create-database)
 ```
 
-At the moment we support two different backends from within Datahike: [in-memory](#in-memory) and [file-based](#file-based). 
+At the moment we support two different backends from within Datahike: [in-memory](#in-memory) and [file-based](#file-based).
 [LevelDB](#leveldb) and [PostgreSQL](#postgresql) is supported via external libraries: [datahike-postgres](https://github.com/replikativ/datahike-postgres/) and [datahike-leveldb](https://github.com/replikativ/datahike-leveldb)
 
 ### in-memory
@@ -92,6 +94,13 @@ At the moment we support two different backends from within Datahike: [in-memory
 - example: `{:store {:backend :pg :host "localhost" :port 5432 :username "alice" :password "foobar" :path "/pg_example"}}`
 - uri example: `datahike:pg://alice:foobar@localhost:5432/pg_example`
 
+## Name
+
+By default datahike generates a name for your database for you. If you want to set
+the name yourself just set a name for it in your config. It helps to specify the
+database you want to use, in case you are using multiple datahike databases in
+your application (to be seen in datahike-server).
+
 ## Schema Flexibility
 
 By default the datahike api uses a schema on `:write` approach with strict value
@@ -102,7 +111,7 @@ can set `:schema-flexibility` to `read`. You may add basic schema definitions li
 
 ```clojure
 (require '[datahike.api :as d])
-         
+
 (d/create-database {:schema-flexibility :read})
 ```
 
@@ -137,4 +146,3 @@ Starting from version `0.3.0` it is encouraged to use the new hashmap configurat
 - all backend configuration remains the same except for `:mem`
 - naming attribute for `:mem` backend is moved to `:id` from `:host` or `:path`
 - optional `clojure.spec` validation has been added
-
