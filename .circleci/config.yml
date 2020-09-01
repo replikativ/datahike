@@ -26,6 +26,7 @@ workflows:
               only: development
           requires:
             - lein/setup
+            - lein/format
             - lein/unittest
             - lein/integrationtest-postgresql
             - lein/build
@@ -36,6 +37,7 @@ workflows:
               only: master
           requires:
             - lein/setup
+            - lein/format
             - lein/unittest
             - lein/integrationtest-postgresql
             - lein/build
