@@ -3,11 +3,13 @@
             [datahike.core :as d]
             [datahike.index :as di]
             [datahike.store :as ds]
+            [datahike.config :as dc]
+            [datahike.tools :as dt]
             [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
             [konserve.cache :as kc]
             [superv.async :refer [<?? S]]
-            [datahike.config :as dc]
+            [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.core.cache :as cache])
   (:import [java.net URI]))
@@ -51,12 +53,12 @@
                            :temporal-aevt-key temporal-aevt-flushed
                            :temporal-avet-key temporal-avet-flushed}))))
     (reset! connection (assoc db-after
-                              :eavt eavt-flushed
-                              :aevt aevt-flushed
-                              :avet avet-flushed
-                              :temporal-eavt temporal-eavt-flushed
-                              :temporal-aevt temporal-aevt-flushed
-                              :temporal-avet temporal-avet-flushed))
+                         :eavt eavt-flushed
+                         :aevt aevt-flushed
+                         :avet avet-flushed
+                         :temporal-eavt temporal-eavt-flushed
+                         :temporal-aevt temporal-aevt-flushed
+                         :temporal-avet temporal-avet-flushed))
     tx-report))
 
 
@@ -71,6 +73,7 @@
   (try
     (deref (transact! connection tx-data))
     (catch Exception e
+      (log/errorf "Error during transaction %s" (.getMessage e))
       (throw (.getCause e)))))
 
 (defn load-entities [connection entities]
@@ -124,8 +127,8 @@
           store-config (:store config)
           raw-store (ds/connect-store store-config)
           _ (when-not raw-store
-              (throw (ex-info "Backend does not exist." {:type :backend-does-not-exist
-                                                         :config store-config})))
+              (dt/raise "Backend does not exist." {:type :backend-does-not-exist
+                                                          :config config}))
           store (kons/add-hitchhiker-tree-handlers
                  (kc/ensure-cache
                   raw-store
@@ -133,8 +136,8 @@
           stored-db (<?? S (k/get-in store [:db]))
           _ (when-not stored-db
               (ds/release-store store-config store)
-              (throw (ex-info "Database does not exist." {:type :db-does-not-exist
-                                                          :config config})))
+              (dt/raise "Database does not exist." {:type :db-does-not-exist
+                                                    :config config}))
           {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx hash]} stored-db
           empty (db/empty-db nil config)]
       (d/conn-from-db
@@ -159,9 +162,9 @@
           store (kc/ensure-cache
                  (ds/empty-store store-config)
                  (atom (cache/lru-cache-factory {} :threshold 1000)))
-          stored-db (<?? S (k/get-in store [:db]))
-          _ (when stored-db
-              (throw (ex-info "Database already exists." {:type :db-already-exists :config store-config})))
+        stored-db (<?? S (k/get-in store [:db]))
+        _ (when stored-db
+            (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
           {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx hash]}
           (db/empty-db nil config)
           backend (kons/->KonserveBackend store)]
