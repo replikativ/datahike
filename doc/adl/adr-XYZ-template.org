@@ -1,0 +1,11 @@
+#+TITLE: Architecture Decision Record Template
+* Context
+* Options
+** Option A
+*** Pro
+*** Contra
+* Status
+* Decision
+* Consequences
+
+  

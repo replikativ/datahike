@@ -1,0 +1,28 @@
+#+TITLE: Architecture Decision Record Template
+* Context
+Datahike enters a stage where architectural decisions have larger consequences
+for the marketing and use since more and more people are integrating it into
+their products. Therefore a documentation for all decisions should be written.
+* Options
+** Write architecture decision records
+Use the approach of [[https://github.com/joelparkerhenderson/architecture_decision_record][Architecture Decsion Records]] to document the decision-making.
+*** Pro
+- transparent decision-making
+- architectural docs
+- recorded discussion on options
+*** Contra
+- overhead of writings
+- longer process for decision-making
+- needs practice
+- needs some supervision in the beginning
+* Status
+Pending
+* Decision
+All architectural decisions have to be recorded in this folder with ascending
+numbering. An overview of sections to be discussed is found in the [[file:./adr-XYZ-template.org][template file]].
+* Consequences
+- all members need to write an ADR for a new feature
+- ADR are the artifacts of our transparent decision-making
+- ADL can be found in the Datahike repository
+- All open discussions on architecutre can be followed and open questions can be
+  addressed

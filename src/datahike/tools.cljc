@@ -1,4 +1,6 @@
-(ns datahike.tools)
+(ns datahike.tools
+  (:require
+   [taoensso.timbre :as log]))
 
 (defn combine-hashes [x y]
   #?(:clj  (clojure.lang.Util/hashCombine x y)
@@ -21,3 +23,15 @@
 (defn get-time []
   #?(:clj (java.util.Date.)
      :cljs (js/Date.)))
+
+(defmacro raise
+  "Logging an error and throwing an exception with message and structured data.
+   Arguments:
+   - Any number of strings that describe the error
+   - Last argument is a map of data that helps understanding the source of the error"
+  [& fragments]
+  (let [msgs (butlast fragments)
+        data (last fragments)]
+    (list `(log/log! :error :p ~fragments ~{:?line (:line (meta &form))})
+          `(throw #?(:clj  (ex-info (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data)
+                     :cljs (error (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data))))))

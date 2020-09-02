@@ -1,25 +1,23 @@
 (ns ^:no-doc datahike.db
   (:require
-    #?(:cljs [goog.array :as garray])
-    [clojure.walk]
-    [clojure.data]
-    #?(:clj [clojure.pprint :as pp])
-    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
-    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-    [datahike.constants :refer [e0 tx0 emax txmax]]
-    [datahike.tools :refer [get-time case-tree]]
-    [datahike.schema :as ds]
-    [me.tonsky.persistent-sorted-set.arrays :as arrays]
-    [datahike.config :as dc])
-  #?(:cljs (:require-macros [datahike.db :refer [raise defrecord-updatable cond+]]
+   #?(:cljs [goog.array :as garray])
+   [clojure.walk]
+   [clojure.data]
+   #?(:clj [clojure.pprint :as pp])
+   [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
+   [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
+   [datahike.constants :refer [e0 tx0 emax txmax]]
+   [datahike.tools :refer [get-time case-tree raise]]
+   [datahike.schema :as ds]
+   [me.tonsky.persistent-sorted-set.arrays :as arrays]
+   [datahike.config :as dc])
+  #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable cond+]]
                             [datahike.datom :refer [combine-cmp]]
-                            [datahike.tools :refer [case-tree]]))
+                            [datahike.tools :refer [case-tree raise]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [java.util Date]
                    [datahike.datom Datom])))
-
-;; ----------------------------------------------------------------------------
 
 #?(:cljs
    (do
@@ -30,12 +28,6 @@
 (def ^:const implicit-schema {:db/ident {:db/unique :db.unique/identity}})
 
 ;; ----------------------------------------------------------------------------
-
-#?(:clj
-   (defmacro raise [& fragments]
-     (let [msgs (butlast fragments)
-           data (last fragments)]
-       `(throw (ex-info (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data)))))
 
 (defn #?@(:clj  [^Boolean seqable?]
           :cljs [^boolean seqable?])
@@ -460,15 +452,15 @@
                      (-index-range [db attr start end] (temporal-index-range (.-origin-db db) db attr start end)))
 
 (defn filter-txInstant [datoms pred db]
-  (into #{}
-        (comp
-          (map datom-tx)
-          (distinct)
-          (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
-          (keep (fn [^Datom d]
-                  (when (and (= :db/txInstant (.-a d)) (pred d))
-                    (.-e d)))))
-        datoms))
+  (let [xf (comp
+            (map datom-tx)
+            (distinct)
+            (mapcat #(temporal-datoms db :eavt [%]))
+            (keep (fn [^Datom d]
+                    (when (and (= :db/txInstant (.-a d))
+                               (pred d))
+                      (.-e d)))))]
+    (into #{} xf datoms)))
 
 (defn get-current-values [rschema datoms]
   (->> datoms
@@ -579,9 +571,13 @@
          (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d)))))))
 
 (defn- filter-before [datoms ^Date before-date db]
-  (let [before-pred     (fn [^Datom d] (.before ^Date (.-v d) before-date))
+  (let [before-pred (fn [^Datom d]
+                      (.before ^Date (.-v d) before-date))
         filtered-tx-ids (filter-txInstant datoms before-pred db)]
-    (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))) datoms)))
+    (filter
+     (fn [^Datom d]
+       (contains? filtered-tx-ids (datom-tx d)))
+     datoms)))
 
 (defrecord-updatable SinceDB [origin-db time-point]
                      #?@(:cljs
@@ -1131,14 +1127,13 @@
                 (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))
         db))))
 
-
 (defn- with-temporal-datom [db ^Datom datom]
   (let [indexing?     (indexing? db (.-a datom))
         schema?       (ds/schema-attr? (.-a datom))
         current-datom ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))
-        history-datom ^Datom (first (search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom)]))
-        current?      (not (nil? current-datom))
-        history?      (not (nil? history-datom))]
+        history-datom ^Datom (first (search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
+        current? (not (nil? current-datom))
+        history? (not (nil? history-datom))]
     (cond-> db
             current? (update-in [:eavt] #(di/-remove % current-datom :eavt))
             current? (update-in [:aevt] #(di/-remove % current-datom :aevt))
@@ -1249,7 +1244,7 @@
         (if (= (.-v old-datom) v)
           report
           (-> report
-              (transact-report (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))
+              (transact-report (datom e a (.-v old-datom) tx false))
               (transact-report new-datom)))
         (transact-report report new-datom)))))
 
@@ -1266,9 +1261,10 @@
               (map (fn [^Datom d] [:db.fn/retractEntity (.-v d)]))) datoms))
 
 (defn- purge-components [db datoms]
-  (into #{} (comp
-              (filter (fn [^Datom d] (component? db (.-a d))))
-              (map (fn [^Datom d] [:db.purge/entity (.-v d)]))) datoms))
+  (let [xf (comp
+            (filter (fn [^Datom d] (component? db (.-a d))))
+            (map (fn [^Datom d] [:db.purge/entity (.-v d)])))]
+    (into #{} xf datoms)))
 
 #?(:clj
    (defmacro cond+ [& clauses]
@@ -1536,8 +1532,11 @@
 
             (= op :db.history.purge/before)
             (if (-keep-history? db)
-              (let [history         (HistoricalDB. db)
-                    e-datoms        (-> (search-temporal-indices db nil) vec (filter-before e db) vec)
+              (let [history (HistoricalDB. db)
+                    e-datoms (-> (search-temporal-indices db nil)
+                                 vec
+                                 (filter-before e db)
+                                 vec)
                     retracted-comps (purge-components history e-datoms)]
                 (recur (reduce transact-purge-datom report e-datoms)
                        (concat retracted-comps entities)))
@@ -1579,11 +1578,14 @@
 
         ;; meta entity
         (ds/meta-attr? a)
-        (let [new-datom (dd/datom max-tid a v max-tid op)]
+        (let [new-datom (dd/datom max-tid a v max-tid op)
+              new-e (.-e new-datom)]
           (recur (-> (transact-report report new-datom)
                      (assoc-in [:db-after :max-tx] max-tid))
                  entities
-                 (assoc-in migration-state [:tids e] (.-e new-datom))))
+                 (-> migration-state
+                     (assoc-in [:tids e] new-e)
+                     (assoc-in [:eids e] new-e))))
 
         ;; ref not added yet
         (and (ref? db a) (nil? (get-in migration-state [:eids v])))

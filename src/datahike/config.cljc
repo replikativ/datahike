@@ -132,17 +132,17 @@
          store-config  (ds/default-config (merge
                                           {:backend (keyword (:datahike-store-backend env :mem))}
                                           (:store config-as-arg)))
-         config        {:store              store-config
-                        :initial-tx         (:datahike-intial-tx env)
-                        :keep-history?      (bool-from-env :datahike-keep-history true)
-                        :name               (:name config-as-arg (z/rand-german-mammal))
-                        :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                        :index              (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
-                        :index-config       {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)
-                                             :index-log-size       (int-from-env :datahike-log-size c/default-index-log-size)
-                                             :index-data-node-size (int-from-env :datahike-data-node-size c/default-index-data-node-size)}}
+         config {:store              store-config
+                 :initial-tx         (:datahike-intial-tx env)
+                 :keep-history?      (bool-from-env :datahike-keep-history true)
+                 :name               (:datahike-name env (z/rand-german-mammal))
+                 :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
+                 :index              (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
+                 :index-config       {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)
+                                      :index-log-size       (int-from-env :datahike-log-size c/default-index-log-size)
+                                      :index-data-node-size (int-from-env :datahike-data-node-size c/default-index-data-node-size)}}
          merged-config ((comp remove-nils deep-merge) config config-as-arg)
-         _             (log/info "Using config " merged-config)
+         _             (log/debug "Using config " merged-config)
          {:keys [keep-history? name schema-flexibility index initial-tx store]} merged-config
          config-spec   (ds/config-spec store)]
      (when config-spec
