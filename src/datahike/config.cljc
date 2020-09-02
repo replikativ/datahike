@@ -4,7 +4,8 @@
             [zufall.core :as z]
             [environ.core :refer [env]]
             [taoensso.timbre :as log]
-            [datahike.store :as ds])
+            [datahike.store :as ds]
+            [datahike.constants :as c])
   (:import [java.net URI]))
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
@@ -14,17 +15,18 @@
 (s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
 (s/def ::name string?)
 
+(s/def ::index-config map?)
 (s/def ::index-b-factor long)
 (s/def ::index-log-size long)
 (s/def ::index-data-node-size long)
+
+
 
 (s/def ::store map?)
 
 (s/def :datahike/config (s/keys :req-un [:datahike/store]
                                 :opt-un [::index
-                                         ::index-b-factor
-                                         ::index-log-size
-                                         ::index-data-node-size
+                                         ::index-config
                                          ::keep-history?
                                          ::schema-flexibility
                                          ::initial-tx
@@ -54,6 +56,9 @@
                    :level {:path path}
                    :file {:path path}))
    :index index
+   :index-config       {:index-b-factor       c/default-index-b-factor
+                        :index-log-size       c/default-index-log-size
+                        :index-data-node-size c/default-index-data-node-size}
    :keep-history? temporal-index
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)})
@@ -95,14 +100,14 @@
     (throw (ex-info "Invalid datahike configuration." config))))
 
 (defn storeless-config []
-  {:store nil
-   :keep-history? false
+  {:store              nil
+   :keep-history?      false
    :schema-flexibility :read
-   :name (z/rand-german-mammal)
-   :index :datahike.index/hitchhiker-tree
-   :index-b-factor 17
-   :index-log-size (- 300 17)
-   :index-data-node-size 300})
+   :name               (z/rand-german-mammal)
+   :index              :datahike.index/hitchhiker-tree
+   :index-config       {:index-b-factor       c/default-index-b-factor
+                        :index-log-size       c/default-index-log-size
+                        :index-data-node-size c/default-index-data-node-size}})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -124,22 +129,22 @@
    (let [config-as-arg (if (s/valid? :datahike/config-depr config-as-arg)
                          (apply from-deprecated config-as-arg (first opts))
                          config-as-arg)
-         store-config (ds/default-config (merge
+         store-config  (ds/default-config (merge
                                           {:backend (keyword (:datahike-store-backend env :mem))}
                                           (:store config-as-arg)))
-         config {:store store-config
-                 :initial-tx (:datahike-intial-tx env)
-                 :keep-history? (bool-from-env :datahike-keep-history true)
-                 :name (:name config-as-arg (z/rand-german-mammal))
-                 :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
-                 :index-b-factor (int-from-env :datahike-b-factor 17)
-                 :index-log-size (int-from-env :datahike-log-size (- 300 17))
-                 :index-data-node-size (int-from-env :datahike-data-node-size 300)}
+         config        {:store              store-config
+                        :initial-tx         (:datahike-intial-tx env)
+                        :keep-history?      (bool-from-env :datahike-keep-history true)
+                        :name               (:name config-as-arg (z/rand-german-mammal))
+                        :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
+                        :index              (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
+                        :index-config       {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)
+                                             :index-log-size       (int-from-env :datahike-log-size c/default-index-log-size)
+                                             :index-data-node-size (int-from-env :datahike-data-node-size c/default-index-data-node-size)}}
          merged-config ((comp remove-nils deep-merge) config config-as-arg)
          _             (log/info "Using config " merged-config)
          {:keys [keep-history? name schema-flexibility index initial-tx store]} merged-config
-         config-spec (ds/config-spec store)]
+         config-spec   (ds/config-spec store)]
      (when config-spec
        (when-not (s/valid? config-spec store)
          (throw (ex-info "Invalid store configuration." (s/explain-data config-spec store)))))
