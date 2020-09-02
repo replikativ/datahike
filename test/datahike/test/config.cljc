@@ -62,7 +62,10 @@
                       :id "default"}
               :keep-history? true
               :schema-flexibility :write
-              :index :datahike.index/hitchhiker-tree}
+              :index :datahike.index/hitchhiker-tree
+              :index-config       {:index-b-factor       c/default-index-b-factor
+                                   :index-log-size       c/default-index-log-size
+                                   :index-data-node-size c/default-index-data-node-size}}
              (-> config (dissoc :name)))))))
 
 (deftest core-config-test
