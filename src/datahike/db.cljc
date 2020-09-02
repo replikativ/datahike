@@ -1,16 +1,17 @@
 (ns ^:no-doc datahike.db
   (:require
-   #?(:cljs [goog.array :as garray])
-   [clojure.walk]
-   [clojure.data]
-   #?(:clj [clojure.pprint :as pp])
-   [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
-   [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   [datahike.constants :refer [e0 tx0 emax txmax]]
-   [datahike.tools :refer [get-time case-tree raise]]
-   [datahike.schema :as ds]
-   [me.tonsky.persistent-sorted-set.arrays :as arrays]
-   [datahike.config :as dc])
+    #?(:cljs [goog.array :as garray])
+    [clojure.walk]
+    [clojure.data]
+    #?(:clj [clojure.pprint :as pp])
+    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
+    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
+    [datahike.constants :refer [e0 tx0 emax txmax]]
+    [datahike.tools :refer [get-time case-tree raise]]
+    [datahike.schema :as ds]
+    [me.tonsky.persistent-sorted-set.arrays :as arrays]
+    [datahike.config :as dc]
+    [datahike.constants :as c])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable cond+]]
                             [datahike.datom :refer [combine-cmp]]
                             [datahike.tools :refer [case-tree raise]]))
@@ -698,7 +699,12 @@
                          :key       :db/isComponent}))))
     (validate-schema-key a :db/unique (:db/unique kv) #{:db.unique/value :db.unique/identity})
     (validate-schema-key a :db/valueType (:db/valueType kv) #{:db.type/ref})
-    (validate-schema-key a :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many})))
+    (validate-schema-key a :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many})
+    (when (contains? ds/system-schema-idents a)
+      (throw (ex-info (str "Bad attribute specification for " a ", protected system attribute name")
+                      {:error     :schema/validation
+                       :attribute a
+                       :key       :db/ident})))))
 
 (def ^:const br 300)
 (def ^:const br-sqrt (long (Math/sqrt br)))
@@ -981,7 +987,9 @@
 (defn- validate-eid [eid at]
   (when-not (number? eid)
     (raise "Bad entity id " eid " at " at ", expected number"
-           {:error :transact/syntax, :entity-id eid, :context at})))
+           {:error :transact/syntax, :entity-id eid, :context at}))
+  ;; (when (contains? system-entities eid) (raise "Bad entity id " eid " at " at ", protected system entity" {:error :transact/system-schema, :entity-id eid, :context at}))
+  )
 
 (defn- validate-attr [attr at db]
   (if (= :read (get-in db [:config :schema-flexibility]))
@@ -1004,11 +1012,13 @@
     (raise "Cannot store nil as a value at " at
            {:error :transact/syntax, :value v, :context at}))
   (when (= :write (get-in db [:config :schema-flexibility]))
-    (let [schema (:schema db)
+    (let [schema      (:schema db)
           schema-spec (if (or (ds/meta-attr? a) (ds/schema-attr? a)) ds/implicit-schema-spec schema)]
       (when-not (ds/value-valid? at schema)
         (raise "Bad entity value " v " at " at ", value does not match schema definition. Must be conform to: " (ds/describe-type (get-in schema-spec [a :db/valueType]))
-               {:error :transact/schema :value v :attribute a :schema (get-in db [:schema a])})))))
+               {:error :transact/schema :value v :attribute a :schema (get-in db [:schema a])}))
+      ;;    (when (and (= :db/ident a) (contains? system-attributes v)) (raise "Cannot use protected system namespace :db" {:error :transact/system-schema :value v :attribute a }))
+      )))
 
 (defn- current-tx [report]
   (inc (get-in report [:db-before :max-tx])))
@@ -1055,6 +1065,9 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)]
+    (when (contains? c/system-entities e)
+      (raise (str "System schema entity cannot be changed")
+             {:error :transact/schema :entity-id e }))
     (if (= a :db/ident)
       (if (schema v)
         (raise (str "Schema with attribute " v " already exists")
@@ -1075,6 +1088,9 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)]
+    (when (contains? c/system-entities e)
+      (raise (str "System schema entity cannot be changed")
+             {:error :retract/schema :entity-id e }))
     (if (= a :db/ident)
       (if-not (schema v)
         (raise (str "Schema with attribute " v " does not exist")
@@ -1349,6 +1365,9 @@
               (do
                 ;; schema tx
                 (when (ds/schema-entity? entity)
+                  (when (contains? ds/system-schema-idents (:db/ident entity))
+                    (raise "Using system attribute names as attribute identifier is not allowed"
+                           {:error :transact/schema :entity entity}))
                   (if-let [attr-name (get-in db [:schema upserted-eid])]
                     (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
                       (when-not (empty? invalid-updates)
@@ -1373,6 +1392,9 @@
                             :else old-eid)
                   new-entity (assoc entity :db/id new-eid)]
               (when (ds/schema-entity? entity)
+                (when (contains? ds/system-schema-idents (:db/ident entity))
+                  (raise "Using system attribute names as attribute identifier is not allowed"
+                         {:error :transact/schema :entity entity}))
                 (if-let [attr-name (get-in db [:schema new-eid])]
                   (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
                     (when-not (empty? invalid-updates)
@@ -1393,6 +1415,9 @@
 
         (sequential? entity)
         (let [[op e a v] entity]
+          (when (contains? c/system-entities e)
+            (raise "No operations supported for protected system entity with id " e
+                   {:error :entity-id/protected, :entity entity}))
           (cond
             (= op :db.fn/call)
             (let [[_ f & args] entity]

@@ -325,3 +325,19 @@
         (d/transact conn [{:message "important" :tag :important} {:message "archive" :tag [:important :archive]}])
         (is (= #{["important" :important] ["archive" :important] ["archive" :archive]}
                (d/q '[:find ?m ?t :where [?e :message ?m] [?e :tag ?te] [?te :db/ident ?t]] (d/db conn))))))))
+
+
+(deftest test-system-schema-protection
+  (testing "manipulating system schema"
+    (let [cfg "datahike:mem://test-protection"
+          _ (d/delete-database cfg)
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (testing "insert schema for system-attribute"
+        (is (thrown-msg?
+              "Using system attributes as attribute-name is not allowed"
+              (d/transact conn [{:db/ident :db/cardinality}]))))
+      (testing "overwrite an attribute of system schema"
+        (is (thrown-msg?
+              "No operations supported for protected system entity with id 1"
+              (d/transact conn [[:db/add 1 :db/cardinality :db.cardinality/many]])))))))

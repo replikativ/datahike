@@ -5,6 +5,7 @@
             [datahike.store :as ds]
             [datahike.config :as dc]
             [datahike.tools :as dt]
+            [datahike.constants :as c]
             [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
             [konserve.cache :as kc]
@@ -179,10 +180,11 @@
                                  :temporal-aevt-key (di/-flush temporal-aevt backend)
                                  :temporal-avet-key (di/-flush temporal-avet backend)}))))
     (ds/release-store store-config store)
-    (when initial-tx
-      (let [conn (-connect config)]
-        (transact conn initial-tx)
-        (release conn)))))
+    (let [conn (-connect config)]
+      (load-entities conn c/system-schema)
+      (when initial-tx
+        (transact conn initial-tx))
+      (release conn))))
 
   (-delete-database [config]
     (let [config (dc/load-config config {})]

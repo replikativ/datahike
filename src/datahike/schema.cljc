@@ -51,6 +51,7 @@
 
 (def required-keys #{:db/ident :db/valueType :db/cardinality})
 
+(def ^:const implicit-schema {:db/ident {:db/unique :db.unique/identity}})
 (def ^:const implicit-schema-spec {:db/ident {:db/valueType   :db.type/keyword
                                               :db/unique      :db.unique/identity
                                               :db/cardinality :db.cardinality/one}
@@ -89,8 +90,36 @@
                                                            :db/unique      :db.unique/identity
                                                            :db/cardinality :db.cardinality/one}})
 
-(def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
+(def ^:const schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
 
+(def ^:const schema-enums
+  #{:db.cardinality/many
+    :db.cardinality/one
+    :db.part/sys
+    :db.part/tx
+    :db.part/user
+    :db.type/bigdec
+    :db.type/bigint
+    :db.type/boolean
+    :db.type/cardinality
+    :db.type/double
+    :db.type/float
+    :db.type/number
+    :db.type/instant
+    :db.type/keyword
+    :db.type/long
+    :db.type/ref
+    :db.type/string
+    :db.type/symbol
+    :db.type/unique
+    :db.type/uuid
+    :db.type/valueType
+    :db.type.install/attribute
+    :db.unique/identity
+    :db.unique/value})
+
+(def ^:const system-schema-idents
+  (clojure.set/union schema-enums schema-keys))
 
 (s/def ::old-schema-val (s/keys :req [:db/valueType :db/cardinality]
                                 :opt [:db/ident :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
@@ -149,6 +178,6 @@
            :db/unique (when-not (get-in attr-schema [:db/unique])
                         (when-not (= (get-in attr-schema [:db/cardinality]) :db.cardinality/one)
                           (assoc m attr-def [old-value new-value])))
-           (assoc m attr-def [old-value new-value])))))
+         (assoc m attr-def [old-value new-value])))))
    {}
    (dissoc entity :db/id)))
