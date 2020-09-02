@@ -2,16 +2,17 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-   [datahike.config :refer :all]
+   [datahike.config :as dc]
+   [datahike.constants :as c]
    [datahike.test.core]
    [datahike.core :as d]))
 
 (deftest int-from-env-test
   (is (= 1000
-         (int-from-env :foo 1000))))
+         (dc/int-from-env :foo 1000))))
 
 (deftest bool-from-env-test
-  (is (bool-from-env :foo true)))
+  (is (dc/bool-from-env :foo true)))
 
 (deftest uri-test
   (let [mem-uri "datahike:mem://config-test"
@@ -19,7 +20,7 @@
         level-uri "datahike:level:///tmp/config-test"
         pg-uri "datahike:pg://alice:foo@localhost:5432/config-test"]
 
-    (are [x y] (= x (uri->config y))
+    (are [x y] (= x (dc/uri->config y))
       {:backend :mem :host "config-test" :uri mem-uri}
       mem-uri
 
@@ -42,18 +43,21 @@
         default-new-cfg {:keep-history? true
                          :initial-tx nil
                          :index :datahike.index/hitchhiker-tree
+                         :index-config       {:index-b-factor       c/default-index-b-factor
+                                              :index-log-size       c/default-index-log-size
+                                              :index-data-node-size c/default-index-data-node-size}
                          :schema-flexibility :write}]
     (is (= (merge default-new-cfg
                   {:store {:backend :mem :id "deprecated-test"}})
-           (from-deprecated mem-cfg)))
+           (dc/from-deprecated mem-cfg)))
     (is (= (merge default-new-cfg
                   {:store {:backend :file
                            :path "/deprecated/test"}})
-           (from-deprecated file-cfg)))))
+           (dc/from-deprecated file-cfg)))))
 
 (deftest load-config-test
   (testing "configuration defaults"
-    (let [{:keys [store name] :as config} (load-config)]
+    (let [{:keys [store name] :as config} (dc/load-config)]
       (is (= {:store {:backend :mem
                       :id "default"}
               :keep-history? true
