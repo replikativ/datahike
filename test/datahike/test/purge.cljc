@@ -109,18 +109,31 @@
             (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
 
 (defn find-ages [db name]
-  (into #{}
-        (d/q '[:find [?a ...] :in $ ?n :where [?e :name ?n] [?e :age ?a]] db name)))
+  (d/q '[:find ?a ?op
+         :in $ ?n
+         :where
+         [?e :name ?n]
+         [?e :age ?a ?t ?op]]
+       db
+       name))
 
 (deftest test-history-purge-before
   (let [conn (create-test-db "datahike:mem://purge-history-before")
         name "Alice"]
-    (is (= #{25} (find-ages @conn name)))
     (testing "remove all historical data before date"
-      (let [before-date (java.util.Date.)]
+      (is (= #{[25 true]}
+             (find-ages @conn name)))
+      (let [upsert-date (java.util.Date.)]
         (d/transact conn [{:db/id [:name name] :age 30}])
-        (is (= #{30} (find-ages @conn name)))
-        (is (= #{25 30} (find-ages (d/history @conn) name)))
-        (d/transact conn [[:db.history.purge/before before-date]])
-        (is (= #{30} (find-ages @conn name)))
-        (is (= #{30} (find-ages (d/history @conn) name)))))))
+        (is (= #{[30 true]}
+               (find-ages @conn name)))
+        (is (= #{[25 true] [25 false] [30 true]}
+               (find-ages (d/history @conn) name)))
+        (d/transact conn [[:db.history.purge/before upsert-date]])
+        (is (= #{[30 true]}
+               (find-ages @conn name)))
+        (is (= #{[25 false] [30 true]}
+               (find-ages (d/history @conn) name)))
+        (d/transact conn [[:db.history.purge/before (java.util.Date.)]])
+        (is (= #{[30 true]}
+               (find-ages (d/history @conn) name)))))))
