@@ -26,11 +26,11 @@
 
 (deftest return-keys-test
   ;; search the data
-  (is (= [{:entity 4 :name "Bob" :age 30}
-          {:entity 5 :name "Charlie" :age 40}
-          {:entity 3 :name "Alice" :age 20}]
-         (d/q '[:find ?e ?n ?a
-                :keys entity name age
+  (is (= [{:name "Bob" :age 30}
+          {:name "Charlie" :age 40}
+          {:name "Alice" :age 20}]
+         (d/q '[:find ?n ?a
+                :keys name age
                 :where
                 [?e :name ?n]
                 [?e :age ?a]]
@@ -38,11 +38,11 @@
 
 (deftest return-syms-test
   ;; search the data
-  (is (= [{'entity 4 'name "Bob" 'age 30}
-          {'entity 5 'name "Charlie" 'age 40}
-          {'entity 3 'name "Alice" 'age 20}]
-         (d/q '[:find ?e ?n ?a
-                :syms entity name age
+  (is (= [{'name "Bob" 'age 30}
+          {'name "Charlie" 'age 40}
+          {'name "Alice" 'age 20}]
+         (d/q '[:find ?n ?a
+                :syms name age
                 :where
                 [?e :name ?n]
                 [?e :age ?a]]
@@ -50,11 +50,11 @@
 
 (deftest return-strs-test
   ;; search the data
-  (is (= [{"entity" 4 "name" "Bob" "age" 30}
-          {"entity" 5 "name" "Charlie" "age" 40}
-          {"entity" 3 "name" "Alice" "age" 20}]
-         (d/q '[:find ?e ?n ?a
-                :strs entity name age
+  (is (= [{"name" "Bob" "age" 30}
+          {"name" "Charlie" "age" 40}
+          {"name" "Alice" "age" 20}]
+         (d/q '[:find ?n ?a
+                :strs name age
                 :where
                 [?e :name ?n]
                 [?e :age ?a]]
