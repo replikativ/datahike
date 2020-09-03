@@ -38,6 +38,4 @@
          :in $ ?a
          :where [?e :name ?v ?t] [?e :age ?a]]
        @conn
-       35)
-
-  )
+       35))

@@ -15,17 +15,17 @@
   (are [q expected] (= (d/q q test-db) expected)
     '[:find ?v
       :where [_ :name ?v]
-             [(.startsWith ?v "Ser")]]
+      [(.startsWith ?v "Ser")]]
     #{["Sergey"]}
 
     '[:find ?v
       :where [_ :name ?v]
-             [(.contains ?v "a")]]
+      [(.contains ?v "a")]]
     #{["Vlad"] ["Ivan"]}
 
     '[:find ?v
       :where [_ :name ?v]
-             [(.matches ?v ".+rg.+")]]
+      [(.matches ?v ".+rg.+")]]
     #{["Sergey"]}))
 
 (deftest test-bind

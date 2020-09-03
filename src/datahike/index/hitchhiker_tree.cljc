@@ -16,10 +16,10 @@
       (let [[a b c d] key1
             [e f g h] key2]
         (dd/combine-cmp
-          (kc/-compare a e)
-          (kc/-compare b f)
-          (kc/-compare c g)
-          (kc/-compare d h)))))
+         (kc/-compare a e)
+         (kc/-compare b f)
+         (kc/-compare c g)
+         (kc/-compare d h)))))
   java.lang.String
   (-compare [key1 key2]
     (compare key1 key2))
@@ -49,7 +49,7 @@
 (defn- from-datom [^Datom datom index-type]
   (let [datom-seq (case index-type
                     :aevt (list  (.-a datom) (.-e datom) (.-v datom) (.-tx datom))
-                    :avet (list(.-a datom) (.-v datom)  (.-e datom) (.-tx datom))
+                    :avet (list (.-a datom) (.-v datom)  (.-e datom) (.-tx datom))
                     (list (.-e datom) (.-a datom) (.-v datom) (.-tx datom)))]
     (->> datom-seq
          (remove #{e0 tx0 emax txmax})
@@ -62,33 +62,33 @@
         [a b c d] (from-datom from index-type)
         [e f g h] (from-datom to index-type)
         xf (comp
-             (take-while (fn [^AMapEntry kv]
+            (take-while (fn [^AMapEntry kv]
                            ;; prefix scan
-                           (let [key (.key kv)
-                                 [i j k l] key
-                                 new (not (cond (and e f g h)
-                                                (or (> (kc/-compare i e) 0)
-                                                    (> (kc/-compare j f) 0)
-                                                    (> (kc/-compare k g) 0)
-                                                    (> (kc/-compare l h) 0))
+                          (let [key (.key kv)
+                                [i j k l] key
+                                new (not (cond (and e f g h)
+                                               (or (> (kc/-compare i e) 0)
+                                                   (> (kc/-compare j f) 0)
+                                                   (> (kc/-compare k g) 0)
+                                                   (> (kc/-compare l h) 0))
 
-                                                (and e f g)
-                                                (or (> (kc/-compare i e) 0)
-                                                    (> (kc/-compare j f) 0)
-                                                    (> (kc/-compare k g) 0))
+                                               (and e f g)
+                                               (or (> (kc/-compare i e) 0)
+                                                   (> (kc/-compare j f) 0)
+                                                   (> (kc/-compare k g) 0))
 
-                                                (and e f)
-                                                (or (> (kc/-compare i e) 0)
-                                                    (> (kc/-compare j f) 0))
+                                               (and e f)
+                                               (or (> (kc/-compare i e) 0)
+                                                   (> (kc/-compare j f) 0))
 
-                                                e
-                                                (> (kc/-compare i e) 0)
+                                               e
+                                               (> (kc/-compare i e) 0)
 
-                                                :else false))]
-                             new)))
-             (map (fn [kv]
-                    (let [[a b c d] (.key ^AMapEntry kv)]
-                      (create-datom a b c d)))))
+                                               :else false))]
+                            new)))
+            (map (fn [kv]
+                   (let [[a b c d] (.key ^AMapEntry kv)]
+                     (create-datom a b c d)))))
         new (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
                  seq)]
     new))
