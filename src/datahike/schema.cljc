@@ -19,7 +19,7 @@
 (s/def :db.type/symbol symbol?)
 (s/def :db.type/uuid uuid?)
 
-(s/def :db.type/value
+(s/def :db.type/valueType
   #{:db.type/bigdec
     :db.type/bigint
     :db.type/boolean
@@ -33,7 +33,7 @@
     :db.type/string
     :db.type/symbol
     :db.type/uuid
-    :db.type/value})
+    :db.type/valueType})
 
 ;; TODO: add tuples, bytes
 
@@ -49,12 +49,10 @@
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality]
                         :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
 
-(def required-keys #{:db/ident :db/valueType :db/cardinality})
-
 (def ^:const implicit-schema-spec {:db/ident {:db/valueType   :db.type/keyword
                                               :db/unique      :db.unique/identity
                                               :db/cardinality :db.cardinality/one}
-                                   :db/valueType {:db/valueType   :db.type/value
+                                   :db/valueType {:db/valueType   :db.type/valueType
                                                   :db/unique      :db.unique/identity
                                                   :db/cardinality :db.cardinality/one}
                                    :db/id {:db/valueType   :db.type/id
@@ -91,10 +89,8 @@
 
 (def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
 
-
 (s/def ::old-schema-val (s/keys :req [:db/valueType :db/cardinality]
                                 :opt [:db/ident :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
-
 
 (s/def ::old-schema-key keyword?)
 

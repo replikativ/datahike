@@ -26,6 +26,8 @@
 
   (def conn (d/connect cfg))
 
+  (d/transact conn [{:db/ident :foo}])
+
   (d/transact conn [{:name "Alice"
                      :age  25}
                     {:name "Bob"
