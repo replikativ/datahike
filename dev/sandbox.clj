@@ -26,8 +26,6 @@
 
   (def conn (d/connect cfg))
 
-  (d/transact conn [{:db/ident :foo}])
-
   (d/transact conn [{:name "Alice"
                      :age  25}
                     {:name "Bob"
@@ -41,5 +39,14 @@
          :where [?e :name ?v ?t] [?e :age ?a]]
        @conn
        35)
+  
+
+  (d/q '[:find ?e ?a ?v
+         :where
+         [?e ?a ?v]]
+       @conn)
+
+  (:eavt @conn)
+
 
   )

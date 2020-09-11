@@ -28,7 +28,7 @@
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx max-eid]} db-after
+        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx max-eid max-sid]} db-after
         store (:store @connection)
         backend (kons/->KonserveBackend store)
         eavt-flushed (di/-flush eavt backend)
@@ -45,6 +45,7 @@
                           :config   config
                           :max-tx max-tx
                           :max-eid max-eid
+                          :max-sid max-sid
                           :eavt-key eavt-flushed
                           :aevt-key aevt-flushed
                           :avet-key avet-flushed}
@@ -138,14 +139,15 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
-          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx max-eid]} stored-db
+          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx max-eid max-sid]} stored-db
           empty (db/empty-db nil config)]
       (d/conn-from-db
        (assoc empty
               :max-tx max-tx
+              :max-eid max-eid
+              :max-sid max-sid
               :config config
               :schema schema
-              :max-eid max-eid
               :eavt eavt-key
               :aevt aevt-key
               :avet avet-key
@@ -164,13 +166,14 @@
         stored-db (<?? S (k/get-in store [:db]))
         _ (when stored-db
             (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx max-eid]}
+        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx max-eid max-sid]}
           (db/empty-db nil config)
         backend (kons/->KonserveBackend store)]
     (<?? S (k/assoc-in store [:db]
                        (merge {:schema   schema
                                :max-tx max-tx
                                :max-eid max-eid
+                               :max-sid max-sid
                                :rschema  rschema
                                :config   config
                                :eavt-key (di/-flush eavt backend)

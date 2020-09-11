@@ -1,7 +1,6 @@
 (ns datahike.constants)
 
 (def ^:const s0 0)
-(def ^:const u0 34)
 (def ^:const tx0 0x1000000000)
 (def ^:const txmax 0x7FFFFFFFFF)
 (def ^:const e0 0x8000000000)
@@ -83,6 +82,8 @@
    {:db/id 31, :db/ident :db.type.install/attribute}
    {:db/id 32, :db/ident :db.unique/identity}
    {:db/id 33, :db/ident :db.unique/value}])
+
+(def ^:const u0 (transduce (comp (map :db/id) (remove #{tx0})) max 0 system-schema))
 
 (defn ref-datoms [system-schema]
   (let [idents (reduce (fn [m {:keys [db/ident db/id]}]
