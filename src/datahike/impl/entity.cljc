@@ -143,8 +143,7 @@
 
        clojure.lang.IFn
        (invoke [e k]      (lookup-entity e k))
-       (invoke [e k not-found] (lookup-entity e k not-found))
-       ]))
+       (invoke [e k not-found] (lookup-entity e k not-found))]))
 
 (defn entity? [x] (instance? Entity x))
 
@@ -178,18 +177,18 @@
 (defn touch-components [db a->v]
   (reduce-kv (fn [acc a v]
                (assoc acc a
-                 (if (db/component? db a)
-                   (if (db/multival? db a)
-                     (set (map touch v))
-                     (touch v))
-                   v)))
+                      (if (db/component? db a)
+                        (if (db/multival? db a)
+                          (set (map touch v))
+                          (touch v))
+                        v)))
              {} a->v))
 
 (defn- datoms->cache [db datoms]
   (reduce (fn [acc part]
-    (let [a (:a (first part))]
-      (assoc acc a (entity-attr db a part))))
-    {} (partition-by :a datoms)))
+            (let [a (:a (first part))]
+              (assoc acc a (entity-attr db a part))))
+          {} (partition-by :a datoms)))
 
 (defn touch [^Entity e]
   {:pre [(entity? e)]}

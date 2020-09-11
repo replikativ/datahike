@@ -57,7 +57,6 @@
                #{[3] [4]}))
         (d/delete-database cfg)))))
 
-
 (deftest load-entities-test
   (testing "Test migrate simple datoms"
     (let [source-datoms (->> tx-data
