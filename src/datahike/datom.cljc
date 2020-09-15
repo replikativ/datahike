@@ -1,7 +1,7 @@
 (ns datahike.datom
   (:require  [clojure.walk]
              [clojure.data]
-             [datahike.tools :refer [combine-hashes ]]
+             [datahike.tools :refer [combine-hashes]]
              [datahike.constants :refer [tx0]]))
 
 (declare hash-datom equiv-datom seq-datom nth-datom assoc-datom val-at-datom)
@@ -163,44 +163,41 @@
             res (num 0)]
        (if (not-empty comps)
          (recur
-           (next comps)
-           `(let [c# ~(first comps)]
-              (if (== 0 c#)
-                ~res
-                c#)))
+          (next comps)
+          `(let [c# ~(first comps)]
+             (if (== 0 c#)
+               ~res
+               c#)))
          res))))
-
 
 (defn cmp [o1 o2]
   (if (nil? o1) 0
-                (if (nil? o2) 0
-                              (compare o1 o2))))
+      (if (nil? o2) 0
+          (compare o1 o2))))
 
 ;; Slower cmp-* fns allows for datom fields to be nil.
 ;; Such datoms come from slice method where they are used as boundary markers.
 
 (defn cmp-datoms-eavt [^Datom d1, ^Datom d2]
   (combine-cmp
-    (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
-    (cmp (.-a d1) (.-a d2))
-    (cmp (.-v d1) (.-v d2))
-    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
-
-
+   (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
+   (cmp (.-a d1) (.-a d2))
+   (cmp (.-v d1) (.-v d2))
+   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-aevt [^Datom d1, ^Datom d2]
   (combine-cmp
-    (cmp (.-a d1) (.-a d2))
-    (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
-    (cmp (.-v d1) (.-v d2))
-    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+   (cmp (.-a d1) (.-a d2))
+   (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
+   (cmp (.-v d1) (.-v d2))
+   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-avet [^Datom d1, ^Datom d2]
   (combine-cmp
-    (cmp (.-a d1) (.-a d2))
-    (cmp (.-v d1) (.-v d2))
-    (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
-    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+   (cmp (.-a d1) (.-a d2))
+   (cmp (.-v d1) (.-v d2))
+   (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
+   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 ;; fast versions without nil checks
 
@@ -215,24 +212,24 @@
 
 (defn cmp-datoms-eavt-quick [^Datom d1, ^Datom d2]
   (combine-cmp
-    (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
-    (cmp-attr-quick (.-a d1) (.-a d2))
-    (compare (.-v d1) (.-v d2))
-    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+   (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (compare (.-v d1) (.-v d2))
+   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-aevt-quick [^Datom d1, ^Datom d2]
   (combine-cmp
-    (cmp-attr-quick (.-a d1) (.-a d2))
-    (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
-    (compare (.-v d1) (.-v d2))
-    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
+   (compare (.-v d1) (.-v d2))
+   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-avet-quick [^Datom d1, ^Datom d2]
   (combine-cmp
-    (cmp-attr-quick (.-a d1) (.-a d2))
-    (compare (.-v d1) (.-v d2))
-    (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
-    (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (compare (.-v d1) (.-v d2))
+   (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
+   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
 (defn diff-sorted [a b cmp]
   (loop [only-a []

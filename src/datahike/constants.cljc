@@ -4,71 +4,134 @@
 (def ^:const tx0 0x20000000)
 (def ^:const emax 0x7FFFFFFF)
 (def ^:const txmax 0x7FFFFFFF)
-(def ^:const implicit-schema {:db/ident {:db/unique :db.unique/identity}})
+(def ^:const old-implicit-schema {:db/ident {:db/unique :db.unique/identity}})
 
 (def ^:const system-schema
-  [[536870912 9 #inst "1899-12-30T23:00:00.000-00:00" 536870912]
-   [1 1 :db/ident 536870912]
-   [1 2 23 536870912]
-   [1 3 11 536870912]
-   [1 4 "An attribute's or specification's identifier" 536870912]
-   [1 6 33 536870912]
-   [2 1 :db/valueType 536870912]
-   [2 2 31 536870912]
-   [2 3 11 536870912]
-   [2 4 "An attribute's value type" 536870912]
-   [3 1 :db/cardinality 536870912]
-   [3 2 19 536870912]
-   [3 3 11 536870912]
-   [3 4 "An attribute's cardinality" 536870912]
-   [4 1 :db/doc 536870912]
-   [4 2 26 536870912]
-   [4 3 11 536870912]
-   [4 4 "An attribute's documentation" 536870912]
-   [5 1 :db/index 536870912]
-   [5 2 17 536870912]
-   [5 3 11 536870912]
-   [5 4 "An attribute's index selection" 536870912]
-   [6 1 :db/unique 536870912]
-   [6 2 30 536870912]
-   [6 3 11 536870912]
-   [6 4 "An attribute's unique selection" 536870912]
-   [7 1 :db/noHistory 536870912]
-   [7 2 17 536870912]
-   [7 3 11 536870912]
-   [7 4 "An attribute's history selection" 536870912]
-   [8 1 :db.install/attribute 536870912]
-   [8 2 32 536870912]
-   [8 3 11 536870912]
-   [8 4 "Only for interoperability with Datomic" 536870912]
-   [9 1 :db/txInstant 536870912]
-   [9 2 22 536870912]
-   [9 3 11 536870912]
-   [9 4 "A transaction's time-point" 536870912]
-   [9 6 33 536870912]
-   [9 5 true 536870912]
-   [10 1 :db.cardinality/many 536870912]
-   [11 1 :db.cardinality/one 536870912]
-   [12 1 :db.part/sys 536870912]
-   [13 1 :db.part/tx 536870912]
-   [14 1 :db.part/user 536870912]
-   [15 1 :db.type/bigdec 536870912]
-   [16 1 :db.type/bigint 536870912]
-   [17 1 :db.type/boolean 536870912]
-   [18 1 :db.type/double 536870912]
-   [19 1 :db.type/cardinality 536870912]
-   [20 1 :db.type/float 536870912]
-   [21 1 :db.type/number 536870912]
-   [22 1 :db.type/instant 536870912]
-   [23 1 :db.type/keyword 536870912]
-   [24 1 :db.type/long 536870912]
-   [25 1 :db.type/ref 536870912]
-   [26 1 :db.type/string 536870912]
-   [27 1 :db.type/symbol 536870912]
-   [28 1 :db.type/unique 536870912]
-   [29 1 :db.type/uuid 536870912]
-   [30 1 :db.type/unique 536870912]
-   [31 1 :db.type/valueType 536870912]
-   [32 1 :db.type.install/attribute 536870912]
-   [33 1 :db.unique/identity 536870912]
-   [34 1 :db.unique/value 536870912]])
+  [{:db/id tx0
+    :db/txInstant #inst"1970-01-01T00:00:00.000-00:00"}
+   {:db/id 1
+    :db/ident :db/ident
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc "An attribute's or specification's identifier"
+    :db/unique :db.unique/value}
+   {:db/id 2
+    :db/ident :db/valueType
+    :db/valueType :db.type/valueType
+    :db/cardinality :db.cardinality/one
+    :db/doc "An attribute's value type"}
+   {:db/id 3
+    :db/ident :db/cardinality
+    :db/valueType :db.type/cardinality
+    :db/cardinality :db.cardinality/one
+    :db/doc "An attribute's cardinality"}
+   {:db/id 4
+    :db/ident :db/doc
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc "An attribute's documentation"}
+   {:db/id 5
+    :db/ident :db/index
+    :db/valueType :db.type/boolean
+    :db/cardinality :db.cardinality/one
+    :db/doc "An attribute's index selection"}
+   {:db/id 6
+    :db/ident :db/unique
+    :db/valueType :db.type/unique
+    :db/cardinality :db.cardinality/one
+    :db/doc "An attribute's unique selection"}
+   {:db/id 7
+    :db/ident :db/noHistory
+    :db/valueType :db.type/boolean
+    :db/cardinality :db.cardinality/one
+    :db/doc "An attribute's history selection"}
+   {:db/id 8
+    :db/ident :db.install/attribute
+    :db/valueType :db.type.install/attribute
+    :db/cardinality :db.cardinality/one
+    :db/doc "Only for interoperability with Datomic"}
+   {:db/id 9
+    :db/ident :db/txInstant
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc "A transaction's time-point"
+    :db/unique :db.unique/identity
+    :db/index true}
+   {:db/id 10
+    :db/ident :db.cardinality/many}
+   {:db/id 11
+    :db/ident :db.cardinality/one}
+   {:db/id 12
+    :db/ident :db.part/sys}
+   {:db/id 13
+    :db/ident :db.part/tx}
+   {:db/id 14
+    :db/ident :db.part/user}
+   {:db/id 15
+    :db/ident :db.type/bigdec}
+   {:db/id 16
+    :db/ident :db.type/bigint}
+   {:db/id 17
+    :db/ident :db.type/boolean}
+   {:db/id 18
+    :db/ident :db.type/double}
+   {:db/id 19
+    :db/ident :db.type/cardinality}
+   {:db/id 20
+    :db/ident :db.type/float}
+   {:db/id 21
+    :db/ident :db.type/number}
+   {:db/id 22
+    :db/ident :db.type/instant}
+   {:db/id 23
+    :db/ident :db.type/keyword}
+   {:db/id 24
+    :db/ident :db.type/long}
+   {:db/id 25
+    :db/ident :db.type/ref}
+   {:db/id 26
+    :db/ident :db.type/string}
+   {:db/id 27
+    :db/ident :db.type/symbol}
+   {:db/id 28
+    :db/ident :db.type/unique}
+   {:db/id 29
+    :db/ident :db.type/uuid}
+   {:db/id 30
+    :db/ident :db.type/valueType}
+   {:db/id 31
+    :db/ident :db.type.install/attribute}
+   {:db/id 32
+    :db/ident :db.unique/identity}
+   {:db/id 33
+    :db/ident :db.unique/value}])
+
+(def ^:const u0 (transduce (comp (map :db/id) (remove #{tx0})) max 0 system-schema))
+
+(defn ref-datoms [system-schema]
+  (let [idents (reduce (fn [m {:keys [db/ident db/id]}]
+                         (assoc m ident id))
+                       {}
+                       system-schema)]
+    (->> system-schema
+         (mapcat
+           (fn [{:keys [db/id] :as i}]
+             (reduce-kv
+               (fn [coll k v]
+                 (let [k-ref (idents k)]
+                   (if (= k :db/ident)
+                     (conj coll [id k-ref v tx0])
+                     (if-let [v-ref (idents v)]
+                       (conj coll [id k-ref v-ref tx0])
+                       (conj coll [id k-ref v tx0])))))
+               []
+               (dissoc i :db/id))))
+         vec)))
+
+(defn system-map [system-schema]
+  (reduce
+    (fn [m {:keys [db/ident db/id] :as attr}]
+      (when ident
+        (assoc m ident attr id ident)))
+    {}
+    system-schema))

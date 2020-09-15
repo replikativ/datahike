@@ -178,7 +178,6 @@ Connect to a database with persistent store:
   load-entities
   dc/load-entities)
 
-
 (def ^{:arglists '([conn])
        :doc      "Releases a database connection"}
   release dc/release)
@@ -208,7 +207,6 @@ Connect to a database with persistent store:
              ;     {:db/id 2, :name \"Oleg\"}]
              ```"}
   pull-many dp/pull-many)
-
 
 (defmulti q
   "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).

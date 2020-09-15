@@ -13,12 +13,10 @@
         (when (not= (:a d) :db/txInstant)
           (prn d))))))
 
-
 (defn import-db
-   "Import a flat-file of datoms at path into your database."
-   [conn path]
-   (doseq  [datoms (->> (line-seq (io/reader path))
-                        (map read-string)
-                        (partition 1000 1000 nil)
-                        )]
-     (api/transact conn (vec datoms))))
+  "Import a flat-file of datoms at path into your database."
+  [conn path]
+  (doseq  [datoms (->> (line-seq (io/reader path))
+                       (map read-string)
+                       (partition 1000 1000 nil))]
+    (api/transact conn (vec datoms))))

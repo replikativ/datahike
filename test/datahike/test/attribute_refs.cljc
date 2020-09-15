@@ -27,30 +27,3 @@
       (is (= nil
              (d/datoms @conn :avet nil))))))
 
-(deftest test-empty-db-with-attr-refs
-  (let [cfg {:store {:backend :mem
-                     :id "attr-refs-test"}
-             :keep-history? false
-             :attribute-refs? true
-             :schema-flexibility :read}
-        _ (d/delete-database cfg)
-        _ (d/create-database cfg)
-        conn (d/connect cfg)]
-    (testing "EAVT system datoms"
-      (is (= (into #{} (map #(conj % true) c/system-schema))
-             (->> (d/datoms @conn :eavt nil)
-                  (mapv (comp vec seq))
-                  (into #{})))))
-    (testing "AEVT system datoms"
-      (is (= (into #{} (map #(conj % true) c/system-schema))
-             (->> (d/datoms @conn :aevt nil)
-                  (mapv (comp vec seq))
-                  (into #{})))))
-    (testing "AVET system datoms"
-      (let [xf (comp
-                (map #(conj % true))
-                (filter (fn [[_ a _ _]] (= 1 a))))]
-        (is (= (into #{} xf c/system-schema)
-               (->> (d/datoms @conn :avet nil)
-                    (mapv (comp vec seq))
-                    (into #{}))))))))

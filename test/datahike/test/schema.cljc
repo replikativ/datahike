@@ -264,7 +264,6 @@
            (d/transact conn [{:db/id [:db/ident :owner]
                               :db/cardinality :db.cardinality/many}]))))))
 
-
 (deftest test-schema-persistence
   (testing "test file persistence"
     (let [os (System/getProperty "os.name")
