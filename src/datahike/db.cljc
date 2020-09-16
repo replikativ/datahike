@@ -1125,7 +1125,6 @@
           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))
         db))))
 
-
 (defn- with-temporal-datom [db ^Datom datom]
   (let [indexing? (indexing? db (.-a datom))
         schema? (ds/schema-attr? (.-a datom))

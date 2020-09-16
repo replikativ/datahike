@@ -14,7 +14,6 @@
             [clojure.core.cache :as cache])
   (:import [java.net URI]))
 
-
 (s/def ::connection #(instance? clojure.lang.Atom %))
 
 (defmulti transact!
@@ -60,7 +59,6 @@
                               :temporal-aevt temporal-aevt-flushed
                               :temporal-avet temporal-avet-flushed))
     tx-report))
-
 
 (defmethod transact! clojure.lang.IPersistentMap
   [connection {:keys [tx-data]}]
@@ -162,9 +160,9 @@
           store (kc/ensure-cache
                  (ds/empty-store store-config)
                  (atom (cache/lru-cache-factory {} :threshold 1000)))
-        stored-db (<?? S (k/get-in store [:db]))
-        _ (when stored-db
-            (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
+          stored-db (<?? S (k/get-in store [:db]))
+          _ (when stored-db
+              (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
           {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx hash]}
           (db/empty-db nil config)
           backend (kons/->KonserveBackend store)]
