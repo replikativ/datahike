@@ -28,7 +28,6 @@
 (deftest test-db-mem-store
   (test-store {:store {:backend :mem :id "test-mem"}}))
 
-
 (deftest test-persistent-set-index
   (let [config {:store {:backend :mem
                         :id "test-persistent-set"}

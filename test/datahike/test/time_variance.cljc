@@ -1,8 +1,9 @@
 (ns datahike.test.time-variance
   (:require
-    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-    [datahike.api :as d])
+   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+   [datahike.constants :as const]
+   [datahike.api :as d])
   (:import [java.util Date]))
 
 (set! *print-namespace-maps* false)
@@ -40,7 +41,7 @@
     (testing "historical values"
       (d/transact conn [{:db/id [:name "Alice"] :age 30}])
       (are [x y]
-          (= x y)
+           (= x y)
         #{[30]}
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
         #{[30] [25]}
@@ -48,7 +49,7 @@
     (testing "historical values after with retraction"
       (d/transact conn [[:db/retractEntity [:name "Alice"]]])
       (are [x y]
-          (= x y)
+           (= x y)
         #{}
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
         #{[30] [25]}
@@ -113,7 +114,7 @@
         query '[:find ?a :in $ ?e :where [?e :age ?a ?tx]]]
     (testing "get values at specific time"
       (is (= #{[25]}
-               (d/q query (d/as-of @conn first-date) [:name "Alice"]))))
+             (d/q query (d/as-of @conn first-date) [:name "Alice"]))))
     (testing "use transaction ID"
       (is (= #{[25]}
              (d/q query (d/as-of @conn tx-id) [:name "Alice"]))))
@@ -138,7 +139,7 @@
         query '[:find ?a :where [?e :age ?a]]]
     (testing "empty after first insertion"
       (is (= #{}
-            (d/q query (d/since @conn first-date)))))
+             (d/q query (d/since @conn first-date)))))
     (testing "added new value"
       (let [new-age 30
             _ (d/transact conn [{:db/id [:name "Alice"] :age new-age}])]
@@ -156,8 +157,7 @@
         _ (d/create-database uri :initial-tx [{:db/ident :name
                                                :db/cardinality :db.cardinality/one
                                                :db/valueType :db.type/string
-                                               :db/unique :db.unique/identity
-                                               }
+                                               :db/unique :db.unique/identity}
                                               {:db/ident :age
                                                :db/cardinality :db.cardinality/one
                                                :db/valueType :db.type/long
@@ -177,3 +177,60 @@
     (testing "all other attributes are present in history"
       (is (= #{["Alice"] ["Bob"]}
              (d/q '[:find ?n :where [?e :name ?n]] (d/history @conn)))))))
+
+(deftest upsert-history
+  (let [cfg {:store {:backend :mem
+                     :id "test-upsert-history"}
+             :keep-history? true
+             :schema-flexibility :read
+             :initial-tx schema-tx}
+        _ (do (d/delete-database cfg)
+              (d/create-database cfg))
+        conn (d/connect cfg)
+        query '[:find ?a ?t ?op
+                :where
+                [?e :name "Alice"]
+                [?e :age ?a ?t ?op]]]
+    (testing "upsert entity"
+      (d/transact conn [[:db/add [:name "Alice"] :age 30]])
+      (is (= #{[30 (+ const/tx0 2) true]}
+             (d/q query @conn)))
+      (is (= #{[25 (+ const/tx0 1) true]
+               [25 (+ const/tx0 2) false]
+               [30 (+ const/tx0 2) true]}
+             (d/q query (d/history @conn)))))
+    (testing "second upsert"
+      (d/transact conn [[:db/add [:name "Alice"] :age 35]])
+      (is (= #{[35 (+ const/tx0 3) true]}
+             (d/q query @conn)))
+      (is (= #{[25 (+ const/tx0 1) true]
+               [25 (+ const/tx0 2) false]
+               [30 (+ const/tx0 2) true]
+               [30 (+ const/tx0 3) false]
+               [35 (+ const/tx0 3) true]}
+             (d/q query (d/history @conn)))))
+    (testing "re-insert previous value"
+      (d/transact conn [[:db/add [:name "Alice"] :age 25]])
+      (is (= #{[25 (+ const/tx0 4) true]}
+             (d/q query @conn)))
+      (is (= #{[25 (+ const/tx0 1) true]
+               [25 (+ const/tx0 2) false]
+               [30 (+ const/tx0 2) true]
+               [30 (+ const/tx0 3) false]
+               [35 (+ const/tx0 3) true]
+               [35 (+ const/tx0 4) false]
+               [25 (+ const/tx0 4) true]}
+             (d/q query (d/history @conn)))))
+    (testing "retract upserted values"
+      (d/transact conn [[:db/retract [:name "Alice"] :age 25]])
+      (is (= #{}
+             (d/q query @conn)))
+      (is (= #{[25 (+ const/tx0 1) true]
+               [25 (+ const/tx0 2) false]
+               [30 (+ const/tx0 2) true]
+               [30 (+ const/tx0 3) false]
+               [35 (+ const/tx0 3) true]
+               [35 (+ const/tx0 4) false]
+               [25 (+ const/tx0 4) true]
+               [25 (+ const/tx0 5) false]}
+             (d/q query (d/history @conn)))))))
