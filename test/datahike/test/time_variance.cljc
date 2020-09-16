@@ -24,7 +24,6 @@
 (defn create-test-db [uri]
   (d/create-database uri :initial-tx schema-tx))
 
-
 (defn now []
   (Date.))
 
@@ -125,9 +124,7 @@
                as-of-str))
         (is (= "#datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}}"
                origin-str))
-        (is (not= as-of-str origin-str))
-        ))
-    ))
+        (is (not= as-of-str origin-str))))))
 
 (deftest test-since-db
   (let [uri "datahike:mem://test-historical-queries"

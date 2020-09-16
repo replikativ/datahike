@@ -847,8 +847,7 @@
          (.write w " :time-point ")
          (binding [*out* w]
            (pr (-time-point db))))
-       (.write w "}")
-       )
+       (.write w "}"))
 
      (defmethod print-method DB [db w] (pr-db db w))
      (defmethod print-method FilteredDB [db w] (pr-db db w))
