@@ -28,7 +28,8 @@
      (def UnsupportedOperationException js/Error)))
 
 (def ^:const implicit-schema {:db/ident {:db/unique :db.unique/identity}
-                              :db.entity/attrs {:db/cardinality :db.cardinality/many}})
+                              :db.entity/attrs {:db/cardinality :db.cardinality/many}
+                              :db.entity/preds {:db/cardinality :db.cardinality/many}})
 
 ;; ----------------------------------------------------------------------------
 
@@ -1234,8 +1235,15 @@
                        [:db/add v straight-a eid]
                        [:db/add eid straight-a v])))]
     (if ensure
-      (let [{:keys [:db.entity/attrs]} (-> db :schema ensure)]
-        (concat entities [[:db.ensure/attrs eid ensure attrs]]))
+      (let [{:keys [:db.entity/attrs :db.entity/preds]} (-> db :schema ensure)]
+        (if (empty? attrs)
+          (if (empty? preds)
+            entities
+            (concat entities [[:db.ensure/preds eid ensure preds]]))
+          (if (empty? preds)
+            (concat entities [[:db.ensure/attrs eid ensure attrs]])
+            (concat entities [[:db.ensure/attrs eid ensure attrs]
+                              [:db.ensure/preds eid ensure preds]]))))
       entities)))
 
 (defn- transact-add [{{{:keys [keep-history?]} :config :as db-after} :db-after :as report} [_ e a v tx :as ent]]
@@ -1304,6 +1312,16 @@
           report' (assoc initial-report :tempids tempids')]
       (transact-tx-data report' es))))
 
+(defn assert-preds [db [_ e _ preds]]
+  (reduce
+   (fn [coll pred]
+     (if ((resolve pred) db e)
+       coll
+       (conj coll pred)
+       ))
+   #{} preds))
+
+
 (def builtin-fn?
   #{:db.fn/call
     :db.fn/cas
@@ -1315,6 +1333,7 @@
     :db/retractEntity
     :db/purge
     :db.ensure/attrs
+    :db.ensure/preds
     :db.purge/entity
     :db.purge/attribute
     :db.history.purge/before})
@@ -1553,6 +1572,7 @@
                        (concat retracted-comps entities)))
               (raise "Purge entity is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
 
+            ;; assert required attributes
             (= op :db.ensure/attrs)
             (let [{:keys [tx-data]} report
                   asserting-datoms (filter (fn [^Datom d] (= e (.-e d))) tx-data)
@@ -1560,11 +1580,22 @@
                   diff (clojure.set/difference (set v) (set asserting-attributes))]
               (if (empty? diff)
                 (recur report entities)
-                (raise "Entity " e " missing attributes " diff " of by " a
-                       {:error :transat/ensure
+                (raise "Entity " e " missing attributes " diff " of spec " a
+                       {:error :transact/ensure
                         :operation op
                         :tx-data entity
                         :asserting-datoms asserting-datoms})))
+
+            ;; assert entity predicates
+            (= op :db.ensure/preds)
+            (let [{:keys [db-after]} report
+                  preds (assert-preds db-after entity)]
+              (if-not (empty? preds)
+                (raise "Entity " e " failed predicates " preds " of spec " a
+                       {:error :transact/ensure
+                        :operation op
+                        :tx-data entity})
+                (recur report entities)))
 
             :else
             (raise "Unknown operation at " entity ", expected :db/add, :db/retract, :db.fn/call, :db.fn/retractAttribute, :db.fn/retractEntity or an ident corresponding to an installed transaction function (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)" {:error :transact/syntax, :operation op, :tx-data entity})))
