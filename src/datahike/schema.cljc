@@ -44,13 +44,13 @@
 (s/def :db.type.install/_attribute #{:db.part/tx :db.part/db :db.part/user})
 
 (s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc })
-(s/def ::entity-spec-attribute #{:db/ensure :db.entity/attrs})
+(s/def ::entity-spec-attribute #{:db/ensure :db.entity/attrs :db.entity/preds})
 (s/def ::meta-attribute #{:db/txInstant :db/retracted})
 
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality]
                         :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
 
-(s/def ::entity-spec (s/keys :req [:db.entity/attrs]))
+(s/def ::entity-spec (s/keys :opt [:db.entity/attrs :db.entity/preds]))
 
 (s/def ::enum (s/keys :req [:db/ident]))
 
@@ -91,12 +91,15 @@
                                                :db/cardinality :db.cardinality/one}
                                    :db.entity/attrs {:db/valueType :db.type/keyword
                                                      :db/cardinality :db.cardinality/many}
+                                   :db.entity/preds {:db/valueType :db.type/symbol
+                                                     :db/cardinality :db.cardinality/many}
                                    :db/doc {:db/valueType :db.type/string
                                             :db/index true
                                             :db/cardinality :db.cardinality/one}
                                    :db.install/_attribute {:db/valueType   :db.type.install/_attribute
                                                            :db/unique      :db.unique/identity
                                                            :db/cardinality :db.cardinality/one}})
+
 
 (def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
 
