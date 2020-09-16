@@ -1,32 +1,33 @@
 (ns datahike.query
   (:require
-    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
-    [clojure.set :as set]
-    [clojure.string :as str]
-    [clojure.walk :as walk]
-    [datahike.db :as db]
-    [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
-    [me.tonsky.persistent-sorted-set.arrays :as da]
-    [datahike.lru]
-    [datahike.impl.entity :as de]
-    #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple Constant
-                                           FindColl FindRel FindScalar FindTuple PlainSymbol
-                                           RulesVar SrcVar Variable]])
-    [datalog.parser.impl :as dpi]
-    [datalog.parser.impl.proto :as dpip]
-    [datahike.pull-api :as dpa]
-    [datalog.parser :refer [parse]]
-    [datalog.parser.pull :as dpp])
+   [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
+   [clojure.set :as set]
+   [clojure.string :as str]
+   [clojure.walk :as walk]
+   [datahike.db :as db]
+   [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
+   [me.tonsky.persistent-sorted-set.arrays :as da]
+   [datahike.lru]
+   [datahike.impl.entity :as de]
+   #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple Constant
+                                          FindColl FindRel FindScalar FindTuple PlainSymbol
+                                          RulesVar SrcVar Variable]])
+   [datalog.parser.impl :as dpi]
+   [datalog.parser.impl.proto :as dpip]
+   [datahike.pull-api :as dpa]
+   [datalog.parser :refer [parse]]
+   [datalog.parser.pull :as dpp])
   #?(:clj (:import [clojure.lang Reflector]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
-                                        Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
-                                        RulesVar SrcVar Variable]
+                    Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
+                    RulesVar SrcVar Variable]
                    [datahike.datom Datom]
                    [java.lang.reflect Method]
                    [java.util Date])))
 
 
 ;; ----------------------------------------------------------------------------
+
 
 (def ^:const lru-cache-size 100)
 
@@ -45,6 +46,7 @@
 
 
 ;; Utilities
+
 
 (defn single [coll]
   (assert (nil? (next coll)) "Expected single element")
@@ -130,14 +132,14 @@
                               [idx-b (attrs-a sym)]))
             tlen (->> (vals attrs-a) (reduce max) (inc))
             tuples' (persistent!
-                      (reduce
-                        (fn [acc tuple-b]
-                          (let [tuple' (da/make-array tlen)]
-                            (doseq [[idx-b idx-a] idxb->idxa]
-                              (aset tuple' idx-a (#?(:cljs da/aget :clj get) tuple-b idx-b)))
-                            (conj! acc tuple')))
-                        (transient (vec tuples-a))
-                        tuples-b))]
+                     (reduce
+                      (fn [acc tuple-b]
+                        (let [tuple' (da/make-array tlen)]
+                          (doseq [[idx-b idx-a] idxb->idxa]
+                            (aset tuple' idx-a (#?(:cljs da/aget :clj get) tuple-b idx-b)))
+                          (conj! acc tuple')))
+                      (transient (vec tuples-a))
+                      tuples-b))]
         (Relation. attrs-a tuples'))
 
       :else
@@ -154,17 +156,18 @@
          idxs1 (to-array (map (:attrs rel1) attrs1))
          idxs2 (to-array (map (:attrs rel2) attrs2))]
      (Relation.
-       (zipmap (concat attrs1 attrs2) (range))
-       (persistent!
-         (reduce
-           (fn [acc t1]
-             (reduce (fn [acc t2]
-                       (conj! acc (join-tuples t1 idxs1 t2 idxs2)))
-                     acc (:tuples rel2)))
-           (transient []) (:tuples rel1)))))))
+      (zipmap (concat attrs1 attrs2) (range))
+      (persistent!
+       (reduce
+        (fn [acc t1]
+          (reduce (fn [acc t2]
+                    (conj! acc (join-tuples t1 idxs1 t2 idxs2)))
+                  acc (:tuples rel2)))
+        (transient []) (:tuples rel1)))))))
 
 
 ;; built-ins
+
 
 (defn- -differ? [& xs]
   (let [l (count xs)]
@@ -181,11 +184,11 @@
 (defn- -get-some
   [db e & as]
   (reduce
-    (fn [_ a]
-      (when-some [datom (first (db/-search db [e a]))]
-        (reduced [(:a datom) (:v datom)])))
-    nil
-    as))
+   (fn [_ a]
+     (when-some [datom (first (db/-search db [e a]))]
+       (reduced [(:a datom) (:v datom)])))
+   nil
+   as))
 
 (defn- -missing?
   [db e a]
@@ -200,8 +203,8 @@
             (if b (reduced b) b)) nil args))
 
 (defmulti -lesser?
-          {:arglists '([value & more])}
-          (fn [value & more] (class value)))
+  {:arglists '([value & more])}
+  (fn [value & more] (class value)))
 
 (defmethod -lesser? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.before ^Date d0 ^Date d1)
@@ -228,8 +231,7 @@
   (or (apply = value more)
       (apply -greater? value more)))
 
-(def built-ins {
-                '=          =, '== ==, 'not= not=, '!= not=, '< -lesser?, '> -greater?, '<= -lesser-equal?, '>= -greater-equal?, '+ +, '- -,
+(def built-ins {'=          =, '== ==, 'not= not=, '!= not=, '< -lesser?, '> -greater?, '<= -lesser-equal?, '>= -greater-equal?, '+ +, '- -,
                 '*          *, '/ /, 'quot quot, 'rem rem, 'mod mod, 'inc inc, 'dec dec, 'max max, 'min min,
                 'zero?      zero?, 'pos? pos?, 'neg? neg?, 'even? even?, 'odd? odd?, 'compare compare,
                 'rand       rand, 'rand-int rand-int,
@@ -251,9 +253,9 @@
                   size (count coll)
                   med (bit-shift-right size 1)]
               (cond-> (nth terms med)
-                      (even? size)
-                      (-> (+ (nth terms (dec med)))
-                          (/ 2)))))
+                (even? size)
+                (-> (+ (nth terms (dec med)))
+                    (/ 2)))))
           (variance
             [coll]
             (let [mean (avg coll)
@@ -276,14 +278,14 @@
                                        (first coll) (next coll)))
                        ([n coll]
                         (vec
-                          (reduce (fn [acc x]
-                                    (cond
-                                      (< (count acc) n)
-                                      (sort compare (conj acc x))
-                                      (neg? (compare x (last acc)))
-                                      (sort compare (conj (butlast acc) x))
-                                      :else acc))
-                                  [] coll))))
+                         (reduce (fn [acc x]
+                                   (cond
+                                     (< (count acc) n)
+                                     (sort compare (conj acc x))
+                                     (neg? (compare x (last acc)))
+                                     (sort compare (conj (butlast acc) x))
+                                     :else acc))
+                                 [] coll))))
      'max            (fn
                        ([coll] (reduce (fn [acc x]
                                          (if (pos? (compare x acc))
@@ -291,14 +293,14 @@
                                        (first coll) (next coll)))
                        ([n coll]
                         (vec
-                          (reduce (fn [acc x]
-                                    (cond
-                                      (< (count acc) n)
-                                      (sort compare (conj acc x))
-                                      (pos? (compare x (first acc)))
-                                      (sort compare (conj (next acc) x))
-                                      :else acc))
-                                  [] coll))))
+                         (reduce (fn [acc x]
+                                   (cond
+                                     (< (count acc) n)
+                                     (sort compare (conj acc x))
+                                     (pos? (compare x (first acc)))
+                                     (sort compare (conj (next acc) x))
+                                     :else acc))
+                                 [] coll))))
      'sum            sum
      'rand           (fn
                        ([coll] (rand-nth coll))
@@ -310,6 +312,7 @@
 
 
 ;;
+
 
 (defn parse-rules [rules]
   (let [rules (if (string? rules) (edn/read-string rules) rules)] ;; for datahike.js interop
@@ -450,7 +453,7 @@
         getters-a (map #(getter-fn attrs-a %) attrs)
         key-fn-a (tuple-key-fn getters-a)]
     (assoc a
-      :tuples (filterv #(nil? (hash (key-fn-a %))) tuples-a))))
+           :tuples (filterv #(nil? (hash (key-fn-a %))) tuples-a))))
 
 (defn lookup-pattern-db [db pattern]
   ;; TODO optimize with bound attrs min/max values here
@@ -565,7 +568,6 @@
                                   :method-name method-name
                                   :args-classes args-classes})))))))
 
-
 (defn- resolve-method [method-sym]
   #?(:cljs nil
      :clj (let [method-str (name method-sym)]
@@ -634,12 +636,12 @@
           :let [[[_ & rule-args] & clauses] branch
                 replacements (zipmap rule-args call-args)]]
       (walk/postwalk
-        #(if (free-var? %)
-           (db/some-of
-             (replacements %)
-             (symbol (str (name %) "__auto__" seqid)))
-           %)
-        clauses))))
+       #(if (free-var? %)
+          (db/some-of
+           (replacements %)
+           (symbol (str (name %) "__auto__" seqid)))
+          %)
+       clauses))))
 
 (defn remove-pairs [xs ys]
   (let [pairs (->> (map vector xs ys)
@@ -711,16 +713,16 @@
 
                     ;; need to expand rule to branches
                     (let [used-args (assoc (:used-args frame) rule
-                                                              (conj (get (:used-args frame) rule []) call-args))
+                                           (conj (get (:used-args frame) rule []) call-args))
                           branches (expand-rule rule-clause context used-args)]
                       (recur (concat
-                               (for [branch branches]
-                                 {:prefix-clauses prefix-clauses
-                                  :prefix-context prefix-context
-                                  :clauses        (concatv branch next-clauses)
-                                  :used-args      used-args
-                                  :pending-guards pending-gs})
-                               (next stack))
+                              (for [branch branches]
+                                {:prefix-clauses prefix-clauses
+                                 :prefix-context prefix-context
+                                 :clauses        (concatv branch next-clauses)
+                                 :used-args      used-args
+                                 :pending-guards pending-gs})
+                              (next stack))
                              rel))))))))
         rel))))
 
@@ -728,23 +730,23 @@
   (if (satisfies? db/IDB source)
     (let [[e a v tx added] pattern]
       (->
-        [(if (or (lookup-ref? e) (attr? e)) (db/entid-strict source e) e)
-         a
-         (if (and v (attr? a) (db/ref? source a) (or (lookup-ref? v) (attr? v))) (db/entid-strict source v) v)
-         (if (lookup-ref? tx) (db/entid-strict source tx) tx)
-         added]
-        (subvec 0 (count pattern))))
+       [(if (or (lookup-ref? e) (attr? e)) (db/entid-strict source e) e)
+        a
+        (if (and v (attr? a) (db/ref? source a) (or (lookup-ref? v) (attr? v))) (db/entid-strict source v) v)
+        (if (lookup-ref? tx) (db/entid-strict source tx) tx)
+        added]
+       (subvec 0 (count pattern))))
     pattern))
 
 (defn dynamic-lookup-attrs [source pattern]
   (let [[e a v tx] pattern]
     (cond-> #{}
-            (free-var? e) (conj e)
-            (free-var? tx) (conj tx)
-            (and
-              (free-var? v)
-              (not (free-var? a))
-              (db/ref? source a)) (conj v))))
+      (free-var? e) (conj e)
+      (free-var? tx) (conj tx)
+      (and
+       (free-var? v)
+       (not (free-var? a))
+       (db/ref? source a)) (conj v))))
 
 (defn limit-rel [rel vars]
   (when-some [attrs' (not-empty (select-keys (:attrs rel) vars))]
@@ -752,8 +754,8 @@
 
 (defn limit-context [context vars]
   (assoc context
-    :rels (->> (:rels context)
-               (keep #(limit-rel % vars)))))
+         :rels (->> (:rels context)
+                    (keep #(limit-rel % vars)))))
 
 (defn check-bound [context vars form]
   (let [bound (into #{} (mapcat #(keys (:attrs %)) (:rels context)))]
@@ -816,8 +818,8 @@
            context' (assoc context :rels [(reduce hash-join (:rels context))])
            negation-context (reduce resolve-clause context' clauses)
            negation (subtract-rel
-                      (single (:rels context'))
-                      (reduce hash-join (:rels negation-context)))]
+                     (single (:rels context'))
+                     (reduce hash-join (:rels negation-context)))]
        (assoc context' :rels [negation]))
 
      '[not-join [*] *]                                      ;; (not-join [vars] ...)
@@ -828,8 +830,8 @@
            negation-context (-> (reduce resolve-clause join-context clauses)
                                 (limit-context vars))
            negation (subtract-rel
-                      (single (:rels context'))
-                      (reduce hash-join (:rels negation-context)))]
+                     (single (:rels context'))
+                     (reduce hash-join (:rels negation-context)))]
        (assoc context' :rels [negation]))
 
      '[*]                                                   ;; pattern
@@ -941,7 +943,7 @@
                    (when (instance? Pull find)
                      [(-context-resolve (:source find) context)
                       (dpp/parse-pull
-                        (-context-resolve (:pattern find) context))]))]
+                       (-context-resolve (:pattern find) context))]))]
     (for [tuple resultset]
       (mapv (fn [env el]
               (if env
@@ -975,7 +977,6 @@
         (-> resultset vec (subvec start end) set)
         #{}))
     resultset))
-
 
 (defn convert-to-return-maps [{:keys [mapping-type mapping-keys]} resultset]
   (let [mapping-keys (map #(get % :mapping-key) mapping-keys)

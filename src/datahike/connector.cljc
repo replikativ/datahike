@@ -28,7 +28,7 @@
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx hash]} db-after
+        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx]} db-after
         store (:store @connection)
         backend (kons/->KonserveBackend store)
         eavt-flushed (di/-flush eavt backend)
@@ -53,12 +53,12 @@
                            :temporal-aevt-key temporal-aevt-flushed
                            :temporal-avet-key temporal-avet-flushed}))))
     (reset! connection (assoc db-after
-                         :eavt eavt-flushed
-                         :aevt aevt-flushed
-                         :avet avet-flushed
-                         :temporal-eavt temporal-eavt-flushed
-                         :temporal-aevt temporal-aevt-flushed
-                         :temporal-avet temporal-avet-flushed))
+                              :eavt eavt-flushed
+                              :aevt aevt-flushed
+                              :avet avet-flushed
+                              :temporal-eavt temporal-eavt-flushed
+                              :temporal-aevt temporal-aevt-flushed
+                              :temporal-avet temporal-avet-flushed))
     tx-report))
 
 
@@ -128,7 +128,7 @@
           raw-store (ds/connect-store store-config)
           _ (when-not raw-store
               (dt/raise "Backend does not exist." {:type :backend-does-not-exist
-                                                          :config config}))
+                                                   :config config}))
           store (kons/add-hitchhiker-tree-handlers
                  (kc/ensure-cache
                   raw-store
@@ -138,7 +138,7 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
-          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx hash]} stored-db
+          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx]} stored-db
           empty (db/empty-db nil config)]
       (d/conn-from-db
        (assoc empty

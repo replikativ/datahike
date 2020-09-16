@@ -1,10 +1,10 @@
 (ns ^:no-doc datahike.js
   (:refer-clojure :exclude [filter])
   (:require
-    [goog.object :as go]
-    [datahike.core :as d]
-    [clojure.walk :as walk]
-    [cljs.reader]))
+   [goog.object :as go]
+   [datahike.core :as d]
+   [clojure.walk :as walk]
+   [cljs.reader]))
 
 ;; Conversions
 
@@ -16,19 +16,19 @@
 (defn- schema->clj [schema]
   (->> (js->clj schema)
        (reduce-kv
-         (fn [m k v] (assoc m k (walk/postwalk keywordize v))) {})))
+        (fn [m k v] (assoc m k (walk/postwalk keywordize v))) {})))
 
 (declare entities->clj)
 
 (defn- entity-map->clj [e]
   (walk/postwalk
-    (fn [form]
-      (if (and (map? form) (contains? form ":db/id"))
-        (-> form
-            (dissoc ":db/id")
-            (assoc  :db/id (get form ":db/id")))
-        form))
-    e))
+   (fn [form]
+     (if (and (map? form) (contains? form ":db/id"))
+       (-> form
+           (dissoc ":db/id")
+           (assoc  :db/id (get form ":db/id")))
+       form))
+   e))
 
 (defn- entity->clj [e]
   (cond
@@ -54,11 +54,11 @@
     obj))
 
 (defn- tx-report->js [report]
-  #js { :db_before (:db-before report)
-        :db_after  (:db-after report)
-        :tx_data   (->> (:tx-data report) into-array)
-        :tempids   (tempids->js (:tempids report))
-        :tx_meta   (:tx-meta report) })
+  #js {:db_before (:db-before report)
+       :db_after  (:db-after report)
+       :tx_data   (->> (:tx-data report) into-array)
+       :tempids   (tempids->js (:tempids report))
+       :tx_meta   (:tx-meta report)})
 
 (defn js->Datom [d]
   (if (array? d)
@@ -127,13 +127,13 @@
     report))
 
 (defn ^:export reset_conn [conn db & [tx-meta]]
-  (let [report #js { :db_before @conn
-                     :db_after  db
-                     :tx_data   (into-array
-                                  (concat
-                                    (map #(assoc % :added false) (d/datoms @conn :eavt))
-                                    (d/datoms db :eavt)))
-                     :tx_meta   tx-meta }]
+  (let [report #js {:db_before @conn
+                    :db_after  db
+                    :tx_data   (into-array
+                                (concat
+                                 (map #(assoc % :added false) (d/datoms @conn :eavt))
+                                 (d/datoms db :eavt)))
+                    :tx_meta   tx-meta}]
     (reset! conn db)
     (doseq [[_ callback] @(:listeners (meta conn))]
       (callback report))

@@ -573,9 +573,13 @@
          (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d)))))))
 
 (defn- filter-before [datoms ^Date before-date db]
-  (let [before-pred (fn [^Datom d] (.before ^Date (.-v d) before-date))
+  (let [before-pred (fn [^Datom d]
+                      (.before ^Date (.-v d) before-date))
         filtered-tx-ids (filter-txInstant datoms before-pred db)]
-    (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))) datoms)))
+    (filter
+     (fn [^Datom d]
+       (contains? filtered-tx-ids (datom-tx d)))
+     datoms)))
 
 (defrecord-updatable SinceDB [origin-db time-point]
   #?@(:cljs
@@ -666,17 +670,17 @@
 
 (defn- rschema [schema]
   (reduce-kv
-    (fn [m attr keys->values]
-      (if (keyword? keys->values)
-        m
-        (reduce-kv
-          (fn [m key value]
-            (reduce
-              (fn [m prop]
-                (assoc m prop (conj (get m prop #{}) attr)))
-              m (attr->properties key value)))
-          (update m :db/ident (fn [coll] (if coll (conj coll attr) #{attr}))) keys->values)))
-    {} schema))
+   (fn [m attr keys->values]
+     (if (keyword? keys->values)
+       m
+       (reduce-kv
+        (fn [m key value]
+          (reduce
+           (fn [m prop]
+             (assoc m prop (conj (get m prop #{}) attr)))
+           m (attr->properties key value)))
+        (update m :db/ident (fn [coll] (if coll (conj coll attr) #{attr}))) keys->values)))
+   {} schema))
 
 (defn- validate-schema-key [a k v expected]
   (when-not (or (nil? v)
@@ -1256,9 +1260,10 @@
              (map (fn [^Datom d] [:db.fn/retractEntity (.-v d)]))) datoms))
 
 (defn- purge-components [db datoms]
-  (into #{} (comp
-             (filter (fn [^Datom d] (component? db (.-a d))))
-             (map (fn [^Datom d] [:db.purge/entity (.-v d)]))) datoms))
+  (let [xf (comp
+            (filter (fn [^Datom d] (component? db (.-a d))))
+            (map (fn [^Datom d] [:db.purge/entity (.-v d)])))]
+    (into #{} xf datoms)))
 
 #?(:clj
    (defmacro cond+ [& clauses]
@@ -1527,7 +1532,10 @@
             (= op :db.history.purge/before)
             (if (-keep-history? db)
               (let [history (HistoricalDB. db)
-                    e-datoms (-> (search-temporal-indices db nil) vec (filter-before e db) vec)
+                    e-datoms (-> (search-temporal-indices db nil)
+                                 vec
+                                 (filter-before e db)
+                                 vec)
                     retracted-comps (purge-components history e-datoms)]
                 (recur (reduce transact-purge-datom report e-datoms)
                        (concat retracted-comps entities)))

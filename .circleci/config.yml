@@ -1,137 +1,43 @@
 version: 2.1
 
-executors:
-  leiningen:
-    docker:
-      - image: circleci/clojure:openjdk-8-lein
-    environment:
-      LEIN_ROOT: nbd
-      JVM_OPTS: -Xmx3200m
-    working_directory: /home/circleci/datahike
+orbs:
+  lein: replikativ/clj-lein@0
 
-jobs:
-  setup:
-    executor: leiningen
-    steps:
-      - restore_cache:
-          keys:
-            - source-{{ .Branch }}-{{ .Revision }}
-            - source-{{ .Branch }}
-            - source-
-      - checkout
-      - save_cache:
-          key: source-{{ .Branch }}-{{ .Revision }}
-          paths:
-            - .git
-      - restore_cache:
-          keys:
-            - deps-{{ checksum "project.clj" }}
-            - deps-
-      - run: lein deps
-      - save_cache:
-          key: deps-{{ checksum "project.clj" }}
-          paths:
-            - /home/circleci/.m2
-            - /home/circleci/.lein
-      - persist_to_workspace:
-          root: /home/circleci/
-          paths:
-            - .m2
-            - datahike
-            - bin
-
-  unittest:
-    executor: leiningen
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Run Unittests
-          command: ./bin/run-unit-tests
-          no_output_timeout: 5m
-
-  integrationtest:
-    executor: leiningen
-    docker:
-      - image: mopedtobias/cimg:1.10
-      - image: circleci/postgres:11-alpine
-        environment:
-          POSTGRES_USER: alice
-          POSTGRES_PASSWORD: foo
-          POSTGRES_DB: config-test
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Run Integrationtests
-          command: ./bin/run-integration-tests
-          no_output_timeout: 5m
-
-  build:
-    executor: leiningen
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Build
-          command: lein uberjar
-          no_output_timeout: 5m
-
-  deploy-snapshot:
-    executor: leiningen
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          command: |
-            VERSION=$(head -n 1 project.clj | awk '{print $3}' | tr -d \")
-            if [[ ${VERSION} =~ .*-SNAPSHOT ]]; then
-                lein deploy clojars
-            else
-                exit 0
-            fi
-  deploy-release:
-    executor: leiningen
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Deploy Release to Clojars
-          command: |
-            VERSION=$(head -n 1 project.clj | awk '{print $3}' | tr -d \")
-            if [[ ${VERSION} =~ .*-SNAPSHOT ]]; then
-                exit 0
-            else
-                lein deploy clojars
-            fi
 workflows:
-  build_test_and_deploy:
+  build-test-and-deploy:
     jobs:
-      - setup
-      - unittest:
+      - lein/setup
+      - lein/format:
           requires:
-            - setup
-      - integrationtest:
+            - lein/setup
+      - lein/unittest:
           requires:
-            - setup
-      - build:
+            - lein/setup
+      - lein/integrationtest-postgresql:
           requires:
-            - setup
-      - deploy-snapshot:
+            - lein/setup
+      - lein/build:
+          requires:
+            - lein/setup
+      - lein/deploy-snapshot:
+          context: clojars-deploy
           filters:
             branches:
               only: development
           requires:
-            - setup
-            - unittest
-            - integrationtest
-            - build
-      - deploy-release:
+            - lein/setup
+            - lein/format
+            - lein/unittest
+            - lein/integrationtest-postgresql
+            - lein/build
+      - lein/deploy-release:
+          context: clojars-deploy
           filters:
             branches:
               only: master
           requires:
-            - setup
-            - unittest
-            - integrationtest
-            - build
+            - lein/setup
+            - lein/format
+            - lein/unittest
+            - lein/integrationtest-postgresql
+            - lein/build

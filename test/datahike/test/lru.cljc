@@ -1,8 +1,8 @@
 (ns datahike.test.lru
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [datahike.lru :as lru]))
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   [datahike.lru :as lru]))
 
 (deftest test-lru
   (let [l0 (lru/lru 2)
@@ -24,4 +24,4 @@
       l5 :b 2   ;; :b remains
       l5 :c nil ;; :c gets evicted as the oldest one
       l5 :d 5)))
-        
+

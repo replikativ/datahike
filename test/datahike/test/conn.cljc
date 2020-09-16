@@ -20,7 +20,7 @@
   (let [conn (d/create-conn schema)]
     (is (= #{} (set (d/datoms @conn :eavt))))
     (is (= schema (:schema @conn))))
-
+  
   (let [conn (d/conn-from-datoms datoms)]
     (is (= datoms (set (d/datoms @conn :eavt))))
     (is (= db/implicit-schema (:schema @conn))))
