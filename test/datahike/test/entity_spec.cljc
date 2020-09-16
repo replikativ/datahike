@@ -29,7 +29,7 @@
                      {:db/ident :account/guard
                       :db.entity/attrs [:account/email :account/balance]})
         valid-account {:account/email "antonia@a.corp"
-                      :account/balance 1000}
+                       :account/balance 1000}
         invalid-account {:account/email "arthur@b.corp"}
         empty-account {}]
     (letfn [(tx-with-ensure [conn account]
@@ -45,8 +45,7 @@
           (testing "assert invalid account"
             (is (thrown-msg?
                  "Entity 5 missing attributes #{:account/balance} of spec :account/guard"
-                 (tx-with-ensure conn invalid-account)
-                 )))
+                 (tx-with-ensure conn invalid-account))))
           (testing "assert empty entity"
             (is (thrown-msg?
                  "Entity 5 missing attributes #{:account/balance :account/email} of spec :account/guard"

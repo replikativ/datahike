@@ -1317,10 +1317,8 @@
    (fn [coll pred]
      (if ((resolve pred) db e)
        coll
-       (conj coll pred)
-       ))
+       (conj coll pred)))
    #{} preds))
-
 
 (def builtin-fn?
   #{:db.fn/call
