@@ -1130,7 +1130,7 @@
   (let [indexing? (indexing? db (.-a datom))
         schema? (ds/schema-attr? (.-a datom))
         current-datom ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))
-        history-datom ^Datom (first (search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom)]))
+        history-datom ^Datom (first (search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
         current? (not (nil? current-datom))
         history? (not (nil? history-datom))]
     (cond-> db
@@ -1243,7 +1243,7 @@
         (if (= (.-v old-datom) v)
           report
           (-> report
-              (transact-report (datom e a (.-v old-datom) (if keep-history? (datom-tx old-datom) tx) false))
+              (transact-report (datom e a (.-v old-datom) tx false))
               (transact-report new-datom)))
         (transact-report report new-datom)))))
 
