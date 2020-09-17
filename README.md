@@ -136,7 +136,7 @@ To run the benchmarks, navigate to the project folder in your terminal and run
 lein with-profile benchmark run 
 ```
 
-You will receive a list containing information about what has been tested and the mean of measured times as follows:
+You will receive a list containing information about what has been tested and the mean of measured times in milliseconds as follows:
 
 ```clojure
 [ ;; ...
@@ -149,7 +149,8 @@ You will receive a list containing information about what has been tested and th
    :function :transaction,
    :db-size 1000,
    :tx-size 10},
-  :mean-time 5.0185512}
+  :mean-time 5.0185512 ;; ms
+ }
   ;; ...
 ]
 ```
