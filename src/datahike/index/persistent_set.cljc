@@ -39,6 +39,7 @@
 
 ;; Functions defined in multimethods in index.cljc
 
+
 (defn empty-set [index-type]
   (set/sorted-set-by (index-type->cmp index-type)))
 
@@ -47,7 +48,7 @@
               (let [avet-datoms (filter (fn [^Datom d] (contains? indexed (.-a d))) datoms)]
                 (to-array avet-datoms))
               (cond-> datoms
-                      (not (arrays/array? datoms))
-                      (arrays/into-array)))
+                (not (arrays/array? datoms))
+                (arrays/into-array)))
         _ (arrays/asort arr (index-type->cmp-quick index-type))]
     (set/from-sorted-array (index-type->cmp index-type) arr)))
