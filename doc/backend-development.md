@@ -12,7 +12,7 @@ As an example, you may have a look at the implementation of our [Postgres](https
 
 ##  Template
 
-Here, we provide a basic template for a backend implementation. The bracketed text pieces defines placeholder values, you should replace as follows:
+[Here, we provide a basic template for a backend implementation](https://github.com/replikativ/datahike-backend-template). Following are bracketed text pieces defining placeholder values, you should replace as follows:
 - **backendname** surprisingly should be the name of your backend.
 - **backendID** should be a `keyword` to identify your backend on request. At this moment, datahike ships with backends identified by `:mem` and `:file`, so do not use those.
 - **indexID** should be a `keyword` identifying an index to be used as default for your backend. So far, you can choose between the following: 

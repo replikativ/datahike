@@ -1,3 +1,1 @@
-{
-  :externs ["datahike/externs.js"]
-}
+{:externs ["datahike/externs.js"]}

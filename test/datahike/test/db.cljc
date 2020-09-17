@@ -56,7 +56,6 @@
         r1 (d/db-with db [[:db.fn/retractEntity 1]])]
     (is (= (hash (d/empty-db)) (hash r1)))))
 
-
 (deftest empty-db-with-schema
   (testing "Test old write schema"
     (is (thrown-msg?

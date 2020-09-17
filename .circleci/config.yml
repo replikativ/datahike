@@ -7,6 +7,9 @@ workflows:
   build-test-and-deploy:
     jobs:
       - lein/setup
+      - lein/format:
+          requires:
+            - lein/setup
       - lein/unittest:
           requires:
             - lein/setup
@@ -23,6 +26,7 @@ workflows:
               only: development
           requires:
             - lein/setup
+            - lein/format
             - lein/unittest
             - lein/integrationtest-postgresql
             - lein/build
@@ -33,6 +37,7 @@ workflows:
               only: master
           requires:
             - lein/setup
+            - lein/format
             - lein/unittest
             - lein/integrationtest-postgresql
             - lein/build
