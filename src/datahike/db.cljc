@@ -875,12 +875,16 @@
      (defn- pp-db [db ^java.io.Writer w]
        (pp/pprint-logical-block :prefix "#datahike/DB {" :suffix "}"
                                 (pp/pprint-logical-block
-                                 (pp/write-out :schema)
-                                 (.write w " ")
+                                 (pp/write-out :max-tx)
+                                 (.write ^java.io.Writer *out* " ")
                                  (pp/pprint-newline :linear)
-                                 (pp/write-out (:schema db)))
-                                (.write w ", ")
-
+                                 (pp/write-out (-max-tx db))
+                                 (.write ^java.io.Writer *out* " ")
+                                 (pp/pprint-newline :linear)
+                                 (pp/write-out :max-eid)
+                                 (.write ^java.io.Writer *out* " ")
+                                 (pp/pprint-newline :linear)
+                                 (pp/write-out (-max-eid db)))
                                 (pp/pprint-newline :linear)))
 
      (defmethod pp/simple-dispatch DB [db] (pp-db db *out*))
