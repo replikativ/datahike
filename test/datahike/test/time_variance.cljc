@@ -10,17 +10,17 @@
 (set! *print-namespace-maps* false)
 
 (def schema [{:db/ident       :name
-                       :db/valueType   :db.type/string
-                       :db/unique      :db.unique/identity
-                       :db/index       true
-                       :db/cardinality :db.cardinality/one}
-                      {:db/ident       :age
-                       :db/valueType   :db.type/long
-                       :db/cardinality :db.cardinality/one}
-                      {:name "Alice"
-                       :age  25}
-                      {:name "Bob"
-                       :age  35}])
+              :db/valueType   :db.type/string
+              :db/unique      :db.unique/identity
+              :db/index       true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident       :age
+              :db/valueType   :db.type/long
+              :db/cardinality :db.cardinality/one}
+             {:name "Alice"
+              :age  25}
+             {:name "Bob"
+              :age  35}])
 
 (def cfg-template {:store {:backend :mem
                            :id "time-variance"}
@@ -120,7 +120,7 @@
             origin-str (pr-str (datahike.db/-origin (d/as-of @conn tx-id)))]
         (is (= "#datahike/AsOfDB {:origin #datahike/DB {:max-tx 536870913 :max-eid 4} :time-point 536870914}"
                as-of-str))
-        (is (= "#datahike/DB {:max-tx 536870913 :max-eid 4}" 
+        (is (= "#datahike/DB {:max-tx 536870913 :max-eid 4}"
                origin-str))
         (is (not= as-of-str origin-str))))))
 
