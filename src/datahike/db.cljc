@@ -133,6 +133,10 @@
   (-keep-history? [db])
   (-config [db]))
 
+(defprotocol IHistory
+  (-time-point [db])
+  (-origin [db]))
+
 ;; ----------------------------------------------------------------------------
 
 
@@ -440,6 +444,9 @@
   (-max-tx [db] (-max-tx (.-origin-db db)))
   (-config [db] (-config (.-origin-db db)))
 
+  IHistory
+  (-origin [db] (.-origin-db db))
+
   ISearch
   (-search [db pattern]
            (temporal-search (.-origin-db db) pattern))
@@ -535,6 +542,10 @@
   (-max-tx [db] (-max-tx (.-origin-db db)))
   (-config [db] (-config (.-origin-db db)))
 
+  IHistory
+  (-time-point [db] (.-time-point db))
+  (-origin [db] (.-origin-db db))
+
   ISearch
   (-search [db pattern]
            (let [origin-db (.-origin-db db)]
@@ -623,6 +634,10 @@
   (-keep-history? [db] (-keep-history? (.-origin-db db)))
   (-max-tx [db] (-max-tx (.-origin-db db)))
   (-config [db] (-config (.-origin-db db)))
+
+  IHistory
+  (-time-point [db] (.-time-point db))
+  (-origin [db] (.-origin-db db))
 
   ISearch
   (-search [db pattern]
@@ -815,15 +830,30 @@
 
 #?(:clj
    (do
-     (defn pr-db [db, ^java.io.Writer w]
-       (.write w (str "#datahike/DB {"))
+     (defn pr-db
+       [db ^java.io.Writer w]
+       (.write w "#datahike/DB {")
        (.write w ":schema ")
        (binding [*out* w]
          (pr (-schema db)))
        (.write w "}"))
 
+     (defn pr-hist-db [db ^java.io.Writer w flavor time-point?]
+       (.write w (str "#datahike/" flavor " {"))
+       (.write w ":origin ")
+       (binding [*out* w]
+         (pr (-origin db)))
+       (when time-point?
+         (.write w " :time-point ")
+         (binding [*out* w]
+           (pr (-time-point db))))
+       (.write w "}"))
+
      (defmethod print-method DB [db w] (pr-db db w))
      (defmethod print-method FilteredDB [db w] (pr-db db w))
+     (defmethod print-method HistoricalDB [db w] (pr-hist-db db w "HistoricalDB" false))
+     (defmethod print-method AsOfDB [db w] (pr-hist-db db w "AsOfDB" true))
+     (defmethod print-method SinceDB [db w] (pr-hist-db db w "SinceDB" true))
 
      (defmethod pp/simple-dispatch Datom [^Datom d]
        (pp/pprint-logical-block :prefix "#datahike/Datom [" :suffix "]"
