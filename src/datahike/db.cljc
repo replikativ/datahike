@@ -129,6 +129,7 @@
   (-rschema [db])
   (-attrs-by [db property])
   (-max-tx [db])
+  (-max-eid [db])
   (-temporal-index? [db]) ;;deprecated
   (-keep-history? [db])
   (-config [db]))
@@ -225,6 +226,7 @@
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-> db -config :keep-history?))
   (-max-tx [db] (.-max-tx db))
+  (-max-eid [db] (.-max-eid db))
   (-config [db] (.-config db))
 
   ISearch
@@ -319,6 +321,7 @@
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-keep-history? (.-unfiltered-db db)))
   (-max-tx [db] (-max-tx (.-unfiltered-db db)))
+  (-max-eid [db] (-max-eid (.-unfiltered-db db)))
   (-config [db] (-config (.-unfiltered-db db)))
 
   ISearch
@@ -442,6 +445,7 @@
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-keep-history? (.-origin-db db)))
   (-max-tx [db] (-max-tx (.-origin-db db)))
+  (-max-eid [db] (-max-eid (.-origin-db db)))
   (-config [db] (-config (.-origin-db db)))
 
   IHistory
@@ -540,6 +544,7 @@
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-keep-history? (.-origin-db db)))
   (-max-tx [db] (-max-tx (.-origin-db db)))
+  (-max-eid [db] (-max-eid (.-origin-db db)))
   (-config [db] (-config (.-origin-db db)))
 
   IHistory
@@ -633,6 +638,7 @@
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-keep-history? (.-origin-db db)))
   (-max-tx [db] (-max-tx (.-origin-db db)))
+  (-max-eid [db] (-max-eid (.-origin-db db)))
   (-config [db] (-config (.-origin-db db)))
 
   IHistory
@@ -824,18 +830,16 @@
 #?(:cljs
    (defn pr-db [db w opts]
      (-write w "#datahike/DB {")
-     (-write w ":schema ")
-     (pr-writer (-schema db) w opts)
+     (-write w (str ":max-tx " (-max-tx db) " "))
+     (-write w (str ":max-eid " (-max-eid db) " "))
      (-write w "}")))
 
 #?(:clj
    (do
-     (defn pr-db
-       [db ^java.io.Writer w]
-       (.write w "#datahike/DB {")
-       (.write w ":schema ")
-       (binding [*out* w]
-         (pr (-schema db)))
+     (defn pr-db [db, ^java.io.Writer w]
+       (.write w (str "#datahike/DB {"))
+       (.write w (str ":max-tx " (-max-tx db) " "))
+       (.write w (str ":max-eid " (-max-eid db)))
        (.write w "}"))
 
      (defn pr-hist-db [db ^java.io.Writer w flavor time-point?]
