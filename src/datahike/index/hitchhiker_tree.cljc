@@ -150,5 +150,5 @@
                             (set/union
                              (async/<?? (mark (into #{} (:children temporal-eavt))))
                              (async/<?? (mark (into #{} (:children temporal-avet))))
-                             (async/<?? (mark (into #{} (:children temporal-aevt)))))))
-        (async/<?? (sweep! (:store db) marked date))]))
+                             (async/<?? (mark (into #{} (:children temporal-aevt)))))))]
+    (async/<?? (sweep! (:store db) marked date))))
