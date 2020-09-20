@@ -3,8 +3,12 @@
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
+            [hitchhiker.tree.utils.gc :refer [mark]]
+            [konserve.gc :refer [sweep!]]
+            [superv.async :as sasync]
             [datahike.constants :refer [e0 tx0 emax txmax]]
-            [datahike.datom :as dd])
+            [datahike.datom :as dd]
+            [clojure.set :as set])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
 
@@ -112,15 +116,15 @@
   (async/<?? (tree/b-tree (tree/->Config br-sqrt br (- br br-sqrt)))))
 
 (defn -insert [tree ^Datom datom index-type]
-  (hmsg/insert tree (datom->node datom index-type) nil))
+  (async/<?? (hmsg/insert tree (datom->node datom index-type) nil)))
 
 (defn init-tree
   "Create tree with datoms"
   [datoms index-type]
   (async/<??
-   (async/reduce<
+   (sasync/reduce<?-
     (fn [tree datom]
-      (-insert tree datom index-type))
+      (hmsg/insert tree (datom->node datom index-type) nil))
     (empty-tree)
     (seq datoms))))
 
@@ -133,3 +137,18 @@
 (def -persistent! identity)
 
 (def -transient identity)
+
+(defn gc
+  "Invokes garbage collection on the database erasing all fragments that are not reachable and older than the date passed."
+  [db date]
+  (let [{:keys [eavt avet aevt temporal-eavt temporal-avet temporal-aevt config]} db
+        marked (set/union #{:db}
+                          (async/<?? (mark (into #{} (:children eavt))))
+                          (async/<?? (mark (into #{} (:children avet))))
+                          (async/<?? (mark (into #{} (:children aevt))))
+                          (when (:temporal-index config)
+                            (set/union
+                             (async/<?? (mark (into #{} (:children temporal-eavt))))
+                             (async/<?? (mark (into #{} (:children temporal-avet))))
+                             (async/<?? (mark (into #{} (:children temporal-aevt)))))))
+        (async/<?? (sweep! (:store db) marked date))]))
