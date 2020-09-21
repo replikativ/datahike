@@ -100,7 +100,7 @@
         (is (= #{[25] [30]}
                (d/q query-with-< history-db [:name "Alice"] date)))))
     (testing "print DB"
-      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}}}"
+      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :db.entity/attrs {:db/cardinality :db.cardinality/many}, :db.entity/preds {:db/cardinality :db.cardinality/many}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}}}"
              (pr-str (d/history @conn)))))))
 
 (deftest test-as-of-db
@@ -120,9 +120,9 @@
     (testing "print DB"
       (let [as-of-str (pr-str (d/as-of @conn tx-id))
             origin-str (pr-str (datahike.db/-origin (d/as-of @conn tx-id)))]
-        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}} :time-point 536870914}"
+        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :db.entity/attrs {:db/cardinality :db.cardinality/many}, :db.entity/preds {:db/cardinality :db.cardinality/many}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}} :time-point 536870914}"
                as-of-str))
-        (is (= "#datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}}"
+        (is (= "#datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :db.entity/attrs {:db/cardinality :db.cardinality/many}, :db.entity/preds {:db/cardinality :db.cardinality/many}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}}"
                origin-str))
         (is (not= as-of-str origin-str))))))
 
@@ -145,7 +145,7 @@
         (is (= #{[new-age]}
                (d/q query (d/since @conn tx-id))))))
     (testing "print DB"
-      (is (= "#datahike/SinceDB {:origin #datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}} :time-point 536870914}"
+      (is (= "#datahike/SinceDB {:origin #datahike/DB {:schema {:db/ident {:db/unique :db.unique/identity}, :db.entity/attrs {:db/cardinality :db.cardinality/many}, :db.entity/preds {:db/cardinality :db.cardinality/many}, :name {:db/ident :name, :db/valueType :db.type/string, :db/unique :db.unique/identity, :db/index true, :db/cardinality :db.cardinality/one}, 1 :name, :age {:db/ident :age, :db/valueType :db.type/long, :db/cardinality :db.cardinality/one}, 2 :age}} :time-point 536870914}"
              (pr-str (d/since @conn tx-id)))))))
 
 (deftest test-no-history
