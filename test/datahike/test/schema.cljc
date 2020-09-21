@@ -33,7 +33,7 @@
         db (d/db conn)
         tx [{:name "Alice"}]]
 
-    (is (= {:db/ident {:db/unique :db.unique/identity}} (dd/-schema db)))
+    (is (= dd/implicit-schema (dd/-schema db)))
 
     (testing "transact without schema present"
       (is (thrown-msg?
@@ -44,11 +44,11 @@
       (d/transact conn [name-schema])
       (is (= #{[:name :db.type/string :db.cardinality/one]}
              (d/q find-schema-q (d/db conn))))
-      (is (= {:db/ident #:db{:unique :db.unique/identity}
-              :name     #:db{:ident       :name
-                             :valueType   :db.type/string
-                             :cardinality :db.cardinality/one}
-              1         :name}
+      (is (= (merge dd/implicit-schema
+                    {:name     #:db{:ident       :name
+                                    :valueType   :db.type/string
+                                    :cardinality :db.cardinality/one}
+                     1         :name})
              (dd/-schema (d/db conn)))))
 
     (testing "transacting data with schema present"
@@ -96,11 +96,11 @@
 
     (testing "schema existence"
       (let [db (d/db conn)]
-        (is (= {:db/ident {:db/unique :db.unique/identity}
-                :name     #:db{:ident       :name
-                               :valueType   :db.type/string
-                               :cardinality :db.cardinality/one}
-                1         :name}
+        (is (= (merge dd/implicit-schema
+                      {:name     #:db{:ident       :name
+                                      :valueType   :db.type/string
+                                      :cardinality :db.cardinality/one}
+                       1         :name})
                (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q db)))))
 
@@ -113,15 +113,15 @@
                          :db/valueType   :db.type/long
                          :db/cardinality :db.cardinality/one}])
       (let [db (d/db conn)]
-        (is (= {:db/ident {:db/unique :db.unique/identity}
-                :name     #:db{:ident       :name
-                               :valueType   :db.type/string
-                               :cardinality :db.cardinality/one}
-                1         :name
-                :age      #:db{:ident       :age
-                               :valueType   :db.type/long
-                               :cardinality :db.cardinality/one}
-                3         :age}
+        (is (= (merge dd/implicit-schema
+                      {:name     #:db{:ident       :name
+                                      :valueType   :db.type/string
+                                      :cardinality :db.cardinality/one}
+                       1         :name
+                       :age      #:db{:ident       :age
+                                      :valueType   :db.type/long
+                                      :cardinality :db.cardinality/one}
+                       3         :age})
                (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one] [:age :db.type/long :db.cardinality/one]}
                (d/q find-schema-q db)))))
@@ -134,15 +134,15 @@
       (d/transact conn [{:db/ident :name
                          :db/cardinality :db.cardinality/many}])
       (let [db (d/db conn)]
-        (is (= {:db/ident {:db/unique :db.unique/identity}
-                :name     #:db{:ident       :name
-                               :valueType   :db.type/string
-                               :cardinality :db.cardinality/many}
-                1         :name
-                :age      #:db{:ident       :age
-                               :valueType   :db.type/long
-                               :cardinality :db.cardinality/one}
-                3         :age}
+        (is (= (merge dd/implicit-schema
+                      {:name     #:db{:ident       :name
+                                      :valueType   :db.type/string
+                                      :cardinality :db.cardinality/many}
+                       1         :name
+                       :age      #:db{:ident       :age
+                                      :valueType   :db.type/long
+                                      :cardinality :db.cardinality/one}
+                       3         :age})
                (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/many] [:age :db.type/long :db.cardinality/one]}
                (d/q find-schema-q db)))))))
