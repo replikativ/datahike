@@ -60,5 +60,3 @@
               [1 :age  20     true]
               [1 :sex  :male  true]]
              (map (juxt :e :a :v :added) tx-data))))))
-
-

@@ -463,15 +463,15 @@
   (-index-range [db attr start end] (temporal-index-range (.-origin-db db) db attr start end)))
 
 (defn filter-txInstant [datoms pred db]
-  (let [xf (comp
-            (map datom-tx)
-            (distinct)
-            (mapcat #(temporal-datoms db :eavt [%]))
-            (keep (fn [^Datom d]
-                    (when (and (= :db/txInstant (.-a d))
-                               (pred d))
-                      (.-e d)))))]
-    (into #{} xf datoms)))
+  (into #{}
+        (comp
+         (map datom-tx)
+         (distinct)
+         (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
+         (keep (fn [^Datom d]
+                 (when (and (= :db/txInstant (.-a d)) (pred d))
+                   (.-e d)))))
+        datoms))
 
 (defn get-current-values [rschema datoms]
   (->> datoms
@@ -1158,6 +1158,7 @@
           keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
           keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
           keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
+          keep-history? (update :hash + (hash datom))
           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))
         db))))
