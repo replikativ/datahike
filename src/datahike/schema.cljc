@@ -44,10 +44,15 @@
 (s/def :db.type.install/_attribute #{:db.part/tx :db.part/db :db.part/user})
 
 (s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
+(s/def ::entity-spec-attribute #{:db/ensure :db.entity/attrs :db.entity/preds})
 (s/def ::meta-attribute #{:db/txInstant :db/retracted})
 
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality]
                         :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
+
+(s/def ::entity-spec (s/keys :opt [:db.entity/attrs :db.entity/preds]))
+
+(s/def ::enum (s/keys :req [:db/ident]))
 
 (def required-keys #{:db/ident :db/valueType :db/cardinality})
 
@@ -82,6 +87,12 @@
                                    :db/retracted {:db/valueType :db.type/long
                                                   :db/unique :db.unique/identity
                                                   :db/cardinality :db.cardinality/many}
+                                   :db/ensure {:db/valueType :db.type/keyword
+                                               :db/cardinality :db.cardinality/one}
+                                   :db.entity/attrs {:db/valueType :db.type/keyword
+                                                     :db/cardinality :db.cardinality/many}
+                                   :db.entity/preds {:db/valueType :db.type/symbol
+                                                     :db/cardinality :db.cardinality/many}
                                    :db/doc {:db/valueType :db.type/string
                                             :db/index true
                                             :db/cardinality :db.cardinality/one}
@@ -110,8 +121,11 @@
 (defn schema-attr? [attr]
   (s/valid? ::schema-attribute attr))
 
+(defn entity-spec-attr? [attr]
+  (s/valid? ::entity-spec-attribute attr))
+
 (defn value-valid? [[_ _ a v _] schema]
-  (let [schema (if (or (meta-attr? a) (schema-attr? a))
+  (let [schema (if (or (meta-attr? a) (schema-attr? a) (entity-spec-attr? a))
                  implicit-schema-spec
                  schema)
         value-type (get-in schema [a :db/valueType])]
