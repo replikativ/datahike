@@ -6,12 +6,11 @@
     #?(:clj [clojure.pprint :as pp])
     [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
     [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-    [datahike.constants :refer [e0 tx0 emax txmax]]
+    [datahike.constants :refer [e0 tx0 emax txmax system-entities]]
     [datahike.tools :refer [get-time case-tree raise]]
     [datahike.schema :as ds]
     [me.tonsky.persistent-sorted-set.arrays :as arrays]
-    [datahike.config :as dc]
-    [datahike.constants :as c])
+    [datahike.config :as dc])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable cond+]]
                             [datahike.datom :refer [combine-cmp]]
                             [datahike.tools :refer [case-tree raise]]))
@@ -1065,7 +1064,7 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)]
-    (when (contains? c/system-entities e)
+    (when (contains? system-entities e)
       (raise (str "System schema entity cannot be changed")
              {:error :transact/schema :entity-id e }))
     (if (= a :db/ident)
@@ -1088,7 +1087,7 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)]
-    (when (contains? c/system-entities e)
+    (when (contains? system-entities e)
       (raise (str "System schema entity cannot be changed")
              {:error :retract/schema :entity-id e }))
     (if (= a :db/ident)
@@ -1415,7 +1414,7 @@
 
         (sequential? entity)
         (let [[op e a v] entity]
-          (when (contains? c/system-entities e)
+          (when (contains? system-entities e)
             (raise "No operations supported for protected system entity with id " e
                    {:error :entity-id/protected, :entity entity}))
           (cond

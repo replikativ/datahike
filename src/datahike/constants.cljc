@@ -54,7 +54,7 @@
         [tx0-sys :db/txInstant #inst "1970-01-01T00:00:00.000-00:00" tx0-sys true]))
 
 
-(def ^:const e0 (+ e0-sys (count complete-implicit-schema)))
+(def ^:const e0 (inc (+ e0-sys (count complete-implicit-schema))))
 (def ^:const tx0 (inc tx0-sys))
 
 ;; for refs: add enums, then replacements

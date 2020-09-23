@@ -15,6 +15,7 @@
 
 
 (def ^:const ^:no-doc tx0 dc/tx0)
+(def ^:const ^:no-doc e0 dc/e0)
 
 
 ; Entities
