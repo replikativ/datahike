@@ -1,13 +1,13 @@
 (ns datahike.constants)
 
-(def ^:const e0 0)
-(def ^:const tx0 0x20000000)
+(def ^:const tx0-sys 0x20000000)
 (def ^:const emax 0x7FFFFFFF)
 (def ^:const txmax 0x7FFFFFFF)
+
 (def ^:const old-implicit-schema {:db/ident {:db/unique :db.unique/identity}})
 
 (def ^:const system-schema
-  [{:db/id tx0
+  [{:db/id tx0-sys
     :db/txInstant #inst"1970-01-01T00:00:00.000-00:00"}
    {:db/id 1
     :db/ident :db/ident
@@ -106,7 +106,7 @@
    {:db/id 33
     :db/ident :db.unique/value}])
 
-(def ^:const u0 (transduce (comp (map :db/id) (remove #{tx0})) max 0 system-schema))
+(def ^:const system-entities (set (map :db/id system-schema)))
 
 (defn ref-datoms [system-schema]
   (let [idents (reduce (fn [m {:keys [db/ident db/id]}]
@@ -120,18 +120,24 @@
                (fn [coll k v]
                  (let [k-ref (idents k)]
                    (if (= k :db/ident)
-                     (conj coll [id k-ref v tx0])
+                     (conj coll [id k-ref v tx0-sys])
                      (if-let [v-ref (idents v)]
-                       (conj coll [id k-ref v-ref tx0])
-                       (conj coll [id k-ref v tx0])))))
+                       (conj coll [id k-ref v-ref tx0-sys])
+                       (conj coll [id k-ref v tx0-sys])))))
                []
                (dissoc i :db/id))))
          vec)))
 
-(defn system-map [system-schema]
+(defn system-map
+ "Maps IDs of system entities to their names (keyword) and attribute names to the attribute's specification"
+ [system-schema]
   (reduce
     (fn [m {:keys [db/ident db/id] :as attr}]
       (when ident
         (assoc m ident attr id ident)))
     {}
     system-schema))
+
+(def ^:const u0 (transduce (comp (map :db/id) (remove #{tx0-sys})) max 0 system-schema))
+(def ^:const tx0 (inc tx0-sys))
+

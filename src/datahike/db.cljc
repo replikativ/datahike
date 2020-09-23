@@ -6,7 +6,7 @@
    #?(:clj [clojure.pprint :as pp])
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   [datahike.constants :as c :refer [e0 tx0 emax txmax system-schema]]
+   [datahike.constants :as c :refer [u0 tx0 emax txmax system-schema system-entities]]
    [datahike.tools :refer [get-time case-tree raise]]
    [datahike.schema :as ds]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
@@ -172,18 +172,18 @@
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
                   (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ _
                   (if indexed?                              ;; _ a v tx
-                    (->> (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
+                    (->> (-slice avet (datom u0 a v tx0) (datom emax a v txmax) :avet)
                          (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                    (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
+                    (->> (-slice aevt (datom u0 a nil tx0) (datom emax a nil txmax) :aevt)
                          (filter (fn [^Datom d] (and (= v (.-v d))
                                                      (= tx (datom-tx d)))))))
                   (if indexed?                              ;; _ a v _
-                    (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
-                    (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
+                    (-slice avet (datom u0 a v tx0) (datom emax a v txmax) :avet)
+                    (->> (-slice aevt (datom u0 a nil tx0) (datom emax a nil txmax) :aevt)
                          (filter (fn [^Datom d] (= v (.-v d))))))
-                  (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ tx
+                  (->> (-slice aevt (datom u0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ tx
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                  (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ _
+                  (-slice aevt (datom u0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ _
                   (filter (fn [^Datom d] (and (= v (.-v d)) (= tx (datom-tx d)))) (-all eavt)) ;; _ _ v tx
                   (filter (fn [^Datom d] (= v (.-v d))) (-all eavt)) ;; _ _ v _
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
@@ -234,19 +234,19 @@
   IIndexAccess
   (-datoms [db index-type cs]
            (-slice (get db index-type)
-                   (components->pattern db index-type cs e0 tx0)
+                   (components->pattern db index-type cs u0 tx0)
                    (components->pattern db index-type cs emax txmax)
                    index-type))
 
   (-seek-datoms [db index-type cs]
                 (-slice (get db index-type)
-                        (components->pattern db index-type cs e0 tx0)
+                        (components->pattern db index-type cs u0 tx0)
                         (datom emax nil nil txmax)
                         index-type))
 
   (-rseek-datoms [db index-type cs]
                  (-> (-slice (get db index-type)
-                             (components->pattern db index-type cs e0 tx0)
+                             (components->pattern db index-type cs u0 tx0)
                              (datom emax nil nil txmax)
                              index-type)
                      vec
@@ -257,7 +257,7 @@
                   (raise "Attribute" attr "should be marked as :db/index true" {}))
                 (validate-attr attr (list '-index-range 'db attr start end) db)
                 (-slice avet
-                        (resolve-datom db nil attr start nil e0 tx0)
+                        (resolve-datom db nil attr start nil u0 tx0)
                         (resolve-datom db nil attr end nil emax txmax)
                         :avet))
 
@@ -266,8 +266,8 @@
 
   clojure.data/Diff
   (diff-similar [a b]
-                (let [datoms-a (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
-                      datoms-b (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
+                (let [datoms-a (-slice (:eavt a) (datom u0 nil nil tx0) (datom emax nil nil txmax) :eavt)
+                      datoms-b (-slice (:eavt b) (datom u0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
                   (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
 
 (defn db? [x]
@@ -367,7 +367,7 @@
 (defn temporal-datoms [^DB db index-type cs]
   (let [index (get db index-type)
         temporal-index (get db (keyword (str "temporal-" (name index-type))))
-        from (components->pattern db index-type cs e0 tx0)
+        from (components->pattern db index-type cs u0 tx0)
         to (components->pattern db index-type cs emax txmax)]
     (concat (-slice index from to index-type)
             (-slice temporal-index from to index-type))))
@@ -375,7 +375,7 @@
 (defn temporal-seek-datoms [^DB db index-type cs]
   (let [index (get db index-type)
         temporal-index (get db (keyword (str "temporal-" (name index-type))))
-        from (components->pattern db index-type cs e0 tx0)
+        from (components->pattern db index-type cs u0 tx0)
         to (datom emax nil nil txmax)]
     (concat (-slice index from to index-type)
             (-slice temporal-index from to index-type))))
@@ -383,7 +383,7 @@
 (defn temporal-rseek-datoms [^DB db index-type cs]
   (let [index (get db index-type)
         temporal-index (get db (keyword (str "temporal-" (name index-type))))
-        from (components->pattern db index-type cs e0 tx0)
+        from (components->pattern db index-type cs u0 tx0)
         to (datom emax nil nil txmax)]
     (concat
      (-> (concat (-slice index from to index-type)
@@ -395,7 +395,7 @@
   (when-not (indexing? db attr)
     (raise "Attribute" attr "should be marked as :db/index true" {}))
   (validate-attr attr (list '-index-range 'db attr start end) db)
-  (let [from (resolve-datom current-db nil attr start nil e0 tx0)
+  (let [from (resolve-datom current-db nil attr start nil u0 tx0)
         to (resolve-datom current-db nil attr end nil emax txmax)]
     (concat
      (-slice (get db :avet) from to :avet)
@@ -709,7 +709,12 @@
                          :key       :db/isComponent}))))
     (validate-schema-key a :db/unique (:db/unique kv) #{:db.unique/value :db.unique/identity})
     (validate-schema-key a :db/valueType (:db/valueType kv) #{:db.type/ref})
-    (validate-schema-key a :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many})))
+    (validate-schema-key a :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many})
+    (when (contains? ds/system-schema-idents a)
+      (throw (ex-info (str "Bad attribute specification for " a ", protected system attribute name")
+                      {:error     :schema/validation
+                       :attribute a
+                       :key       :db/ident})))))
 
 (def ^:const br 300)
 (def ^:const br-sqrt (long (Math/sqrt br)))
@@ -738,11 +743,11 @@
   ;; solved with reserse slice first in datascript
   (if-let [datoms (-slice
                    eavt
-                   (datom e0 nil nil tx0)
+                   (datom u0 nil nil tx0)
                    (datom (dec tx0) nil nil txmax)
                    :eavt)]
-    (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
-    e0))
+   (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
+   u0))
 
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
@@ -756,18 +761,18 @@
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
    (let [{:keys [keep-history? index schema-flexibility attribute-refs?] :as config} (merge (dc/storeless-config) config)
          on-read? (= :read schema-flexibility)
-         schema (to-old-schema schema)
-         _ (if on-read?
+         schema   (to-old-schema schema)
+         _        (if on-read?
              (validate-schema schema)
              (validate-write-schema schema))
-         schema (merge (if attribute-refs? implicit-schema c/old-implicit-schema) schema)
-         rschema (rschema schema)
-         indexed (:db/index rschema)
-         eavt (di/empty-index index :eavt)
-         aevt (di/empty-index index :aevt)
-         avet (di/empty-index index :avet)
-         max-eid e0
-         max-tx tx0]
+         schema   (merge (if attribute-refs? implicit-schema c/old-implicit-schema) schema)
+         rschema  (rschema schema)
+         indexed  (:db/index rschema)
+         eavt     (di/empty-index index :eavt)
+         aevt     (di/empty-index index :aevt)
+         avet     (di/empty-index index :avet)
+         max-eid  u0
+         max-tx   tx0]
      (map->DB
       (merge
        {:schema schema
@@ -794,11 +799,11 @@
   ;; solved with reserse slice first in datascript
   (if-let [datoms (-slice
                    eavt
-                   (datom e0 nil nil tx0)
+                   (datom u0 nil nil tx0)
                    (datom (dec tx0) nil nil txmax)
                    :eavt)]
-    (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
-    e0))
+   (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
+   u0))
 
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
@@ -1051,7 +1056,7 @@
     (raise "Cannot store nil as a value at " at
            {:error :transact/syntax, :value v, :context at}))
   (when (= :write (get-in db [:config :schema-flexibility]))
-    (let [schema (:schema db)
+    (let [schema      (:schema db)
           schema-spec (if (or (ds/meta-attr? a) (ds/schema-attr? a)) ds/implicit-schema-spec schema)]
       (when-not (ds/value-valid? at schema)
         (raise "Bad entity value " v " at " at ", value does not match schema definition. Must be conform to: " (ds/describe-type (get-in schema-spec [a :db/valueType]))
@@ -1102,6 +1107,9 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)]
+    (when (contains? system-entities e)
+      (raise (str "System schema entity cannot be changed")
+             {:error :transact/schema :entity-id e }))
     (if (= a :db/ident)
       (if (schema v)
         (raise (str "Schema with attribute " v " already exists")
@@ -1122,6 +1130,9 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)]
+    (when (contains? system-entities e)
+      (raise (str "System schema entity cannot be changed")
+             {:error :retract/schema :entity-id e }))
     (if (= a :db/ident)
       (if-not (schema v)
         (raise (str "Schema with attribute " v " does not exist")
@@ -1395,43 +1406,49 @@
              (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
              (do
                 ;; schema tx
-               (when (ds/schema-entity? entity)
-                 (if-let [attr-name (get-in db [:schema upserted-eid])]
-                   (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
-                     (when-not (empty? invalid-updates)
-                       (raise "Update not supported for these schema attributes"
-                              {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
-                   (when (= :write (get-in db [:config :schema-flexibility]))
-                     (when (or (:db/cardinality entity) (:db/valueType entity))
-                       (when-not (ds/schema? entity)
-                         (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                                {:error :transact/schema :entity entity}))))))
-               (recur (allocate-eid report old-eid upserted-eid)
-                      (concat (explode db (assoc entity :db/id upserted-eid)) entities))))
+                (when (ds/schema-entity? entity)
+                  (when (contains? ds/system-schema-idents (:db/ident entity))
+                    (raise "Using system attribute names as attribute identifier is not allowed"
+                           {:error :transact/schema :entity entity}))
+                  (if-let [attr-name (get-in db [:schema upserted-eid])]
+                    (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
+                      (when-not (empty? invalid-updates)
+                        (raise "Update not supported for these schema attributes"
+                               {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
+                    (when (= :write (get-in db [:config :schema-flexibility]))
+                      (when (or (:db/cardinality entity) (:db/valueType entity))
+                        (when-not (ds/schema? entity)
+                          (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                                 {:error :transact/schema :entity entity}))))))
+                (recur (allocate-eid report old-eid upserted-eid)
+                       (concat (explode db (assoc entity :db/id upserted-eid)) entities))))
 
             ;; resolved | allocated-tempid | tempid | nil => explode
-           (or (number? old-eid)
-               (nil? old-eid)
-               (string? old-eid))
-           (let [new-eid (cond
-                           (nil? old-eid) (next-eid db)
-                           (tempid? old-eid) (or (get tempids old-eid)
-                                                 (next-eid db))
-                           :else old-eid)
-                 new-entity (assoc entity :db/id new-eid)]
-             (when (ds/schema-entity? entity)
-               (if-let [attr-name (get-in db [:schema new-eid])]
-                 (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
-                   (when-not (empty? invalid-updates)
-                     (raise "Update not supported for these schema attributes"
-                            {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
-                 (when (= :write (get-in db [:config :schema-flexibility]))
-                   (when (or (:db/cardinality entity) (:db/valueType entity))
-                     (when-not (ds/schema? entity)
-                       (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                              {:error :transact/schema :entity entity}))))))
-             (recur (allocate-eid report old-eid new-eid)
-                    (concat (explode db new-entity) entities)))
+            (or (number? old-eid)
+                (nil? old-eid)
+                (string? old-eid))
+            (let [new-eid (cond
+                            (nil? old-eid) (next-eid db)
+                            (tempid? old-eid) (or (get tempids old-eid)
+                                                  (next-eid db))
+                            :else old-eid)
+                  new-entity (assoc entity :db/id new-eid)]
+              (when (ds/schema-entity? entity)
+                (when (contains? ds/system-schema-idents (:db/ident entity))
+                  (raise "Using system attribute names as attribute identifier is not allowed"
+                         {:error :transact/schema :entity entity}))
+                (if-let [attr-name (get-in db [:schema new-eid])]
+                  (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
+                    (when-not (empty? invalid-updates)
+                      (raise "Update not supported for these schema attributes"
+                             {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
+                  (when (= :write (get-in db [:config :schema-flexibility]))
+                    (when (or (:db/cardinality entity) (:db/valueType entity))
+                      (when-not (ds/schema? entity)
+                        (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                               {:error :transact/schema :entity entity}))))))
+              (recur (allocate-eid report old-eid new-eid)
+                     (concat (explode db new-entity) entities)))
 
             ;; trash => error
            :else
@@ -1440,6 +1457,9 @@
 
         (sequential? entity)
         (let [[op e a v] entity]
+          (when (contains? system-entities e)
+            (raise "No operations supported for protected system entity with id " e
+                   {:error :entity-id/protected, :entity entity}))
           (cond
             (= op :db.fn/call)
             (let [[_ f & args] entity]

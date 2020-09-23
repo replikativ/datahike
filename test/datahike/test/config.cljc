@@ -2,16 +2,16 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-   [datahike.config :refer :all]
-   [datahike.test.core]
+   [datahike.config :as dc]
+   [datahike.test.core :as tdc]
    [datahike.core :as d]))
 
 (deftest int-from-env-test
   (is (= 1000
-         (int-from-env :foo 1000))))
+         (dc/int-from-env :foo 1000))))
 
 (deftest bool-from-env-test
-  (is (bool-from-env :foo true)))
+  (is (dc/bool-from-env :foo true)))
 
 (deftest uri-test
   (let [mem-uri "datahike:mem://config-test"
@@ -19,7 +19,7 @@
         level-uri "datahike:level:///tmp/config-test"
         pg-uri "datahike:pg://alice:foo@localhost:5432/config-test"]
 
-    (are [x y] (= x (uri->config y))
+    (are [x y] (= x (dc/uri->config y))
       {:backend :mem :host "config-test" :uri mem-uri}
       mem-uri
 
@@ -45,15 +45,15 @@
                          :schema-flexibility :write}]
     (is (= (merge default-new-cfg
                   {:store {:backend :mem :id "deprecated-test"}})
-           (from-deprecated mem-cfg)))
+           (dc/from-deprecated mem-cfg)))
     (is (= (merge default-new-cfg
                   {:store {:backend :file
                            :path "/deprecated/test"}})
-           (from-deprecated file-cfg)))))
+           (dc/from-deprecated file-cfg)))))
 
 (deftest load-config-test
   (testing "configuration defaults"
-    (let [{:keys [store name] :as config} (load-config)]
+    (let [config (dc/load-config)]
       (is (= {:store {:backend :mem
                       :id "default"}
               :keep-history? true
@@ -64,10 +64,10 @@
 (deftest core-config-test
   (testing "Schema on write in core empty database"
     (is (thrown-msg?
-         "Bad entity attribute :name at {:db/id 1, :name \"Ivan\"}, not defined in current schema"
-         (d/db-with (d/empty-db nil {:schema-flexibility :write})
-                    [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
-                     {:db/id 2 :name "Petr" :age 37 :huh? false}])))
+          (str "Bad entity attribute :name at {:db/id " tdc/e1 ", :name \"Ivan\"}, not defined in current schema")
+          (d/db-with (d/empty-db nil {:schema-flexibility :write})
+                    [{:db/id tdc/e1 :name "Ivan" :aka ["IV" "Terrible"]}
+                     {:db/id tdc/e2 :name "Petr" :age 37 :huh? false}])))
     (is (thrown-msg?
          "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
          (d/empty-db {:name {:db/cardinality :db.cardinality/one}} {:schema-flexibility :write})))

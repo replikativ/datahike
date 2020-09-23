@@ -1,10 +1,9 @@
 (ns datahike.test.query-aggregates
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
-   [datahike.core :as d]
-   [datahike.db :as db]
-   [datahike.test.core :as tdc]))
+    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+       :clj  [clojure.test :as t :refer        [is are deftest testing]])
+    [datahike.core :as d]))
+
 
 (defn sort-reverse [xs]
   (reverse (sort xs)))
@@ -97,7 +96,7 @@
                result))
 
         #?(:clj
-           (is (= (set (d/q '[:find ?color (datahike.test.query-aggregates/sort-reverse ?x)
-                              :in   [[?color ?x]]]
-                            data))
-                  result)))))))
+            (is (= (set (d/q '[ :find ?color (datahike.test.query-aggregates/sort-reverse ?x)
+                                :in   [[?color ?x]]]
+                             data))
+                   result)))))))
