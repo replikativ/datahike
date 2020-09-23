@@ -151,8 +151,10 @@
       (update :aevt -persistent!)
       (update :avet -persistent!)))
 
-(defn- search-indices [eavt aevt avet pattern indexed? temporal-db?]
-  (let [[e a v tx added?] pattern]
+(defn- search-indices [eavt aevt avet pattern temporal-db? {:keys [attr-refs? attr-map] :as db}]
+  (let [[e a-raw v tx added?] pattern
+        indexed? (indexing? db a-raw)
+        a (if attr-refs? (get attr-map a-raw) a-raw)]
     (if (and (not temporal-db?) (false? added?))
       '()
       (case-tree [e a (some? v) tx]
@@ -227,7 +229,7 @@
   ISearch
   (-search [db pattern]
            (let [[_ a _ _] pattern]
-             (search-indices eavt aevt avet pattern (indexing? db a) false)))
+             (search-indices eavt aevt avet pattern false db)))
 
   IIndexAccess
   (-datoms [db index-type cs]
@@ -342,8 +344,8 @@
                     (.-aevt db)
                     (.-avet db)
                     pattern
-                    (indexing? db a)
-                    false)))
+                    false
+                    db)))
 
 (defn- search-temporal-indices [^DB db pattern]
   (let [[_ a _ _ added] pattern
@@ -351,8 +353,8 @@
                                (.-temporal-aevt db)
                                (.-temporal-avet db)
                                pattern
-                               (indexing? db a)
-                               true)]
+                               true
+                               db)]
     (case added
       true (filter datom-added result)
       false (remove datom-added result)
