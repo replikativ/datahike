@@ -3,7 +3,6 @@
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     [datahike.core :as d]
-    [datahike.db :as db]
     [datahike.test.core :as tdc]))
 
 #?(:cljs
@@ -23,14 +22,14 @@
                             :aka   coll
                             :also  "ok"}])
         (is (= (d/q '[:find  ?n ?a
-                      :where [1 :name ?n]
-                      [1 :age ?a]] @conn)
+                      :where [e1 :name ?n]
+                      [e1 :age ?a]] @conn)
                #{["Ivan" 16]}))
         (is (= (d/q '[:find  ?v
-                      :where [1 :also ?v]] @conn)
+                      :where [e1 :also ?v]] @conn)
                #{["ok"]}))
         (is (= (d/q '[:find  ?v
-                      :where [1 :aka ?v]] @conn)
+                      :where [tdc/e1 :aka ?v]] @conn)
                #{["Devil"] ["Tupen"]}))))))
 
 (deftest test-explode-ref
@@ -53,7 +52,7 @@
              #{["Petr"] ["Evgeny"]})))
     
     (is (thrown-msg? "Bad attribute :_parent: reverse attribute name requires {:db/valueType :db.type/ref} in schema"
-      (d/db-with db0 [{:name "Sergey" :_parent 1}])))))
+      (d/db-with db0 [{:name "Sergey" :_parent tdc/e1}])))))
 
 (deftest test-explode-nested-maps
   (let [schema { :profile { :db/valueType :db.type/ref }}
@@ -61,17 +60,17 @@
     (are [tx res] (= (d/q '[:find ?e ?a ?v
                             :where [?e ?a ?v]]
                           (d/db-with db tx)) res)
-      [ {:db/id 5 :name "Ivan" :profile {:db/id 7 :email "@2"}} ]
-      #{ [5 :name "Ivan"] [5 :profile 7] [7 :email "@2"] }
+      [ {:db/id tdc/e5 :name "Ivan" :profile {:db/id tdc/e7 :email "@2"}} ]
+      #{ [tdc/e5 :name "Ivan"] [tdc/e5 :profile tdc/e7] [tdc/e7 :email "@2"] }
          
       [ {:name "Ivan" :profile {:email "@2"}} ]
-      #{ [1 :name "Ivan"] [1 :profile 2] [2 :email "@2"] }
+      #{ [tdc/e1 :name "Ivan"] [tdc/e1 :profile tdc/e2] [tdc/e2 :email "@2"] }
          
       [ {:profile {:email "@2"}} ] ;; issue #59
-      #{ [1 :profile 2] [2 :email "@2"] }
+      #{ [tdc/e1 :profile tdc/e2] [tdc/e2 :email "@2"] }
          
       [ {:email "@2" :_profile {:name "Ivan"}} ]
-      #{ [1 :email "@2"] [2 :name "Ivan"] [2 :profile 1] }
+      #{ [tdc/e1 :email "@2"] [tdc/e2 :name "Ivan"] [tdc/e2 :profile tdc/e1] }
     ))
   
   (testing "multi-valued"
@@ -81,23 +80,23 @@
       (are [tx res] (= (d/q '[:find ?e ?a ?v
                               :where [?e ?a ?v]]
                             (d/db-with db tx)) res)
-        [ {:db/id 5 :name "Ivan" :profile {:db/id 7 :email "@2"}} ]
-        #{ [5 :name "Ivan"] [5 :profile 7] [7 :email "@2"] }
+        [ {:db/id tdc/e5 :name "Ivan" :profile {:db/id tdc/e7 :email "@2"}} ]
+        #{ [tdc/e5 :name "Ivan"] [tdc/e5 :profile tdc/e7] [tdc/e7 :email "@2"] }
            
-        [ {:db/id 5 :name "Ivan" :profile [{:db/id 7 :email "@2"} {:db/id 8 :email "@3"}]} ]
-        #{ [5 :name "Ivan"] [5 :profile 7] [7 :email "@2"] [5 :profile 8] [8 :email "@3"] }
+        [ {:db/id tdc/e5 :name "Ivan" :profile [{:db/id tdc/e7 :email "@2"} {:db/id tdc/e8 :email "@3"}]} ]
+        #{ [tdc/e5 :name "Ivan"] [tdc/e5 :profile tdc/e7] [tdc/e7 :email "@2"] [tdc/e5 :profile tdc/e8] [tdc/e8 :email "@3"] }
 
         [ {:name "Ivan" :profile {:email "@2"}} ]
-        #{ [1 :name "Ivan"] [1 :profile 2] [2 :email "@2"] }
+        #{ [tdc/e1 :name "Ivan"] [tdc/e1 :profile tdc/e2] [tdc/e2 :email "@2"] }
 
         [ {:name "Ivan" :profile [{:email "@2"} {:email "@3"}]} ]
-        #{ [1 :name "Ivan"] [1 :profile 2] [2 :email "@2"] [1 :profile 3] [3 :email "@3"] }
+        #{ [tdc/e1 :name "Ivan"] [tdc/e1 :profile tdc/e2] [tdc/e2 :email "@2"] [tdc/e1 :profile tdc/e3] [tdc/e3 :email "@3"] }
            
         [ {:email "@2" :_profile {:name "Ivan"}} ]
-        #{ [1 :email "@2"] [2 :name "Ivan"] [2 :profile 1] }
+        #{ [tdc/e1 :email "@2"] [tdc/e2 :name "Ivan"] [tdc/e2 :profile tdc/e1] }
 
         [ {:email "@2" :_profile [{:name "Ivan"} {:name "Petr"} ]} ]
-        #{ [1 :email "@2"] [2 :name "Ivan"] [2 :profile 1] [3 :name "Petr"] [3 :profile 1] }
+        #{ [tdc/e1 :email "@2"] [tdc/e2 :name "Ivan"] [tdc/e2 :profile tdc/e1] [tdc/e3 :name "Petr"] [tdc/e3 :profile tdc/e1] }
       ))))
 
 (deftest test-circular-refs
@@ -105,31 +104,31 @@
                        :db/cardinality :db.cardinality/many
                        :db/isComponent true}}
         db     (d/db-with (d/empty-db schema)
-                 [{:db/id 1, :comp [{:name "C"}]}])]
+                 [{:db/id tdc/e1, :comp [{:name "C"}]}])]
     (is (= (mapv (juxt :e :a :v) (d/datoms db :eavt))
-           [ [ 1 :comp 2  ]
-             [ 2 :name "C"] ])))
+           [ [ tdc/e1 :comp tdc/e2  ]
+             [ tdc/e2 :name "C"] ])))
   
   (let [schema {:comp {:db/valueType   :db.type/ref
                        :db/cardinality :db.cardinality/many}}
         db     (d/db-with (d/empty-db schema)
-                 [{:db/id 1, :comp [{:name "C"}]}])]
+                 [{:db/id tdc/e1, :comp [{:name "C"}]}])]
     (is (= (mapv (juxt :e :a :v) (d/datoms db :eavt))
-           [ [ 1 :comp 2  ]
-             [ 2 :name "C"] ])))
+           [ [ tdc/e1 :comp tdc/e2  ]
+             [ tdc/e2 :name "C"] ])))
   
   (let [schema {:comp {:db/valueType   :db.type/ref
                        :db/isComponent true}}
         db     (d/db-with (d/empty-db schema)
-                 [{:db/id 1, :comp {:name "C"}}])]
+                 [{:db/id tdc/e1, :comp {:name "C"}}])]
     (is (= (mapv (juxt :e :a :v) (d/datoms db :eavt))
-           [ [ 1 :comp 2  ]
-             [ 2 :name "C"] ])))
+           [ [ tdc/e1 :comp tdc/e2  ]
+             [ tdc/e2 :name "C"] ])))
   
   (let [schema {:comp {:db/valueType   :db.type/ref}}
         db     (d/db-with (d/empty-db schema)
-                 [{:db/id 1, :comp {:name "C"}}])]
+                 [{:db/id tdc/e1, :comp {:name "C"}}])]
     (is (= (mapv (juxt :e :a :v) (d/datoms db :eavt))
-           [ [ 1 :comp 2  ]
-             [ 2 :name "C"] ]))))
+           [ [ tdc/e1 :comp tdc/e2  ]
+             [ tdc/e2 :name "C"] ]))))
  

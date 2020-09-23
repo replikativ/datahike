@@ -3,14 +3,14 @@
     #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
        :clj  [clojure.test :as t :refer        [is are deftest testing]])
     [datahike.core :as d]
-    [datahike.db :as db]
-    [datahike.test.core :as tdc]))
+    [datahike.test.core :as tdc]
+    [datahike.db :as db]))
 
 (def schema (merge db/implicit-schema
                    { :aka { :db/cardinality :db.cardinality/many }}))
 
-(def datoms #{(d/datom 1 :age  17)
-              (d/datom 1 :name "Ivan")})
+(def datoms #{(d/datom tdc/e1 :age  17)
+              (d/datom tdc/e1 :name "Ivan")})
 
 (deftest test-ways-to-create-conn
   (let [conn (d/create-conn)]
@@ -55,10 +55,10 @@
       (is (= datoms' (set (d/datoms db-after :eavt))))
       (is (= schema' (:schema db-after)))
       (is (= :meta   tx-meta))
-      (is (= [[1 :age  17     false]
-              [1 :name "Ivan" false]
-              [1 :age  20     true]
-              [1 :sex  :male  true]]
+      (is (= [[tdc/e1 :age  17     false]
+              [tdc/e1 :name "Ivan" false]
+              [tdc/e1 :age  20     true]
+              [tdc/e1 :sex  :male  true]]
              (map (juxt :e :a :v :added) tx-data))))))
   
   

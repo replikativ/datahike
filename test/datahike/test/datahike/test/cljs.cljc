@@ -1,6 +1,5 @@
 (ns datahike.test.cljs
   (:require
-    [clojure.string :as str]
     [cljs.test :as t])
   #?(:cljs
       (:require-macros

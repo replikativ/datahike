@@ -1,7 +1,8 @@
 (ns datahike.test.store
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest]]
+      :clj  [clojure.test :as t :refer        [is deftest]])
+   [datahike.test.core :as tdc]
    [datahike.api :as d])
   (:import [java.lang System]))
 
@@ -10,12 +11,12 @@
     (is (not (d/database-exists? cfg)))
     (let [_ (d/create-database (merge cfg {:schema-flexibility :read}))
           conn (d/connect cfg)]
-      (d/transact conn [{:db/id 1, :name  "Ivan", :age   15}
-                        {:db/id 2, :name  "Petr", :age   37}
-                        {:db/id 3, :name  "Ivan", :age   37}
-                        {:db/id 4, :age 15}])
+      (d/transact conn [{:db/id tdc/e1, :name  "Ivan", :age   15}
+                        {:db/id tdc/e2, :name  "Petr", :age   37}
+                        {:db/id tdc/e3, :name  "Ivan", :age   37}
+                        {:db/id tdc/e4, :age 15}])
       (is (= (d/q '[:find ?e :where [?e :name]] @conn)
-             #{[3] [2] [1]}))
+             #{[tdc/e3] [tdc/e2] [tdc/e1]}))
 
       (d/release conn)
       (is (d/database-exists? cfg)))))
@@ -38,7 +39,7 @@
     (d/delete-database config)
     (d/create-database config)
     (let [conn (d/connect config)]
-      (d/transact conn [{:db/id 1, :name "Alice"}])
+      (d/transact conn [{:db/id tdc/e1, :name "Alice"}])
       (is (= me.tonsky.persistent_sorted_set.PersistentSortedSet
              (-> @conn :eavt type))))))
 
@@ -51,6 +52,6 @@
     (d/delete-database config)
     (d/create-database config)
     (let [conn (d/connect config)]
-      (d/transact conn [{:db/id 1, :name "Alice"}])
+      (d/transact conn [{:db/id tdc/e1, :name "Alice"}])
       (is (= hitchhiker.tree.DataNode
              (-> @conn :eavt type))))))

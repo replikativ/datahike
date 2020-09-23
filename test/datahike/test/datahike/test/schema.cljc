@@ -1,11 +1,10 @@
 (ns datahike.test.schema
   (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer [is deftest testing]])
    [datahike.api :as d]
    [datahike.schema :as ds]
-   [datahike.db :as dd]
-   [datahike.test.core :as tdc])
+   [datahike.db :as dd])
   (:import [java.lang System]))
 
 #?(:clj
@@ -302,10 +301,10 @@
           conn (d/connect cfg)]
       (testing "insert any data"
         (d/transact conn [{:name "Alice" :age 26} {:age "12" :car :bmw}])
-        (is (= #{[1 "Alice" 26]}
-               (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))))
+        (is (= #{["Alice" 26]}
+               (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))))
         (is (= #{[2 "12" :bmw]}
-               (d/q '[:find ?e ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn))))))))
+               (d/q '[:find ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn))))))))
 
 (deftest test-ident
   (testing "use db/ident as enum"

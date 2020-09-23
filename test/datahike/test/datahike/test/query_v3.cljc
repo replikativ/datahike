@@ -1,11 +1,8 @@
 (ns datahike.test.query-v3
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [datahike.core :as d]
-    [datahike.db :as db]
-    [datahike.query-v3 :as dq]
-    [datahike.test.core :as tdc])
+    #?(:cljs [cljs.test    :as t :refer-macros [are deftest]]
+       :clj  [clojure.test :as t :refer        [are deftest]])
+    [datahike.query-v3 :as dq])
     #?(:clj
       (:import [clojure.lang ExceptionInfo])))
 
