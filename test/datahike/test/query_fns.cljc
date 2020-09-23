@@ -17,7 +17,7 @@
   (let [db (-> (d/empty-db {:parent {:db/valueType :db.type/ref}})
                (d/db-with [ { :db/id tdc/e1, :name  "Ivan",  :age   15 }
                             { :db/id tdc/e2, :name  "Petr",  :age   22, :height 240, :parent tdc/e1}
-                            { :db/id tdc/e3, :name  "Slava", :age   37, :parent 2}]))]
+                            { :db/id tdc/e3, :name  "Slava", :age   37, :parent tdc/e2}]))]
 
     (testing "ground"
       (is (= (d/q '[:find ?vowel
@@ -55,7 +55,7 @@
                     :in $
                     :where [?e :age ?age]
                     [(missing? $ ?e :_parent)]] db)
-             #{[15]})))
+             #{[37]})))
 
     (testing "Built-ins"
       (is (= (d/q '[:find  ?a1 ?a2
@@ -239,7 +239,7 @@
        :where [?e :name "Ivan"]
               [?e :age ?a]
               [(= ?a 20)]]
-      #{[22]}
+      #{[20]}
 
       ;; pred over const, false
       '[:find  ?e
@@ -249,12 +249,12 @@
       #{})
     (let [pred (fn [db e a]
                  (= a (:age (d/entity db e))))]
-      (is (= (d/q '[:find ?a
+      (is (= (d/q '[:find ?e
                     :in $ ?pred
                     :where [?e :age ?a]
                            [(?pred $ ?e 10)]]
                   db pred)
-             #{[10] [30]})))))
+             #{[tdc/e1]})))))
 
 
 (deftest test-exceptions

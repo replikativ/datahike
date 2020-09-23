@@ -22,14 +22,20 @@
                             :aka   coll
                             :also  "ok"}])
         (is (= (d/q '[:find  ?n ?a
-                      :where [e1 :name ?n]
-                      [e1 :age ?a]] @conn)
+                      :in $ ?e
+                      :where [?e :name ?n]
+                      [?e :age ?a]]
+                    @conn (+ d/e0 1))
                #{["Ivan" 16]}))
         (is (= (d/q '[:find  ?v
-                      :where [e1 :also ?v]] @conn)
+                      :in $ ?e
+                      :where [?e :also ?v]]
+                    @conn (+ d/e0 1))
                #{["ok"]}))
         (is (= (d/q '[:find  ?v
-                      :where [tdc/e1 :aka ?v]] @conn)
+                      :in $ ?e
+                      :where [?e :aka ?v]]
+                    @conn (+ d/e0 1))
                #{["Devil"] ["Tupen"]}))))))
 
 (deftest test-explode-ref

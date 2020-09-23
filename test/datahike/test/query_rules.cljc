@@ -143,9 +143,7 @@
           '[[(rule ?p ?fn ?x)
              [?p :attr ?x]
              [(?fn ?x)]]]
-           (constantly true)))
-  )
-
+           (constantly true))))
 
   (testing "Specifying db to rule"
     (is (= (d/q '[:find ?n
@@ -159,8 +157,7 @@
                     [(adult ?y)
                      [?y ?a]
                      [(>= ?a 18)]]])
-           #{["Oleg"]})))
-  )
+           #{["Oleg"]}))))
 
 ;; https://github.com/tonsky/datahike/issues/218
 (deftest test-false-arguments
@@ -172,7 +169,7 @@
     (is (= (d/q '[:find ?id :in $ %
                   :where (is ?id true)]
                 db rules)
-           #{[1]}))
+           #{[tdc/e1]}))
     (is (= (d/q '[:find ?id :in $ %
                   :where (is ?id false)] db rules)
-           #{[2]}))))
+           #{[tdc/e2]}))))

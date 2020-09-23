@@ -1,11 +1,11 @@
 (ns datahike.test.pull-api
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
+    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+       :clj  [clojure.test :as t :refer        [is deftest testing]])
     [datahike.core :as d]
     [datahike.constants :refer [tx0]]
     [datahike.test.core :as tdc]))
-
+;; TODO: fix tests, 1 fails, 3 errors
 (def test-schema
   {:aka    { :db/cardinality :db.cardinality/many }
    :child  { :db/cardinality :db.cardinality/many
@@ -65,10 +65,10 @@
 
 (deftest test-pull-attr-spec
   (is (= {:name "Petr" :aka ["Devil" "Tupen"]}
-         (d/pull test-db '[:name :aka] 1)))
+         (d/pull test-db '[:name :aka] tdc/e1)))
 
-  (is (= {:name "Matthew" :father {:db/id 3} :db/id 6}
-         (d/pull test-db '[:name :father :db/id] 6)))
+  (is (= {:name "Matthew" :father {:db/id tdc/e3} :db/id tdc/e6}
+         (d/pull test-db '[:name :father :db/id] tdc/e6)))
 
   (is (= [{:name "Petr"} {:name "Elizabeth"}
           {:name "Eunan"} {:name "Rebecca"}]
@@ -168,7 +168,7 @@
     (testing "Limits can be used as map specification keys"
       (is (= {:name "Lucy"
               :friend [{:name "Elizabeth"} {:name "Matthew"}]}
-             (d/pull db '[:name {(limit :friend tdc/e2) [:name]}] tdc/e4))))))
+             (d/pull db '[:name {(limit :friend 2) [:name]}] tdc/e4))))))
 
 (deftest test-pull-default
   (testing "Empty results return nil"
@@ -212,7 +212,7 @@
              (d/pull test-db '[:name {:part [:name]}] tdc/e10)))
 
       (is (= parts
-             (d/pull test-db '[:name {:part e1}] tdc/e10))))))
+             (d/pull test-db '[:name {:part 1}] tdc/e10))))))
 
 (deftest test-pull-recursion
   (let [db      (-> test-db
@@ -250,14 +250,14 @@
                      [{:db/id tdc/e8 :name "Kerri"}]
                      :enemy
                      [{:db/id tdc/e4 :name "Lucy"
-                       :friend [{:db/id 5}]}]}]}]
+                       :friend [{:db/id tdc/e5}]}]}]}]
                  :enemy
                  [{:db/id tdc/e6 :name "Matthew"
                    :friend
                    [{:db/id tdc/e7 :name "Eunan"
                      :friend
                      [{:db/id tdc/e8 :name "Kerri"}]
-                     :enemy [{:db/id 4 :name "Lucy"
+                     :enemy [{:db/id tdc/e4 :name "Lucy"
                               :friend [{:db/id tdc/e5 :name "Elizabeth"}]}]}]
                    :enemy
                    [{:db/id tdc/e8 :name "Kerri"}]}]}]
@@ -266,12 +266,12 @@
       (is (= friends (d/pull db '[:db/id :name {:friend ...}] tdc/e4))))
 
     (testing "Multiple recursion specs in one pattern"
-      (is (= enemies (d/pull db '[:db/id :name {:friend tdc/e2 :enemy tdc/e2}] tdc/e4))))
+      (is (= enemies (d/pull db '[:db/id :name {:friend 2 :enemy 2}] tdc/e4))))
 
     (let [db (d/db-with db [[:db/add tdc/e8 :friend tdc/e4]])]
       (testing "Cycles are handled by returning only the :db/id of entities which have been seen before"
         (is (= (update-in friends (take 8 (cycle [:friend 0]))
-                          assoc :friend [{:db/id tdc/e4 :name "Lucy" :friend [{:db/id 5}]}])
+                          assoc :friend [{:db/id tdc/e4 :name "Lucy" :friend [{:db/id tdc/e5}]}])
                (d/pull db '[:db/id :name {:friend ...}] tdc/e4)))))))
 
 (deftest test-dual-recursion

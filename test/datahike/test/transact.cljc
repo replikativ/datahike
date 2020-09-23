@@ -5,6 +5,38 @@
     [datahike.test.core :as tdc]
     [datahike.core :as d]))
 
+(let [db (-> (d/empty-db)
+             (d/db-with [(d/datom tdc/e1 :name "Oleg")
+                         (d/datom tdc/e1 :age  17)
+                         (d/datom tdc/e1 :name "Oleg" d/tx0 false)]))]
+  (is (= [[tdc/e1 :age 17 d/tx0]]
+         (map (juxt :e :a :v :tx)
+              (d/datoms db :eavt)))))
+
+
+(let [db  (-> (d/empty-db {:aka {:db/cardinality :db.cardinality/many}
+                           :name {:db/cardinality :db.cardinality/one}})
+              (d/db-with [[:db/add tdc/e1 :name "Ivan"]])
+              (d/db-with [[:db/add tdc/e1 :name "Petr"]])
+              (d/db-with [[:db/add tdc/e1 :aka  "Devil"]])
+              (d/db-with [[:db/add tdc/e1 :aka  "Tupen"]]))
+      db2 (-> db
+              (d/db-with [[:db/retract tdc/e1 :name "Petr"]])
+              (d/db-with [[:db/retract tdc/e1 :aka  "Devil"]]))]
+
+  (is (= (d/q '[:find ?v
+                :in $ ?e
+                :where [?e :name ?v]]
+              db2 tdc/e1)
+         #{}))
+  (is (= (d/q '[:find ?v
+                :in $ ?e
+                :where [?e :aka ?v]]
+              db2 tdc/e1)
+         #{["Tupen"]}))
+
+  (is (= (into {} (d/entity db2 tdc/e1)) { :aka #{"Tupen"} })))
+
 (deftest test-with
   (let [db  (-> (d/empty-db {:aka {:db/cardinality :db.cardinality/many}
                              :name {:db/cardinality :db.cardinality/one}})
@@ -49,7 +81,7 @@
                       :in $ ?e
                       :where [?e :name ?v]]
                     db3 tdc/e1)
-               #{["Petr"]})))))
+               #{["Petr"]})))))                             ;; TODO: finds: ivan, petr
   
   (testing "Skipping nils in tx"
     (let [db (-> (d/empty-db)
@@ -77,14 +109,14 @@
                  (d/db-with [(d/datom tdc/e1 :name "Oleg")
                              (d/datom tdc/e1 :age  17)
                              (d/datom tdc/e1 :name "Oleg" d/tx0 false)]))]
-      (is (= [[1 :age 17 d/tx0]]
+      (is (= [[tdc/e1 :age 17 d/tx0]]
              (map (juxt :e :a :v :tx)
                   (d/datoms db :eavt)))))))
 
 (deftest test-retract-fns
   (let [db (-> (d/empty-db {:aka    { :db/cardinality :db.cardinality/many }
                             :friend { :db/valueType :db.type/ref }})
-               (d/db-with [ { :db/id tdc/e1, :name  "Ivan", :age 15, :aka ["X" "Y" "Z"], :friend 2 }
+               (d/db-with [ { :db/id tdc/e1, :name  "Ivan", :age 15, :aka ["X" "Y" "Z"], :friend tdc/e2 }
                             { :db/id tdc/e2, :name  "Petr", :age 37 } ]))]
     (let [db (d/db-with db [ [:db.fn/retractEntity tdc/e1] ])]
       (is (= (d/q '[:find ?a ?v
@@ -103,27 +135,27 @@
 
     (testing "Retract entitiy with incoming refs"
       (is (= (d/q '[:find ?e
-                    :in $ ?e
-                    :where [?e :friend ?e]]
+                    :in $ ?e1
+                    :where [?e1 :friend ?e]]
                   db tdc/e1)
-             #{[2]}))
+             #{[tdc/e2]}))
       
       (let [db (d/db-with db [ [:db.fn/retractEntity tdc/e2] ])]
         (is (= (d/q '[:find ?e
-                      :in $ ?e
-                      :where [?e :friend ?e]]
+                      :in $ ?e1
+                      :where [?e1 :friend ?e]]
                     db tdc/e1)
                #{}))))
     
     (let [db (d/db-with db [ [:db.fn/retractAttribute tdc/e1 :name] ])]
       (is (= (d/q '[:find ?a ?v
-                    :in $ ?e
-                    :where [?e ?a ?v]]
+                    :in $ ?e1
+                    :where [?e1 ?a ?v]]
                   db tdc/e1)
              #{[:age 15] [:aka "X"] [:aka "Y"] [:aka "Z"] [:friend tdc/e2]}))
       (is (= (d/q '[:find ?a ?v
-                    :in $ ?e
-                    :where [?e ?a ?v]]
+                    :in $ ?e2
+                    :where [?e2 ?a ?v]]
                   db tdc/e2)
              #{[:name "Petr"] [:age 37]})))
 
@@ -192,7 +224,7 @@
     (is (= (:weight (d/entity @conn tdc/e1)) 300))
     (d/transact! conn [[:db/cas tdc/e1 :weight 300 400]])
     (is (= (:weight (d/entity @conn tdc/e1)) 400))
-    (is (thrown-msg? (re-pattern (str ":db.fn/cas failed on datom [" tdc/e1 " :weight 400], expected 200"))
+    (is (thrown-msg? (str ":db.fn/cas failed on datom [" tdc/e1 " :weight 400], expected 200")
                      (d/transact! conn [[:db.fn/cas tdc/e1 :weight 200 210]]))))
   
   (let [conn (d/create-conn {:label { :db/cardinality :db.cardinality/many }})]
@@ -200,8 +232,8 @@
     (d/transact! conn [[:db/add tdc/e1 :label :y]])
     (d/transact! conn [[:db.fn/cas tdc/e1 :label :y :z]])
     (is (= (:label (d/entity @conn tdc/e1)) #{:x :y :z}))
-    (is (thrown-msg? ":db.fn/cas failed on datom [1 :label (:x :y :z)], expected :s"
-          (d/transact! conn [[:db.fn/cas tdc/e1 :label :s :t]]))))
+    (is (thrown-msg? (str ":db.fn/cas failed on datom [" tdc/e1 " :label (:x :y :z)], expected :s")
+                     (d/transact! conn [[:db.fn/cas tdc/e1 :label :s :t]]))))
 
   (let [conn (d/create-conn)]
     (d/transact! conn [[:db/add tdc/e1 :name "Ivan"]])

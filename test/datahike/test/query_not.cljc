@@ -61,8 +61,7 @@
                '[[?e :name ?a]
                 (not [?e :age ?f]
                      [?e :age 10])]
-               #{tdc/e2 tdc/e4 tdc/e6}
-               ))
+               #{tdc/e2 tdc/e4 tdc/e6}))
 
 
 (deftest test-not-join
@@ -86,11 +85,11 @@
 
 (deftest test-default-source
   (let [db1 (d/db-with (d/empty-db)
-                       [[:db/add 1 :name "Ivan"]
-                        [:db/add 2 :name "Oleg"]])
+                       [[:db/add tdc/e1 :name "Ivan"]
+                        [:db/add tdc/e2 :name "Oleg"]])
         db2 (d/db-with (d/empty-db)
-                       [[:db/add 1 :age 10]
-                        [:db/add 2 :age 20]])]
+                       [[:db/add tdc/e1 :age 10]
+                        [:db/add tdc/e2 :age 20]])]
     (are [q res] (= (set (d/q (concat '[:find [?e ...]
                                         :in $ $2
                                         :where]
@@ -100,32 +99,32 @@
                  ;; NOT inherits default source
                  '[[?e :name]
                   (not [?e :name "Ivan"])]
-                 #{2}
+                 #{tdc/e2}
 
                  ;; NOT can reference any source
                  '[[?e :name]
                   (not [$2 ?e :age 10])]
-                 #{2}
+                 #{tdc/e2}
 
                  ;; NOT can change default source
                  '[[?e :name]
                   ($2 not [?e :age 10])]
-                 #{2}
+                 #{tdc/e2}
 
                  ;; even with another default source, it can reference any other source explicitly
                  '[[?e :name]
                   ($2 not [$ ?e :name "Ivan"])]
-                 #{2}
+                 #{tdc/e2}
 
                  ;; nested NOT keeps the default source
                  '[[?e :name]
                   ($2 not (not [?e :age 10]))]
-                 #{1}
+                 #{tdc/e1}
 
                  ;; can override nested NOT source
                  '[[?e :name]
                   ($2 not ($ not [?e :name "Ivan"]))]
-                 #{1})))
+                 #{tdc/e1})))
 
 
 (deftest test-impl-edge-cases
@@ -136,7 +135,7 @@
                 :where [?e :name "Oleg"]
                 [?e :age 10]
                 (not [?e :age 20])]
-               #{[3]}
+               #{[tdc/e3]}
 
                ;; const \ const
                '[:find ?e
@@ -149,7 +148,7 @@
                '[:find ?e
                 :where [?e :name "Oleg"]
                 (not [?e :age 10])]
-               #{[4]}
+               #{[tdc/e4]}
 
                ;; 2 rels \ 2 rels
                '[:find ?e ?e2
@@ -157,7 +156,8 @@
                 [?e2 :name "Ivan"]
                 (not [?e :age 10]
                      [?e2 :age 20])]
-               #{[2 1] [6 5] [1 1] [2 2] [5 5] [6 6] [2 5] [1 5] [2 6] [6 1] [5 1] [6 2]}
+               #{[tdc/e2 tdc/e1] [tdc/e6 tdc/e5] [tdc/e1 tdc/e1] [tdc/e2 tdc/e2] [tdc/e5 tdc/e5] [tdc/e6 tdc/e6] [tdc/e2 tdc/e5] [tdc/e1 tdc/e5] [tdc/e2 tdc/e6]
+                 [tdc/e6 tdc/e1] [tdc/e5 tdc/e1] [tdc/e6 tdc/e2]}
 
                ;; 2 rels \ rel + const
                '[:find ?e ?e2
@@ -165,7 +165,7 @@
                 [?e2 :name "Oleg"]
                 (not [?e :age 10]
                      [?e2 :age 20])]
-               #{[2 3] [1 3] [2 4] [6 3] [5 3] [6 4]}
+               #{[tdc/e2 tdc/e3] [tdc/e1 tdc/e3] [tdc/e2 tdc/e4] [tdc/e6 tdc/e3] [tdc/e5 tdc/e3] [tdc/e6 tdc/e4]}
 
                ;; 2 rels \ 2 consts
                '[:find ?e ?e2
@@ -173,7 +173,7 @@
                 [?e2 :name "Oleg"]
                 (not [?e :age 10]
                      [?e2 :age 20])]
-               #{[4 3] [3 3] [4 4]}
+               #{[tdc/e4 tdc/e3] [tdc/e3 tdc/e3] [tdc/e4 tdc/e4]}
                ))
 
 

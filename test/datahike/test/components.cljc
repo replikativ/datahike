@@ -42,14 +42,17 @@
                                   :email "@4"}}})))
     (testing "retractEntity"
       (let [db (d/db-with db [[:db.fn/retractEntity tdc/e1]])]
-        (is (= (d/q '[:find ?a ?v :where [tdc/e1 ?a ?v]] db)
+        (is (= (d/q '[:find ?a ?v :in $ ?e1 :where [?e1 ?a ?v]]
+                    db tdc/e1)
                #{}))
-        (is (= (d/q '[:find ?a ?v :where [tdc/e3 ?a ?v]] db)
+        (is (= (d/q '[:find ?a ?v :in $ ?e3 :where [?e3 ?a ?v]]
+                    db tdc/e3)
                #{}))))
     
     (testing "retractAttribute"
       (let [db (d/db-with db [[:db.fn/retractAttribute tdc/e1 :profile]])]
-        (is (= (d/q '[:find ?a ?v :where [tdc/e3 ?a ?v]] db)
+        (is (= (d/q '[:find ?a ?v :in $ ?e3 :where [?e3 ?a ?v]]
+                    db tdc/e3)
                #{}))))
     
     (testing "reverse navigation"
@@ -58,6 +61,7 @@
 
 (deftest test-components-multival
   (let [empty-db (d/empty-db {:profile {:db/valueType   :db.type/ref
+                                        :db/cardinality :db.cardinality/many
                                         :db/isComponent true}})
         db (d/db-with empty-db
              [{:db/id tdc/e1 :name "Ivan" :profile [tdc/e3 tdc/e4]}
@@ -79,10 +83,10 @@
                #{}))))
     
     (testing "retractAttribute"
-      (let [db (d/db-with db [[:db.fn/retractAttribute 1 :profile]])]
+      (let [db (d/db-with db [[:db.fn/retractAttribute tdc/e1 :profile]])]
         (is (= (d/q '[:find ?a ?v :in $ [?e ...] :where [?e ?a ?v]] db [tdc/e3 tdc/e4])
                #{}))))
     
     (testing "reverse navigation"
       (is (= (visible (:_profile (d/entity db tdc/e3)))
-             {:db/id 1})))))
+             {:db/id tdc/e1})))))

@@ -35,10 +35,10 @@
       (is (false? (:huh? e3))))
 
     (is (= (pr-str (d/entity db 1)) "{:db/id 1}"))
-    (is (= (pr-str (let [e (d/entity db tdc/e1)] (:unknown e) e)) "{:db/id 1}"))
+    (is (= (pr-str (let [e (d/entity db tdc/e1)] (:unknown e) e)) (str "{:db/id " tdc/e1 "}")))
     ;; read back in to account for unordered-ness
     (is (= (edn/read-string (pr-str (let [e (d/entity db tdc/e1)] (:name e) e)))
-           (edn/read-string "{:name \"Ivan\", :db/id 1}")))))
+           (edn/read-string (str "{:name \"Ivan\", :db/id " tdc/e1 "}"))))))
 
 (deftest test-entity-refs
   (let [db (-> (d/empty-db {:father   {:db/valueType   :db.type/ref}
@@ -63,20 +63,20 @@
       (is (= (-> (e tdc/e2) :father :children) #{(e tdc/e2)}))
 
       (testing "after touch"
-        (let [en1  (e tdc/e1)
-              en10 (e tdc/e2)]
-          (d/touch en1)
-          (d/touch en10)
-          (is (= (-> tdc/e1 :children first :children) #{(e tdc/e3) (e tdc/e4)}))
-          (is (= (-> tdc/e2 :children first :father) (e tdc/e2)))
-          (is (= (-> tdc/e2 :father :children) #{(e tdc/e2)})))))
+        (let [e1  (e tdc/e1)
+              e10 (e tdc/e2)]
+          (d/touch e1)
+          (d/touch e10)
+          (is (= (-> e1 :children first :children) #{(e tdc/e3) (e tdc/e4)}))
+          (is (= (-> e10 :children first :father) (e tdc/e2)))
+          (is (= (-> e10 :father :children) #{(e tdc/e2)})))))
 
     (testing "backward navigation"
       (is (= (:_children (e tdc/e1))  nil))
       (is (= (:_father   (e tdc/e1))  #{(e tdc/e2)}))
       (is (= (:_children (e tdc/e2)) #{(e tdc/e1)}))
       (is (= (:_father   (e tdc/e2)) #{(e tdc/e3) (e tdc/e4)}))
-      (is (= (-> (e tdc/e3) :_children first :_children) #{(e 1)})))))
+      (is (= (-> (e tdc/e3) :_children first :_children) #{(e tdc/e1)})))))
 
 (deftest test-entity-misses
   (let [db (-> (d/empty-db {:name {:db/unique :db.unique/identity}})

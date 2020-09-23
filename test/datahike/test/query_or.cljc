@@ -17,53 +17,55 @@
 
 
 (deftest test-or
-  (are [q res] (= (d/q (concat '[:find ?e :where] q) @test-db)
+  (are [q res] (= (d/q (concat '[:find ?e :in $ :where] (quote q)) ;; TODO: make dependent on database config
+                       @test-db)
                   (into #{} (map vector) res))
 
                ;; intersecting results
-               '[(or [?e :name "Oleg"]
-                     [?e :age 10])]
+               [(or [?e :name "Oleg"]
+                    [?e :age 10])]
                #{tdc/e1 tdc/e3 tdc/e4 tdc/e5}
 
                ;; one branch empty
-               '[(or [?e :name "Oleg"]
-                     [?e :age 30])]
+               [(or [?e :name "Oleg"]
+                    [?e :age 30])]
                #{tdc/e3 tdc/e4}
 
                ;; both empty
-               '[(or [?e :name "Petr"]
-                     [?e :age 30])]
+               [(or [?e :name "Petr"]
+                    [?e :age 30])]
                #{}
 
                ;; join with 1 var
-               '[[?e :name "Ivan"]
-                 (or [?e :name "Oleg"]
-                     [?e :age 10])]
+               [[?e :name "Ivan"]
+                (or [?e :name "Oleg"]
+                    [?e :age 10])]
                #{tdc/e1 tdc/e5}
 
-               ;; join with 2 vars
-               '[[?e :age ?a]
-                 (or (and [?e :name "Ivan"]
-                          [tdc/e1 :age ?a])
-                     (and [?e :name "Oleg"]
-                          [tdc/e2 :age ?a]))]
+               #_(identity                                  ;; TODO: activate tests for config without system-schema in database
+                  ;; join with 2 vars
+               [[?e :age ?a]
+                (or (and [?e :name "Ivan"]
+                         [1 :age ?a])
+                    (and [?e :name "Oleg"]
+                         [2 :age ?a]))]
                #{tdc/e1 tdc/e5 tdc/e4}
 
                ;; OR introduces vars
-               '[(or (and [?e :name "Ivan"]
-                          [tdc/e1 :age ?a])
-                     (and [?e :name "Oleg"]
-                          [tdc/e2 :age ?a]))
-                 [?e :age ?a]]
-               #{tdc/e1 tdc/e5 tdc/e4}
+               [(or (and [?e :name "Ivan"]
+                        [1 :age ?a])
+                   (and [?e :name "Oleg"]
+                        [2 :age ?a]))
+                [?e :age ?a]]
+                  #{tdc/e1 tdc/e5 tdc/e4}
 
-               ;; OR introduces vars in different order
-               '[(or (and [?e :name "Ivan"]
-                          [tdc/e1 :age ?a])
-                     (and [tdc/e2 :age ?a]
-                          [?e :name "Oleg"]))
-                 [?e :age ?a]]
-               #{tdc/e1 tdc/e5 tdc/e4}))
+                  ;; OR introduces vars in different order
+                  [(or (and [?e :name "Ivan"]
+                            [1 :age ?a])
+                       (and [2 :age ?a]
+                            [?e :name "Oleg"]))
+                   [?e :age ?a]]
+                  #{tdc/e1 tdc/e5 tdc/e4})))
 
 (deftest test-or-join
   (are [q res] (= (d/q (concat '[:find ?e :where] q) @test-db)

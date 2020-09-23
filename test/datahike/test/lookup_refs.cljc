@@ -31,7 +31,7 @@
                                    :friend  { :db/valueType :db.type/ref }})
                       [{:db/id tdc/e1 :name "Ivan"}
                        {:db/id tdc/e2 :name "Petr"}])]
-    (are [tx res] (= res (tdc/entity-map (d/db-with db tx) 1))
+    (are [tx res] (= res (tdc/entity-map (d/db-with db tx) tdc/e1))
       ;; Additions
       [[:db/add [:name "Ivan"] :age 35]]
       {:db/id tdc/e1 :name "Ivan" :age 35}
@@ -100,7 +100,7 @@
                        {:db/id tdc/e2 :name "Petr"}
                        {:db/id tdc/e3 :name "Oleg"}
                        {:db/id tdc/e4 :name "Sergey"}])]
-    (are [tx res] (= (tdc/entity-map (d/db-with db tx) 1) res)
+    (are [tx res] (= (tdc/entity-map (d/db-with db tx) tdc/e1) res)
       ;; Additions
       [[:db/add tdc/e1 :friends [:name "Petr"]]]
       {:db/id tdc/e1 :name "Ivan" :friends #{{:db/id tdc/e2}}}
@@ -132,8 +132,7 @@
       {:db/id tdc/e1 :name "Ivan" :friends #{{:db/id tdc/e2}}}
 
       [{:db/id tdc/e2 :_friends [[:name "Ivan"] [:name "Oleg"]]}]
-      {:db/id tdc/e1 :name "Ivan" :friends #{{:db/id tdc/e2}}}
-    )))
+      {:db/id tdc/e1 :name "Ivan" :friends #{{:db/id tdc/e2}}})))
 
 (deftest lookup-refs-index-access
   (let [db (d/db-with (d/empty-db {:name    { :db/unique :db.unique/identity }
@@ -235,13 +234,13 @@
 
     ;; https://github.com/tonsky/datahike/issues/214
     (is (= (d/q '[:find ?e
-                  :in $ [?e ...]
-                  :where [?e :friend tdc/e3]]
-                db [tdc/e1 tdc/e2 tdc/e3 "A"])
-           #{[2]}))
+                  :in $ ?e3 [?e ...]
+                  :where [?e :friend ?e3]]
+                db tdc/e3 [tdc/e1 tdc/e2 tdc/e3 "A"])
+           #{[tdc/e2]}))
     
     (let [db2 (d/db-with (d/empty-db schema)
-                [{:db/id tdc/e3 :name "Ivan" :id tdc/e4}
+                [{:db/id tdc/e3 :name "Ivan" :id tdc/e3}
                  {:db/id tdc/e1 :name "Petr" :id tdc/e1}
                  {:db/id tdc/e2 :name "Oleg" :id tdc/e2}])]
       (is (= (d/q '[:find ?e ?e1 ?e2
@@ -257,17 +256,14 @@
       (is (= (d/q '[:find ?v
                     :where [[:name "Ivan"] :friend ?v]]
                   db)
-             #{[2]}))
+             #{[tdc/e2]}))
       
       (is (= (d/q '[:find ?e
                     :where [?e :friend [:name "Petr"]]]
                   db)
-             #{[1]}))
+             #{[tdc/e1]}))
       
       (is (thrown-msg? "Nothing found for entity id [:name \"Valery\"]"
             (d/q '[:find ?e
                    :where [[:name "Valery"] :friend ?e]]
-                  db)))
-
-      )
-))
+                  db))))))

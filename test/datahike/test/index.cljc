@@ -39,10 +39,10 @@
     (testing "Components filtration"
       (is (= [ [tdc/e1 :age 44]
                [tdc/e1 :name "Petr"] ]
-             (map dvec (d/datoms db :eavt 1))))
+             (map dvec (d/datoms db :eavt tdc/e1))))
 
       (is (= [ [tdc/e1 :age 44] ]
-             (map dvec (d/datoms db :eavt 1 :age))))
+             (map dvec (d/datoms db :eavt tdc/e1 :age))))
 
       (is (= [ [tdc/e3 :age 11]
                [tdc/e2 :age 25]

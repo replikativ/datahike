@@ -20,11 +20,15 @@
                      :where [_ :name ?name]] test-db))
          #{"Ivan" "Petr" "Sergey"}))
   (is (= (d/q '[:find [?name ?age]
-                :where [tdc/e1 :name ?name]
-                [tdc/e1 :age ?age]] test-db)
+                :in $ ?e1
+                :where [?e1 :name ?name]
+                [?e1 :age ?age]]
+              test-db tdc/e1)
          ["Petr" 44]))
   (is (= (d/q '[:find ?name .
-                :where [tdc/e1 :name ?name]] test-db)
+                :in $ ?e1
+                :where [?e1 :name ?name]]
+              test-db tdc/e1)
          "Petr"))
 
   (testing "Multiple results get cut"
@@ -47,7 +51,6 @@
            [3]))
     (is (= (d/q '[:find (count ?name) .
                   :where [_ :name ?name]] test-db)
-           3)))
-  )
+           3))))
 
 #_(t/test-ns 'datahike.test.query-find-specs)

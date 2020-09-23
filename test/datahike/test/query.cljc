@@ -92,7 +92,7 @@
     (testing "Named DB"
       (is (= (d/q '[:find ?a ?v
                     :in $db ?e
-                    :where [$db ?e ?a ?v]] db 1)
+                    :where [$db ?e ?a ?v]] db tdc/e1)
              #{[:name "Ivan"]
                [:age 15]})))
 
@@ -278,9 +278,9 @@
              (d/q {:query '[:find ?name :strs foo :where [?e :name ?name]]
                    :args  [db]}))))
     (testing "return map with keys using multiple find vars"
-      (is (= #{["Bob" {:age 37 :db/id 2}]
-               ["Charlie" {:age 37 :db/id 3}]
-               ["Alice" {:age 15 :db/id 1}]}
+      (is (= #{["Bob" {:age 37 :db/id tdc/e2}]
+               ["Charlie" {:age 37 :db/id tdc/e3}]
+               ["Alice" {:age 15 :db/id tdc/e1}]}
              (into #{} (d/q {:find  '[?name (pull ?e ?p)]
                              :args  [db '[:age :db/id]]
                              :in    '[$ ?p]

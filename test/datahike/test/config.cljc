@@ -64,8 +64,8 @@
 (deftest core-config-test
   (testing "Schema on write in core empty database"
     (is (thrown-msg?
-         "Bad entity attribute :name at {:db/id 1, :name \"Ivan\"}, not defined in current schema"
-         (d/db-with (d/empty-db nil {:schema-flexibility :write})
+          (str "Bad entity attribute :name at {:db/id " tdc/e1 ", :name \"Ivan\"}, not defined in current schema")
+          (d/db-with (d/empty-db nil {:schema-flexibility :write})
                     [{:db/id tdc/e1 :name "Ivan" :aka ["IV" "Terrible"]}
                      {:db/id tdc/e2 :name "Petr" :age 37 :huh? false}])))
     (is (thrown-msg?

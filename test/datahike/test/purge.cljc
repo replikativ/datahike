@@ -1,8 +1,7 @@
 (ns datahike.test.purge
   (:require
     #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-    [datahike.test.core :as tdc]
+       :clj  [clojure.test :as t :refer [is are deftest testing]])
     [datahike.api :as d]))
 
 (def schema-tx [{:db/ident       :name
