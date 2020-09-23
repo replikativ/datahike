@@ -1,15 +1,10 @@
 # Datahike database configuration
 
-At database creation _datahike_ supports features that can be
-configured based on the application's requirements. As of version `0.2.0`
-configuration for the [storage backend](#storage-backend), the [schema
-flexibility](#schema-flexibility), and [time variance](#time-variance) is supported.
-Be aware: all these features can be set at database creation
-but can not be changed afterwards. You can still migrate the data to a new configuration.
+At database creation _Datahike_ supports features that can be configured based on the application's requirements. As of version `0.2.0` configuration for the [storage backend](#storage-backend), the [schema flexibility](#schema-flexibility), and [time variance](#time-variance) is supported.  Be aware: all these features can be set at database creation but can not be changed afterwards. You can still migrate the data to a new configuration.
 
 ## Configuration
 
-Configuring datahike is now possible via the [environ library made by weavejester](https://github.com/weavejester/environ). That means you can use the lein-environ plugins for leiningen or boot to read variables from `.lein-env` or `.boot.env`. Without using the plugins you can use environment variables, java system properties and passing a config-map as argument.
+Configuring _Datahike_ is now possible via the [environ library made by weavejester](https://github.com/weavejester/environ). That means you can use the lein-environ plugins for leiningen or boot to read variables from `.lein-env` or `.boot.env`. Without using the plugins you can use environment variables, java system properties and passing a config-map as argument.
 
 The sources are resolved in following order:
 1. A .lein-env file in the project directory
@@ -21,19 +16,14 @@ The sources are resolved in following order:
 That means passing a config as argument overwrites java system properties and using java system properties overwrite environment variables etc. Currently the configuration map looks like this per default:
 
 ```
-{:store {:backend  :mem        ;keyword
-         :id       "default"   ;string
-         :username nil         ;string
-         :password nil         ;string
-         :path     nil         ;string
-         :host     nil         ;string
-         :port     nil}        ;int
- :name (generated)             ;string
- :schema-flexibility :write    ;keyword
- :keep-history?      true}}    ;boolean
+{:store 	     {:backend  :mem        ;keyword
+                      :id       "default"}  ;string
+ :name               (generated)            ;string
+ :schema-flexibility :write    		    ;keyword
+ :keep-history?      true}                  ;boolean
 ```
 
-Please refer to the documentation of the [environ library](https://github.com/weavejester/environ) on how to use it. If you want to pass the config as environment variables or Java system properties you need to name them like following:
+If you are using a backend different from the builtins `:mem` or `:file`, please have a look at the README in the corresponding Github repository. The configuration is outsourced to the backends so you will find the configuration documentation there. An example for `:mem`, `:file`, `:level` and `:postgresql`-backend you can see downwards. Please refer to the documentation of the [environ library](https://github.com/weavejester/environ) on how to use it. If you want to pass the config as environment variables or Java system properties you need to name them like following:
 
 properties                  | envvar
 ----------------------------|--------------------------
@@ -90,20 +80,20 @@ At the moment we support two different backends from within Datahike: [in-memory
 - `password`: PostgreSQL instance password
 - `host`: PostgreSQL instance host
 - `port`: PostgreSQL instance port
-- `path`: name of the PostgreSQL database, must be present in the instance
-- example: `{:store {:backend :pg :host "localhost" :port 5432 :username "alice" :password "foobar" :path "/pg_example"}}`
-- uri example: `datahike:pg://alice:foobar@localhost:5432/pg_example`
+- `dbname`: name of the PostgreSQL database, must be present in the instance
+- example: `{:store {:backend :pg :host "localhost" :port 5432 :username "alice" :password "foobar" :dbname "pg_example"}}`
+- uri example: (deprecated) `datahike:pg://alice:foobar@localhost:5432/pg_example`
 
 ## Name
 
-By default datahike generates a name for your database for you. If you want to set
+By default _Datahike_ generates a name for your database for you. If you want to set
 the name yourself just set a name for it in your config. It helps to specify the
-database you want to use, in case you are using multiple datahike databases in
+database you want to use, in case you are using multiple _Datahike_ databases in
 your application (to be seen in datahike-server).
 
 ## Schema Flexibility
 
-By default the datahike api uses a schema on `:write` approach with strict value
+By default the _Datahike_ api uses a schema on `:write` approach with strict value
 types that need to be defined in advance. If you are not sure how your data
 model looks like and you want to transact any kind of data into the database you
 can set `:schema-flexibility` to `read`. You may add basic schema definitions like `:db/unique`,
