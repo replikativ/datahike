@@ -27,7 +27,6 @@
      (def IllegalArgumentException js/Error)
      (def UnsupportedOperationException js/Error)))
 
-(def ^:const implicit-schema (c/system-map system-schema))
 ;; ----------------------------------------------------------------------------
 
 (defn #?@(:clj  [^Boolean seqable?]
@@ -746,12 +745,11 @@
                    (datom u0 nil nil tx0)
                    (datom (dec tx0) nil nil txmax)
                    :eavt)]
-   (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
-   u0))
+    (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
+    u0))
 
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
-
 
 (defn ^DB empty-db
   "Prefer create-database in api, schema not in index."
@@ -763,9 +761,12 @@
          on-read? (= :read schema-flexibility)
          schema   (to-old-schema schema)
          _        (if on-read?
-             (validate-schema schema)
-             (validate-write-schema schema))
-         schema   (merge (if attribute-refs? implicit-schema c/old-implicit-schema) schema)
+                    (validate-schema schema)
+                    (validate-write-schema schema))
+         schema   (merge (if attribute-refs?
+                           c/ref-implicit-schema
+                           c/non-ref-implicit-schema)
+                         schema)
          rschema  (rschema schema)
          indexed  (:db/index rschema)
          eavt     (di/empty-index index :eavt)
@@ -802,8 +803,8 @@
                    (datom u0 nil nil tx0)
                    (datom (dec tx0) nil nil txmax)
                    :eavt)]
-   (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
-   u0))
+    (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
+    u0))
 
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
@@ -813,8 +814,10 @@
   ([datoms schema] (init-db datoms schema nil))
   ([datoms schema config]
    (validate-schema schema)
-   (let [{:keys [index schema-flexibility keep-history? attribute-refs?] :as config} (merge (dc/storeless-config) config)
-         rschema (rschema (merge (if attribute-refs? implicit-schema c/old-implicit-schema) schema))
+   (let [complete-config (merge (dc/storeless-config) config)
+         {:keys [index schema-flexibility keep-history? attribute-refs?]} complete-config
+         rschema (rschema (merge (if attribute-refs? c/ref-implicit-schema c/non-ref-implicit-schema)
+                                 schema))
          indexed (:db/index rschema)
          eavt (di/init-index index datoms indexed :eavt)
          aevt (di/init-index index datoms indexed :aevt)
@@ -823,10 +826,10 @@
          max-tx (get-max-tx eavt)]
      (map->DB (merge {:schema (merge schema (when (= :read schema-flexibility)
                                               (if attribute-refs?
-                                                implicit-schema
-                                                c/old-implicit-schema)))
+                                                c/ref-implicit-schema
+                                                c/non-ref-implicit-schema)))
                       :rschema rschema
-                      :config  config
+                      :config  complete-config
                       :eavt    eavt
                       :aevt    aevt
                       :avet    avet
@@ -889,10 +892,10 @@
      (defn- pp-db [db ^java.io.Writer w]
        (pp/pprint-logical-block :prefix "#datahike/DB {" :suffix "}"
                                 (pp/pprint-logical-block
-                                  (pp/write-out :schema)
-                                  (.write w " ")
-                                  (pp/pprint-newline :linear)
-                                  (pp/write-out (:schema db)))
+                                 (pp/write-out :schema)
+                                 (.write w " ")
+                                 (pp/pprint-newline :linear)
+                                 (pp/write-out (:schema db)))
                                 (.write w ", ")
 
                                 (pp/pprint-newline :linear)))
@@ -1109,7 +1112,7 @@
         v (.-v datom)]
     (when (contains? system-entities e)
       (raise (str "System schema entity cannot be changed")
-             {:error :transact/schema :entity-id e }))
+             {:error :transact/schema :entity-id e}))
     (if (= a :db/ident)
       (if (schema v)
         (raise (str "Schema with attribute " v " already exists")
@@ -1132,7 +1135,7 @@
         v (.-v datom)]
     (when (contains? system-entities e)
       (raise (str "System schema entity cannot be changed")
-             {:error :retract/schema :entity-id e }))
+             {:error :retract/schema :entity-id e}))
     (if (= a :db/ident)
       (if-not (schema v)
         (raise (str "Schema with attribute " v " does not exist")
@@ -1406,49 +1409,49 @@
              (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
              (do
                 ;; schema tx
-                (when (ds/schema-entity? entity)
-                  (when (contains? ds/system-schema-idents (:db/ident entity))
-                    (raise "Using system attribute names as attribute identifier is not allowed"
-                           {:error :transact/schema :entity entity}))
-                  (if-let [attr-name (get-in db [:schema upserted-eid])]
-                    (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
-                      (when-not (empty? invalid-updates)
-                        (raise "Update not supported for these schema attributes"
-                               {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
-                    (when (= :write (get-in db [:config :schema-flexibility]))
-                      (when (or (:db/cardinality entity) (:db/valueType entity))
-                        (when-not (ds/schema? entity)
-                          (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                                 {:error :transact/schema :entity entity}))))))
-                (recur (allocate-eid report old-eid upserted-eid)
-                       (concat (explode db (assoc entity :db/id upserted-eid)) entities))))
+               (when (ds/schema-entity? entity)
+                 (when (contains? ds/system-schema-idents (:db/ident entity))
+                   (raise "Using system attribute names as attribute identifier is not allowed"
+                          {:error :transact/schema :entity entity}))
+                 (if-let [attr-name (get-in db [:schema upserted-eid])]
+                   (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
+                     (when-not (empty? invalid-updates)
+                       (raise "Update not supported for these schema attributes"
+                              {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
+                   (when (= :write (get-in db [:config :schema-flexibility]))
+                     (when (or (:db/cardinality entity) (:db/valueType entity))
+                       (when-not (ds/schema? entity)
+                         (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                                {:error :transact/schema :entity entity}))))))
+               (recur (allocate-eid report old-eid upserted-eid)
+                      (concat (explode db (assoc entity :db/id upserted-eid)) entities))))
 
             ;; resolved | allocated-tempid | tempid | nil => explode
-            (or (number? old-eid)
-                (nil? old-eid)
-                (string? old-eid))
-            (let [new-eid (cond
-                            (nil? old-eid) (next-eid db)
-                            (tempid? old-eid) (or (get tempids old-eid)
-                                                  (next-eid db))
-                            :else old-eid)
-                  new-entity (assoc entity :db/id new-eid)]
-              (when (ds/schema-entity? entity)
-                (when (contains? ds/system-schema-idents (:db/ident entity))
-                  (raise "Using system attribute names as attribute identifier is not allowed"
-                         {:error :transact/schema :entity entity}))
-                (if-let [attr-name (get-in db [:schema new-eid])]
-                  (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
-                    (when-not (empty? invalid-updates)
-                      (raise "Update not supported for these schema attributes"
-                             {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
-                  (when (= :write (get-in db [:config :schema-flexibility]))
-                    (when (or (:db/cardinality entity) (:db/valueType entity))
-                      (when-not (ds/schema? entity)
-                        (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                               {:error :transact/schema :entity entity}))))))
-              (recur (allocate-eid report old-eid new-eid)
-                     (concat (explode db new-entity) entities)))
+           (or (number? old-eid)
+               (nil? old-eid)
+               (string? old-eid))
+           (let [new-eid (cond
+                           (nil? old-eid) (next-eid db)
+                           (tempid? old-eid) (or (get tempids old-eid)
+                                                 (next-eid db))
+                           :else old-eid)
+                 new-entity (assoc entity :db/id new-eid)]
+             (when (ds/schema-entity? entity)
+               (when (contains? ds/system-schema-idents (:db/ident entity))
+                 (raise "Using system attribute names as attribute identifier is not allowed"
+                        {:error :transact/schema :entity entity}))
+               (if-let [attr-name (get-in db [:schema new-eid])]
+                 (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
+                   (when-not (empty? invalid-updates)
+                     (raise "Update not supported for these schema attributes"
+                            {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
+                 (when (= :write (get-in db [:config :schema-flexibility]))
+                   (when (or (:db/cardinality entity) (:db/valueType entity))
+                     (when-not (ds/schema? entity)
+                       (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                              {:error :transact/schema :entity entity}))))))
+             (recur (allocate-eid report old-eid new-eid)
+                    (concat (explode db new-entity) entities)))
 
             ;; trash => error
            :else

@@ -422,7 +422,8 @@
 (defn conn-from-datoms
   "Creates an empty DB and a mutable reference to it. See [[create-conn]]."
   ([datoms] (conn-from-db (init-db datoms)))
-  ([datoms schema] (conn-from-db (init-db datoms schema))))
+  ([datoms schema] (conn-from-db (init-db datoms schema)))
+  ([datoms schema config] (conn-from-db (init-db datoms schema config))))
 
 (defn create-conn
   "Creates a mutable reference (a “connection”) to an empty immutable database.
@@ -431,7 +432,8 @@
 
    To access underlying immutable DB value, deref: `@conn`."
   ([] (conn-from-db (empty-db)))
-  ([schema] (conn-from-db (empty-db schema))))
+  ([schema] (conn-from-db (empty-db schema)))
+  ([schema config] (conn-from-db (empty-db schema config))))
 
 (defn ^:no-doc -transact! [conn tx-data tx-meta]
   {:pre [(conn? conn)]}

@@ -1,10 +1,9 @@
 (ns datahike.test.query-rules
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
-       :clj  [clojure.test :as t :refer        [is deftest testing]])
-    [datahike.test.core :as tdc]
-    [datahike.core :as d]))
-
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
+   [datahike.test.core :as tdc]
+   [datahike.core :as d]))
 
 (deftest test-rules
   (let [db [[5 :follow 3]
@@ -140,32 +139,32 @@
              :where (rule ?p ?fn "a")
              (rule ?p ?fn "b")]
            [[1 :attr "a"]]
-          '[[(rule ?p ?fn ?x)
-             [?p :attr ?x]
-             [(?fn ?x)]]]
+           '[[(rule ?p ?fn ?x)
+              [?p :attr ?x]
+              [(?fn ?x)]]]
            (constantly true))))
 
   (testing "Specifying db to rule"
     (is (= (d/q '[:find ?n
                   :in   $sexes $ages %
                   :where ($sexes male ?n)
-                         ($ages adult ?n) ]
-                  [["Ivan" :male] ["Darya" :female] ["Oleg" :male] ["Igor" :male]]
-                  [["Ivan" 15] ["Oleg" 66] ["Darya" 32]]
-                  '[[(male ?x)
-                     [?x :male]]
-                    [(adult ?y)
-                     [?y ?a]
-                     [(>= ?a 18)]]])
+                  ($ages adult ?n)]
+                [["Ivan" :male] ["Darya" :female] ["Oleg" :male] ["Igor" :male]]
+                [["Ivan" 15] ["Oleg" 66] ["Darya" 32]]
+                '[[(male ?x)
+                   [?x :male]]
+                  [(adult ?y)
+                   [?y ?a]
+                   [(>= ?a 18)]]])
            #{["Oleg"]}))))
 
 ;; https://github.com/tonsky/datahike/issues/218
 
 
 (deftest test-false-arguments
-  (let [db    (d/db-with (d/empty-db) 
-                [[:db/add tdc/e1 :attr true]
-                 [:db/add tdc/e2 :attr false]])
+  (let [db    (d/db-with (d/empty-db)
+                         [[:db/add tdc/e1 :attr true]
+                          [:db/add tdc/e2 :attr false]])
         rules '[[(is ?id ?val)
                  [?id :attr ?val]]]]
     (is (= (d/q '[:find ?id :in $ %

@@ -1,7 +1,7 @@
 (ns datahike.integration-test.config-record-file-test
   (:require
-    [clojure.test :refer :all]
-    [datahike.api :as d]))
+   [clojure.test :refer :all]
+   [datahike.api :as d]))
 
 (def config {:store {:backend :file :path "/tmp/file-test-1"}})
 
@@ -36,6 +36,8 @@
 
 
   ;; add new entity data using a hash map
+
+
   (let [eid (ffirst (d/q '[:find ?e
                            :where
                            [?e :name "Alice"]]

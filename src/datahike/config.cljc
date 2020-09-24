@@ -10,6 +10,7 @@
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
 (s/def ::schema-flexibility #{:read :write})
+(s/def ::attribute-refs? boolean?)
 (s/def ::entity (s/or :map associative? :vec vector?))
 (s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
 (s/def ::name string?)
@@ -20,6 +21,7 @@
                                 :opt-un [::index
                                          ::keep-history?
                                          ::schema-flexibility
+                                         ::attribute-refs?
                                          ::initial-tx
                                          ::name]))
 
@@ -48,6 +50,7 @@
                    :file {:path path}))
    :index index
    :keep-history? temporal-index
+   :attribute-refs? false
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)})
 
@@ -121,6 +124,7 @@
          config {:store store-config
                  :initial-tx (:datahike-intial-tx env)
                  :keep-history? (bool-from-env :datahike-keep-history true)
+                 :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
                  :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}

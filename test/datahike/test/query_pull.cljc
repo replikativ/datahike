@@ -1,15 +1,14 @@
 (ns datahike.test.query-pull
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [datahike.test.core :as tdc]
-    [datahike.core :as d]))
-
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   [datahike.test.core :as tdc]
+   [datahike.core :as d]))
 
 (def test-db (d/db-with (d/empty-db)
-             [{:db/id tdc/e1 :name "Petr" :age 44}
-              {:db/id tdc/e2 :name "Ivan" :age 25}
-              {:db/id tdc/e3 :name "Oleg" :age 11}]))
+                        [{:db/id tdc/e1 :name "Petr" :age 44}
+                         {:db/id tdc/e2 :name "Ivan" :age 25}
+                         {:db/id tdc/e3 :name "Oleg" :age 11}]))
 
 (deftest test-basics
   (are [find res] (= (set (d/q {:find find
@@ -96,27 +95,27 @@
 
   (is (= (d/q '[:find [?e (pull ?e [:name])]
                 :where [?e :age 25]]
-               test-db)
+              test-db)
          [tdc/e2 {:name "Ivan"}])))
 
 ;; TODO: What does this test test? Is ground needed here?
 #_(deftest test-find-spec-input
-  (is (= (d/q '[:find (pull ?e ?p) .
-                :in $ ?p
-                :where [(ground tdc/e2) ?e]]
+    (is (= (d/q '[:find (pull ?e ?p) .
+                  :in $ ?p
+                  :where [(ground tdc/e2) ?e]]
                 test-db [:name])
-         {:name "Ivan"}))
-  (is (= (d/q '[:find (pull ?e p) .
-                :in $ p
-                :where [(ground tdc/e1) ?e]]
+           {:name "Ivan"}))
+    (is (= (d/q '[:find (pull ?e p) .
+                  :in $ p
+                  :where [(ground tdc/e1) ?e]]
                 test-db [:name])
-         {:name "Ivan"})))
+           {:name "Ivan"})))
 
 (deftest test-aggregates
   (let [db (d/db-with (d/empty-db {:value {:db/cardinality :db.cardinality/many}})
-             [{:db/id tdc/e1 :name "Petr" :value [10 20 30 40]}
-              {:db/id tdc/e2 :name "Ivan" :value [14 16]}
-              {:db/id tdc/e3 :name "Oleg" :value 1}])]
+                      [{:db/id tdc/e1 :name "Petr" :value [10 20 30 40]}
+                       {:db/id tdc/e2 :name "Ivan" :value [14 16]}
+                       {:db/id tdc/e3 :name "Oleg" :value 1}])]
     (is (= (set (d/q '[:find ?e (pull ?e [:name]) (min ?v) (max ?v)
                        :where [?e :value ?v]]
                      db))
@@ -125,10 +124,10 @@
              [tdc/e3 {:name "Oleg"} 1 1]}))))
 
 (deftest test-lookup-refs
-  (let [db (d/db-with (d/empty-db {:name { :db/unique :db.unique/identity }})
-             [{:db/id tdc/e1 :name "Petr" :age 44}
-              {:db/id tdc/e2 :name "Ivan" :age 25}
-              {:db/id tdc/e3 :name "Oleg" :age 11}])]
+  (let [db (d/db-with (d/empty-db {:name {:db/unique :db.unique/identity}})
+                      [{:db/id tdc/e1 :name "Petr" :age 44}
+                       {:db/id tdc/e2 :name "Ivan" :age 25}
+                       {:db/id tdc/e3 :name "Oleg" :age 11}])]
     (is (= (set (d/q '[:find ?ref ?a (pull ?ref [:db/id :name])
                        :in   $ [?ref ...]
                        :where [?ref :age ?a]

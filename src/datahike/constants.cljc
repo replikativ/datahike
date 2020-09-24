@@ -1,10 +1,9 @@
 (ns datahike.constants)
 
+(def ^:const e0 0x00000000)
 (def ^:const tx0-sys 0x20000000)
 (def ^:const emax 0x7FFFFFFF)
 (def ^:const txmax 0x7FFFFFFF)
-
-(def ^:const old-implicit-schema {:db/ident {:db/unique :db.unique/identity}})
 
 (def ^:const system-schema
   [{:db/id tx0-sys
@@ -115,29 +114,40 @@
                        system-schema)]
     (->> system-schema
          (mapcat
-           (fn [{:keys [db/id] :as i}]
-             (reduce-kv
-               (fn [coll k v]
-                 (let [k-ref (idents k)]
-                   (if (= k :db/ident)
-                     (conj coll [id k-ref v tx0-sys])
-                     (if-let [v-ref (idents v)]
-                       (conj coll [id k-ref v-ref tx0-sys])
-                       (conj coll [id k-ref v tx0-sys])))))
-               []
-               (dissoc i :db/id))))
+          (fn [{:keys [db/id] :as i}]
+            (reduce-kv
+             (fn [coll k v]
+               (let [k-ref (idents k)]
+                 (if (= k :db/ident)
+                   (conj coll [id k-ref v tx0-sys])
+                   (if-let [v-ref (idents v)]
+                     (conj coll [id k-ref v-ref tx0-sys])
+                     (conj coll [id k-ref v tx0-sys])))))
+             []
+             (dissoc i :db/id))))
          vec)))
 
 (defn system-map
- "Maps IDs of system entities to their names (keyword) and attribute names to the attribute's specification"
- [system-schema]
+  "Maps IDs of system entities to their names (keyword) and attribute names to the attribute's specification"
+  [system-schema]
   (reduce
-    (fn [m {:keys [db/ident db/id] :as attr}]
-      (when ident
-        (assoc m ident attr id ident)))
-    {}
-    system-schema))
+   (fn [m {:keys [db/ident db/id] :as attr}]
+     (when ident
+       (assoc m ident attr id ident)))
+   {}
+   system-schema))
 
-(def ^:const u0 (transduce (comp (map :db/id) (remove #{tx0-sys})) max 0 system-schema))
+(def ^:const non-ref-implicit-schema {:db/ident {:db/unique :db.unique/identity}})
+
+(def ^:const ref-implicit-schema
+  "Maps attribute names to the attribute's specification"
+  (reduce
+   (fn [m {:keys [db/ident] :as attr}]
+     (when ident
+       (assoc m ident attr)))
+   {}
+   system-schema))
+
+(def ^:const u0 (inc (transduce (comp (map :db/id) (remove #{tx0-sys})) max 0 system-schema)))
 (def ^:const tx0 (inc tx0-sys))
 

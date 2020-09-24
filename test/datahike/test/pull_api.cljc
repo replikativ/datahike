@@ -1,10 +1,10 @@
 (ns datahike.test.pull-api
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
-       :clj  [clojure.test :as t :refer        [is deftest testing]])
-    [datahike.core :as d]
-    [datahike.constants :refer [tx0]]
-    [datahike.test.core :as tdc]))
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
+   [datahike.core :as d]
+   [datahike.constants :refer [tx0]]
+   [datahike.test.core :as tdc]))
 
 ;; TODO: fix tests, 1 fails, 3 errors
 (def test-schema
@@ -26,40 +26,40 @@
 
 (def test-datoms
   (->>
-    [[tdc/e1 :name  "Petr"]
-     [tdc/e1 :aka   "Devil"]
-     [tdc/e1 :aka   "Tupen"]
-     [tdc/e2 :name  "David"]
-     [tdc/e3 :name  "Thomas"]
-     [tdc/e4 :name  "Lucy"]
-     [tdc/e5 :name  "Elizabeth"]
-     [tdc/e6 :name  "Matthew"]
-     [tdc/e7 :name  "Eunan"]
-     [tdc/e8 :name  "Kerri"]
-     [tdc/e9 :name  "Rebecca"]
-     [tdc/e1 :child tdc/e2]
-     [tdc/e1 :child tdc/e3]
-     [tdc/e2 :father tdc/e1]
-     [tdc/e3 :father tdc/e1]
-     [tdc/e6 :father tdc/e3]
-     [tdc/e10 :name  "Part A"]
-     [tdc/e11 :name  "Part A.A"]
-     [tdc/e10 :part tdc/e11]
-     [tdc/e12 :name  "Part A.A.A"]
-     [tdc/e11 :part tdc/e12]
-     [tdc/e13 :name  "Part A.A.A.A"]
-     [tdc/e12 :part tdc/e13]
-     [tdc/e14 :name  "Part A.A.A.B"]
-     [tdc/e12 :part tdc/e14]
-     [tdc/e15 :name  "Part A.B"]
-     [tdc/e10 :part tdc/e15]
-     [tdc/e16 :name  "Part A.B.A"]
-     [tdc/e15 :part tdc/e16]
-     [tdc/e17 :name  "Part A.B.A.A"]
-     [tdc/e16 :part tdc/e17]
-     [tdc/e18 :name  "Part A.B.A.B"]
-     [tdc/e16 :part tdc/e18]]
-    (map (fn [[e a v]] (d/datom e a v tx0)))))
+   [[tdc/e1 :name  "Petr"]
+    [tdc/e1 :aka   "Devil"]
+    [tdc/e1 :aka   "Tupen"]
+    [tdc/e2 :name  "David"]
+    [tdc/e3 :name  "Thomas"]
+    [tdc/e4 :name  "Lucy"]
+    [tdc/e5 :name  "Elizabeth"]
+    [tdc/e6 :name  "Matthew"]
+    [tdc/e7 :name  "Eunan"]
+    [tdc/e8 :name  "Kerri"]
+    [tdc/e9 :name  "Rebecca"]
+    [tdc/e1 :child tdc/e2]
+    [tdc/e1 :child tdc/e3]
+    [tdc/e2 :father tdc/e1]
+    [tdc/e3 :father tdc/e1]
+    [tdc/e6 :father tdc/e3]
+    [tdc/e10 :name  "Part A"]
+    [tdc/e11 :name  "Part A.A"]
+    [tdc/e10 :part tdc/e11]
+    [tdc/e12 :name  "Part A.A.A"]
+    [tdc/e11 :part tdc/e12]
+    [tdc/e13 :name  "Part A.A.A.A"]
+    [tdc/e12 :part tdc/e13]
+    [tdc/e14 :name  "Part A.A.A.B"]
+    [tdc/e12 :part tdc/e14]
+    [tdc/e15 :name  "Part A.B"]
+    [tdc/e10 :part tdc/e15]
+    [tdc/e16 :name  "Part A.B.A"]
+    [tdc/e15 :part tdc/e16]
+    [tdc/e17 :name  "Part A.B.A.A"]
+    [tdc/e16 :part tdc/e17]
+    [tdc/e18 :name  "Part A.B.A.B"]
+    [tdc/e16 :part tdc/e18]]
+   (map (fn [[e a v]] (d/datom e a v tx0)))))
 
 (def test-db (d/init-db test-datoms test-schema))
 
@@ -142,15 +142,15 @@
 
 (deftest test-pull-limit
   (let [db (d/init-db
-             (concat
-               test-datoms
-               [(d/datom tdc/e4 :friend tdc/e5)
-                (d/datom tdc/e4 :friend tdc/e6)
-                (d/datom tdc/e4 :friend tdc/e7)
-                (d/datom tdc/e4 :friend tdc/e8)]
-               (for [idx (range 2000)]
-                 (d/datom tdc/e8 :aka (str "aka-" idx))))
-              test-schema)]
+            (concat
+             test-datoms
+             [(d/datom tdc/e4 :friend tdc/e5)
+              (d/datom tdc/e4 :friend tdc/e6)
+              (d/datom tdc/e4 :friend tdc/e7)
+              (d/datom tdc/e4 :friend tdc/e8)]
+             (for [idx (range 2000)]
+               (d/datom tdc/e8 :aka (str "aka-" idx))))
+            test-schema)]
 
     (testing "Without an explicit limit, the default is 1000"
       (is (= 1000 (->> (d/pull db '[:aka] tdc/e8) :aka count))))
@@ -276,8 +276,8 @@
 
 (deftest test-dual-recursion
 
-  (let [empty (d/empty-db {:part { :db/valueType :db.type/ref }
-                           :spec { :db/valueType :db.type/ref }})]
+  (let [empty (d/empty-db {:part {:db/valueType :db.type/ref}
+                           :spec {:db/valueType :db.type/ref}})]
     (let [db (d/db-with empty [[:db/add tdc/e1 :part tdc/e2]
                                [:db/add tdc/e2 :part tdc/e3]
                                [:db/add tdc/e3 :part tdc/e1]

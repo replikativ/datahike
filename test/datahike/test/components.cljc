@@ -1,10 +1,10 @@
 (ns datahike.test.components
   (:require
-    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
-    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
-       :clj  [clojure.test :as t :refer        [is deftest testing]])
-    [datahike.core :as d]
-    [datahike.test.core :as tdc]))
+   [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
+   [datahike.core :as d]
+   [datahike.test.core :as tdc]))
 
 (t/use-fixtures :once tdc/no-namespace-maps)
 
@@ -16,15 +16,15 @@
                    (d/empty-db {:profile {:db/isComponent true}})))
   (is (thrown-msg? "Bad attribute specification for {:profile {:db/isComponent \"aaa\"}}, expected one of #{true false}"
 
-        (d/empty-db {:profile {:db/isComponent "aaa" :db/valueType :db.type/ref}})))
-  
+                   (d/empty-db {:profile {:db/isComponent "aaa" :db/valueType :db.type/ref}})))
+
   (let [empty-db (d/empty-db {:profile {:db/valueType   :db.type/ref
                                         :db/isComponent true}})
         db (d/db-with
-             empty-db
-             [{:db/id tdc/e1 :name "Ivan" :profile tdc/e3}
-              {:db/id tdc/e3 :email "@3"}
-              {:db/id tdc/e4 :email "@4"}])
+            empty-db
+            [{:db/id tdc/e1 :name "Ivan" :profile tdc/e3}
+             {:db/id tdc/e3 :email "@3"}
+             {:db/id tdc/e4 :email "@4"}])
         visible #(edn/read-string (pr-str %))
         touched #(visible (d/touch %))]
 
@@ -65,9 +65,9 @@
                                         :db/cardinality :db.cardinality/many
                                         :db/isComponent true}})
         db (d/db-with empty-db
-             [{:db/id tdc/e1 :name "Ivan" :profile [tdc/e3 tdc/e4]}
-              {:db/id tdc/e3 :email "@3"}
-              {:db/id tdc/e4 :email "@4"}])
+                      [{:db/id tdc/e1 :name "Ivan" :profile [tdc/e3 tdc/e4]}
+                       {:db/id tdc/e3 :email "@3"}
+                       {:db/id tdc/e4 :email "@4"}])
         visible #(edn/read-string (pr-str %))
         touched #(visible (d/touch %))]
 

@@ -7,7 +7,6 @@
    [datahike.constants :as c]
    [datahike.test.core :as tdc]))
 
-
 (deftest test-empty-db-without-attr-refs
   (let [cfg {:store {:backend :mem
                      :id "attr-refs-test"}

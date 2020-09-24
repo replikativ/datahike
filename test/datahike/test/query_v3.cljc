@@ -1,10 +1,10 @@
 (ns datahike.test.query-v3
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [are deftest]]
-       :clj  [clojure.test :as t :refer        [are deftest]])
-    [datahike.query-v3 :as dq])
-    #?(:clj
-      (:import [clojure.lang ExceptionInfo])))
+   #?(:cljs [cljs.test    :as t :refer-macros [are deftest]]
+      :clj  [clojure.test :as t :refer        [are deftest]])
+   [datahike.query-v3 :as dq])
+  #?(:clj
+     (:import [clojure.lang ExceptionInfo])))
 
 (deftest test-validation
   (are [q ins msg] (thrown-with-msg? ExceptionInfo msg (apply dq/q q ins))

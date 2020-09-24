@@ -1,8 +1,8 @@
 (ns datahike.integration-test.config-record-level-test
   (:require
-    [clojure.test :refer :all]
-    [datahike.api :as d]
-    [datahike-leveldb.core]))
+   [clojure.test :refer :all]
+   [datahike.api :as d]
+   [datahike-leveldb.core]))
 
 (def config {:store {:backend :level :path "/tmp/level-test"}})
 
@@ -39,9 +39,9 @@
 
   ;; add new entity data using a hash map
   (let [eid (ffirst (d/q '[:find ?e
-                          :where
-                          [?e :name "Alice"]]
-                        @conn))]
+                           :where
+                           [?e :name "Alice"]]
+                         @conn))]
 
     (d/transact conn {:tx-data [{:db/id eid :age 25}]}))
 

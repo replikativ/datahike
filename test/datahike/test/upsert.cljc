@@ -1,9 +1,9 @@
 (ns datahike.test.upsert
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [datahike.core :as d]
-    [datahike.test.core :as tdc]))
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   [datahike.core :as d]
+   [datahike.test.core :as tdc]))
 
 #?(:cljs
    (def Throwable js/Error))
@@ -17,9 +17,8 @@
         e2 (+ 2 (:max-eid edb))
         e3 (+ 3 (:max-eid edb))
         db (d/db-with edb
-                        [{:db/id e1 :name "Ivan" :email "@1"} {:db/id e2 :name "Petr" :email "@2"}]
+                      [{:db/id e1 :name "Ivan" :email "@1"} {:db/id e2 :name "Petr" :email "@2"}])
 
-                      )
         touched (fn [tx e] (into {} (d/touch (d/entity (:db-after tx) e))))
         tempids (fn [tx] (dissoc (:tempids tx) :db/current-tx))]
     (testing "upsert, no tempid"
@@ -136,9 +135,8 @@
                {-1 e3, -2 e3}))))
 
     #_(testing "upsert and :current-tx conflict"            ;; TODO: check if different than randomized
-      (is (thrown-with-msg? Throwable (re-pattern (str "Conflicting upsert: [:name \"Ivan\"] resolves to " e1 ", but entity already has :db/id " ctx))
-                            (d/with db [{:db/id :db/current-tx :name "Ivan" :age 35}]))))))
-
+        (is (thrown-with-msg? Throwable (re-pattern (str "Conflicting upsert: [:name \"Ivan\"] resolves to " e1 ", but entity already has :db/id " ctx))
+                              (d/with db [{:db/id :db/current-tx :name "Ivan" :age 35}]))))))
 
 (deftest test-redefining-ids
   (let [db (-> (d/empty-db {:name {:db/unique :db.unique/identity}})
@@ -155,7 +153,7 @@
                            {:db/id -2 :name "Oleg"}]))]
     (is (thrown-with-msg? Throwable (re-pattern (str "Conflicting upsert: -1 resolves both to " (+ d/e0 1) " and " (+ d/e0 2)))
                           (d/with db [{:db/id -1 :name "Ivan" :age 35}
-                      {:db/id -1 :name "Oleg" :age 36}])))))
+                                      {:db/id -1 :name "Oleg" :age 36}])))))
 
 ;; https://github.com/tonsky/datahike/issues/285
 (deftest test-retries-order
@@ -182,16 +180,16 @@
       [[:db/add -1 :name "Ivan"]
        [:db/add -1 :age 12]]
       #{[(+ d/e0 1) :age 12] [(+ d/e0 1) :name "Ivan"]}
-         
+
       [[:db/add -1 :age 12]
        [:db/add -1 :name "Ivan"]]
       #{[(+ d/e0 1) :age 12] [(+ d/e0 1) :name "Ivan"]}))
-  
-  (let [db (-> (d/empty-db {:name  { :db/unique :db.unique/identity }})
+
+  (let [db (-> (d/empty-db {:name  {:db/unique :db.unique/identity}})
                (d/db-with [[:db/add -1 :name "Ivan"]
                            [:db/add -2 :name "Oleg"]]))]
     (is (thrown-with-msg? Throwable (re-pattern (str "Conflicting upsert: -1 resolves both to " (+ d/e0 1) " and " (+ d/e0 2)))
                           (d/with db [[:db/add -1 :name "Ivan"]
-                      [:db/add -1 :age 35]
-                      [:db/add -1 :name "Oleg"]
-                      [:db/add -1 :age 36]])))))
+                                      [:db/add -1 :age 35]
+                                      [:db/add -1 :name "Oleg"]
+                                      [:db/add -1 :age 36]])))))

@@ -6,7 +6,7 @@
    [datahike.test.core :as tdc]
    [datahike.core :as d]
    [datahike.db #?@(:cljs [:refer-macros [defrecord-updatable]]
-                           :clj  [:refer [defrecord-updatable]])]))
+                    :clj  [:refer [defrecord-updatable]])]))
 
 ;;
 ;; verify that defrecord-updatable works with compiler/core macro configuration

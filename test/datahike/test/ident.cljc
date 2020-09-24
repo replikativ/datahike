@@ -1,8 +1,8 @@
 (ns datahike.test.ident
   (:require
-    [clojure.test :as t :refer [is deftest]]
-    [datahike.test.core :as tdc]
-    [datahike.core :as d]))
+   [clojure.test :as t :refer [is deftest]]
+   [datahike.test.core :as tdc]
+   [datahike.core :as d]))
 
 (def db
   (let [db   (d/empty-db {:ref {:db/valueType :db.type/ref}})]
@@ -12,9 +12,9 @@
 
 (deftest test-q
   (is (= tdc/e1 (d/q '[:find ?v .
-                  :where [:ent2 :ref ?v]] db)))
+                       :where [:ent2 :ref ?v]] db)))
   (is (= tdc/e2 (d/q '[:find ?f .
-                  :where [?f :ref :ent1]] db))))
+                       :where [?f :ref :ent1]] db))))
 
 (deftest test-transact!
   (let [db' (d/db-with db [[:db/add :ent1 :ref :ent2]])]

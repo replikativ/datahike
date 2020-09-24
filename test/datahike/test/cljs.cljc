@@ -1,6 +1,6 @@
 (ns datahike.test.cljs
   (:require
-    [cljs.test :as t])
+   [cljs.test :as t])
   #?(:cljs
      (:require-macros
       [datahike.test.cljs])))

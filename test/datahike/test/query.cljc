@@ -1,10 +1,10 @@
 (ns datahike.test.query
   (:require
-    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer [is are deftest testing]])
-    [datahike.core :as d]
-    [datahike.test.core :as tdc]
-    [datahike.query :as dq])
+   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer [is are deftest testing]])
+   [datahike.core :as d]
+   [datahike.test.core :as tdc]
+   [datahike.query :as dq])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
@@ -114,9 +114,9 @@
 
 (deftest test-bindings
   (let [db (-> (d/empty-db)
-                      (d/db-with [{:db/id tdc/e1, :name "Ivan", :age 15}
-                                  {:db/id tdc/e2, :name "Petr", :age 37}
-                                  {:db/id tdc/e3, :name "Ivan", :age 37}]))]
+               (d/db-with [{:db/id tdc/e1, :name "Ivan", :age 15}
+                           {:db/id tdc/e2, :name "Petr", :age 37}
+                           {:db/id tdc/e3, :name "Ivan", :age 37}]))]
     (testing "Relation binding"
       (is (= (d/q '[:find ?e ?email
                     :in $ [[?n ?email]]
@@ -176,7 +176,6 @@
                             (d/q '[:find ?a :in [?a ...]] :a)))
       (is (thrown-with-msg? ExceptionInfo #"Not enough elements in a collection \[:a\] to bind tuple \[\?a \?b\]"
                             (d/q '[:find ?a ?b :in [?a ?b]] [:a]))))))
-
 
 (deftest test-nested-bindings
   (is (= (d/q '[:find ?k ?v
@@ -256,9 +255,9 @@
 
 (deftest test-return-maps
   (let [db (-> (d/empty-db)
-                      (d/db-with [{:db/id tdc/e1, :name "Alice", :age 15}
-                                  {:db/id tdc/e2, :name "Bob", :age 37}
-                                  {:db/id tdc/e3, :name "Charlie", :age 37}]))]
+               (d/db-with [{:db/id tdc/e1, :name "Alice", :age 15}
+                           {:db/id tdc/e2, :name "Bob", :age 37}
+                           {:db/id tdc/e3, :name "Charlie", :age 37}]))]
     (testing "returns map"
       (is (map? (first (d/q {:query '[:find ?e :keys name :where [?e :name _]]
                              :args  [db]})))))
@@ -320,8 +319,8 @@
     (is (= '[{:foo 1, :bar 11, :baz "Ivan"} {:foo 3, :bar 21, :baz "Petr"} {:foo 3, :bar 31, :baz "Ivan"}]
            (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :keys,
                                                                        :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo},
-                                                                                       #datalog.parser.type.MappingKey{:mapping-key bar},
-                                                                                       #datalog.parser.type.MappingKey{:mapping-key baz})}
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key bar},
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key baz})}
                                       #{[1 11 "Ivan"]
                                         [3 31 "Ivan"]
                                         [3 21 "Petr"]}))))
@@ -329,8 +328,8 @@
     (is (= '[{"foo" 1, "bar" 11, "baz" "Ivan"} {"foo" 3, "bar" 21, "baz" "Petr"} {"foo" 3, "bar" 31, "baz" "Ivan"}]
            (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :strs,
                                                                        :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo},
-                                                                                       #datalog.parser.type.MappingKey{:mapping-key bar},
-                                                                                       #datalog.parser.type.MappingKey{:mapping-key baz})}
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key bar},
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key baz})}
                                       #{[1 11 "Ivan"]
                                         [3 31 "Ivan"]
                                         [3 21 "Petr"]}))))
@@ -338,8 +337,8 @@
     (is (= '[{foo 1, bar 11, baz "Ivan"} {foo 3, bar 21, baz "Petr"} {foo 3, bar 31, baz "Ivan"}]
            (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :syms,
                                                                        :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo},
-                                                                                       #datalog.parser.type.MappingKey{:mapping-key bar},
-                                                                                       #datalog.parser.type.MappingKey{:mapping-key baz})}
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key bar},
+                                                                                      #datalog.parser.type.MappingKey{:mapping-key baz})}
                                       #{[1 11 "Ivan"]
                                         [3 31 "Ivan"]
                                         [3 21 "Petr"]})))))

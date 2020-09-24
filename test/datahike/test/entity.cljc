@@ -1,12 +1,12 @@
 (ns datahike.test.entity
   (:require
-    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [datahike.core :as d]
-    [datahike.test.core :as tdc])
-    #?(:clj
-      (:import [clojure.lang ExceptionInfo])))
+   [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   [datahike.core :as d]
+   [datahike.test.core :as tdc])
+  #?(:clj
+     (:import [clojure.lang ExceptionInfo])))
 
 (t/use-fixtures :once tdc/no-namespace-maps)
 
@@ -45,10 +45,10 @@
                             :children {:db/valueType   :db.type/ref
                                        :db/cardinality :db.cardinality/many}})
                (d/db-with
-                 [{:db/id tdc/e1, :children [tdc/e2]}
-                  {:db/id tdc/e2, :father tdc/e1, :children [tdc/e3 tdc/e4]}
-                  {:db/id tdc/e3, :father tdc/e2}
-                  {:db/id tdc/e4, :father tdc/e2}]))
+                [{:db/id tdc/e1, :children [tdc/e2]}
+                 {:db/id tdc/e2, :father tdc/e1, :children [tdc/e3 tdc/e4]}
+                 {:db/id tdc/e3, :father tdc/e2}
+                 {:db/id tdc/e4, :father tdc/e2}]))
         e  #(d/entity db %)]
 
     (is (= (:children (e tdc/e1))   #{(e tdc/e2)}))
@@ -80,8 +80,8 @@
 
 (deftest test-entity-misses
   (let [db (-> (d/empty-db {:name {:db/unique :db.unique/identity}})
-             (d/db-with [{:db/id tdc/e1, :name "Ivan"}
-                         {:db/id tdc/e2, :name "Oleg"}]))]
+               (d/db-with [{:db/id tdc/e1, :name "Ivan"}
+                           {:db/id tdc/e2, :name "Oleg"}]))]
     (is (nil? (d/entity db nil)))
     (is (nil? (d/entity db "abc")))
     (is (nil? (d/entity db :keyword)))

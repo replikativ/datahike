@@ -39,9 +39,9 @@
 
   ;; add new entity data using a hash map
   (let [eid (ffirst (d/q '[:find ?e
-                          :where
-                          [?e :name "Alice"]]
-                        @conn))]
+                           :where
+                           [?e :name "Alice"]]
+                         @conn))]
 
     (d/transact conn {:tx-data [{:db/id eid :age 25}]}))
 

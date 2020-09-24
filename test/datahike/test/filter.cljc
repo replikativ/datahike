@@ -1,9 +1,9 @@
 (ns datahike.test.filter
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [datahike.core :as d]
-    [datahike.test.core :as tdc]))
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   [datahike.core :as d]
+   [datahike.test.core :as tdc]))
 
 (deftest test-filter-db
   (let [empty-db (d/empty-db {:aka {:db/cardinality :db.cardinality/many}})
@@ -64,9 +64,9 @@
 
   (testing "double filtering"
     (let [db       (d/db-with (d/empty-db {})
-                     [{ :db/id tdc/e1, :name "Petr", :age 32}
-                      { :db/id tdc/e2, :name "Oleg"}
-                      { :db/id tdc/e3, :name "Ivan", :age 12}])
+                              [{:db/id tdc/e1, :name "Petr", :age 32}
+                               {:db/id tdc/e2, :name "Oleg"}
+                               {:db/id tdc/e3, :name "Ivan", :age 12}])
           has-age? (fn [db datom] (some? (:age (d/entity db (:e datom)))))
           adult?   (fn [db datom] (>= (:age (d/entity db (:e datom))) 18))
           names    (fn [db] (map :v (d/datoms db :aevt :name)))]

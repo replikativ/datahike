@@ -41,6 +41,7 @@
                   :path "/deprecated/test"}
         default-new-cfg {:keep-history? true
                          :initial-tx nil
+                         :attribute-refs? false
                          :index :datahike.index/hitchhiker-tree
                          :schema-flexibility :write}]
     (is (= (merge default-new-cfg
@@ -57,6 +58,7 @@
       (is (= {:store {:backend :mem
                       :id "default"}
               :keep-history? true
+              :attribute-refs? false
               :schema-flexibility :write
               :index :datahike.index/hitchhiker-tree}
              (-> config (dissoc :name)))))))
@@ -64,8 +66,8 @@
 (deftest core-config-test
   (testing "Schema on write in core empty database"
     (is (thrown-msg?
-          (str "Bad entity attribute :name at {:db/id " tdc/e1 ", :name \"Ivan\"}, not defined in current schema")
-          (d/db-with (d/empty-db nil {:schema-flexibility :write})
+         (str "Bad entity attribute :name at {:db/id " tdc/e1 ", :name \"Ivan\"}, not defined in current schema")
+         (d/db-with (d/empty-db nil {:schema-flexibility :write})
                     [{:db/id tdc/e1 :name "Ivan" :aka ["IV" "Terrible"]}
                      {:db/id tdc/e2 :name "Petr" :age 37 :huh? false}])))
     (is (thrown-msg?

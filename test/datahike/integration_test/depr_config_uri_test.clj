@@ -1,7 +1,7 @@
 (ns datahike.integration-test.depr-config-uri-test
   (:require
-    [clojure.test :refer :all]
-    [datahike.api :as d]))
+   [clojure.test :refer :all]
+   [datahike.api :as d]))
 
 (def config "datahike:file:///tmp/file-test-3")
 

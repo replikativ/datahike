@@ -37,8 +37,8 @@
 
     (testing "transact without schema present"
       (is (thrown-msg?
-            (str "Bad entity attribute :name at {:db/id " tdc/e1 ", :name \"Alice\"}, not defined in current schema")
-            (d/transact conn tx))))
+           (str "Bad entity attribute :name at {:db/id " tdc/e1 ", :name \"Alice\"}, not defined in current schema")
+           (d/transact conn tx))))
 
     (testing "transacting new schema"
       (d/transact conn [name-schema])
@@ -58,13 +58,13 @@
 
     (testing "insert new data with wrong data type"
       (is (thrown-msg?
-            (str "Bad entity value 42 at [:db/add " tdc/e3 " :name 42], value does not match schema definition. Must be conform to: string?")
-            (d/transact conn [{:name 42}]))))
+           (str "Bad entity value 42 at [:db/add " tdc/e3 " :name 42], value does not match schema definition. Must be conform to: string?")
+           (d/transact conn [{:name 42}]))))
 
     (testing "insert new data with additional attributes not in schema"
       (is (thrown-msg?
-            (str "Bad entity attribute :age at {:db/id " tdc/e3 ", :age 42}, not defined in current schema")
-            (d/transact conn [{:name "Bob" :age 42}]))))
+           (str "Bad entity attribute :age at {:db/id " tdc/e3 ", :age 42}, not defined in current schema")
+           (d/transact conn [{:name "Bob" :age 42}]))))
 
     (testing "insert incomplete schema :db/valueType"
       (is (thrown-msg?
@@ -83,8 +83,8 @@
 
     (testing "insert schema with incorrect value type"
       (is (thrown-msg?
-            (str "Bad entity value :string at [:db/add " tdc/e3 " :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/number :db.type/instant :db.type/boolean :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/symbol}")
-            (d/transact conn [{:db/ident       :phone
+           (str "Bad entity value :string at [:db/add " tdc/e3 " :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/number :db.type/instant :db.type/boolean :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/symbol}")
+           (d/transact conn [{:db/ident       :phone
                               :db/cardinality :db.cardinality/one
                               :db/valueType   :string}]))))))
 
@@ -326,7 +326,6 @@
         (is (= #{["important" :important] ["archive" :important] ["archive" :archive]}
                (d/q '[:find ?m ?t :where [?e :message ?m] [?e :tag ?te] [?te :db/ident ?t]] (d/db conn))))))))
 
-
 (deftest test-system-schema-protection
   (testing "manipulating system schema"
     (let [cfg "datahike:mem://test-protection"
@@ -335,9 +334,9 @@
           conn (d/connect cfg)]
       (testing "insert schema for system-attribute"
         (is (thrown-msg?
-              "Using system attribute names as attribute identifier is not allowed"
-              (d/transact conn [{:db/ident :db/cardinality}]))))
+             "Using system attribute names as attribute identifier is not allowed"
+             (d/transact conn [{:db/ident :db/cardinality}]))))
       (testing "overwrite an attribute of system schema"
         (is (thrown-msg?
-              "No operations supported for protected system entity with id 1"
-              (d/transact conn [[:db/add 1 :db/cardinality :db.cardinality/many]])))))))
+             "No operations supported for protected system entity with id 1"
+             (d/transact conn [[:db/add 1 :db/cardinality :db.cardinality/many]])))))))

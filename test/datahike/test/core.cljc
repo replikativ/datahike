@@ -1,11 +1,11 @@
 (ns datahike.test.core
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is deftest]]
-       :clj  [clojure.test :as t :refer        [is deftest]])
-    #?(:clj [kaocha.stacktrace])
-    [datahike.core :as d]
-    [datahike.impl.entity :as de]
-    #?(:cljs [datahike.test.cljs])))
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest]]
+      :clj  [clojure.test :as t :refer        [is deftest]])
+   #?(:clj [kaocha.stacktrace])
+   [datahike.core :as d]
+   [datahike.impl.entity :as de]
+   #?(:cljs [datahike.test.cljs])))
 
 #?(:cljs
    (enable-console-print!))
@@ -95,18 +95,18 @@
 ;; Core tests
 
 #_(deftest test-protocols                                   ;; TODO: fix
-  (let [schema {:aka {:db/cardinality :db.cardinality/many}}
-        db (d/db-with (d/empty-db schema)
-                      [{:db/id e1 :name "Ivan" :aka ["IV" "Terrible"]}
-                       {:db/id e2 :name "Petr" :age 37 :huh? false}])]
-   (println "schema" (.-schema db))
-    (is (= (d/empty-db schema)
-           (empty db)))
-    (is (= 6 (count db)))
-    (is (= (set (seq db))
-           #{(d/datom e1 :aka "IV")
-             (d/datom e1 :aka "Terrible")
-             (d/datom e1 :name "Ivan")
-             (d/datom e2 :age 37)
-             (d/datom e2 :name "Petr")
-             (d/datom e2 :huh? false)}))))
+    (let [schema {:aka {:db/cardinality :db.cardinality/many}}
+          db (d/db-with (d/empty-db schema)
+                        [{:db/id e1 :name "Ivan" :aka ["IV" "Terrible"]}
+                         {:db/id e2 :name "Petr" :age 37 :huh? false}])]
+      (println "schema" (.-schema db))
+      (is (= (d/empty-db schema)
+             (empty db)))
+      (is (= 6 (count db)))
+      (is (= (set (seq db))
+             #{(d/datom e1 :aka "IV")
+               (d/datom e1 :aka "Terrible")
+               (d/datom e1 :name "Ivan")
+               (d/datom e2 :age 37)
+               (d/datom e2 :name "Petr")
+               (d/datom e2 :huh? false)}))))

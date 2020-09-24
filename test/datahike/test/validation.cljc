@@ -1,9 +1,9 @@
 (ns datahike.test.validation
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest]]
-       :clj  [clojure.test :as t :refer        [is are deftest]])
-    [datahike.test.core :as tdc]
-    [datahike.core :as d]))
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest]]
+      :clj  [clojure.test :as t :refer        [is are deftest]])
+   [datahike.test.core :as tdc]
+   [datahike.core :as d]))
 
 #?(:cljs
    (def Throwable js/Error))
@@ -34,7 +34,7 @@
     (is (thrown-with-msg? Throwable #"Bad transaction data" (d/db-with db {:profile "aaa"})))))
 
 (deftest test-unique
-  (let [db (d/db-with (d/empty-db {:name { :db/unique :db.unique/value }})
+  (let [db (d/db-with (d/empty-db {:name {:db/unique :db.unique/value}})
                       [[:db/add tdc/e1 :name "Ivan"]
                        [:db/add tdc/e2 :name "Petr"]])]
     (are [tx] (thrown-with-msg? Throwable #"unique constraint" (d/db-with db tx))
