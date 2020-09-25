@@ -1,12 +1,12 @@
 (ns datahike.constants)
 
 (def ^:const e0 0x00000000)
-(def ^:const tx0-sys 0x20000000)
+(def ^:const tx0 0x20000000)
 (def ^:const emax 0x7FFFFFFF)
 (def ^:const txmax 0x7FFFFFFF)
 
 (def ^:const system-schema
-  [{:db/id tx0-sys
+  [{:db/id        tx0
     :db/txInstant #inst"1970-01-01T00:00:00.000-00:00"}
    {:db/id 1
     :db/ident :db/ident
@@ -128,6 +128,6 @@
    {}
    system-schema))
 
-(def ^:const u0 (inc (transduce (comp (map :db/id) (remove #{tx0-sys})) max 0 system-schema)))
-(def ^:const tx0 (inc tx0-sys))
+(def ^:const ue0 (inc (transduce (comp (map :db/id) (remove #{tx0})) max 0 system-schema)))
+(def ^:const utx0 (inc tx0))
 

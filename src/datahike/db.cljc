@@ -6,7 +6,7 @@
    #?(:clj [clojure.pprint :as pp])
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   [datahike.constants :as c :refer [u0 e0 tx0 tx0-sys emax txmax system-schema system-entities]]
+   [datahike.constants :as c :refer [ue0 e0 tx0 utx0 emax txmax system-schema system-entities]]
    [datahike.tools :refer [get-time case-tree raise]]
    [datahike.schema :as ds]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
@@ -171,18 +171,18 @@
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
                   (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ _
                   (if indexed?                              ;; _ a v tx
-                    (->> (-slice avet (datom u0 a v tx0) (datom emax a v txmax) :avet)
+                    (->> (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
                          (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                    (->> (-slice aevt (datom u0 a nil tx0) (datom emax a nil txmax) :aevt)
+                    (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
                          (filter (fn [^Datom d] (and (= v (.-v d))
                                                      (= tx (datom-tx d)))))))
                   (if indexed?                              ;; _ a v _
-                    (-slice avet (datom u0 a v tx0) (datom emax a v txmax) :avet)
-                    (->> (-slice aevt (datom u0 a nil tx0) (datom emax a nil txmax) :aevt)
+                    (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
+                    (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
                          (filter (fn [^Datom d] (= v (.-v d))))))
-                  (->> (-slice aevt (datom u0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ tx
+                  (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ tx
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                  (-slice aevt (datom u0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ _
+                  (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ _
                   (filter (fn [^Datom d] (and (= v (.-v d)) (= tx (datom-tx d)))) (-all eavt)) ;; _ _ v tx
                   (filter (fn [^Datom d] (= v (.-v d))) (-all eavt)) ;; _ _ v _
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
@@ -233,19 +233,19 @@
   IIndexAccess
   (-datoms [db index-type cs]
            (-slice (get db index-type)
-                   (components->pattern db index-type cs u0 tx0)
+                   (components->pattern db index-type cs e0 tx0)
                    (components->pattern db index-type cs emax txmax)
                    index-type))
 
   (-seek-datoms [db index-type cs]
                 (-slice (get db index-type)
-                        (components->pattern db index-type cs u0 tx0)
+                        (components->pattern db index-type cs e0 tx0)
                         (datom emax nil nil txmax)
                         index-type))
 
   (-rseek-datoms [db index-type cs]
                  (-> (-slice (get db index-type)
-                             (components->pattern db index-type cs u0 tx0)
+                             (components->pattern db index-type cs e0 tx0)
                              (datom emax nil nil txmax)
                              index-type)
                      vec
@@ -256,7 +256,7 @@
                   (raise "Attribute" attr "should be marked as :db/index true" {}))
                 (validate-attr attr (list '-index-range 'db attr start end) db)
                 (-slice avet
-                        (resolve-datom db nil attr start nil u0 tx0)
+                        (resolve-datom db nil attr start nil e0 tx0)
                         (resolve-datom db nil attr end nil emax txmax)
                         :avet))
 
@@ -265,8 +265,8 @@
 
   clojure.data/Diff
   (diff-similar [a b]
-                (let [datoms-a (-slice (:eavt a) (datom u0 nil nil tx0) (datom emax nil nil txmax) :eavt)
-                      datoms-b (-slice (:eavt b) (datom u0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
+                (let [datoms-a (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
+                      datoms-b (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
                   (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
 
 (defn db? [x]
@@ -366,7 +366,7 @@
 (defn temporal-datoms [^DB db index-type cs]
   (let [index (get db index-type)
         temporal-index (get db (keyword (str "temporal-" (name index-type))))
-        from (components->pattern db index-type cs u0 tx0)
+        from (components->pattern db index-type cs e0 tx0)
         to (components->pattern db index-type cs emax txmax)]
     (concat (-slice index from to index-type)
             (-slice temporal-index from to index-type))))
@@ -374,7 +374,7 @@
 (defn temporal-seek-datoms [^DB db index-type cs]
   (let [index (get db index-type)
         temporal-index (get db (keyword (str "temporal-" (name index-type))))
-        from (components->pattern db index-type cs u0 tx0)
+        from (components->pattern db index-type cs e0 tx0)
         to (datom emax nil nil txmax)]
     (concat (-slice index from to index-type)
             (-slice temporal-index from to index-type))))
@@ -382,7 +382,7 @@
 (defn temporal-rseek-datoms [^DB db index-type cs]
   (let [index (get db index-type)
         temporal-index (get db (keyword (str "temporal-" (name index-type))))
-        from (components->pattern db index-type cs u0 tx0)
+        from (components->pattern db index-type cs e0 tx0)
         to (datom emax nil nil txmax)]
     (concat
      (-> (concat (-slice index from to index-type)
@@ -394,7 +394,7 @@
   (when-not (indexing? db attr)
     (raise "Attribute" attr "should be marked as :db/index true" {}))
   (validate-attr attr (list '-index-range 'db attr start end) db)
-  (let [from (resolve-datom current-db nil attr start nil u0 tx0)
+  (let [from (resolve-datom current-db nil attr start nil e0 tx0)
         to (resolve-datom current-db nil attr end nil emax txmax)]
     (concat
      (-slice (get db :avet) from to :avet)
@@ -742,11 +742,11 @@
   ;; solved with reserse slice first in datascript
   (if-let [datoms (-slice
                    eavt
-                   (datom u0 nil nil tx0)
+                   (datom e0 nil nil tx0)
                    (datom (dec tx0) nil nil txmax)
                    :eavt)]
     (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
-    u0))
+    e0))
 
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
@@ -763,10 +763,10 @@
           (fn [coll k v]
            (let [k-ref (idents k)]
             (if (= k :db/ident)
-             (conj coll (dd/datom id k-ref v tx0-sys))
+             (conj coll (dd/datom id k-ref v tx0))
              (if-let [v-ref (idents v)]
-              (conj coll (dd/datom id k-ref v-ref tx0-sys))
-              (conj coll (dd/datom id k-ref v tx0-sys))))))
+              (conj coll (dd/datom id k-ref v-ref tx0))
+              (conj coll (dd/datom id k-ref v tx0))))))
           []
           (dissoc i :db/id))))
        vec)))
@@ -799,8 +799,9 @@
          avet     (if attribute-refs?
                    (di/init-index index ref-datoms indexed :aevt) ;; TODO: needs to be filtered???
                    (di/empty-index index :avet))
-         max-eid  (if attribute-refs? u0 e0)
-         max-tx   (if attribute-refs? tx0 tx0-sys)]
+         max-eid (if attribute-refs? ue0 e0)          ;; TODO: use functions??? get-max-eid (more robust)
+         max-tx  (if attribute-refs? utx0 tx0)]       ;; TODO: use functions??? get-max-tx
+    (println "max-eid" max-eid "max-tx" max-tx)
      (map->DB
       (merge
        {:schema complete-schema
@@ -822,16 +823,6 @@
    (fn [^Datom d]
      (datom (+ (.-e d) offset) (.-a d) (.-v d) (.-tx d)))
    datoms))
-
-(defn init-max-eid [eavt]
-  ;; solved with reserse slice first in datascript
-  (if-let [datoms (-slice
-                   eavt
-                   (datom u0 nil nil tx0)
-                   (datom (dec tx0) nil nil txmax)
-                   :eavt)]
-    (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
-    u0))
 
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
@@ -1133,12 +1124,13 @@
      (update-in [:db-after] advance-max-eid eid))))
 
 (defn update-schema [db ^Datom datom]
-  (let [schema (:schema db)
+  (let [{:keys [schema config]} db
+        attribute-refs? (:attribute-refs? config)
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)]
-    (when (contains? system-entities e)
-      (raise (str "System schema entity cannot be changed")
+    (when (and attribute-refs? (contains? system-entities e))
+     (raise (str "System schema entity cannot be changed")
              {:error :transact/schema :entity-id e}))
     (if (= a :db/ident)
       (if (schema v)
@@ -1487,8 +1479,9 @@
 
         (sequential? entity)
         (let [[op e a v] entity]
-          (when (contains? system-entities e)
-            (raise "No operations supported for protected system entity with id " e
+         (println (:config db))
+          (when (and (:attribute-refs? (:config db)) (contains? system-entities e))
+           (raise "No operations supported for protected system entity with id " e
                    {:error :entity-id/protected, :entity entity}))
           (cond
             (= op :db.fn/call)

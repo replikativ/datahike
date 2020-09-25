@@ -3,7 +3,7 @@
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
-            [datahike.constants :refer [u0 tx0 emax txmax]]
+            [datahike.constants :refer [e0 tx0 emax txmax]]
             [datahike.datom :as dd])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
@@ -52,7 +52,7 @@
                     :avet (list (.-a datom) (.-v datom)  (.-e datom) (.-tx datom))
                     (list (.-e datom) (.-a datom) (.-v datom) (.-tx datom)))]
     (->> datom-seq
-         (remove #{u0 tx0 emax txmax})
+         (remove #{e0 tx0 emax txmax})
          (remove nil?)
          vec)))
 
@@ -94,7 +94,7 @@
     new))
 
 (defn -seq [tree index-type]
-  (-slice tree (dd/datom u0 nil nil tx0) (dd/datom emax nil nil txmax) index-type))
+  (-slice tree (dd/datom e0 nil nil tx0) (dd/datom emax nil nil txmax) index-type))
 
 (defn -count [tree index-type]
   (count (-seq tree index-type)))
