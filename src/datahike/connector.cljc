@@ -154,7 +154,7 @@
               :store store))))
 
   (-create-database [config & deprecated-config]
-    (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)
+    (let [{:keys [keep-history? initial-tx attribute-refs?] :as config} (dc/load-config config deprecated-config)
           store-config (:store config)
           store        (kc/ensure-cache
                         (ds/empty-store store-config)
@@ -179,10 +179,9 @@
                                    :temporal-avet-key (di/-flush temporal-avet backend)}))))
       (ds/release-store store-config store)
       (let [conn (-connect config)]
-        (load-entities conn c/system-schema)
-        (when initial-tx
-          (transact conn initial-tx))
-        (release conn))))
+       (when initial-tx
+        (transact conn initial-tx))
+       (release conn))))
 
   (-delete-database [config]
     (let [config (dc/load-config config {})]

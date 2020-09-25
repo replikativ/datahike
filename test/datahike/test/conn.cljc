@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.core :as d]
    [datahike.constants :as c]
+   [datahike.db :as db]
    [datahike.test.core :as tdc]))
 
 (def user-schema {:aka {:db/cardinality :db.cardinality/many}})
@@ -46,11 +47,11 @@
 
   (testing "Connections with attribute references"
     (let [conn (d/create-conn nil {:attribute-refs? true})]
-      (is (= #{} (set (d/datoms @conn :eavt))))
+      (is (= (set db/ref-datoms) (set (d/datoms @conn :eavt))))
       (is (= c/ref-implicit-schema (:schema @conn))))
 
     (let [conn (d/create-conn user-schema {:attribute-refs? true})]
-      (is (= #{} (set (d/datoms @conn :eavt))))
+      (is (= (set db/ref-datoms) (set (d/datoms @conn :eavt))))
       (is (= ref-schema (:schema @conn))))
 
     (let [conn (d/conn-from-datoms ref-datoms nil {:attribute-refs? true})]

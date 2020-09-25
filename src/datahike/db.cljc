@@ -6,13 +6,13 @@
    #?(:clj [clojure.pprint :as pp])
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   [datahike.constants :as c :refer [u0 tx0 emax txmax system-schema system-entities]]
+   [datahike.constants :as c :refer [u0 e0 tx0 tx0-sys emax txmax system-schema system-entities]]
    [datahike.tools :refer [get-time case-tree raise]]
    [datahike.schema :as ds]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
    [datahike.config :as dc])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable cond+]]
-                            [datahike.datom :refer [combine-cmp]]
+                            [datahike.datom :refer [combine-cmp datom]]
                             [datahike.tools :refer [case-tree raise]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry]
@@ -751,41 +751,68 @@
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
 
+(def ref-datoms
+ (let [idents (reduce (fn [m {:keys [db/ident db/id]}]
+                       (assoc m ident id))
+                      {}
+                      system-schema)]
+  (->> system-schema
+       (mapcat
+        (fn [{:keys [db/id] :as i}]
+         (reduce-kv
+          (fn [coll k v]
+           (let [k-ref (idents k)]
+            (if (= k :db/ident)
+             (conj coll (dd/datom id k-ref v tx0-sys))
+             (if-let [v-ref (idents v)]
+              (conj coll (dd/datom id k-ref v-ref tx0-sys))
+              (conj coll (dd/datom id k-ref v tx0-sys))))))
+          []
+          (dissoc i :db/id))))
+       vec)))
+
 (defn ^DB empty-db
   "Prefer create-database in api, schema not in index."
   ([] (empty-db nil nil))
   ([schema] (empty-db schema nil))
   ([schema config]
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
-   (let [{:keys [keep-history? index schema-flexibility attribute-refs?] :as config} (merge (dc/storeless-config) config)
+   (let [complete-config (merge (dc/storeless-config) config)
+         {:keys [keep-history? index schema-flexibility attribute-refs?]} complete-config
          on-read? (= :read schema-flexibility)
          schema   (to-old-schema schema)
          _        (if on-read?
                     (validate-schema schema)
                     (validate-write-schema schema))
-         schema   (merge (if attribute-refs?
+         complete-schema   (merge (if attribute-refs?
                            c/ref-implicit-schema
                            c/non-ref-implicit-schema)
                          schema)
-         rschema  (rschema schema)
-         indexed  (:db/index rschema)
-         eavt     (di/empty-index index :eavt)
-         aevt     (di/empty-index index :aevt)
-         avet     (di/empty-index index :avet)
-         max-eid  u0
-         max-tx   tx0]
+         rschema  (rschema complete-schema)
+         indexed  (:db/index complete-schema)
+         eavt (if attribute-refs?
+                (di/init-index index ref-datoms indexed :eavt)
+                (di/empty-index index :eavt))
+         aevt     (if attribute-refs?
+                   (di/init-index index ref-datoms indexed :aevt)
+                   (di/empty-index index :aevt))
+         avet     (if attribute-refs?
+                   (di/init-index index ref-datoms indexed :aevt) ;; TODO: needs to be filtered???
+                   (di/empty-index index :avet))
+         max-eid  (if attribute-refs? u0 e0)
+         max-tx   (if attribute-refs? tx0 tx0-sys)]
      (map->DB
       (merge
-       {:schema schema
+       {:schema complete-schema
         :rschema rschema
-        :config  config
+        :config  complete-config
         :eavt eavt
         :aevt aevt
         :avet avet
         :max-eid max-eid
         :max-tx max-tx
         :hash    0}
-       (when keep-history?
+       (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt (di/empty-index index :eavt)
           :temporal-aevt (di/empty-index index :aevt)
           :temporal-avet (di/empty-index index :avet)}))))))

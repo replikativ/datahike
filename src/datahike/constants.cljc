@@ -107,26 +107,6 @@
 
 (def ^:const system-entities (set (map :db/id system-schema)))
 
-(defn ref-datoms [system-schema]
-  (let [idents (reduce (fn [m {:keys [db/ident db/id]}]
-                         (assoc m ident id))
-                       {}
-                       system-schema)]
-    (->> system-schema
-         (mapcat
-          (fn [{:keys [db/id] :as i}]
-            (reduce-kv
-             (fn [coll k v]
-               (let [k-ref (idents k)]
-                 (if (= k :db/ident)
-                   (conj coll [id k-ref v tx0-sys])
-                   (if-let [v-ref (idents v)]
-                     (conj coll [id k-ref v-ref tx0-sys])
-                     (conj coll [id k-ref v tx0-sys])))))
-             []
-             (dissoc i :db/id))))
-         vec)))
-
 (defn system-map
   "Maps IDs of system entities to their names (keyword) and attribute names to the attribute's specification"
   [system-schema]
