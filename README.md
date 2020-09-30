@@ -272,15 +272,6 @@ Have a look at the [change log](./CHANGELOG.md) for recent updates.
 
 ## Roadmap
 
-### 0.3.0
-
-- clojure.spec for api functions
-- conceptualize schema upgrades
-- Java API
-- remote HTTP interface
-- Docker image
-- further schema types: bytes, tuples
-
 ### 0.4.0
 
 - identity and access management
@@ -315,6 +306,6 @@ feature, please let us know.
 
 ## License
 
-Copyright © 2014–2020 Konrad Kühne, Christian Weilbach, Nikita Prokopov
+Copyright © 2014–2020 Konrad Kühne, Christian Weilbach, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).
