@@ -1,37 +1,43 @@
-version: 2.0
-jobs:
-  build:
-    working_directory: ~/datahike
+version: 2.1
 
-    docker:
-      - image: circleci/clojure:lein-2.9.3
-      - image: circleci/postgres:11-alpine
-        environment:
-          POSTGRES_USER: alice
-          POSTGRES_PASSWORD: foo
-          POSTGRES_DB: config-test
+orbs:
+  lein: replikativ/clj-lein@0
 
-    filters:
-      branches:
-        only:
-          - master
-          - development
-
-    environment:
-      LEIN_ROOT: "true"
-      JVM_OPTS: -Xmx3200m
-
-    steps:
-      - checkout
-      - restore_cache:
-          keys:
-            - datahike-{{ checksum "project.clj" }}
-      - run: lein deps
-      - save_cache:
-          paths:
-            - ~/.m2
-            - ~/.lein
-          key: datahike-{{ checksum "project.clj" }}
-      - run: ./bin/run-unit-tests
-      - run: lein uberjar
-      - run: ./bin/run-integration-tests
+workflows:
+  build-test-and-deploy:
+    jobs:
+      - lein/setup
+      - lein/format:
+          requires:
+            - lein/setup
+      - lein/unittest:
+          requires:
+            - lein/setup
+      - lein/integrationtest-postgresql:
+          requires:
+            - lein/setup
+      - lein/build:
+          requires:
+            - lein/setup
+      - lein/deploy-snapshot:
+          context: clojars-deploy
+          filters:
+            branches:
+              only: development
+          requires:
+            - lein/setup
+            - lein/format
+            - lein/unittest
+            - lein/integrationtest-postgresql
+            - lein/build
+      - lein/deploy-release:
+          context: clojars-deploy
+          filters:
+            branches:
+              only: master
+          requires:
+            - lein/setup
+            - lein/format
+            - lein/unittest
+            - lein/integrationtest-postgresql
+            - lein/build
