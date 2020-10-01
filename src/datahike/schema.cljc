@@ -140,11 +140,13 @@
 (defn schema-attr? [attr]
   (s/valid? ::schema-attribute attr))
 
-(defn value-valid? [[_ _ a v _] schema]
-  (let [schema (if (or (meta-attr? a) (schema-attr? a))
+(defn value-valid? [ident [_ _ a v _] schema]
+  (println a ident "implschema" implicit-schema-spec)
+  (println "schema" schema)
+  (let [schema (if (or (meta-attr? ident) (schema-attr? ident))
                  implicit-schema-spec
                  schema)
-        value-type (get-in schema [a :db/valueType])]
+        value-type (get-in schema [ident :db/valueType])]
     (s/valid? value-type v)))
 
 (defn instant? [^Datom datom schema]

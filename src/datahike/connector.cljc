@@ -179,9 +179,9 @@
                                    :temporal-avet-key (di/-flush temporal-avet backend)}))))
       (ds/release-store store-config store)
       (let [conn (-connect config)]
-       (when initial-tx
-        (transact conn initial-tx))
-       (release conn))))
+        (when initial-tx
+          (transact conn initial-tx))
+        (release conn))))
 
   (-delete-database [config]
     (let [config (dc/load-config config {})]
