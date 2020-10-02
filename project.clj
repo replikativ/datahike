@@ -13,7 +13,7 @@
                  [io.replikativ/hitchhiker-tree "0.1.7"]
                  [io.replikativ/superv.async "0.2.9"]
                  [io.replikativ/hasch "0.3.7"]
-                 [io.lambdaforge/datalog-parser "0.1.7"]
+                 [io.lambdaforge/datalog-parser "0.1.8-SNAPSHOT"]
                  [io.replikativ/zufall "0.1.0"]
                  [junit/junit "4.13"]]
 

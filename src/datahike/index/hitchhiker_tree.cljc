@@ -14,7 +14,7 @@
   (case index-type
     :aevt [(.-a datom) (.-e datom) (.-v datom) (.-tx datom)]
     :avet [(.-a datom) (.-v datom) (.-e datom) (.-tx datom)]
-    [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
+    :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
 
 (defn old-key
   "Returns an old version of the 'new' key if it exists in 'map'"
@@ -78,17 +78,13 @@
 
 (defn -upsert [tree ^Datom datom index-type]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (new-UpsertOp
-                                            datom-as-vec
-                                            datom-as-vec)
+    (async/<?? (hmsg/enqueue tree [(assoc (new-UpsertOp datom-as-vec datom-as-vec)
                                      :tag (h/uuid))]))))
 
 (defn -temporal-upsert [tree ^Datom datom index-type]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [assoc (new-temporal-UpsertOp
-                                           datom-as-vec
-                                           datom-as-vec)
-                                   :tag (h/uuid)]))))
+    (async/<?? (hmsg/enqueue tree [(assoc (new-temporal-UpsertOp datom-as-vec datom-as-vec)
+                                     :tag (h/uuid))]))))
 
 (extend-protocol kc/IKeyCompare
   clojure.lang.PersistentVector

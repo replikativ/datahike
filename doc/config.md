@@ -34,12 +34,12 @@ That means passing a config as argument overwrites java system properties and us
 
 Please refer to the documentation of the [environ library](https://github.com/weavejester/environ) on how to use it. If you want to pass the config as environment variables or Java system properties you need to name them like following:
 
-properties              | envvar
---------------------------|--------------------------
-datahike.store.backend  | DATAHIKE_STORE_BACKEND
-datahike.store.username | DATAHIKE_STORE_USERNAME
-datahike.schema.on.read | DATAHIKE_SCHEMA_ON_READ
-datahike.keep.history    DATAHIKE_KEEP_HISTORY
+properties                  | envvar
+----------------------------|--------------------------
+datahike.store.backend      | DATAHIKE_STORE_BACKEND
+datahike.store.username     | DATAHIKE_STORE_USERNAME
+datahike.schema.flexibility | DATAHIKE_SCHEMA_FLEXIBILITY
+datahike.keep.history       | DATAHIKE_KEEP_HISTORY
 etc.
 
 *Do not use `:` in the keyword strings, it will be added automatically.*
@@ -55,7 +55,7 @@ you can simply use the defaults which creates an in-memory database with ID `"de
 (d/create-database)
 ```
 
-At the moment we support two different backends from within Datahike: [in-memory](#in-memory) and [file-based](#file-based). 
+At the moment we support two different backends from within Datahike: [in-memory](#in-memory) and [file-based](#file-based).
 [LevelDB](#leveldb) and [PostgreSQL](#postgresql) is supported via external libraries: [datahike-postgres](https://github.com/replikativ/datahike-postgres/) and [datahike-leveldb](https://github.com/replikativ/datahike-leveldb)
 
 ### in-memory
@@ -102,7 +102,7 @@ can set `:schema-flexibility` to `read`. You may add basic schema definitions li
 
 ```clojure
 (require '[datahike.api :as d])
-         
+
 (d/create-database {:schema-flexibility :read})
 ```
 

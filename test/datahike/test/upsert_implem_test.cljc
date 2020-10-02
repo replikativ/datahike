@@ -13,7 +13,7 @@
 
 (defn upsert-helper
   [t k]
-  (ha/<?? (msg/upsert t (ht/new-UpsertOp k k))))
+  (ha/<?? (msg/enqueue t [(ht/new-UpsertOp k k)])))
 
 
 (deftest upsert
