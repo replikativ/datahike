@@ -1160,7 +1160,7 @@
   (let [indexing?     (indexing? db (.-a datom))
         schema?       (ds/schema-attr? (.-a datom))
         keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom)))
-                         (not (ds/meta-attr? (.-a datom))))]
+                        (not= :db/txInstant (.-a datom)))]
     (cond-> db
       ;; Optimistic remove of the schema entry
       schema? (try
