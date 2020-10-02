@@ -1163,29 +1163,29 @@
 
 (defn- with-datom-upsert [db ^Datom datom]
   (validate-datom-upsert db datom)
-  (let [indexing?      (indexing? db (.-a datom))
-        schema?        (ds/schema-attr? (.-a datom))
-        keep-history?  (and (-keep-history? db) (not (no-history? db (.-a datom)))
+  (let [indexing?     (indexing? db (.-a datom))
+        schema?       (ds/schema-attr? (.-a datom))
+        keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom)))
                          (not (ds/meta-attr? (.-a datom))))]
     (cond-> db
       ;; Optimistic remove of the schema entry
-      schema?    (try
+      schema? (try
                    (-> db (remove-schema datom) update-rschema)
                    (catch clojure.lang.ExceptionInfo e
                      db))
 
-      keep-history?  (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt))
-      true       (update-in [:eavt] #(di/-upsert % datom :eavt))
+      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt))
+      true          (update-in [:eavt] #(di/-upsert % datom :eavt))
 
       keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt))
-      true       (update-in [:aevt] #(di/-upsert % datom :aevt))
+      true          (update-in [:aevt] #(di/-upsert % datom :aevt))
 
       (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet))
-      indexing?  (update-in [:avet] #(di/-insert % datom :avet))
+      indexing?                     (update-in [:avet] #(di/-insert % datom :avet))
 
-      true       (advance-max-eid (.-e datom))
-      true       (update :hash + (hash datom))
-      schema?    (-> (update-schema datom) update-rschema))))
+      true    (advance-max-eid (.-e datom))
+      true    (update :hash + (hash datom))
+      schema? (-> (update-schema datom) update-rschema))))
 
 
 (defn- transact-report-upsert [report datom]
