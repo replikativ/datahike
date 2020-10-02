@@ -21,3 +21,5 @@ release.clj
 .#*
 /.gitold/COMMIT_EDITMSG
 .cpcache
+lsp/
+/.calva
