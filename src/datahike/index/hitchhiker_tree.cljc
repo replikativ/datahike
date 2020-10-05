@@ -17,13 +17,17 @@
     :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
 
 (defn old-key
-  "Returns an old version of the given 'new' key if it exists in 'map'"
-  [map new]
+  "Returns the old version of the given 'new' key if it exists in 'old-keys'.
+  If there are multiple old versions, the one with the biggest transaction time is returned."
+  [old-keys new]
   (let [[a b _ _] new]
-    (when (seq map)
-      (when-let [[[oa ob oc od] _] (first (subseq map >= [a b nil nil]))]
-        (when (and (= (kc/-compare a oa) 0) (= (kc/-compare b ob) 0))
-          [oa ob oc od])))))
+    (when (seq old-keys)
+      (when-let [candidates (subseq old-keys >= [a b nil nil])]
+        (->> candidates
+          (map first)
+          (filter #(and (= a (first %)) (= b (second %))))
+          reverse
+          first)))))
 
 (defn remove-old
   "Removes old key from map using remove-fn function if new and old keys' first 2 entries match."
