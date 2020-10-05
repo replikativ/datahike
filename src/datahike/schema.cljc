@@ -134,27 +134,29 @@
 (defn explain-old-schema [schema]
   (s/explain-data ::old-schema schema))
 
-(defn meta-attr? [attr]
-  (s/valid? ::meta-attribute attr))
+(defn meta-attr? [a-ident]
+  (s/valid? ::meta-attribute a-ident))
 
-(defn schema-attr? [attr]
-  (s/valid? ::schema-attribute attr))
+(defn schema-attr? [a-ident]
+  (s/valid? ::schema-attribute a-ident))
 
-(defn value-valid? [ident [_ _ a v _] schema]
-  (println a ident "implschema" implicit-schema-spec)
-  (println "schema" schema)
-  (let [schema (if (or (meta-attr? ident) (schema-attr? ident))
+(defn value-valid? [a-ident v-ident schema]
+ (println "VALUEVALID" a-ident v-ident schema)
+  (let [schema (if (or (meta-attr? a-ident) (schema-attr? a-ident))
                  implicit-schema-spec
                  schema)
-        value-type (get-in schema [ident :db/valueType])]
-    (s/valid? value-type v)))
+        value-type (get-in schema [a-ident :db/valueType])]
+   (println "valtype" value-type)
+    (s/valid? value-type v-ident)))
 
-(defn instant? [^Datom datom schema]
-  (let [a (.-a datom)
-        schema (if (or (meta-attr? a) (schema-attr? a))
+(defn instant? [{:keys [config ref-ident-map] :as db} ^Datom datom schema]
+  (let [a-ident (if (:attribute-refs? config)
+                 (ref-ident-map (.-a datom))
+                 (.-a datom))
+        schema (if (or (meta-attr? a-ident) (schema-attr? a-ident))
                  implicit-schema-spec
                  schema)]
-    (= (get-in schema [a :db/valueType]) :db.type/instant)))
+    (= (get-in schema [a-ident :db/valueType]) :db.type/instant)))
 
 (defn schema-entity? [entity]
   (some #(contains? entity %) schema-keys))

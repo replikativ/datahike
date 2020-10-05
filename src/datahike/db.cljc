@@ -150,9 +150,20 @@
       (update :aevt -persistent!)
       (update :avet -persistent!)))
 
-(defn- search-indices [eavt aevt avet pattern temporal-db? db]
-  (let [[e a v tx added?] pattern
-        indexed? (indexing? db a)]
+(defn- search-indices [eavt aevt avet pattern temporal-db? {:keys [config ident-ref-map] :as db}]
+ (println "SEARCHINDICES")
+ (let [[e ident v tx added?] pattern
+        _ (when (not (or (keyword? ident) (string? ident) (nil? ident)))
+           (raise "A search pattern requires a keyword, string, or nil  as attribute, given: " ident {})) ;; TODO: raise or throw?
+        a (if (:attribute-refs? config)
+           (get ident-ref-map ident)
+           ident)
+       _ (println "pattern" pattern)
+       _ (println "ident a" ident a)
+       _ (println "ident-ref-map" ident-ref-map)
+        _ (println "(indexing? db a)" (indexing? db a) )
+        _ (println "(indexing? db ident)" (indexing? db ident) )
+        indexed? (indexing? db ident)]
     (if (and (not temporal-db?) (false? added?))
       '()
       (case-tree [e a (some? v) tx]
@@ -252,7 +263,7 @@
 
   (-index-range [db attr start end]
                 (when-not (indexing? db attr)
-                  (raise "Attribute" attr "should be marked as :db/index true" {}))
+                 (raise "Attribute" attr "should be marked as :db/index true" {}))
                 (validate-attr attr (list '-index-range 'db attr start end) db)
                 (-slice avet
                         (resolve-datom db nil attr start nil e0 tx0)
@@ -390,9 +401,9 @@
          rseq))))
 
 (defn temporal-index-range [^DB db current-db attr start end]
-  (when-not (indexing? db attr)
-    (raise "Attribute" attr "should be marked as :db/index true" {}))
-  (validate-attr attr (list '-index-range 'db attr start end) db)
+ (when-not (indexing? db attr)
+  (raise "Attribute" attr "should be marked as :db/index true" {}))
+ (validate-attr attr (list '-index-range 'db attr start end) db)
   (let [from (resolve-datom current-db nil attr start nil e0 tx0)
         to (resolve-datom current-db nil attr end nil emax txmax)]
     (concat
@@ -750,7 +761,7 @@
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
 
-(def ref-datoms
+(def ref-datoms                                             ;; maps enums as well
   (let [idents (reduce (fn [m {:keys [db/ident db/id]}]
                          (assoc m ident id))
                        {}
@@ -799,16 +810,24 @@
                                     c/non-ref-implicit-schema))
          rschema  (rschema complete-schema)
          ident-ref-map (if attribute-refs? (get-ident-ref-map complete-schema) {})
-         ref-ident-map (if attribute-refs? (reduce (fn [m [a ref]] (assoc m ref a)) {} ident-ref-map) {})
-         indexed  (:db/index complete-schema)               ;; TODO: still correct?
+         ref-ident-map (if attribute-refs? (clojure.set/map-invert ident-ref-map) {})
+         indexed (if attribute-refs?
+                  (set (map ident-ref-map (:db/index rschema)))
+                  (:db/index rschema))
+         _ (println rschema)
+         _ (println ident-ref-map)
+         _ (println ref-ident-map)
+         _ (println (:db/index rschema))
+         _ (println indexed)
          eavt (if attribute-refs?
                 (di/init-index index ref-datoms indexed :eavt)
                 (di/empty-index index :eavt))
          aevt     (if attribute-refs?
                     (di/init-index index ref-datoms indexed :aevt)
                     (di/empty-index index :aevt))
+         indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) ref-datoms)
          avet     (if attribute-refs?
-                    (di/init-index index ref-datoms indexed :aevt) ;; TODO: needs to be filtered???
+                    (di/init-index index indexed-datoms indexed :avet)
                     (di/empty-index index :avet))
          max-eid (if attribute-refs? ue0 e0)          ;; TODO: use functions??? get-max-eid (more robust)
          max-tx  (if attribute-refs? utx0 tx0)]       ;; TODO: use functions??? get-max-tx
@@ -850,13 +869,18 @@
                                   (if attribute-refs?
                                     c/ref-implicit-schema
                                     c/non-ref-implicit-schema))
+         rschema  (rschema complete-schema)
          ident-ref-map (if attribute-refs? (get-ident-ref-map schema) {})
-         ref-ident-map (if attribute-refs? (reduce (fn [m [a ref]] (assoc m ref a)) {}
-                                                   ident-ref-map) {})
-         indexed (:db/index rschema)
+         ref-ident-map (if attribute-refs? (clojure.set/map-invert ident-ref-map) {})
+         indexed (if attribute-refs?
+                  (set (map ident-ref-map (:db/index rschema)))
+                  (:db/index rschema))
          eavt (di/init-index index datoms indexed :eavt)
          aevt (di/init-index index datoms indexed :aevt)
-         avet (di/init-index index datoms indexed :avet)
+         indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) ref-datoms)
+         avet     (if attribute-refs?
+                   (di/init-index index indexed-datoms indexed :avet)
+                   (di/empty-index index :avet))
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)]
      (map->DB (merge {:schema        complete-schema
@@ -965,8 +989,9 @@
 (defrecord TxReport [db-before db-after tx-data tempids tx-meta])
 
 (defn #?@(:clj  [^Boolean is-attr?]
-          :cljs [^boolean is-attr?]) [db attr property]
-  (contains? (-attrs-by db property) attr))
+          :cljs [^boolean is-attr?]) [{:keys [ref-ident-map] :as db} attr property]
+ (let [ident (if (number? attr) (get ref-ident-map attr) attr)]
+  (contains? (-attrs-by db property) ident)))
 
 (defn #?@(:clj  [^Boolean multival?]
           :cljs [^boolean multival?]) [db attr]
@@ -1029,37 +1054,37 @@
 
 ;;;;;;;;;; Transacting
 (defn #?@(:clj  [^Boolean reverse-ref?]
-          :cljs [^boolean reverse-ref?]) [attr]
+          :cljs [^boolean reverse-ref?]) [ident]
   (cond
-    (keyword? attr)
-    (= \_ (nth (name attr) 0))
+    (keyword? ident)
+    (= \_ (nth (name ident) 0))
 
-    (string? attr)
-    (boolean (re-matches #"(?:([^/]+)/)?_([^/]+)" attr))
+    (string? ident)
+    (boolean (re-matches #"(?:([^/]+)/)?_([^/]+)" ident))
 
-    (number? attr)
+    (number? ident)
     false
 
     :else
-    (raise "Bad attribute type: " attr ", expected keyword or string"
-           {:error :transact/syntax, :attribute attr})))
+    (raise "Bad attribute type: " ident ", expected keyword or string"
+           {:error :transact/syntax, :attribute ident})))
 
-(defn reverse-ref [attr]
+(defn reverse-ref [ident]
   (cond
-    (keyword? attr)
-    (if (reverse-ref? attr)
-      (keyword (namespace attr) (subs (name attr) 1))
-      (keyword (namespace attr) (str "_" (name attr))))
+    (keyword? ident)
+    (if (reverse-ref? ident)
+      (keyword (namespace ident) (subs (name ident) 1))
+      (keyword (namespace ident) (str "_" (name ident))))
 
-    (string? attr)
-    (let [[_ ns name] (re-matches #"(?:([^/]+)/)?([^/]+)" attr)]
+    (string? ident)
+    (let [[_ ns name] (re-matches #"(?:([^/]+)/)?([^/]+)" ident)]
       (if (= \_ (nth name 0))
         (if ns (str ns "/" (subs name 1)) (subs name 1))
         (if ns (str ns "/_" name) (str "_" name))))
 
     :else
-    (raise "Bad attribute type: " attr ", expected keyword or string"
-           {:error :transact/syntax, :attribute attr})))
+    (raise "Bad attribute type: " ident ", expected keyword or string"
+           {:error :transact/syntax, :attribute ident})))
 
 (defn validate-datom [db ^Datom datom]
   (when (and (datom-added datom)
@@ -1077,24 +1102,30 @@
 
 (defn- validate-attr [attr at {:keys [config] :as db}]
   (let [{:keys [schema-flexibility]} config]
-    (if (= :read schema-flexibility)
+    (when (= :read schema-flexibility)
       (when-not (or (keyword? attr) (string? attr))
         (raise "Bad entity attribute " attr " at " at ", expected keyword or string"
                {:error :transact/syntax, :attribute attr, :context at})))))
 
 (defn- validate-val [v [_ _ a _ _ :as at] {:keys [config schema ref-ident-map] :as db}]
-  (let [ident (if (number? a) (ref-ident-map a) a)]                ;; TODO: remove dirty fix
+  (let [{:keys [attribute-refs? schema-flexibility]} config
+        a-ident (if attribute-refs? (ref-ident-map a) a)
+        v-ident (if (and (contains? system-entities a)
+                         (not (nil? (ref-ident-map v))))
+                 (ref-ident-map v)
+                 v)]
+   (println "VALVAL" v v-ident a a-ident)
     (when (nil? v)
       (raise "Cannot store nil as a value at " at
-             {:error :transact/syntax, :value v, :context at}))
-    (when (= :write (:schema-flexibility config))
-      (let [schema-spec (if (or (ds/meta-attr? ident) (ds/schema-attr? ident))
+             {:error :transact/syntax, :value v-ident, :context at}))
+    (when (= :write schema-flexibility)
+      (let [schema-spec (if (or (ds/meta-attr? a-ident) (ds/schema-attr? a-ident))
                           ds/implicit-schema-spec
                           schema)]
-        (when-not (ds/value-valid? ident at schema)
-          (raise "Bad entity value " v " at " at ", value does not match schema definition. Must be conform to: "
-                 (ds/describe-type (get-in schema-spec [ident :db/valueType]))
-                 {:error :transact/schema :value v :attribute ident :schema (get-in db [:schema a])}))))))
+        (when-not (ds/value-valid? a-ident v-ident schema)
+          (raise "Bad entity value " v-ident " at " at ", value does not match schema definition. Must be conform to: "
+                 (ds/describe-type (get-in schema-spec [a-ident :db/valueType]))
+                 {:error :transact/schema :value v-ident :attribute a-ident :schema (get-in db [:schema a-ident])}))))))
 
 (defn- current-tx [report]
   (inc (get-in report [:db-before :max-tx])))
@@ -1137,29 +1168,35 @@
      (update-in [:db-after] advance-max-eid eid))))
 
 (defn update-schema [db ^Datom datom]
+ (println "UPDATESCHEMA" datom)
   (let [{:keys [schema config ref-ident-map]} db
         attribute-refs? (:attribute-refs? config)
-        e (.-e datom)
-        a (if attribute-refs?
-            (ref-ident-map (.-a datom))
-            (.-a datom))
-        v               (.-v datom)]
+        e     (.-e datom)
+        a (.-a datom)
+        v (.-v datom)
+        a-ident (if attribute-refs? (ref-ident-map a) a)
+        v-ident     (if (and (contains? system-entities a)
+                             (not (nil? (ref-ident-map v))))
+                     (ref-ident-map v)
+                     v)]
+   (println "e a v" e a v)
+   (println "e a-ident v-ident attr-refs?" e a-ident v-ident attribute-refs?)
     (when (and attribute-refs? (contains? system-entities e))
       (raise (str "System schema entity cannot be changed")
              {:error :transact/schema :entity-id e}))
-    (if (= a :db/ident)
-      (if (schema v)
-        (raise (str "Schema with attribute " v " already exists")
-               {:error :transact/schema :attribute v})
-        (-> (assoc-in db [:schema v] (merge (or (schema e) {}) (hash-map a v)))
-            (assoc-in [:schema e] v)                        ;; TODO: delete or remove ref-ident-map?
-            (assoc-in [:ident-ref-map v] e)
-            (assoc-in [:ref-ident-map e] v)))
+    (if (= a-ident :db/ident)
+      (if (schema v-ident)
+        (raise (str "Schema with attribute " v-ident " already exists")
+               {:error :transact/schema :attribute v-ident})
+        (-> (assoc-in db [:schema v-ident] (merge (or (schema e) {}) (hash-map a-ident v-ident)))
+            (assoc-in [:schema e] v-ident)                        ;; TODO: delete or remove ref-ident-map?
+            (assoc-in [:ident-ref-map v-ident] e)
+            (assoc-in [:ref-ident-map e] v-ident)))
       (if-let [schema-entry (schema e)]
         (if (schema schema-entry)
-          (update-in db [:schema schema-entry] #(assoc % a v))
-          (update-in db [:schema e] #(assoc % a v)))
-        (assoc-in db [:schema e] (hash-map a v))))))
+          (update-in db [:schema schema-entry] #(assoc % a-ident v-ident))
+          (update-in db [:schema e] #(assoc % a-ident v-ident)))
+        (assoc-in db [:schema e] (hash-map a-ident v-ident))))))
 
 (defn update-rschema [db]
   (assoc db :rschema (rschema (:schema db))))
@@ -1168,37 +1205,44 @@
   (let [{:keys [schema config ref-ident-map]} db
         attribute-refs? (:attribute-refs? config)
         e (.-e datom)
-        a (if attribute-refs?
-            (ref-ident-map (.-a datom))
-            (.-a datom))
-        v (.-v datom)]
+        a (.-a datom)
+        v (.-v datom)
+        a-ident (if attribute-refs? (ref-ident-map a) a)
+        v-ident     (if (and (contains? system-entities a)
+                             (not (nil? (ref-ident-map v))))
+                     (ref-ident-map v)
+                     v)]
     (when (and attribute-refs? (contains? system-entities e))
       (raise (str "System schema entity cannot be changed")
              {:error :retract/schema :entity-id e}))
-    (if (= a :db/ident)
-      (if-not (schema v)
-        (raise (str "Schema with attribute " v " does not exist")
-               {:error :retract/schema :attribute v})
-        (-> (assoc-in db [:schema e] (dissoc (schema v) a))
-            (update-in [:schema] #(dissoc % v))))
+    (if (= a-ident :db/ident)
+      (if-not (schema v-ident)
+        (raise (str "Schema with attribute " v-ident " does not exist")
+               {:error :retract/schema :attribute v-ident})
+        (-> (assoc-in db [:schema e] (dissoc (schema v-ident) a-ident))
+            (update-in [:schema] #(dissoc % v-ident))
+            (update-in [:ident-ref-map] #(dissoc % e))      ;; TODO: correct?
+            (update-in [:ref-ident-map] #(dissoc % v-ident))))
       (if-let [schema-entry (schema e)]
         (if (schema schema-entry)
-          (update-in db [:schema schema-entry] #(dissoc % a))
-          (update-in db [:schema e] #(dissoc % a v)))
+          (update-in db [:schema schema-entry] #(dissoc % a-ident))
+          (update-in db [:schema e] #(dissoc % a-ident v-ident)))
         (raise (str "Schema with entity id " e " does not exist")
-               {:error :retract/schema :entity-id e :attribute a :value e})))))
+               {:error :retract/schema :entity-id e :attribute a-ident :value e})))))
 
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
 
 (defn- with-datom [db ^Datom datom]
   (validate-datom db datom)
+ (println "WITHDATOM" datom)
   (let [indexing? (indexing? db (.-a datom))
+        _ (println "indexing?" indexing?)
         {:keys [config ref-ident-map]} db
-        ident (if (:attribute-refs? config)
+        a-ident (if (:attribute-refs? config)
                 (ref-ident-map (.-a datom))
                 (.-a datom))
-        schema? (ds/schema-attr? ident)
+        schema? (ds/schema-attr? a-ident)
         keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom))))]
     (if (datom-added datom)
      (cond-> db
@@ -1209,7 +1253,7 @@
              true (update :hash + (hash datom))
              schema? (-> (update-schema datom)
                          update-rschema))
-      (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
+      (if-some [removing ^Datom (first (-search db [(.-e datom) a-ident (.-v datom)]))]
         (cond-> db
           true (update-in [:eavt] #(di/-remove % removing :eavt))
           true (update-in [:aevt] #(di/-remove % removing :aevt))
@@ -1224,11 +1268,14 @@
           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))
         db))))
 
-(defn- with-temporal-datom [db ^Datom datom]
-  (let [indexing? (indexing? db (.-a datom))
-        schema? (ds/schema-attr? (.-a datom))
-        current-datom ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))
-        history-datom ^Datom (first (search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
+(defn- with-temporal-datom [{:keys [ref-ident-map config] :as db} ^Datom datom]
+  (let [a-ident (if (:attribute-refs? config)
+               (ref-ident-map (.-a datom))
+               (.-a datom))
+        indexing? (indexing? db (.-a datom))
+        schema? (ds/schema-attr? a-ident)
+        current-datom ^Datom (first (-search db [(.-e datom) a-ident (.-v datom)]))
+        history-datom ^Datom (first (search-temporal-indices db [(.-e datom) a-ident (.-v datom) (.-tx datom)]))
         current? (not (nil? current-datom))
         history? (not (nil? history-datom))]
     (cond-> db
@@ -1261,19 +1308,23 @@
               :assertion acc}))))
 
 (defn- upsert-eid [{:keys [ident-ref-map config] :as db} entity]
+ (println "UPSERTEID" entity)
   (let [attribute-refs? (:attribute-refs? config)]
-    (when-let [idents (not-empty (-attrs-by db :db.unique/identity))]
-      (let [attributes (if attribute-refs? (set (map ident-ref-map idents))
-                           idents)]
+    (when-let [unique-idents (not-empty (-attrs-by db :db.unique/identity))]
+      (let [unique-attribs (if attribute-refs? (set (map ident-ref-map unique-idents))
+                           unique-idents)]
+       (println "attributes" unique-attribs)
         (->>
          (reduce-kv
           (fn [acc ident v]                                     ;; acc = [e a v]
             (let [a (if attribute-refs?
-                      (ident ident-ref-map)
+                      (get ident-ref-map ident)
                       ident)]
-              (if (contains? attributes a)
+             (println "attr" a ident)
+              (if (contains? unique-attribs a)
                 (do
                   (validate-val v [nil nil a v nil] db)
+                  (println "a v e" a v (:e (first (-datoms db :avet [a v]))))
                   (if-some [e (:e (first (-datoms db :avet [a v])))]
                     (cond
                       (nil? acc) [e a v]                              ;; first upsert
@@ -1295,11 +1346,11 @@
 
 
 ;; multivals/reverse can be specified as coll or as a single value, trying to guess
-(defn- maybe-wrap-multival [db a vs]
+(defn- maybe-wrap-multival [db ident vs]
   (cond
     ;; not a multival context
-    (not (or (reverse-ref? a)
-             (multival? db a)))
+    (not (or (reverse-ref? ident)
+             (multival? db ident)))
     [vs]
 
     ;; not a collection at all, so definitely a single value
@@ -1315,39 +1366,46 @@
     :else vs))
 
 (defn- explode [db entity]
+ (println "EXPLODE" entity )
   (let [eid (:db/id entity)
         {:keys [config ident-ref-map]} db
         {:keys [attribute-refs?]} config]
-    (for [[a vs] entity
-          :when (not= a :db/id)
-          :let [_ (validate-attr a {:db/id eid, a vs} db)
-                reverse? (reverse-ref? a)
-                straight-a (if reverse? (reverse-ref a) a)
-                _ (when (and reverse? (not (ref? db straight-a)))
-                    (raise "Bad attribute " a ": reverse attribute name requires {:db/valueType :db.type/ref} in schema"
-                           {:error :transact/syntax, :attribute a, :context {:db/id eid, a vs}}))]
-          v (maybe-wrap-multival db a vs)]
-      (do
-        (if (and (ref? db straight-a) (map? v))               ;; another entity specified as nested map
-          (assoc v (reverse-ref a) eid)
-          (let [a-resolved (if attribute-refs? (ident-ref-map straight-a) straight-a)]
-            (if reverse?
-              [:db/add v a-resolved eid]
-              [:db/add eid a-resolved v])))))))
+    (for [[a-ident vs] entity
+          :when (not= a-ident :db/id)
+          :let [_ (validate-attr a-ident {:db/id eid, a-ident vs} db)
+                reverse? (reverse-ref? a-ident)
+                straight-ident (if reverse? (reverse-ref a-ident) a-ident)
+                _ (when (and reverse? (not (ref? db straight-ident)))
+                    (raise "Bad attribute " a-ident ": reverse attribute name requires {:db/valueType :db.type/ref} in schema"
+                           {:error :transact/syntax, :attribute a-ident, :context {:db/id eid, a-ident vs}}))
+                a (if attribute-refs? (ident-ref-map straight-ident) straight-ident)]
+          v (maybe-wrap-multival db a-ident vs) ]
+     (do (println "AAAAA")
+         (if (and (ref? db straight-ident) (map? v))        ;; another entity specified as nested map
+          (assoc v (reverse-ref a-ident) eid)
+          (let [v-resolved (if (nil? (ident-ref-map v))
+                            v
+                            (ident-ref-map v))]
+           (println "v" v "v-resolved" v-resolved)
+           (if reverse?
+            [:db/add v-resolved a eid]
+            [:db/add eid a v-resolved])))))))
 
-(defn- transact-add [{{{:keys [keep-history?]} :config :as db-after} :db-after :as report} [_ e a v tx :as ent]]
+(defn- transact-add [{{{:keys [keep-history? attribute-refs?]} :config :as db-after} :db-after :as report} [_ e a v tx :as ent]]
   (validate-attr a ent db-after)
   (validate-val v ent db-after)
+ (println "TXADD " ent)
   (let [tx (or tx (current-tx report))
         db (:db-after report)
         e (entid-strict db e)
-        v (if (ref? db a) (entid-strict db v) v)
+        ident (if attribute-refs? (get-in db [:ref-ident-map a]) a)
+        v (if (ref? db ident) (entid-strict db v) v)
         new-datom (datom e a v tx)]
     (if (multival? db a)
-      (if (empty? (-search db [e a v]))
+      (if (empty? (-search db [e ident v]))
         (transact-report report new-datom)
         report)
-      (if-some [^Datom old-datom (first (-search db [e a]))]
+      (if-some [^Datom old-datom (first (-search db [e ident]))]
         (if (= (.-v old-datom) v)
           report
           (-> report
@@ -1429,7 +1487,8 @@
                     initial-es)]
       (let [[entity & entities] es
             {:keys [tempids db-after]} report
-            db db-after]
+            db db-after
+            _ (println "ENTITY" entity)]
         (cond
           (empty? es)
           (-> report
@@ -1516,7 +1575,7 @@
 
           (sequential? entity)
           (let [[op e a v] entity]
-            (when (:attribute-refs? config)
+            (when attribute-refs?
               (when (not (number? a))
                 (raise "Attributes must be given as references. Currently given: " a
                        {:error :transact/references, :attribute a}))
@@ -1683,8 +1742,11 @@
          es initial-es
          migration-state (or (get-in initial-report [:db-before :migration]) {})]
     (let [[entity & entities] es
-          db (:db-after report)
+          {:keys [config ref-ident-map] :as db} (:db-after report)
           [e a v t op] entity
+          a-ident (if (:attribute-refs? config)
+                   (ref-ident-map a)
+                   a)
           max-eid (next-eid db)
           max-tid (inc (get-in report [:db-after :max-tx]))]
       (cond
@@ -1696,11 +1758,11 @@
                                                  migration-state))
             (update :db-after persistent!))
 
-        (= :db.install/attribute a)
+        (= :db.install/attribute a-ident)
         (recur report entities migration-state)
 
         ;; meta entity
-        (ds/meta-attr? a)
+        (ds/meta-attr? a-ident)
         (let [new-datom (dd/datom max-tid a v max-tid op)
               new-e (.-e new-datom)]
           (recur (-> (transact-report report new-datom)
