@@ -17,7 +17,7 @@
     :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
 
 (defn old-key
-  "Returns an old version of the 'new' key if it exists in 'map'"
+  "Returns an old version of the given 'new' key if it exists in 'map'"
   [map new]
   (let [[a b _ _] new]
     (when (seq map)
@@ -44,11 +44,13 @@
       (-> (or (remove-old children key (partial tree/delete tree)) tree)
         (tree/insert key value)))))
 
-
 (defn old-retracted [map key]
+  "Returns a new datom (to insert in the tree and) to signal that the old datom now that it is retracted."
   (when-let [old (old-key map key)]
-    (let [[a b c ot] old]
-      [a b c (- ot)])))
+    (let [[a b c _ ] old
+          [_ _ _ nt] key]
+      ;; - says that it is retracted and nt is the current transaction time.
+      [a b c (- nt)])))
 
 (defrecord temporal-UpsertOp [key value]
   op/IOperation
