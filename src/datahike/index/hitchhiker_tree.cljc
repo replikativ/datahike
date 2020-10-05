@@ -30,16 +30,16 @@
           first)))))
 
 (defn remove-old
-  "Removes old key from map using remove-fn function if new and old keys' first 2 entries match."
-  [map new remove-fn]
-  (when-let [old (old-key map new)]
+  "Removes old key from the 'kvs' map using 'remove-fn' function if 'new' and 'old' keys' first 2 entries match."
+  [kvs new remove-fn]
+  (when-let [old (old-key kvs new)]
     (remove-fn old)))
 
 (defrecord UpsertOp [key value]
   op/IOperation
   (-affects-key [_] key)
-  (-apply-op-to-coll [_ map]
-    (-> (or (remove-old map key (partial dissoc map)) map)
+  (-apply-op-to-coll [_ kvs]
+    (-> (or (remove-old kvs key (partial dissoc kvs)) kvs)
       (assoc key value)))
   (-apply-op-to-tree [_ tree]
     (let [children  (cond
@@ -48,9 +48,10 @@
       (-> (or (remove-old children key (partial tree/delete tree)) tree)
         (tree/insert key value)))))
 
-(defn old-retracted [map key]
+(defn old-retracted
   "Returns a new datom (to insert in the tree and) to signal that the old datom now that it is retracted."
-  (when-let [old (old-key map key)]
+  [kvs key]
+  (when-let [old (old-key kvs key)]
     (let [[a b c _ ] old
           [_ _ _ nt] key]
       ;; - says that it is retracted and nt is the current transaction time.
@@ -59,11 +60,11 @@
 (defrecord temporal-UpsertOp [key value]
   op/IOperation
   (-affects-key [_] key)
-  (-apply-op-to-coll [_ map]
-    (let [old-retracted  (old-retracted map key)]
+  (-apply-op-to-coll [_ kvs]
+    (let [old-retracted  (old-retracted kvs key)]
       (-> (if old-retracted
-            (assoc map old-retracted old-retracted)
-            map)
+            (assoc kvs old-retracted old-retracted)
+            kvs)
         (assoc key value))))
   (-apply-op-to-tree [_ tree]
     (let [children  (cond
