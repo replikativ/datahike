@@ -331,8 +331,8 @@
   (-max-tx [db] (-max-tx (.-unfiltered-db db)))
   (-max-eid [db] (-max-eid (.-unfiltered-db db)))
   (-config [db] (-config (.-unfiltered-db db)))
-  (-ref-ident-map [db] (.-ref-ident-map (.-unfiltered-db db)))
-  (-ident-ref-map [db] (.-ident-ref-map (.-unfiltered-db db)))
+  (-ref-ident-map [db] (-ref-ident-map (.-unfiltered-db db)))
+  (-ident-ref-map [db] (-ident-ref-map (.-unfiltered-db db)))
 
   ISearch
   (-search [db pattern]
@@ -457,8 +457,8 @@
   (-max-tx [db] (-max-tx (.-origin-db db)))
   (-max-eid [db] (-max-eid (.-origin-db db)))
   (-config [db] (-config (.-origin-db db)))
-  (-ref-ident-map [db] (.-ref-ident-map (.-origin-db db)))
-  (-ident-ref-map [db] (.-ident-ref-map (.-origin-db db)))
+  (-ref-ident-map [db] (-ref-ident-map (.-origin-db db)))
+  (-ident-ref-map [db] (-ident-ref-map (.-origin-db db)))
 
   IHistory
   (-origin [db] (.-origin-db db))
@@ -891,12 +891,14 @@
          indexed (if attribute-refs?
                    (set (map ident-ref-map (:db/index rschema)))
                    (:db/index rschema))
+         indexed-system-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) ref-datoms)
+         indexed-user-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) datoms)
+         indexed-datoms (if attribute-refs?
+                          (concat indexed-system-datoms indexed-user-datoms)
+                          indexed-user-datoms)
+         avet (di/init-index index indexed-datoms indexed :avet)
          eavt (di/init-index index datoms indexed :eavt)
          aevt (di/init-index index datoms indexed :aevt)
-         indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) ref-datoms)
-         avet     (if attribute-refs?
-                    (di/init-index index indexed-datoms indexed :avet)
-                    (di/empty-index index :avet))
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)]
      (map->DB (merge {:schema        complete-schema
@@ -1024,7 +1026,7 @@
 
 (defn #?@(:clj  [^Boolean is-attr?]
           :cljs [^boolean is-attr?]) [db attr property]
-  (let [ident (if (number? attr) ((.-ref-ident-map db) attr) attr)]
+  (let [ident (if (number? attr) ((-ref-ident-map db) attr) attr)]
     (contains? (-attrs-by db property) ident)))
 
 (defn #?@(:clj  [^Boolean multival?]
