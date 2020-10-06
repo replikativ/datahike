@@ -3,33 +3,37 @@
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
    [datahike.constants :as const]
-   [datahike.api :as d])
+   [datahike.api :as d]
+   [datahike.test.utils :refer [setup-db]])
   (:import [java.util Date]))
 
-(def schema-tx [{:db/ident       :name
-                 :db/valueType   :db.type/string
-                 :db/unique      :db.unique/identity
-                 :db/index       true
-                 :db/cardinality :db.cardinality/one}
-                {:db/ident       :age
-                 :db/valueType   :db.type/long
-                 :db/cardinality :db.cardinality/one}
-                {:name "Alice"
-                 :age  25}
-                {:name "Bob"
-                 :age  35}])
+(set! *print-namespace-maps* false)
 
-(defn create-test-db [uri]
-  (d/create-database uri :initial-tx schema-tx))
+(def schema [{:db/ident       :name
+              :db/valueType   :db.type/string
+              :db/unique      :db.unique/identity
+              :db/index       true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident       :age
+              :db/valueType   :db.type/long
+              :db/cardinality :db.cardinality/one}
+             {:name "Alice"
+              :age  25}
+             {:name "Bob"
+              :age  35}])
+
+(def cfg-template {:store {:backend :mem
+                           :id "time-variance"}
+                   :keep-history? true
+                   :schema-flexibility :write
+                   :initial-tx schema})
 
 (defn now []
   (Date.))
 
 (deftest test-base-history
-  (let [uri "datahike:mem://test-base-history"
-        _ (d/delete-database uri)
-        _ (create-test-db uri)
-        conn (d/connect uri)]
+  (let [cfg (assoc-in cfg-template [:store :id] "test-base-history")
+        conn (setup-db cfg)]
 
     (testing "Initial data"
       (is (= #{["Alice" 25] ["Bob" 35]}
@@ -65,10 +69,8 @@
                   [:name "Alice"]))))))
 
 (deftest test-historical-queries
-  (let [uri "datahike:mem://test-historical-queries"
-        _ (d/delete-database uri)
-        _ (create-test-db uri)
-        conn (d/connect uri)]
+  (let [cfg (assoc-in cfg-template [:store :id] "test-historical-queries")
+        conn (setup-db cfg)]
 
     (testing "get all values before specific time"
       (let [_ (d/transact conn [{:db/id [:name "Alice"] :age 30}])
@@ -96,29 +98,37 @@
         (is (= #{[25] [30]}
                (d/q query history-db [:name "Alice"] date)))
         (is (= #{[25] [30]}
-               (d/q query-with-< history-db [:name "Alice"] date)))))))
+               (d/q query-with-< history-db [:name "Alice"] date)))))
+    (testing "print DB"
+      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:max-tx 536870915 :max-eid 4}}"
+             (pr-str (d/history @conn)))))))
 
 (deftest test-as-of-db
-  (let [uri "datahike:mem://test-historical-queries"
-        _ (d/delete-database uri)
-        _ (create-test-db uri)
-        conn (d/connect uri)
+  (let [cfg (assoc-in cfg-template [:store :id] "test-as-of-db")
+        conn (setup-db cfg)
         first-date (now)
+        tx-id 536870914
         query '[:find ?a :in $ ?e :where [?e :age ?a ?tx]]]
     (testing "get values at specific time"
       (is (= #{[25]}
              (d/q query (d/as-of @conn first-date) [:name "Alice"]))))
     (testing "use transaction ID"
-      (let [tx-id 536870914]
-        (is (= #{[25]}
-               (d/q query (d/as-of @conn tx-id) [:name "Alice"])))))))
+      (is (= #{[25]}
+             (d/q query (d/as-of @conn tx-id) [:name "Alice"]))))
+    (testing "print DB"
+      (let [as-of-str (pr-str (d/as-of @conn tx-id))
+            origin-str (pr-str (datahike.db/-origin (d/as-of @conn tx-id)))]
+        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:max-tx 536870913 :max-eid 4} :time-point 536870914}"
+               as-of-str))
+        (is (= "#datahike/DB {:max-tx 536870913 :max-eid 4}"
+               origin-str))
+        (is (not= as-of-str origin-str))))))
 
 (deftest test-since-db
-  (let [uri "datahike:mem://test-historical-queries"
-        _ (d/delete-database uri)
-        _ (create-test-db uri)
-        conn (d/connect uri)
+  (let [cfg (assoc-in cfg-template [:store :id] "test-since-db")
+        conn (setup-db cfg)
         first-date (now)
+        tx-id 536870914
         query '[:find ?a :where [?e :age ?a]]]
     (testing "empty after first insertion"
       (is (= #{}
@@ -127,22 +137,28 @@
       (let [new-age 30
             _ (d/transact conn [{:db/id [:name "Alice"] :age new-age}])]
         (is (= #{[new-age]}
-               (d/q query (d/since @conn first-date))))))))
+               (d/q query (d/since @conn first-date))))
+        (is (= #{[new-age]}
+               (d/q query (d/since @conn tx-id))))))
+    (testing "print DB"
+      (is (= "#datahike/SinceDB {:origin #datahike/DB {:max-tx 536870914 :max-eid 4} :time-point 536870914}"
+             (pr-str (d/since @conn tx-id)))))))
 
 (deftest test-no-history
-  (let [uri "datahike:mem://test-no-history"
-        _ (d/delete-database uri)
-        _ (d/create-database uri :initial-tx [{:db/ident :name
-                                               :db/cardinality :db.cardinality/one
-                                               :db/valueType :db.type/string
-                                               :db/unique :db.unique/identity}
-                                              {:db/ident :age
-                                               :db/cardinality :db.cardinality/one
-                                               :db/valueType :db.type/long
-                                               :db/noHistory true}
-                                              {:name "Alice" :age 25}
-                                              {:name "Bob" :age 35}])
-        conn (d/connect uri)
+  (let [initial-tx [{:db/ident :name
+                     :db/cardinality :db.cardinality/one
+                     :db/valueType :db.type/string
+                     :db/unique :db.unique/identity}
+                    {:db/ident :age
+                     :db/cardinality :db.cardinality/one
+                     :db/valueType :db.type/long
+                     :db/noHistory true}
+                    {:name "Alice" :age 25}
+                    {:name "Bob" :age 35}]
+        cfg (-> cfg-template
+                (assoc-in [:store :id] "test-no-history")
+                (assoc :initial-tx initial-tx))
+        conn (setup-db cfg)
         query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
         first-date (now)]
     (testing "all names and ages are present in history"
@@ -161,10 +177,8 @@
                      :id "test-upsert-history"}
              :keep-history? true
              :schema-flexibility :read
-             :initial-tx schema-tx}
-        _ (do (d/delete-database cfg)
-              (d/create-database cfg))
-        conn (d/connect cfg)
+             :initial-tx schema}
+        conn (setup-db cfg)
         query '[:find ?a ?t ?op
                 :where
                 [?e :name "Alice"]

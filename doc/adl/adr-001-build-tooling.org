@@ -1,0 +1,54 @@
+#+TITLE: Reconsider build and dependency resolution tooling
+#+DATE: 2020-09-22
+
+* Status
+
+Accepted
+
+* Context
+
+Embracing Clojurescript support for the replikativ libraries again also means
+that there are some changes to the used tooling for dependency resolution and
+compilation. Shadow CLJS is the current default tool for compiling ClojureScript
+projects. Shadow CLJS supports Leiningen and Clojure CLI Tools.
+
+Leiningen was for a long time the default dependency resolution and build tool
+for most people in the Clojure community and still has widespread adoption. All
+the replikativ libraries are using it and it worked fine for a long time. But
+Clojure CLI Tools see a lot of adoption throughout the community and people see
+it as the successor to Leiningen.
+
+The Clojurescript build process took some work from the community to figure out
+a simple way. For new projects Clojure CLI Tools and Shadow CLJS are probably
+the defaults for new projects in that space. replikativ has a legacy in using
+Leiningen. Shadow CLJS supports dependency resolution from both tools so
+dependencies only need to be specified once.
+
+** Advantages of Clojure CLI tools:
+- simpler
+- faster start (leiningen starts a JVM for itself as well)
+- community is gravitating towards it
+- commit-shas for dependency resolution
+
+** Advantages of Leiningen:
+- not alpha
+- uberjar built in
+- deploy built in
+- adoption in replikativ already there
+- no pom.xml needed
+- diversity of plugins available
+
+It seems that there is no obstacle in our way to switch to Clojure CLI tools
+but there might be some unknowns on our way. We could stick with Leiningen
+as well and avoid some work that is not yet needed.
+
+* Decision
+  
+The decision is to use Clojure CLI tools in the future and to adopt it step by
+step. First is the hasch library and the other Clojurescript-using libraries
+like konserve, superv.async and incognito.
+
+* Consequences
+
+Harmonize the build tools and CI across all the replikativ libraries. That means
+there will be built another CircleCI Orb and a change to all the libs is needed.

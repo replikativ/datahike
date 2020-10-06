@@ -89,6 +89,12 @@
                                    :db/retracted {:db/valueType :db.type/long
                                                   :db/unique :db.unique/identity
                                                   :db/cardinality :db.cardinality/many}
+                                   :db/ensure {:db/valueType :db.type/keyword
+                                               :db/cardinality :db.cardinality/one}
+                                   :db.entity/attrs {:db/valueType :db.type/keyword
+                                                     :db/cardinality :db.cardinality/many}
+                                   :db.entity/preds {:db/valueType :db.type/symbol
+                                                     :db/cardinality :db.cardinality/many}
                                    :db/doc {:db/valueType :db.type/string
                                             :db/index true
                                             :db/cardinality :db.cardinality/one}
@@ -150,7 +156,7 @@
  (s/valid? ::entity-spec-attribute a-ident))
 
 (defn value-valid? [a-ident v-ident schema]
-  (let [schema (if (or (meta-attr? a-ident) (schema-attr? a-ident))
+  (let [schema (if (or (meta-attr? a-ident) (schema-attr? a-ident) (entity-spec-attr? a-ident))
                  implicit-schema-spec
                  schema)
         value-type (get-in schema [a-ident :db/valueType])]

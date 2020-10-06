@@ -1,3 +1,17 @@
+# 0.3.2
+- added entity specs (#197)
+- fixed hash computation (#190)
+- improved printer (#202)
+- fixed history upsert (#219)
+- added database name to environ 
+- added circle ci orbs for ci/cd across all libraries (#167)
+- fixed reverse schema update (#199)
+- added automatic releases
+- added benchmark utility
+- extended time variance test 
+- updated dependencies
+- adjusted documentation
+
 # 0.3.1
 - support returning maps (#149, #186)
 - support on-write schema for empty-db (#178)
