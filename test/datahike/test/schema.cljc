@@ -1,12 +1,11 @@
 (ns datahike.test.schema
-  (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
-      :clj  [clojure.test :as t :refer [is deftest testing]])
-   [datahike.api :as d]
-   [datahike.schema :as ds]
-   [datahike.test.core :as tdc]
-   [datahike.db :as dd])
-  (:import [java.lang System]))
+ (:require
+  #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
+     :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+  [datahike.api :as d]
+  [datahike.schema :as ds]
+  [datahike.db :as dd])
+ (:import [java.lang System]))
 
 #?(:clj
    (defn random-uuid []
@@ -37,7 +36,7 @@
 
     (testing "transact without schema present"
       (is (thrown-msg?
-           (str "Bad entity attribute :name at {:db/id " tdc/e1 ", :name \"Alice\"}, not defined in current schema")
+           "Bad entity attribute :name at {:db/id 1, :name \"Alice\"}, not defined in current schema"
            (d/transact conn tx))))
 
     (testing "transacting new schema"
@@ -48,7 +47,7 @@
               :name     #:db{:ident       :name
                              :valueType   :db.type/string
                              :cardinality :db.cardinality/one}
-              tdc/e1         :name}
+              1         :name}
              (dd/-schema (d/db conn)))))
 
     (testing "transacting data with schema present"
@@ -58,12 +57,12 @@
 
     (testing "insert new data with wrong data type"
       (is (thrown-msg?
-           (str "Bad entity value 42 at [:db/add " tdc/e3 " :name 42], value does not match schema definition. Must be conform to: string?")
+           "Bad entity value 42 at [:db/add 3 :name 42], value does not match schema definition. Must be conform to: string?"
            (d/transact conn [{:name 42}]))))
 
     (testing "insert new data with additional attributes not in schema"
       (is (thrown-msg?
-           (str "Bad entity attribute :age at {:db/id " tdc/e3 ", :age 42}, not defined in current schema")
+           "Bad entity attribute :age at {:db/id 3, :age 42}, not defined in current schema"
            (d/transact conn [{:name "Bob" :age 42}]))))
 
     (testing "insert incomplete schema :db/valueType"
@@ -83,7 +82,7 @@
 
     (testing "insert schema with incorrect value type"
       (is (thrown-msg?
-           (str "Bad entity value :string at [:db/add " tdc/e3 " :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/number :db.type/instant :db.type/boolean :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/symbol}")
+           "Bad entity value :string at [:db/add 3 :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/number :db.type/instant :db.type/boolean :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/symbol}"
            (d/transact conn [{:db/ident       :phone
                               :db/cardinality :db.cardinality/one
                               :db/valueType   :string}]))))))
@@ -100,7 +99,7 @@
                 :name     #:db{:ident       :name
                                :valueType   :db.type/string
                                :cardinality :db.cardinality/one}
-                tdc/e1         :name}
+                1         :name}
                (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q db)))))
 
@@ -117,11 +116,11 @@
                 :name     #:db{:ident       :name
                                :valueType   :db.type/string
                                :cardinality :db.cardinality/one}
-                tdc/e1         :name
+                1         :name
                 :age      #:db{:ident       :age
                                :valueType   :db.type/long
                                :cardinality :db.cardinality/one}
-                tdc/e3         :age}
+                3         :age}
                (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one] [:age :db.type/long :db.cardinality/one]}
                (d/q find-schema-q db)))))
@@ -138,11 +137,11 @@
                 :name     #:db{:ident       :name
                                :valueType   :db.type/string
                                :cardinality :db.cardinality/many}
-                tdc/e1         :name
+                1         :name
                 :age      #:db{:ident       :age
                                :valueType   :db.type/long
                                :cardinality :db.cardinality/one}
-                tdc/e3         :age}
+                3         :age}
                (dd/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/many] [:age :db.type/long :db.cardinality/one]}
                (d/q find-schema-q db)))))))
@@ -203,20 +202,19 @@
                     :db/valueType   :db.type/uuid
                     :db/cardinality :db.cardinality/one}]
         _ (d/create-database cfg :initial-tx schema-tx)
-        conn (d/connect cfg)
-        next-eid (inc (:max-eid @conn))]
+        conn (d/connect cfg)]
 
-    (testing-type conn "bigdec" (bigdec 1) (+ 1 next-eid) 1)
-    (testing-type conn "bigint" (biginteger 1) (+ 2 next-eid)  1.0)
-    (testing-type conn "boolean" true (+ 3 next-eid)  0)
-    (testing-type conn "double" (double 1) (+ 4 next-eid)  1)
-    (testing-type conn "float" (float 1) (+ 5 next-eid)  1)
-    (testing-type conn "instant" (java.util.Date.) (+ 6 next-eid)  1)
-    (testing-type conn "keyword" :one (+ 7 next-eid)  1)
-    (testing-type conn "long" (long 2) (+ 8 next-eid)  :2)
-    (testing-type conn "string" "one" (+ 9 next-eid)  :one)
-    (testing-type conn "symbol" 'one (+ 10 next-eid)  :one)
-    (testing-type conn "uuid" (random-uuid) (+ 11 next-eid)  1)))
+    (testing-type conn "bigdec" (bigdec 1) 13 1)
+    (testing-type conn "bigint" (biginteger 1) 14 1.0)
+    (testing-type conn "boolean" true 15 0)
+    (testing-type conn "double" (double 1) 16 1)
+    (testing-type conn "float" (float 1) 17 1)
+    (testing-type conn "instant" (java.util.Date.) 18 1)
+    (testing-type conn "keyword" :one 19 1)
+    (testing-type conn "long" (long 2) 20 :2)
+    (testing-type conn "string" "one" 21 :one)
+    (testing-type conn "symbol" 'one 22 :one)
+    (testing-type conn "uuid" (random-uuid) 23 1)))
 
 (deftest test-schema-cardinality
   (let [cfg "datahike:mem://test-schema-cardinality"
@@ -302,10 +300,10 @@
           conn (d/connect cfg)]
       (testing "insert any data"
         (d/transact conn [{:name "Alice" :age 26} {:age "12" :car :bmw}])
-        (is (= #{["Alice" 26]}
-               (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))))
-        (is (= #{["12" :bmw]}
-               (d/q '[:find ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn))))))))
+        (is (= #{[1 "Alice" 26]}
+               (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))))
+        (is (= #{[2 "12" :bmw]}
+               (d/q '[:find ?e ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn))))))))
 
 (deftest test-ident
   (testing "use db/ident as enum"
@@ -325,18 +323,3 @@
         (d/transact conn [{:message "important" :tag :important} {:message "archive" :tag [:important :archive]}])
         (is (= #{["important" :important] ["archive" :important] ["archive" :archive]}
                (d/q '[:find ?m ?t :where [?e :message ?m] [?e :tag ?te] [?te :db/ident ?t]] (d/db conn))))))))
-
-(deftest test-system-schema-protection
-  (testing "manipulating system schema"
-    (let [cfg "datahike:mem://test-protection"
-          _ (d/delete-database cfg)
-          _ (d/create-database cfg)
-          conn (d/connect cfg)]
-      (testing "insert schema for system-attribute"
-        (is (thrown-msg?
-             "Using system attribute names as attribute identifier is not allowed"
-             (d/transact conn [{:db/ident :db/cardinality}]))))
-      (testing "overwrite an attribute of system schema"
-        (is (thrown-msg?
-             "No operations supported for protected system entity with id 1"
-             (d/transact conn [[:db/add 1 :db/cardinality :db.cardinality/many]])))))))

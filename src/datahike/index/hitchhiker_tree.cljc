@@ -37,7 +37,7 @@
 (defn- index-type->datom-fn [index-type]
   (case index-type
     :aevt (fn [a e v tx] (dd/datom e a v tx true))
-    :avet (fn [a v e tx] (do (println "Datom" e a v tx) (dd/datom e a v tx true)))
+    :avet (fn [a v e tx] (dd/datom e a v tx true))
     (fn [e a v tx] (dd/datom e a v tx true))))
 
 (defn- datom->node [^Datom datom index-type]

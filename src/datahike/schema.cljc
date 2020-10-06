@@ -1,5 +1,6 @@
 (ns datahike.schema
-  (:require [clojure.spec.alpha :as s])
+  (:require [clojure.spec.alpha :as s]
+            [clojure.string :as str])
   (:import [datahike.datom Datom]))
 
 (s/def :db.type/id #(or (= (class %) java.lang.Long) string?))
@@ -44,10 +45,15 @@
 (s/def :db.type.install/_attribute #{:db.part/tx :db.part/db :db.part/user})
 
 (s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
+(s/def ::entity-spec-attribute #{:db/ensure :db.entity/attrs :db.entity/preds})
 (s/def ::meta-attribute #{:db/txInstant :db/retracted})
 
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality]
                         :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
+
+(s/def ::entity-spec (s/keys :opt [:db.entity/attrs :db.entity/preds]))
+
+(s/def ::enum (s/keys :req [:db/ident]))
 
 (def required-keys #{:db/ident :db/valueType :db/cardinality})
 
@@ -140,19 +146,20 @@
 (defn schema-attr? [a-ident]
   (s/valid? ::schema-attribute a-ident))
 
+(defn entity-spec-attr? [a-ident]
+ (s/valid? ::entity-spec-attribute a-ident))
+
 (defn value-valid? [a-ident v-ident schema]
- (println "VALUEVALID" a-ident v-ident schema)
   (let [schema (if (or (meta-attr? a-ident) (schema-attr? a-ident))
                  implicit-schema-spec
                  schema)
         value-type (get-in schema [a-ident :db/valueType])]
-   (println "valtype" value-type)
     (s/valid? value-type v-ident)))
 
 (defn instant? [{:keys [config ref-ident-map] :as db} ^Datom datom schema]
   (let [a-ident (if (:attribute-refs? config)
-                 (ref-ident-map (.-a datom))
-                 (.-a datom))
+                  (ref-ident-map (.-a datom))
+                  (.-a datom))
         schema (if (or (meta-attr? a-ident) (schema-attr? a-ident))
                  implicit-schema-spec
                  schema)]
@@ -184,3 +191,6 @@
            (assoc m attr-def [old-value new-value])))))
    {}
    (dissoc entity :db/id)))
+
+(defn get-user-schema [{:keys [schema] :as db}]
+ (into {} (filter #(not= (namespace (key %)) "db" ) schema)))

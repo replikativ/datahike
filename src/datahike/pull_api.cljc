@@ -229,6 +229,7 @@
 
 (defn- pull-pattern-frame
   [db [frame & frames]]
+  (println "frame" frame)
   (if-let [eids (seq (:eids frame))]
     (if (:wildcard? frame)
       (pull-wildcard db

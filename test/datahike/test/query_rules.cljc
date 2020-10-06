@@ -1,9 +1,10 @@
 (ns datahike.test.query-rules
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
-      :clj  [clojure.test :as t :refer        [is deftest testing]])
-   [datahike.test.core :as tdc]
-   [datahike.core :as d]))
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   [datahike.core :as d]
+   [datahike.db :as db]
+   [datahike.test.core :as tdc]))
 
 (deftest test-rules
   (let [db [[5 :follow 3]
@@ -163,14 +164,14 @@
 
 (deftest test-false-arguments
   (let [db    (d/db-with (d/empty-db)
-                         [[:db/add tdc/e1 :attr true]
-                          [:db/add tdc/e2 :attr false]])
+                         [[:db/add 1 :attr true]
+                          [:db/add 2 :attr false]])
         rules '[[(is ?id ?val)
                  [?id :attr ?val]]]]
     (is (= (d/q '[:find ?id :in $ %
                   :where (is ?id true)]
                 db rules)
-           #{[tdc/e1]}))
+           #{[1]}))
     (is (= (d/q '[:find ?id :in $ %
                   :where (is ?id false)] db rules)
-           #{[tdc/e2]}))))
+           #{[2]}))))

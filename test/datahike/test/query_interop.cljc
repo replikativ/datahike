@@ -1,15 +1,15 @@
 (ns datahike.test.query-interop
   (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing]])
-   [datahike.test.core :as tdc]
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]))
 
 (def test-db
-  (d/db-with (d/empty-db)
-             [[:db/add tdc/e1 :name "Vlad"]
-              [:db/add tdc/e2 :name "Ivan"]
-              [:db/add tdc/e3 :name "Sergey"]]))
+  (d/db-with
+   (d/empty-db)
+   [[:db/add 1 :name "Vlad"]
+    [:db/add 2 :name "Ivan"]
+    [:db/add 3 :name "Sergey"]]))
 
 (deftest test-filter
   (are [q expected] (= (d/q q test-db) expected)

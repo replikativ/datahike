@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
+   [datahike.db :as db]
    [datahike.test.core :as tdc])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
@@ -15,9 +16,9 @@
            #{[:a] [:b] [:c]})))
 
   (let [db (-> (d/empty-db {:parent {:db/valueType :db.type/ref}})
-               (d/db-with [{:db/id tdc/e1, :name  "Ivan",  :age   15}
-                           {:db/id tdc/e2, :name  "Petr",  :age   22, :height 240, :parent tdc/e1}
-                           {:db/id tdc/e3, :name  "Slava", :age   37, :parent tdc/e2}]))]
+               (d/db-with [{:db/id 1, :name  "Ivan",  :age   15}
+                           {:db/id 2, :name  "Petr",  :age   22, :height 240, :parent 1}
+                           {:db/id 3, :name  "Slava", :age   37, :parent 2}]))]
 
     (testing "ground"
       (is (= (d/q '[:find ?vowel
@@ -25,10 +26,10 @@
              #{[:a] [:e] [:i] [:o] [:u]})))
 
     (testing "get-else"
-      (is (= (d/q '[:find ?age ?height
+      (is (= (d/q '[:find ?e ?age ?height
                     :where [?e :age ?age]
                     [(get-else $ ?e :height 300) ?height]] db)
-             #{[15 300] [22 240] [37 300]}))
+             #{[1 15 300] [2 22 240] [3 37 300]}))
 
       (is (thrown-with-msg? ExceptionInfo #"get-else: nil default value is not supported"
                             (d/q '[:find ?e ?height
@@ -36,33 +37,33 @@
                                    [(get-else $ ?e :height nil) ?height]] db))))
 
     (testing "get-some"
-      (is (= (d/q '[:find ?a ?v
+      (is (= (d/q '[:find ?e ?a ?v
                     :where [?e :name _]
                     [(get-some $ ?e :height :age) [?a ?v]]] db)
-             #{[:age 15]
-               [:height 240]
-               [:age 37]})))
+             #{[1 :age 15]
+               [2 :height 240]
+               [3 :age 37]})))
 
     (testing "missing?"
-      (is (= (d/q '[:find ?age
+      (is (= (d/q '[:find ?e ?age
                     :in $
                     :where [?e :age ?age]
                     [(missing? $ ?e :height)]] db)
-             #{[15] [37]})))
+             #{[1 15] [3 37]})))
 
     (testing "missing? back-ref"
-      (is (= (d/q '[:find ?age
+      (is (= (d/q '[:find ?e
                     :in $
                     :where [?e :age ?age]
                     [(missing? $ ?e :_parent)]] db)
-             #{[37]})))
+             #{[3]})))
 
     (testing "Built-ins"
-      (is (= (d/q '[:find  ?a1 ?a2
+      (is (= (d/q '[:find  ?e1 ?e2
                     :where [?e1 :age ?a1]
                     [?e2 :age ?a2]
                     [(< ?a1 18 ?a2)]] db)
-             #{[15 22] [15 37]}))
+             #{[1 2] [1 3]}))
 
       (is (= (d/q '[:find  ?x ?c
                     :in    [?x ...]
@@ -83,23 +84,23 @@
              [{:db/id -1 :age 92 :name "Aaron"}])))
 
     (testing "Passing predicate as source"
-      (is (= (d/q '[:find  ?a
+      (is (= (d/q '[:find  ?e
                     :in    $ ?adult
                     :where [?e :age ?a]
                     [(?adult ?a)]]
                   db
                   #(> % 18))
-             #{[22] [37]})))
+             #{[2] [3]})))
 
     (testing "Calling a function"
-      (is (= (d/q '[:find  ?a1 ?a2 ?a3
+      (is (= (d/q '[:find  ?e1 ?e2 ?e3
                     :where [?e1 :age ?a1]
                     [?e2 :age ?a2]
                     [?e3 :age ?a3]
                     [(+ ?a1 ?a2) ?a12]
                     [(= ?a12 ?a3)]]
                   db)
-             #{[15 22 37] [22 15 37]})))
+             #{[1 2 3] [2 1 3]})))
 
     (testing "Two conflicting function values for one binding."
       (is (= (d/q '[:find  ?n
@@ -198,51 +199,51 @@
              #{})))))
 
 (deftest test-predicates
-  (let [entities [{:db/id tdc/e1 :name "Ivan" :age 10}
-                  {:db/id tdc/e2 :name "Ivan" :age 20}
-                  {:db/id tdc/e3 :name "Oleg" :age 30}
-                  {:db/id tdc/e4 :name "Oleg" :age 40}]
+  (let [entities [{:db/id 1 :name "Ivan" :age 10}
+                  {:db/id 2 :name "Ivan" :age 20}
+                  {:db/id 3 :name "Oleg" :age 10}
+                  {:db/id 4 :name "Oleg" :age 20}]
         db (d/db-with (d/empty-db) entities)]
-    (are [q res] (= (d/q q db) res)
+    (are [q res] (= (d/q (quote q) db) res)
       ;; plain predicate
-      '[:find  ?a
-        :where [?e :age ?a]
-        [(> ?a 20)]]
-      #{[30] [40]}
+      [:find  ?e ?a
+       :where [?e :age ?a]
+       [(> ?a 10)]]
+      #{[2 20] [4 20]}
 
       ;; join in predicate
-      '[:find  ?e ?e2
-        :where [?e  :name]
-        [?e2 :name]
-        [(< ?e ?e2)]]
-      #{[tdc/e1 tdc/e2] [tdc/e1 tdc/e3] [tdc/e1 tdc/e4] [tdc/e2 tdc/e3] [tdc/e2 tdc/e4] [tdc/e3 tdc/e4]}
+      [:find  ?e ?e2
+       :where [?e  :name]
+       [?e2 :name]
+       [(< ?e ?e2)]]
+      #{[1 2] [1 3] [1 4] [2 3] [2 4] [3 4]}
 
       ;; join with extra symbols
-      '[:find  ?a ?a2
-        :where [?e  :age ?a]
-        [?e2 :age ?a2]
-        [(< ?e ?e2)]]
-      #{[10 20] [20 30] [30 40] [10 30] [10 40] [20 40]}
+      [:find  ?e ?e2
+       :where [?e  :age ?a]
+       [?e2 :age ?a2]
+       [(< ?e ?e2)]]
+      #{[1 2] [1 3] [1 4] [2 3] [2 4] [3 4]}
 
       ;; empty result
-      '[:find  ?e ?e2
-        :where [?e  :name "Ivan"]
-        [?e2 :name "Oleg"]
-        [(= ?e ?e2)]]
+      [:find  ?e ?e2
+       :where [?e  :name "Ivan"]
+       [?e2 :name "Oleg"]
+       [(= ?e ?e2)]]
       #{}
 
       ;; pred over const, true
-      '[:find  ?a
-        :where [?e :name "Ivan"]
-        [?e :age ?a]
-        [(= ?a 20)]]
-      #{[20]}
+      [:find  ?e
+       :where [?e :name "Ivan"]
+       [?e :age 20]
+       [(= ?e 2)]]
+      #{[2]}
 
       ;; pred over const, false
-      '[:find  ?e
-        :where [?e :name "Ivan"]
-        [?e :age ?a]
-        [(= ?a 21)]]
+      [:find  ?e
+       :where [?e :name "Ivan"]
+       [?e :age 20]
+       [(= ?e 1)]]
       #{})
     (let [pred (fn [db e a]
                  (= a (:age (d/entity db e))))]
@@ -251,7 +252,7 @@
                     :where [?e :age ?a]
                     [(?pred $ ?e 10)]]
                   db pred)
-             #{[tdc/e1]})))))
+             #{[1] [3]})))))
 
 (deftest test-exceptions
   (is (thrown-with-msg? ExceptionInfo #"Unknown predicate 'fun in \[\(fun \?e\)\]"
@@ -272,7 +273,7 @@
                 :where [_ :pred ?pred]
                 [?e :age ?a]
                 [(?pred ?a)]]
-              (d/db-with (d/empty-db) [[:db/add tdc/e1 :age 20]])))))
+              (d/db-with (d/empty-db) [[:db/add 1 :age 20]])))))
 
 (defn sample-query-fn [] 42)
 
