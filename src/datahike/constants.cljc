@@ -117,7 +117,9 @@
    {}
    system-schema))
 
-(def ^:const non-ref-implicit-schema {:db/ident {:db/unique :db.unique/identity}})
+(def ^:const non-ref-implicit-schema {:db/ident {:db/unique :db.unique/identity}
+                                      :db.entity/attrs {:db/cardinality :db.cardinality/many}
+                                      :db.entity/preds {:db/cardinality :db.cardinality/many}})
 
 (def ^:const ref-implicit-schema
   "Maps attribute names to the attribute's specification"

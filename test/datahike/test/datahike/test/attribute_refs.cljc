@@ -21,8 +21,6 @@
               :db/cardinality :db.cardinality/one
               :db/valueType   :db.type/long}])
 
-
-
 (deftest test-empty-db-without-attr-refs
   (let [cfg {:store {:backend :mem
                      :id "attr-no-refs-test"}

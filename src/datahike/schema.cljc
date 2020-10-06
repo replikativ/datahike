@@ -153,7 +153,7 @@
   (s/valid? ::schema-attribute a-ident))
 
 (defn entity-spec-attr? [a-ident]
- (s/valid? ::entity-spec-attribute a-ident))
+  (s/valid? ::entity-spec-attribute a-ident))
 
 (defn value-valid? [a-ident v-ident schema]
   (let [schema (if (or (meta-attr? a-ident) (schema-attr? a-ident) (entity-spec-attr? a-ident))
@@ -199,4 +199,4 @@
    (dissoc entity :db/id)))
 
 (defn get-user-schema [{:keys [schema] :as db}]
- (into {} (filter #(not= (namespace (key %)) "db" ) schema)))
+  (into {} (filter #(not= (namespace (key %)) "db") schema)))
