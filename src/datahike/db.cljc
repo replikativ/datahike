@@ -1638,9 +1638,7 @@
             (= op :db.history.purge/before)
             (if (-keep-history? db)
               (let [history (HistoricalDB. db)
-                    into-sorted-set (fn [s]
-                                      (apply sorted-set-by
-                                        dd/cmp-datoms-eavt-quick s))
+                    into-sorted-set #(apply sorted-set-by dd/cmp-datoms-eavt-quick %)
                     e-datoms (-> (clojure.set/difference
                                    (into-sorted-set (search-temporal-indices db nil))
                                    (into-sorted-set (search-current-indices db nil)))
