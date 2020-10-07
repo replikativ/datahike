@@ -198,5 +198,8 @@
    {}
    (dissoc entity :db/id)))
 
+(defn is-system-attribute? [ident]
+  (= "db" (namespace (keyword ident))))
+
 (defn get-user-schema [{:keys [schema] :as db}]
   (into {} (filter #(not= (namespace (key %)) "db") schema)))

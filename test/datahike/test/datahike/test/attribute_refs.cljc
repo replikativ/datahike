@@ -1,10 +1,9 @@
 (ns datahike.test.attribute-refs
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
-      :clj  [clojure.test :as t :refer        [is deftest testing]])
+   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
    [datahike.api :as d]
-   [datahike.constants :as c]
-   [datahike.db :refer [ref-datoms]])
+   [datahike.db :as db :refer [ref-datoms]])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [java.util Date]
                    [datahike.datom Datom])))
@@ -21,15 +20,27 @@
               :db/cardinality :db.cardinality/one
               :db/valueType   :db.type/long}])
 
+(def no-ref-cfg
+  {:store              {:backend :mem
+                        :id      "attr-no-refs-test"}
+   :keep-history?      false
+   :attribute-refs?    false
+   :schema-flexibility :read})
+
+(def ref-cfg
+  {:store              {:backend :mem
+                        :id      "attr-no-refs-test"}
+   :keep-history?      false
+   :attribute-refs?    true
+   :schema-flexibility :write})
+
+(defn start-db [cfg]
+  (d/delete-database cfg)
+  (d/create-database cfg)
+  (d/connect cfg))
+
 (deftest test-empty-db-without-attr-refs
-  (let [cfg {:store {:backend :mem
-                     :id "attr-no-refs-test"}
-             :keep-history? false
-             :attribute-refs? false
-             :schema-flexibility :read}
-        _ (d/delete-database cfg)
-        _ (d/create-database cfg)
-        conn (d/connect cfg)]
+  (let [conn (start-db no-ref-cfg)]
     (testing "empty EAVT datoms"
       (is (= nil
              (d/datoms @conn :eavt nil))))
@@ -41,21 +52,23 @@
              (d/datoms @conn :avet nil))))))
 
 (deftest test-empty-db-with-attr-refs
-  (let [cfg  {:store              {:backend :mem
-                                   :id      "attr-refs-test"}
-              :keep-history?      false
-              :attribute-refs?    true
-              :schema-flexibility :read}
-        _    (d/delete-database cfg)
-        _    (d/create-database cfg)
-        conn (d/connect cfg)]
+  (let [conn (start-db ref-cfg)]
     (testing "empty EAVT datoms"
-      (is (= (count ref-datoms)
-             (count (d/datoms @conn :eavt)))))
+      (is (= (set ref-datoms)
+             (set (d/datoms @conn :eavt)))))
     (testing "empty AEVT datoms"
-      (is (= (count ref-datoms)
-             (count (d/datoms @conn :aevt)))))
+      (is (= (set ref-datoms)
+             (set (d/datoms @conn :aevt)))))
     (testing "empty AVET datoms"
-      (is (= (count (filter (fn [^Datom datom] (contains? #{1 9}  (.-a datom)))
-                            ref-datoms))
-             (count (d/datoms @conn :avet)))))))
+      (is (= (set (filter (fn [^Datom datom] (contains? #{1 9} (.-a datom)))
+                          ref-datoms))
+             (set (d/datoms @conn :avet)))))))
+
+(deftest test-invalid-config-with-attr-refs
+  (let [schema {:aka {:db/cardinality :db.cardinality/many}}
+        read-config (assoc ref-cfg :schema-flexibility :read)]
+    (is (thrown-msg "Attribute references cannot be used with schema-flexibility ':read'.")
+        (db/empty-db schema read-config))
+    (is (thrown-msg "Attribute references cannot be used with schema-flexibility ':read'.")
+        (db/init-db [] schema read-config))))
+

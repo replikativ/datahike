@@ -86,9 +86,11 @@
                          ", value does not match configuration definition. Must be conform to: "
                          (s/describe attribute)) config))))
 
-(defn validate-config [config]
+(defn validate-config [{:keys [attribute-refs? schema-flexibility] :as config}]
   (when-not (s/valid? :datahike/config config)
-    (throw (ex-info "Invalid datahike configuration." config))))
+    (throw (ex-info "Invalid Datahike configuration." (s/explain-data :datahike/config config))))
+  (when (and attribute-refs? (= :read schema-flexibility))
+    (throw (ex-info "Attribute references cannot be used with schema-flexibility ':read'." config))))
 
 (defn storeless-config []
   {:store nil
@@ -130,13 +132,15 @@
                  :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}
          merged-config ((comp remove-nils deep-merge) config config-as-arg)
          _             (log/debug "Using config " merged-config)
-         {:keys [initial-tx store]} merged-config
+         {:keys [initial-tx store attribute-refs? schema-flexibility]} merged-config
          config-spec (ds/config-spec store)]
      (when config-spec
        (when-not (s/valid? config-spec store)
          (throw (ex-info "Invalid store configuration." (s/explain-data config-spec store)))))
      (when-not (s/valid? :datahike/config merged-config)
        (throw (ex-info "Invalid Datahike configuration." (s/explain-data :datahike/config merged-config))))
+     (when (and attribute-refs? (= :read schema-flexibility))
+       (throw (ex-info "Attribute references cannot be used with schema-flexibility ':read'." config)))
      (if (string? initial-tx)
        (update merged-config :initial-tx (fn [path] (-> path slurp read-string)))
        merged-config))))
