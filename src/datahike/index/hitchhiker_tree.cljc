@@ -49,12 +49,12 @@
         (tree/insert key value)))))
 
 (defn old-retracted
-  "Returns a new datom (to insert in the tree and) to signal that the old datom now that it is retracted."
+  "Returns a new datom to insert in the tree to signal the retraction of the old datom."
   [kvs key]
   (when-let [old (old-key kvs key)]
     (let [[a b c _ ] old
           [_ _ _ nt] key]
-      ;; - says that it is retracted and nt is the current transaction time.
+      ;; '-' means it is retracted and 'nt' is the current transaction time.
       [a b c (- nt)])))
 
 (defrecord temporal-UpsertOp [key value]
