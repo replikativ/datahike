@@ -818,7 +818,8 @@
   ([schema] (empty-db schema nil))
   ([schema config]
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
-   (println "EMPTYDB" schema config)
+   (println "EMPTYDB"                                       ;;schema config
+            )
    (let [complete-config (merge (dc/storeless-config) config)
          _ (dc/validate-config complete-config)
          {:keys [keep-history? index schema-flexibility attribute-refs?]} complete-config
@@ -1426,11 +1427,10 @@
                                                 (raise "Bad attribute " a-ident ": reverse attribute name requires {:db/valueType :db.type/ref} in schema"
                                                        {:error :transact/syntax, :attribute a-ident, :context {:db/id eid, a-ident vs}}))]
                        v (maybe-wrap-multival db a-ident vs)]
-                   (do (println a-ident straight-a-ident straight-a)
-                       ;; (println ident-ref-map )
-                       (println v (ident-ref-map v))
+                   (do                                      ;;(println a-ident straight-a-ident straight-a)
+
                        (if (and (ref? db straight-a-ident) (map? v)) ;; another entity specified as nested map
-                         (assoc v straight-a-ident eid)
+                         (assoc v (reverse-ref a-ident) eid)
                          (if reverse?
                            [:db/add v straight-a eid]
                            [:db/add eid straight-a (if (and attribute-refs? (ds/is-system-attribute? v))
@@ -1619,7 +1619,7 @@
                                 :else old-eid)
                    new-entity (assoc entity :db/id new-eid)]
                (when (ds/schema-entity? entity)
-                 (when (ds/is-system-attribute? (:db/ident entity))
+                 (when (and (contains? entity :db/ident) (ds/is-system-attribute? (:db/ident entity)))
                    (raise "Using system attribute names as attribute identifier is not allowed"
                           {:error :transact/schema :entity entity}))
                  (if-let [attr-name (get-in db [:schema new-eid])]
