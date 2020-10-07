@@ -1638,10 +1638,14 @@
             (= op :db.history.purge/before)
             (if (-keep-history? db)
               (let [history (HistoricalDB. db)
-                    e-datoms (mapcat
-                               (fn [d] [d (datom (.-e d) (.-a d) (.-v d) (.-tx d) true)])
-                               (-> (search-temporal-indices db [nil nil nil nil false])
-                                 vec (filter-before e db) vec))
+                    into-sorted-set (fn [s]
+                                      (apply sorted-set-by
+                                        dd/cmp-datoms-eavt-quick s))
+                    e-datoms (-> (clojure.set/difference
+                                   (into-sorted-set (search-temporal-indices db nil))
+                                   (into-sorted-set (search-current-indices db nil)))
+                               (filter-before e db)
+                               vec)
                     retracted-comps (purge-components history e-datoms)]
                 (recur (reduce transact-purge-datom report e-datoms)
                        (concat retracted-comps entities)))
