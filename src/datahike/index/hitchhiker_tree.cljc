@@ -25,7 +25,7 @@
       (when-let [candidates (subseq old-keys >= [a b nil nil])]
         (->> candidates
           (map first)
-          (filter #(and (= a (first %)) (= b (second %))))
+          (take-while #(and (= a (first %)) (= b (second %))))
           reverse
           first)))))
 
