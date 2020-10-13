@@ -213,32 +213,39 @@ Connect to a database with persistent store:
              ```"}
   pull-many dp/pull-many)
 
-(defmulti q
-  "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
-
-   Usage:
-
-   ```
-   (q '[:find ?value
-        :where [_ :likes ?value]]
-      db)
-   ; => #{[\"fries\"] [\"candy\"] [\"pie\"] [\"pizza\"]}
-   ```"
-  {:arglists '([query & inputs])}
-  (fn [query & inputs] (type query)))
-
-(defmethod q clojure.lang.PersistentVector
-  [query & inputs]
-  (dq/q {:query query :args inputs}))
-
-(defmethod q clojure.lang.PersistentArrayMap
-  [{:keys [query args limit offset] :as query-map} & arg-list]
-  (let [query (or query query-map)
-        args (or args arg-list)]
-    (dq/q {:query query
-           :args args
-           :limit limit
-           :offset offset})))
+(def ^{:arglists '([query & args] [arg-map])
+       :doc "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
+             Usage:
+             Query as parameter with additional args:
+                 (q '[:find ?value
+                      :where [_ :likes ?value]]
+                    #{[1 :likes \"fries\"]
+                      [2 :likes \"candy\"]
+                      [3 :likes \"pie\"]
+                      [4 :likes \"pizza\"]}) ; => #{[\"fries\"] [\"candy\"] [\"pie\"] [\"pizza\"]}
+             Or query passed in arg-map:
+                 (q {:query '[:find ?value
+                              :where [_ :likes ?value]]
+                     :offset 2
+                     :limit 1
+                     :args [#{[1 :likes \"fries\"]
+                              [2 :likes \"candy\"]
+                              [3 :likes \"pie\"]
+                              [4 :likes \"pizza\"]}]}) ; => #{[\"fries\"] [\"candy\"] [\"pie\"] [\"pizza\"]}
+             Or query passed as map of vectors:
+                 (q '{:find [?value] :where [[_ :likes ?value]]}
+                    #{[1 :likes \"fries\"]
+                      [2 :likes \"candy\"]
+                      [3 :likes \"pie\"]
+                      [4 :likes \"pizza\"]}) ; => #{[\"fries\"] [\"candy\"] [\"pie\"] [\"pizza\"]}
+             Or query passed as string:
+                 (q {:query \"[:find ?value :where [_ :likes ?value]]\"
+                     :args [#{[1 :likes \"fries\"]
+                              [2 :likes \"candy\"]
+                              [3 :likes \"pie\"]
+                              [4 :likes \"pizza\"]}]})
+             Query passed as map needs vectors as values. Query can not be passed as list. The 1-arity function takes a map with the arguments :query and :args and optionally the additional keys :offset and :limit."}
+  q dq/q)
 
 (defn datoms
   "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components (e, a, v) match passed arguments.
