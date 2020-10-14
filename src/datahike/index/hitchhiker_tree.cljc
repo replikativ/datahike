@@ -1,5 +1,5 @@
 (ns datahike.index.hitchhiker-tree
-  (:require [hitchhiker.tree.utils.async :as async]
+  (:require [hitchhiker.tree.utils.clojure.async :as async]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
