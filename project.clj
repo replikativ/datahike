@@ -17,7 +17,11 @@
                  [junit/junit "4.13"]]
 
   :plugins [[lein-cljfmt "0.6.8"]
-            [lein-cljsbuild "1.1.8"]]
+            [lein-cljsbuild "1.1.8"]
+            [lein-codox "0.10.7"]]
+
+  :codox {:metadata {:doc/format :markdown}
+          :namespaces [datahike.api]}
 
   :global-vars {*warn-on-reflection*   true
                 *print-namespace-maps* false}

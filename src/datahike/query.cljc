@@ -1,4 +1,4 @@
-(ns datahike.query
+(ns ^:no-doc datahike.query
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    [clojure.set :as set]

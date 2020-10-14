@@ -1,4 +1,4 @@
-(ns datahike.core
+(ns ^:no-doc datahike.core
   (:refer-clojure :exclude [filter])
   (:require
    [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]

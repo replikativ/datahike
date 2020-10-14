@@ -1,4 +1,4 @@
-(ns datahike.store
+(ns ^:no-doc datahike.store
   (:require [hitchhiker.tree.bootstrap.konserve :as kons]
             [clojure.spec.alpha :as s]
             [konserve.filestore :as fs]

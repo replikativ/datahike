@@ -1,4 +1,4 @@
-(ns datahike.constants)
+(ns ^:no-doc datahike.constants)
 
 (def ^:const e0 0)
 (def ^:const tx0 0x20000000)
