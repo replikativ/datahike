@@ -112,11 +112,13 @@ Refer to the docs for more information:
 
 - [configuration](./doc/config.md)
 - [schema flexibility](./doc/schema.md)
+- [entity spec](./doc/entity_spec.md)
 - [time variance](./doc/time_variance.md)
 - [differences from Datomic](./doc/datomic_differences.md)
 - [backend development](./doc/backend-development.md)
 - [logging and error handling](./doc/logging_and_error_handling.md)
 - [releasing Datahike](./doc/release.md)
+
 
 For simple examples have a look at the projects in the `examples` folder.
 
@@ -136,7 +138,7 @@ To run the benchmarks, navigate to the project folder in your terminal and run
 lein with-profile benchmark run 
 ```
 
-You will receive a list containing information about what has been tested and the mean of measured times as follows:
+You will receive a list containing information about what has been tested and the mean of measured times in milliseconds as follows:
 
 ```clojure
 [ ;; ...
@@ -149,7 +151,8 @@ You will receive a list containing information about what has been tested and th
    :function :transaction,
    :db-size 1000,
    :tx-size 10},
-  :mean-time 5.0185512}
+  :mean-time 5.0185512 ;; ms
+ }
   ;; ...
 ]
 ```
@@ -269,15 +272,6 @@ Have a look at the [change log](./CHANGELOG.md) for recent updates.
 
 ## Roadmap
 
-### 0.3.0
-
-- clojure.spec for api functions
-- conceptualize schema upgrades
-- Java API
-- remote HTTP interface
-- Docker image
-- further schema types: bytes, tuples
-
 ### 0.4.0
 
 - identity and access management
@@ -312,6 +306,6 @@ feature, please let us know.
 
 ## License
 
-Copyright © 2014–2020 Konrad Kühne, Christian Weilbach, Nikita Prokopov
+Copyright © 2014–2020 Konrad Kühne, Christian Weilbach, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).

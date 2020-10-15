@@ -1,4 +1,4 @@
-(defproject io.replikativ/datahike "0.3.2-SNAPSHOT"
+(defproject io.replikativ/datahike "0.3.3-SNAPSHOT"
   :description "A durable datalog implementation adaptable for distribution."
   :license {:name "Eclipse"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
@@ -7,16 +7,17 @@
   :dependencies [[org.clojure/clojure       "1.10.1"   :scope "provided"]
                  [org.clojure/clojurescript "1.10.597" :scope "provided"]
                  [persistent-sorted-set     "0.1.2"]
-                 [org.clojure/tools.reader "1.3.2"]
+                 [org.clojure/tools.reader "1.3.3"]
                  [environ "1.2.0"]
                  [com.taoensso/timbre "4.10.0"]
                  [io.replikativ/hitchhiker-tree "0.1.7"]
                  [io.replikativ/superv.async "0.2.9"]
-                 [io.lambdaforge/datalog-parser "0.1.8-SNAPSHOT"]
+                 [io.lambdaforge/datalog-parser "0.1.8"]
                  [io.replikativ/zufall "0.1.0"]
                  [junit/junit "4.13"]]
 
-  :plugins [[lein-cljsbuild "1.1.8"]]
+  :plugins [[lein-cljfmt "0.6.8"]
+            [lein-cljsbuild "1.1.8"]]
 
   :global-vars {*warn-on-reflection*   true
                 *print-namespace-maps* false}

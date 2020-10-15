@@ -1,9 +1,9 @@
 (ns datahike.test.purge
   (:require
-    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-    [datahike.test.core :as tdc]
-    [datahike.api :as d]))
+   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+   [datahike.test.core :as tdc]
+   [datahike.api :as d]))
 
 (def schema-tx [{:db/ident       :name
                  :db/valueType   :db.type/string
@@ -39,20 +39,20 @@
       (let [name "Alice"]
         (d/transact conn [[:db/retract [:name "Alice"] :age 25]])
         (are [x y] (= x y)
-                   true (nil? (find-age @conn name))
-                   25 (find-age (d/history @conn) name))))
+          true (nil? (find-age @conn name))
+          25 (find-age (d/history @conn) name))))
     (testing "purge datom from current index and from history"
       (let [name "Bob"]
         (d/transact conn [[:db/purge [:name "Bob"] :age 35]])
         (are [x y] (= x y)
-                   true (nil? (find-age @conn name))
-                   true (nil? (find-age (d/history @conn) name)))))
+          true (nil? (find-age @conn name))
+          true (nil? (find-age (d/history @conn) name)))))
     (testing "purge retracted datom"
       (let [name "Alice"]
         (d/transact conn [[:db/purge [:name name] :age 25]])
         (are [x y] (= x y)
-                   true (nil? (find-age @conn name))
-                   true (nil? (find-age (d/history @conn) name)))))))
+          true (nil? (find-age @conn name))
+          true (nil? (find-age (d/history @conn) name)))))))
 
 (deftest test-purge-attribute
   (let [conn (create-test-db "datahike:mem://test-purge-attribute")]
@@ -60,21 +60,21 @@
       (let [name "Alice"]
         (d/transact conn [[:db.purge/attribute [:name "Alice"] :age]])
         (are [x y] (= x y)
-                   true (nil? (find-age @conn name))
-                   true (nil? (find-age (d/history @conn) name))
-                   #{["Alice"] ["Bob"]} (d/q '[:find ?n :where [_ :name ?n]] @conn))))
+          true (nil? (find-age @conn name))
+          true (nil? (find-age (d/history @conn) name))
+          #{["Alice"] ["Bob"]} (d/q '[:find ?n :where [_ :name ?n]] @conn))))
     (testing "retract attribute from current index and purge from history"
       (let [name "Bob"]
         (testing "retracting from current index"
           (d/transact conn [[:db.fn/retractAttribute [:name name] :age]])
           (are [x y] (= x y)
-                     true (nil? (find-age @conn name))
-                     35 (find-age (d/history @conn) name)))
+            true (nil? (find-age @conn name))
+            35 (find-age (d/history @conn) name)))
         (testing "purging from history"
           (d/transact conn [[:db.purge/entity [:name name] :age]])
           (are [x y] (= x y)
-                     true (nil? (find-age @conn name))
-                     true (nil? (find-age (d/history @conn) name))))))))
+            true (nil? (find-age @conn name))
+            true (nil? (find-age (d/history @conn) name))))))))
 
 (deftest test-purge-entity
   (let [conn (create-test-db "datahike:mem://test-purge-entity")]
@@ -95,8 +95,8 @@
           (is (= #{} (find-entities (d/history @conn)))))))
     (testing "purge something that is not present in the database"
       (is (thrown-msg?
-            "Can't find entity with ID [:name \"Alice\"] to be purged"
-            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
+           "Can't find entity with ID [:name \"Alice\"] to be purged"
+           (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
 
 (deftest test-purge-non-temporal-database
   (let [uri "datahike:mem://purge-non-temporal"
@@ -105,8 +105,8 @@
         conn (d/connect uri)]
     (testing "purge data in non temporal database"
       (is (thrown-msg?
-            "Purge entity is only available in temporal databases."
-            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
+           "Purge entity is only available in temporal databases."
+           (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
 
 (defn find-ages [db name]
   (d/q '[:find ?a ?op

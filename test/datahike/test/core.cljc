@@ -1,37 +1,37 @@
 (ns datahike.test.core
   (:require
-    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [clojure.string :as str]
-    #?(:clj [kaocha.stacktrace])
-    [datahike.core :as d]
-    [datahike.impl.entity :as de]
-    [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
-                              :clj  [:refer [defrecord-updatable]])]
-    #?(:cljs [datahike.test.cljs])))
+   [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   [clojure.string :as str]
+   #?(:clj [kaocha.stacktrace])
+   [datahike.core :as d]
+   [datahike.impl.entity :as de]
+   [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
+                           :clj  [:refer [defrecord-updatable]])]
+   #?(:cljs [datahike.test.cljs])))
 
 #?(:cljs
    (enable-console-print!))
 
 ;; Added special case for printing ex-data of ExceptionInfo
 #?(:cljs
-  (defmethod t/report [::t/default :error] [m]
-    (t/inc-report-counter! :error)
-    (println "\nERROR in" (t/testing-vars-str m))
-    (when (seq (:testing-contexts (t/get-current-env)))
-      (println (t/testing-contexts-str)))
-    (when-let [message (:message m)] (println message))
-    (println "expected:" (pr-str (:expected m)))
-    (print "  actual: ")
-    (let [actual (:actual m)]
-      (cond
-        (instance? ExceptionInfo actual)
-          (println (.-stack actual) "\n" (pr-str (ex-data actual)))
-        (instance? js/Error actual)
-          (println (.-stack actual))
-        :else
-          (prn actual)))))
+   (defmethod t/report [::t/default :error] [m]
+     (t/inc-report-counter! :error)
+     (println "\nERROR in" (t/testing-vars-str m))
+     (when (seq (:testing-contexts (t/get-current-env)))
+       (println (t/testing-contexts-str)))
+     (when-let [message (:message m)] (println message))
+     (println "expected:" (pr-str (:expected m)))
+     (print "  actual: ")
+     (let [actual (:actual m)]
+       (cond
+         (instance? ExceptionInfo actual)
+         (println (.-stack actual) "\n" (pr-str (ex-data actual)))
+         (instance? js/Error actual)
+         (println (.-stack actual))
+         :else
+         (prn actual)))))
 
 #?(:cljs (def test-summary (atom nil)))
 #?(:cljs (defmethod t/report [::t/default :end-run-tests] [m]
@@ -45,16 +45,16 @@
 
 ;; utils
 #?(:clj
-(defmethod t/assert-expr 'thrown-msg? [msg form]
-  (let [[_ match & body] form]
-    `(try ~@body
-          (t/do-report {:type :fail, :message ~msg, :expected '~form, :actual nil})
-          (catch Throwable e#
-            (let [m# (.getMessage e#)]
-              (if (= ~match m#)
-                (t/do-report {:type :pass, :message ~msg, :expected '~form, :actual e#})
-                (t/do-report {:type :fail, :message ~msg, :expected '~form, :actual e#})))
-            e#)))))
+   (defmethod t/assert-expr 'thrown-msg? [msg form]
+     (let [[_ match & body] form]
+       `(try ~@body
+             (t/do-report {:type :fail, :message ~msg, :expected '~form, :actual nil})
+             (catch Throwable e#
+               (let [m# (.getMessage e#)]
+                 (if (= ~match m#)
+                   (t/do-report {:type :pass, :message ~msg, :expected '~form, :actual e#})
+                   (t/do-report {:type :fail, :message ~msg, :expected '~form, :actual e#})))
+               e#)))))
 
 (defn entity-map [db e]
   (when-let [entity (d/entity db e)]
@@ -68,7 +68,7 @@
 
 (defn no-namespace-maps [t]
   (binding [*print-namespace-maps* false]
-    (t))) 
+    (t)))
 
 ;; Filter Kaocha frames from exceptions
 
@@ -91,5 +91,4 @@
              (d/datom 1 :name "Ivan")
              (d/datom 2 :age 37)
              (d/datom 2 :name "Petr")
-             (d/datom 2 :huh? false)}))
-    ))
+             (d/datom 2 :huh? false)}))))
