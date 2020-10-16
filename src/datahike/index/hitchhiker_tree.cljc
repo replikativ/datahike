@@ -1,10 +1,14 @@
 (ns datahike.index.hitchhiker-tree
-  (:require [hitchhiker.tree.utils.async :as async]
+  (:require [hitchhiker.tree.utils.async :as ha]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
+            [hitchhiker.tree.utils.gc :refer [mark]]
+            [konserve.gc :refer [sweep!]]
             [datahike.constants :refer [e0 tx0 emax txmax]]
-            [datahike.datom :as dd])
+            [datahike.datom :as dd]
+            [clojure.set :as set]
+            [clojure.core.async :as async])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
 
@@ -109,27 +113,42 @@
 (defn empty-tree
   "Create empty hichthiker tree"
   []
-  (async/<?? (tree/b-tree (tree/->Config br-sqrt br (- br br-sqrt)))))
+  (ha/<?? (tree/b-tree (tree/->Config br-sqrt br (- br br-sqrt)))))
 
 (defn -insert [tree ^Datom datom index-type]
-  (hmsg/insert tree (datom->node datom index-type) nil))
+  (ha/<?? (hmsg/insert tree (datom->node datom index-type) nil)))
 
 (defn init-tree
   "Create tree with datoms"
   [datoms index-type]
-  (async/<??
-   (async/reduce<
+  (ha/<??
+   (ha/reduce<
     (fn [tree datom]
-      (-insert tree datom index-type))
+      (hmsg/insert tree (datom->node datom index-type) nil))
     (empty-tree)
     (seq datoms))))
 
 (defn -remove [tree ^Datom datom index-type]
-  (async/<?? (hmsg/delete tree (datom->node datom index-type))))
+  (ha/<?? (hmsg/delete tree (datom->node datom index-type))))
 
 (defn -flush [tree backend]
-  (:tree (async/<?? (tree/flush-tree-without-root tree backend))))
+  (:tree (ha/<?? (tree/flush-tree-without-root tree backend))))
 
 (def -persistent! identity)
 
 (def -transient identity)
+
+(defn gc
+  "Invokes garbage collection on the database erasing all fragments that are not reachable and older than the date passed."
+  [db date]
+  (let [{:keys [eavt avet aevt temporal-eavt temporal-avet temporal-aevt config]} db
+        marked (set/union #{:db}
+                          (ha/<?? (mark (into #{} (:children eavt))))
+                          (ha/<?? (mark (into #{} (:children avet))))
+                          (ha/<?? (mark (into #{} (:children aevt))))
+                          (when (:temporal-index config)
+                            (set/union
+                             (ha/<?? (mark (into #{} (:children temporal-eavt))))
+                             (ha/<?? (mark (into #{} (:children temporal-avet))))
+                             (ha/<?? (mark (into #{} (:children temporal-aevt)))))))]
+    (async/<!! (sweep! (:store db) marked date))))

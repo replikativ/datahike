@@ -10,14 +10,12 @@
                  [org.clojure/tools.reader "1.3.3"]
                  [environ "1.2.0"]
                  [com.taoensso/timbre "4.10.0"]
-                 [io.replikativ/hitchhiker-tree "0.1.7"]
-                 [io.replikativ/superv.async "0.2.9"]
-                 [io.lambdaforge/datalog-parser "0.1.8"]
+                 [io.replikativ/hitchhiker-tree "0.1.9"]
+                 [io.replikativ/superv.async "0.2.11"]
+                 [io.lambdaforge/datalog-parser "0.1.8-SNAPSHOT"]
                  [io.replikativ/zufall "0.1.0"]
                  [junit/junit "4.13"]]
-
-  :plugins [[lein-cljfmt "0.6.8"]
-            [lein-cljsbuild "1.1.8"]]
+  :plugins [[lein-cljsbuild "1.1.8"]]
 
   :global-vars {*warn-on-reflection*   true
                 *print-namespace-maps* false}
