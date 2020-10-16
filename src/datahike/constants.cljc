@@ -130,5 +130,5 @@
    {}
    system-schema))
 
-(def ^:const ue0 (inc (transduce (comp (map :db/id) (remove #{tx0})) max 0 system-schema)))
-(def ^:const utx0 (inc tx0))
+(def ^:const ue0 (transduce (comp (map :db/id) (remove #{tx0})) max 0 system-schema))
+(def ^:const utx0 tx0)

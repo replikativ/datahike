@@ -157,13 +157,11 @@
       (update :avet -persistent!)))
 
 (defn- search-indices [eavt aevt avet pattern temporal-db? {:keys [config ident-ref-map] :as db}]
-  (let [[e ident v tx added?] pattern
-        _        (when (not (or (keyword? ident) (string? ident) (nil? ident)))
-                   (raise "A search pattern requires a keyword, string, or nil  as attribute, given: " ident {})) ;; TODO: raise or throw?
-        a        (if (:attribute-refs? config)
-                   (get ident-ref-map ident)
-                   ident)
-        indexed? (indexing? db ident)]
+  (let [[e a-raw v tx added?] pattern
+        a        (if (and (:attribute-refs? config) (not (number? a-raw)))
+                   (get ident-ref-map a-raw)
+                   a-raw)
+        indexed? (indexing? db a-raw)]
     (if (and (not temporal-db?) (false? added?))
       '()
       (case-tree [e a (some? v) tx]
@@ -740,7 +738,7 @@
     (validate-schema-key a-ident :db/unique (:db/unique kv) #{:db.unique/value :db.unique/identity})
     (validate-schema-key a-ident :db/valueType (:db/valueType kv) #{:db.type/ref})
     (validate-schema-key a-ident :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many})
-    (when (ds/is-system-attribute? a-ident)
+    (when (ds/is-system-keyword? a-ident)
       (throw (ex-info (str "Bad attribute specification for " a-ident ": protected system attribute name")
                       {:error     :schema/validation
                        :attribute a-ident
@@ -813,13 +811,11 @@
    schema))
 
 (defn ^DB empty-db
-  "Prefer create-database in api, schema not in index."
+  "Prefer create-database in api, schema only in index for attribute reference database."
   ([] (empty-db nil nil))
   ([schema] (empty-db schema nil))
   ([schema config]
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
-   (println "EMPTYDB"                                       ;;schema config
-            )
    (let [complete-config (merge (dc/storeless-config) config)
          _ (dc/validate-config complete-config)
          {:keys [keep-history? index schema-flexibility attribute-refs?]} complete-config
@@ -1413,7 +1409,6 @@
     :else vs))
 
 (defn- explode [{:keys [config ident-ref-map] :as db} entity]
-  (println "EXPLODE" entity)
   (let [eid      (:db/id entity)
         {:keys [attribute-refs?]} config
         ensure   (:db/ensure entity)
@@ -1427,15 +1422,13 @@
                                                 (raise "Bad attribute " a-ident ": reverse attribute name requires {:db/valueType :db.type/ref} in schema"
                                                        {:error :transact/syntax, :attribute a-ident, :context {:db/id eid, a-ident vs}}))]
                        v (maybe-wrap-multival db a-ident vs)]
-                   (do                                      ;;(println a-ident straight-a-ident straight-a)
-
-                       (if (and (ref? db straight-a-ident) (map? v)) ;; another entity specified as nested map
-                         (assoc v (reverse-ref a-ident) eid)
-                         (if reverse?
-                           [:db/add v straight-a eid]
-                           [:db/add eid straight-a (if (and attribute-refs? (ds/is-system-attribute? v))
-                                                     (ident-ref-map v)
-                                                     v)]))))]
+                   (if (and (ref? db straight-a-ident) (map? v)) ;; another entity specified as nested map
+                     (assoc v (reverse-ref a-ident) eid)
+                     (if reverse?
+                       [:db/add v straight-a eid]
+                       [:db/add eid straight-a (if (and attribute-refs? (ds/is-system-keyword? v))
+                                                 (ident-ref-map v)
+                                                 v)])))]
     (if ensure
       (let [{:keys [:db.entity/attrs :db.entity/preds]} (-> db :schema ensure)]
         (if (empty? attrs)
@@ -1540,7 +1533,6 @@
     :db.history.purge/before})
 
 (defn transact-tx-data [initial-report initial-es]
-  (println "TXTXDATA" initial-es)
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
     (raise "Bad transaction data " initial-es ", expected sequential collection"
@@ -1592,8 +1584,8 @@
                (do
                   ;; schema tx
                  (when (ds/schema-entity? entity)
-                   (when (ds/is-system-attribute? (:db/ident entity))
-                     (raise "Using system attribute names as attribute identifier is not allowed"
+                   (when (and (contains? entity :db/ident) (ds/is-system-keyword? (:db/ident entity)))
+                     (raise "Using namespace 'db' for attribute identifiers is not allowed"
                             {:error :transact/schema :entity entity}))
                    (if-let [attr-name (get-in db [:schema upserted-eid])]
                      (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
@@ -1619,8 +1611,8 @@
                                 :else old-eid)
                    new-entity (assoc entity :db/id new-eid)]
                (when (ds/schema-entity? entity)
-                 (when (and (contains? entity :db/ident) (ds/is-system-attribute? (:db/ident entity)))
-                   (raise "Using system attribute names as attribute identifier is not allowed"
+                 (when (and (contains? entity :db/ident) (ds/is-system-keyword? (:db/ident entity)))
+                   (raise "Using namespace 'db' for attribute identifiers is not allowed"
                           {:error :transact/schema :entity entity}))
                  (if-let [attr-name (get-in db [:schema new-eid])]
                    (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
@@ -1642,13 +1634,13 @@
 
           (sequential? entity)
           (let [[op e a v] entity]
-            (when attribute-refs?
-              (when (not (number? a))                       ;; TODO: keep or allow flexibility?
-                (raise "Attributes must be given as references. Currently given: " a
-                       {:error :transact/references, :attribute a}))
-              (when (contains? system-entities e)
-                (raise "No operations supported for protected system entity with id " e
-                       {:error :entity-id/protected, :entity entity})))
+            (if attribute-refs?
+              (when (not (number? a))                   ;; TODO: keep or allow flexibility?
+                (raise "Bad attribute type for: " a ", expected number"
+                       {:error :transact/syntax, :attribute a, :context entity}))
+              (when (not (or (keyword? a) (string? a)))
+                (raise "Bad attribute type for: " a ", expected keyword or string"
+                       {:error :transact/syntax, :attribute a, :context entity})))
             (cond
               (= op :db.fn/call)
               (let [[_ f & args] entity]

@@ -198,8 +198,11 @@
    {}
    (dissoc entity :db/id)))
 
-(defn is-system-attribute? [ident]
-  (= "db" (namespace (keyword ident))))
+(defn is-system-keyword? [value]
+  (and (or (keyword? value) (string? value))
+       (if-let [ns (namespace (keyword value))]
+         (= "db" (first (clojure.string/split ns #"\.")))
+         false)))
 
 (defn get-user-schema [{:keys [schema] :as db}]
   (into {} (filter #(not= (namespace (key %)) "db") schema)))

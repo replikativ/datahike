@@ -109,7 +109,6 @@
 
 (defn- pull-attr-datoms
   [db attr-key attr eid forward? datoms opts [parent & frames]]
-  ;(println "PULLATTRDATOMS " attr-key attr eid forward?)
   (let [limit (get opts :limit +default-limit+)
         attr-key (or (:as opts) attr-key)
         found (not-empty
@@ -151,9 +150,8 @@
              (update :kvps assoc! attr-key (:default opts)))
            (conj frames)))))
 
-(defn- pull-attr
+(defn- pull-attr                                            ;; TODO: here mapping to ref?
   [db spec eid frames]
-  ;(println "PULLATTR" spec eid)
   (let [[attr-key opts] spec]
     (if (= :db/id attr-key)
       (if (not-empty (db/-datoms db :eavt [eid]))
@@ -162,9 +160,12 @@
         frames)
       (let [attr     (:attr opts)
             forward? (= attr-key attr)
+            a (if (get-in db [:config :attribute-refs?])
+                (get-in db [:ident-ref-map attr])
+                attr)
             results  (if forward?
-                       (db/-datoms db :eavt [eid attr])
-                       (db/-datoms db :avet [attr eid]))]
+                       (db/-datoms db :eavt [eid a])
+                       (db/-datoms db :avet [a eid]))]
         (pull-attr-datoms db attr-key attr eid forward?
                           results opts frames)))))
 
@@ -231,7 +232,6 @@
 
 (defn- pull-pattern-frame
   [db [frame & frames]]
-  ;(println "PULLPATTERNFRAME" frame)
   (if-let [eids (seq (:eids frame))]
     (if (:wildcard? frame)
       (pull-wildcard db
@@ -242,7 +242,6 @@
                      frames)
       (if-let [specs (seq (:specs frame))]
         (let [spec       (first specs)
-              pattern    (:pattern frame)
               new-frames (conj frames (assoc frame :specs (rest specs)))]
           (pull-attr db spec (first eids) new-frames))
         (->> frame :kvps persistent! not-empty
@@ -253,7 +252,6 @@
 
 (defn- pull-pattern
   [db frames]
-  ; (println "PULLPATTERN" frames)
   (case (:state (first frames))
     :expand     (recur db (pull-expand-frame db frames))
     :expand-rev (recur db (pull-expand-reverse-frame db frames))
@@ -271,7 +269,6 @@
 
 (defn pull-spec
   [db pattern eids multi?]
-  ; (println "PULLSPEC" pattern)
   (let [eids (into [] (map #(db/entid-strict db %)) eids)]
     (pull-pattern db (list (initial-frame pattern eids multi?)))))
 

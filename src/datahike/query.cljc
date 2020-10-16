@@ -455,14 +455,14 @@
     (assoc a
            :tuples (filterv #(nil? (hash (key-fn-a %))) tuples-a))))
 
-(defn lookup-pattern-db [db pattern]
+(defn lookup-pattern-db [db pattern]                        ;; TODO translate attrib here?
   ;; TODO optimize with bound attrs min/max values here
   (let [search-pattern (mapv #(if (symbol? %) nil %) pattern)
         datoms (db/-search db search-pattern)
         attr->prop (->> (map vector pattern ["e" "a" "v" "tx" "added"])
                         (filter (fn [[s _]] (free-var? s)))
                         (into {}))]
-    (Relation. attr->prop datoms)))
+    (Relation. attr->prop  datoms)))
 
 (defn matches-pattern? [pattern tuple]
   (loop [tuple tuple
@@ -494,7 +494,7 @@
     :else
     (lookup-pattern-coll source pattern)))
 
-(defn collapse-rels [rels new-rel]
+(defn collapse-rels [rels new-rel]                          ;;TODO: here filtering with attrs?
   (loop [rels rels
          new-rel new-rel
          acc []]
@@ -739,7 +739,10 @@
     pattern))
 
 (defn dynamic-lookup-attrs [source pattern]
-  (let [[e a v tx] pattern]
+  (let [{:keys [config ident-ref-map]} source
+        [e a v tx] pattern
+        ;a (if (:attribute-refs? config) (get ident-ref-map a-raw) a-raw)
+        ]
     (cond-> #{}
       (free-var? e) (conj e)
       (free-var? tx) (conj tx)

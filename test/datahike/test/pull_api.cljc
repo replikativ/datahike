@@ -60,8 +60,6 @@
    (map (fn [[e a v]] (d/datom e a v tx0)))))
 
 (def test-db (d/init-db test-datoms test-schema))
-{:name "David" :_child [{:db/id 1}]}
-(d/pull test-db '[:name :_child] 2)
 
 (deftest test-pull-attr-spec
   (is (= {:name "Petr" :aka ["Devil" "Tupen"]}
