@@ -739,10 +739,7 @@
     pattern))
 
 (defn dynamic-lookup-attrs [source pattern]
-  (let [{:keys [config ident-ref-map]} source
-        [e a v tx] pattern
-        ;a (if (:attribute-refs? config) (get ident-ref-map a-raw) a-raw)
-        ]
+  (let [[e a v tx] pattern]
     (cond-> #{}
       (free-var? e) (conj e)
       (free-var? tx) (conj tx)

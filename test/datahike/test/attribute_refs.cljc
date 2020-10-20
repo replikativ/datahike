@@ -10,7 +10,6 @@
                    [java.util Date]
                    [datahike.datom Datom])))
 
-
 (def no-ref-cfg
   {:store              {:backend :mem :id "attr-no-refs-test"}
    :keep-history?      true
@@ -108,7 +107,6 @@
         (is (= (:schema @conn)
                (merge c/ref-implicit-schema {:name (first simple-schema)} {(+ 1 c/ue0) :name})))))))
 
-
 (deftest test-transact-tempid
   (let [simple-schema [{:db/ident       :name
                         :db/cardinality :db.cardinality/one
@@ -155,15 +153,14 @@
         (is (= (keyword-attrs tx-data)
                #{}))))))
 
-
 (deftest test-system-enum-resolution
   (let [schema [{:db/ident       :name
                  :db/cardinality :db.cardinality/one
                  :db/valueType   :db.type/string}]
         unresolved-enums (fn [datoms] (->> datoms
-                                (filter (fn [datom] (keyword? (:v datom))))
-                                (map :v)
-                                set))]
+                                           (filter (fn [datom] (keyword? (:v datom))))
+                                           (map :v)
+                                           set))]
     (testing "Do not resolve enums in keyword DB"
       (let [conn (start-db no-ref-cfg)
             tx-data (:tx-data (d/transact conn schema))]
@@ -175,7 +172,6 @@
             tx-data (:tx-data (d/transact conn schema))]
         (is (= (unresolved-enums tx-data)
                #{:name}))))))
-
 
 (deftest test-indexing
   (let [schema [{:db/ident       :name
@@ -211,7 +207,6 @@
         (is (= (difference (avet-a-v @conn) initial-avet)
                #{[(ref :name) "Alice"] [1 :age] [1 :name]}))))))
 
-
 (deftest test-transact-nested-data
   (let [schema [{:db/ident       :name
                  :db/cardinality :db.cardinality/one
@@ -239,89 +234,82 @@
         (is (= 1 (count (find-alices @conn))))
         (is (= 1 (count (find-bobs @conn))))))))
 
-
 #_(deftest test-transact-data-with-keyword-attr
-  (testing "Keyword transaction in keyword DB"
-    (let [conn     (start-db no-ref-cfg)
-          next-eid (inc (:max-eid @conn))]
-      (d/transact conn [[:db/add next-eid :db/ident :name]])))
+    (testing "Keyword transaction in keyword DB"
+      (let [conn     (start-db no-ref-cfg)
+            next-eid (inc (:max-eid @conn))]
+        (d/transact conn [[:db/add next-eid :db/ident :name]])))
 
-  (testing "Keyword transaction in reference DB"
-    (let [conn     (start-db ref-cfg)
-          next-eid (inc (:max-eid @conn))]
-      (is (thrown-msg?
-            "Bad attribute type for: :db/ident, expected number"
-            (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
-
+    (testing "Keyword transaction in reference DB"
+      (let [conn     (start-db ref-cfg)
+            next-eid (inc (:max-eid @conn))]
+        (is (thrown-msg?
+             "Bad attribute type for: :db/ident, expected number"
+             (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
 #_(deftest test-transact-data-with-reference-attr
-  (testing "Reference transaction in keyword DB"
-    (let [conn     (start-db no-ref-cfg)
-          next-eid (inc (:max-eid @conn))]
-      (is (thrown-msg?
-            "Bad attribute type for: 1, expected  keyword or string"
-            (d/transact conn [[:db/add next-eid 1 :name]])))))
+    (testing "Reference transaction in keyword DB"
+      (let [conn     (start-db no-ref-cfg)
+            next-eid (inc (:max-eid @conn))]
+        (is (thrown-msg?
+             "Bad attribute type for: 1, expected  keyword or string"
+             (d/transact conn [[:db/add next-eid 1 :name]])))))
 
-  (testing "Reference transaction in reference DB"
-    (let [conn     (start-db ref-cfg)
-          next-eid (inc (:max-eid @conn))]
-      (d/transact conn [[:db/add next-eid 1 :name]]))))
-
+    (testing "Reference transaction in reference DB"
+      (let [conn     (start-db ref-cfg)
+            next-eid (inc (:max-eid @conn))]
+        (d/transact conn [[:db/add next-eid 1 :name]]))))
 
 #_(deftest test-system-schema-protection
-  (let [conn (start-db ref-cfg)]
-    (testing "Transact sequential system schema update"
-      (thrown-msg?
-        "System schema entity cannot be changed"
-        (d/transact conn [[:db/add 1 1 :name]])))
+    (let [conn (start-db ref-cfg)]
+      (testing "Transact sequential system schema update"
+        (thrown-msg?
+         "System schema entity cannot be changed"
+         (d/transact conn [[:db/add 1 1 :name]])))
 
-    (testing "Transact system schema update as map"
-      (thrown-msg?
-        "System schema entity cannot be changed"
-        (d/transact conn [{:db/id 1 :db/ident :name}])))))
-
+      (testing "Transact system schema update as map"
+        (thrown-msg?
+         "System schema entity cannot be changed"
+         (d/transact conn [{:db/id 1 :db/ident :name}])))))
 
 #_(deftest test-system-attribute-protection
-  (testing "Use system keyword for schema in keyword DB"
-    (let [conn (start-db no-ref-cfg)]
-      (thrown-msg?
-        "Using system attribute names as attribute identifier is not allowed"
-        (d/transact conn [{:db/ident :db/unique}]))))
+    (testing "Use system keyword for schema in keyword DB"
+      (let [conn (start-db no-ref-cfg)]
+        (thrown-msg?
+         "Using system attribute names as attribute identifier is not allowed"
+         (d/transact conn [{:db/ident :db/unique}]))))
 
-  (testing "Use system keyword for schema in keyword DB"
-    (let [conn (start-db ref-cfg)]
-      (thrown-msg?
-        "Using system attribute names as attribute identifier is not allowed"
-        (d/transact conn [{:db/ident :db/unique}])))))
-
+    (testing "Use system keyword for schema in keyword DB"
+      (let [conn (start-db ref-cfg)]
+        (thrown-msg?
+         "Using system attribute names as attribute identifier is not allowed"
+         (d/transact conn [{:db/ident :db/unique}])))))
 
 #_(deftest test-system-enum-protection
-  (testing "Use system keyword for schema in keyword DB"
-    (let [conn (start-db no-ref-cfg)]
-      (thrown-msg?
-        "Using system attribute names as attribute identifier is not allowed"
-        (d/transact conn [{:db/ident :db.cardinality/many}]))))
+    (testing "Use system keyword for schema in keyword DB"
+      (let [conn (start-db no-ref-cfg)]
+        (thrown-msg?
+         "Using system attribute names as attribute identifier is not allowed"
+         (d/transact conn [{:db/ident :db.cardinality/many}]))))
 
-  (testing "Use system keyword for schema in keyword DB"
-    (let [conn (start-db ref-cfg)]
-      (thrown-msg?
-        "Using system attribute names as attribute identifier is not allowed"
-        (d/transact conn [{:db/ident :db.cardinality/many}])))))
-
+    (testing "Use system keyword for schema in keyword DB"
+      (let [conn (start-db ref-cfg)]
+        (thrown-msg?
+         "Using system attribute names as attribute identifier is not allowed"
+         (d/transact conn [{:db/ident :db.cardinality/many}])))))
 
 #_(deftest test-read-schema               ;; thrown-msg not working? intended behavior?
-  (testing "No error in combination with schema-flexibility read for keyword DB"
-    (let [read-no-ref-cfg (assoc no-ref-cfg :schema-flexibility :read)]
-      (db/empty-db nil read-no-ref-cfg)
-      (db/init-db [] nil read-no-ref-cfg)))
+    (testing "No error in combination with schema-flexibility read for keyword DB"
+      (let [read-no-ref-cfg (assoc no-ref-cfg :schema-flexibility :read)]
+        (db/empty-db nil read-no-ref-cfg)
+        (db/init-db [] nil read-no-ref-cfg)))
 
-  (testing "Error in combination with schema-flexibility read for reference DB"
-    (let [read-ref-cfg (assoc ref-cfg :schema-flexibility :read)]
-      (is (thrown-msg? "Attribute references cannot be used with schema-flexibility ':read'."
-                       (db/empty-db nil read-ref-cfg)))
-      (is (thrown-msg? "Attribute references cannot be used with schema-flexibility ':read'."
-                       (db/init-db [] nil read-ref-cfg))))))
-
+    (testing "Error in combination with schema-flexibility read for reference DB"
+      (let [read-ref-cfg (assoc ref-cfg :schema-flexibility :read)]
+        (is (thrown-msg? "Attribute references cannot be used with schema-flexibility ':read'."
+                         (db/empty-db nil read-ref-cfg)))
+        (is (thrown-msg? "Attribute references cannot be used with schema-flexibility ':read'."
+                         (db/init-db [] nil read-ref-cfg))))))
 
 (deftest test-query-ref-db
   (let [conn (start-db ref-cfg)

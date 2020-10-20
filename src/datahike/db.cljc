@@ -1137,11 +1137,11 @@
            {:error :transact/syntax, :entity-id eid, :context at})))
 
 (defn- validate-attr [attr at {:keys [config ref-ident-map rschema] :as db}]
-  (let [a-ident (if (number? attr) (ref-ident-map attr) attr)]
-    (if (= :read (:schema-flexibility config))
-      (when-not (or (keyword? a-ident) (string? a-ident))
-        (raise "Bad entity attribute " a-ident " at " at ", expected keyword or string"
-               {:error :transact/syntax, :attribute a-ident, :context at}))
+  (if (= :read (:schema-flexibility config))                ;; no attribute references possible
+    (when-not (or (keyword? attr) (string? attr))
+      (raise "Bad entity attribute " attr " at " at ", expected keyword or string"
+             {:error :transact/syntax, :attribute attr, :context at}))
+    (let [a-ident (if (number? attr) (ref-ident-map attr) attr)]
       (when-not (or (ds/meta-attr? a-ident) (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident))
         (if-let [db-idents (:db/ident rschema)]
           (let [attr (if (reverse-ref? a-ident)
@@ -1268,7 +1268,7 @@
                {:error :retract/schema :attribute v-ident})
         (-> (assoc-in db [:schema e] (dissoc (schema v-ident) a-ident))
             (update-in [:schema] #(dissoc % v-ident))
-            (update-in [:ident-ref-map] #(dissoc % e))      ;; TODO: correct?
+            (update-in [:ident-ref-map] #(dissoc % e))
             (update-in [:ref-ident-map] #(dissoc % v-ident))))
       (if-let [schema-entry (schema e)]
         (if (schema schema-entry)
@@ -1634,13 +1634,6 @@
 
           (sequential? entity)
           (let [[op e a v] entity]
-            (if attribute-refs?
-              (when (not (number? a))                   ;; TODO: keep or allow flexibility?
-                (raise "Bad attribute type for: " a ", expected number"
-                       {:error :transact/syntax, :attribute a, :context entity}))
-              (when (not (or (keyword? a) (string? a)))
-                (raise "Bad attribute type for: " a ", expected keyword or string"
-                       {:error :transact/syntax, :attribute a, :context entity})))
             (cond
               (= op :db.fn/call)
               (let [[_ f & args] entity]

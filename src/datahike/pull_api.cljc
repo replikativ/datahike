@@ -150,7 +150,7 @@
              (update :kvps assoc! attr-key (:default opts)))
            (conj frames)))))
 
-(defn- pull-attr                                            ;; TODO: here mapping to ref?
+(defn- pull-attr
   [db spec eid frames]
   (let [[attr-key opts] spec]
     (if (= :db/id attr-key)
@@ -160,8 +160,8 @@
         frames)
       (let [attr     (:attr opts)
             forward? (= attr-key attr)
-            a (if (get-in db [:config :attribute-refs?])
-                (get-in db [:ident-ref-map attr])
+            a (if (and (:attribute-refs? (db/-config db)) (not (number? attr)))
+                (get (db/-ident-ref-map db) attr)
                 attr)
             results  (if forward?
                        (db/-datoms db :eavt [eid a])

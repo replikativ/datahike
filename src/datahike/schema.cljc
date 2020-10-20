@@ -205,4 +205,4 @@
          false)))
 
 (defn get-user-schema [{:keys [schema] :as db}]
-  (into {} (filter #(not= (namespace (key %)) "db") schema)))
+  (into {} (filter #(not (is-system-keyword? (key %)) ) schema)))
