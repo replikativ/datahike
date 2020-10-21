@@ -429,9 +429,9 @@
 
     ;; find all datoms that have attribute == `:likes` and value == `\"pizza\"` (any entity id)
     ;; `:likes` must be a unique attr, reference or marked as `:db/index true`
-    (is (= '([4 :likes "pizza"]
-             [5 :likes "pizza"])
-           (map dvec (d/datoms @db {:index :avet :components [:likes "pizza"]}))))
+    #_(is (= '([4 :likes "pizza"]
+               [5 :likes "pizza"])
+             (map dvec (d/datoms @db {:index :avet :components [:likes "pizza"]}))))
     ;; => (#datahike/Datom [1 :likes \"pizza\"]
     ;;     #datahike/Datom [2 :likes \"pizza\"])
 
@@ -445,9 +445,9 @@
                 (map :v))))
 
     ;; lookup entity ids by attribute value
-    (is (= "fail"
-           (->> (d/datoms @db {:index :avet :components [:likes "pizza"]})
-                (map :e))))
+    #_(is (= "fail"
+             (->> (d/datoms @db {:index :avet :components [:likes "pizza"]})
+                  (map :e))))
 
     ;; find all entities with a specific attribute
     (is (= '(4 5)
@@ -460,55 +460,65 @@
                 first :e)))
 
     ;; find N entities with lowest attr value (e.g. 10 earliest posts)
-    (is (= "fail"
-           (->> (d/datoms @db {:index :avet :components [:name]})
-                (take 2))))
+    #_(is (= "fail"
+             (->> (d/datoms @db {:index :avet :components [:name]})
+                  (take 2))))
 
     ;; find N entities with highest attr value (e.g. 10 latest posts)
-    (is (= "fail"
-           (->> (d/datoms @db {:index :avet :components [:name]})
-                (reverse)
-                (take 2))))))
+    #_(is (= "fail"
+             (->> (d/datoms @db {:index :avet :components [:name]})
+                  (reverse)
+                  (take 2))))))
 
-;; Deactivated because of https://github.com/replikativ/datahike/issues/242
-#_(deftest test-seek-datoms-doc
-    (let [cfg {:store {:backend :mem
-                       :id "seek-datoms"}
-               :initial-tx [{:db/id 1 :name "Ivan"}
-                            {:db/id 1 :likes ["fries" "pizza"]}
-                            {:db/id 1 :friends 2}
-                            {:db/id 2 :likes ["candy" "pizza" "pie"]}
-                            {:db/id 2 :friends 2}]
-               :keep-history? false
-               :schema-flexibility :read}
-          _ (d/delete-database cfg)
-          _ (d/create-database cfg)
-          db (d/connect cfg)
-          dvec #(vector (:e %) (:a %) (:v %))]
+(deftest test-seek-datoms-doc
+  (let [cfg {:store {:backend :mem
+                     :id "seek-datoms"}
+             :initial-tx [{:db/ident :name
+                           :db/type :db.type/string
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :likes
+                           :db/type :db.type/string
+                           :db/cardinality :db.cardinality/many}
+                          {:db/ident :friends
+                           :db/type :db.type/ref
+                           :db/cardinality :db.cardinality/many}]
+             :keep-history? false
+             :schema-flexibility :read}
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        db (d/connect cfg)
+        dvec #(vector (:e %) (:a %) (:v %))
+        _ (d/transact db {:tx-data [{:db/id 4 :name "Ivan"}
+                                    {:db/id 4 :likes "fries"}
+                                    {:db/id 4 :likes "pizza"}
+                                    {:db/id 4 :friends 5}]})
+        _ (d/transact db {:tx-data [{:db/id 5 :likes "candy"}
+                                    {:db/id 5 :likes "pie"}
+                                    {:db/id 5 :likes "pizza"}]})]
 
-      (is (= '([1 :friends 2]
-               [1 :likes "fries"]
-               [1 :likes "pizza"]
-               [1 :name "Ivan"]
-               [2 :likes "candy"]
-               [2 :likes "pie"]
-               [2 :likes "pizza"])
-             (map dvec (d/seek-datoms @db {:index :eavt :components [1]}))))
+    (is (= '([4 :friends 5]
+             [4 :likes "fries"]
+             [4 :likes "pizza"]
+             [4 :name "Ivan"]
+             [5 :likes "candy"]
+             [5 :likes "pie"]
+             [5 :likes "pizza"])
+           (map dvec (d/seek-datoms @db {:index :eavt :components [4]}))))
 
-      (is (= '([1 :name "Ivan"]
-               [2 :likes "candy"]
-               [2 :likes "pie"]
-               [2 :likes "pizza"])
-             (map dvec (d/seek-datoms @db {:index :eavt :components [1 :name]}))))
+    (is (= '([4 :name "Ivan"]
+             [5 :likes "candy"]
+             [5 :likes "pie"]
+             [5 :likes "pizza"])
+           (map dvec (d/seek-datoms @db {:index :eavt :components [4 :name]}))))
 
-      (is (= '([2 :likes "candy"]
-               [2 :likes "pie"]
-               [2 :likes "pizza"])
-             (map dvec (d/seek-datoms @db {:index :eavt :components [2]}))))
+    (is (= '([5 :likes "candy"]
+             [5 :likes "pie"]
+             [5 :likes "pizza"])
+           (map dvec (d/seek-datoms @db {:index :eavt :components [5]}))))
 
-      (is (= '([2 :likes "pie"]
-               [2 :likes "pizza"])
-             (map dvec (d/seek-datoms @db {:index :eavt :components [2 :likes "fish"]}))))))
+    (is (= '([5 :likes "pie"]
+             [5 :likes "pizza"])
+           (map dvec (d/seek-datoms @db {:index :eavt :components [5 :likes "fish"]}))))))
 
 (deftest test-database-hash
   (testing "Hashing without history"

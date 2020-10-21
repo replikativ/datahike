@@ -381,31 +381,31 @@
 
                              Usage:
 
-                                 (seek-datoms db {:index :eavt
-                                                  :components [1]}) ; => (#datahike/Datom [1 :friends 2]
-                                                                          #datahike/Datom [1 :likes \"fries\"]
-                                                                          #datahike/Datom [1 :likes \"pizza\"]
-                                                                          #datahike/Datom [1 :name \"Ivan\"]
-                                                                          #datahike/Datom [2 :likes \"candy\"]
-                                                                          #datahike/Datom [2 :likes \"pie\"]
-                                                                          #datahike/Datom [2 :likes \"pizza\"])
+                                 (seek-datoms @db {:index :eavt
+                                                   :components [1]}) ; => (#datahike/Datom [1 :friends 2]
+                                                                           #datahike/Datom [1 :likes \"fries\"]
+                                                                           #datahike/Datom [1 :likes \"pizza\"]
+                                                                           #datahike/Datom [1 :name \"Ivan\"]
+                                                                           #datahike/Datom [2 :likes \"candy\"]
+                                                                           #datahike/Datom [2 :likes \"pie\"]
+                                                                           #datahike/Datom [2 :likes \"pizza\"])
 
-                                 (seek-datoms db {:index :eavt
-                                                  :components [1 :name]}) ; => (#datahike/Datom [1 :name \"Ivan\"]
-                                                                                #datahike/Datom [2 :likes \"candy\"]
-                                                                                #datahike/Datom [2 :likes \"pie\"]
-                                                                                #datahike/Datom [2 :likes \"pizza\"])
+                                 (seek-datoms @db {:index :eavt
+                                                   :components [1 :name]}) ; => (#datahike/Datom [1 :name \"Ivan\"]
+                                                                                 #datahike/Datom [2 :likes \"candy\"]
+                                                                                 #datahike/Datom [2 :likes \"pie\"]
+                                                                                 #datahike/Datom [2 :likes \"pizza\"])
 
-                                 (seek-datoms db {:index :eavt
-                                                  :components [2]}) ; => (#datahike/Datom [2 :likes \"candy\"]
-                                                                          #datahike/Datom [2 :likes \"pie\"]
-                                                                          #datahike/Datom [2 :likes \"pizza\"])
+                                 (seek-datoms @db {:index :eavt
+                                                   :components [2]}) ; => (#datahike/Datom [2 :likes \"candy\"]
+                                                                           #datahike/Datom [2 :likes \"pie\"]
+                                                                           #datahike/Datom [2 :likes \"pizza\"])
 
                              No datom [2 :likes \"fish\"], so starts with one immediately following such in index
 
-                                 (seek-datoms db {:index :eavt
-                                                  :components [2 :likes \"fish\"]}) ; => (#datahike/Datom [2 :likes \"pie\"]
-                                                                                          #datahike/Datom [2 :likes \"pizza\"])"}
+                                 (seek-datoms @db {:index :eavt
+                                                   :components [2 :likes \"fish\"]}) ; => (#datahike/Datom [2 :likes \"pie\"]
+                                                                                           #datahike/Datom [2 :likes \"pizza\"])"}
   (fn
     ([db arg-map]
      (type arg-map))
