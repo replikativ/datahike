@@ -330,111 +330,145 @@
     (is (= datahike.db.SinceDB
            (type (d/since @conn (java.util.Date.)))))))
 
-;; Deactivated because of https://github.com/replikativ/datahike/issues/242
-#_(deftest test-datoms-docs
-    (let [cfg {:store {:backend :mem
-                       :id "datoms"
-                       :initial-tx [{:db/ident :name
-                                     :db/type :db.type/string
-                                     :db/cardinality :db.cardinality/one}
-                                    {:db/ident :likes
-                                     :db/type :db.type/string
-                                     :db/cardinality :db.cardinality/many}
-                                    {:db/ident :friends
-                                     :db/type :db.type/ref
-                                     :db/cardinality :db.cardinality/many}]}
-               :keep-history? false
-               :schema-flexibility :read}
-          _ (d/delete-database cfg)
-          _ (d/create-database cfg)
-          db (d/connect cfg)
-          _ (d/transact db [{:db/id 1 :name "Ivan"}
-                            {:db/id 1 :likes "fries"}
-                            {:db/id 1 :likes "pizza"}
-                            {:db/id 1 :friends 2}])
-          dvec #(vector (:e %) (:a %) (:v %))]
+(comment
+  (def cfg {:store {:backend :mem
+                             :id "datoms"}
+            :initial-tx [{:db/ident :name
+                          :db/type :db.type/string
+                          :db/cardinality :db.cardinality/one}
+                         {:db/ident :likes
+                          :db/type :db.type/string
+                          :db/cardinality :db.cardinality/many}
+                         {:db/ident :friends
+                          :db/type :db.type/ref
+                          :db/cardinality :db.cardinality/many}]
+            :keep-history? false
+            :schema-flexibility :read})
+  (d/delete-database cfg)
+  (d/create-database cfg)
+  (def db (d/connect cfg))
+  (def dvec #(vector (:e %) (:a %) (:v %)))
+  (d/transact db {:tx-data [{:db/id 4 :name "Ivan"}
+                            {:db/id 4 :likes "fries"}
+                            {:db/id 4 :likes "pizza"}
+                            {:db/id 4 :friends 5}]})
+  (d/transact db {:tx-data [{:db/id 5 :name "Oleg"}
+                            {:db/id 5 :likes "candy"}
+                            {:db/id 5 :likes "pie"}
+                            {:db/id 5 :likes "pizza"}]})
+  (d/datoms @db :avet)
+  (d/datoms @db :avet :likes "pizza")
+  (d/datoms @db :avet :db/ident :likes)
+  (d/datoms @db :eavt))
 
-      ;; find all datoms for entity id == 1 (any attrs and values)
-      ;; sort by attribute, then value
-      (is (= '([1 :friends 2]
-               [1 :likes "fries"]
-               [1 :likes "pizza"]
-               [1 :name "Ivan"])
-             (map dvec (d/datoms @db {:index :eavt :components [1]}))))
-            ;; => (#datahike/Datom [1 :friends 2]
-            ;;     #datahike/Datom [1 :likes \"fries\"]
-            ;;     #datahike/Datom [1 :likes \"pizza\"]
-            ;;     #datahike/Datom [1 :name \"Ivan\"])
+(deftest test-datoms-docs
+  (let [cfg {:store {:backend :mem
+                     :id "datoms"}
+             :initial-tx [{:db/ident :name
+                           :db/type :db.type/string
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :likes
+                           :db/type :db.type/string
+                           :db/cardinality :db.cardinality/many}
+                          {:db/ident :friends
+                           :db/type :db.type/ref
+                           :db/cardinality :db.cardinality/many}]
+             :keep-history? false
+             :schema-flexibility :read}
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        db (d/connect cfg)
+        _ (d/transact db [{:db/id 4 :name "Ivan"}
+                          {:db/id 4 :likes "fries"}
+                          {:db/id 4 :likes "pizza"}
+                          {:db/id 4 :friends 5}])
+        _ (d/transact db [{:db/id 5 :name "Oleg"}
+                          {:db/id 5 :likes "candy"}
+                          {:db/id 5 :likes "pie"}
+                          {:db/id 5 :likes "pizza"}])
+        dvec #(vector (:e %) (:a %) (:v %))]
 
-      ;; find all datoms for entity id == 1 and attribute == :likes (any values)
-      ;; sorted by value
-      (is (= '([1 :likes "fries"]
-               [1 :likes "pizza"])
-             (map dvec (d/datoms @db {:index :eavt :components [1 :likes]}))))
+    ;; find all datoms for entity id == 1 (any attrs and values)
+    ;; sort by attribute, then value
+    (is (= '([4 :friends 5]
+             [4 :likes "fries"]
+             [4 :likes "pizza"]
+             [4 :name "Ivan"])
+           (map dvec (d/datoms @db {:index :eavt :components [4]}))))
+          ;; => (#datahike/Datom [1 :friends 2]
+          ;;     #datahike/Datom [1 :likes \"fries\"]
+          ;;     #datahike/Datom [1 :likes \"pizza\"]
+          ;;     #datahike/Datom [1 :name \"Ivan\"])
+
+    ;; find all datoms for entity id == 1 and attribute == :likes (any values)
+    ;; sorted by value
+    (is (= '([4 :likes "fries"]
+             [4 :likes "pizza"])
+           (map dvec (d/datoms @db {:index :eavt :components [4 :likes]}))))
+    ;; => (#datahike/Datom [1 :likes \"fries\"]
+    ;;     #datahike/Datom [1 :likes \"pizza\"])
+
+    ;; find all datoms for entity id == 1, attribute == :likes and value == \"pizza\"
+    (is (= '([4 :likes "pizza"])
+           (map dvec (d/datoms @db {:index :eavt :components [4 :likes "pizza"]}))))
+    ;; => (#datahike/Datom [1 :likes \"pizza\"])
+
+    ;; find all datoms for attribute == :likes (any entity ids and values)
+    ;; sorted by entity id, then value
+    (is (= '([4 :likes "fries"]
+             [4 :likes "pizza"]
+             [5 :likes "candy"]
+             [5 :likes "pie"]
+             [5 :likes "pizza"])
+           (map dvec (d/datoms @db {:index :aevt :components [:likes]}))))
       ;; => (#datahike/Datom [1 :likes \"fries\"]
-      ;;     #datahike/Datom [1 :likes \"pizza\"])
-
-      ;; find all datoms for entity id == 1, attribute == :likes and value == \"pizza\"
-      (is (= '([1 :likes "pizza"])
-             (map dvec (d/datoms @db {:index :eavt :components [1 :likes "pizza"]}))))
-      ;; => (#datahike/Datom [1 :likes \"pizza\"])
-
-      ;; find all datoms for attribute == :likes (any entity ids and values)
-      ;; sorted by entity id, then value
-      (is (= '([1 :likes "fries"]
-               [1 :likes "pizza"]
-               [2 :likes "candy"]
-               [2 :likes "pie"]
-               [2 :likes "pizza"])
-             (map dvec (d/datoms @db {:index :aevt :components [:likes]}))))
-        ;; => (#datahike/Datom [1 :likes \"fries\"]
-        ;;     #datahike/Datom [1 :likes \"pizza\"]
-        ;;     #datahike/Datom [2 :likes \"candy\"]
-        ;;     #datahike/Datom [2 :likes \"pie\"]
-        ;;     #datahike/Datom [2 :likes \"pizza\"])
-
-      ;; find all datoms that have attribute == `:likes` and value == `\"pizza\"` (any entity id)
-      ;; `:likes` must be a unique attr, reference or marked as `:db/index true`
-      (is (= '([1 :likes "pizza"]
-               [2 :likes "pizza"])
-             (map dvec (d/datoms @db {:index :avet :components [:likes "pizza"]}))))
-      ;; => (#datahike/Datom [1 :likes \"pizza\"]
+      ;;     #datahike/Datom [1 :likes \"pizza\"]
+      ;;     #datahike/Datom [2 :likes \"candy\"]
+      ;;     #datahike/Datom [2 :likes \"pie\"]
       ;;     #datahike/Datom [2 :likes \"pizza\"])
 
-      ;; find all datoms sorted by entity id, then attribute, then value
-      (is (= "fail"
-             (map dvec (d/datoms @db {:index :eavt})))) ; => (...)))
+    ;; find all datoms that have attribute == `:likes` and value == `\"pizza\"` (any entity id)
+    ;; `:likes` must be a unique attr, reference or marked as `:db/index true`
+    (is (= '([4 :likes "pizza"]
+             [5 :likes "pizza"])
+           (map dvec (d/datoms @db {:index :avet :components [:likes "pizza"]}))))
+    ;; => (#datahike/Datom [1 :likes \"pizza\"]
+    ;;     #datahike/Datom [2 :likes \"pizza\"])
 
-      ;; get all values of :db.cardinality/many attribute
-      (is (= "fail"
-             (->> (d/datoms @db {:index :eavt :components [1 :likes]})
-                  (map :v))))
+    ;; find all datoms sorted by entity id, then attribute, then value
+    (is (= '([1 :db/cardinality :db.cardinality/one] [1 :db/ident :name] [1 :db/type :db.type/string] [2 :db/cardinality :db.cardinality/many] [2 :db/ident :likes] [2 :db/type :db.type/string] [3 :db/cardinality :db.cardinality/many] [3 :db/ident :friends] [3 :db/type :db.type/ref] [4 :friends 5] [4 :likes "fries"] [4 :likes "pizza"] [4 :name "Ivan"] [5 :likes "candy"] [5 :likes "pie"] [5 :likes "pizza"] [5 :name "Oleg"])
+           (map dvec (d/datoms @db {:index :eavt})))) ; => (...)))
 
-      ;; lookup entity ids by attribute value
-      (is (= "fail"
-             (->> (d/datoms @db {:index :avet :components [:likes "pizza"]})
-                  (map :e))))
+    ;; get all values of :db.cardinality/many attribute
+    (is (= '("fries" "pizza")
+           (->> (d/datoms @db {:index :eavt :components [4 :likes]})
+                (map :v))))
 
-      ;; find all entities with a specific attribute
-      (is (= "fail"
-             (->> (d/datoms @db {:index :aevt :components [:name]})
-                  (map :e))))
+    ;; lookup entity ids by attribute value
+    (is (= "fail"
+           (->> (d/datoms @db {:index :avet :components [:likes "pizza"]})
+                (map :e))))
 
-      ;; find “singleton” entity by its attr
-      (is (= "fail"
-             (->> (d/datoms @db {:index :aevt :components [:name]})
-                  first :e)))
+    ;; find all entities with a specific attribute
+    (is (= '(4 5)
+           (->> (d/datoms @db {:index :aevt :components [:name]})
+                (map :e))))
 
-      ;; find N entities with lowest attr value (e.g. 10 earliest posts)
-      (is (= "fail"
-             (->> (d/datoms @db {:index :avet :components [:name]})
-                  (take 2))))
+    ;; find “singleton” entity by its attr
+    (is (= 4
+           (->> (d/datoms @db {:index :aevt :components [:name]})
+                first :e)))
 
-      ;; find N entities with highest attr value (e.g. 10 latest posts)
-      (is (= "fail"
-             (->> (d/datoms @db {:index :avet :components [:name]})
-                  (reverse)
-                  (take 2))))))
+    ;; find N entities with lowest attr value (e.g. 10 earliest posts)
+    (is (= "fail"
+           (->> (d/datoms @db {:index :avet :components [:name]})
+                (take 2))))
+
+    ;; find N entities with highest attr value (e.g. 10 latest posts)
+    (is (= "fail"
+           (->> (d/datoms @db {:index :avet :components [:name]})
+                (reverse)
+                (take 2))))))
 
 ;; Deactivated because of https://github.com/replikativ/datahike/issues/242
 #_(deftest test-seek-datoms-doc
