@@ -119,14 +119,14 @@
 
                       ;; check assigned id (here `*1` is a result returned from previous `transact` call)
                       (def report *1)
-                      (:tempids report) ; => {-1 296}
+                      (:tempids report) ; => {-1 296, :db/current-tx 536870913}
 
                       ;; check actual datoms inserted
-                      (:tx-data report) ; => [#datahike/Datom [296 :name \"Ivan\"]]
+                      (:tx-data report) ; => [#datahike/Datom [296 :name \"Ivan\" 536870913]]
 
                       ;; tempid can also be a string
                       (transact conn [[:db/add \"ivan\" :name \"Ivan\"]])
-                      (:tempids *1) ; => {\"ivan\" 297}
+                      (:tempids *1) ; => {\"ivan\" 5, :db/current-tx 536870920}
 
                       ;; reference another entity (must exist)
                       (transact conn [[:db/add -1 :friend 296]])

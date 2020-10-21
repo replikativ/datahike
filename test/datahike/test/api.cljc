@@ -36,35 +36,31 @@
            (map dvec (:tx-data (d/transact conn {:tx-data [[:db/add -1 :name "Ivan"]]})))))
 
     ;; check assigned id (here `*1` is a result returned from previous `transact` call)
-    (def report *1)
-    (is (= {-1 296}
-           (:tempids report))) ; => {-1 296}
+    (is (= {-1 3, :db/current-tx 536870918}
+           (:tempids (d/transact conn {:tx-data [[:db/add -1 :name "Ivan"]]}))))
 
     ;; check actual datoms inserted
-    (is (= [296 :name "Ivan"]
-           (:tx-data report))) ; => [#datahike/Datom [296 :name "Ivan"]]
+    (is (= '([4 :name "Ivan"])
+           (map dvec (:tx-data (d/transact conn {:tx-data [[:db/add -1 :name "Ivan"]]}))))) ; => [#datahike/Datom [296 :name "Ivan"]]
 
     ;; tempid can also be a string
-    (is (= '([3 :name "Ivan"])
-           (map dvec (:tx-data (d/transact conn {:tx-data [[:db/add "ivan" :name "Ivan"]]})))))
-
-    (is (= {"ivan" 297}
-           (:tempids *1))) ; => {"ivan" 297}
+    (is (= {"ivan" 5, :db/current-tx 536870920}
+           (:tempids (d/transact conn {:tx-data [[:db/add "ivan" :name "Ivan"]]}))))
 
     ;; reference another entity (must exist)
-    (is (= '([4 :friend 296])
+    (is (= '([6 :friend 296])
            (map dvec (:tx-data (d/transact conn {:tx-data [[:db/add -1 :friend 296]]})))))
 
     ;; create an entity and set multiple attributes (in a single transaction
     ;; equal tempids will be replaced with the same unused yet entid)
-    (is (= '([5 :name "Ivan"] [5 :likes "fries"] [5 :likes "fries"] [5 :likes "pizza"] [5 :friend 296])
+    (is (= '([7 :name "Ivan"] [7 :likes "fries"] [7 :likes "fries"] [7 :likes "pizza"] [7 :friend 296])
            (map dvec (:tx-data (d/transact conn {:tx-data [[:db/add -1 :name "Ivan"]
                                                            [:db/add -1 :likes "fries"]
                                                            [:db/add -1 :likes "pizza"]
                                                            [:db/add -1 :friend 296]]})))))
 
     ;; create an entity and set multiple attributes (alternative map form)
-    (is (= '([6 :name "Ivan"] [6 :likes ["fries" "pizza"]] [6 :friend 296])
+    (is (= '([8 :name "Ivan"] [8 :likes ["fries" "pizza"]] [8 :friend 296])
            (map dvec (:tx-data (d/transact conn {:tx-data [{:db/id  -1
                                                             :name   "Ivan"
                                                             :likes  ["fries" "pizza"]
