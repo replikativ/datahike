@@ -294,72 +294,114 @@
         _ (d/create-database cfg)
         conn (d/connect cfg)]
     (is (= datahike.db.DB
-           (type (d/db conn))))))
+           (type (d/db conn))))
+    (is (= datahike.db.DB
+           (type @conn)))))
 
 (deftest test-history-docs
   (let [cfg {:store {:backend :mem
                      :id "history"}
+             :initial-tx [{:db/ident :name
+                           :db/valueType :db.type/string
+                           :db/unique :db.unique/identity
+                           :db/index true
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :age
+                           :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}]
              :keep-history? true
              :schema-flexibility :read}
         _ (d/delete-database cfg)
         _ (d/create-database cfg)
         conn (d/connect cfg)]
-    (is (= datahike.db.HistoricalDB
-           (type (d/history @conn))))))
+
+    (d/transact conn {:tx-data [{:name "Alice" :age 25} {:name "Bob" :age 30}]})
+
+    (is (= #{["Alice" 25] ["Bob" 30]}
+           (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                 :args [(d/history (d/db conn))]})))
+
+    (d/transact conn {:tx-data [{:db/id [:name "Alice"] :age 35}]})
+
+    (is (= #{["Alice" 35] ["Bob" 30]}
+           (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                 :args [(d/db conn)]})))
+
+    (is (= #{["Alice" 25] ["Alice" 35] ["Bob" 30]}
+           (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                 :args [(d/history (d/db conn))]})))))
 
 (deftest test-as-of-docs
   (let [cfg {:store {:backend :mem
                      :id "as-of"}
-             :keep-history? true
-             :schema-flexibility :read}
-        _ (d/delete-database cfg)
-        _ (d/create-database cfg)
-        conn (d/connect cfg)
-        date (java.util.Date.)]
-    (is (= datahike.db.AsOfDB
-           (type (d/as-of @conn date))))))
-
-(deftest test-since-docs
-  (let [cfg {:store {:backend :mem
-                     :id "since"}
+             :initial-tx [{:db/ident :name
+                           :db/valueType :db.type/string
+                           :db/unique :db.unique/identity
+                           :db/index true
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :age
+                           :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}]
              :keep-history? true
              :schema-flexibility :read}
         _ (d/delete-database cfg)
         _ (d/create-database cfg)
         conn (d/connect cfg)]
-    (is (= datahike.db.SinceDB
-           (type (d/since @conn (java.util.Date.)))))))
 
-(comment
-  (def cfg {:store {:backend :mem
-                             :id "datoms"}
-            :initial-tx [{:db/ident :name
-                          :db/type :db.type/string
-                          :db/cardinality :db.cardinality/one}
-                         {:db/ident :likes
-                          :db/type :db.type/string
-                          :db/cardinality :db.cardinality/many}
-                         {:db/ident :friends
-                          :db/type :db.type/ref
-                          :db/cardinality :db.cardinality/many}]
-            :keep-history? false
-            :schema-flexibility :read})
-  (d/delete-database cfg)
-  (d/create-database cfg)
-  (def db (d/connect cfg))
-  (def dvec #(vector (:e %) (:a %) (:v %)))
-  (d/transact db {:tx-data [{:db/id 4 :name "Ivan"}
-                            {:db/id 4 :likes "fries"}
-                            {:db/id 4 :likes "pizza"}
-                            {:db/id 4 :friends 5}]})
-  (d/transact db {:tx-data [{:db/id 5 :name "Oleg"}
-                            {:db/id 5 :likes "candy"}
-                            {:db/id 5 :likes "pie"}
-                            {:db/id 5 :likes "pizza"}]})
-  (d/datoms @db :avet)
-  (d/datoms @db :avet :likes "pizza")
-  (d/datoms @db :avet :db/ident :likes)
-  (d/datoms @db :eavt))
+    (d/transact conn {:tx-data [{:name "Alice" :age 25} {:name "Bob" :age 30}]})
+
+    (Thread/sleep 100)
+
+    (def date (java.util.Date.))
+
+    (d/transact conn {:tx-data [{:db/id [:name "Alice"] :age 35}]})
+
+    (is (= #{["Alice" 25] ["Bob" 30]}
+           (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                 :args [(d/as-of (d/db conn) date)]})))
+
+    (is (= #{["Alice" 35] ["Bob" 30]}
+           (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                 :args [(d/db conn)]})))))
+
+(deftest test-since-docs
+  (let [cfg {:store {:backend :mem
+                     :id "since"}
+             :initial-tx [{:db/ident :name
+                           :db/valueType :db.type/string
+                           :db/unique :db.unique/identity
+                           :db/index true
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :age
+                           :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}]
+             :keep-history? true
+             :schema-flexibility :read}
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (d/transact conn {:tx-data [{:name "Alice" :age 25} {:name "Bob" :age 30}]})
+
+    (Thread/sleep 100)
+
+    (def date (java.util.Date.))
+
+    (Thread/sleep 100)
+
+    (d/transact conn [{:db/id [:name "Alice"] :age 30}])
+
+    (is (= #{["Alice" 30]}
+           (d/q '[:find ?n ?a
+                  :in $ $since
+                  :where
+                  [$ ?e :name ?n]
+                  [$since ?e :age ?a]]
+               @conn
+               (d/since @conn date))))
+
+    (is (= #{["Alice" 30] ["Bob" 30]
+               (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                     :args [(d/db conn)]})}))))
 
 (deftest test-datoms-docs
   (let [cfg {:store {:backend :mem
@@ -429,9 +471,9 @@
 
     ;; find all datoms that have attribute == `:likes` and value == `\"pizza\"` (any entity id)
     ;; `:likes` must be a unique attr, reference or marked as `:db/index true`
-    #_(is (= '([4 :likes "pizza"]
-               [5 :likes "pizza"])
-             (map dvec (d/datoms @db {:index :avet :components [:likes "pizza"]}))))
+    (is (= '([4 :likes "pizza"]
+             [5 :likes "pizza"])
+           (map dvec (d/datoms @db {:index :avet :components [:likes "pizza"]}))))
     ;; => (#datahike/Datom [1 :likes \"pizza\"]
     ;;     #datahike/Datom [2 :likes \"pizza\"])
 
@@ -445,9 +487,9 @@
                 (map :v))))
 
     ;; lookup entity ids by attribute value
-    #_(is (= "fail"
-             (->> (d/datoms @db {:index :avet :components [:likes "pizza"]})
-                  (map :e))))
+    (is (= "fail"
+           (->> (d/datoms @db {:index :avet :components [:likes "pizza"]})
+                (map :e))))
 
     ;; find all entities with a specific attribute
     (is (= '(4 5)
@@ -460,15 +502,15 @@
                 first :e)))
 
     ;; find N entities with lowest attr value (e.g. 10 earliest posts)
-    #_(is (= "fail"
-             (->> (d/datoms @db {:index :avet :components [:name]})
-                  (take 2))))
+    (is (= "fail"
+           (->> (d/datoms @db {:index :avet :components [:name]})
+                (take 2))))
 
     ;; find N entities with highest attr value (e.g. 10 latest posts)
-    #_(is (= "fail"
-             (->> (d/datoms @db {:index :avet :components [:name]})
-                  (reverse)
-                  (take 2))))))
+    (is (= "fail"
+           (->> (d/datoms @db {:index :avet :components [:name]})
+                (reverse)
+                (take 2))))))
 
 (deftest test-seek-datoms-doc
   (let [cfg {:store {:backend :mem

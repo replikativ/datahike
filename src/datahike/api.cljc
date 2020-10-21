@@ -401,7 +401,7 @@
                                                                            #datahike/Datom [2 :likes \"pie\"]
                                                                            #datahike/Datom [2 :likes \"pizza\"])
 
-                             No datom [2 :likes \"fish\"], so starts with one immediately following such in index
+                             No datom `[2 :likes \"fish\"]`, so starts with one immediately following such in index
 
                                  (seek-datoms @db {:index :eavt
                                                    :components [2 :likes \"fish\"]}) ; => (#datahike/Datom [2 :likes \"pie\"]
@@ -575,30 +575,102 @@
   [conn]
   @conn)
 
-(defn history
-  "Returns the full historical state of the database you may interact with."
-  [db]
-  (if (db/-temporal-index? db)
-    (HistoricalDB. db)
-    (throw (ex-info "history is only allowed on temporal indexed databases." {:config (db/-config db)}))))
+(def ^{:arglists '([db])
+       :doc "Returns the full historical state of the database you may interact with.
 
-(defn- date? [d]
+                 (d/transact conn {:tx-data [{:db/ident :name
+                                              :db/valueType :db.type/string
+                                              :db/unique :db.unique/identity
+                                              :db/index true
+                                              :db/cardinality :db.cardinality/one}
+                                             {:db/ident :age
+                                              :db/valueType :db.type/long
+                                              :db/cardinality :db.cardinality/one}]})
+
+                 (d/transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
+
+                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                       :args [(d/history (d/db conn))]})                          ; => #{[\"Alice\" 25] [\"Bob\" 30}
+
+                 (d/transact conn {:tx-data [{:db/id [:name \"Alice\"] :age 35}]})
+
+                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                       :args [(d/db (d/db conn))]})                               ; => #{[\"Alice\" 35] [\"Bob\" 30}
+
+                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                       :args [(d/history (d/db conn))]})                          ; => #{[\"Alice\" 25] [\"Bob\" 30}"}
+  history
+  (fn [db]
+    (if (db/-temporal-index? db)
+      (HistoricalDB. db)
+      (throw (ex-info "history is only allowed on temporal indexed databases." {:config (db/-config db)})))))
+
+(defn- ^:no-doc date? [d]
   #?(:cljs (instance? js/Date d)
      :clj  (instance? Date d)))
 
-(defn as-of
-  "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long)."
-  [db time-point]
-  {:pre [(or (int? time-point) (date? time-point))]}
-  (if (db/-temporal-index? db)
-    (AsOfDB. db time-point)
-    (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
+(def ^{:arglists '([db time-point])
+       :doc "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long).
 
-(defn since
-  "Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
-  Be aware: the database contains only the datoms that were added since the date."
-  [db time-point]
-  {:pre [(or (int? time-point) (date? time-point))]}
-  (if (db/-temporal-index? db)
-    (SinceDB. db time-point)
-    (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)}))))
+                 (d/transact conn {:tx-data [{:db/ident :name
+                                              :db/valueType :db.type/string
+                                              :db/unique :db.unique/identity
+                                              :db/index true
+                                              :db/cardinality :db.cardinality/one}
+                                             {:db/ident :age
+                                              :db/valueType :db.type/long
+                                              :db/cardinality :db.cardinality/one}]})
+
+                 (d/transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
+
+                 (def date (java.util.Date.))
+
+                 (d/transact conn {:tx-data [{:db/id [:name \"Alice\"] :age 35}]})
+
+                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                       :args [(d/as-of (d/db conn) date)]})))                  ; => #{[\"Alice\" 25] [\"Bob\" 30]}
+
+                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                       :args [(d/db conn)]})))))                               ; => #{[\"Alice\" 35] [\"Bob\" 30]}"}
+  as-of
+  (fn [db time-point]
+    {:pre [(or (int? time-point) (date? time-point))]}
+    (if (db/-temporal-index? db)
+      (AsOfDB. db time-point)
+      (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)})))))
+
+(def ^{:arglists '([db time-point])
+       :doc "Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
+             Be aware: the database contains only the datoms that were added since the date.
+
+                 (d/transact conn {:tx-data [{:db/ident :name
+                                              :db/valueType :db.type/string
+                                              :db/unique :db.unique/identity
+                                              :db/index true
+                                              :db/cardinality :db.cardinality/one}
+                                             {:db/ident :age
+                                              :db/valueType :db.type/long
+                                              :db/cardinality :db.cardinality/one}]})
+
+                 (d/transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
+
+                 (def date (java.util.Date.))
+
+                 (d/transact conn [{:db/id [:name \"Alice\"] :age 30}])
+
+                 (d/q '[:find ?n ?a
+                        :in $ $since
+                        :where
+                        [$ ?e :name ?n]
+                        [$since ?e :age ?a]]
+                      @conn
+                      (d/since @conn date)))) ; => #{[\"Alice\" 30]}
+
+                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                       :args [(d/db conn)]})                                  ; => #{[\"Alice\" 30] [\"Bob\" 30]"}
+  since
+  (fn [db time-point]
+    {:pre [(or (int? time-point) (date? time-point))]}
+    (if (db/-temporal-index? db)
+      (SinceDB. db time-point)
+      (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)})))))
