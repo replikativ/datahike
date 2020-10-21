@@ -5,7 +5,8 @@
     [hitchhiker.tree.utils.async :as ha]
     [hitchhiker.tree :as tree]
     [hitchhiker.tree.messaging :as msg]
-    [datahike.index.hitchhiker-tree :as ht]))
+    [datahike.index.hitchhiker-tree :as ht]
+    [datahike.api :as d]))
 
 #?(:cljs
    (def Throwable js/Error))
@@ -16,7 +17,7 @@
   (ha/<?? (msg/enqueue t [(ht/new-UpsertOp k k)])))
 
 
-(deftest upsert
+(deftest hh-tree-upsert
   (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
         projected-vec [4 :name "Marcel" 1]
         tree (reduce upsert-helper (ha/<?? new-tree)
@@ -86,3 +87,27 @@
       (is (= nil           (msg/lookup tree [4 :age 12 1])))
       (is (= nil           (msg/lookup tree [4 :age 20 1])))
       (is (= [4 :age 40 1] (msg/lookup tree [4 :age 40 1]))))))
+
+
+(defn connect []
+  (let [cfg  {:keep-history?      true
+              :schema-flexibility :read
+              :initial-tx         []}
+        _    (d/delete-database cfg)
+        _    (d/create-database cfg)]
+    (d/connect cfg)))
+
+(deftest datahike-upsert
+  (testing "IndexNode"
+    (let [txs  (vec (for [i (range 1000)]
+                      {:name (str "Peter" i)
+                       :age  i}))]
+      (is (d/transact (connect) txs))))
+
+  (testing "simple upsert and history"
+    (let [txs  [[:db/add 199 :name "Peter"]
+                [:db/add 199 :name "Ptr"]]
+          conn (connect)]
+      (is (d/transact conn txs))
+      (is (not (d/datoms @conn :eavt 199 :name "Peter"))) ;; no history
+      (is (d/datoms (d/history @conn) :eavt 199 :name "Peter")))))

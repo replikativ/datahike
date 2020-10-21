@@ -53,8 +53,8 @@
     (dih/-count eavt-tree :eavt))
   (-insert [tree datom index-type]
     (dih/-insert tree datom index-type))
-  (-upsert [tree datom temporal? index-type]
-    (dih/-upsert tree datom temporal? index-type))
+  (-upsert [tree datom index-type]
+    (dih/-upsert tree datom index-type))
   (-temporal-upsert [tree datom index-type]
     (dih/-temporal-upsert tree datom index-type))
   (-remove [tree datom index-type]
