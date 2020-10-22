@@ -674,3 +674,55 @@
     (if (db/-temporal-index? db)
       (SinceDB. db time-point)
       (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)})))))
+
+(def ^{:arglists '([db arg-map])
+       :doc "Returns part of `:avet` index between `[_ attr start]` and `[_ attr end]` in AVET sort order.
+
+             Same properties as [[datoms]].
+
+             `attr` must be a reference, unique attribute or marked as `:db/index true`.
+
+             Usage:
+
+
+                 (transact db {:tx-data [{:db/ident :name
+                                          :db/type :db.type/string
+                                          :db/cardinality :db.cardinality/one}
+                                         {:db/ident :likes
+                                          :db/index true
+                                          :db/type :db.type/string
+                                          :db/cardinality :db.cardinality/many}
+                                         {:db/ident :age
+                                          :db/unique :db.unique/identity
+                                          :db/type :db.type/ref
+                                          :db/cardinality :db.cardinality/many}]})
+
+                 (transact db {:tx-data [{:name \"Ivan\"}
+                                         {:age 19}
+                                         {:likes \"fries\"}
+                                         {:likes \"pizza\"}
+                                         {:likes \"candy\"}
+                                         {:likes \"pie\"}
+                                         {:likes \"pizza\"}]})
+
+                 (index-range db {:attrid :likes
+                                  :start  \"a\"
+                                  :end    \"zzzzzzzzz\"}) ; => (#datahike/Datom [2 :likes \"candy\"]
+                                                          ;     #datahike/Datom [1 :likes \"fries\"]
+                                                          ;     #datahike/Datom [2 :likes \"pie\"]
+                                                          ;     #datahike/Datom [1 :likes \"pizza\"]
+                                                          ;     #datahike/Datom [2 :likes \"pizza\"])
+
+                 (index-range db {:attrid :likes
+                                  :start  \"egg\"
+                                  :end    \"pineapple\"}) ; => (#datahike/Datom [1 :likes \"fries\"]
+                                                          ;     #datahike/Datom [2 :likes \"pie\"])
+
+             Useful patterns:
+
+                 ; find all entities with age in a specific range (inclusive)
+                 (->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))"}
+  index-range
+  (fn [db {:keys [attrid start end]}]
+    {:pre [(db/db? db)]}
+    (db/-index-range db attrid start end)))

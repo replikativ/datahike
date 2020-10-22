@@ -558,6 +558,39 @@
              [5 :likes "pizza"])
            (map dvec (d/seek-datoms @db {:index :eavt :components [5 :likes "fish"]}))))))
 
+(deftest test-index-range-doc
+  (let [cfg {:store {:backend :mem
+                     :id "seek-datoms"}
+             :initial-tx [{:db/ident :name
+                           :db/type :db.type/string
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :likes
+                           :db/index true
+                           :db/type :db.type/string
+                           :db/cardinality :db.cardinality/many}
+                          {:db/ident :age
+                           :db/unique :db.unique/identity
+                           :db/type :db.type/ref
+                           :db/cardinality :db.cardinality/many}]
+             :keep-history? false
+             :schema-flexibility :read}
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        db (d/connect cfg)
+        dvec #(vector (:e %) (:a %) (:v %))
+        _ (d/transact db {:tx-data [{ :name "Ivan"}
+                                    { :likes "fries"}
+                                    { :likes "pizza"}
+                                    { :age 19}
+                                    { :likes "candy"}
+                                    { :likes "pie"}
+                                    { :likes "pizza"}]})]
+    (is (= '([8 :likes "candy"] [5 :likes "fries"] [9 :likes "pie"] [6 :likes "pizza"] [10 :likes "pizza"])
+           (map dvec (d/index-range @db {:attrid :likes :start "a" :end "zzzzzzzzz"}))))
+
+    (is (= '([5 :likes "fries"] [9 :likes "pie"])
+           (map dvec (d/index-range @db {:attrid :likes :start "egg" :end "pineapple"}))))))
+
 (deftest test-database-hash
   (testing "Hashing without history"
     (let [cfg {:store {:backend :mem
