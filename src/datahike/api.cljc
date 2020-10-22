@@ -526,26 +526,23 @@
       (instance? AsOfDB x)
       (instance? SinceDB x)))
 
-;; TODO do better than {:foo :bar}
 (def ^{:arglists '([db arg-map])
        :doc "Same as [[transact]]`, but applies to an immutable database value. Returns transaction report (see [[transact]]).
 
              Accepts tx-data and tx-meta as a map.
 
-                 (d/with @conn {:tx-data [[:db/add 1 :name \"Ivan\"]]}) ; => {:db-before #datahike/DB {:max-tx 536870912 :max-eid 0},
-                                                                              :db-after #datahike/DB {:max-tx 536870913 :max-eid 1},
-                                                                              :tx-data [#datahike/Datom [1 :name \"Ivan\" 536870913]],
-                                                                              :tempids #:db{:current-tx 536870913},
-                                                                              :tx-meta nil}
+                 (with @conn {:tx-data [[:db/add 1 :name \"Ivan\"]]}) ; => {:db-before #datahike/DB {:max-tx 536870912 :max-eid 0},
+                                                                            :db-after #datahike/DB {:max-tx 536870913 :max-eid 1},
+                                                                            :tx-data [#datahike/Datom [1 :name \"Ivan\" 536870913]],
+                                                                            :tempids #:db{:current-tx 536870913},
+                                                                            :tx-meta nil}
 
-                 (d/with @conn {:tx-data [[:db/add 1 :name \"Ivan\"]]
-                                :tx-meta {:foo :bar}}) ; => {:db-before #datahike/DB {:max-tx 536870912 :max-eid 0},
-                                                             :db-after #datahike/DB {:max-tx 536870913 :max-eid 1},
-                                                             :tx-data [#datahike/Datom [1 :name \"Ivan\" 536870913]],
-                                                             :tempids #:db{:current-tx 536870913},
-                                                             :tx-meta {:foo :bar}}
-
-"}
+                 (with @conn {:tx-data [[:db/add 1 :name \"Ivan\"]]
+                              :tx-meta {:foo :bar}}) ; => {:db-before #datahike/DB {:max-tx 536870912 :max-eid 0},
+                                                           :db-after #datahike/DB {:max-tx 536870913 :max-eid 1},
+                                                           :tx-data [#datahike/Datom [1 :name \"Ivan\" 536870913]],
+                                                           :tempids #:db{:current-tx 536870913},
+                                                           :tx-meta {:foo :bar}}"}
   with
   (fn
     ([db arg-map]
@@ -571,34 +568,37 @@
     (:db-after (with db tx-data))))
 
 (defn db
-  "Returns the current state of the database you may interact with."
+  "Returns the underlying immutable database value from a connection.
+
+   Exists for Datomic API compatibility. Prefer using `@conn` directly if possible."
   [conn]
   @conn)
 
 (def ^{:arglists '([db])
        :doc "Returns the full historical state of the database you may interact with.
 
-                 (d/transact conn {:tx-data [{:db/ident :name
-                                              :db/valueType :db.type/string
-                                              :db/unique :db.unique/identity
-                                              :db/index true
-                                              :db/cardinality :db.cardinality/one}
-                                             {:db/ident :age
-                                              :db/valueType :db.type/long
-                                              :db/cardinality :db.cardinality/one}]})
 
-                 (d/transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
+                 (transact conn {:tx-data [{:db/ident :name
+                                            :db/valueType :db.type/string
+                                            :db/unique :db.unique/identity
+                                            :db/index true
+                                            :db/cardinality :db.cardinality/one}
+                                           {:db/ident :age
+                                            :db/valueType :db.type/long
+                                            :db/cardinality :db.cardinality/one}]})
 
-                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                       :args [(d/history (d/db conn))]})                          ; => #{[\"Alice\" 25] [\"Bob\" 30}
+                 (transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
 
-                 (d/transact conn {:tx-data [{:db/id [:name \"Alice\"] :age 35}]})
+                 (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                     :args [(history @conn)]}) ; => #{[\"Alice\" 25] [\"Bob\" 30]}
 
-                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                       :args [(d/db (d/db conn))]})                               ; => #{[\"Alice\" 35] [\"Bob\" 30}
+                 (transact conn {:tx-data [{:db/id [:name \"Alice\"] :age 35}]})
 
-                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                       :args [(d/history (d/db conn))]})                          ; => #{[\"Alice\" 25] [\"Bob\" 30}"}
+                 (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                     :args [@conn]}) ; => #{[\"Alice\" 35] [\"Bob\" 30]}
+
+                 (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                       :args [(history @conn)]}) ; => #{[\"Alice\" 25] [\"Bob\" 30]}"}
   history
   (fn [db]
     (if (db/-temporal-index? db)
@@ -612,26 +612,27 @@
 (def ^{:arglists '([db time-point])
        :doc "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long).
 
-                 (d/transact conn {:tx-data [{:db/ident :name
-                                              :db/valueType :db.type/string
-                                              :db/unique :db.unique/identity
-                                              :db/index true
-                                              :db/cardinality :db.cardinality/one}
-                                             {:db/ident :age
-                                              :db/valueType :db.type/long
-                                              :db/cardinality :db.cardinality/one}]})
 
-                 (d/transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
+                 (transact conn {:tx-data [{:db/ident :name
+                                            :db/valueType :db.type/string
+                                            :db/unique :db.unique/identity
+                                            :db/index true
+                                            :db/cardinality :db.cardinality/one}
+                                           {:db/ident :age
+                                            :db/valueType :db.type/long
+                                            :db/cardinality :db.cardinality/one}]})
+
+                 (transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
 
                  (def date (java.util.Date.))
 
-                 (d/transact conn {:tx-data [{:db/id [:name \"Alice\"] :age 35}]})
+                 (transact conn {:tx-data [{:db/id [:name \"Alice\"] :age 35}]})
 
-                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                       :args [(d/as-of (d/db conn) date)]})))                  ; => #{[\"Alice\" 25] [\"Bob\" 30]}
+                 (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                     :args [(as-of @conn date)]}) ; => #{[\"Alice\" 25] [\"Bob\" 30]}
 
-                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                       :args [(d/db conn)]})))))                               ; => #{[\"Alice\" 35] [\"Bob\" 30]}"}
+                 (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                     :args [@conn]}) ; => #{[\"Alice\" 35] [\"Bob\" 30]}"}
   as-of
   (fn [db time-point]
     {:pre [(or (int? time-point) (date? time-point))]}
@@ -643,31 +644,32 @@
        :doc "Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
              Be aware: the database contains only the datoms that were added since the date.
 
-                 (d/transact conn {:tx-data [{:db/ident :name
-                                              :db/valueType :db.type/string
-                                              :db/unique :db.unique/identity
-                                              :db/index true
-                                              :db/cardinality :db.cardinality/one}
-                                             {:db/ident :age
-                                              :db/valueType :db.type/long
-                                              :db/cardinality :db.cardinality/one}]})
 
-                 (d/transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
+                 (transact conn {:tx-data [{:db/ident :name
+                                            :db/valueType :db.type/string
+                                            :db/unique :db.unique/identity
+                                            :db/index true
+                                            :db/cardinality :db.cardinality/one}
+                                           {:db/ident :age
+                                            :db/valueType :db.type/long
+                                            :db/cardinality :db.cardinality/one}]})
+
+                 (transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
 
                  (def date (java.util.Date.))
 
-                 (d/transact conn [{:db/id [:name \"Alice\"] :age 30}])
+                 (transact conn [{:db/id [:name \"Alice\"] :age 30}])
 
-                 (d/q '[:find ?n ?a
-                        :in $ $since
-                        :where
-                        [$ ?e :name ?n]
-                        [$since ?e :age ?a]]
+                 (q '[:find ?n ?a
+                      :in $ $since
+                      :where
+                      [$ ?e :name ?n]
+                      [$since ?e :age ?a]]
                       @conn
-                      (d/since @conn date)))) ; => #{[\"Alice\" 30]}
+                      (since @conn date)) ; => #{[\"Alice\" 30]}
 
-                 (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                       :args [(d/db conn)]})                                  ; => #{[\"Alice\" 30] [\"Bob\" 30]"}
+                 (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                     :args [@conn]}) ; => #{[\"Alice\" 30] [\"Bob\" 30]}"}
   since
   (fn [db time-point]
     {:pre [(or (int? time-point) (date? time-point))]}
@@ -707,16 +709,16 @@
 
                  (index-range db {:attrid :likes
                                   :start  \"a\"
-                                  :end    \"zzzzzzzzz\"}) ; => (#datahike/Datom [2 :likes \"candy\"]
-                                                          ;     #datahike/Datom [1 :likes \"fries\"]
-                                                          ;     #datahike/Datom [2 :likes \"pie\"]
-                                                          ;     #datahike/Datom [1 :likes \"pizza\"]
-                                                          ;     #datahike/Datom [2 :likes \"pizza\"])
+                                  :end    \"zzzzzzzzz\"}) ; => '(#datahike/Datom [2 :likes \"candy\"]
+                                                                 #datahike/Datom [1 :likes \"fries\"]
+                                                                 #datahike/Datom [2 :likes \"pie\"]
+                                                                 #datahike/Datom [1 :likes \"pizza\"]
+                                                                 #datahike/Datom [2 :likes \"pizza\"])
 
                  (index-range db {:attrid :likes
                                   :start  \"egg\"
-                                  :end    \"pineapple\"}) ; => (#datahike/Datom [1 :likes \"fries\"]
-                                                          ;     #datahike/Datom [2 :likes \"pie\"])
+                                  :end    \"pineapple\"}) ; => '(#datahike/Datom [1 :likes \"fries\"]
+                                                                 #datahike/Datom [2 :likes \"pie\"])
 
              Useful patterns:
 
