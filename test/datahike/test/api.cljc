@@ -258,6 +258,86 @@
                   :where [?e ?a ?v]]
                 @conn)))))
 
+(deftest test-qseq-docs
+  (let [cfg {:store {:backend :mem
+                     :id "q"}
+             :initial-tx [[:db/add -1 :name "Ivan"]
+                          [:db/add -1 :likes "fries"]
+                          [:db/add -1 :likes "pizza"]
+                          [:db/add -1 :friend 296]]
+             :keep-history? false
+             :schema-flexibility :read}
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (is (= '(["fries"] ["candy"] ["pie"] ["pizza"])
+           (d/qseq '[:find ?value :where [_ :likes ?value]]
+                   #{[1 :likes "fries"]
+                     [2 :likes "candy"]
+                     [3 :likes "pie"]
+                     [4 :likes "pizza"]})))
+
+    (is (= '(["fries"] ["candy"] ["pie"] ["pizza"])
+           (d/qseq {:query '[:find ?value :where [_ :likes ?value]]
+                    :args [#{[1 :likes "fries"]
+                             [2 :likes "candy"]
+                             [3 :likes "pie"]
+                             [4 :likes "pizza"]}]})))
+
+    (is (= '(["pizza"])
+           (d/qseq {:query '[:find ?value :where [_ :likes ?value]]
+                    :offset 2
+                    :limit 1
+                    :args [#{[1 :likes "fries"]
+                             [2 :likes "candy"]
+                             [3 :likes "pie"]
+                             [4 :likes "pizza"]}]})))
+
+    (is (= '(["fries"] ["pie"] ["candy"] ["pizza"])
+           (d/qseq {:query '[:find ?value :where [_ :likes ?value]]
+                    :offset 0
+                    :timeout 50
+                    :args [#{[1 :likes "fries"]
+                             [2 :likes "candy"]
+                             [3 :likes "pie"]
+                             [4 :likes "pizza"]}]})))
+
+    (is (= '(["candy"] ["pizza"])
+           (d/qseq {:query '[:find ?value :where [_ :likes ?value]]
+                    :offset 2
+                    :timeout 50
+                    :args [#{[1 :likes "fries"]
+                             [2 :likes "candy"]
+                             [3 :likes "pie"]
+                             [4 :likes "pizza"]}]})))
+
+    (is (= '(["fries"] ["candy"] ["pie"] ["pizza"])
+           (d/qseq '{:find [?value] :where [[_ :likes ?value]]}
+                   #{[1 :likes "fries"]
+                     [2 :likes "candy"]
+                     [3 :likes "pie"]
+                     [4 :likes "pizza"]})))
+
+    (is (= '(["fries"] ["candy"] ["pie"] ["pizza"])
+           (d/qseq '{:query {:find [?value] :where [[_ :likes ?value]]}
+                     :args [#{[1 :likes "fries"]
+                              [2 :likes "candy"]
+                              [3 :likes "pie"]
+                              [4 :likes "pizza"]}]})))
+
+    (is (= '(["fries"] ["candy"] ["pie"] ["pizza"])
+           (d/qseq {:query "[:find ?value :where [_ :likes ?value]]"
+                    :args [#{[1 :likes "fries"]
+                             [2 :likes "candy"]
+                             [3 :likes "pie"]
+                             [4 :likes "pizza"]}]})))
+
+    ;; TODO better testing
+    (is (= [{:db/id 1, :friend 296, :likes "pizza", :name "Ivan"}]
+           (d/qseq '[:find [(pull ?e [*]) ...]
+                     :where [?e ?a ?v]]
+                   @conn)))))
+
 (deftest test-with-docs
   (let [cfg {:store {:backend :mem
                      :id "with"}

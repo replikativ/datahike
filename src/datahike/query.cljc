@@ -880,8 +880,7 @@
 
 (defn collect [context symbols]
   (->> (-collect context symbols)
-       (map vec)
-       set))
+       (map vec)))
 
 (defprotocol IContextResolve
   (-context-resolve [var context]))
@@ -1013,9 +1012,15 @@
         wheres        (:where query)
         context       (-> (Context. [] {} {})
                           (resolve-ins (:qin parsed-q) args))
+        returntype    (fn [collected]
+                        (let [returntype (if (contains? query-map :type) (:type query-map) clojure.lang.PersistentHashSet)]
+                          (cond (= returntype clojure.lang.PersistentHashSet) (set collected)
+                                (= returntype clojure.lang.PersistentVector) (vec collected)
+                                (= returntype clojure.lang.LazySeq) collected)))
         resultset     (-> context
                           (-q wheres)
-                          (collect all-vars))]
+                          (collect all-vars)
+                          (returntype))]
     (cond->> resultset
       (:with query)                                 (mapv #(vec (subvec % 0 result-arity)))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
@@ -1024,3 +1029,9 @@
       true                                          (paginate (:offset query-map)
                                                               (:limit query-map))
       returnmaps                                    (convert-to-return-maps returnmaps))))
+
+(defn qseq [query-map & args]
+  {:pre [(not (and args (:args query-map)))]}
+  (if args
+    (q {:query query-map :args args :type clojure.lang.LazySeq})
+    (q (assoc query-map :type clojure.lang.LazySeq))))
