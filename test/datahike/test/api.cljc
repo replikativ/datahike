@@ -252,8 +252,7 @@
                           [3 :likes "pie"]
                           [4 :likes "pizza"]}]})))
 
-    ;; TODO better testing
-    (is (= [{:db/id 1, :friend 296, :likes "pizza", :name "Ivan"}]
+    (is (= #{{:db/id 1, :friend 296, :likes "pizza", :name "Ivan"}}
            (d/q '[:find [(pull ?e [*]) ...]
                   :where [?e ?a ?v]]
                 @conn)))))

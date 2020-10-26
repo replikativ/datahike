@@ -1026,10 +1026,11 @@
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
       (some #(instance? Pull %) find-elements)      (pull find-elements context)
       true                                          (-post-process find)
+      true                                          (returntype)
       true                                          (paginate (:offset query-map)
                                                               (:limit query-map))
-      returnmaps                                    (convert-to-return-maps returnmaps)
-      true                                          (returntype))))
+      true                                          (returntype)
+      returnmaps                                    (convert-to-return-maps returnmaps))))
 
 (defn qseq [query-map & args]
   {:pre [(not (and args (:args query-map)))]}
