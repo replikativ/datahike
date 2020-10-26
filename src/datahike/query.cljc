@@ -972,8 +972,10 @@
           end (if (< length part)
                 length
                 part)]
-      (if (< start end)
-        (-> resultset vec (subvec start end) set)))
+      (when (< start end)
+        (->> resultset
+             (drop start)
+             (take limit))))
     resultset))
 
 (defn convert-to-return-maps [{:keys [mapping-type mapping-keys]} resultset]
@@ -1026,8 +1028,8 @@
       true                                          (-post-process find)
       true                                          (paginate (:offset query-map)
                                                               (:limit query-map))
-      true                                          (returntype)
-      returnmaps                                    (convert-to-return-maps returnmaps))))
+      returnmaps                                    (convert-to-return-maps returnmaps)
+      true                                          (returntype))))
 
 (defn qseq [query-map & args]
   {:pre [(not (and args (:args query-map)))]}
