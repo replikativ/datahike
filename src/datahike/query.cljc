@@ -973,8 +973,7 @@
                 length
                 part)]
       (if (< start end)
-        (-> resultset vec (subvec start end) set)
-        #{}))
+        (-> resultset vec (subvec start end) set)))
     resultset))
 
 (defn convert-to-return-maps [{:keys [mapping-type mapping-keys]} resultset]
@@ -1013,14 +1012,13 @@
         context       (-> (Context. [] {} {})
                           (resolve-ins (:qin parsed-q) args))
         returntype    (fn [collected]
-                        (let [returntype (if (contains? query-map :type) (:type query-map) clojure.lang.PersistentHashSet)]
-                          (cond (= returntype clojure.lang.PersistentHashSet) (set collected)
-                                (= returntype clojure.lang.PersistentVector) (vec collected)
-                                (= returntype clojure.lang.LazySeq) collected)))
+                        (let [returntype (if (contains? query-map :type) (:type query-map) :set)]
+                          (cond (= returntype :set) (set collected)
+                                (= returntype :vec) (vec collected)
+                                (= returntype :seq) collected)))
         resultset     (-> context
                           (-q wheres)
-                          (collect all-vars)
-                          (returntype))]
+                          (collect all-vars))]
     (cond->> resultset
       (:with query)                                 (mapv #(vec (subvec % 0 result-arity)))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
@@ -1028,10 +1026,11 @@
       true                                          (-post-process find)
       true                                          (paginate (:offset query-map)
                                                               (:limit query-map))
+      true                                          (returntype)
       returnmaps                                    (convert-to-return-maps returnmaps))))
 
 (defn qseq [query-map & args]
   {:pre [(not (and args (:args query-map)))]}
   (if args
-    (q {:query query-map :args args :type clojure.lang.LazySeq})
-    (q (assoc query-map :type clojure.lang.LazySeq))))
+    (q {:query query-map :args args :type :seq})
+    (q (assoc query-map :type :seq))))
