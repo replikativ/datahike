@@ -34,7 +34,7 @@ We presented Datahike also at meetups,for example at:
 
 ## Usage
 
-Add to your leiningen dependencies:
+Add to your dependencies:
 
 [![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
 
@@ -119,7 +119,7 @@ Refer to the docs for more information:
 - [differences from Datomic](./doc/datomic_differences.md)
 - [backend development](./doc/backend-development.md)
 - [logging and error handling](./doc/logging_and_error_handling.md)
-- [releasing Datahike](./doc/release.md)
+- [contributing to Datahike](./doc/contributing.md)
 
 
 For simple examples have a look at the projects in the `examples` folder.
@@ -137,7 +137,7 @@ There is a small command line utility integrated in this project to measure the 
 To run the benchmarks, navigate to the project folder in your terminal and run 
 
 ```bash
-lein with-profile benchmark run 
+clj -A:benchmark
 ```
 
 You will receive a list containing information about what has been tested and the mean of measured times in milliseconds as follows:
