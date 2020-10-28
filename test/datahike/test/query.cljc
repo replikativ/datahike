@@ -204,54 +204,54 @@
          #{[:a 2] [:a 4] [:a 6]
            [:b 2]})))
 
-(deftest test-offset
-  (let [db (-> (d/empty-db)
-               (d/db-with [{:db/id 1, :name  "Alice", :age   15}
-                           {:db/id 2, :name  "Bob", :age   37}
-                           {:db/id 3, :name  "Charlie", :age   37}]))]
-    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
-                        :args [db]}))
-           3))
-    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
+#_(deftest test-offset
+    (let [db (-> (d/empty-db)
+                 (d/db-with [{:db/id 1, :name  "Alice", :age   15}
+                             {:db/id 2, :name  "Bob", :age   37}
+                             {:db/id 3, :name  "Charlie", :age   37}]))]
+      (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]}))
+             3))
+      (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :offset 1
+                          :limit 1}))
+             1))
+      (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :limit 2}))
+             2))
+      (is (= (count  (d/q {:query '[:find ?e :where [?e :name _]]
+                           :args [db]
+                           :offset 1
+                           :limit 2}))
+             2))
+      (is (= (count  (d/q {:query '[:find ?e :where [?e :name _]]
+                           :args [db]
+                           :offset 2
+                           :limit 2}))
+             1))
+      (is (not (= (d/q {:query '[:find ?e :where [?e :name _]]
+                        :args [db]
+                        :limit 2})
+                  (d/q {:query '[:find ?e :where [?e :name _]]
                         :args [db]
                         :offset 1
-                        :limit 1}))
-           1))
-    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
-                        :args [db]
-                        :limit 2}))
-           2))
-    (is (= (count  (d/q {:query '[:find ?e :where [?e :name _]]
-                         :args [db]
-                         :offset 1
-                         :limit 2}))
-           2))
-    (is (= (count  (d/q {:query '[:find ?e :where [?e :name _]]
-                         :args [db]
-                         :offset 2
-                         :limit 2}))
-           1))
-    (is (not (= (d/q {:query '[:find ?e :where [?e :name _]]
-                      :args [db]
-                      :limit 2})
-                (d/q {:query '[:find ?e :where [?e :name _]]
-                      :args [db]
-                      :offset 1
-                      :limit 2}))))
-    (is (= (d/q {:query '[:find ?e :where [?e :name _]]
-                 :args [db]
-                 :offset 4})
-           #{}))
-    (is (= (d/q {:query '[:find ?e :where [?e :name _]]
-                 :args [db]
-                 :offset 10
-                 :limit 5})
-           #{}))
-    (is (= (d/q {:query '[:find ?e :where [?e :name _]]
-                 :args [db]
-                 :offset 1
-                 :limit 0})
-           #{}))))
+                        :limit 2}))))
+      (is (= (d/q {:query '[:find ?e :where [?e :name _]]
+                   :args [db]
+                   :offset 4})
+             #{}))
+      (is (= (d/q {:query '[:find ?e :where [?e :name _]]
+                   :args [db]
+                   :offset 10
+                   :limit 5})
+             #{}))
+      (is (= (d/q {:query '[:find ?e :where [?e :name _]]
+                   :args [db]
+                   :offset 1
+                   :limit 0})
+             #{}))))
 
 (deftest test-return-maps
   (let [db (-> (d/empty-db)
@@ -304,44 +304,44 @@
     (is (= [{:foo 3} {:foo 2} {:foo 1}]
            (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :keys,
                                                                        :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo})}
-                                      #{[1] [2] [3]}))))
+                                      '([1] [2] [3])))))
   (testing "converting strs"
     (is (= [{"foo" 3} {"foo" 2} {"foo" 1}]
            (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :strs,
                                                                        :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo})}
-                                      #{[1] [2] [3]}))))
+                                      '([1] [2] [3])))))
   (testing "converting syms"
     (is (= [{'foo 3} {'foo 2} {'foo 1}]
            (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :syms,
                                                                        :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo})}
-                                      #{[1] [2] [3]}))))
+                                      '([1] [2] [3])))))
   (testing "converting keys"
     (is (= '[{:foo 1, :bar 11, :baz "Ivan"} {:foo 3, :bar 21, :baz "Petr"} {:foo 3, :bar 31, :baz "Ivan"}]
            (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :keys,
                                                                        :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo},
                                                                                       #datalog.parser.type.MappingKey{:mapping-key bar},
                                                                                       #datalog.parser.type.MappingKey{:mapping-key baz})}
-                                      #{[1 11 "Ivan"]
+                                      '([1 11 "Ivan"]
                                         [3 31 "Ivan"]
-                                        [3 21 "Petr"]}))))
+                                        [3 21 "Petr"])))))
   (testing "converting strs"
     (is (= '[{"foo" 1, "bar" 11, "baz" "Ivan"} {"foo" 3, "bar" 21, "baz" "Petr"} {"foo" 3, "bar" 31, "baz" "Ivan"}]
            (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :strs,
                                                                        :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo},
                                                                                       #datalog.parser.type.MappingKey{:mapping-key bar},
                                                                                       #datalog.parser.type.MappingKey{:mapping-key baz})}
-                                      #{[1 11 "Ivan"]
+                                      '([1 11 "Ivan"]
                                         [3 31 "Ivan"]
-                                        [3 21 "Petr"]}))))
+                                        [3 21 "Petr"])))))
   (testing "converting syms"
     (is (= '[{foo 1, bar 11, baz "Ivan"} {foo 3, bar 21, baz "Petr"} {foo 3, bar 31, baz "Ivan"}]
            (dq/convert-to-return-maps '#datalog.parser.type.ReturnMaps{:mapping-type :syms,
                                                                        :mapping-keys (#datalog.parser.type.MappingKey{:mapping-key foo},
                                                                                       #datalog.parser.type.MappingKey{:mapping-key bar},
                                                                                       #datalog.parser.type.MappingKey{:mapping-key baz})}
-                                      #{[1 11 "Ivan"]
+                                      '([1 11 "Ivan"]
                                         [3 31 "Ivan"]
-                                        [3 21 "Petr"]})))))
+                                        [3 21 "Petr"]))))))
 
 #_(require 'datahike.test.query :reload)
 #_(clojure.test/test-ns 'datahike.test.query)

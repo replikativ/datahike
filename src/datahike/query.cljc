@@ -901,16 +901,16 @@
     (.-value var)))
 
 (defn -aggregate [find-elements context tuples]
-  (mapv (fn [element fixed-value i]
-          (if (instance? Aggregate element)
-            (let [f (-context-resolve (:fn element) context)
-                  args (map #(-context-resolve % context) (butlast (:args element)))
-                  vals (map #(nth % i) tuples)]
-              (apply f (concat args [vals])))
-            fixed-value))
-        find-elements
-        (first tuples)
-        (range)))
+  (map (fn [element fixed-value i]
+         (if (instance? Aggregate element)
+           (let [f (-context-resolve (:fn element) context)
+                 args (map #(-context-resolve % context) (butlast (:args element)))
+                 vals (map #(nth % i) tuples)]
+             (apply f (concat args [vals])))
+           fixed-value))
+       find-elements
+       (first tuples)
+       (range)))
 
 (defn- idxs-of [pred coll]
   (->> (map #(when (pred %1) %2) coll (range))
@@ -924,18 +924,29 @@
     (for [[_ tuples] grouped]
       (-aggregate find-elements context tuples))))
 
+(defn coerce-type [tuples returntype]
+  (cond (= returntype :set) (set tuples)
+        (= returntype :vec) (vec tuples)
+        (= returntype :seq) tuples))
+
 (defprotocol IPostProcess
-  (-post-process [find tuples]))
+  (-post-process [find returntype tuples]))
 
 (extend-protocol IPostProcess
   FindRel
-  (-post-process [_ tuples] tuples)
+  (-post-process [_ returntype tuples]
+    (coerce-type tuples returntype))
   FindColl
-  (-post-process [_ tuples] (into [] (map first) tuples))
+  (-post-process [_ returntype tuples]
+    (-> (into [] (map first) tuples)
+        (coerce-type returntype)))
   FindScalar
-  (-post-process [_ tuples] (ffirst tuples))
+  (-post-process [_ _ tuples]
+    (ffirst tuples))
   FindTuple
-  (-post-process [_ tuples] (first tuples)))
+  (-post-process [_ returntype tuples]
+    (-> (first tuples)
+        (coerce-type returntype))))
 
 (defn- pull [find-elements context resultset]
   (let [resolved (for [find find-elements]
@@ -944,11 +955,11 @@
                       (dpp/parse-pull
                        (-context-resolve (:pattern find) context))]))]
     (for [tuple resultset]
-      (mapv (fn [env el]
-              (if env
-                (let [[src spec] env]
-                  (dpa/pull-spec src spec [el] false))
-                el))
+      (map (fn [env el]
+             (if env
+               (let [[src spec] env]
+                 (dpa/pull-spec src spec [el] false))
+               el))
             resolved
             tuple))))
 
@@ -1013,27 +1024,24 @@
         wheres        (:where query)
         context       (-> (Context. [] {} {})
                           (resolve-ins (:qin parsed-q) args))
-        returntype    (fn [collected]
-                        (let [returntype (if (contains? query-map :type) (:type query-map) :set)]
-                          (cond (= returntype :set) (set collected)
-                                (= returntype :vec) (vec collected)
-                                (= returntype :seq) collected)))
         resultset     (-> context
                           (-q wheres)
-                          (collect all-vars))]
+                          (collect all-vars))
+        returntype    (if (contains? query-map :type) (:type query-map) :set)]
     (cond->> resultset
-      (:with query)                                 (mapv #(vec (subvec % 0 result-arity)))
+      (:with query)                                 (map #(vec (subvec % 0 result-arity)))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
       (some #(instance? Pull %) find-elements)      (pull find-elements context)
-      true                                          (-post-process find)
-      true                                          (returntype)
-      true                                          (paginate (:offset query-map)
-                                                              (:limit query-map))
-      true                                          (returntype)
-      returnmaps                                    (convert-to-return-maps returnmaps))))
+      returnmaps                                    (convert-to-return-maps returnmaps)
+      true                                          (-post-process find returntype))))
 
 (defn qseq [query-map & args]
   {:pre [(not (and args (:args query-map)))]}
   (if args
     (q {:query query-map :args args :type :seq})
     (q (assoc query-map :type :seq))))
+
+
+(comment
+ (subvec '([1 medusa] [1 cyclops] [1 chimera]) 0 1)
+ (map #(vec (subvec % 0 1)) '([1 medusa] [1 cyclops] [1 chimera])))
