@@ -5,7 +5,7 @@
             [datahike.store :as ds]
             [datahike.config :as dc]
             [datahike.tools :as dt]
-            [datahike.upsert :as ups]
+            [datahike.index.hitchhiker-tree.upsert :as ups]
             [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
             [konserve.cache :as kc]

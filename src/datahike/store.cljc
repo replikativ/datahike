@@ -5,7 +5,7 @@
             [konserve.memory :as mem]
             [superv.async :refer [<?? S]]
             [environ.core :refer [env]]
-            [datahike.upsert :as ups]))
+            [datahike.index.hitchhiker-tree.upsert :as ups]))
 
 (defmulti empty-store
   "Creates an empty store"
