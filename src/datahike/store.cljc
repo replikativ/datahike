@@ -4,7 +4,8 @@
             [konserve.filestore :as fs]
             [konserve.memory :as mem]
             [superv.async :refer [<?? S]]
-            [environ.core :refer [env]]))
+            [environ.core :refer [env]]
+            [datahike.upsert :as ups]))
 
 (defmulti empty-store
   "Creates an empty store"
@@ -96,8 +97,9 @@
 ;; file
 
 (defmethod empty-store :file [{:keys [path]}]
-  (kons/add-hitchhiker-tree-handlers
-   (<?? S (fs/new-fs-store path))))
+  (ups/add-upsert-handler
+    (kons/add-hitchhiker-tree-handlers
+      (<?? S (fs/new-fs-store path)))))
 
 (defmethod delete-store :file [{:keys [path]}]
   (fs/delete-store path))
