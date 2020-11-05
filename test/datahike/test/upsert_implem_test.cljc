@@ -5,7 +5,7 @@
     [hitchhiker.tree.utils.async :as ha]
     [hitchhiker.tree :as tree]
     [hitchhiker.tree.messaging :as msg]
-    [datahike.index.hitchhiker-tree :as ht]
+    [datahike.index.hitchhiker-tree.upsert :as ht]
     [datahike.api :as d]))
 
 #?(:cljs

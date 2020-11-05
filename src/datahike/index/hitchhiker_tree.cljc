@@ -1,10 +1,12 @@
 (ns datahike.index.hitchhiker-tree
-  (:require [datahike.index.hitchhiker-tree.upsert]
+  (:require [datahike.index.hitchhiker-tree.upsert :as ups]
             [hitchhiker.tree.utils.async :as async]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
-            [datahike.constants :refer [e0 tx0 emax txmax]])
+            [datahike.datom :as dd]
+            [datahike.constants :refer [e0 tx0 emax txmax]]
+            [hasch.core :as h])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
 
@@ -116,12 +118,12 @@
 
 (defn -upsert [tree ^Datom datom index-type]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (new-UpsertOp datom-as-vec datom-as-vec)
+    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec datom-as-vec)
                                      :tag (h/uuid))]))))
 
 (defn -temporal-upsert [tree ^Datom datom index-type]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (new-temporal-UpsertOp datom-as-vec datom-as-vec)
+    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-temporal-UpsertOp datom-as-vec datom-as-vec)
                                      :tag (h/uuid))]))))
 
 (defn init-tree
