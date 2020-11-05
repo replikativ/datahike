@@ -455,7 +455,7 @@
     (assoc a
            :tuples (filterv #(nil? (hash (key-fn-a %))) tuples-a))))
 
-(defn lookup-pattern-db [db pattern]                        ;; TODO translate attrib here?
+(defn lookup-pattern-db [db pattern]
   ;; TODO optimize with bound attrs min/max values here
   (let [search-pattern (mapv #(if (symbol? %) nil %) pattern)
         datoms (db/-search db search-pattern)
@@ -494,7 +494,7 @@
     :else
     (lookup-pattern-coll source pattern)))
 
-(defn collapse-rels [rels new-rel]                          ;;TODO: here filtering with attrs?
+(defn collapse-rels [rels new-rel]
   (loop [rels rels
          new-rel new-rel
          acc []]

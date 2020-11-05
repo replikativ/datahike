@@ -156,6 +156,7 @@
   (s/valid? ::entity-spec-attribute a-ident))
 
 (defn value-valid? [a-ident v-ident schema]
+  (println a-ident v-ident )
   (let [schema (if (or (meta-attr? a-ident) (schema-attr? a-ident) (entity-spec-attr? a-ident))
                  implicit-schema-spec
                  schema)

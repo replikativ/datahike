@@ -103,7 +103,9 @@
    {:db/id 32
     :db/ident :db.unique/identity}
    {:db/id 33
-    :db/ident :db.unique/value}])
+    :db/ident :db.unique/value}
+   {:db/id 34
+    :db/ident :db/isComponent}])
 
 (def ^:const system-entities (set (map :db/id system-schema)))
 

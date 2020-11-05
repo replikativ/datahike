@@ -1155,11 +1155,14 @@
 
 (defn- validate-val [v [_ _ a _ _ :as at] {:keys [config schema ref-ident-map] :as db}]
   (let [{:keys [attribute-refs? schema-flexibility]} config
-        a-ident (if attribute-refs? (ref-ident-map a) a)
-        v-ident (if (and (contains? system-entities a)
+        a-ident (if (and attribute-refs? (number? a)) (ref-ident-map a) a)
+        _ (println "a" a a-ident)
+        v-ident (if (and (contains? system-entities a)      ;; TODO: make robust to database versions?
                          (not (nil? (ref-ident-map v))))
                   (ref-ident-map v)
-                  v)]
+                  v)
+        _ (println "v" v v-ident)
+        _ (println "ref-ident-map" ref-ident-map)]
     (when (nil? v)
       (raise "Cannot store nil as a value at " at
              {:error :transact/syntax, :value v-ident, :context at}))
@@ -1417,7 +1420,12 @@
                        :let [_                (validate-attr a-ident {:db/id eid, a-ident vs} db)
                              reverse?         (reverse-ref? a-ident)
                              straight-a-ident (if reverse? (reverse-ref a-ident) a-ident)
-                             straight-a       (if attribute-refs? (ident-ref-map straight-a-ident) straight-a-ident)
+                             straight-a       (if attribute-refs?
+                                                (if-let [ref (ident-ref-map straight-a-ident)]
+                                                  ref
+                                                  (raise "Bad attribute " straight-a-ident ": specification not found database"
+                                                         {:error :transact/syntax, :attribute a-ident, :context {:db/id eid, a-ident vs}}))
+                                                straight-a-ident)
                              _                (when (and reverse? (not (ref? db straight-a-ident)))
                                                 (raise "Bad attribute " a-ident ": reverse attribute name requires {:db/valueType :db.type/ref} in schema"
                                                        {:error :transact/syntax, :attribute a-ident, :context {:db/id eid, a-ident vs}}))]
