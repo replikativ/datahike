@@ -72,7 +72,7 @@
 
 
 (defn add-upsert-handler
-  "Tells the store how to deserialize an upsert related operation"
+  "Tells the store how to deserialize upsert related operations"
   [store]
   (swap! (:read-handlers store)
     merge
