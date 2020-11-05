@@ -1156,13 +1156,10 @@
 (defn- validate-val [v [_ _ a _ _ :as at] {:keys [config schema ref-ident-map] :as db}]
   (let [{:keys [attribute-refs? schema-flexibility]} config
         a-ident (if (and attribute-refs? (number? a)) (ref-ident-map a) a)
-        _ (println "a" a a-ident)
         v-ident (if (and (contains? system-entities a)      ;; TODO: make robust to database versions?
                          (not (nil? (ref-ident-map v))))
                   (ref-ident-map v)
-                  v)
-        _ (println "v" v v-ident)
-        _ (println "ref-ident-map" ref-ident-map)]
+                  v)]
     (when (nil? v)
       (raise "Cannot store nil as a value at " at
              {:error :transact/syntax, :value v-ident, :context at}))

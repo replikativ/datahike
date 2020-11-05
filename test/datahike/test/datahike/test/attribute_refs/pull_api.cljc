@@ -1,10 +1,9 @@
-(ns datahike.test.pull-api-ref
+(ns datahike.test.attribute-refs.pull-api
   (:require
     #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
        :clj  [clojure.test :as t :refer [is deftest testing]])
     [datahike.api :as da]
     [datahike.core :as d]))
-
 
 
 (def test-schema
@@ -94,7 +93,6 @@
       (let [conn (da/connect config)
             _ (da/transact conn test-schema)
             max-eid (:max-eid @conn)
-            _ (println "meid" max-eid)
             db-datoms (test-datoms @conn max-eid)]
         (da/transact conn db-datoms)
         {:db @conn :e0 max-eid})))

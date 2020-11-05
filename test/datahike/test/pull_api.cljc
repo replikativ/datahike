@@ -14,7 +14,6 @@
    :enemy  {:db/cardinality :db.cardinality/many
             :db/valueType :db.type/ref}
    :father {:db/valueType :db.type/ref}
-
    :part   {:db/valueType :db.type/ref
             :db/isComponent true
             :db/cardinality :db.cardinality/many}
@@ -60,21 +59,6 @@
    (map (fn [[e a v]] (d/datom e a v tx0)))))
 
 (def test-db (d/init-db test-datoms test-schema))
-
-(d/pull test-db '[:name] 1)
-(d/pull test-db '[:db/id] 6)
-(d/pull test-db '[:name :db/id] 6)
-(d/pull test-db '[:_child] 2)
-(d/pull test-db '[*] 2)
-(d/pull test-db '[{:father [:name]}] 6)
-(d/pull test-db '[(default :foo "bar")] 1)
-(d/pull test-db '[(limit :aka 2)] 1)
-
-(let [db (-> test-db
-             (d/db-with [[:db/add 4 :friend 5]
-                         [:db/add 5 :friend 6]]))]
-  (d/pull db '[:db/id :name {:friend ...}] 4))
-
 
 (deftest test-pull-attr-spec
   (is (= {:name "Petr" :aka ["Devil" "Tupen"]}

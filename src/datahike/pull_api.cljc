@@ -137,7 +137,7 @@
    - attribute is reference.
    Returns frame set."
   [db attr-key attr eid forward? datoms opts [parent & frames]]
-  (println "PULL_ATTR_DATOMS" attr-key attr eid forward? datoms opts parent (count frames))
+  ;(println "PULL_ATTR_DATOMS" attr-key attr eid forward? datoms opts parent (count frames))
   (let [limit (get opts :limit +default-limit+)
         attr-key (or (:as opts) attr-key)
         found (not-empty
@@ -182,7 +182,7 @@
 (defn- pull-attr
   "Retrieve datoms for given entity id and specification from database"
   [db spec eid frames]
-  (println "PULL_ATTR" spec eid (count frames) (first frames))
+  ; (println "PULL_ATTR" spec eid (count frames) (first frames))
   (let [[attr-key opts] spec]
     (if (= :db/id attr-key)
       (if (not-empty (db/-datoms db :eavt [eid]))
