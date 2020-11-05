@@ -3,8 +3,7 @@
     #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
        :clj  [clojure.test :as t :refer [is deftest testing]])
     [datahike.api :as da]
-    [datahike.core :as d]
-    ))
+    [datahike.core :as d]))
 
 
 
@@ -36,43 +35,56 @@
     :db/isComponent true
     :db/cardinality :db.cardinality/one}])
 
+(defn wrap-ref-datoms [db offset datoms]
+  (let [irmap (:ident-ref-map db)]
+    (mapv (fn [[e a v]] [:db/add (+ offset e) (get irmap a) (+ offset v) ])
+          datoms)))
 
-(def test-datoms
-  (->>
-   [[1 :name  "Petr"]
-    [1 :aka   "Devil"]
-    [1 :aka   "Tupen"]
-    [2 :name  "David"]
-    [3 :name  "Thomas"]
-    [4 :name  "Lucy"]
-    [5 :name  "Elizabeth"]
-    [6 :name  "Matthew"]
-    [7 :name  "Eunan"]
-    [8 :name  "Kerri"]
-    [9 :name  "Rebecca"]
-    [1 :child 2]
-    [1 :child 3]
-    [2 :father 1]
-    [3 :father 1]
-    [6 :father 3]
-    [10 :name "Part A"]
-    [11 :name "Part A.A"]
-    [10 :part 11]
-    [12 :name "Part A.A.A"]
-    [11 :part 12]
-    [13 :name "Part A.A.A.A"]
-    [12 :part 13]
-    [14 :name "Part A.A.A.B"]
-    [12 :part 14]
-    [15 :name "Part A.B"]
-    [10 :part 15]
-    [16 :name "Part A.B.A"]
-    [15 :part 16]
-    [17 :name "Part A.B.A.A"]
-    [16 :part 17]
-    [18 :name "Part A.B.A.B"]
-    [16 :part 18]]
-   (mapv (fn [[e a v]] [:db/add e a v]))))
+(defn wrap-direct-datoms [db offset datoms]
+  (let [irmap (:ident-ref-map db)]
+    (mapv (fn [[e a v]] [:db/add (+ offset e) (get irmap a) v])
+          datoms)))
+
+(def test-direct-datoms
+  [[1 :name  "Petr"]
+   [1 :aka   "Devil"]
+   [1 :aka   "Tupen"]
+   [2 :name  "David"]
+   [3 :name  "Thomas"]
+   [4 :name  "Lucy"]
+   [5 :name  "Elizabeth"]
+   [6 :name  "Matthew"]
+   [7 :name  "Eunan"]
+   [8 :name  "Kerri"]
+   [9 :name  "Rebecca"]
+   [10 :name "Part A"]
+   [11 :name "Part A.A"]
+   [12 :name "Part A.A.A"]
+   [13 :name "Part A.A.A.A"]
+   [14 :name "Part A.A.A.B"]
+   [15 :name "Part A.B"]
+   [16 :name "Part A.B.A"]
+   [17 :name "Part A.B.A.A"]
+   [18 :name "Part A.B.A.B"]])
+
+(def test-ref-datoms
+  [[1 :child 2]
+   [1 :child 3]
+   [2 :father 1]
+   [3 :father 1]
+   [6 :father 3]
+   [10 :part 11]
+   [11 :part 12]
+   [12 :part 13]
+   [12 :part 14]
+   [10 :part 15]
+   [15 :part 16]
+   [16 :part 17]
+   [16 :part 18]])
+
+(defn test-datoms [db offset]
+  (vec (concat (wrap-direct-datoms db offset test-direct-datoms)
+               (wrap-ref-datoms db offset test-ref-datoms))))
 
 (def config {:attribute-refs? true})
 
@@ -81,13 +93,9 @@
       (da/create-database config)
       (let [conn (da/connect config)
             _ (da/transact conn test-schema)
-            irmap (:ident-ref-map @conn)
             max-eid (:max-eid @conn)
             _ (println "meid" max-eid)
-            db-datoms (mapv (fn [[op e a v]]
-                              [op (+ max-eid e) (get irmap a) (if (number? v) (+ max-eid v) v)])
-                            test-datoms)
-            _ (println db-datoms)]
+            db-datoms (test-datoms @conn max-eid)]
         (da/transact conn db-datoms)
         {:db @conn :e0 max-eid})))
 
@@ -147,8 +155,7 @@
                     {:db/id (+ test-e0 18) :name "Part A.B.A.B"}]}]}]}
         rpart (update-in parts [:part 0 :part 0 :part]
                          (partial into [{:db/id (+ test-e0 10)}]))
-        irmap (get test-db :ident-ref-map)
-        recdb (da/db-with test-db [(d/datom (+ test-e0 12) (:part irmap) (+ test-e0 10))])]
+        recdb (da/db-with test-db (wrap-ref-datoms test-db test-e0 [[12 :part 10]]))]
 
     (testing "Component entities are expanded recursively"
       (is (= parts (d/pull test-db '[:name :part] (+ test-e0 10)))))
@@ -172,15 +179,16 @@
          (d/pull test-db '[* :_child] (+ test-e0 2)))))
 
 (deftest test-pull-limit
-  (let [irmap (get test-db :ident-ref-map)
-        db (da/db-with test-db
-            (concat
-             [(d/datom (+ test-e0 4) (:friend irmap) (+ test-e0 5))
-              (d/datom (+ test-e0 4) (:friend irmap)  (+ test-e0 6))
-              (d/datom (+ test-e0 4) (:friend irmap)  (+ test-e0 7))
-              (d/datom (+ test-e0 4) (:friend irmap)  (+ test-e0 8))]
-             (for [idx (range 2000)]
-               (d/datom (+ test-e0 8) (:aka irmap) (str "aka-" idx)))))]
+  (let [db (da/db-with test-db
+             (concat
+               (wrap-ref-datoms test-db test-e0
+                 [[4 :friend 5]
+                  [4 :friend 6]
+                  [4 :friend 7]
+                  [4 :friend 8]])
+               (wrap-direct-datoms test-db test-e0
+                                   (for [idx (range 2000)]
+                                     [8 :aka (str "aka-" idx)]))))]
 
     (testing "Without an explicit limit, the default is 1000"
       (is (= 1000 (->> (d/pull db '[:aka] (+ test-e0 8)) :aka count))))
@@ -247,14 +255,15 @@
 (deftest test-pull-recursion
   (let [irmap (get test-db :ident-ref-map)
         db      (d/db-with test-db
-                           [[:db/add (+ test-e0 4) (:friend irmap) (+ test-e0 5)]
-                            [:db/add (+ test-e0 5) (:friend irmap) (+ test-e0 6)]
-                            [:db/add (+ test-e0 6) (:friend irmap) (+ test-e0 7)]
-                            [:db/add (+ test-e0 7) (:friend irmap) (+ test-e0 8)]
-                            [:db/add (+ test-e0 4) (:enemy irmap) (+ test-e0 6)]
-                            [:db/add (+ test-e0 5) (:enemy irmap) (+ test-e0 7)]
-                            [:db/add (+ test-e0 6) (:enemy irmap) (+ test-e0 8)]
-                            [:db/add (+ test-e0 7) (:enemy irmap) (+ test-e0 4)]])
+                           (wrap-ref-datoms test-db test-e0
+                                            [[4 :friend 5]
+                                             [5 :friend 6]
+                                             [6 :friend 7]
+                                             [7 :friend 8]
+                                             [4 :enemy 6]
+                                             [5 :enemy 7]
+                                             [6 :enemy 8]
+                                             [7 :enemy 4]]))
         friends {:db/id (+ test-e0 4)
                  :name "Lucy"
                  :friend
@@ -316,13 +325,13 @@
                  :db/cardinality :db.cardinality/one
                  :db/valueType :db.type/ref}]
         _ (da/transact conn schema)
-        irmap (get @conn :ident-ref-map)
         test-e0 (:max-eid @conn)
-        db (d/db-with @conn [[:db/add (+ test-e0 1) (:part irmap) (+ test-e0 2)]
-                             [:db/add (+ test-e0 2) (:part irmap) (+ test-e0 3)]
-                             [:db/add (+ test-e0 3) (:part irmap) (+ test-e0 1)]
-                             [:db/add (+ test-e0 1) (:spec irmap) (+ test-e0 2)]
-                             [:db/add (+ test-e0 2) (:spec irmap) (+ test-e0 1)]])]
+        db (d/db-with @conn (wrap-ref-datoms @conn test-e0
+                                             [[1 :part 2]
+                                              [2 :part 3]
+                                              [3 :part 1]
+                                              [1 :spec 2]
+                                              [2 :spec 1]]))]
     (is (= (d/pull db '[:db/id {:part ...} {:spec ...}] (+ test-e0 1))
            {:db/id (+ test-e0 1),
             :spec {:db/id (+ test-e0 2)
