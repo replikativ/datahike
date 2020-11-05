@@ -71,10 +71,16 @@
 
 
 
-(defn add-upsert-handler [store]
+(defn add-upsert-handler
+  "Tells the store how to deserialize an upsert related operation"
+  [store]
   (swap! (:read-handlers store)
     merge
     {'datahike.index.hitchhiker_tree.upsert.UpsertOp
      (fn [{:keys [key value]}]
-            (map->UpsertOp {:key key :value value}))})
+       (map->UpsertOp {:key key :value value}))
+
+     'datahike.index.hitchhiker_tree.upsert.temporal-UpsertOp
+     (fn [{:keys [key value]}]
+       (map->temporal-UpsertOp {:key key :value value}))})
   store)
