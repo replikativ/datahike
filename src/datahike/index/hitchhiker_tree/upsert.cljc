@@ -73,8 +73,8 @@
 
 (defn add-upsert-handler [store]
   (swap! (:read-handlers store)
-         merge
-         {'datahike.index.hitchhiker_tree.UpsertOp
-          (fn [{:keys [key value]}]
+    merge
+    {'datahike.index.hitchhiker_tree.upsert.UpsertOp
+     (fn [{:keys [key value]}]
             (map->UpsertOp {:key key :value value}))})
   store)
