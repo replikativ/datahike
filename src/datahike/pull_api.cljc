@@ -260,7 +260,6 @@
                                    (get (db/-ref-ident-map db) (.-a ^Datom d))
                                    (.-a ^Datom d)))
                          (db/-datoms db :eavt [eid]))
-        _ (println datoms)
         {:keys [attr recursion]} frame
         rec (cond-> recursion
               (some? attr) (push-recursion attr eid))]

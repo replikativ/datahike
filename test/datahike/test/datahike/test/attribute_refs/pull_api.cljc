@@ -1,10 +1,9 @@
 (ns datahike.test.attribute-refs.pull-api
   (:require
-    #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
-       :clj  [clojure.test :as t :refer [is deftest testing]])
-    [datahike.api :as da]
-    [datahike.core :as d]))
-
+   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer [is deftest testing]])
+   [datahike.api :as da]
+   [datahike.core :as d]))
 
 (def test-schema
   [{:db/ident       :aka
@@ -27,7 +26,7 @@
     :db/valueType   :db.type/ref}
    {:db/ident       :part
     :db/valueType   :db.type/ref
-     :db/isComponent true
+    :db/isComponent true
     :db/cardinality :db.cardinality/many}
    {:db/ident       :spec
     :db/valueType   :db.type/ref
@@ -36,7 +35,7 @@
 
 (defn wrap-ref-datoms [db offset datoms]
   (let [irmap (:ident-ref-map db)]
-    (mapv (fn [[e a v]] [:db/add (+ offset e) (get irmap a) (+ offset v) ])
+    (mapv (fn [[e a v]] [:db/add (+ offset e) (get irmap a) (+ offset v)])
           datoms)))
 
 (defn wrap-direct-datoms [db offset datoms]
@@ -178,15 +177,15 @@
 
 (deftest test-pull-limit
   (let [db (da/db-with test-db
-             (concat
-               (wrap-ref-datoms test-db test-e0
-                 [[4 :friend 5]
-                  [4 :friend 6]
-                  [4 :friend 7]
-                  [4 :friend 8]])
-               (wrap-direct-datoms test-db test-e0
-                                   (for [idx (range 2000)]
-                                     [8 :aka (str "aka-" idx)]))))]
+                       (concat
+                        (wrap-ref-datoms test-db test-e0
+                                         [[4 :friend 5]
+                                          [4 :friend 6]
+                                          [4 :friend 7]
+                                          [4 :friend 8]])
+                        (wrap-direct-datoms test-db test-e0
+                                            (for [idx (range 2000)]
+                                              [8 :aka (str "aka-" idx)]))))]
 
     (testing "Without an explicit limit, the default is 1000"
       (is (= 1000 (->> (d/pull db '[:aka] (+ test-e0 8)) :aka count))))
