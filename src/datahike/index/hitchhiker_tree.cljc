@@ -111,7 +111,8 @@
   (case index-type
     :aevt [(.-a datom) (.-e datom) (.-v datom) (.-tx datom)]
     :avet [(.-a datom) (.-v datom) (.-e datom) (.-tx datom)]
-    :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
+    :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]
+    (throw (IllegalArgumentException. (str "Unknown index-type: " index-type)))))
 
 (defn -insert [tree ^Datom datom index-type]
   (hmsg/insert tree (datom->node datom index-type) nil))
