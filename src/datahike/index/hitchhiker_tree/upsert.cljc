@@ -32,7 +32,7 @@
                       (tree/data-node? tree) (:children tree)
                       :else (:children (peek (tree/lookup-path tree key))))]
       (-> (or (remove-old children key (partial tree/delete tree)) tree)
-        (tree/insert key value)))))
+        (tree/insert key nil)))))
 
 (defn old-retracted
   "Returns a new datom to insert in the tree to signal the retraction of the old datom."
@@ -58,9 +58,9 @@
                       :else (:children (peek (tree/lookup-path tree key))))
           old-retracted  (old-retracted children key)]
       (-> (if old-retracted
-            (tree/insert tree old-retracted old-retracted)
+            (tree/insert tree old-retracted nil)
             tree)
-        (tree/insert key value)))))
+        (tree/insert key nil)))))
 
 
 (defn new-UpsertOp [key value]

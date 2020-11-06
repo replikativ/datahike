@@ -5,7 +5,7 @@
     [hitchhiker.tree.utils.async :as ha]
     [hitchhiker.tree :as tree]
     [hitchhiker.tree.messaging :as msg]
-    [datahike.index.hitchhiker-tree.upsert :as ht]
+    [datahike.index.hitchhiker-tree.upsert :as htu]
     [datahike.api :as d]))
 
 #?(:cljs
@@ -14,8 +14,7 @@
 
 (defn upsert-helper
   [t k]
-  (ha/<?? (msg/enqueue t [(ht/new-UpsertOp k k)])))
-
+  (ha/<?? (msg/enqueue t [(htu/new-UpsertOp k k)])))
 
 (deftest hh-tree-upsert
   (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
@@ -33,7 +32,7 @@
       (testing "we are in a projection"
         (is (= (:key (first (:op-buf tree))) projected-vec)))
       (testing "basic lookup works"
-        (is (= [1 :age 44 1] (msg/lookup tree [1 :age 44 1]))))
+        (is (= [[1 :age 44 1] nil] (first (msg/lookup-fwd-iter tree [1 :age 44 1])))))
       (testing "a totally new entry is persisted"
         (let [new [5 :name "Jo" 3]
               tree-after (upsert-helper tree new)]
@@ -54,7 +53,7 @@
 
     (testing "Against an entry located at leaf level,"
       (testing "basic lookup works"
-        (is (= [1 :age 44 1] (msg/lookup tree [1 :age 44 1]))))
+        (is (= [[1 :age 44 1] nil] (first (msg/lookup-fwd-iter tree [1 :age 44 1])))))
       (testing "re-inserting works"
         (let [new [1 :age 44 1]
               tree-after (upsert-helper tree new)]
@@ -84,9 +83,9 @@
                      [4 :name "Paulo" 1]
                      [4 :age 40 1] ;; triggers the overflow
                      }))]
-      (is (= nil           (msg/lookup tree [4 :age 12 1])))
-      (is (= nil           (msg/lookup tree [4 :age 20 1])))
-      (is (= [4 :age 40 1] (msg/lookup tree [4 :age 40 1]))))))
+      (is (= nil (msg/lookup tree [4 :age 12 1])))
+      (is (= nil (msg/lookup tree [4 :age 20 1])))
+      (is (= [[1 :age 44 1] nil] (first (msg/lookup-fwd-iter tree [1 :age 44 1])))))))
 
 
 (defn connect []
