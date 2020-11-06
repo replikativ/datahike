@@ -37,17 +37,17 @@
         (let [new [5 :name "Jo" 3]
               tree-after (upsert-helper tree new)]
           ;; Is new in?
-          (is (= new (msg/lookup tree-after new)))))
+          (is (= [new nil] (first (msg/lookup-fwd-iter tree-after new))))))
       (testing "new = old"
         (let [new [4 :name "Marcel" 2]
               tree-after (upsert-helper tree new)]
-          (is (= new (msg/lookup tree-after new)))))
+          (is (= [new nil] (first (msg/lookup-fwd-iter tree-after new))))))
       (testing "old v <> new v,"
         (testing "not keeping history"
           (let [new [4 :name "New-Name" 2]
                 tree-after (upsert-helper tree new)]
             ;; Is new in?
-            (is (= new (msg/lookup tree-after new)))
+            (is (= [new nil] (first (msg/lookup-fwd-iter tree-after new))))
             ;; Is old deleted?
             (is (= nil (msg/lookup tree-after projected-vec)))))))
 
@@ -57,13 +57,13 @@
       (testing "re-inserting works"
         (let [new [1 :age 44 1]
               tree-after (upsert-helper tree new)]
-          (is (= new (msg/lookup tree-after new)))))
+          (is (= [new nil] (first (msg/lookup-fwd-iter tree-after new))))))
       (testing "old v <> new v"
         (testing "not keeping history"
           (let [new [1 :age 40 5]
                 tree-after (upsert-helper tree new)]
             ;; Is new in?
-            (is (= new (msg/lookup tree-after new)))
+            (is (= [new nil] (first (msg/lookup-fwd-iter tree-after new))))
             ;; Is old deleted?
             (is (= nil (msg/lookup tree-after [1 :age 44 1])))))
         )))

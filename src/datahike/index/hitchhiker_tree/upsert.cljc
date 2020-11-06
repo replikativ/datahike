@@ -26,7 +26,7 @@
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
     (-> (or (remove-old kvs key (partial dissoc kvs)) kvs)
-      (assoc key value)))
+      (assoc key nil)))
   (-apply-op-to-tree [_ tree]
     (let [children  (cond
                       (tree/data-node? tree) (:children tree)
@@ -49,9 +49,9 @@
   (-apply-op-to-coll [_ kvs]
     (let [old-retracted  (old-retracted kvs key)]
       (-> (if old-retracted
-            (assoc kvs old-retracted old-retracted)
+            (assoc kvs old-retracted nil)
             kvs)
-        (assoc key value))))
+        (assoc key nil))))
   (-apply-op-to-tree [_ tree]
     (let [children  (cond
                       (tree/data-node? tree) (:children tree)
