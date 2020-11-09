@@ -1,4 +1,4 @@
-(ns datahike.tools
+(ns ^:no-doc datahike.tools
   (:require
    [taoensso.timbre :as log]))
 
