@@ -63,6 +63,7 @@
        (has [this attr]
             (not (nil? (.get this attr))))
        (get [this attr]
+            (println "get" this attr)
             (if (= attr ":db/id")
               eid
               (if (db/reverse-ref? attr)
@@ -177,17 +178,20 @@
 (defn touch-components [db a->v]
   (reduce-kv (fn [acc a v]
                (assoc acc a
-                      (if (db/component? db a)
-                        (if (db/multival? db a)
-                          (set (map touch v))
-                          (touch v))
-                        v)))
+                          (if (db/component? db a)
+                            (if (db/multival? db a)
+                              (set (map touch v))
+                              (touch v))
+                            v)))
              {} a->v))
 
 (defn- datoms->cache [db datoms]
-  (reduce (fn [acc part]
-            (let [a (:a (first part))]
-              (assoc acc a (entity-attr db a part))))
+  (reduce (fn [acc partition]
+            (let [a (:a (first partition))
+                  a-ident (if (get-in db [:config :attribute-refs?])
+                            (get-in db [:ref-ident-map a])
+                            a)]
+              (assoc acc a-ident (entity-attr db a-ident partition))))
           {} (partition-by :a datoms)))
 
 (defn touch [^Entity e]

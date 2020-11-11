@@ -1,7 +1,7 @@
 (ns datahike.test.attribute-refs.transact
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as da]
    [datahike.core :as d]))
 
@@ -13,12 +13,18 @@
     :db/valueType   :db.type/string}
    {:db/ident       :label
     :db/cardinality :db.cardinality/many
-    :db/valueType   :db.type/string}
+    :db/valueType   :db.type/keyword}
    {:db/ident       :name
     :db/cardinality :db.cardinality/one
     :db/valueType   :db.type/string
     :db/unique      :db.unique/identity}
    {:db/ident       :age
+    :db/cardinality :db.cardinality/one
+    :db/valueType   :db.type/long}
+   {:db/ident       :had-birthday
+    :db/cardinality :db.cardinality/one
+    :db/valueType   :db.type/boolean}
+   {:db/ident       :weight
     :db/cardinality :db.cardinality/one
     :db/valueType   :db.type/long}
    {:db/ident       :friend
@@ -76,8 +82,8 @@
                     db2 (+ test-e0 1))
                #{["Tupen"]}))
 
-        #_(is (= (into {} (d/entity db2 (+ test-e0 1))) {:aka #{"Tupen"}})) ;; TODO: adjust entity function
-        ))
+        (is (= (into {} (d/entity db2 (+ test-e0 1)))
+               {:aka #{"Tupen"}}))))
 
     (testing "Cannot retract what's not there"
       (let [db3 (d/db-with db (wrap-ddatoms test-db test-e0 :db/retract
@@ -99,16 +105,17 @@
                     :where [?e ?a ?v]]
                   db (+ test-e0 1))
              #{}))
-      #_(is (= (d/q '[:find ?a ?v
+      (is (= (d/q '[:find ?a ?v
                       :in $ ?e
-                      :where [?e ?a ?v]]
+                      :where [?e ?r ?v]
+                             [?r :db/ident ?a]]
                     db (+ test-e0 2))
-               #{[:name "Petr"] [:age 37]})))                 ; TODO: refs or kws?
+               #{[:name "Petr"] [:age 37]})))
 
     #_(is (= (d/db-with db [[:db.fn/retractEntity (+ test-e0 1)]]) ; TODO: Why not equal?
              (d/db-with db [[:db/retractEntity (+ test-e0 1)]])))
 
-    (testing "Retract entitiy with incoming refs"
+    (testing "Retract entity with incoming refs"
       (is (= (d/q '[:find ?e
                     :in $ ?e1
                     :where [?e1 :friend ?e]]
@@ -122,71 +129,78 @@
                     db (+ test-e0 1))
                #{}))))
 
-    #_(let [db (d/db-with db [[:db.fn/retractAttribute (+ test-e0 1) :name]])]
+    (let [db (d/db-with db [[:db.fn/retractAttribute (+ test-e0 1) :name]])]
         (is (= (d/q '[:find ?a ?v
                       :in $ ?e1
-                      :where [?e1 ?a ?v]]
+                      :where [?e1 ?r ?v]
+                             [?r :db/ident ?a]]
                     db (+ test-e0 1))
                #{[:age 15] [:aka "X"] [:aka "Y"] [:aka "Z"] [:friend (+ test-e0 2)]}))
         (is (= (d/q '[:find ?a ?v
                       :in $ ?e2
-                      :where [?e2 ?a ?v]]
+                      :where [?e2 ?r ?v]
+                             [?r :db/ident ?a]]
                     db (+ test-e0 2))
-               #{[:name "Petr"] [:age 37]})))                 ; TODO: return kw or ref for attribute?
+               #{[:name "Petr"] [:age 37]})))
 
-    #_(let [db (d/db-with db [[:db.fn/retractAttribute (+ test-e0 1) :aka]])]
+    (let [db (d/db-with db [[:db.fn/retractAttribute (+ test-e0 1) :aka]])]
         (is (= (d/q '[:find ?a ?v
                       :in $ ?e
-                      :where [?e ?a ?v]]
+                      :where [?e ?r ?v]
+                             [?r :db/ident ?a]]
                     db (+ test-e0 1))
                #{[:name "Ivan"] [:age 15] [:friend (+ test-e0 2)]}))
         (is (= (d/q '[:find ?a ?v
                       :in $ ?e
-                      :where [?e ?a ?v]]
+                      :where [?e ?r ?v]
+                             [?r :db/ident ?a]]
                     db (+ test-e0 2))
                #{[:name "Petr"] [:age 37]})))))
 
-#_(deftest test-db-fn-cas
-    (let [conn (:conn test-conn)]
-      (da/transact conn [[:db/cas 1 :weight nil 100]])
-      (is (= (:weight (d/entity @conn 1)) 100))
-      (da/transact conn [[:db/add 1 :weight 200]])
-      (da/transact conn [[:db.fn/cas 1 :weight 200 300]])
-      (is (= (:weight (d/entity @conn 1)) 300))
-      (da/transact conn [[:db/cas 1 :weight 300 400]])
-      (is (= (:weight (d/entity @conn 1)) 400))
-      (is (thrown-msg? ":db.fn/cas failed on datom [1 :weight 400], expected 200"
-                       (da/transact conn [[:db.fn/cas 1 :weight 200 210]]))))
+(deftest test-db-fn-cas
+    (let [conn (:conn test-conn)
+          weight-ref (get-in @conn [:ident-ref-map :weight])]
+      (da/transact conn [[:db/cas (+ test-e0 1) weight-ref nil 100]])
+      (is (= (:weight (d/entity @conn (+ test-e0 1))) 100))
+      (da/transact conn [[:db/add (+ test-e0 1) weight-ref 200]])
+      (da/transact conn [[:db.fn/cas (+ test-e0 1) weight-ref 200 300]])
+      (is (= (:weight (d/entity @conn (+ test-e0 1))) 300))
+      (da/transact conn [[:db/cas (+ test-e0 1) weight-ref 300 400]])
+      (is (= (:weight (d/entity @conn (+ test-e0 1))) 400))
+      #_(is (thrown-msg? (str ":db.fn/cas failed on datom [" (+ test-e0 1) " " weight-ref" 400], expected 200")
+                       (da/transact conn [[:db.fn/cas (+ test-e0 1) weight-ref 200 210]]))))
 
-    #_(let [conn (:conn test-conn)]
-        (da/transact conn [[:db/add 1 :label :x]])
-        (da/transact conn [[:db/add 1 :label :y]])
-        (da/transact conn [[:db.fn/cas 1 :label :y :z]])
-        (is (= (:label (d/entity @conn 1)) #{:x :y :z}))
-        (is (thrown-msg? ":db.fn/cas failed on datom [1 :label (:x :y :z)], expected :s"
-                         (da/transact conn [[:db.fn/cas 1 :label :s :t]]))))
+    #_(let [conn (:conn test-conn)
+          label-ref (get-in @conn [:ident-ref-map :label])]
+        (da/transact conn [[:db/add (+ test-e0 1) label-ref :x]])
+        (da/transact conn [[:db/add (+ test-e0 1) label-ref :y]])
+        (da/transact conn [[:db.fn/cas (+ test-e0 1) label-ref :y :z]])
+        (is (= (:label (d/entity @conn (+ test-e0 1))) #{:x :y :z}))
+        #_(is (thrown-msg? (str ":db.fn/cas failed on datom [" (+ test-e0 1) " " label-ref " (:x :y :z)], expected :s")
+                         (da/transact conn [[:db.fn/cas (+ test-e0 1) label-ref :s :t]]))))
 
-    #_(let [conn (:conn test-conn)]
-        (da/transact conn [[:db/add 1 :name "Ivan"]])
-        (da/transact conn [[:db.fn/cas 1 :age nil 42]])
-        (is (= (:age (d/entity @conn 1)) 42))
-        (is (thrown-msg? ":db.fn/cas failed on datom [1 :age 42], expected nil"
-                         (da/transact conn [[:db.fn/cas 1 :age nil 4711]]))))
-
-    #_(let [conn (:conn test-conn)]
-        (is (thrown-msg? "Can't use tempid in '[:db.fn/cas -1 :attr nil :val]'. Tempids are allowed in :db/add only"
-                         (da/transact conn [[:db/add    -1 :name "Ivan"]
-                                            [:db.fn/cas -1 :attr nil :val]])))))
+    #_(let [conn (:conn test-conn)
+          name-ref (get-in @conn [:ident-ref-map :name])
+          age-ref (get-in @conn [:ident-ref-map :age])]
+        (da/transact conn [[:db.fn/retractEntity (+ test-e0 1)]])
+        (da/transact conn [[:db/add (+ test-e0 1) name-ref "Ivan"]])
+        (da/transact conn [[:db.fn/cas (+ test-e0 1) age-ref nil 42]])
+        (is (= (:age (d/entity @conn (+ test-e0 1))) 42))
+        #_(is (thrown-msg? (str ":db.fn/cas failed on datom [" (+ test-e0 1) " " age-ref" 42], expected ni")
+                         (da/transact conn [[:db.fn/cas (+ test-e0 1) age-ref nil 4711]])))))
 
 (deftest test-db-fn
   (let [conn (:conn test-conn)
+        had-birthday-ref (get-in @conn [:ident-ref-map :had-birthday])
         inc-age (fn [db name]
                   (if-let [[eid age] (first (d/q '{:find [?e ?age]
                                                    :in [$ ?name]
-                                                   :where [[?e :name ?name]
-                                                           [?e :age ?age]]}
+                                                   :where [[?e ?r ?name]
+                                                           [?r :db/ident :name]
+                                                           [?e ?r2 ?age]
+                                                           [?r2 :db/ident :age]]}
                                                  db name))]
-                    [{:db/id eid :age (inc age)} [:db/add eid :had-birthday true]]
+                    [{:db/id eid :age (inc age)} [:db/add eid had-birthday-ref true]]
                     (throw (ex-info (str "No entity with name: " name) {}))))]
     (da/transact conn [{:db/id (+ test-e0 1) :name "Ivan" :age 31}
                        {:db/id (+ test-e0 1) :name "Petr"}
@@ -203,8 +217,6 @@
     #_(is (thrown-msg? "No entity with name: Bob"
                        (d/transact! conn [[:db.fn/call inc-age "Bob"]])))
     #_(let [{:keys [db-after]} (d/transact! conn [[:db.fn/call inc-age "Petr"]])
-            e (d/entity db-after 1)]                          ;; TODO: d/entity
+            e (d/entity db-after 1)]
         (is (= (:age e) 32))
         (is (:had-birthday e)))))
-
-

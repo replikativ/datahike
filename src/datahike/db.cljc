@@ -158,9 +158,8 @@
 
 (defn- search-indices [eavt aevt avet pattern temporal-db? {:keys [config ident-ref-map] :as db}]
   (let [[e a-raw v tx added?] pattern
-        a        (if (and (:attribute-refs? config) (not (number? a-raw)))
-                   (get ident-ref-map a-raw)
-                   a-raw)
+        attr-ref? (and (:attribute-refs? config) (not (number? a-raw)))
+        a (if (and (not (nil? a-raw)) attr-ref?) (get ident-ref-map a-raw -1) a-raw)
         indexed? (indexing? db a-raw)]
     (if (and (not temporal-db?) (false? added?))
       '()
@@ -178,13 +177,13 @@
                   (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ tx
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
                   (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ _
-                  (if indexed?                              ;; _ a v tx
+                  (if indexed?                             ;; _ a v tx
                     (->> (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
                          (filter (fn [^Datom d] (= tx (datom-tx d)))))
                     (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
                          (filter (fn [^Datom d] (and (= v (.-v d))
                                                      (= tx (datom-tx d)))))))
-                  (if indexed?                              ;; _ a v _
+                  (if indexed?                             ;; _ a v _
                     (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
                     (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
                          (filter (fn [^Datom d] (= v (.-v d))))))
@@ -1224,7 +1223,7 @@
                           (ref-ident-map v)
                           v)]
     (when (and attribute-refs? (contains? system-entities e))
-      (raise (str "System schema entity cannot be changed")
+      (raise "System schema entity cannot be changed"
              {:error :transact/schema :entity-id e}))
     (if (= a-ident :db/ident)
       (if (schema v-ident)

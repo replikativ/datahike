@@ -1,10 +1,9 @@
 (ns datahike.test.entity
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.core :as d]
-   [datahike.db :as db]
    [datahike.test.core :as tdc])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
@@ -16,7 +15,8 @@
                (d/db-with [{:db/id 1, :name "Ivan", :age 19, :aka ["X" "Y"]}
                            {:db/id 2, :name "Ivan", :sex "male", :aka ["Z"]}
                            [:db/add 3 :huh? false]]))
-        e  (d/entity db 1)]
+        e (d/entity db 1)
+        _ (println "e" e)]
     (is (= (:db/id e) 1))
     (is (identical? (d/entity-db e) db))
     (is (= (:name e) "Ivan"))

@@ -1,7 +1,7 @@
 (ns datahike.test.attribute-refs.differences
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+      :clj [clojure.test :as t :refer [is are deftest testing use-fixtures]])
    [clojure.set :refer [difference]]
    [datahike.api :as d]
    [datahike.constants :as c :refer [utx0]]
@@ -11,16 +11,20 @@
                    [datahike.datom Datom])))
 
 (def no-ref-cfg
-  {:store              {:backend :mem :id "attr-no-refs-test"}
-   :keep-history?      true
-   :attribute-refs?    false
+  {:store {:backend :mem :id "attr-no-refs-test"}
+   :keep-history? true
+   :attribute-refs? false
    :schema-flexibility :write})
 
 (def ref-cfg
-  {:store              {:backend :mem :id "attr-no-refs-test"}
-   :keep-history?      false
-   :attribute-refs?    true
+  {:store {:backend :mem :id "attr-no-refs-test"}
+   :keep-history? false
+   :attribute-refs? true
    :schema-flexibility :write})
+
+(def name-schema [{:db/ident :name
+                   :db/cardinality :db.cardinality/one
+                   :db/valueType :db.type/string}])
 
 (defn start-db [cfg]
   (d/delete-database cfg)
@@ -58,16 +62,16 @@
                             ref-datoms))
                (set (d/datoms @conn :avet))))))))
 
-(deftest test-last-entity-id                          ;; TODO: What is the behavior wanted?
+(deftest test-last-entity-id                                ;; TODO: What is the behavior wanted?
   (let [find-last-entity-id (fn [db]
                               (->> (d/datoms db :eavt)
                                    (remove (fn [datom] (= (tx-instant db) (:a datom))))
                                    (map :e)
                                    (concat [-1])
                                    (apply max)))
-        simple-schema [{:db/ident       :name
+        simple-schema [{:db/ident :name
                         :db/cardinality :db.cardinality/one
-                        :db/valueType   :db.type/string}]]
+                        :db/valueType :db.type/string}]]
     (let [conn (start-db no-ref-cfg)]
       (testing "Last entity id for empty keyword DB"
         (is (= c/e0 (:max-eid @conn)))
@@ -89,54 +93,48 @@
         (is (= (+ 1 c/ue0) (find-last-entity-id @conn)))))))
 
 (deftest test-transact-schema
-  (let [simple-schema [{:db/ident       :name
-                        :db/cardinality :db.cardinality/one
-                        :db/valueType   :db.type/string}]]
-    (testing "Schema for keyword DB"
-      (let [conn (start-db no-ref-cfg)]
-        (is (= (:schema @conn)
-               c/non-ref-implicit-schema))
-        (d/transact conn simple-schema)
-        (is (= (:schema @conn)
-               (merge c/non-ref-implicit-schema {:name (first simple-schema)} {1 :name})))))
-    (testing "Schema for reference DB"
-      (let [conn (start-db ref-cfg)]
-        (is (= (:schema @conn)
-               c/ref-implicit-schema))
-        (d/transact conn simple-schema)
-        (is (= (:schema @conn)
-               (merge c/ref-implicit-schema {:name (first simple-schema)} {(+ 1 c/ue0) :name})))))))
+  (testing "Schema for keyword DB"
+    (let [conn (start-db no-ref-cfg)]
+      (is (= (:schema @conn)
+             c/non-ref-implicit-schema))
+      (d/transact conn name-schema)
+      (is (= (:schema @conn)
+             (merge c/non-ref-implicit-schema {:name (first name-schema)} {1 :name})))))
+  (testing "Schema for reference DB"
+    (let [conn (start-db ref-cfg)]
+      (is (= (:schema @conn)
+             c/ref-implicit-schema))
+      (d/transact conn name-schema)
+      (is (= (:schema @conn)
+             (merge c/ref-implicit-schema {:name (first name-schema)} {(+ 1 c/ue0) :name}))))))
 
 (deftest test-transact-tempid
-  (let [simple-schema [{:db/ident       :name
-                        :db/cardinality :db.cardinality/one
-                        :db/valueType   :db.type/string}]]
-    (testing "Tempid resolution for keyword DB"
-      (let [conn (start-db no-ref-cfg)]
-        (is (= (:tempids (d/transact conn simple-schema))
-               {:db/current-tx (+ 1 c/tx0)}))
-        (is (= (:tempids (d/transact conn [{:db/id -1 :name "Ivan"}]))
-               {-1 (+ 2 c/e0), :db/current-tx (+ 2 c/tx0)}))
-        (is (= (:tempids (d/transact conn [[:db/add -2 :name "Petr"]]))
-               {-2 (+ 3 c/e0), :db/current-tx (+ 3 c/tx0)}))
-        (is (= (:tempids (d/transact conn [{:db/id "Serg" :name "Sergey"}]))
-               {"Serg" (+ 4 c/e0), :db/current-tx (+ 4 c/tx0)}))))
+  (testing "Tempid resolution for keyword DB"
+    (let [conn (start-db no-ref-cfg)]
+      (is (= (:tempids (d/transact conn name-schema))
+             {:db/current-tx (+ 1 c/tx0)}))
+      (is (= (:tempids (d/transact conn [{:db/id -1 :name "Ivan"}]))
+             {-1 (+ 2 c/e0), :db/current-tx (+ 2 c/tx0)}))
+      (is (= (:tempids (d/transact conn [[:db/add -2 :name "Petr"]]))
+             {-2 (+ 3 c/e0), :db/current-tx (+ 3 c/tx0)}))
+      (is (= (:tempids (d/transact conn [{:db/id "Serg" :name "Sergey"}]))
+             {"Serg" (+ 4 c/e0), :db/current-tx (+ 4 c/tx0)}))))
 
-    (testing "Tempid resolution for reference DB"
-      (let [conn (start-db ref-cfg)]
-        (is (= (:tempids (d/transact conn simple-schema))
-               {:db/current-tx (+ 1 c/tx0)}))
-        (is (= (:tempids (d/transact conn [{:db/id -1 :name "Ivan"}]))
-               {-1 (+ 2 c/ue0), :db/current-tx (+ 2 c/tx0)}))
-        (is (= (:tempids (d/transact conn [[:db/add -2 (get-in @conn [:ident-ref-map :name]) "Petr"]]))
-               {-2 (+ 3 c/ue0), :db/current-tx (+ 3 c/tx0)}))
-        (is (= (:tempids (d/transact conn [{:db/id "Serg" :name "Sergey"}]))
-               {"Serg" (+ 4 c/ue0), :db/current-tx (+ 4 c/utx0)}))))))
+  (testing "Tempid resolution for reference DB"
+    (let [conn (start-db ref-cfg)]
+      (is (= (:tempids (d/transact conn name-schema))
+             {:db/current-tx (+ 1 c/tx0)}))
+      (is (= (:tempids (d/transact conn [{:db/id -1 :name "Ivan"}]))
+             {-1 (+ 2 c/ue0), :db/current-tx (+ 2 c/tx0)}))
+      (is (= (:tempids (d/transact conn [[:db/add -2 (get-in @conn [:ident-ref-map :name]) "Petr"]]))
+             {-2 (+ 3 c/ue0), :db/current-tx (+ 3 c/tx0)}))
+      (is (= (:tempids (d/transact conn [{:db/id "Serg" :name "Sergey"}]))
+             {"Serg" (+ 4 c/ue0), :db/current-tx (+ 4 c/utx0)})))))
 
 (deftest test-system-attr-resolution
-  (let [schema [{:db/ident       :name
+  (let [schema [{:db/ident :name
                  :db/cardinality :db.cardinality/one
-                 :db/valueType   :db.type/string}]
+                 :db/valueType :db.type/string}]
         keyword-attrs (fn [datoms] (->> datoms
                                         (filter (fn [datom] (keyword? (:a datom))))
                                         (map :a)
@@ -154,9 +152,9 @@
                #{}))))))
 
 (deftest test-system-enum-resolution
-  (let [schema [{:db/ident       :name
+  (let [schema [{:db/ident :name
                  :db/cardinality :db.cardinality/one
-                 :db/valueType   :db.type/string}]
+                 :db/valueType :db.type/string}]
         unresolved-enums (fn [datoms] (->> datoms
                                            (filter (fn [datom] (keyword? (:v datom))))
                                            (map :v)
@@ -174,13 +172,13 @@
                #{:name}))))))
 
 (deftest test-indexing
-  (let [schema [{:db/ident       :name
+  (let [schema [{:db/ident :name
                  :db/cardinality :db.cardinality/one
-                 :db/index       true
-                 :db/valueType   :db.type/string}
-                {:db/ident       :age
+                 :db/index true
+                 :db/valueType :db.type/string}
+                {:db/ident :age
                  :db/cardinality :db.cardinality/one
-                 :db/valueType   :db.type/long}]
+                 :db/valueType :db.type/long}]
         tx1 [{:name "Alice"
               :age 10}]
         avet-a-v (fn [db] (->> (d/datoms db :avet)
@@ -208,17 +206,17 @@
                #{[(ref :name) "Alice"] [1 :age] [1 :name]}))))))
 
 (deftest test-transact-nested-data
-  (let [schema [{:db/ident       :name
+  (let [schema [{:db/ident :name
                  :db/cardinality :db.cardinality/one
-                 :db/unique      :db.unique/identity
-                 :db/valueType   :db.type/string}
-                {:db/ident       :sibling
+                 :db/unique :db.unique/identity
+                 :db/valueType :db.type/string}
+                {:db/ident :sibling
                  :db/cardinality :db.cardinality/many
-                 :db/valueType   :db.type/ref}]
+                 :db/valueType :db.type/ref}]
         find-alices (fn [db] (d/q '[:find ?e :where [?e :name "Alice"]] db))
         find-bobs (fn [db] (d/q '[:find ?e :where [?e :name "Bob"]] db))
         tx1 [{:name "Alice"}]
-        tx2 [{:name    "Charlie"
+        tx2 [{:name "Charlie"
               :sibling [{:name "Alice"} {:name "Bob"}]}]]
     (testing "Resolve nesting in keyword DB"
       (let [conn (start-db no-ref-cfg)]
@@ -234,92 +232,84 @@
         (is (= 1 (count (find-alices @conn))))
         (is (= 1 (count (find-bobs @conn))))))))
 
-#_(deftest test-transact-data-with-keyword-attr
-    (testing "Keyword transaction in keyword DB"
-      (let [conn     (start-db no-ref-cfg)
-            next-eid (inc (:max-eid @conn))]
-        (d/transact conn [[:db/add next-eid :db/ident :name]])))
+(deftest test-transact-data-with-keyword-attr
+  (testing "Keyword transaction in keyword DB"
+    (let [conn (start-db no-ref-cfg)
+          next-eid (inc (:max-eid @conn))]
+      (d/transact conn [[:db/add next-eid :db/ident :name]])))
 
-    (testing "Keyword transaction in reference DB"
-      (let [conn     (start-db ref-cfg)
-            next-eid (inc (:max-eid @conn))]
-        (is (thrown-msg?
-             "Bad attribute type for: :db/ident, expected number"
-             (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
+  #_(testing "Keyword transaction in reference DB"
+    (let [conn (start-db ref-cfg)
+          next-eid (inc (:max-eid @conn))]
+      (is (thrown-msg? "Bad attribute type for: :db/ident, expected number"
+                       (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
-#_(deftest test-transact-data-with-reference-attr
-    (testing "Reference transaction in keyword DB"
-      (let [conn     (start-db no-ref-cfg)
-            next-eid (inc (:max-eid @conn))]
-        (is (thrown-msg?
-             "Bad attribute type for: 1, expected  keyword or string"
-             (d/transact conn [[:db/add next-eid 1 :name]])))))
+(deftest test-transact-data-with-reference-attr
+  #_(testing "Reference transaction in keyword DB"
+    (let [conn (start-db no-ref-cfg)
+          next-eid (inc (:max-eid @conn))]
+      (is (thrown-msg? "Bad attribute type for: 1, expected  keyword or string"
+                       (d/transact conn [[:db/add next-eid 1 :name]])))))
 
-    (testing "Reference transaction in reference DB"
-      (let [conn     (start-db ref-cfg)
-            next-eid (inc (:max-eid @conn))]
-        (d/transact conn [[:db/add next-eid 1 :name]]))))
+  (testing "Reference transaction in reference DB"
+    (let [conn (start-db ref-cfg)
+          next-eid (inc (:max-eid @conn))]
+      (d/transact conn [[:db/add next-eid 1 :name]]))))
 
-#_(deftest test-system-schema-protection
+(deftest test-system-schema-protection
+  (let [conn (start-db ref-cfg)]
+    #_(testing "Transact sequential system schema update"
+      (is (thrown-msg? "System schema entity cannot be changed"
+                       (d/transact conn [[:db/add 1 1 :name]]))))
+
+    #_(testing "Transact system schema update as map"
+      (is (thrown-msg? "System schema entity cannot be changed"
+                       (d/transact conn [{:db/id 1 :db/ident :name}]))))))
+
+(deftest test-system-attribute-protection
+  (testing "Use system keyword for schema in keyword DB"
+    (let [conn (start-db no-ref-cfg)]
+      (is (thrown-msg? "Using namespace 'db' for attribute identifiers is not allowed"
+                       (d/transact conn [{:db/ident :db/unique}])))))
+
+  (testing "Use system keyword for schema in keyword DB"
     (let [conn (start-db ref-cfg)]
-      (testing "Transact sequential system schema update"
-        (thrown-msg?
-         "System schema entity cannot be changed"
-         (d/transact conn [[:db/add 1 1 :name]])))
+      (is (thrown-msg? "Using namespace 'db' for attribute identifiers is not allowed"
+                       (d/transact conn [{:db/ident :db/unique}]))))))
 
-      (testing "Transact system schema update as map"
-        (thrown-msg?
-         "System schema entity cannot be changed"
-         (d/transact conn [{:db/id 1 :db/ident :name}])))))
+(deftest test-system-enum-protection
+  (testing "Use system keyword for schema in keyword DB"
+    (let [conn (start-db no-ref-cfg)]
+      (is (thrown-msg? "Using namespace 'db' for attribute identifiers is not allowed"
+                       (d/transact conn [{:db/ident :db.cardinality/many}])))))
 
-#_(deftest test-system-attribute-protection
-    (testing "Use system keyword for schema in keyword DB"
-      (let [conn (start-db no-ref-cfg)]
-        (thrown-msg?
-         "Using system attribute names as attribute identifier is not allowed"
-         (d/transact conn [{:db/ident :db/unique}]))))
+  (testing "Use system keyword for schema in keyword DB"
+    (let [conn (start-db ref-cfg)]
+      (is (thrown-msg? "Using namespace 'db' for attribute identifiers is not allowed"
+                       (d/transact conn [{:db/ident :db.cardinality/many}]))))))
 
-    (testing "Use system keyword for schema in keyword DB"
-      (let [conn (start-db ref-cfg)]
-        (thrown-msg?
-         "Using system attribute names as attribute identifier is not allowed"
-         (d/transact conn [{:db/ident :db/unique}])))))
+(deftest test-read-schema                                   ;; thrown-msg not working? intended behavior?
+  (testing "No error in combination with schema-flexibility read for keyword DB"
+    (let [read-no-ref-cfg (assoc no-ref-cfg :schema-flexibility :read)]
+      (db/empty-db nil read-no-ref-cfg)
+      (db/init-db [] nil read-no-ref-cfg)))
 
-#_(deftest test-system-enum-protection
-    (testing "Use system keyword for schema in keyword DB"
-      (let [conn (start-db no-ref-cfg)]
-        (thrown-msg?
-         "Using system attribute names as attribute identifier is not allowed"
-         (d/transact conn [{:db/ident :db.cardinality/many}]))))
-
-    (testing "Use system keyword for schema in keyword DB"
-      (let [conn (start-db ref-cfg)]
-        (thrown-msg?
-         "Using system attribute names as attribute identifier is not allowed"
-         (d/transact conn [{:db/ident :db.cardinality/many}])))))
-
-#_(deftest test-read-schema               ;; thrown-msg not working? intended behavior?
-    (testing "No error in combination with schema-flexibility read for keyword DB"
-      (let [read-no-ref-cfg (assoc no-ref-cfg :schema-flexibility :read)]
-        (db/empty-db nil read-no-ref-cfg)
-        (db/init-db [] nil read-no-ref-cfg)))
-
-    (testing "Error in combination with schema-flexibility read for reference DB"
-      (let [read-ref-cfg (assoc ref-cfg :schema-flexibility :read)]
-        (is (thrown-msg? "Attribute references cannot be used with schema-flexibility ':read'."
-                         (db/empty-db nil read-ref-cfg)))
-        (is (thrown-msg? "Attribute references cannot be used with schema-flexibility ':read'."
-                         (db/init-db [] nil read-ref-cfg))))))
+  (testing "Error in combination with schema-flexibility read for reference DB"
+    (let [read-ref-cfg (assoc ref-cfg :schema-flexibility :read)]
+      (is (thrown-msg? "Attribute references cannot be used with schema-flexibility ':read'."
+                       (db/empty-db nil read-ref-cfg)))
+      (is (thrown-msg? "Attribute references cannot be used with schema-flexibility ':read'."
+                       (db/init-db [] nil read-ref-cfg))))))
 
 (deftest test-query-ref-db
   (let [conn (start-db ref-cfg)
-        schema [{:db/ident       :name
+        schema [{:db/ident :name
                  :db/cardinality :db.cardinality/one
-                 :db/valueType   :db.type/string}]
-        ref    (fn [ident] (get-in @conn [:ident-ref-map ident]))]
+                 :db/valueType :db.type/string}]
+        ref (fn [ident] (get-in @conn [:ident-ref-map ident]))]
     (d/transact conn schema)
-    (d/transact conn [{:name  "Alice"}
-                      {:name  "Bob"}])
+    (d/transact conn [{:name "Alice"}
+                      {:name "Bob"}])
     (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn (ref :name))
            #{["Alice"] ["Bob"]}))
     (is (= (d/q '[:find ?n :in $ :where [_ :name ?n]] @conn)
@@ -331,25 +321,25 @@
 
 
 (deftest test-pull-ref-db
-  (let [conn    (start-db ref-cfg)
-        schema  [{:db/ident       :name
-                  :db/cardinality :db.cardinality/one
-                  :db/valueType   :db.type/string}
-                 {:db/ident       :aka
-                  :db/cardinality :db.cardinality/many
-                  :db/valueType   :db.type/string}
-                 {:db/ident       :child
-                  :db/cardinality :db.cardinality/many
-                  :db/valueType   :db.type/ref}
-                 {:db/ident       :father
-                  :db/cardinality :db.cardinality/one
-                  :db/valueType   :db.type/ref}]
-        _       (d/transact conn schema)
-        _       (d/transact conn [{:name "Ivan"
-                                   :aka  ["Devil" "Tupen"]}])
-        ivan    (ffirst (d/q '[:find ?e :where [?e :name "Ivan"]] @conn))
-        _       (d/transact conn [{:name   "Matthew"
-                                   :father ivan}])
+  (let [conn (start-db ref-cfg)
+        schema [{:db/ident :name
+                 :db/cardinality :db.cardinality/one
+                 :db/valueType :db.type/string}
+                {:db/ident :aka
+                 :db/cardinality :db.cardinality/many
+                 :db/valueType :db.type/string}
+                {:db/ident :child
+                 :db/cardinality :db.cardinality/many
+                 :db/valueType :db.type/ref}
+                {:db/ident :father
+                 :db/cardinality :db.cardinality/one
+                 :db/valueType :db.type/ref}]
+        _ (d/transact conn schema)
+        _ (d/transact conn [{:name "Ivan"
+                             :aka ["Devil" "Tupen"]}])
+        ivan (ffirst (d/q '[:find ?e :where [?e :name "Ivan"]] @conn))
+        _ (d/transact conn [{:name "Matthew"
+                             :father ivan}])
         matthew (ffirst (d/q '[:find ?e :where [?e :name "Matthew"]] @conn))]
 
     (is (= {:name "Ivan" :aka ["Devil" "Tupen"]}
