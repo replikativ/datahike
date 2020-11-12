@@ -65,8 +65,7 @@
             ;; Is new in?
             (is (= [new nil] (first (msg/lookup-fwd-iter tree-after new))))
             ;; Is old deleted?
-            (is (= nil (msg/lookup tree-after [1 :age 44 1])))))
-        )))
+            (is (= nil (msg/lookup tree-after [1 :age 44 1]))))))))
 
   (testing "when it overflows"
     ;; I.e. testing the projection of a deferred-op sitting on an index-node.
