@@ -3,7 +3,6 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    #?(:clj [clojure.java.shell :as sh])
-   datahike.test.differences
    datahike.test.core
    datahike.test.components
    datahike.test.config
