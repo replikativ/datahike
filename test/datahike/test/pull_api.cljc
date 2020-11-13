@@ -3,7 +3,9 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
-   [datahike.constants :refer [tx0]]))
+   [datahike.db :as db]
+   [datahike.constants :refer [tx0]]
+   [datahike.test.core :as tdc]))
 
 (def test-schema
   {:aka    {:db/cardinality :db.cardinality/many}
@@ -14,6 +16,7 @@
    :enemy  {:db/cardinality :db.cardinality/many
             :db/valueType :db.type/ref}
    :father {:db/valueType :db.type/ref}
+
    :part   {:db/valueType :db.type/ref
             :db/isComponent true
             :db/cardinality :db.cardinality/many}

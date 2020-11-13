@@ -1,12 +1,12 @@
 (ns datahike.test.core
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing]])
+      :clj [clojure.test :as t :refer [is are deftest testing]])
    #?(:clj [kaocha.stacktrace])
    [datahike.core :as d]
    [datahike.impl.entity :as de]
    [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
-                           :clj  [:refer [defrecord-updatable]])]
+                           :clj [:refer [defrecord-updatable]])]
    #?(:cljs [datahike.test.cljs])))
 
 #?(:cljs
@@ -37,9 +37,9 @@
 
 (defn wrap-res [f]
   #?(:cljs (do (f) (clj->js @test-summary))
-     :clj  (let [res (f)]
-             (when (pos? (+ (:fail res) (:error res)))
-               (System/exit 1)))))
+     :clj (let [res (f)]
+            (when (pos? (+ (:fail res) (:error res)))
+              (System/exit 1)))))
 
 ;; utils
 #?(:clj
@@ -77,9 +77,9 @@
 
 (deftest test-protocols
   (let [schema {:aka {:db/cardinality :db.cardinality/many}}
-        db     (d/db-with (d/empty-db schema)
-                          [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
-                           {:db/id 2 :name "Petr" :age 37 :huh? false}])]
+        db (d/db-with (d/empty-db schema)
+                      [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
+                       {:db/id 2 :name "Petr" :age 37 :huh? false}])]
     (is (= (d/empty-db schema)
            (empty db)))
     (is (= 6 (count db)))

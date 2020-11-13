@@ -15,7 +15,8 @@
 
     (are [tx] (thrown-with-msg? Throwable #"Bad entity attribute" (d/db-with db tx))
       [[:db/add -1 nil "Ivan"]]
-      [{:db/id -1 nil "Ivan"}])
+      [[:db/add -1 17 "Ivan"]]
+      [{:db/id -1 17 "Ivan"}])
 
     (are [tx] (thrown-with-msg? Throwable #"Cannot store nil as a value" (d/db-with db tx))
       [[:db/add -1 :name nil]]

@@ -462,7 +462,7 @@
         attr->prop (->> (map vector pattern ["e" "a" "v" "tx" "added"])
                         (filter (fn [[s _]] (free-var? s)))
                         (into {}))]
-    (Relation. attr->prop  datoms)))
+    (Relation. attr->prop datoms)))
 
 (defn matches-pattern? [pattern tuple]
   (loop [tuple tuple

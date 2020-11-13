@@ -4,8 +4,8 @@
       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
    [datahike.api :as d]
    [datahike.schema :as ds]
-   [datahike.constants :as c]
-   [datahike.db :as dd])
+   [datahike.db :as dd]
+   [datahike.constants :as c])
   (:import [java.lang System]))
 
 #?(:clj

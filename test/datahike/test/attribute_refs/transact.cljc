@@ -146,7 +146,7 @@
     (d/transact conn [[:db/add (+ e0 1) name-ref "Ivan"]])
     (d/transact conn [[:db.fn/cas (+ e0 1) age-ref nil 42]])
     (is (= (:age (d/entity @conn (+ e0 1))) 42))
-    (is (thrown-msg? (str ":db.fn/cas failed on datom [" (+ ref-e0 1) " " age-ref " 42], expected ni")
+    (is (thrown-msg? (str ":db.fn/cas failed on datom [" (+ ref-e0 1) " " age-ref " 42], expected nil")
                      (d/transact conn [[:db.fn/cas (+ ref-e0 1) age-ref nil 4711]])))))
 
 (deftest test-db-fn
