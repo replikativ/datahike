@@ -1,4 +1,4 @@
-(ns datahike.connector
+(ns ^:no-doc datahike.connector
   (:require [datahike.db :as db]
             [datahike.core :as d]
             [datahike.index :as di]
