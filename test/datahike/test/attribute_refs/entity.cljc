@@ -1,8 +1,8 @@
 (ns datahike.test.attribute-refs.entity
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
-   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
-      :clj  [clojure.test :as t :refer        [is deftest testing]])
+   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
+      :clj [clojure.test :as t :refer [is deftest testing]])
    [datahike.api :as d]
    [datahike.core :as dc]
    [datahike.test.attribute-refs.util :refer [ref-db ref-e0 shift-entities]]
@@ -22,7 +22,7 @@
     (is (= (:db/id e) (+ ref-e0 1)))
     (is (identical? (d/entity-db e) db))
     (is (= (:name e) "Ivan"))
-    (is (= (e :name) "Ivan")) ; IFn form
+    (is (= (e :name) "Ivan"))                               ; IFn form
     (is (= (:age e) 19))
     (is (= (:aka e) #{"X" "Y"}))
     (is (= true (contains? e :age)))
@@ -43,7 +43,7 @@
 
 (deftest test-entity-refs                                   ;; TODO: why working?
   (let [db (d/db-with ref-db
-                      [{:db/id 1, :children [10]}          ;; TODO: shouldn't be possible?
+                      [{:db/id 1, :children [10]}           ;; TODO: shouldn't be possible?
                        {:db/id 10, :father 1, :children [100 101]}
                        {:db/id 100, :father 10}
                        {:db/id 101, :father 10}])
@@ -70,10 +70,10 @@
           (is (= (-> e10 :father :children) #{(e 10)})))))
 
     (testing "backward navigation"
-      (is (= (:_children (e 1))  nil))
-      (is (= (:_father   (e 1))  #{(e 10)}))
+      (is (= (:_children (e 1)) nil))
+      (is (= (:_father (e 1)) #{(e 10)}))
       (is (= (:_children (e 10)) #{(e 1)}))
-      (is (= (:_father   (e 10)) #{(e 100) (e 101)}))
+      (is (= (:_father (e 10)) #{(e 100) (e 101)}))
       (is (= (-> (e 100) :_children first :_children) #{(e 1)})))))
 
 (deftest test-entity-misses

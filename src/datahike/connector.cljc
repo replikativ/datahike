@@ -40,9 +40,9 @@
         temporal-avet-flushed (when keep-history? (di/-flush temporal-avet backend))]
     (<?? S (k/assoc-in store [:db]
                        (merge
-                        {:schema   schema
-                         :rschema  rschema
-                         :config   config
+                        {:schema schema
+                         :rschema rschema
+                         :config config
                          :hash hash
                          :max-tx max-tx
                          :eavt-key eavt-flushed
@@ -106,14 +106,14 @@
 
   clojure.lang.IPersistentMap
   (-database-exists? [config]
-    (let [config       (dc/load-config config)
+    (let [config (dc/load-config config)
           store-config (:store config)
-          raw-store    (ds/connect-store store-config)]
+          raw-store (ds/connect-store store-config)]
       (if (not (nil? raw-store))
-        (let [store     (kons/add-hitchhiker-tree-handlers
-                         (kc/ensure-cache
-                          raw-store
-                          (atom (cache/lru-cache-factory {} :threshold 1000))))
+        (let [store (kons/add-hitchhiker-tree-handlers
+                     (kc/ensure-cache
+                      raw-store
+                      (atom (cache/lru-cache-factory {} :threshold 1000))))
               stored-db (<?? S (k/get-in store [:db]))]
           (ds/release-store store-config store)
           (not (nil? stored-db)))
@@ -122,7 +122,7 @@
           false))))
 
   (-connect [config]
-    (let [config       (dc/load-config config)
+    (let [config (dc/load-config config)
           store-config (:store config)
           raw-store (ds/connect-store store-config)
           _ (when-not raw-store
@@ -156,7 +156,7 @@
               :store store))))
 
   (-create-database [config & deprecated-config]
-    (let [{:keys [keep-history? initial-tx attribute-refs?] :as config} (dc/load-config config deprecated-config)
+    (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)
           store-config (:store config)
           store (kc/ensure-cache
                  (ds/empty-store store-config)
@@ -166,13 +166,13 @@
               (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
           {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx hash]}
           (db/empty-db nil config)
-          backend      (kons/->KonserveBackend store)]
+          backend (kons/->KonserveBackend store)]
       (<?? S (k/assoc-in store [:db]
-                         (merge {:schema   schema
+                         (merge {:schema schema
                                  :max-tx max-tx
                                  :hash hash
-                                 :rschema  rschema
-                                 :config   config
+                                 :rschema rschema
+                                 :config config
                                  :eavt-key (di/-flush eavt backend)
                                  :aevt-key (di/-flush aevt backend)
                                  :avet-key (di/-flush avet backend)}
@@ -206,14 +206,14 @@
 (defn delete-database
   ([]
    (-delete-database {}))
- ;;deprecated
+  ;;deprecated
   ([config]
-  ;; TODO log deprecation notice with #54
+   ;; TODO log deprecation notice with #54
    (-delete-database config)))
 
 (defn database-exists?
   ([]
    (-database-exists? {}))
   ([config]
-  ;; TODO log deprecation notice with #54
+   ;; TODO log deprecation notice with #54
    (-database-exists? config)))
