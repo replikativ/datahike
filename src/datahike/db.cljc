@@ -1212,7 +1212,7 @@
         keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom)))
                         (not= :db/txInstant (.-a datom)))]
     (cond-> db
-      ;; Optimistic remove of the schema entry
+      ;; Optimistic removal of the schema entry (we don't know whether it is present or not)
       schema? (try
                    (-> db (remove-schema datom) update-rschema)
                    (catch clojure.lang.ExceptionInfo e
