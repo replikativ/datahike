@@ -119,12 +119,12 @@
 
 (defn -upsert [tree ^Datom datom index-type]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec datom-as-vec)
+    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec)
                                      :tag (h/uuid))]))))
 
 (defn -temporal-upsert [tree ^Datom datom index-type]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-temporal-UpsertOp datom-as-vec datom-as-vec)
+    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-temporal-UpsertOp datom-as-vec)
                                      :tag (h/uuid))]))))
 
 (defn init-tree

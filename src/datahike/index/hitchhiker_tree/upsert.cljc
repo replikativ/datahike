@@ -21,7 +21,7 @@
   (when-let [old (old-key kvs new)]
     (remove-fn old)))
 
-(defrecord UpsertOp [key value]
+(defrecord UpsertOp [key]
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
@@ -43,7 +43,7 @@
       ;; '-' means it is retracted and 'nt' is the current transaction time.
       [a b c (- nt)])))
 
-(defrecord temporal-UpsertOp [key value]
+(defrecord temporal-UpsertOp [key]
   op/IOperation
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
@@ -63,11 +63,11 @@
         (tree/insert key nil)))))
 
 
-(defn new-UpsertOp [key value]
-  (UpsertOp. key value))
+(defn new-UpsertOp [key]
+  (UpsertOp. key))
 
-(defn new-temporal-UpsertOp [key value]
-  (temporal-UpsertOp. key value))
+(defn new-temporal-UpsertOp [key]
+  (temporal-UpsertOp. key))
 
 
 
