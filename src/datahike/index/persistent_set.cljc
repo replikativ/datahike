@@ -1,4 +1,4 @@
-(ns datahike.index.persistent-set
+(ns ^:no-doc datahike.index.persistent-set
   (:require [me.tonsky.persistent-sorted-set :as set]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
             [datahike.datom :as dd]

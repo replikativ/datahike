@@ -1,58 +1,85 @@
-# Datomic Differences
+# Differences to Datomic Client API
 
 Although datahike supports a part of [Datomic's
 API](https://docs.datomic.com/client-api/datomic.client.api.html), some
 behavior is different using the different functions. Datahike supports part of the `datomic.client.api`:
 
-Without differences you may use the following like in Datomic:
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
+
+Without differences in the signature you may use the following like in Datomic:
 
 - as-of
+- datoms
+- [db](#db)
 - history
+- [index-range](#index-range)
 - pull
 - q
 - since
+- [transact](#transact)
+
+Please be aware that `q` returns sets instead of vectors. Only when using aggregates or `:with`, `q` returns a
+vector. That is the behavior of Datascript.
 
 The following functions from the `datahike.api` namespace are different from Datomic's client API:
 
 - [connect](#connect)
 - [create-database](#create-database)
-- [datoms](#datoms)
-- [db](#db)
+- [database-exists?](#database)
+- [db-with](https://cljdoc.org/d/io.replikativ/datahike)
 - [delete-database](#delete-database)
-- [transact](#transact)
+- [entity](https://cljdoc.org/d/io.replikativ/datahike)
+- [entity-db](https://cljdoc.org/d/io.replikativ/datahike)
+- [filter](https://cljdoc.org/d/io.replikativ/datahike)
+- [is-filtered](https://cljdoc.org/d/io.replikativ/datahike)
+- [load-entities](https://cljdoc.org/d/io.replikativ/datahike)
+- [pull-many](https://cljdoc.org/d/io.replikativ/datahike)
+- [release](https://cljdoc.org/d/io.replikativ/datahike)
+- [seek-datoms](https://cljdoc.org/d/io.replikativ/datahike)
+- [tempid](https://cljdoc.org/d/io.replikativ/datahike)
 - [with](#with)
 
-Additionally, datahike supports also almost all functions from
-[datascript](https://github.com/tonsky/datascript) in the `datahike.core` namespace.
+Additionally, datahike supports most functions from [datascript](https://github.com/tonsky/datascript)
+in the `datahike.api` namespace.
+
+These functions of Datomic are not yet implemented but considered candidates for future development:
+- tx-range
+- index-pull
+- with-db
+
+These functions are part of Datomics' distributed implementation and are currently not part of the
+Datahike API:
+- client
+- administer-system
+- db-stats
+- list-databases
+- sync
+
+Async support is on our roadmap as well as running distributed Datahike.
 
 ## connect
 
-Connects to an existing database given a configuration hash-map or URI (deprecated). 
-The specification for the configuration can be found [here](./config.md).
+Connects to an existing database given the configuration hash-map where Datomic
+takes a client as argument. The specification for the configuration can be found
+[here](./config.md).
 
-```clojure
-(create-database {:store {:backend :file :path "/tmp/datomic-diff"}})
-```
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
 
 ## create-database
 
-Creates a new database given configuration hash-map or an URI (deprecated) with additional
-optional parameters for `schema-flexibility` and `keep-history?` capabilities. Have
-a look at the [configuration documentation](./config.md) for details.
+Creates a new database with the given configuration hash-map where Datomic takes a client and an
+arg-map as arguments. Additional optional parameters are `schema-flexibility`, `keep-history?`
+and `initial-tx`. Have a look at the [configuration documentation](./config.md) for details.
 
-```clojure
-(create-database {:store {:backend :mem :id "datomic-diff"} :keep-history? false :schema-flexibility :read})
-```
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
 
-## datoms
+## delete-database
 
-The signature is different. Index can be selected: `:eavt`, `:aevt`, `:avet` and
-components to be matched using entity, attribute and values. Find more examples
-and documentation either in the examples project or in the code documentation.
+Deletes a database with the configuration hash-map as argument.
 
-```clojure
-(datoms @conn :eavt :name)
-```
+## database-exists?
+
+Checks if a database exists with the configuration hash-map as argument.
 
 ## db
 
@@ -62,17 +89,22 @@ just a small wrapper for Datomic compliance.
 ```clojure
 (db conn)
 ```
-
-## delete-database
-
-The deletion supports only URIs at the moment.
+equivalent to:
+```
+@conn
+```
 
 ## transact
 
-Returns a different hash map as a report. Have a look at the clojure docs for
-more examples.
+Returns a hash map different from Datomics' as a report. The `:tx-meta` is not part
+of Datomics' transaction report but apart from that the same keys are present. The
+values are different records though.
+
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
 
 ## with
 
-Applies transactions to an immutable database value and returns a new database snapshot. It does not change the
-mutable database inside the connection unlike [transact](#transact).
+Applies transactions to an immutable database value and returns a new database
+snapshot. It does not change the mutable database inside the connection unlike
+[transact](#transact). It works quite the same as Datomics' `with` but does
+not need a `with-db` function to work.

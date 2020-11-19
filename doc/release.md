@@ -1,4 +1,4 @@
-# How to do a release for Datahike
+# Release Datahike
 ## SNAPSHOT
 To create a snapshot of Datahike and upload it to Clojars the version in
 `project.clj` needs to end on *-SNAPSHOT*. Snapshots can and will be overwritten

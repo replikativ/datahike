@@ -1,4 +1,4 @@
-(ns datahike.index
+(ns ^:no-doc datahike.index
   (:require [datahike.index.hitchhiker-tree :as dih]
             [datahike.index.persistent-set :as dip])
   #?(:clj (:import [hitchhiker.tree DataNode IndexNode]

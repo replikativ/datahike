@@ -1,4 +1,4 @@
-(ns datahike.connector
+(ns ^:no-doc datahike.connector
   (:require [datahike.db :as db]
             [datahike.core :as d]
             [datahike.index :as di]
@@ -16,15 +16,6 @@
   (:import [java.net URI]))
 
 (s/def ::connection #(instance? clojure.lang.Atom %))
-
-(defmulti transact!
-  "Transacts new data to database"
-  {:arglists '([conn tx-data])}
-  (fn [conn tx-data] (type tx-data)))
-
-(defmethod transact! clojure.lang.PersistentVector
-  [connection tx-data]
-  (transact! connection {:tx-data tx-data}))
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
@@ -61,19 +52,27 @@
                               :temporal-avet temporal-avet-flushed))
     tx-report))
 
-(defmethod transact! clojure.lang.IPersistentMap
+(defn transact!
   [connection {:keys [tx-data]}]
   {:pre [(d/conn? connection)]}
   (future
     (locking connection
       (update-and-flush-db connection tx-data d/transact))))
 
-(defn transact [connection tx-data]
-  (try
-    (deref (transact! connection tx-data))
-    (catch Exception e
-      (log/errorf "Error during transaction %s" (.getMessage e))
-      (throw (.getCause e)))))
+(defn transact [connection arg-map]
+  (let [arg (cond
+              (and (map? arg-map) (contains? arg-map :tx-data)) arg-map
+              (vector? arg-map) {:tx-data arg-map}
+              (seq? arg-map) {:tx-data arg-map}
+              :else (dt/raise "Bad argument to transact, expected map with :tx-data as key.
+                               Vector and sequence are allowed as argument but deprecated."
+                              {:error :transact/syntax :argument arg-map}))
+        _ (log/debugf "Transacting with arguments: " arg)]
+    (try
+      (deref (transact! connection arg))
+      (catch Exception e
+        (log/errorf "Error during transaction %s" (.getMessage e))
+        (throw (.getCause e))))))
 
 (defn load-entities [connection entities]
   (future
