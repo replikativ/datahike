@@ -1193,30 +1193,27 @@
       (update-in [:db-after] with-datom datom)
       (update-in [:tx-data] conj datom)))
 
-
-
 (defn validate-datom-upsert [db ^Datom datom]
   (when (is-attr? db (.-a datom) :db/unique)
     (when-let [old (first (-datoms db :avet [(.-a datom) (.-v datom)]))]
       (when-not (= (.-e datom) (.-e old))
         (raise "Cannot add " datom " because of unique constraint: " old
-          {:error     :transact/unique
-           :attribute (.-a datom)
-           :datom     datom})))))
-
+               {:error     :transact/unique
+                :attribute (.-a datom)
+                :datom     datom})))))
 
 (defn- with-datom-upsert [db ^Datom datom]
   (validate-datom-upsert db datom)
   (let [indexing?     (indexing? db (.-a datom))
         schema?       (ds/schema-attr? (.-a datom))
         keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom)))
-                        (not= :db/txInstant (.-a datom)))]
+                           (not= :db/txInstant (.-a datom)))]
     (cond-> db
       ;; Optimistic removal of the schema entry (we don't know whether it is present or not)
       schema? (try
-                   (-> db (remove-schema datom) update-rschema)
-                   (catch clojure.lang.ExceptionInfo e
-                     db))
+                (-> db (remove-schema datom) update-rschema)
+                (catch clojure.lang.ExceptionInfo e
+                  db))
 
       keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt))
       true          (update-in [:eavt] #(di/-upsert % datom :eavt))
@@ -1231,25 +1228,24 @@
       true    (update :hash + (hash datom))
       schema? (-> (update-schema datom) update-rschema))))
 
-
 (defn- transact-report-upsert [report datom]
   (-> report
-    (update-in [:db-after] with-datom-upsert datom)
-    (update-in [:tx-data] conj datom)))
+      (update-in [:db-after] with-datom-upsert datom)
+      (update-in [:tx-data] conj datom)))
 
 (defn- check-upsert-conflict [entity acc]
   (let [[e a v] acc
         _e (:db/id entity)]
     (if (or (nil? _e)
-          (tempid? _e)
-          (nil? acc)
-          (== _e e))
+            (tempid? _e)
+            (nil? acc)
+            (== _e e))
       acc
       (raise "Conflicting upsert: " [a v] " resolves to " e
-        ", but entity already has :db/id " _e
-        {:error     :transact/upsert
-         :entity    entity
-         :assertion acc}))))
+             ", but entity already has :db/id " _e
+             {:error     :transact/upsert
+              :entity    entity
+              :assertion acc}))))
 
 (defn- upsert-eid [db entity]
   (when-let [idents (not-empty (-attrs-by db :db.unique/identity))]
@@ -1640,10 +1636,10 @@
               (let [history (HistoricalDB. db)
                     into-sorted-set #(apply sorted-set-by dd/cmp-datoms-eavt-quick %)
                     e-datoms (-> (clojure.set/difference
-                                   (into-sorted-set (search-temporal-indices db nil))
-                                   (into-sorted-set (search-current-indices db nil)))
-                               (filter-before e db)
-                               vec)
+                                  (into-sorted-set (search-temporal-indices db nil))
+                                  (into-sorted-set (search-current-indices db nil)))
+                                 (filter-before e db)
+                                 vec)
                     retracted-comps (purge-components history e-datoms)]
                 (recur (reduce transact-purge-datom report e-datoms)
                        (concat retracted-comps entities)))
