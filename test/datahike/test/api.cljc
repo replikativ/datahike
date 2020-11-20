@@ -395,9 +395,9 @@
                 @conn
                 (d/since @conn date))))
 
-    (is (= #{["Alice" 30] ["Bob" 30]
-             (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                   :args [(d/db conn)]})}))))
+    (is (= #{["Alice" 30] ["Bob" 30]}
+           (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
+                 :args [(d/db conn)]})))))
 
 (deftest test-datoms-docs
   (let [cfg {:store {:backend :mem

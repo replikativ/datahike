@@ -1,54 +1,48 @@
-{ 
-  :deps {
-    persistent-sorted-set {:mvn/version "0.1.0"}
-  }
-  
-  :aliases {
-    :1.9 {
-      :override-deps {
-        org.clojure/clojure {:mvn/version "1.9.0"}
-      }
-    }
-  
-    :1.10 {
-      :override-deps {
-        org.clojure/clojure {:mvn/version "1.10.0"}
-      }
-    }
+{:deps {org.clojure/clojure                         {:mvn/version "1.10.1"}
+        org.clojure/clojurescript                   {:mvn/version "1.10.597"}
+        persistent-sorted-set/persistent-sorted-set {:mvn/version "0.1.2"}
+        org.clojure/tools.reader                    {:mvn/version "1.3.3"}
+        environ/environ                             {:mvn/version "1.2.0"}
+        com.taoensso/timbre                         {:mvn/version "4.10.0"}
+        io.replikativ/hitchhiker-tree               {:mvn/version "0.1.7"}
+        io.replikativ/superv.async                  {:mvn/version "0.2.9"}
+        io.lambdaforge/datalog-parser               {:mvn/version "0.1.8"}
+        io.replikativ/zufall                        {:mvn/version "0.1.0"}
+        junit/junit                                 {:mvn/version "4.13"}}
 
-    :dev {
-      :extra-paths ["dev" "target/classes"]
-      :extra-deps {
-        org.clojure/clojurescript {:mvn/version "1.10.516"}
-        org.clojure/tools.namespace {:mvn/version "0.2.11"}
-      }
-    }
+ :paths ["src" "target/classes"]
 
-    :test {
-      :extra-paths ["test"]
-      :extra-deps {
-        org.clojure/clojurescript {:mvn/version "1.10.516"}
-        lambdaisland/kaocha       {:mvn/version "1.0.632"}
-        lambdaisland/kaocha-cljs  {:mvn/version "0.0-71"}
-      }
-    }
+ :aliases {:1.9 {:override-deps {org.clojure/clojure {:mvn/version "1.9.0"}}}
 
-    :repl {
-      :extra-deps {
-        cider/cider-nrepl           {:mvn/version "0.19.0"}
-        nrepl/nrepl                 {:mvn/version "0.5.3"}
-        org.clojure/tools.namespace {:mvn/version "0.2.11"}
-      }
-      :main-opts [
-        "-m" "nrepl.cmdline" "--middleware" "[cider.nrepl/cider-middleware]"
-      ]
-    }
+           :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
 
-    :datomic {
-      :extra-deps {
-        com.datomic/datomic-free {:mvn/version  "0.9.5703"}
-      }
-    }
-  }
-}
+           :dev {:extra-paths ["dev"]
+                 :extra-deps {org.clojure/tools.namespace {:mvn/version "0.2.11"}
+                              cider/cider-nrepl           {:mvn/version "0.19.0"}
+                              nrepl/nrepl                 {:mvn/version "0.5.3"}}}
 
+           :test {:extra-paths ["test"]
+                  :extra-deps {org.clojure/clojurescript {:mvn/version "1.10.516"}
+                               lambdaisland/kaocha       {:mvn/version "1.0.632"}
+                               lambdaisland/kaocha-cljs  {:mvn/version "0.0-71"}
+                               io.replikativ/datahike-leveldb {:mvn/version "0.1.0"}
+                               io.replikativ/datahike-postgres {:mvn/version "0.3.1-SNAPSHOT"}}}
+
+           :repl {:extra-deps {cider/cider-nrepl           {:mvn/version "0.19.0"}
+                               nrepl/nrepl                 {:mvn/version "0.5.3"}
+                               org.clojure/tools.namespace {:mvn/version "0.2.11"}}
+                  :main-opts ["-m" "nrepl.cmdline" "--middleware" "[cider.nrepl/cider-middleware]"]}
+
+           :benchmark {:main-opts ["-m" "benchmark.core"]
+                       :extra-paths ["benchmark/src" "src"]}
+
+           :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version  "0.9.5703"}}}
+
+           :deploy {:extra-deps {deps-deploy/deps-deploy {:mvn/version "0.0.9"}}
+                    :main-opts ["-m" "deps-deploy.deps-deploy" "deploy" "replikativ-datahike.jar"]}
+
+           :build {:extra-deps {seancorfield/depstar {:mvn/version "1.1.116"}}
+                   :main-opts ["-m" "hf.depstar.jar" "replikativ-datahike.jar"]}
+
+           :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.7.0"}}
+                    :main-opts ["-m" "cljfmt.main" "check"]}}}
