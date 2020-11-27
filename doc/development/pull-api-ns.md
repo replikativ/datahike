@@ -1,4 +1,7 @@
-# Pull-API namespace
+# Pull-API Namespace 
+
+This document is aimed at Datahike core developers that want to debug or extend the Pull-API.
+Hopefully, this will help people getting a grip of the existing code and work flow of the Pull-API.
 
 ## Terminology 
 
