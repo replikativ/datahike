@@ -97,7 +97,7 @@
       (conj frames (assoc frame :state :done :results results)))))
 
 (defn- recurse-attr
-  "Adds recursion frame to frame set"
+  "Adds recursion frame to frame set if maximum recursion depth not reached"
   [db attr multi? eids eid parent frames]
   (let [{:keys [recursion pattern]} parent
         depth  (-> recursion (get :depth) (get attr 0))]
