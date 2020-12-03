@@ -41,10 +41,13 @@
         rand-i-val (rand-nth (mapv :i1 tx))
         t-query2-n   (:t (timed (d/q (c/q2 rand-i-val) @conn)))
 
-        final-size (+ initial-size n-datoms)]
+        final-size (+ initial-size n-datoms)
+        simple-config (-> config
+                          (dissoc :store)
+                          (assoc :dh-backend (get-in config [:store :backend])))]
     (d/release conn)
-    [{:time t-connection-0  :context {:db config :function :connection  :db-size initial-size}}
-     {:time t-transaction-n :context {:db config :function :transaction :db-size initial-size :tx-size n-datoms}}
-     {:time t-connection-n  :context {:db config :function :connection  :db-size final-size}}
-     {:time t-query1-n      :context {:db config :function :query1      :db-size final-size}}
-     {:time t-query2-n      :context {:db config :function :query2      :db-size final-size}}]))
+    [{:time t-connection-0  :context {:db simple-config :function :connection  :db-size initial-size}}
+     {:time t-transaction-n :context {:db simple-config :function :transaction :db-size initial-size :tx-size n-datoms}}
+     {:time t-connection-n  :context {:db simple-config :function :connection  :db-size final-size}}
+     {:time t-query1-n      :context {:db simple-config :function :query1      :db-size final-size}}
+     {:time t-query2-n      :context {:db simple-config :function :query2      :db-size final-size}}]))

@@ -1,8 +1,10 @@
 (ns benchmark.config)
 
 
-(def datom-counts [1 10 100 1000])                                                    ;; later 100,000
-(def iterations 10)
+(def datom-counts            [1 10]                               ;[1 10 100 1000]
+  )                                                         ;; later 100,000
+(def iterations 2                                           ;10
+  )
 (def max-int 1000000)
 (def initial-datoms [0 1000])                                                         ;; later 100,000
 
