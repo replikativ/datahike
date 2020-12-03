@@ -98,8 +98,8 @@
 
 (defmethod empty-store :file [{:keys [path]}]
   (ups/add-upsert-handler
-    (kons/add-hitchhiker-tree-handlers
-      (<?? S (fs/new-fs-store path)))))
+   (kons/add-hitchhiker-tree-handlers
+    (<?? S (fs/new-fs-store path)))))
 
 (defmethod delete-store :file [{:keys [path]}]
   (fs/delete-store path))

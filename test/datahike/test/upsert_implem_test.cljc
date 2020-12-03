@@ -1,16 +1,15 @@
 (ns datahike.test.upsert-implem-test
   (:require
-    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-    [hitchhiker.tree.utils.async :as ha]
-    [hitchhiker.tree :as tree]
-    [hitchhiker.tree.messaging :as msg]
-    [datahike.index.hitchhiker-tree.upsert :as htu]
-    [datahike.api :as d]))
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
+      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   [hitchhiker.tree.utils.async :as ha]
+   [hitchhiker.tree :as tree]
+   [hitchhiker.tree.messaging :as msg]
+   [datahike.index.hitchhiker-tree.upsert :as htu]
+   [datahike.api :as d]))
 
 #?(:cljs
    (def Throwable js/Error))
-
 
 (defn upsert-helper
   [t k]
@@ -20,14 +19,14 @@
   (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
         projected-vec [4 :name "Marcel" 1]
         tree (reduce upsert-helper (ha/<?? new-tree)
-               (into (sorted-set)
-                 #{[1 :at "home" 1]
-                   [1 :age 44 1]
-                   [1 :name "Petr" 1]
-                   [2 :age 25 1]
-                   [2 :name "Ivan" 1]
-                   [3 :age 11 1]
-                   projected-vec}))]
+                     (into (sorted-set)
+                           #{[1 :at "home" 1]
+                             [1 :age 44 1]
+                             [1 :name "Petr" 1]
+                             [2 :age 25 1]
+                             [2 :name "Ivan" 1]
+                             [3 :age 11 1]
+                             projected-vec}))]
     (testing "Against an entry in the projection area,"
       (testing "we are in a projection"
         (is (= (:key (first (:op-buf tree))) projected-vec)))
@@ -71,21 +70,20 @@
     ;; I.e. testing the projection of a deferred-op sitting on an index-node.
     (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
           tree (reduce upsert-helper (ha/<?? new-tree)
-                 (into (sorted-set)
-                   #{[1 :age 44 1]
-                     [1 :name "Petr" 1]
-                     [2 :age 25 1]
-                     [2 :name "Ivan" 1]
-                     [3 :age 11 1]
-                     [4 :age 12 1]
-                     [4 :age 20 1]
-                     [4 :name "Paulo" 1]
-                     [4 :age 40 1] ;; triggers the overflow
-                     }))]
+                       (into (sorted-set)
+                             #{[1 :age 44 1]
+                               [1 :name "Petr" 1]
+                               [2 :age 25 1]
+                               [2 :name "Ivan" 1]
+                               [3 :age 11 1]
+                               [4 :age 12 1]
+                               [4 :age 20 1]
+                               [4 :name "Paulo" 1]
+                               [4 :age 40 1] ;; triggers the overflow
+                               }))]
       (is (= nil (msg/lookup tree [4 :age 12 1])))
       (is (= nil (msg/lookup tree [4 :age 20 1])))
       (is (= [[1 :age 44 1] nil] (first (msg/lookup-fwd-iter tree [1 :age 44 1])))))))
-
 
 (defn connect []
   (let [cfg  {:keep-history?      true
