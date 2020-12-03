@@ -1,10 +1,12 @@
 (ns ^:no-doc datahike.index.hitchhiker-tree
-  (:require [hitchhiker.tree.utils.async :as async]
+  (:require [datahike.index.hitchhiker-tree.upsert :as ups]
+            [hitchhiker.tree.utils.async :as async]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
+            [datahike.datom :as dd]
             [datahike.constants :refer [e0 tx0 emax txmax]]
-            [datahike.datom :as dd])
+            [hasch.core :as h])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [datahike.datom Datom])))
 
@@ -39,12 +41,6 @@
     :aevt (fn [a e v tx] (dd/datom e a v tx true))
     :avet (fn [a v e tx] (dd/datom e a v tx true))
     (fn [e a v tx] (dd/datom e a v tx true))))
-
-(defn- datom->node [^Datom datom index-type]
-  (case index-type
-    :aevt [(.-a datom) (.-e datom) (.-v datom) (.-tx datom)]
-    :avet [(.-a datom) (.-v datom) (.-e datom) (.-tx datom)]
-    [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
 
 (defn- from-datom [^Datom datom index-type]
   (let [datom-seq (case index-type
@@ -111,8 +107,25 @@
   []
   (async/<?? (tree/b-tree (tree/->Config br-sqrt br (- br br-sqrt)))))
 
+(defn- datom->node [^Datom datom index-type]
+  (case index-type
+    :aevt [(.-a datom) (.-e datom) (.-v datom) (.-tx datom)]
+    :avet [(.-a datom) (.-v datom) (.-e datom) (.-tx datom)]
+    :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]
+    (throw (IllegalArgumentException. (str "Unknown index-type: " index-type)))))
+
 (defn -insert [tree ^Datom datom index-type]
   (hmsg/insert tree (datom->node datom index-type) nil))
+
+(defn -upsert [tree ^Datom datom index-type]
+  (let [datom-as-vec (datom->node datom index-type)]
+    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec)
+                                          :tag (h/uuid))]))))
+
+(defn -temporal-upsert [tree ^Datom datom index-type]
+  (let [datom-as-vec (datom->node datom index-type)]
+    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-temporal-UpsertOp datom-as-vec)
+                                          :tag (h/uuid))]))))
 
 (defn init-tree
   "Create tree with datoms"

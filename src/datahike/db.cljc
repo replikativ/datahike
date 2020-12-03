@@ -1193,6 +1193,46 @@
       (update-in [:db-after] with-datom datom)
       (update-in [:tx-data] conj datom)))
 
+(defn validate-datom-upsert [db ^Datom datom]
+  (when (is-attr? db (.-a datom) :db/unique)
+    (when-let [old (first (-datoms db :avet [(.-a datom) (.-v datom)]))]
+      (when-not (= (.-e datom) (.-e old))
+        (raise "Cannot add " datom " because of unique constraint: " old
+               {:error     :transact/unique
+                :attribute (.-a datom)
+                :datom     datom})))))
+
+(defn- with-datom-upsert [db ^Datom datom]
+  (validate-datom-upsert db datom)
+  (let [indexing?     (indexing? db (.-a datom))
+        schema?       (ds/schema-attr? (.-a datom))
+        keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom)))
+                           (not= :db/txInstant (.-a datom)))]
+    (cond-> db
+      ;; Optimistic removal of the schema entry (we don't know whether it is present or not)
+      schema? (try
+                (-> db (remove-schema datom) update-rschema)
+                (catch clojure.lang.ExceptionInfo e
+                  db))
+
+      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt))
+      true          (update-in [:eavt] #(di/-upsert % datom :eavt))
+
+      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt))
+      true          (update-in [:aevt] #(di/-upsert % datom :aevt))
+
+      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet))
+      indexing?                     (update-in [:avet] #(di/-insert % datom :avet))
+
+      true    (advance-max-eid (.-e datom))
+      true    (update :hash + (hash datom))
+      schema? (-> (update-schema datom) update-rschema))))
+
+(defn- transact-report-upsert [report datom]
+  (-> report
+      (update-in [:db-after] with-datom-upsert datom)
+      (update-in [:tx-data] conj datom)))
+
 (defn- check-upsert-conflict [entity acc]
   (let [[e a v] acc
         _e (:db/id entity)]
@@ -1297,13 +1337,7 @@
       (if (empty? (-search db [e a v]))
         (transact-report report new-datom)
         report)
-      (if-some [^Datom old-datom (first (-search db [e a]))]
-        (if (= (.-v old-datom) v)
-          report
-          (-> report
-              (transact-report (datom e a (.-v old-datom) tx false))
-              (transact-report new-datom)))
-        (transact-report report new-datom)))))
+      (transact-report-upsert report new-datom))))
 
 (defn- transact-retract-datom [report ^Datom d]
   (transact-report report (datom (.-e d) (.-a d) (.-v d) (current-tx report) false)))
@@ -1600,8 +1634,10 @@
             (= op :db.history.purge/before)
             (if (-keep-history? db)
               (let [history (HistoricalDB. db)
-                    e-datoms (-> (search-temporal-indices db nil)
-                                 vec
+                    into-sorted-set #(apply sorted-set-by dd/cmp-datoms-eavt-quick %)
+                    e-datoms (-> (clojure.set/difference
+                                  (into-sorted-set (search-temporal-indices db nil))
+                                  (into-sorted-set (search-current-indices db nil)))
                                  (filter-before e db)
                                  vec)
                     retracted-comps (purge-components history e-datoms)]

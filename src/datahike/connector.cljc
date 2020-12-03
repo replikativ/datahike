@@ -5,6 +5,7 @@
             [datahike.store :as ds]
             [datahike.config :as dc]
             [datahike.tools :as dt]
+            [datahike.index.hitchhiker-tree.upsert :as ups]
             [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
             [konserve.cache :as kc]
@@ -108,10 +109,11 @@
           store-config (:store config)
           raw-store (ds/connect-store store-config)]
       (if (not (nil? raw-store))
-        (let [store (kons/add-hitchhiker-tree-handlers
-                     (kc/ensure-cache
-                      raw-store
-                      (atom (cache/lru-cache-factory {} :threshold 1000))))
+        (let [store (ups/add-upsert-handler
+                      (kons/add-hitchhiker-tree-handlers
+                        (kc/ensure-cache
+                          raw-store
+                          (atom (cache/lru-cache-factory {} :threshold 1000)))))
               stored-db (<?? S (k/get-in store [:db]))]
           (ds/release-store store-config store)
           (not (nil? stored-db)))
@@ -126,10 +128,11 @@
           _ (when-not raw-store
               (dt/raise "Backend does not exist." {:type :backend-does-not-exist
                                                    :config config}))
-          store (kons/add-hitchhiker-tree-handlers
-                 (kc/ensure-cache
-                  raw-store
-                  (atom (cache/lru-cache-factory {} :threshold 1000))))
+          store (ups/add-upsert-handler
+                  (kons/add-hitchhiker-tree-handlers
+                    (kc/ensure-cache
+                      raw-store
+                      (atom (cache/lru-cache-factory {} :threshold 1000)))))
           stored-db (<?? S (k/get-in store [:db]))
           _ (when-not stored-db
               (ds/release-store store-config store)
