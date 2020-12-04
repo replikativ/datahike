@@ -20,7 +20,7 @@
                  :extra-deps {org.clojure/tools.namespace {:mvn/version "0.2.11"}
                               cider/cider-nrepl {:mvn/version "0.19.0"}
                               nrepl/nrepl {:mvn/version "0.5.3"}
-                              clj-http {:mvn/version "3.11.0"}
+                              clj-http/clj-http {:mvn/version "3.11.0"}
                               org.clojure/tools.cli {:mvn/version "1.0.194"}}}
 
            :test {:extra-paths ["test"]
@@ -37,7 +37,7 @@
 
            :benchmark {:main-opts ["-m" "benchmark.core"]
                        :extra-paths ["benchmark/src"]
-                       :extra-deps {clj-http {:mvn/version "3.11.0"}
+                       :extra-deps {clj-http/clj-http {:mvn/version "3.11.0"}
                                     org.clojure/tools.cli {:mvn/version "1.0.194"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
