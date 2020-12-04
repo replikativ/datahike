@@ -115,7 +115,7 @@
                       (transact conn [[:db.fn/retractEntity 1]])
 
                       ;; create a new entity (`-1`, as any other negative value, is a tempid
-                      ;; that will be replaced with DataScript to a next unused eid)
+                      ;; that will be replaced by Datahike with the next unused eid)
                       (transact conn [[:db/add -1 :name \"Ivan\"]])
 
                       ;; check assigned id (here `*1` is a result returned from previous `transact` call)
@@ -460,7 +460,7 @@
   dcore/tempid)
 
 (def ^{:arglists '([db eid])
-       :doc      "Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate DataScript database content.
+       :doc      "Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate Datahike database content.
 
                   For `eid` pass entity id or lookup attr:
 
