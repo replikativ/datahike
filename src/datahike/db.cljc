@@ -1683,7 +1683,7 @@
         (raise "Bad entity type at " entity ", expected map or vector"
                {:error :transact/syntax, :tx-data entity})))))
 
-(def tx-delay 200)
+(def tx-delay 50)
 (def tx-count 100)
 
 (defn transact-entities-directly [initial-report initial-es]
