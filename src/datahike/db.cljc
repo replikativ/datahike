@@ -1684,6 +1684,7 @@
                {:error :transact/syntax, :tx-data entity})))))
 
 (def tx-delay 200)
+(def tx-count 100)
 
 (defn transact-entities-directly [initial-report initial-es]
   (loop [report (update initial-report :db-after persistent!)
@@ -1695,7 +1696,7 @@
           [e a v t op] entity
           max-eid (next-eid db)
           max-tid (inc (get-in report [:db-after :max-tx]))]
-      (if (= counter 100)
+      (if (= counter tx-count)
         (do
           (Thread/sleep tx-delay)
           (recur report es migration-state 0))
