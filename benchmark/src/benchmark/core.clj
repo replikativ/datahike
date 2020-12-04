@@ -18,7 +18,7 @@
    ["-h" "--help"]])
 
 (defn print-usage-info [summary]
-  (println (str "Usage: lein run [options] \n\n  Options:\n" summary)))
+  (println (str "Usage: clj -M:benchmark [options] \n\n  Options:\n" summary)))
 
 (defn full-server-description? [server-description]
   (every? #(not (nil? %)) server-description))
@@ -71,9 +71,4 @@
 
   (shutdown-agents))
 
-#_(-main "-t" "test-id" "-u" "http://localhost:3001" "-n" "benchmarks" "-g" "test-token")
-
-;; TIMBRE_LEVEL=':fatal' lein with-profile benchmark run
-;; TIMBRE_LEVEL=':fatal' lein with-profile benchmark run -t test-id
-;; TIMBRE_LEVEL=':fatal' lein with-profile benchmark run -t test-id -u http://localhost:3001 -n benchmarks -g test-token
 
