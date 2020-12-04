@@ -1683,49 +1683,57 @@
         (raise "Bad entity type at " entity ", expected map or vector"
                {:error :transact/syntax, :tx-data entity})))))
 
+(def tx-delay 200)
+
 (defn transact-entities-directly [initial-report initial-es]
   (loop [report (update initial-report :db-after persistent!)
          es initial-es
-         migration-state (or (get-in initial-report [:db-before :migration]) {})]
+         migration-state (or (get-in initial-report [:db-before :migration]) {})
+         counter 0]
     (let [[entity & entities] es
           db (:db-after report)
           [e a v t op] entity
           max-eid (next-eid db)
           max-tid (inc (get-in report [:db-after :max-tx]))]
-      (cond
-        (empty? es)
-        (-> report
-            (update-in [:db-after :max-tx] inc)
-            (update-in [:db-after :migration] #(if %
-                                                 (merge % migration-state)
-                                                 migration-state))
-            (update :db-after persistent!))
+      (if (= counter 100)
+        (do
+          (Thread/sleep tx-delay)
+          (recur report es migration-state 0))
+        (cond
+          (empty? es)
+          (-> report
+              (update-in [:db-after :max-tx] inc)
+              (update-in [:db-after :migration] #(if %
+                                                   (merge % migration-state)
+                                                   migration-state))
+              (update :db-after persistent!))
 
-        (= :db.install/attribute a)
-        (recur report entities migration-state)
+          (= :db.install/attribute a)
+          (recur report entities migration-state counter)
 
-        ;; meta entity
-        (ds/meta-attr? a)
-        (let [new-datom (dd/datom max-tid a v max-tid op)
-              new-e (.-e new-datom)]
-          (recur (-> (transact-report report new-datom)
-                     (assoc-in [:db-after :max-tx] max-tid))
-                 entities
-                 (-> migration-state
-                     (assoc-in [:tids e] new-e)
-                     (assoc-in [:eids e] new-e))))
+          ;; meta entity
+          (ds/meta-attr? a)
+          (let [new-datom (dd/datom max-tid a v max-tid op)
+                new-e (.-e new-datom)]
+            (recur (-> (transact-report report new-datom)
+                       (assoc-in [:db-after :max-tx] max-tid))
+                   entities
+                   (-> migration-state
+                       (assoc-in [:tids e] new-e)
+                       (assoc-in [:eids e] new-e))
+                   (inc counter)))
 
-        ;; ref not added yet
-        (and (ref? db a) (nil? (get-in migration-state [:eids v])))
-        (recur (allocate-eid report max-eid) es (assoc-in migration-state [:eids v] max-eid))
+          ;; ref not added yet
+          (and (ref? db a) (nil? (get-in migration-state [:eids v])))
+          (recur (allocate-eid report max-eid) es (assoc-in migration-state [:eids v] max-eid) (inc counter))
 
-        :else
-        (let [new-datom ^Datom (dd/datom
-                                (or (get-in migration-state [:eids e]) max-eid)
-                                a
-                                (if (ref? db a)
-                                  (get-in migration-state [:eids v])
-                                  v)
-                                (get-in migration-state [:tids t])
-                                op)]
-          (recur (transact-report report new-datom) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))
+          :else
+          (let [new-datom ^Datom (dd/datom
+                                  (or (get-in migration-state [:eids e]) max-eid)
+                                  a
+                                  (if (ref? db a)
+                                    (get-in migration-state [:eids v])
+                                    v)
+                                  (get-in migration-state [:tids t])
+                                  op)]
+            (recur (transact-report report new-datom) entities (assoc-in migration-state [:eids e] (.-e new-datom)) (inc counter))))))))
