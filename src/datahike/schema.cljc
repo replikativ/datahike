@@ -18,6 +18,7 @@
 (s/def :db.type/string string?)
 (s/def :db.type/symbol symbol?)
 (s/def :db.type/uuid uuid?)
+(s/def :db.type/tuple vector?)
 
 (s/def :db.type/value
   #{:db.type/bigdec
@@ -33,9 +34,10 @@
     :db.type/string
     :db.type/symbol
     :db.type/uuid
-    :db.type/value})
+    :db.type/value
+    :db.type/tuple})
 
-;; TODO: add tuples, bytes
+;; TODO: add bytes
 
 (s/def :db.type/cardinality #{:db.cardinality/one :db.cardinality/many})
 (s/def :db.type/unique #{:db.unique/identity :db.unique/value})
@@ -43,12 +45,13 @@
 ;; only for old datomic compliance, will be part of partioning in the future
 (s/def :db.type.install/_attribute #{:db.part/tx :db.part/db :db.part/user})
 
-(s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
+(s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleAttrs  :db/tupleType :db/tupleTypes})
+
 (s/def ::entity-spec-attribute #{:db/ensure :db.entity/attrs :db.entity/preds})
 (s/def ::meta-attribute #{:db/txInstant :db/retracted})
 
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality]
-                        :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
+                        :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory :db/tupleType :db/tupleTypes]))
 
 (s/def ::entity-spec (s/keys :opt [:db.entity/attrs :db.entity/preds]))
 
@@ -98,9 +101,15 @@
                                             :db/cardinality :db.cardinality/one}
                                    :db.install/_attribute {:db/valueType   :db.type.install/_attribute
                                                            :db/unique      :db.unique/identity
-                                                           :db/cardinality :db.cardinality/one}})
+                                                           :db/cardinality :db.cardinality/one}
+                                   :db/tupleType {:db/valueType :db.type/value
+                                                  :db/cardinality :db.cardinality/one}
+                                   :db/tupleTypes {:db/valueType :db.type/tuple
+                                                   :db/cardinality :db.cardinality/one}
+                                   :db/tupleAttrs {:db/valueType :db.type/tuple
+                                                   :db/cardinality :db.cardinality/one}})
 
-(def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc})
+(def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleType :db/tupleTypes :db/tupleAttrs})
 
 (s/def ::old-schema-val (s/keys :req [:db/valueType :db/cardinality]
                                 :opt [:db/ident :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
