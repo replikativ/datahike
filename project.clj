@@ -16,9 +16,11 @@
                  [io.replikativ/zufall "0.1.0"]
                  [junit/junit "4.13"]]
 
-  :plugins [[lein-cljfmt "0.6.8"]
+  :plugins [[lein-ancient "0.6.15"]
+            [lein-cljfmt "0.6.8"]
             [lein-cljsbuild "1.1.8"]
-            [lein-codox "0.10.7"]]
+            [lein-codox "0.10.7"]
+            [lein-nsorg "0.3.0"]]
 
   :codox {:metadata {:doc/format :markdown}
           :namespaces [datahike.api]}
