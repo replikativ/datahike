@@ -1,43 +1,93 @@
 version: 2.1
 
 orbs:
-  lein: replikativ/clj-lein@0
+  tools: replikativ/clj-tools@0
+jobs:
+  setup:
+    executor: tools/clojurecli
+    steps:
+      - restore_cache:
+          keys:
+            - source-{{ .Branch }}-{{ .Revision }}
+            - source-{{ .Branch }}
+            - source-
+      - checkout
+      - save_cache:
+          key: source-{{ .Branch }}-{{ .Revision }}
+          paths:
+            - .git
+      - restore_cache:
+          keys:
+            - deps-{{ checksum "deps.edn" }}
+            - deps-
+      - run: clojure -e nil
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+      - restore_cache:
+          keys:
+            - pom-{{ checksum "pom.xml" }}
+            - pom-
+      - run: sudo apt-get install maven --yes
+      - run: mvn compile
+      - save_cache:
+          key: pom-{{ checksum "pom.xml" }}
+          paths:
+            - /home/circleci/.m2
+      - persist_to_workspace:
+          root: /home/circleci/
+          paths:
+            - .m2
+            - replikativ
 
 workflows:
   build-test-and-deploy:
     jobs:
-      - lein/setup
-      - lein/format:
+      - setup:
+          context: dockerhub-deploy
+      - tools/format:
+          context: dockerhub-deploy
           requires:
-            - lein/setup
-      - lein/unittest:
+            - setup
+      - tools/unittest:
+          context: dockerhub-deploy
           requires:
-            - lein/setup
-      - lein/integrationtest-postgresql:
+            - setup
+      - tools/integrationtest-postgresql:
+          context: dockerhub-deploy
           requires:
-            - lein/setup
-      - lein/build:
+            - setup
+      - tools/build:
+          jarname: "datahike"
+          context: dockerhub-deploy
           requires:
-            - lein/setup
-      - lein/deploy-snapshot:
-          context: clojars-deploy
+            - setup
+      - tools/deploy-snapshot:
+          jarname: "datahike"
+          context:
+            - clojars-deploy
+            - dockerhub-deploy
           filters:
             branches:
               only: development
           requires:
-            - lein/setup
-            - lein/format
-            - lein/unittest
-            - lein/integrationtest-postgresql
-            - lein/build
-      - lein/deploy-release:
-          context: clojars-deploy
+            - setup
+            - tools/format
+            - tools/unittest
+            - tools/integrationtest-postgresql
+            - tools/build
+      - tools/deploy-release:
+          jarname: "datahike"
+          context:
+            - clojars-deploy
+            - dockerhub-deploy
           filters:
             branches:
               only: master
           requires:
-            - lein/setup
-            - lein/format
-            - lein/unittest
-            - lein/integrationtest-postgresql
-            - lein/build
+            - setup
+            - tools/format
+            - tools/unittest
+            - tools/integrationtest-postgresql
+            - tools/build

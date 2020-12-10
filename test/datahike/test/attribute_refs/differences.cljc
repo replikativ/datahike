@@ -236,35 +236,36 @@
   (testing "Keyword transaction in keyword DB"
     (let [conn (setup-db no-ref-cfg)
           next-eid (inc (:max-eid @conn))]
-      (d/transact conn [[:db/add next-eid :db/ident :name]])))
+      (is (not (nil? (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
   #_(testing "Keyword transaction in reference DB"
-      (let [conn (setup-db ref-cfg)
-            next-eid (inc (:max-eid @conn))]
-        (is (thrown-msg? "Bad attribute type for: :db/ident, expected number"
-                         (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
+    (let [conn (setup-db ref-cfg)
+          next-eid (inc (:max-eid @conn))]
+      nil
+      (is (thrown-msg? "Bad attribute type for: :db/ident, expected number" ;; TODO: ensure to have error thrown
+                       (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
 (deftest test-transact-data-with-reference-attr
   #_(testing "Reference transaction in keyword DB"
-      (let [conn (setup-db no-ref-cfg)
-            next-eid (inc (:max-eid @conn))]
-        (is (thrown-msg? "Bad attribute type for: 1, expected  keyword or string"
-                         (d/transact conn [[:db/add next-eid 1 :name]])))))
+    (let [conn (setup-db no-ref-cfg)
+          next-eid (inc (:max-eid @conn))]
+      (is (thrown-msg? "Bad attribute type for: 1, expected  keyword or string" ;; TODO: adjust error message
+                       (d/transact conn [[:db/add next-eid 1 :name]])))))
 
   (testing "Reference transaction in reference DB"
     (let [conn (setup-db ref-cfg)
           next-eid (inc (:max-eid @conn))]
-      (d/transact conn [[:db/add next-eid 1 :name]]))))
+      (is (not (nil? (d/transact conn [[:db/add next-eid 1 :name]])))))))
 
 (deftest test-system-schema-protection
   (let [conn (setup-db ref-cfg)]
-    #_(testing "Transact sequential system schema update"
-        (is (thrown-msg? "System schema entity cannot be changed"
-                         (d/transact conn [[:db/add 1 1 :name]]))))
+    (testing "Transact sequential system schema update"
+      (is (thrown-msg? "System schema entity cannot be changed"
+                       (d/transact conn [[:db/add 1 1 :name]]))))
 
-    #_(testing "Transact system schema update as map"
-        (is (thrown-msg? "System schema entity cannot be changed"
-                         (d/transact conn [{:db/id 1 :db/ident :name}]))))))
+    (testing "Transact system schema update as map"
+      (is (thrown-msg? "Entity with ID 1 is a system attribute :db/ident and cannot be changed"
+                       (d/transact conn [{:db/id 1 :db/ident :name}]))))))
 
 (deftest test-system-attribute-protection
   (testing "Use system keyword for schema in keyword DB"
@@ -312,7 +313,7 @@
                       {:name "Bob"}])
     (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn (ref :name))
            #{["Alice"] ["Bob"]}))
-    (is (= (d/q '[:find ?n :in $ :where [_ :name ?n]] @conn)
+    (is (= (d/q '[:find ?n :in $ :where [_ :name ?n]] @conn) ;; TODO: keep behaviour?
            #{["Alice"] ["Bob"]}))
     (is (= (d/q '[:find ?n :in $ :where [_ ?a ?n] [?a :db/ident :name]] @conn)
            #{["Alice"] ["Bob"]}))
@@ -353,3 +354,9 @@
 
     (is (= {:name "Ivan" :_father [{:db/id matthew}]}
            (d/pull @conn '[:name :_father] ivan)))))
+
+(deftest test-pull-ref-db
+  (let [conn (setup-db ref-cfg)]
+    (d/transact conn name-schema)
+    (is (thrown-msg? "Entity with ID 1 is a system attribute :db/ident and cannot be changed"
+                     (d/transact conn [{:db/id 1 :name "Ivan"}])))))

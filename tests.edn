@@ -1,7 +1,7 @@
 #kaocha/v1 {:tests [{:id :clj
                      :ns-patterns ["datahike.test."]}
-                    {:id :cljs
-                     :type :kaocha.type/cljs
-                     :ns-patterns ["datahike.test."]}
+                    #_{:id :cljs
+                       :type :kaocha.type/cljs
+                       :ns-patterns ["datahike.test."]}
                     {:id :integration
                      :test-paths ["test/datahike/integration_test"]}]}

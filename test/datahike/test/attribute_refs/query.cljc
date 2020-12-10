@@ -9,6 +9,20 @@
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
+(let [entities [{:db/id 1, :name "Ivan", :age 15}
+                {:db/id 2, :name "Petr", :age 37}]
+      db (d/db-with ref-db (shift-entities ref-e0 entities))
+      query '{:find [?e]
+              :in [$ ?attr ?value]
+              :where [[?e ?attr ?value]]}]
+  (d/q query db :name "Ivan")
+  (d/q '{:find [?e]
+         :in [$ ?value]
+         :where [[?e :name ?value]]}
+       db "Ivan")
+  ;(d/q query db :age 37)
+  )
+
 (deftest test-joins
   (let [entities [{:db/id 1, :name "Ivan", :age 15}
                   {:db/id 2, :name "Petr", :age 37}
@@ -58,7 +72,7 @@
                 :in [$ ?attr ?value]
                 :where [[?e ?attr ?value]]}]
     #_(is (= (d/q query db :name "Ivan")
-             #{[(+ ref-e0 1)]}))                              ;; TODO: adjust?
+           #{[(+ ref-e0 1)]}))                              ;; TODO: adjust
     #_(is (= (d/q query db :age 37)
              #{[(+ ref-e0 2)]}))
 

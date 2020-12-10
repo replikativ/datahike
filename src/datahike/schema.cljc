@@ -1,4 +1,4 @@
-(ns datahike.schema
+(ns ^:no-doc datahike.schema
   (:require [clojure.spec.alpha :as s])
   (:import [datahike.datom Datom]))
 

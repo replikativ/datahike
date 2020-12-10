@@ -1,4 +1,4 @@
-(ns datahike.query
+(ns ^:no-doc datahike.query
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    [clojure.set :as set]
@@ -416,25 +416,15 @@
       (persistent! hash-table))))
 
 (defn hash-join [rel1 rel2]
-  (println "HASHJOIN" rel1 rel2)
   (let [tuples1 (:tuples rel1)
         tuples2 (:tuples rel2)
-        _ (println "tuples")
-        _ (println tuples1)
-        _ (println tuples2)
         attrs1 (:attrs rel1)
         attrs2 (:attrs rel2)
-        _ (println "attrs")
-        _ (println attrs1)
-        _ (println attrs2)
         common-attrs (vec (intersect-keys (:attrs rel1) (:attrs rel2)))
         common-gtrs1 (map #(getter-fn attrs1 %) common-attrs)
         common-gtrs2 (map #(getter-fn attrs2 %) common-attrs)
         keep-attrs1 (keys attrs1)
         keep-attrs2 (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
-        _ (println "keep-attrs")
-        _ (println keep-attrs1)
-        _ (println keep-attrs2)
         keep-idxs1 (to-array (map attrs1 keep-attrs1))
         keep-idxs2 (to-array (map attrs2 keep-attrs2))
         key-fn1 (tuple-key-fn common-gtrs1)
@@ -450,7 +440,6 @@
                                   acc)))
                             (transient []) tuples2)
                     (persistent!))]
-    (println "newtup" new-tuples)
     (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
                new-tuples)))
 
@@ -468,17 +457,14 @@
 
 (defn lookup-pattern-db [db pattern]
   ;; TODO optimize with bound attrs min/max values here
-  (println "LUpattern db" pattern)
   (let [search-pattern (mapv #(if (symbol? %) nil %) pattern)
         datoms (db/-search db search-pattern)
         attr->prop (->> (map vector pattern ["e" "a" "v" "tx" "added"])
                         (filter (fn [[s _]] (free-var? s)))
                         (into {}))]
-    (println "attr->prop" attr->prop)
     (Relation. attr->prop datoms)))
 
 (defn matches-pattern? [pattern tuple]
-  (println "MP" pattern tuple)
   (loop [tuple tuple
          pattern pattern]
     (if (and tuple pattern)
@@ -490,7 +476,6 @@
       true)))
 
 (defn lookup-pattern-coll [coll pattern]
-  (println "LUPC" pattern coll)
   (let [data (filter #(matches-pattern? pattern %) coll)
         attr->idx (->> (map vector pattern (range))
                        (filter (fn [[s _]] (free-var? s)))
@@ -510,8 +495,6 @@
     (lookup-pattern-coll source pattern)))
 
 (defn collapse-rels [rels new-rel]
-  (println "COLLAPSE_REL" new-rel)
-  (println  "rels" rels)
   (loop [rels rels
          new-rel new-rel
          acc []]
@@ -522,11 +505,9 @@
       (conj acc new-rel))))
 
 (defn- rel-with-attr [context sym]
-  (println "RELWITHATTR"  sym context)
   (some #(when (contains? (:attrs %) sym) %) (:rels context)))
 
 (defn- context-resolve-val [context sym]
-  (println "CRV"  sym context)
   (when-some [rel (rel-with-attr context sym)]
     (when-some [tuple (first (:tuples rel))]
       (#?(:cljs da/aget :clj get) tuple ((:attrs rel) sym)))))
@@ -540,7 +521,6 @@
     [(update context :rels #(remove (set rels) %)) production]))
 
 (defn -call-fn [context rel f args]
-  (println "CALLFN" args)
   (let [sources (:sources context)
         attrs (:attrs rel)
         len (count args)
@@ -692,9 +672,7 @@
 
 (defn solve-rule [context clause]
   (let [final-attrs (filter free-var? clause)
-        _ (println "fattrs" final-attrs)
         final-attrs-map (zipmap final-attrs (range))
-        _ (println "fattrsmap" final-attrs-map)
         ;;         clause-cache    (atom {}) ;; TODO
         solve (fn [prefix-context clauses]
                 (reduce -resolve-clause prefix-context clauses))
@@ -712,9 +690,7 @@
 
             ;; no rules -> expand, collect, sum
             (let [context (solve (:prefix-context frame) clauses)
-                  _ (println "context" context)
                   tuples (-collect context final-attrs)
-                  _ (println "tuples" tuples)
                   new-rel (Relation. final-attrs-map tuples)]
               (recur (next stack) (sum-rel rel new-rel)))
 
@@ -751,7 +727,6 @@
         rel))))
 
 (defn resolve-pattern-lookup-refs [source pattern]          ;;  TODO: resolve here?
-  (println "RESPATLUR" pattern)
   (if (satisfies? db/IDB source)
     (let [[e a v tx added] pattern]
       (->
@@ -764,7 +739,6 @@
     pattern))
 
 (defn dynamic-lookup-attrs [source pattern]
-  (println "DYN LUA" pattern)
   (let [[e a v tx] pattern]
     (cond-> #{}
       (free-var? e) (conj e)
@@ -870,7 +844,6 @@
          (update context :rels collapse-rels relation))))))
 
 (defn resolve-clause [context clause]
-  (println "RESOLVE CLAUSE" context clause)
   (if (rule? context clause)
     (if (source? (first clause))
       (binding [*implicit-source* (get (:sources context) (first clause))]
@@ -906,7 +879,6 @@
      acc)))
 
 (defn collect [context symbols]
-  (println "COLLECT" context symbols)
   (->> (-collect context symbols)
        (map vec)
        set))
@@ -1017,14 +989,15 @@
 
 (defmulti q (fn [query & args] (type query)))
 
-(defmethod q clojure.lang.LazySeq [query & inputs]
-  (q {:query query :args inputs}))
+(defmethod q clojure.lang.LazySeq [query & args]
+  (q {:query query :args args}))
 
-(defmethod q clojure.lang.PersistentVector [query & inputs]
-  (q {:query query :args inputs}))
+(defmethod q clojure.lang.PersistentVector [query & args]
+  (q {:query query :args args}))
 
 (defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
   (let [query (if (contains? query-map :query) (:query query-map) query-map)
+        query (if (string? query) (edn/read-string query) query)
         args (if (contains? query-map :args) (:args query-map) inputs)
         parsed-q (memoized-parse-query query)
         find (:qfind parsed-q)
@@ -1035,18 +1008,15 @@
         returnmaps (:qreturnmaps parsed-q)
         ;; TODO utilize parser
         all-vars (concat find-vars (map :symbol with))
-        _ (println "all-vars" all-vars)
         query (cond-> query
                 (sequential? query) dpi/query->map)
         wheres (:where query)
         context (-> (Context. [] {} {})
                     (resolve-ins (:qin parsed-q) args))
-        _ (println "context" context)
 
         resultset (-> context
                       (-q wheres)
                       (collect all-vars))]
-    (println "res" resultset)
     (cond->> resultset
       (:with query) (mapv #(vec (subvec % 0 result-arity)))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)

@@ -1,4 +1,4 @@
-(ns datahike.datom
+(ns ^:no-doc datahike.datom
   (:require  [clojure.walk]
              [clojure.data]
              [datahike.tools :refer [combine-hashes]]

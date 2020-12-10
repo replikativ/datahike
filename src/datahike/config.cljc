@@ -1,4 +1,4 @@
-(ns datahike.config
+(ns ^:no-doc datahike.config
   (:require [clojure.edn :as edn]
             [clojure.spec.alpha :as s]
             [zufall.core :as z]

@@ -15,7 +15,7 @@
 (deftest test-entity
   (let [entities [{:db/id 1, :name "Ivan", :age 19, :aka ["X" "Y"]}
                   {:db/id 2, :name "Petr", :sex "male", :aka ["Z"]}
-                  ; [:db/add 3 :huh? false] ;; TODO: should be impossible to add
+                  ; [:db/add 3 :huh? false] ;; TODO: should be impossible to add?
                   ]
         db (d/db-with ref-db (shift-entities ref-e0 entities))
         e (d/entity db (+ ref-e0 1))]
@@ -41,13 +41,13 @@
     (is (= (edn/read-string (pr-str (let [e (d/entity db (+ ref-e0 1))] (:name e) e)))
            (edn/read-string (str "{:name \"Ivan\", :db/id " (+ ref-e0 1) "}"))))))
 
-(deftest test-entity-refs                                   ;; TODO: why working?
+(deftest test-entity-refs
   (let [db (d/db-with ref-db
-                      [{:db/id 1, :children [10]}           ;; TODO: shouldn't be possible?
-                       {:db/id 10, :father 1, :children [100 101]}
-                       {:db/id 100, :father 10}
-                       {:db/id 101, :father 10}])
-        e #(d/entity db %)]
+                      [{:db/id (+ ref-e0 1) :children [(+ ref-e0 10)]}
+                       {:db/id (+ ref-e0 10) :father (+ ref-e0 1) :children [(+ ref-e0 100) (+ ref-e0 101)]}
+                       {:db/id (+ ref-e0 100) :father (+ ref-e0 10)}
+                       {:db/id (+ ref-e0 101) :father (+ ref-e0 10)}])
+        e #(d/entity db (+ ref-e0 %))]
 
     (is (= (:children (e 1)) #{(e 10)}))
     (is (= (:children (e 10)) #{(e 100) (e 101)}))
