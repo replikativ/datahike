@@ -10,7 +10,7 @@
    [datahike.lru]
    [datahike.impl.entity :as de]
    #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple Constant
-                                          FindColl FindRel FindScalar FindTuple PlainSymbol
+                                          FindColl FindRel FindScalar FindTuple PlainSymbol Predicate
                                           RulesVar SrcVar Variable]])
    [datalog.parser.impl :as dpi]
    [datalog.parser.impl.proto :as dpip]
@@ -19,7 +19,7 @@
    [datalog.parser.pull :as dpp])
   #?(:clj (:import [clojure.lang Reflector]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
-                    Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
+                    Constant FindColl FindRel FindScalar FindTuple PlainSymbol Predicate Pull
                     RulesVar SrcVar Variable]
                    [datahike.datom Datom]
                    [java.lang.reflect Method]
@@ -996,26 +996,31 @@
   (q {:query query :args args}))
 
 (defmethod q clojure.lang.PersistentArrayMap [query-map & args]
-  (let [query         (if (contains? query-map :query) (:query query-map) query-map)
-        query         (if (string? query) (edn/read-string query) query)
-        args          (if (contains? query-map :args) (:args query-map) args)
-        parsed-q      (memoized-parse-query query)
-        find          (:qfind parsed-q)
+  (let [query (if (contains? query-map :query) (:query query-map) query-map)
+        query (if (string? query) (edn/read-string query) query)
+        args (if (contains? query-map :args) (:args query-map) args)
+        parsed-q (memoized-parse-query query)
+        find (:qfind parsed-q)
         find-elements (dpip/find-elements find)
-        find-vars     (dpi/find-vars find)
-        result-arity  (count find-elements)
-        with          (:qwith parsed-q)
-        returnmaps    (:qreturnmaps parsed-q)
+        find-vars (dpi/find-vars find)
+        result-arity (count find-elements)
+        with (:qwith parsed-q)
+        returnmaps (:qreturnmaps parsed-q)
         ;; TODO utilize parser
-        all-vars      (concat find-vars (map :symbol with))
-        query         (cond-> query
-                        (sequential? query) dpi/query->map)
-        wheres        (:where query)
-        context       (-> (Context. [] {} {})
-                          (resolve-ins (:qin parsed-q) args))
-        resultset     (-> context
-                          (-q wheres)
-                          (collect all-vars))]
+        all-vars (concat find-vars (map :symbol with))
+        query (cond-> query
+                      (sequential? query) dpi/query->map)
+        {non-predicates false predicates true} (->> (:where query)
+                                                    (map vector (:qwhere parsed-q))
+                                                    (group-by #(instance? Predicate (first %))))
+        reordered-wheres (concat (map second non-predicates)
+                                 (map second predicates))
+        context (-> (Context. [] {} {})
+                    (resolve-ins (:qin parsed-q) args))
+        resultset
+        (-> context
+            (-q reordered-wheres)
+            (collect all-vars))]
     (cond->> resultset
       (:with query)                                 (mapv #(vec (subvec % 0 result-arity)))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)

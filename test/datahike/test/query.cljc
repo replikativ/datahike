@@ -1,11 +1,9 @@
 (ns datahike.test.query
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.core :as d]
-   [datahike.query :as dq]
-   [datahike.db :as db]
-   [datahike.test.core :as tdc])
+   [datahike.query :as dq])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
@@ -343,5 +341,20 @@
                                         [3 31 "Ivan"]
                                         [3 21 "Petr"]})))))
 
-#_(require 'datahike.test.query :reload)
-#_(clojure.test/test-ns 'datahike.test.query)
+(deftest test-clause-order-invariance
+  (let [db (-> (d/empty-db)
+               (d/db-with [{:db/id 1, :name  "Ivan", :age   15}
+                           {:db/id 2, :name  "Petr", :age   37}
+                           {:db/id 3, :name  "Ivan", :age   37}
+                           {:db/id 4, :age 15}]))]
+    (testing "Clause order does not matter for predicates"
+      (is (= (d/q {:query '{:find [?e]
+                            :where [[?e :age ?age]
+                                    [(= ?age 37)]]}
+                   :args [db]})
+             #{[2] [3]}))
+      (is (= (d/q {:query '{:find [?e]
+                            :where [[(= ?age 37)]
+                                    [?e :age ?age]]}
+                   :args [db]})
+             #{[2] [3]})))))
