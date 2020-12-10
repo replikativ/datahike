@@ -1009,7 +1009,7 @@
         ;; TODO utilize parser
         all-vars (concat find-vars (map :symbol with))
         query (cond-> query
-                      (sequential? query) dpi/query->map)
+                (sequential? query) dpi/query->map)
         {non-predicates false predicates true} (->> (:where query)
                                                     (map vector (:qwhere parsed-q))
                                                     (group-by #(instance? Predicate (first %))))
