@@ -72,7 +72,7 @@
                 :in [$ ?attr ?value]
                 :where [[?e ?attr ?value]]}]
     #_(is (= (d/q query db :name "Ivan")
-           #{[(+ ref-e0 1)]}))                              ;; TODO: adjust
+             #{[(+ ref-e0 1)]}))                              ;; TODO: adjust
     #_(is (= (d/q query db :age 37)
              #{[(+ ref-e0 2)]}))
 

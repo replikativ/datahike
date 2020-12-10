@@ -178,12 +178,6 @@
            [{:db/id 1, :name "Ivan"}
             {:db/id 2, :name "Oleg"}]))))
 
-(d/q {:query "[:find ?value :where [_ :likes ?value]]"
-      :args [#{[1 :likes "fries"]
-               [2 :likes "candy"]
-               [3 :likes "pie"]
-               [4 :likes "pizza"]}]})
-
 (deftest test-q-docs
   (let [cfg {:store {:backend :mem
                      :id "q"}
@@ -251,7 +245,7 @@
                           [3 :likes "pie"]
                           [4 :likes "pizza"]}]})))
 
-    #_(is (= #{["fries"] ["candy"] ["pie"] ["pizza"]}
+    (is (= #{["fries"] ["candy"] ["pie"] ["pizza"]}
            (d/q {:query "[:find ?value :where [_ :likes ?value]]"
                  :args [#{[1 :likes "fries"]
                           [2 :likes "candy"]

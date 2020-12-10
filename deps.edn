@@ -45,4 +45,7 @@
                    :main-opts ["-m" "hf.depstar.jar" "replikativ-datahike.jar"]}
 
            :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.7.0"}}
-                    :main-opts ["-m" "cljfmt.main" "check"]}}}
+                    :main-opts ["-m" "cljfmt.main" "check"]}
+
+           :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.7.0"}}
+                  :main-opts ["-m" "cljfmt.main" "fix"]}}}

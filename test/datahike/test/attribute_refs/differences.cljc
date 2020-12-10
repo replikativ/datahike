@@ -239,18 +239,18 @@
       (is (not (nil? (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
   #_(testing "Keyword transaction in reference DB"
-    (let [conn (setup-db ref-cfg)
-          next-eid (inc (:max-eid @conn))]
-      nil
-      (is (thrown-msg? "Bad attribute type for: :db/ident, expected number" ;; TODO: ensure to have error thrown
-                       (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
+      (let [conn (setup-db ref-cfg)
+            next-eid (inc (:max-eid @conn))]
+        nil
+        (is (thrown-msg? "Bad attribute type for: :db/ident, expected number" ;; TODO: ensure to have error thrown
+                         (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
 (deftest test-transact-data-with-reference-attr
   #_(testing "Reference transaction in keyword DB"
-    (let [conn (setup-db no-ref-cfg)
-          next-eid (inc (:max-eid @conn))]
-      (is (thrown-msg? "Bad attribute type for: 1, expected  keyword or string" ;; TODO: adjust error message
-                       (d/transact conn [[:db/add next-eid 1 :name]])))))
+      (let [conn (setup-db no-ref-cfg)
+            next-eid (inc (:max-eid @conn))]
+        (is (thrown-msg? "Bad attribute type for: 1, expected  keyword or string" ;; TODO: adjust error message
+                         (d/transact conn [[:db/add next-eid 1 :name]])))))
 
   (testing "Reference transaction in reference DB"
     (let [conn (setup-db ref-cfg)
