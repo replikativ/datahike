@@ -74,7 +74,7 @@
        (valAt [d k nf] (val-at-datom d k nf))
 
        clojure.lang.Associative
-       (entryAt [d k] (some->> (val-at-datom d k nil) (clojure.lang.MapEntry k)))
+       (entryAt [d k] (some->> (val-at-datom d k nil) (clojure.lang.MapEntry. k)))
        (containsKey [e k] (#{:e :a :v :tx :added} k))
        (assoc [d k v] (assoc-datom d k v))]))
 
