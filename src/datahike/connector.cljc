@@ -123,6 +123,7 @@
 
   (-connect [config]
     (let [config (dc/load-config config)
+          _ (log/debug "Using config " (update-in config [:store] dissoc :password))
           store-config (:store config)
           raw-store (ds/connect-store store-config)
           _ (when-not raw-store
