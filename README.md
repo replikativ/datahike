@@ -2,25 +2,143 @@
     Datahike
 </h1>
 <p align="center">
-<a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://img.shields.io/badge/clojurians%20slack-join%20channel-blueviolet"/></a>
-<a href="https://gitter.im/replikativ/replikativ?utm_source=badge&amp;utm_medium=badge&amp;utm_campaign=pr-badge&amp;utm_content=badge"><img src="https://camo.githubusercontent.com/da2edb525cde1455a622c58c0effc3a90b9a181c/68747470733a2f2f6261646765732e6769747465722e696d2f4a6f696e253230436861742e737667" alt="Gitter" data-canonical-src="https://badges.gitter.im/Join%20Chat.svg" style="max-width:100%;"></a>
-<a href="https://clojars.org/io.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/io.replikativ/datahike.svg" /></a>
-<a href="https://circleci.com/gh/replikativ/datahike"><img src="https://circleci.com/gh/replikativ/datahike.svg?style=shield"/></a>
-<a href="https://github.com/replikativ/datahike/tree/development"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/development"/></a>
-<a href="https://versions.deps.co/replikativ/datahike" title="Dependencies Status"><img src="https://versions.deps.co/replikativ/datahike/status.svg" /></a>
-</p>
 
-Datahike is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
-powered by an efficient Datalog query engine. This project started as a port of
-[DataScript](https://github.com/tonsky/DataScript) to the
-[hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
-DataScript tests are passing, but we are still working on the internals. Having
-said this we consider Datahike usable for medium sized projects, since DataScript is
-very mature and deployed in many applications and the hitchhiker-tree
-implementation is heavily tested through generative testing. We are
-building on the two projects and the storage backends for the hitchhiker-tree
-through [konserve](https://github.com/replikativ/konserve). We would like to
-hear experience reports and are happy if you join us.
+__Disclaimer: This is experimental work in progress and subject to change.__
+
+
+# Clojurescript and IndexedDB support for Datahike
+
+This branch contains initial work on Clojurescript support for Datahike with persistence to IndexedDB in the browser. Our goal is a full port on a rebase of the Datahike `development` branch including new features such as tuple support and improved transaction performance in Q1 2021. We will support all major browsers, web workers, node.js and embedded JS environment. 
+Our vision is a distributed unified address space for client and server side databases along the lines of the semantic web, but built based on fast P2P replication of our read scalable, immutable fractal tree data structure. 
+
+
+
+## What can I do with this preview?
+
+This preview is supposed to be a basis for prototyping to help us guide our development and make sure Datahike will fit your use case. It is not intended for production use yet.
+
+## Ways to contribute
+
+We are interested in tooling experience and suggestions. In particular we care about our API design, performance, integration into existing ecosystems ([react](https://github.com/homebaseio/homebase-react) with our partner [Homebase](https://www.homebase.io/), Electron, JS backends, Chrome apps, react native).
+
+- Join us on [Discord](https://discord.com/invite/kEBzMvb)
+- Report issues
+- Support us on [Open Collective](https://opencollective.com/datahike)
+
+
+# Usage
+
+**Functionality included:**
+
+- Create a store
+  - In memory
+  - IndexedDB
+- Transact
+- Query
+- Entity
+
+**Not yet included:**
+
+- History functionality
+- Pull
+- a bunch of special cases
+
+### Setup
+
+```clojure
+(ns my-app.prototype
+  (:require [datahike.api :as d]
+            [datahike.impl.entity :as de]
+            [clojure.core.async :as async :refer [go <!]]))
+
+(def schema [{:db/ident       :name
+              :db/cardinality :db.cardinality/one
+              :db/index       true
+              :db/unique      :db.unique/identity
+              :db/valueType   :db.type/string}
+             {:db/ident       :sibling
+              :db/cardinality :db.cardinality/many
+              :db/valueType   :db.type/ref}
+             {:db/ident       :age
+              :db/cardinality :db.cardinality/one
+              :db/valueType   :db.type/number}
+             {:db/ident       :friend
+              :db/cardinality :db.cardinality/many
+              :db/valueType :db.type/ref}])
+
+
+(def cfg-idb {:store  {:backend :indexeddb :id "idb-sandbox"}
+              :keep-history? false
+              :schema-flexibility :write
+              :initial-tx schema})
+```
+
+Instead of `:backend` `:indexeddb` you can also use the memory backend with `:memory`.
+
+### Database interaction
+
+We now show how to interact with the database interactively. All API calls return core.async channels, so if you want to use it inside of your application logic you need to wrap them in a `go` block and take from each resulting channel.
+
+```clojure
+  ;; Create an indexeddb store.
+  (d/create-database cfg-idb)
+
+  ;; Connect to the indexeddb store.
+  (go (def conn-idb (<! (d/connect cfg-idb))))
+
+  ;; Transact some data to the store.
+  (d/transact conn-idb [{:name "Alice"
+                         :age  26}
+                        {:name "Bob"
+                         :age  35
+                         :_friend [{:name "Mike"
+                                    :age 28}]}
+                        {:name  "Charlie"
+                         :age   45
+                         :sibling [[:name "Alice"] [:name "Bob"]]}])
+
+  ;; Run a query against the store.
+  (go (println (<! (d/q '[:find ?e ?a ?v ?t
+                          :in $ ?a
+                          :where [?e :name ?v ?t] [?e :age ?a]]
+                        @conn-idb
+                        35))))
+
+  ;; Use the Entity API for "Bob".
+  (go
+    (let [e (<! (d/entity @conn-idb 6))]
+      (println (<! (e :name)))))
+
+  ;; Release the connection from the store.
+  ;; This is necessary for deletion.
+  (d/release conn-idb)
+
+  ;; Delete the store. 
+  ;; This can be done immediately after creation.
+  ;; In a fresh browser session or after releasing the connection. 
+  (d/delete-database cfg-idb) 
+
+```
+
+You can inspect the resulting IndexedDB through your browser dev tools and should be able to retrieve the durable data after reloading your browser tab.
+
+## How we currently develop this
+
+To hack on this prototype clone this repository. The namespace for the api sandbox is located:
+- `dev/api_sandbox.cljs`
+
+You will need **Clojure** and **shadow-cljs** installed.  
+
+The settings for starting your clojurescript repl is as follows:
+
+- Project type: `shadow-cljs`
+- Build selection: `:app`
+- Build to connect to: `browser-repl`
+
+
+# Datahike background
+
+Datahike is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database powered by an efficient Datalog query engine. This project started as a port of [DataScript](https://github.com/tonsky/DataScript) to the [hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All DataScript tests are passing, but we are still working on the internals. Having said this we consider Datahike usable for medium sized projects, since DataScript is very mature and deployed in many applications and the hitchhiker-tree implementation is heavily tested through generative testing. We are building on the two projects and the storage backends for the hitchhiker-tree through [konserve](https://github.com/replikativ/konserve). We would like to hear experience reports and are happy if you join us.
 
 You may find articles on Datahike on our company's [blog page](https://lambdaforge.io/articles).
 
@@ -30,85 +148,8 @@ We presented Datahike also at meetups,for example at:
 - [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
 - [2018 Dutch clojure meetup](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
 
-## Usage
 
-Add to your leiningen dependencies:
-
-[![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
-
-We provide a small stable API for the JVM at the moment, but the on-disk schema
-is not fixed yet. We will provide a migration guide until we have reached a
-stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
-
-```clojure
-(require '[datahike.api :as d])
-
-
-;; use the filesystem as storage medium
-(def cfg {:store {:backend :file :path "/tmp/example"}})
-
-;; create a database at this place, per default configuration we enforce a strict
-;; schema and keep all historical data
-(d/create-database cfg)
-
-(def conn (d/connect cfg))
-
-;; the first transaction will be the schema we are using
-;; you may also add this within database creation by adding :initial-tx
-;; to the configuration
-(d/transact conn [{:db/ident :name
-                   :db/valueType :db.type/string
-                   :db/cardinality :db.cardinality/one }
-                  {:db/ident :age
-                   :db/valueType :db.type/long
-                   :db/cardinality :db.cardinality/one }])
-
-;; lets add some data and wait for the transaction
-(d/transact conn [{:name  "Alice", :age   20 }
-                  {:name  "Bob", :age   30 }
-                  {:name  "Charlie", :age   40 }
-                  {:age 15 }])
-
-;; search the data
-(d/q '[:find ?e ?n ?a
-       :where
-       [?e :name ?n]
-       [?e :age ?a]]
-  @conn)
-;; => #{[3 "Alice" 20] [4 "Bob" 30] [5 "Charlie" 40]}
-
-;; add new entity data using a hash map
-(d/transact conn {:tx-data [{:db/id 3 :age 25}]})
-
-;; if you want to work with queries like in
-;; https://grishaev.me/en/datomic-query/,
-;; you may use a hashmap
-(d/q {:query '{:find [?e ?n ?a ]
-               :where [[?e :name ?n]
-                       [?e :age ?a]]}
-      :args [@conn]})
-;; => #{[5 "Charlie" 40] [4 "Bob" 30] [3 "Alice" 25]}
-
-;; query the history of the data
-(d/q '[:find ?a
-       :where
-       [?e :name "Alice"]
-       [?e :age ?a]]
-  (d/history @conn))
-;; => #{[20] [25]}
-
-;; you might need to release the connection for specific stores like leveldb
-(d/release conn)
-
-;; clean up the database if it is not need any more
-(d/delete-database cfg)
-```
-
-The API namespace provides compatibility to a subset of Datomic functionality
-and should work as a drop-in replacement on the JVM. The rest of Datahike will
-be ported to core.async to coordinate IO in a platform-neutral manner.
-
-Refer to the docs for more information:
+Refer to the JVM docs for more information:
 
 - [configuration](./doc/config.md)
 - [schema flexibility](./doc/schema.md)
@@ -127,176 +168,58 @@ For simple examples have a look at the projects in the `examples` folder.
 - [Invoice creation](https://gitlab.com/replikativ/datahike-invoice)
   demonstrated at the [Dutch Clojure
   Meetup](https://www.meetup.com/de-DE/The-Dutch-Clojure-Meetup/events/trmqnpyxjbrb/).
-  
-## Performance Measurement
-
-There is a small command line utility integrated in this project to measure the performance of our *in-memory* and our *file* backend.
-
-To run the benchmarks, navigate to the project folder in your terminal and run 
-
-```bash
-lein with-profile benchmark run 
-```
-
-You will receive a list containing information about what has been tested and the mean of measured times in milliseconds as follows:
-
-```clojure
-[ ;; ...
- {:context
-  {:db
-   {:store {:backend :mem, :id "performance-hht"},
-    :schema-flexibility :write,
-    :keep-history? true,
-    :index :datahike.index/hitchhiker-tree},
-   :function :transaction,
-   :db-size 1000,
-   :tx-size 10},
-  :mean-time 5.0185512 ;; ms
- }
-  ;; ...
-]
-```
-
-The functions tested are
-- `connect` with keyword `:connection`
-  - `:dbsize` describes the number of datoms in the database the connection is being established to
-- `transact` with keyword `:transaction`
-  - `:txsize` describes the number of datoms inserted into the database
-  - `:dbsize` describes the number of datoms in the database before the transaction
-- `q` with keywords `:query1` and `:query2`
-  - `:dbsize` describes the number of datoms in the database
-  - queries are defined as following examples:
-```clojure
- (def query1 '[:find ?e :where [?e :s1 "string"]])
-
- (def query2 '[:find ?a :where [?e :s1 ?a]
-                               [?e :i1 42]])
-```
 
 
-## Relationship to Datomic and DataScript
 
-Datahike provides similar functionality to [Datomic](http://Datomic.com) and can
-be used as a drop-in replacement for a subset of it. The goal of Datahike is not
-to provide an open-source reimplementation of Datomic, but it is part of the
-[replikativ](https://github.com/replikativ) toolbox aimed to build distributed
-data management solutions. We have spoken to many backend engineers and Clojure
-developers, who tried to stay away from Datomic just because of its proprietary
-nature and we think in this regard Datahike should make an approach to Datomic
-easier and vice-versa people who only want to use the goodness of Datalog in
-small scale applications should not worry about setting up and depending on
-Datomic.
 
-Some differences are:
+# Roadmap 
+ 
+## Datahike
 
-- Datahike runs locally on one peer. A transactor might be provided in the
-  future and can also be realized through any linearizing write mechanism, e.g.
-  Apache Kafka. If you are interested, please contact us.
-- Datahike provides the database as a transparent value, i.e. you can directly
-  access the index datastructures (hitchhiker-tree) and leverage their
-  persistent nature for replication. These internals are not guaranteed to stay
-  stable, but provide useful insight into what is going on and can be optimized.
-- Datomic has a REST interface and a Java API
-- Datomic provides timeouts
+### 0.4.1 
+- GC
+- query performance improvements
+- updating of all konserve backends including DynamoDB/S3
+     
 
-Datomic is a full-fledged scalable database (as a service) built from the
-authors of Clojure and people with a lot of experience. If you need this kind
-of professional support, you should definitely stick to Datomic.
+### 0.4.2
+- better error messages
+- safe Datalog clause reorderings (static analysis)
+- GraalVM support (if possible)
 
-Datahike's query engine and most of its codebase come from
-[DataScript](https://github.com/tonsky/DataScript). Without the work on
-DataScript, Datahike would not have been possible. Differences to Datomic with
-respect to the query engine are documented there.
+### 0.5.0 
+- ClojureScript support on IndexedDB
+- remote connection support for datahike-server transactor
+- general URI based address scheme for databases globally
+- cross-platform joins between frontend and backend databases
 
-## When should I pick what?
+   
+### 0.6.0 
+- RDF compatible schemas and translation (semantic web)
+- resource/cost model for query execution and planning
+- general interface definitions and semantics independent of Clojure
+- attribute-based CRDT support (preview)
+    
+### 1.0.0 
+- full CRDT support including fully decentralized P2P version
+- run queries on distributed infrastructure
+- JIT compiled Datalog runtime for Clojure/ClojureScript
+- integration of Datalog for static analysis in Clojure compiler/macroexpander
+- non-Clojure Datalog query runtime implementation for e.g. Julia, Python,
+  Ruby or Rust
 
-### Datahike
+     
+## Datahike server
 
-Pick Datahike if your app has modest requirements towards a typical durable
-database, e.g. a single machine and a few millions of entities at maximum.
-Similarly if you want to have an open-source solution and be able to study and
-tinker with the codebase of your database, Datahike provides a comparatively
-small and well composed codebase to tweak it to your needs. You should also
-always be able to migrate to Datomic later easily.
-
-### Datomic
-
-Pick Datomic if you already know that you will need scalability later or if you
-need a network API for your database. There is also plenty of material about
-Datomic online already. Most of it applies in some form or another to Datahike,
-but it might be easier to use Datomic directly when you first learn Datalog.
-
-### DataScript
-
-Pick DataScript if you want the fastest possible query performance and do not
-have a huge amount of data. You can easily persist the write operations
-separately and use the fast in-memory index datastructure of DataScript then.
-Datahike also at the moment does not support ClojureScript anymore, although we
-plan to recover this functionality.
-
-## ClojureScript support
-
-ClojureScript support is planned and work in progress. Please see [Roadmap](https://github.com/replikativ/datahike#roadmap).
-
-## Migration & Backup
-
-The database can be exported to a flat file with:
-
-```clojure
-(require '[datahike.migrate :refer [export-db import-db]])
-(export-db @conn "/tmp/eavt-dump")
-```
-
-You must do so before upgrading to a Datahike version that has changed the
-on-disk format. This can happen as long as we are arriving at version `1.0.0`
-and will always be communicated through the Changelog. After you have bumped the
-Datahike version you can use
-
-```clojure
-;; ... setup new-conn (recreate with correct schema)
-
-(import-db new-conn "/tmp/eavt-dump")
-```
-
-to reimport your data into the new format.
-
-The datoms are stored as strings in a line-based format, so you can easily check
-whether your dump is containing reasonable data. You can also use it to do some
-string based editing of the DB. You can also use the export as a backup.
-
-If you are upgrading from pre `0.1.2` where we have not had the migration code
-yet, then just evaluate the `datahike.migrate` namespace manually in your
-project before exporting.
-
-Have a look at the [change log](./CHANGELOG.md) for recent updates.
-
-## Roadmap
-
-### 0.4.0
-
-- identity and access management
-- CRDT type schema support
-- fast redis backend support
-- query planner and optimizer
-- transaction monitoring
-
-### 0.5.0
-
-- optionally use core.async to handle storage IO
-- ClojureScript support both in the browser and on node
-
-### 0.6.0
-
-- support GC or eager deletion of fragments
-- use hitchhiker-tree synchronization for replication
-- run comprehensive query suite and compare to DataScript and Datomic
-- support anomaly errors (?)
-
-### 1.0.0
-
-- support optimistic write support through attributes with conflict resolution
-  (CRDT-like)
-- investigate https://github.com/usethesource/capsule for faster hh-tree durability
+### 0.1.0 
+- swagger documented REST API
+- basic authentication
+- managed implementation for large cloud provider, e.g. Azure
+    
+### 0.2.0
+- basic smart contract support (already implemented for Datopia)
+- exposure of konserve store or immutable iterators for remote connections
+- experimental P2P replication through dat
 
 ## Commercial support
 

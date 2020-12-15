@@ -1,4 +1,4 @@
-(ns api-sandbox-indexeddb
+(ns api-sandbox
   (:require [datahike.api :as d]
             [datahike.impl.entity :as de]
             [clojure.core.async :as async :refer [go <!]]))
@@ -63,7 +63,11 @@
   (async/go (println (<! ((<! (d/entity @conn-idb 8)) :sibling))))
   (async/go (println (<! ((<! (d/entity @conn-idb 7)) :friend))))
 
-  
+  (go
+    (let [e (<! (d/entity @conn-idb 6))]
+      (println (<! (e :name)))))
+
+
   ;; Collection operators over a touched db
   (async/go  (println (count (<! (de/touch (<! (d/entity @conn-idb 6)))))))
   (async/go  (println (keys (<! (de/touch (<! (d/entity @conn-idb 6)))))))

@@ -8,7 +8,7 @@
                                        :sha "5db97f979d3d9379af7180db13aed5759ad64a6b"}
         io.replikativ/konserve        {:git/url "https://github.com/groundedSAGE/konserve.git"
                                        :sha "88eecbdb9a831a46f5eaf652b10cd06668b5ccc1"}
-        io.replikativ/superv.async    {:git/url "https://github.com/groundedSAGE/datalog-parser.git"
+        io.replikativ/superv.async    {:git/url "https://github.com/groundedSAGE/superv.async.git"
                                        :sha "bc1bf6e4336baee365e7f0da9b3022e450e58750"} 
         io.lambdaforge/datalog-parser  {:git/url "https://github.com/groundedSAGE/datalog-parser.git"
                                         :sha "6493b5d3f1a00bd57e825dc2755d19030f407819"}
