@@ -1,7 +1,10 @@
 (ns datahike.index.persistent-set
+  ;(:refer-clojure :exlude [seq count flush persistent!])
+  (:refer-clojure :exclude [-persistent! -flush -seq -count])
   (:require [me.tonsky.persistent-sorted-set :as set]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
             [datahike.datom :as dd])
+
   #?(:clj (:import [datahike.datom Datom])))
 
 (def -slice set/slice)

@@ -1,10 +1,7 @@
 (ns datahike.test.cljs
   (:require
    [clojure.string :as str]
-   [cljs.test :as t])
-  #?(:cljs
-     (:require-macros
-      [datahike.test.cljs])))
+   [cljs.test :as t]))
 
 ; The datahike.test.cljs namespace exists only for the side
 ; effect of extending the cljs.test/assert-expr multimethod.

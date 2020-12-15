@@ -1,9 +1,13 @@
 (ns datahike.store
   (:require [hitchhiker.tree.bootstrap.konserve :as kons]
             [clojure.spec.alpha :as s]
-            [konserve.filestore :as fs]
+            #?(:clj [konserve.filestore :as fs])
             [konserve.memory :as mem]
-            [superv.async :refer [<?? S]]
+            [clojure.core.async :as async]
+            [hitchhiker.tree.utils.cljs.async :as ha]
+            [superv.async :refer [#?(:clj <??) S <? go-try]]
+            #?(:cljs [konserve.indexeddb :refer [new-indexeddb-store delete-indexeddb-store]])
+            [konserve.serializers :as ser]
             [environ.core :refer [env]]))
 
 (defmulti empty-store
@@ -12,7 +16,8 @@
   :backend)
 
 (defmethod empty-store :default [{:keys [backend]}]
-  (throw (IllegalArgumentException. (str "Can't create a store with scheme: " backend))))
+  #?(:clj (throw (IllegalArgumentException. (str "Can't create a store with scheme: " backend)))
+     :cljs (throw (js/Error. (str "Can't create a store with scheme: " backend)))))
 
 (defmulti delete-store
   "Deletes an existing store"
@@ -20,7 +25,8 @@
   :backend)
 
 (defmethod delete-store :default [{:keys [backend]}]
-  (throw (IllegalArgumentException. (str "Can't delete a store with scheme: " backend))))
+  #?(:clj (throw (IllegalArgumentException. (str "Can't delete a store with scheme: " backend)))
+     :cljs (throw (js/Error. (str "Can't delete a store with scheme: " backend)))))
 
 (defmulti connect-store
   "Makes a connection to an existing store"
@@ -28,7 +34,8 @@
   :backend)
 
 (defmethod connect-store :default [{:keys [backend]}]
-  (throw (IllegalArgumentException. (str "Can't connect to store with scheme: " backend))))
+  #?(:clj (throw (IllegalArgumentException. (str "Can't connect to store with scheme: " backend)))
+     :cljs (throw (js/Error. (str "Can't connect to store with scheme: " backend)))))
 
 (defmulti release-store
   "Releases the connection to an existing store (optional)."
@@ -50,7 +57,7 @@
   :backend)
 
 (defmethod default-config :default [{:keys [backend] :as config}]
-  (println "INFO: No default configuration found for" backend)
+  #_(println "INFO: No default configuration found for" backend)  ; TODO: uncomment for indexeddb release
   config)
 
 (defmulti config-spec
@@ -59,24 +66,28 @@
   :backend)
 
 (defmethod config-spec :default [{:keys [backend]}]
-  (println "INFO: Not configuration spec found for" backend))
+  nil
+  #_(println "INFO: Not configuration spec found for" backend))  ; TODO: uncomment for indexeddb release
 
 ;; memory
 
 (def memory (atom {}))
 
 (defmethod empty-store :mem [{:keys [id]}]
-  (if-let [store (get @memory id)]
-    store
-    (let [store (<?? S (mem/new-mem-store))]
-      (swap! memory assoc id store)
-      store)))
+  (go-try S
+   (if-let [store (get @memory id)]
+     store
+     (let [store (<? S (mem/new-mem-store))]
+       (swap! memory assoc id store)
+       store))))
+
+
 
 (defmethod delete-store :mem [{:keys [id]}]
   (swap! memory dissoc id))
 
 (defmethod connect-store :mem [{:keys [id]}]
-  (@memory id))
+  (ha/go-try (@memory id)))
 
 (defmethod scheme->index :mem [_]
   :datahike.index/hitchhiker-tree)
@@ -95,15 +106,60 @@
 
 ;; file
 
-(defmethod empty-store :file [{:keys [path]}]
-  (kons/add-hitchhiker-tree-handlers
-   (<?? S (fs/new-fs-store path))))
+#?(:clj (defmethod empty-store :file [{:keys [path]}]
+          (kons/add-hitchhiker-tree-handlers
+           (<?? S (fs/new-fs-store path)))))
 
-(defmethod delete-store :file [{:keys [path]}]
-  (fs/delete-store path))
 
-(defmethod connect-store :file [{:keys [path]}]
-  (<?? S (fs/new-fs-store path)))
+#_#?(:clj (defmethod delete-store  :indexeddb [{:keys [id]}]
+          (fs/delete-store id)))
+
+#?(:cljs (defmethod delete-store :file [{:keys [path]}]
+          (fs/delete-store path)))
+
+#?(:clj (defmethod connect-store :file [{:keys [path]}]
+          (<?? S (fs/new-fs-store path))))
+
+;; indexeddb
+
+(def indexeddb (atom {}))
+
+@indexeddb
+
+
+
+#?(:cljs (defmethod empty-store :indexeddb [{:keys [id]}]
+           (go-try S
+                   (let [store (kons/add-hitchhiker-tree-handlers
+                                (<? S (new-indexeddb-store id :serializer (ser/fressian-serializer))))]
+                     (swap! indexeddb assoc id store)
+                     store))))
+
+
+#?(:cljs (defmethod connect-store :indexeddb [{:keys [id]}]
+           (go-try S
+                   (or (get indexeddb id)
+                       (let [store (kons/add-hitchhiker-tree-handlers
+                                    (<? S (new-indexeddb-store id :serializer (ser/fressian-serializer))))]
+                         (swap! indexeddb assoc id store)
+                         store)))))
+
+
+#?(:cljs (defmethod release-store :indexeddb [{:keys [id]}]
+           (do
+             (.close (:db (get @indexeddb id)))
+             (swap! indexeddb dissoc id)
+             nil)))
+
+#?(:cljs (defmethod delete-store :indexeddb [{:keys [id]}]
+           (go-try S
+                   (let [deleted? (ha/<? (delete-indexeddb-store id))]
+                     (when deleted? 
+                       (swap! indexeddb dissoc id)
+                       (println "Database deleted: " id))))))
+
+
+
 
 (defmethod scheme->index :file [_]
   :datahike.index/hitchhiker-tree)

@@ -23,3 +23,7 @@ release.clj
 .cpcache
 lsp/
 /.calva
+/.shadow-cljs
+/resources
+/public
+/out

@@ -1,8 +1,10 @@
 (ns datahike.datom
+  #?(:cljs (:require-macros [datahike.datom :refer [combine-cmp]]))
   (:require  [clojure.walk]
              [clojure.data]
              [datahike.tools :refer [combine-hashes]]
-             [datahike.constants :refer [tx0]]))
+             [datahike.constants :refer [tx0]]
+             #?(:cljs [goog.array :as garray])))
 
 (declare hash-datom equiv-datom seq-datom nth-datom assoc-datom val-at-datom)
 
@@ -139,7 +141,8 @@
     :v (datom (.-e d) (.-a d) v (datom-tx d) (datom-added d))
     :tx (datom (.-e d) (.-a d) (.-v d) v (datom-added d))
     :added (datom (.-e d) (.-a d) (.-v d) (datom-tx d) v)
-    (throw (IllegalArgumentException. (str "invalid key for #datahike/Datom: " k)))))
+    #?(:clj (throw (IllegalArgumentException. (str "invalid key for #datahike/Datom: " k)))
+       :cljs (throw (js/Error. (str "invalid key for #datahike/Datom: " k))))))
 
 ;; printing and reading
 ;; #datomic/DB {:schema <map>, :datoms <vector of [e a v tx]>}

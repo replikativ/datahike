@@ -3,7 +3,7 @@
   (:require [datahike.connector :as dc]
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
-            [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
+            [datahike.db :as db ] ;#?@(:cljs [:refer [CurrentDB]])
             [datahike.impl.entity :as de])
   #?(:clj
      (:import [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
@@ -76,7 +76,8 @@ Connect to a database with persistent store:
   (create-database {:store {:backend :mem :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"}
 
   create-database
-  dc/create-database)
+  dc/create-database
+  )
 
 (def ^{:arglists '([config])
        :doc      "Deletes a database given a database configuration. Storage configuration `:store` is mandatory.
@@ -227,11 +228,13 @@ Connect to a database with persistent store:
   {:arglists '([query & inputs])}
   (fn [query & inputs] (type query)))
 
-(defmethod q clojure.lang.PersistentVector
+(defmethod q #?(:cljs cljs.core/PersistentVector
+                :clj clojure.lang.PersistentVector)
   [query & inputs]
   (dq/q {:query query :args inputs}))
 
-(defmethod q clojure.lang.PersistentArrayMap
+(defmethod q #?(:cljs cljs.core/PersistentArrayMap
+                :clj clojure.lang.PersistentArrayMap)
   [{:keys [query args limit offset] :as query-map} & arg-list]
   (let [query (or query query-map)
         args (or args arg-list)]
@@ -426,12 +429,12 @@ Connect to a database with persistent store:
   {:pre [(de/entity? entity)]}
   (.-db entity))
 
-(defn is-filtered
+#_(defn is-filtered
   "Returns `true` if this database was filtered using [[filter]], `false` otherwise."
   [x]
   (instance? FilteredDB x))
 
-(defn filter
+#_(defn filter
   "Returns a view over database that has same interface but only includes datoms for which the `(pred db datom)` is true. Can be applied multiple times.
 
    Filtered DB gotchas:
@@ -450,7 +453,7 @@ Connect to a database with persistent store:
       (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
     (FilteredDB. db #(pred db %))))
 
-(defn- is-temporal? [x]
+#_(defn- is-temporal? [x]
   (or (instance? HistoricalDB x)
       (instance? AsOfDB x)
       (instance? SinceDB x)))
@@ -460,7 +463,7 @@ Connect to a database with persistent store:
   ([db tx-data] (with db tx-data nil))
   ([db tx-data tx-meta]
    {:pre [(db/db? db)]}
-   (if (or (is-filtered db) (is-temporal? db))
+   (if #_(or (is-filtered db) (is-temporal? db)) false
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
      (db/transact-tx-data (db/map->TxReport
                            {:db-before db
@@ -480,7 +483,7 @@ Connect to a database with persistent store:
   [conn]
   @conn)
 
-(defn history
+#_(defn history
   "Returns the full historical state of the database you may interact with."
   [db]
   (if (db/-temporal-index? db)
@@ -491,7 +494,7 @@ Connect to a database with persistent store:
   #?(:cljs (instance? js/Date d)
      :clj  (instance? Date d)))
 
-(defn as-of
+#_(defn as-of
   "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long)."
   [db timepoint]
   {:pre [(or (int? timepoint) (date? timepoint))]}
@@ -499,7 +502,7 @@ Connect to a database with persistent store:
     (AsOfDB. db timepoint)
     (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
-(defn since
+#_(defn since
   "Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
   Be aware: the database contains only the datoms that were added since the date."
   [db timepoint]

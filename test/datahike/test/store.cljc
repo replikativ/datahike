@@ -55,8 +55,6 @@
       (is (= hitchhiker.tree.DataNode
              (-> @conn :eavt type))))))
 
-
-
 (deftest test-hitchhiker-tree-gc
   (testing "Testing gc after appending data."
     (let [uri "datahike:file:///tmp/datahike-hh-gc-test-fs"
@@ -66,11 +64,11 @@
       (let [conn (d/connect uri)
             now  (fn [] (java.util.Date.))]
         (d/transact conn (vec (for [i (range 1 1001)]
-                                { :db/id i, :name "Ivan", :age 15 })))
+                                {:db/id i, :name "Ivan", :age 15})))
 
         (is (zero? (count (gc (d/db conn) (now)))))
         (d/transact conn (vec (for [i (range 1001 2001)]
-                                { :db/id i, :name "Peter", :age 25 })))
+                                {:db/id i, :name "Peter", :age 25})))
         ;; only three fragments are left
         (is (= 3 (count (gc (d/db conn) (now)))))
         (d/release conn)
@@ -88,11 +86,11 @@
       (let [conn (d/connect uri)
             now  (fn [] (java.util.Date.))]
         (d/transact conn (vec (for [i (map #(* % 2) (range 1 1001))]
-                                { :db/id i, :name "Ivan", :age 15 })))
+                                {:db/id i, :name "Ivan", :age 15})))
 
         (is (zero? (count (gc (d/db conn) (now)))))
         (d/transact conn (vec (for [i (map #(inc (* % 2)) (range 1 1001))]
-                                { :db/id i, :name "Peter", :age 25 })))
+                                {:db/id i, :name "Peter", :age 25})))
         (is (= 9 (count (gc (d/db conn) (now)))))
         (d/release conn)
         (let [reconn (d/connect uri)]

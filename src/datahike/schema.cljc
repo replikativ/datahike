@@ -1,19 +1,24 @@
 (ns datahike.schema
-  (:require [clojure.spec.alpha :as s])
-  (:import [datahike.datom Datom]))
+  (:require [clojure.spec.alpha :as s]
+            #?(:cljs [datahike.datom :refer [Datom]]))
+  #?(:clj (:import [datahike.datom Datom])))
 
-(s/def :db.type/id #(or (= (class %) java.lang.Long) string?))
+(s/def :db.type/id #(or #?(:clj (= (class %) java.lang.Long)
+                           :cljs (int? %))
+                        string?))
 
 ;; db types
-(s/def :db.type/bigdec decimal?)
+#?(:clj (s/def :db.type/bigdec decimal?))
 (s/def :db.type/bigint integer?)
 (s/def :db.type/boolean boolean?)
 (s/def :db.type/double double?)
 (s/def :db.type/float float?)
 (s/def :db.type/number number?)
-(s/def :db.type/instant #(= (class %) java.util.Date))
+(s/def :db.type/instant #?(:clj #(= (class %) java.util.Date)
+                           :cljs #(= (type %) (type (js/Date.)))))
 (s/def :db.type/keyword keyword?)
-(s/def :db.type/long #(= (class %) java.lang.Long))
+(s/def :db.type/long #?(:clj #(= (class %) java.lang.Long)
+                        :cljs #(int? %)))
 (s/def :db.type/ref :db.type/id)
 (s/def :db.type/string string?)
 (s/def :db.type/symbol symbol?)
