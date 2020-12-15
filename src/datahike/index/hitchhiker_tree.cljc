@@ -14,7 +14,9 @@
   clojure.lang.PersistentVector
   (-compare [key1 key2]
     (if-not (= (class key2) clojure.lang.PersistentVector)
-      -1                                                    ;; HACK for nil
+      (if (nil? key2)
+        +1    ;; Case for tuples. E.g. (compare [100 200] nil)
+        -1)   ;; HACK for nil
       (let [[a b c d] key1
             [e f g h] key2]
         (dd/combine-cmp
