@@ -12,5 +12,4 @@
             :a :foo/bar
             :v "foobar"}
            (select-keys d [:e :a :v])))
-    ;; TODO: Datom should implement IFn.
-    #_(is (= 123 (d :e)))))
+    (is (= 123 (d :e)))))

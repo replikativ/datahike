@@ -27,6 +27,10 @@
        ISeqable
        (-seq [d] (seq-datom d))
 
+       IFn
+       (-invoke [d k] (val-at-datom d k nil))
+       (-invoke [d k v] (val-at-datom d k v))
+
        ILookup
        (-lookup [d k] (val-at-datom d k nil))
        (-lookup [d k nf] (val-at-datom d k nf))
@@ -68,6 +72,10 @@
        clojure.lang.Indexed
        (nth [this i] (nth-datom this i))
        (nth [this i not-found] (nth-datom this i not-found))
+
+       clojure.lang.IFn
+       (invoke [d k] (val-at-datom d k nil))
+       (invoke [d k v] (val-at-datom d k v))
 
        clojure.lang.ILookup
        (valAt [d k] (val-at-datom d k nil))
