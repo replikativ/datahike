@@ -1,10 +1,8 @@
 (ns benchmark.config)
 
 
-(def datom-counts            [1 10]                               ;[1 10 100 1000]
-  )                                                         ;; later 100,000
-(def iterations 2                                           ;10
-  )
+(def datom-counts [1 10 100 1000])                                                    ;; later 100,000
+(def iterations 10)
 (def max-int 1000000)
 (def initial-datoms [0 1000])                                                         ;; later 100,000
 
@@ -30,7 +28,6 @@
    {:s1 (format "%15d" (rand-int max-int))
     :i1 (rand-int max-int)})
 
-
 (defn q1 [string-val]
   (conj '[:find ?e :where]
         (conj '[?e :s1] string-val)))
@@ -38,4 +35,3 @@
 (defn q2 [int-val]
   (conj '[:find ?a :where [?e :s1 ?a]]
         (conj '[?e :i1] int-val)))
-
