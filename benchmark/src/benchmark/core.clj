@@ -2,7 +2,7 @@
   (:require [clojure.tools.cli :as cli]
             [benchmark.measure :as m]
             [benchmark.config :as c]
-            [benchmark.store :refer [transact-missing-schema transact-data ->RemoteDB]]
+            [benchmark.store :refer [transact-missing-schema transact-results ->RemoteDB]]
             [clojure.pprint :refer [pprint]]))
 
 
@@ -64,11 +64,9 @@
                      (mapv (fn [entity] (assoc entity :tag (vec tags))) processed))]
         (if (full-server-description? server-description)
           (let [rdb (apply ->RemoteDB server-description)]
-            (println "db" rdb)
+            (println "Database used:" rdb)
             (transact-missing-schema rdb)
-            (transact-data rdb tagged))
+            (transact-results rdb tagged))
           (pprint tagged)))))
 
   (shutdown-agents))
-
-

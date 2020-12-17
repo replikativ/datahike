@@ -46,8 +46,8 @@
                           (dissoc :store)
                           (assoc :dh-backend (get-in config [:store :backend])))]
     (d/release conn)
-    [{:time t-connection-0  :context {:db simple-config :function :connection  :db-size initial-size}}
-     {:time t-transaction-n :context {:db simple-config :function :transaction :db-size initial-size :tx-size n-datoms}}
-     {:time t-connection-n  :context {:db simple-config :function :connection  :db-size final-size}}
-     {:time t-query1-n      :context {:db simple-config :function :query1      :db-size final-size}}
-     {:time t-query2-n      :context {:db simple-config :function :query2      :db-size final-size}}]))
+    [{:time t-connection-0  :context {:db-config simple-config :function :connection  :db-size initial-size}}
+     {:time t-transaction-n :context {:db-config simple-config :function :transaction :db-size initial-size :tx-size n-datoms}}
+     {:time t-connection-n  :context {:db-config simple-config :function :connection  :db-size final-size}}
+     {:time t-query1-n      :context {:db-config simple-config :function :query1      :db-size final-size}}
+     {:time t-query2-n      :context {:db-config simple-config :function :query2      :db-size final-size}}]))

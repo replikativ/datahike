@@ -5,8 +5,8 @@
 (defrecord RemoteDB [baseurl token dbname])
 
 (def schema
-  [{:db/ident :db
-    :db/valueType :db.type/ref                                   ;; TODO: unique database configs
+  [{:db/ident :db-config
+    :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one}
    {:db/ident :mean-time
     :db/valueType :db.type/double
@@ -34,17 +34,10 @@
     :db/cardinality :db.cardinality/one}
    {:db/ident :dh-backend
     :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one}
-   #_{:db/ident :date                                         ;; TODO: save date directly?
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :foo
-    :db/valueType :db.type/keyword
     :db/cardinality :db.cardinality/one}])
 
 
 (defn parse-body [{:keys [body] :as response}]
-  (println "res" response)
   (if-not (empty? body)
     (edn/read-string body)
     ""))
@@ -72,10 +65,34 @@
   (db-request db :post "datoms" {:index :eavt}))
 
 (defn request-data [db q]
-  (db-request db :post "q" {:query q}))
+  (let [query (if (map? q) q {:query q})]
+    (db-request db :post "q" query)))
 
 (defn get-schema [db]
   (db-request db :get "schema"))
+
+(defn db-config-eid
+  "Get existing entity ID for database configuration or transact config and get ID from new entry"
+  [db {:keys [dh-backend index keep-history? schema-flexibility] :as db-config}]
+  (let [query {:query '[:find ?e
+                        :in $ ?b ?i ?h ?s
+                        :where
+                        [?e :dh-backend ?b]
+                        [?e :index ?i]
+                        [?e :keep-history? ?h]
+                        [?e :schema-flexibility ?s]]
+               :args [dh-backend index keep-history? schema-flexibility]}
+        existing-eid (ffirst (request-data db query))
+        eid (if (nil? existing-eid)
+              (first (second (:tx-data (transact-data db [db-config])))) ;; get new eid
+              existing-eid)]
+    eid))
+
+(defn transact-results [db results]
+  (let [config-mapping (memoize db-config-eid)
+        tx-data (time (map #(update % :db-config (partial config-mapping db))
+                           results))]
+    (transact-data db tx-data)))
 
 (defn transact-missing-schema [db]
   (let [current-schema (get-schema db)
