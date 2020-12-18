@@ -5,7 +5,7 @@
         environ/environ               {:mvn/version "1.2.0"}
         com.taoensso/timbre           {:mvn/version "4.10.0"}
         io.replikativ/hitchhiker-tree {:git/url "https://github.com/groundedSAGE/hitchhiker-tree.git"
-                                       :sha "5db97f979d3d9379af7180db13aed5759ad64a6b"}
+                                       :sha "0be4d55f61c2c1bbbdacef9c76762e612ce1c869"}
         io.replikativ/konserve        {:git/url "https://github.com/groundedSAGE/konserve.git"
                                        :sha "88eecbdb9a831a46f5eaf652b10cd06668b5ccc1"}
         io.replikativ/superv.async    {:git/url "https://github.com/groundedSAGE/superv.async.git"
