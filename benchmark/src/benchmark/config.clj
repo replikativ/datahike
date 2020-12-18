@@ -28,7 +28,6 @@
    {:s1 (format "%15d" (rand-int max-int))
     :i1 (rand-int max-int)})
 
-
 (defn q1 [string-val]
   (conj '[:find ?e :where]
         (conj '[?e :s1] string-val)))
@@ -36,4 +35,3 @@
 (defn q2 [int-val]
   (conj '[:find ?a :where [?e :s1 ?a]]
         (conj '[?e :i1] int-val)))
-
