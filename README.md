@@ -6,9 +6,9 @@
 __Disclaimer: This is experimental work in progress and subject to change.__
 
 
-# Clojurescript and IndexedDB support for Datahike
+# ClojureScript and IndexedDB support for Datahike
 
-This branch contains initial work on Clojurescript support for Datahike with persistence to IndexedDB in the browser. Our goal is a full port on a rebase of the Datahike `development` branch including new features such as tuple support and improved transaction performance in Q1 2021. We will support all major browsers, web workers, node.js and embedded JS environment. 
+This branch contains initial work on ClojureScript support for Datahike with persistence to IndexedDB in the browser. Our goal is a full port on a rebase of the Datahike `development` branch including new features such as tuple support and improved transaction performance in Q1 2021. We will support all major browsers, web workers, node.js and embedded JS environment. 
 Our vision is a distributed unified address space for client and server side databases along the lines of the semantic web, but built based on fast P2P replication of our read scalable, immutable fractal tree data structure. 
 
 
@@ -41,9 +41,18 @@ We are interested in tooling experience and suggestions. In particular we care a
 
 - History functionality
 - Pull
-- a bunch of special cases
+- Some special cases
 
 ### Setup
+
+You can include this preview in your `deps.edn` with the code below. This is currently only tested with `shadow-cljs` using the `browser-repl`. Further work is needed for advanced compilation (feedback on experiences welcome in Discord).
+
+```clojure
+io.replikativ/datahike {:git/url "https://github.com/replikativ/datahike.git"
+                        :sha "684cf719d93618a4630565078f3efb4b85858070"}
+```
+
+The following is an example of how to use Datahike in your project.
 
 ```clojure
 (ns my-app.prototype
@@ -129,7 +138,7 @@ To hack on this prototype clone this repository. The namespace for the api sandb
 
 You will need **Clojure** and **shadow-cljs** installed.  
 
-The settings for starting your clojurescript repl is as follows:
+The settings for starting your ClojureScript repl is as follows:
 
 - Project type: `shadow-cljs`
 - Build selection: `:app`
@@ -229,6 +238,6 @@ feature, please let us know.
 
 ## License
 
-Copyright © 2014–2020 Konrad Kühne, Christian Weilbach, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov
+Copyright © 2014–2020 Konrad Kühne, Christian Weilbach, Wade Dominic, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).
