@@ -1758,13 +1758,13 @@
 
               (= op :db/retract)
               (if-some [e (entid db e)]
-                (let [v (if (ref? db a) (entid-strict db v) v)]
-                  (validate-attr a entity db)
-                  (validate-val v entity db)
-                  (if-some [old-datom (first (-search db [e a v]))]
-                    (recur (transact-retract-datom report old-datom) entities)
-                    (recur report
-                           entities)))
+                (let [_ (validate-attr a entity db)
+                      pattern (if (nil? v)
+                                [e a]
+                                (let [v (if (ref? db a) (entid-strict db v) v)]
+                                  (validate-val v entity db)
+                                  [e a v]))]
+                  (recur (reduce transact-retract-datom report (-search db pattern)) entities))
                 (recur report entities))
 
               (= op :db.fn/retractAttribute)
