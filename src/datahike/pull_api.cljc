@@ -30,13 +30,11 @@
 (defn- subpattern-frame
   "Returns frame specific for given attribute"
   [pattern eids multi? attr]
-  ;(println "SUBPATTERN_FRAME" pattern eids multi? attr)
   (assoc (initial-frame pattern eids multi?) :attr attr))
 
 (defn- reset-frame
   "Recalculate frame attributes from frame pattern and transfer end results to frame-specific result section"
   [frame eids kvps]
-  ; (println "RESET_FRAME" eids kvps frame)
   (let [pattern (:pattern frame)]
     (assoc frame
            :eids      eids

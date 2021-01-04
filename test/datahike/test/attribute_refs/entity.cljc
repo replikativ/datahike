@@ -17,7 +17,6 @@
                   {:db/id 2, :name "Petr", :sex "male", :aka ["Z"]}]
         db (d/db-with ref-db (shift-entities ref-e0 entities))
         e (d/entity db (+ ref-e0 1))]
-    ;(println (:not-found e))
     (is (= (:db/id e) (+ ref-e0 1)))
     (is (identical? (d/entity-db e) db))
     (is (= (:name e) "Ivan"))

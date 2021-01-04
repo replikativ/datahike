@@ -107,8 +107,6 @@
                          :clj ^{:tag "[[Ljava.lang.Object;"} idxs1)
                    t2 #?(:cljs idxs2
                          :clj ^{:tag "[[Ljava.lang.Object;"} idxs2)]
-  (println "join tups")
-  (println idxs1 idxs2)
   (let [l1 (alength idxs1)
         l2 (alength idxs2)
         res (da/make-array (+ l1 l2))]
@@ -335,7 +333,6 @@
 
   BindScalar
   (in->rel [binding value]
-    (println "in2rel scal" binding value)
     (Relation. {(get-in binding [:variable :symbol]) 0} [(into-array [value])]))
 
   BindColl
@@ -353,7 +350,6 @@
 
   BindTuple
   (in->rel [binding coll]
-    (println "in2rel " binding coll)
     (cond
       (not (db/seqable? coll))
       (raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
@@ -366,8 +362,6 @@
               (map #(in->rel %1 %2) (:bindings binding) coll)))))
 
 (defn resolve-in [context [binding value]]
-  (println "res-in" context)
-  (println "res-in" context binding value)
   (cond
     (and (instance? BindScalar binding)
          (instance? SrcVar (:variable binding)))
@@ -379,8 +373,6 @@
     (update context :rels conj (in->rel binding value))))
 
 (defn resolve-ins [context bindings values]
-  (println "res-ins" context)
-  (println "res-ins" bindings values)
   (reduce resolve-in context (zipmap bindings values)))
 
 ;;
@@ -415,7 +407,6 @@
       (direct-getter-fn idx))))
 
 (defn tuple-key-fn [getters]
-  (println "tkf" (count getters) getters)
   (if (== (count getters) 1)
     (first getters)
     (let [getters (to-array getters)]
@@ -487,7 +478,6 @@
     (if (and tuple pattern)
       (let [t (first tuple)
             p (first pattern)]
-        (println t p)
         (if (or (symbol? p) (= t p))
           (recur (next tuple) (next pattern))
           false))
@@ -746,8 +736,7 @@
 
 (defn resolve-pattern-lookup-refs
   "Translate pattern entries before using pattern for database search?"
-  [source pattern]          ;;  TODO: resolve here? instead of later?
-  (println "res-plur" pattern)
+  [source pattern]
   (if (satisfies? db/IDB source)
     (let [[e a v tx added] pattern]
       (->
@@ -799,8 +788,6 @@
   ([context clause]
    (-resolve-clause context clause clause))
   ([context clause orig-clause]
-   (println "res-clause " context)
-   (println "res-clause " clause orig-clause)
    (condp looks-like? clause
      [[symbol? '*]]                                         ;; predicate [(pred ?a ?b ?c)]
      (filter-by-pred context clause)
@@ -910,8 +897,6 @@
      acc)))
 
 (defn collect [context symbols]
-  (println "collect" context symbols)
-  (println "collect" (-collect context symbols))
   (->> (-collect context symbols)
        (map vec)
        set))
@@ -1031,7 +1016,6 @@
 (defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
   (let [query (if (contains? query-map :query) (:query query-map) query-map)
         query (if (string? query) (edn/read-string query) query)
-        _ (println "q" query-map inputs)
         args (if (contains? query-map :args) (:args query-map) inputs)
         parsed-q (memoized-parse-query query)
         find (:qfind parsed-q)
@@ -1042,19 +1026,14 @@
         returnmaps (:qreturnmaps parsed-q)
         ;; TODO utilize parser
         all-vars (concat find-vars (map :symbol with))
-        _ (println "vars" all-vars)
         query (cond-> query
                 (sequential? query) dpi/query->map)
         wheres (:where query)
         context (-> (Context. [] {} {})
                     (resolve-ins (:qin parsed-q) args))
-        _ (println "context" context)
         resultset (-> context
                       (-q wheres)
                       (collect all-vars))]
-    (println "res"  (-> context
-                        (-q wheres)))
-    (println "res" resultset)
     (cond->> resultset
       (:with query) (mapv #(vec (subvec % 0 result-arity)))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)

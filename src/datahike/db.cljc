@@ -1494,15 +1494,6 @@
         a-ident (if attribute-refs? (-ident-for db a) a)
         v (if (ref? db a-ident) (entid-strict db v) v)
         new-datom (datom e a v tx)]
-    (comment
-      (println "txadd")
-      (println "tx" tx)
-      (println "db" db)
-      (println "e" e)
-      (println "a-ident" a-ident a)
-      (println "v" v)
-      (println "new-datom" new-datom)
-      (println "ent" ent))
     (if (multival? db a)
       (if (empty? (-search db [e a v]))
         (transact-report report new-datom)
