@@ -86,7 +86,8 @@
                     db2 (+ ref-e0 1))
                #{}))))
 
-    (let [db2 (d/db-with db [[:db.fn/retractAttribute (+ ref-e0 1) :name]])]
+    (let [name-ref (get-in db [:ident-ref-map :name])
+          db2 (d/db-with db [[:db.fn/retractAttribute (+ ref-e0 1) name-ref]])]
       (is (= (d/q '[:find ?a ?v
                     :in $ ?e1
                     :where [?e1 ?r ?v]
@@ -100,7 +101,8 @@
                   db2 (+ ref-e0 2))
              #{[:name "Petr"] [:age 37]})))
 
-    (let [db2 (d/db-with db [[:db.fn/retractAttribute (+ ref-e0 1) :aka]])]
+    (let [aka-ref (get-in db [:ident-ref-map :aka])
+          db2 (d/db-with db [[:db.fn/retractAttribute (+ ref-e0 1) aka-ref]])]
       (is (= (d/q '[:find ?a ?v
                     :in $ ?e
                     :where [?e ?r ?v]
@@ -114,7 +116,7 @@
                   db2 (+ ref-e0 2))
              #{[:name "Petr"] [:age 37]})))))
 
-(deftest test-db-fn-cas ; TODO: unexpected behaviour: different amount of errors
+(deftest test-db-fn-cas
   (let [conn (setup-new-connection)
         e0 (:max-eid @conn)
         weight-ref (get-in @conn [:ident-ref-map :weight])]

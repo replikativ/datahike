@@ -31,7 +31,7 @@
 
 (def ^:const lru-cache-size 100)
 
-(declare -collect -resolve-clause resolve-clause)
+(declare -collect -resolve-clause resolve-clause direct-getter-fn)
 
 ;; Records
 
@@ -107,13 +107,15 @@
                          :clj ^{:tag "[[Ljava.lang.Object;"} idxs1)
                    t2 #?(:cljs idxs2
                          :clj ^{:tag "[[Ljava.lang.Object;"} idxs2)]
+  (println "join tups")
+  (println idxs1 idxs2)
   (let [l1 (alength idxs1)
         l2 (alength idxs2)
         res (da/make-array (+ l1 l2))]
     (dotimes [i l1]
-      (aset res i (#?(:cljs da/aget :clj get) t1 (aget idxs1 i)))) ;; FIXME aget
+      (aset res i ((direct-getter-fn (aget idxs1 i)) t1))) ;; FIXME aget
     (dotimes [i l2]
-      (aset res (+ l1 i) (#?(:cljs da/aget :clj get) t2 (aget idxs2 i)))) ;; FIXME aget
+      (aset res (+ l1 i) ((direct-getter-fn (aget idxs2 i)) t2 ))) ;; FIXME aget
     res))
 
 (defn sum-rel [a b]
@@ -333,6 +335,7 @@
 
   BindScalar
   (in->rel [binding value]
+    (println "in2rel scal" binding value)
     (Relation. {(get-in binding [:variable :symbol]) 0} [(into-array [value])]))
 
   BindColl
@@ -350,6 +353,7 @@
 
   BindTuple
   (in->rel [binding coll]
+    (println "in2rel " binding coll)
     (cond
       (not (db/seqable? coll))
       (raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
@@ -362,6 +366,8 @@
               (map #(in->rel %1 %2) (:bindings binding) coll)))))
 
 (defn resolve-in [context [binding value]]
+  (println "res-in" context)
+  (println "res-in" context binding value)
   (cond
     (and (instance? BindScalar binding)
          (instance? SrcVar (:variable binding)))
@@ -373,20 +379,33 @@
     (update context :rels conj (in->rel binding value))))
 
 (defn resolve-ins [context bindings values]
+  (println "res-ins" context)
+  (println "res-ins" bindings values)
   (reduce resolve-in context (zipmap bindings values)))
 
 ;;
 
 (def ^{:dynamic true
-       :doc "List of symbols in current pattern that might potentiall be resolved to refs"}
+       :doc "List of symbols in current pattern that might potentially be resolved to refs"}
   *lookup-attrs* nil)
 
 (def ^{:dynamic true
        :doc "Default pattern source. Lookup refs, patterns, rules will be resolved with it"}
   *implicit-source* nil)
 
+(defn direct-getter-fn [idx]
+  (if (and (satisfies? db/IDB *implicit-source*)
+           (:attribute-refs? (db/-config *implicit-source*))
+           (= idx "a"))
+    (fn [tuple]
+      (db/-ident-for *implicit-source* (#?(:cljs da/aget :clj get) tuple idx)))
+    (fn [tuple]
+      (#?(:cljs da/aget :clj get) tuple idx))))
+
 (defn getter-fn [attrs attr]
+  (println attrs attr (contains? *lookup-attrs* attr) )
   (let [idx (attrs attr)]
+    (println "idx" idx (= idx "a"))
     (if (contains? *lookup-attrs* attr)
       (fn [tuple]
         (let [eid (#?(:cljs da/aget :clj get) tuple idx)]
@@ -395,10 +414,10 @@
             (sequential? eid) (db/entid *implicit-source* eid)
             (da/array? eid) (db/entid *implicit-source* eid)
             :else eid)))
-      (fn [tuple]
-        (#?(:cljs da/aget :clj get) tuple idx)))))
+      (direct-getter-fn idx))))
 
 (defn tuple-key-fn [getters]
+  (println "tkf" (count getters) getters)
   (if (== (count getters) 1)
     (first getters)
     (let [getters (to-array getters)]
@@ -416,23 +435,38 @@
       (persistent! hash-table))))
 
 (defn hash-join [rel1 rel2]
+  (println "hashjoin")
   (let [tuples1 (:tuples rel1)
         tuples2 (:tuples rel2)
         attrs1 (:attrs rel1)
         attrs2 (:attrs rel2)
+        _ (println "attrs" attrs1 attrs2)
+        _ (println "tuples1" tuples1 )
+        _ (println "tuples2" tuples2 )
         common-attrs (vec (intersect-keys (:attrs rel1) (:attrs rel2)))
+        _ (println "common-attrs" common-attrs )
         common-gtrs1 (map #(getter-fn attrs1 %) common-attrs)
         common-gtrs2 (map #(getter-fn attrs2 %) common-attrs)
+        _ (println "common-gtrs1" common-gtrs1 )
+        _ (println "common-gtrs2" common-gtrs2 )
         keep-attrs1 (keys attrs1)
         keep-attrs2 (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
+        _ (println "keep-attrs1" keep-attrs1 )
+        _ (println "keep-attrs2" keep-attrs2 )
         keep-idxs1 (to-array (map attrs1 keep-attrs1))
         keep-idxs2 (to-array (map attrs2 keep-attrs2))
+        _ (println "keep-idxs1" keep-idxs1 )
+        _ (println "keep-idxs2" keep-idxs2 (first keep-idxs2))
         key-fn1 (tuple-key-fn common-gtrs1)
         hash (hash-attrs key-fn1 tuples1)
         key-fn2 (tuple-key-fn common-gtrs2)
+        _ (println "hash" hash )
+        _ (println "key-fn1" key-fn1 )
+        _ (println "key-fn2" key-fn2)
         new-tuples (->>
                     (reduce (fn [acc tuple2]
                               (let [key (key-fn2 tuple2)]
+                                (println "key" key tuple2 (get hash key))
                                 (if-some [tuples1 (get hash key)]
                                   (reduce (fn [acc tuple1]
                                             (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
@@ -440,6 +474,10 @@
                                   acc)))
                             (transient []) tuples2)
                     (persistent!))]
+    (println "new tup" (count new-tuples) new-tuples)
+    (println "new tup" (first new-tuples) )
+    (println "new tup" (get (first new-tuples) 0) (get (first new-tuples) 1) (get (first new-tuples) 2))
+    (println "new tup" (get (first new-tuples) "a") (get (first new-tuples) "e") (get (first new-tuples) "v"))
     (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
                new-tuples)))
 
@@ -465,11 +503,13 @@
     (Relation. attr->prop datoms)))
 
 (defn matches-pattern? [pattern tuple]
+  (println "matches pattern" pattern tuple)
   (loop [tuple tuple
          pattern pattern]
     (if (and tuple pattern)
       (let [t (first tuple)
             p (first pattern)]
+        (println t p)
         (if (or (symbol? p) (= t p))
           (recur (next tuple) (next pattern))
           false))
@@ -726,14 +766,25 @@
                              rel))))))))
         rel))))
 
-(defn resolve-pattern-lookup-refs [source pattern]          ;;  TODO: resolve here?
+(defn resolve-pattern-lookup-refs
+  "Translate pattern entries before using pattern for database search?"
+  [source pattern]          ;;  TODO: resolve here? instead of later?
+  (println "res-plur" pattern)
   (if (satisfies? db/IDB source)
     (let [[e a v tx added] pattern]
       (->
-       [(if (or (lookup-ref? e) (attr? e)) (db/entid-strict source e) e)
-        a
-        (if (and v (attr? a) (db/ref? source a) (or (lookup-ref? v) (attr? v))) (db/entid-strict source v) v)
-        (if (lookup-ref? tx) (db/entid-strict source tx) tx)
+       [(if (or (lookup-ref? e) (attr? e))
+          (db/entid-strict source e)
+          e)
+        (if (and (:attribute-refs? (db/-config source)) (keyword? a))
+          (db/-ref-for source a)
+          a)
+        (if (and v (attr? a) (db/ref? source a) (or (lookup-ref? v) (attr? v)))
+          (db/entid-strict source v)
+          v)
+        (if (lookup-ref? tx)
+          (db/entid-strict source tx)
+          tx)
         added]
        (subvec 0 (count pattern))))
     pattern))
@@ -770,6 +821,8 @@
   ([context clause]
    (-resolve-clause context clause clause))
   ([context clause orig-clause]
+   (println "res-clause " context )
+   (println "res-clause " clause orig-clause )
    (condp looks-like? clause
      [[symbol? '*]]                                         ;; predicate [(pred ?a ?b ?c)]
      (filter-by-pred context clause)
@@ -879,6 +932,8 @@
      acc)))
 
 (defn collect [context symbols]
+  (println "collect" context symbols)
+  (println "collect" (-collect context symbols) )
   (->> (-collect context symbols)
        (map vec)
        set))
@@ -998,6 +1053,7 @@
 (defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
   (let [query (if (contains? query-map :query) (:query query-map) query-map)
         query (if (string? query) (edn/read-string query) query)
+        _ (println "q" query-map inputs)
         args (if (contains? query-map :args) (:args query-map) inputs)
         parsed-q (memoized-parse-query query)
         find (:qfind parsed-q)
@@ -1008,15 +1064,19 @@
         returnmaps (:qreturnmaps parsed-q)
         ;; TODO utilize parser
         all-vars (concat find-vars (map :symbol with))
+        _ (println "vars" all-vars)
         query (cond-> query
                 (sequential? query) dpi/query->map)
         wheres (:where query)
         context (-> (Context. [] {} {})
                     (resolve-ins (:qin parsed-q) args))
-
+        _ (println "context" context)
         resultset (-> context
                       (-q wheres)
                       (collect all-vars))]
+    (println "res"  (-> context
+                        (-q wheres)))
+    (println "res" resultset)
     (cond->> resultset
       (:with query) (mapv #(vec (subvec % 0 result-arity)))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)

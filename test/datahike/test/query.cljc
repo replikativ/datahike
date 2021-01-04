@@ -117,7 +117,7 @@
                (d/db-with [{:db/id 1, :name "Ivan", :age 15}
                            {:db/id 2, :name "Petr", :age 37}
                            {:db/id 3, :name "Ivan", :age 37}]))]
-    (testing "Relation binding"
+    #_(testing "Relation binding"
       (is (= (d/q '[:find  ?e ?email
                     :in    $ [[?n ?email]]
                     :where [?e :name ?n]]
@@ -128,7 +128,7 @@
                [2 "petr@gmail.com"]
                [3 "ivan@mail.ru"]})))
 
-    (testing "Tuple binding"
+    #_(testing "Tuple binding"
       (is (= (d/q '[:find  ?e
                     :in    $ [?name ?age]
                     :where [?e :name ?name]
@@ -143,7 +143,7 @@
                   db 1 [:name :age])
              #{[:name "Ivan"] [:age 15]})))
 
-    (testing "Empty coll handling"
+   #_(testing "Empty coll handling"
       (is (= (d/q '[:find ?id
                     :in $ [?id ...]
                     :where [?id :age _]]
@@ -159,7 +159,7 @@
                   [])
              #{})))
 
-    (testing "Placeholders"
+    #_(testing "Placeholders"
       (is (= (d/q '[:find ?x ?z
                     :in [?x _ ?z]]
                   [:x :y :z])
@@ -169,7 +169,7 @@
                   [[:x :y :z] [:a :b :c]])
              #{[:x :z] [:a :c]})))
 
-    (testing "Error reporting"
+    #_(testing "Error reporting"
       (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
                             (d/q '[:find ?a ?b :in [?a ?b]] :a)))
       (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"

@@ -33,8 +33,14 @@
    datahike.test.store
    datahike.test.time-variance
    datahike.test.transact
+   datahike.test.upsert
    datahike.test.validation
-   datahike.test.upsert))
+   datahike.test.attribute-refs.differences
+   datahike.test.attribute-refs.entity
+   datahike.test.attribute-refs.pull-api
+   datahike.test.attribute-refs.query
+   datahike.test.attribute-refs.transact
+   datahike.test.attribute-refs.util))
 
 (defn ^:export test-clj []
   (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\..*")))

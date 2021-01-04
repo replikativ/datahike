@@ -1,5 +1,6 @@
 (ns datahike.test.attribute-refs.util
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d]
+            [datahike.db :as db]))
 
 (def ref-config {:store {:backend :mem :id "attr-refs-test"}
                  :attribute-refs? true
@@ -73,14 +74,12 @@
 (def ref-e0 (:e0 test-setup))
 
 (defn wrap-ref-datoms [db offset op datoms]
-  (let [irmap (:ident-ref-map db)]
-    (mapv (fn [[e a v]] [op (+ offset e) (get irmap a) (+ offset v)])
-          datoms)))
+  (mapv (fn [[e a v]] [op (+ offset e) (db/-ref-for db a) (+ offset v)])
+        datoms))
 
 (defn wrap-direct-datoms [db offset op datoms]
-  (let [irmap (:ident-ref-map db)]
-    (mapv (fn [[e a v]] [op (+ offset e) (get irmap a) v])
-          datoms)))
+  (mapv (fn [[e a v]] [op (+ offset e) (db/-ref-for db a) v])
+        datoms))
 
 (defn shift-entities [offset entities]
   (mapv (fn [entity] (if (:db/id entity)

@@ -187,8 +187,8 @@
 (defn- datoms->cache [db datoms]
   (reduce (fn [acc partition]
             (let [a (:a (first partition))
-                  a-ident (if (get-in db [:config :attribute-refs?])
-                            (get-in db [:ref-ident-map a])
+                  a-ident (if (:attribute-refs? (db/-config db))
+                            (db/-ident-for db a)
                             a)]
               (assoc acc a-ident (entity-attr db a-ident partition))))
           {} (partition-by :a datoms)))

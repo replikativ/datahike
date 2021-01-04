@@ -138,8 +138,10 @@
     (if found
       (let [ref?       (db/ref? db attr)
             component? (and ref? (db/component? db attr))
-            multi?     (if forward? (db/multival? db attr) (not component?))
-            datom-val  (if forward? (fn [d] (.-v ^Datom d)) (fn [d] (.-e ^Datom d)))]
+            multi?     (if forward? (db/multival? db attr)
+                                    (not component?))
+            datom-val  (if forward? (fn [d] (.-v ^Datom d))
+                                    (fn [d] (.-e ^Datom d)))]
         (cond
           (contains? opts :subpattern)
           (->> (subpattern-frame (:subpattern opts)
@@ -182,8 +184,9 @@
         frames)
       (let [attr     (:attr opts)
             forward? (= attr-key attr)
-            a (if (and (:attribute-refs? (db/-config db)) (not (number? attr)))
-                (get (db/-ident-ref-map db) attr)
+            a (if (and (:attribute-refs? (db/-config db))
+                       (not (number? attr)))
+                (db/-ref-for db attr)
                 attr)
             results  (if (nil? a)
                        []
@@ -243,7 +246,7 @@
 (defn- pull-wildcard-expand
   [db frame frames eid pattern]
   (let [datoms (group-by (fn [d] (if (:attribute-refs? (db/-config db))
-                                   (get (db/-ref-ident-map db) (.-a ^Datom d))
+                                   (db/-ident-for db (.-a ^Datom d))
                                    (.-a ^Datom d)))
                          (db/-datoms db :eavt [eid]))
         {:keys [attr recursion]} frame

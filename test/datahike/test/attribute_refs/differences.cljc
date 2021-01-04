@@ -238,18 +238,17 @@
           next-eid (inc (:max-eid @conn))]
       (is (not (nil? (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
-  #_(testing "Keyword transaction in reference DB"
+  (testing "Keyword transaction in reference DB"
       (let [conn (setup-db ref-cfg)
             next-eid (inc (:max-eid @conn))]
-        nil
-        (is (thrown-msg? "Bad attribute type for: :db/ident, expected number" ;; TODO: ensure to have error thrown
+        (is (thrown-msg? (str "Bad entity attribute " :db/ident " at " [:db/add next-eid :db/ident :name] ", expected reference number") ;; TODO: ensure to have error thrown
                          (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
 (deftest test-transact-data-with-reference-attr
-  #_(testing "Reference transaction in keyword DB"
+  (testing "Reference transaction in keyword DB"
       (let [conn (setup-db no-ref-cfg)
             next-eid (inc (:max-eid @conn))]
-        (is (thrown-msg? "Bad attribute type for: 1, expected  keyword or string" ;; TODO: adjust error message
+        (is (thrown-msg? (str "Bad entity attribute " 1 " at " [:db/add next-eid 1 :name] ", expected keyword or string")
                          (d/transact conn [[:db/add next-eid 1 :name]])))))
 
   (testing "Reference transaction in reference DB"
@@ -264,7 +263,7 @@
                        (d/transact conn [[:db/add 1 1 :name]]))))
 
     (testing "Transact system schema update as map"
-      (is (thrown-msg? "Entity with ID 1 is a system attribute :db/ident and cannot be changed"
+      (is (thrown-msg? "System schema entity cannot be changed"
                        (d/transact conn [{:db/id 1 :db/ident :name}]))))))
 
 (deftest test-system-attribute-protection
@@ -354,9 +353,3 @@
 
     (is (= {:name "Ivan" :_father [{:db/id matthew}]}
            (d/pull @conn '[:name :_father] ivan)))))
-
-(deftest test-pull-ref-db
-  (let [conn (setup-db ref-cfg)]
-    (d/transact conn name-schema)
-    (is (thrown-msg? "Entity with ID 1 is a system attribute :db/ident and cannot be changed"
-                     (d/transact conn [{:db/id 1 :name "Ivan"}])))))

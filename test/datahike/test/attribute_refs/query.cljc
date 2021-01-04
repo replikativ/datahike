@@ -71,9 +71,9 @@
         query '{:find [?e]
                 :in [$ ?attr ?value]
                 :where [[?e ?attr ?value]]}]
-    #_(is (= (d/q query db :name "Ivan")
-             #{[(+ ref-e0 1)]}))                              ;; TODO: adjust
-    #_(is (= (d/q query db :age 37)
+    (is (= (d/q query db :name "Ivan")
+             #{[(+ ref-e0 1)]}))
+    (is (= (d/q query db :age 37)
              #{[(+ ref-e0 2)]}))
 
     (testing "DB join with collection"
@@ -115,7 +115,7 @@
                   db ["Petr" 37])
              #{[(+ ref-e0 2)]})))
 
-    (testing "Collection binding"
+    #_(testing "Collection binding"                         ;; TODO: this way or as before? (i.e. direct attribs, see below)
       (is (= (d/q '[:find ?attr ?value
                     :in $ ?e [?attr ...]
                     :where [?e ?r ?value]
@@ -123,7 +123,7 @@
                   db (+ ref-e0 1) [:name :age])
              #{[:name "Ivan"] [:age 15]})))
 
-    #_(testing "Collection binding with direct attribute"   ;; TODO: make work?
+    (testing "Collection binding with direct attribute"
         (is (= (d/q '[:find ?attr ?value
                       :in $ ?e [?attr ...]
                       :where [?e ?attr ?value]]
@@ -140,7 +140,7 @@
                 [[:x :y :z] [:a :b :c]])
            #{[:x :z] [:a :c]})))
 
-  #_(testing "Error reporting"
+  (testing "Error reporting"
       (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
                             (d/q '[:find ?a ?b :in [?a ?b]] :a)))
       (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"
