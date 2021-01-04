@@ -27,6 +27,7 @@
       (:v (first datoms)))))
 
 (defn- -lookup-backwards [db eid attr not-found]
+  (println "lu back" eid attr not-found)
   (if-let [datoms (not-empty (db/-search db [nil attr eid]))]
     (if (db/component? db attr)
       (entity db (:e (first datoms)))
@@ -160,6 +161,10 @@
 (defn- lookup-entity
   ([this attr] (lookup-entity this attr nil))
   ([^Entity this attr not-found]
+   (println "lu entity" this attr not-found)
+   (println "rr" (db/reverse-ref? attr))
+   (println "c" (@(.-cache this) attr))
+   (println "t" (.-touched this))
    (if (= attr :db/id)
      (.-eid this)
      (if (db/reverse-ref? attr)
@@ -168,13 +173,19 @@
          v
          (if @(.-touched this)
            not-found
-           (if-some [datoms (not-empty (db/-search (.-db this) [(.-eid this) attr]))]
-             (let [value (entity-attr (.-db this) attr datoms)]
-               (vreset! (.-cache this) (assoc @(.-cache this) attr value))
-               value)
+           (if-let [a (if (:attribute-refs? (db/-config (.-db this)))
+                        (db/-ref-for (.-db this) attr)
+                        attr)]
+             (if-some [datoms (not-empty (db/-search (.-db this) [(.-eid this) a]))]
+               (let [value (entity-attr (.-db this) a datoms)]
+                 (println "datoms" value)
+                 (vreset! (.-cache this) (assoc @(.-cache this) attr value))
+                 value)
+               not-found)
              not-found)))))))
 
 (defn touch-components [db a->v]
+  (println "tc" a->v)
   (reduce-kv (fn [acc a v]
                (assoc acc a
                       (if (db/component? db a)
@@ -190,11 +201,13 @@
                   a-ident (if (:attribute-refs? (db/-config db))
                             (db/-ident-for db a)
                             a)]
+              (println "a" a a-ident)
               (assoc acc a-ident (entity-attr db a-ident partition))))
           {} (partition-by :a datoms)))
 
 (defn touch [^Entity e]
   {:pre [(entity? e)]}
+  (println "touch" e)
   (when-not @(.-touched e)
     (when-let [datoms (not-empty (db/-search (.-db e) [(.-eid e)]))]
       (vreset! (.-cache e) (->> datoms

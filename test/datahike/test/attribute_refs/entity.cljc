@@ -17,6 +17,7 @@
                   {:db/id 2, :name "Petr", :sex "male", :aka ["Z"]}]
         db (d/db-with ref-db (shift-entities ref-e0 entities))
         e (d/entity db (+ ref-e0 1))]
+    ;(println (:not-found e))
     (is (= (:db/id e) (+ ref-e0 1)))
     (is (identical? (d/entity-db e) db))
     (is (= (:name e) "Ivan"))
@@ -24,7 +25,7 @@
     (is (= (:age e) 19))
     (is (= (:aka e) #{"X" "Y"}))
     (is (= true (contains? e :age)))
-    #_(is (= false (contains? e :not-found)))               ;; TODO: should not contain Ivan
+    (is (= false (contains? e :not-found)))
     (is (= (into {} e)
            {:name "Ivan", :age 19, :aka #{"X" "Y"}}))
     (is (= (into {} (d/entity db (+ ref-e0 1)))
@@ -33,7 +34,7 @@
            {:name "Petr", :sex "male", :aka #{"Z"}}))
 
     (is (= (pr-str (d/entity db 1)) "{:db/id 1}"))
-    #_(is (= (pr-str (let [e (d/entity db 1)] (:unknown e) e)) ;; TODO: should not contain unknown after consumption?
+    (is (= (pr-str (let [e (d/entity db 1)] (:unknown e) e))
            (str "{:db/id 1}")))
     ;; read back in to account for unordered-ness
     (is (= (edn/read-string (pr-str (let [e (d/entity db (+ ref-e0 1))] (:name e) e)))
@@ -84,12 +85,5 @@
     (is (nil? (d/entity db :keyword)))
     (is (nil? (d/entity db [:name "Petr"])))
     (is (= 777 (:db/id (d/entity db 777))))
-    #_(is (thrown-msg? "Lookup ref attribute should be marked as :db/unique: [:not-an-attr 777]"
+    (is (thrown-msg? "Lookup ref attribute should be marked as :db/unique: [:not-an-attr 777]"
                      (d/entity db [:not-an-attr 777])))))
-
-#_(let [entities (shift-entities ref-e0
-                               [{:db/id 1, :name "Ivan"}
-                                {:db/id 2, :name "Oleg"}])
-      db (d/db-with ref-db entities)]
-  (d/entity db [:name "Petr"])
-  )

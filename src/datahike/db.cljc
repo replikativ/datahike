@@ -239,16 +239,16 @@
             (if (:attribute-refs? (.-config db))
               (let [ref (get (.-ident-ref-map db) a-ident)]
                 #_(when (raise (str "Attribute " a-ident " has not been found in database")
-                           {:attribute a-ident :map (.-ident-ref-map db)})) ;; TODO: make info instead
-                 ref)
+                               {:attribute a-ident :map (.-ident-ref-map db)})) ;; TODO: make info instead
+                ref)
               (throw (UnsupportedOperationException.
                       (str "Mapping between attribute keywords and reference values is only supported for reference databases.")))))
   (-ident-for [db a-ref]
               (if (:attribute-refs? (.-config db))
                 (let [a-ident (get (.-ref-ident-map db) a-ref)]
                   #_(when (nil? a-ident)
-                    (raise (str "Attribute with reference number " a-ref " has not been found in database")
-                           {:attribute-eid a-ref}))        ;; see above
+                      (raise (str "Attribute with reference number " a-ref " has not been found in database")
+                             {:attribute-eid a-ref}))        ;; see above
                   a-ident)
                 (throw (UnsupportedOperationException.
                         (str "Mapping between attribute keywords and reference values is only supported for reference databases.")))))
@@ -1190,7 +1190,7 @@
   (let [a-ident (if (:attribute-refs? (-config db))
                   (-ident-for db attr)
                   attr)]
-      (validate-attr-ident a-ident at db)))
+    (validate-attr-ident a-ident at db)))
 
 (defn- validate-val [v [_ _ a _ _ :as at] {:keys [config schema ref-ident-map] :as db}]
   (when (nil? v)
@@ -1495,14 +1495,14 @@
         v (if (ref? db a-ident) (entid-strict db v) v)
         new-datom (datom e a v tx)]
     (comment
-     (println "txadd")
-     (println "tx" tx)
-     (println "db" db)
-     (println "e" e)
-     (println "a-ident" a-ident a)
-     (println "v" v)
-     (println "new-datom" new-datom)
-     (println "ent" ent))
+      (println "txadd")
+      (println "tx" tx)
+      (println "db" db)
+      (println "e" e)
+      (println "a-ident" a-ident a)
+      (println "v" v)
+      (println "new-datom" new-datom)
+      (println "ent" ent))
     (if (multival? db a)
       (if (empty? (-search db [e a v]))
         (transact-report report new-datom)

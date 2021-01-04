@@ -64,13 +64,12 @@
              #{}))
       (is (= (d/q '[:find ?a ?v
                     :in $ ?e
-                    :where [?e ?r ?v]
-                    [?r :db/ident ?a]]
+                    :where [?e ?a ?v]]
                   db (+ ref-e0 2))
              #{[:name "Petr"] [:age 37]})))
 
-    #_(is (= (d/db-with db [[:db.fn/retractEntity (+ ref-e0 1)]]) ; TODO: Why not equal?
-             (d/db-with db [[:db/retractEntity (+ ref-e0 1)]])))
+    (is (= (d/db-with db [[:db.fn/retractEntity (+ ref-e0 1)]]) ; TODO: Why not equal?
+           (d/db-with db [[:db/retractEntity (+ ref-e0 1)]])))
 
     (testing "Retract entity with incoming refs"
       (is (= (d/q '[:find ?e
@@ -90,14 +89,12 @@
           db2 (d/db-with db [[:db.fn/retractAttribute (+ ref-e0 1) name-ref]])]
       (is (= (d/q '[:find ?a ?v
                     :in $ ?e1
-                    :where [?e1 ?r ?v]
-                    [?r :db/ident ?a]]
+                    :where [?e1 ?a ?v]]
                   db2 (+ ref-e0 1))
              #{[:age 15] [:aka "X"] [:aka "Y"] [:aka "Z"] [:friend (+ ref-e0 2)]}))
       (is (= (d/q '[:find ?a ?v
                     :in $ ?e2
-                    :where [?e2 ?r ?v]
-                    [?r :db/ident ?a]]
+                    :where [?e2 ?a ?v]]
                   db2 (+ ref-e0 2))
              #{[:name "Petr"] [:age 37]})))
 
@@ -105,14 +102,12 @@
           db2 (d/db-with db [[:db.fn/retractAttribute (+ ref-e0 1) aka-ref]])]
       (is (= (d/q '[:find ?a ?v
                     :in $ ?e
-                    :where [?e ?r ?v]
-                    [?r :db/ident ?a]]
+                    :where [?e ?a ?v]]
                   db2 (+ ref-e0 1))
              #{[:name "Ivan"] [:age 15] [:friend (+ ref-e0 2)]}))
       (is (= (d/q '[:find ?a ?v
                     :in $ ?e
-                    :where [?e ?r ?v]
-                    [?r :db/ident ?a]]
+                    :where [?e ?a ?v]]
                   db2 (+ ref-e0 2))
              #{[:name "Petr"] [:age 37]})))))
 
@@ -158,10 +153,8 @@
         inc-age (fn [db name]
                   (if-let [[eid age] (first (d/q '{:find [?e ?age]
                                                    :in [$ ?name]
-                                                   :where [[?e ?r ?name]
-                                                           [?r :db/ident :name]
-                                                           [?e ?r2 ?age]
-                                                           [?r2 :db/ident :age]]}
+                                                   :where [[?e :name ?name]
+                                                           [?e :age ?age]]}
                                                  db name))]
                     [{:db/id eid :age (inc age)} [:db/add eid had-birthday-ref true]]
                     (throw (ex-info (str "No entity with name: " name) {}))))]

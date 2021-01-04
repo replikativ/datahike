@@ -239,17 +239,17 @@
       (is (not (nil? (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
   (testing "Keyword transaction in reference DB"
-      (let [conn (setup-db ref-cfg)
-            next-eid (inc (:max-eid @conn))]
-        (is (thrown-msg? (str "Bad entity attribute " :db/ident " at " [:db/add next-eid :db/ident :name] ", expected reference number") ;; TODO: ensure to have error thrown
-                         (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
+    (let [conn (setup-db ref-cfg)
+          next-eid (inc (:max-eid @conn))]
+      (is (thrown-msg? (str "Bad entity attribute " :db/ident " at " [:db/add next-eid :db/ident :name] ", expected reference number") ;; TODO: ensure to have error thrown
+                       (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
 (deftest test-transact-data-with-reference-attr
   (testing "Reference transaction in keyword DB"
-      (let [conn (setup-db no-ref-cfg)
-            next-eid (inc (:max-eid @conn))]
-        (is (thrown-msg? (str "Bad entity attribute " 1 " at " [:db/add next-eid 1 :name] ", expected keyword or string")
-                         (d/transact conn [[:db/add next-eid 1 :name]])))))
+    (let [conn (setup-db no-ref-cfg)
+          next-eid (inc (:max-eid @conn))]
+      (is (thrown-msg? (str "Bad entity attribute " 1 " at " [:db/add next-eid 1 :name] ", expected keyword or string")
+                       (d/transact conn [[:db/add next-eid 1 :name]])))))
 
   (testing "Reference transaction in reference DB"
     (let [conn (setup-db ref-cfg)
@@ -310,15 +310,16 @@
     (d/transact conn schema)
     (d/transact conn [{:name "Alice"}
                       {:name "Bob"}])
-    (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn (ref :name))
+    (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name)
            #{["Alice"] ["Bob"]}))
-    (is (= (d/q '[:find ?n :in $ :where [_ :name ?n]] @conn) ;; TODO: keep behaviour?
+    (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn (ref :name)) ;; TODO: keep behaviour?
+           #{}))
+    (is (= (d/q '[:find ?n :in $ :where [_ :name ?n]] @conn)
            #{["Alice"] ["Bob"]}))
     (is (= (d/q '[:find ?n :in $ :where [_ ?a ?n] [?a :db/ident :name]] @conn)
            #{["Alice"] ["Bob"]}))
     (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name)
-           #{}))))                                          ;; TODO: keep behaviour or eliminate?
-
+           #{["Alice"] ["Bob"]}))))
 
 (deftest test-pull-ref-db
   (let [conn (setup-db ref-cfg)

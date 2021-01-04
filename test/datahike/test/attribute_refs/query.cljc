@@ -72,9 +72,9 @@
                 :in [$ ?attr ?value]
                 :where [[?e ?attr ?value]]}]
     (is (= (d/q query db :name "Ivan")
-             #{[(+ ref-e0 1)]}))
+           #{[(+ ref-e0 1)]}))
     (is (= (d/q query db :age 37)
-             #{[(+ ref-e0 2)]}))
+           #{[(+ ref-e0 2)]}))
 
     (testing "DB join with collection"
       (is (= (d/q '[:find ?e ?email
@@ -116,19 +116,19 @@
              #{[(+ ref-e0 2)]})))
 
     #_(testing "Collection binding"                         ;; TODO: this way or as before? (i.e. direct attribs, see below)
-      (is (= (d/q '[:find ?attr ?value
-                    :in $ ?e [?attr ...]
-                    :where [?e ?r ?value]
-                    [?r :db/ident ?attr]]
-                  db (+ ref-e0 1) [:name :age])
-             #{[:name "Ivan"] [:age 15]})))
-
-    (testing "Collection binding with direct attribute"
         (is (= (d/q '[:find ?attr ?value
                       :in $ ?e [?attr ...]
-                      :where [?e ?attr ?value]]
+                      :where [?e ?r ?value]
+                      [?r :db/ident ?attr]]
                     db (+ ref-e0 1) [:name :age])
-               #{[:name "Ivan"] [:age 15]}))))
+               #{[:name "Ivan"] [:age 15]})))
+
+    (testing "Collection binding with direct attribute"
+      (is (= (d/q '[:find ?attr ?value
+                    :in $ ?e [?attr ...]
+                    :where [?e ?attr ?value]]
+                  db (+ ref-e0 1) [:name :age])
+             #{[:name "Ivan"] [:age 15]}))))
 
   (testing "Placeholders"
     (is (= (d/q '[:find ?x ?z
@@ -141,12 +141,12 @@
            #{[:x :z] [:a :c]})))
 
   (testing "Error reporting"
-      (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
-                            (d/q '[:find ?a ?b :in [?a ?b]] :a)))
-      (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"
-                            (d/q '[:find ?a :in [?a ...]] :a)))
-      (is (thrown-with-msg? ExceptionInfo #"Not enough elements in a collection \[:a\] to bind tuple \[\?a \?b\]"
-                            (d/q '[:find ?a ?b :in [?a ?b]] [:a])))))
+    (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
+                          (d/q '[:find ?a ?b :in [?a ?b]] :a)))
+    (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"
+                          (d/q '[:find ?a :in [?a ...]] :a)))
+    (is (thrown-with-msg? ExceptionInfo #"Not enough elements in a collection \[:a\] to bind tuple \[\?a \?b\]"
+                          (d/q '[:find ?a ?b :in [?a ?b]] [:a])))))
 
 (deftest test-nested-bindings
   (is (= (d/q '[:find ?k ?v

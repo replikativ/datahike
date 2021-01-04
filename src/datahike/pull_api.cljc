@@ -139,9 +139,9 @@
       (let [ref?       (db/ref? db attr)
             component? (and ref? (db/component? db attr))
             multi?     (if forward? (db/multival? db attr)
-                                    (not component?))
+                           (not component?))
             datom-val  (if forward? (fn [d] (.-v ^Datom d))
-                                    (fn [d] (.-e ^Datom d)))]
+                           (fn [d] (.-e ^Datom d)))]
         (cond
           (contains? opts :subpattern)
           (->> (subpattern-frame (:subpattern opts)
