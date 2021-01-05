@@ -1214,8 +1214,8 @@
         v (.-v datom)]
     (if (= a :db/ident)
       (if-not (schema v)
-        (raise (str "Schema with attribute " v " does not exist")
-               {:error :retract/schema :attribute v})
+        (throw (ex-info (str "Schema with attribute " v " does not exist")
+                 {:error :retract/schema :attribute v}))
         (-> (assoc-in db [:schema e] (dissoc (schema v) a))
             (update-in [:schema] #(dissoc % v))))
       (if-let [schema-entry (schema e)]
