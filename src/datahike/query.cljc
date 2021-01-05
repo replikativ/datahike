@@ -111,9 +111,9 @@
         l2 (alength idxs2)
         res (da/make-array (+ l1 l2))]
     (dotimes [i l1]
-      (aset res i ((direct-getter-fn (aget idxs1 i)) t1))) ;; FIXME aget
+      (aset res i (#?(:cljs da/aget :clj get) t1 (aget idxs1 i)))) ;; FIXME aget
     (dotimes [i l2]
-      (aset res (+ l1 i) ((direct-getter-fn (aget idxs2 i)) t2))) ;; FIXME aget
+      (aset res (+ l1 i) (#?(:cljs da/aget :clj get) t2 (aget idxs2 i)))) ;; FIXME aget
     res))
 
 (defn sum-rel [a b]
@@ -385,15 +385,6 @@
        :doc "Default pattern source. Lookup refs, patterns, rules will be resolved with it"}
   *implicit-source* nil)
 
-(defn direct-getter-fn [idx]
-  (if (and (satisfies? db/IDB *implicit-source*)
-           (:attribute-refs? (db/-config *implicit-source*))
-           (= idx "a"))
-    (fn [tuple]
-      (db/-ident-for *implicit-source* (#?(:cljs da/aget :clj get) tuple idx)))
-    (fn [tuple]
-      (#?(:cljs da/aget :clj get) tuple idx))))
-
 (defn getter-fn [attrs attr]
   (let [idx (attrs attr)]
     (if (contains? *lookup-attrs* attr)
@@ -404,7 +395,8 @@
             (sequential? eid) (db/entid *implicit-source* eid)
             (da/array? eid) (db/entid *implicit-source* eid)
             :else eid)))
-      (direct-getter-fn idx))))
+      (fn [tuple]
+        (#?(:cljs da/aget :clj get) tuple idx)))))
 
 (defn tuple-key-fn [getters]
   (if (== (count getters) 1)

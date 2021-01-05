@@ -70,10 +70,12 @@
         db (d/db-with ref-db (shift-entities ref-e0 entities))
         query '{:find [?e]
                 :in [$ ?attr ?value]
-                :where [[?e ?attr ?value]]}]
-    (is (= (d/q query db :name "Ivan")
+                :where [[?e ?attr ?value]]}
+        ref (fn [key] (get-in db [:ident-ref-map key]))]
+    (println "name" (ref name))
+    (is (= (d/q query db (ref :name) "Ivan")
            #{[(+ ref-e0 1)]}))
-    (is (= (d/q query db :age 37)
+    (is (= (d/q query db (ref :age) 37)
            #{[(+ ref-e0 2)]}))
 
     (testing "DB join with collection"
@@ -115,20 +117,20 @@
                   db ["Petr" 37])
              #{[(+ ref-e0 2)]})))
 
-    #_(testing "Collection binding"                         ;; TODO: this way or as before? (i.e. direct attribs, see below)
-        (is (= (d/q '[:find ?attr ?value
-                      :in $ ?e [?attr ...]
-                      :where [?e ?r ?value]
-                      [?r :db/ident ?attr]]
-                    db (+ ref-e0 1) [:name :age])
-               #{[:name "Ivan"] [:age 15]})))
-
-    (testing "Collection binding with direct attribute"
+    (testing "Collection binding"
       (is (= (d/q '[:find ?attr ?value
                     :in $ ?e [?attr ...]
-                    :where [?e ?attr ?value]]
+                    :where [?e ?r ?value]
+                    [?r :db/ident ?attr]]
                   db (+ ref-e0 1) [:name :age])
-             #{[:name "Ivan"] [:age 15]}))))
+             #{[:name "Ivan"] [:age 15]})))
+
+    #_(testing "Collection binding with direct attribute"   ;; TODO: make work in next query engine version
+        (is (= (d/q '[:find ?attr ?value
+                      :in $ ?e [?attr ...]
+                      :where [?e ?attr ?value]]
+                    db (+ ref-e0 1) [:name :age])
+               #{[:name "Ivan"] [:age 15]}))))
 
   (testing "Placeholders"
     (is (= (d/q '[:find ?x ?z

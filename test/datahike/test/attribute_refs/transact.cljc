@@ -64,7 +64,8 @@
              #{}))
       (is (= (d/q '[:find ?a ?v
                     :in $ ?e
-                    :where [?e ?a ?v]]
+                    :where [?e ?r ?v]
+                    [?r :db/ident ?a]]
                   db (+ ref-e0 2))
              #{[:name "Petr"] [:age 37]})))
 
@@ -88,13 +89,15 @@
     (let [name-ref (get-in db [:ident-ref-map :name])
           db2 (d/db-with db [[:db.fn/retractAttribute (+ ref-e0 1) name-ref]])]
       (is (= (d/q '[:find ?a ?v
-                    :in $ ?e1
-                    :where [?e1 ?a ?v]]
+                    :in $ ?e
+                    :where [?e ?r ?v]
+                    [?r :db/ident ?a]]
                   db2 (+ ref-e0 1))
              #{[:age 15] [:aka "X"] [:aka "Y"] [:aka "Z"] [:friend (+ ref-e0 2)]}))
       (is (= (d/q '[:find ?a ?v
-                    :in $ ?e2
-                    :where [?e2 ?a ?v]]
+                    :in $ ?e
+                    :where [?e ?r ?v]
+                    [?r :db/ident ?a]]
                   db2 (+ ref-e0 2))
              #{[:name "Petr"] [:age 37]})))
 
@@ -102,12 +105,14 @@
           db2 (d/db-with db [[:db.fn/retractAttribute (+ ref-e0 1) aka-ref]])]
       (is (= (d/q '[:find ?a ?v
                     :in $ ?e
-                    :where [?e ?a ?v]]
+                    :where [?e ?r ?v]
+                    [?r :db/ident ?a]]
                   db2 (+ ref-e0 1))
              #{[:name "Ivan"] [:age 15] [:friend (+ ref-e0 2)]}))
       (is (= (d/q '[:find ?a ?v
                     :in $ ?e
-                    :where [?e ?a ?v]]
+                    :where [?e ?r ?v]
+                    [?r :db/ident ?a]]
                   db2 (+ ref-e0 2))
              #{[:name "Petr"] [:age 37]})))))
 
