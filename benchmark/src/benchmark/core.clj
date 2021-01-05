@@ -18,3 +18,5 @@
                   :mean-time (/ (reduce (fn [x y] (+ x (:time y))) 0 group)
                                 (count group))}))
          pp/pprint)))
+
+(-main)

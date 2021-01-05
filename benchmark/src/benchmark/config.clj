@@ -11,7 +11,7 @@
     :schema-flexibility :write
     :keep-history? true
     :index          :datahike.index/hitchhiker-tree}
-   {:store          {:backend :file :path "/tmp/performance-hht"}
+   {:store          {:backend :file :path "/tmp/performance-hht" }
     :schema-flexibility :write
     :keep-history? true
     :index          :datahike.index/hitchhiker-tree}])
@@ -36,4 +36,16 @@
 (defn q2 [int-val]
   (conj '[:find ?a :where [?e :s1 ?a]]
         (conj '[?e :i1] int-val)))
+
+(defn q3 []
+  '[:find ?e ?a :where
+    [?e :i1 ?i]
+    [(< ?i (/ max-int 2))]
+    [?e :s1 ?a]])
+
+(defn q4 []
+  '[:find ?e ?a :where
+    [?e :i1 ?i]
+    [?e :s1 ?a]
+    [(< ?i (/ max-int 2))]])
 
