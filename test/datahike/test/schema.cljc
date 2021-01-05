@@ -334,6 +334,6 @@
         db (d/db conn)]
     (testing "non existing schema should throw exception"
       (is (thrown-msg? "Schema with attribute :name does not exist"
-            (dd/remove-schema db (da/datom 1 :db/ident :name)))))
+                       (dd/remove-schema db (da/datom 1 :db/ident :name)))))
     (testing "when upserting a non existing schema, it should not throw an exception"
       (is (d/transact conn [name-schema])))))

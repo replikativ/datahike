@@ -1219,7 +1219,7 @@
           (throw #?(:clj (ex-info err-msg err-map)
                     :cljs (error err-msg err-map))))
         (-> (assoc-in db [:schema e] (dissoc (schema v) a))
-          (update-in [:schema] #(dissoc % v))))
+            (update-in [:schema] #(dissoc % v))))
       (if-let [schema-entry (schema e)]
         (if (schema schema-entry)
           (update-in db [:schema schema-entry] #(dissoc % a))
