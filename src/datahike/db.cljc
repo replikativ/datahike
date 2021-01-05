@@ -1222,8 +1222,8 @@
         (if (schema schema-entry)
           (update-in db [:schema schema-entry] #(dissoc % a))
           (update-in db [:schema e] #(dissoc % a v)))
-        (raise (str "Schema with entity id " e " does not exist")
-               {:error :retract/schema :entity-id e :attribute a :value e})))))
+        (throw (ex-info (str "Schema with entity id " e " does not exist")
+                 {:error :retract/schema :entity-id e :attribute a :value e}))))))
 
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
