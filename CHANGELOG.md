@@ -1,3 +1,38 @@
+# 0.3.3
+
+- Support for tuples (#104)
+- Switch to Clojure CLI tools (#253)
+- Adapt API namespace for Datomic compatibility (#196)
+- Implement query with string (#196)
+- Implement transact with lazy sequence (#196, #78, #151)
+- Change upsert implementation to improve transaction performance (#62)
+- Improve [cljdoc](https://cljdoc.org/d/io.replikativ/datahike/) (#88)
+- Format source code according to [Clojure Style Guide](https://github.com/bbatsov/clojure-style-guide) (#198)
+- Improve benchmark tooling
+- Improve documentation on the pull-api namespace
+
+The improved api namespace is now the entry point to using Datahike and should be the only namespace that needs to be imported in your projects. However it is still possible to use other namespaces but there will be changes that might break existing behaviour. Please take a look at the [improved cljdoc documentation](https://cljdoc.org/d/io.replikativ/datahike/) for the api namespace.
+
+With the change in the upsert implementation (#62), we expect up to 3x speedup in terms of transaction time. However, it also brings a breaking change to the content of transaction reports. In previous Datahike versions, following an upsert operation (which updates an existing entry), you would see in the :tx-data section of the transaction report both the old retracted datom and its newly added version. E.g.:
+
+```
+#datahike.db.TxReport{
+...
+:tx-data [#datahike/Datom[1 :name "Ivan" 536870914 false]
+          #datahike/Datom[1 :name "Petr" 536870914 true]]
+...}
+```
+
+With this release, you would only see the newly added entry and no information about retraction or addition is shown (it is assumed to be an addition).
+```
+#datahike.db.TxReport{
+...
+:tx-data [#datahike/Datom [1 :name "Petr" 536870914]]
+...}
+```
+
+Thanks to all the contributors and the community for helping on this release. Special thanks go to [clojurists together](https://www.clojuriststogether.org/) for funding large parts of this work.
+
 # 0.3.2
 - added entity specs (#197)
 - fixed hash computation (#190)
