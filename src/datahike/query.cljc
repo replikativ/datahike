@@ -759,6 +759,7 @@
                     (keep #(limit-rel % vars)))))
 
 (defn check-bound [context vars form]
+  (println "check" vars " " form)
   (let [bound (into #{} (mapcat #(keys (:attrs %)) (:rels context)))]
     (when-not (set/subset? vars bound)
       (let [missing (set/difference (set vars) bound)]
@@ -773,7 +774,8 @@
   ([context clause orig-clause]
    (condp looks-like? clause
      [[symbol? '*]]                                         ;; predicate [(pred ?a ?b ?c)]
-     (filter-by-pred context clause)
+     (do (check-bound context (identity (filter free-var? (first clause))) orig-clause)
+         (filter-by-pred context clause))
 
      [[symbol? '*] '_]                                      ;; function [(fn ?a ?b) ?res]
      (bind-by-fn context clause)
