@@ -759,7 +759,6 @@
                     (keep #(limit-rel % vars)))))
 
 (defn check-bound [context vars form]
-  (println "check" vars " " form)
   (let [bound (into #{} (mapcat #(keys (:attrs %)) (:rels context)))]
     (when-not (set/subset? vars bound)
       (let [missing (set/difference (set vars) bound)]
