@@ -27,3 +27,4 @@ lsp/
 /resources
 /public
 /out
+/.clj-kondo
