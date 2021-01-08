@@ -80,7 +80,7 @@
        (containsKey [e k] (#{:e :a :v :tx :added} k))
        (assoc [d k v] (assoc-datom d k v))]))
 
-#?(:cljs (goog/exportSymbol "datahike.db.Datom" Datom))
+#?(:cljs (goog/exportSymbol "datahike.datom.Datom" Datom))
 
 (defn ^Datom datom
   ([e a v] (Datom. e a v tx0 0))
