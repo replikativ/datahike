@@ -67,7 +67,7 @@
               :else (dt/raise "Bad argument to transact, expected map with :tx-data as key.
                                Vector and sequence are allowed as argument but deprecated."
                               {:error :transact/syntax :argument arg-map}))
-        _ (log/debugf "Transacting with arguments: " arg)]
+        _ (log/error "Transacting with arguments: " arg)]
     (try
       (deref (transact! connection arg))
       (catch Exception e
@@ -123,6 +123,7 @@
 
   (-connect [config]
     (let [config (dc/load-config config)
+          _ (log/debug "Using config " (update-in config [:store] dissoc :password))
           store-config (:store config)
           raw-store (ds/connect-store store-config)
           _ (when-not raw-store
