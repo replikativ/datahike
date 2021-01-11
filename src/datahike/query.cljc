@@ -692,7 +692,7 @@
             final-attrs-map (zipmap final-attrs (range))
         ;;         clause-cache    (atom {}) ;; TODO
             solve (fn [prefix-context clauses]
-                    (ha/<? (ha/reduce< -resolve-clause prefix-context clauses)))
+                    (ha/go-try (ha/<? (ha/reduce< -resolve-clause prefix-context clauses))))
             empty-rels? (fn [context]
                           (some #(empty? (:tuples %)) (:rels context)))]
         (loop [stack (list {:prefix-clauses []
@@ -706,7 +706,7 @@
               (if (nil? rule-clause)
 
             ;; no rules -> expand, collect, sum
-                (let [context (solve (:prefix-context frame) clauses)
+                (let [context (ha/<? (solve (:prefix-context frame) clauses))
                       tuples (-collect context final-attrs)
                       new-rel (Relation. final-attrs-map tuples)]
                   (recur (next stack) (sum-rel rel new-rel)))
@@ -722,7 +722,7 @@
                     (recur (next stack) rel)
 
                     (let [prefix-clauses (concat clauses active-gs)
-                          prefix-context (solve (:prefix-context frame) prefix-clauses)]
+                          prefix-context (ha/<? (solve (:prefix-context frame) prefix-clauses))]
                       (if (empty-rels? prefix-context)
 
                     ;; this branch has no data, just drop it from stack
@@ -876,6 +876,7 @@
         (if (source? (first clause))
           (let [enriched-context (assoc context :implicit-source (get (:sources context) (first clause)))]
             (ha/<? (resolve-clause enriched-context (next clause))))
+
           (binding [*implicit-source* (:implicit-source context)]
             (update context :rels collapse-rels (ha/<? (solve-rule context clause)))))
         (ha/<? (-resolve-clause context clause)))))
@@ -1026,6 +1027,7 @@
                    :clj clojure.lang.PersistentVector) [query & inputs]
      (q {:query query :args inputs}))
 
+   
    (defmethod q #?(:cljs cljs.core/PersistentArrayMap
                    :clj clojure.lang.PersistentArrayMap) [query-map & inputs]
      (ha/go-try

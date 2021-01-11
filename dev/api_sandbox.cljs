@@ -49,12 +49,32 @@
                          :age   45
                          :sibling [[:name "Alice"] [:name "Bob"]]}])
 
-  ;; Run a query against the store
+  ;; Run a queries against the store
   (go (println (<! (d/q '[:find ?e ?a ?v ?t
                           :in $ ?a
                           :where [?e :name ?v ?t] [?e :age ?a]]
                         @conn-idb
                         35))))
+  
+  (go (println (<! (d/q '[:find ?e ?v
+                          :in $ %
+                          :where (r ?e ?v)]
+                        @conn-idb
+                        '[[(r ?e ?v)
+                           [?e :name ?v]]]))))
+  
+
+    (go (println (<! (d/q '[:find ?e ?v
+                            :in $
+                            :where [?e :name ?v]]
+                          @conn-idb))))
+  
+  (go (println (<! (d/q '[:find ?e ?v
+                          :in $ %
+                          :where (r ?e ?v)]
+                        @conn-idb
+                        '[[(r ?e ?v)
+                           [?e :name ?v]]]))))
 
 
   ;; Use the Entity API
