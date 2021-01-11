@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+rm -rf /tmp/cljdoc
+mkdir -p /tmp/cljdoc
+version=$(xmllint --xpath '/*[local-name()="project"]/*[local-name()="version"]/text()' pom.xml)
+
+clj -A:build
+clj -A:install
+
+echo "---- cljdoc preview: ingesting datahike"
+docker run --rm
+       --volume "$PWD:/repo-to-import" \
+       --volume "$HOME/.m2:/root/.m2" \
+       --volume /tmp/cljdoc:/app/data \
+       --entrypoint "clojure" \
+       cljdoc/cljdoc
+       -A:cli ingest -p io.replikativ/datahike -v "$version" --git /repo-to-import
+
+echo "---- cljdoc preview: starting server on port 8000"
+docker run --rm -p 8000:8000 -v /tmp/cljdoc:/app/data cljdoc/cljdoc

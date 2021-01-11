@@ -1,4 +1,4 @@
-(ns datahike.index.hitchhiker-tree.upsert
+(ns ^:no-doc datahike.index.hitchhiker-tree.upsert
   (:require [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 

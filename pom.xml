@@ -15,7 +15,10 @@
     </license>
   </licenses>
   <scm>
-    <tag>c67c37eb13f55b5ef514749b56bd5bddd1475b2b</tag>
+    <connection>scm:git:git@github.com:replikativ/datahike.git</connection>
+    <developerConnection>scm:git:git@git@github.com/replikativ/datahike.git</developerConnection>
+    <tag>HEAD</tag>
+    <url>git@github.com:replikativ/datahike</url>
   </scm>
   <properties>
     <java.version>1.8</java.version>
