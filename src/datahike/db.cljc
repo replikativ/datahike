@@ -1214,16 +1214,20 @@
         v (.-v datom)]
     (if (= a :db/ident)
       (if-not (schema v)
-        (raise (str "Schema with attribute " v " does not exist")
-               {:error :retract/schema :attribute v})
+        (let [err-msg (str "Schema with attribute " v " does not exist")
+              err-map {:error :retract/schema :attribute v}]
+          (throw #?(:clj (ex-info err-msg err-map)
+                    :cljs (error err-msg err-map))))
         (-> (assoc-in db [:schema e] (dissoc (schema v) a))
             (update-in [:schema] #(dissoc % v))))
       (if-let [schema-entry (schema e)]
         (if (schema schema-entry)
           (update-in db [:schema schema-entry] #(dissoc % a))
           (update-in db [:schema e] #(dissoc % a v)))
-        (raise (str "Schema with entity id " e " does not exist")
-               {:error :retract/schema :entity-id e :attribute a :value e})))))
+        (let [err-msg (str "Schema with entity id " e " does not exist")
+              err-map {:error :retract/schema :entity-id e :attribute a :value e}]
+          (throw #?(:clj (ex-info err-msg err-map)
+                    :cljs (error err-msg err-map))))))))
 
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
