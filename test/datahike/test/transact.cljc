@@ -108,7 +108,12 @@
              #{[:name "Ivan"] [:age 15] [:friend 2]}))
       (is (= (d/q '[:find ?a ?v
                     :where [2 ?a ?v]] db)
-             #{[:name "Petr"] [:age 37]})))))
+             #{[:name "Petr"] [:age 37]})))
+
+    (is (= (d/db-with db [[:db.fn/retractAttribute 1 :name]])
+           (d/db-with db [[:db/retract 1 :name]])))
+    (is (= (d/db-with db [[:db.fn/retractAttribute 1 :aka]])
+           (d/db-with db [[:db/retract 1 :aka]])))))
 
 (deftest test-retract-fns-not-found
   (let [db  (-> (d/empty-db {:name {:db/unique :db.unique/identity}})
@@ -134,6 +139,38 @@
       [:db/retract             [:name "Ivan"] :name "Ivan"]
       [:db.fn/retractAttribute [:name "Ivan"] :name]
       [:db.fn/retractEntity    [:name "Ivan"]])))
+
+(deftest test-retract-component
+  (let [db  (-> (d/empty-db {:name {:db/unique :db.unique/identity}
+                             :room {:db/valueType :db.type/ref
+                                    :db/cardinality :db.cardinality/many
+                                    :db/isComponent true}})
+                (d/db-with  [{:name :house1 :room [{:name :kitchen} {:name :bath}]}
+                             {:name :house2 :room [{:name :office} {:name :attic}]}]))
+        names (fn [db]
+                (set (d/q '[:find [?name ...]
+                            :where [_ :name ?name]]
+                          db)))]
+
+    (is (= (names (d/db-with db [[:db.fn/retractEntity [:name :house1]]]))
+           #{:house2 :office :attic}))
+
+    (testing ":db.fn/retractAttribute retracts components"
+      (let [db (d/db-with db [[:db.fn/retractAttribute [:name :house1] :room]])]
+        (is (nil? (:room (d/entity db [:name :house1]))))
+        (is (= (names db)
+               #{:house1 :house2 :office :attic}))))
+
+    (testing ":db/retract only retracts reference to components"
+      (let [db (d/db-with db [[:db/retract [:name :house1] :room [:name :kitchen]]])]
+        (is (= (map :name (:room (d/entity db [:name :house1])))
+               [:bath]))
+        (is (d/entity db [:name :kitchen])))
+
+      (let [db (d/db-with db [[:db/retract [:name :house1] :room]])]
+        (is (nil? (:room (d/entity db [:name :house1]))))
+        (is (= (names db)
+               #{:house1 :kitchen :bath :house2 :office :attic}))))))
 
 (deftest test-transact!
   (let [conn (d/create-conn {:aka {:db/cardinality :db.cardinality/many}})]
