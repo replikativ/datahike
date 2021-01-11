@@ -2,7 +2,7 @@
   (:refer-clojure :exclude [-seq -count -flush -persistent!])
   (:require [datahike.index.hitchhiker-tree :as dih]
             [datahike.index.persistent-set :as dip]
-            #?(:cljs [hitchhiker.tree-cljs :refer [DataNode IndexNode]])
+            #?(:cljs [hitchhiker.tree :refer [DataNode IndexNode]])
             #?(:cljs [me.tonsky.persistent-sorted-set :as PersistentSortedSet]))
 
   #?(:clj (:import [hitchhiker.tree DataNode IndexNode]

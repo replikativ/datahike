@@ -2,8 +2,7 @@
   (:require [hitchhiker.tree.utils.cljs.async :as ha]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
-            #?(:clj [hitchhiker.tree :as tree])
-            #?(:cljs [hitchhiker.tree-cljs :as tree])
+            [hitchhiker.tree :as tree]
             [hitchhiker.tree.utils.gc :refer [mark]]
             [clojure.core.async]
             ;[konserve.gc :refer [sweep!]]
