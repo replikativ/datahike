@@ -6,11 +6,12 @@
    #?(:clj [clojure.pprint :as pp])
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   [datahike.constants :as c :refer [ue0 e0 tx0 utx0 emax txmax system-schema system-entities]]
+   [datahike.constants :as c :refer [ue0 e0 tx0 utx0 emax txmax system-schema]]
    [datahike.tools :refer [get-time case-tree raise]]
    [datahike.schema :as ds]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
-   [datahike.config :as dc])
+   [datahike.config :as dc]
+   [taoensso.timbre :refer [warn]])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable cond+]]
                             [datahike.datom :refer [combine-cmp datom]]
                             [datahike.tools :refer [case-tree raise]]))
@@ -125,6 +126,7 @@
 (defprotocol IDB
   (-schema [db])
   (-rschema [db])
+  (-system-entities [db])
   (-attrs-by [db property])
   (-max-tx [db])
   (-max-eid [db])
@@ -199,7 +201,7 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx rschema hash config ident-ref-map ref-ident-map]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx rschema hash config system-entities ident-ref-map ref-ident-map]
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -229,6 +231,7 @@
   IDB
   (-schema [db] (.-schema db))
   (-rschema [db] (.-rschema db))
+  (-system-entities [db] (.-system-entities db))
   (-attrs-by [db property] ((.-rschema db) property))
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-> db -config :keep-history?))
@@ -238,17 +241,16 @@
   (-ref-for [db a-ident]
             (if (:attribute-refs? (.-config db))
               (let [ref (get (.-ident-ref-map db) a-ident)]
-                #_(when (raise (str "Attribute " a-ident " has not been found in database")
-                               {:attribute a-ident :map (.-ident-ref-map db)})) ;; TODO: make info instead
+                (when (nil? ref)
+                  (warn (str "Attribute " a-ident " has not been found in database")))
                 ref)
               (throw (UnsupportedOperationException.
                       (str "Mapping between attribute keywords and reference values is only supported for reference databases.")))))
   (-ident-for [db a-ref]
               (if (:attribute-refs? (.-config db))
                 (let [a-ident (get (.-ref-ident-map db) a-ref)]
-                  #_(when (nil? a-ident)
-                      (raise (str "Attribute with reference number " a-ref " has not been found in database")
-                             {:attribute-eid a-ref}))        ;; see above
+                  (when (nil? a-ident)
+                    (warn (str "Attribute with reference number " a-ref " has not been found in database")))
                   a-ident)
                 (throw (UnsupportedOperationException.
                         (str "Mapping between attribute keywords and reference values is only supported for reference databases.")))))
@@ -341,6 +343,7 @@
   IDB
   (-schema [db] (-schema (.-unfiltered-db db)))
   (-rschema [db] (-rschema (.-unfiltered-db db)))
+  (-system-entities [db] (-system-entities (.-unfiltered-db db)))
   (-attrs-by [db property] (-attrs-by (.-unfiltered-db db) property))
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-keep-history? (.-unfiltered-db db)))
@@ -467,6 +470,7 @@
   IDB
   (-schema [db] (-schema (.-origin-db db)))
   (-rschema [db] (-rschema (.-origin-db db)))
+  (-system-entities [db] (-system-entities (.-origin-db db)))
   (-attrs-by [db property] (-attrs-by (.-origin-db db) property))
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-keep-history? (.-origin-db db)))
@@ -849,6 +853,7 @@
          rschema (rschema complete-schema)
          ident-ref-map (if attribute-refs? (get-ident-ref-map complete-schema) {})
          ref-ident-map (if attribute-refs? (clojure.set/map-invert ident-ref-map) {})
+         system-entities (if attribute-refs? (set (keys (c/system-map system-schema))) #{})
          indexed (if attribute-refs?
                    (set (map ident-ref-map (:db/index rschema)))
                    (:db/index rschema))
@@ -862,8 +867,8 @@
          avet (if attribute-refs?
                 (di/init-index index indexed-datoms indexed :avet)
                 (di/empty-index index :avet))
-         max-eid (if attribute-refs? ue0 e0)                ;; TODO: use functions??? get-max-eid (more robust)
-         max-tx (if attribute-refs? utx0 tx0)]              ;; TODO: use functions??? get-max-tx
+         max-eid (if attribute-refs? ue0 e0)
+         max-tx (if attribute-refs? utx0 tx0)]
      (map->DB
       (merge
        {:schema complete-schema
@@ -875,6 +880,7 @@
         :max-eid max-eid
         :max-tx max-tx
         :hash 0
+        :system-entities system-entities
         :ref-ident-map ref-ident-map
         :ident-ref-map ident-ref-map}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
@@ -906,6 +912,7 @@
          rschema (rschema complete-schema)
          ident-ref-map (if attribute-refs? (get-ident-ref-map schema) {})
          ref-ident-map (if attribute-refs? (clojure.set/map-invert ident-ref-map) {})
+         system-entities (if attribute-refs? (set (keys (c/system-map system-schema))) #{})
          indexed (if attribute-refs?
                    (set (map ident-ref-map (:db/index rschema)))
                    (:db/index rschema))
@@ -928,6 +935,7 @@
                       :max-eid max-eid
                       :max-tx max-tx
                       :hash (hash-datoms datoms)
+                      :system-entities system-entities
                       :ref-ident-map ref-ident-map
                       :ident-ref-map ident-ref-map}
                      (when keep-history?
@@ -1197,8 +1205,8 @@
     (raise "Cannot store nil as a value at " at
            {:error :transact/syntax, :value v, :context at}))
   (let [{:keys [attribute-refs? schema-flexibility]} config
-        a-ident (if (and attribute-refs? (number? a)) (ref-ident-map a) a)
-        v-ident (if (and (contains? system-entities a)      ;; TODO: make robust to database versions?
+        a-ident (if (and attribute-refs? (number? a)) (-ident-for db a) a)
+        v-ident (if (and (contains? (-system-entities db) a)
                          (not (nil? (ref-ident-map v))))
                   (ref-ident-map v)
                   v)]
@@ -1258,12 +1266,12 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)
-        a-ident (if attribute-refs? (ref-ident-map a) a)
-        v-ident (if (and (contains? system-entities a)
+        a-ident (if attribute-refs? (-ident-for db a) a)
+        v-ident (if (and (contains? (-system-entities db) a)
                          (not (nil? (ref-ident-map v))))
                   (ref-ident-map v)
                   v)]
-    (when (and attribute-refs? (contains? system-entities e))
+    (when (and attribute-refs? (contains? (-system-entities db) e))
       (raise "System schema entity cannot be changed"
              {:error :transact/schema :entity-id e}))
     (if (= a-ident :db/ident)
@@ -1271,7 +1279,7 @@
         (raise (str "Schema with attribute " v-ident " already exists")
                {:error :transact/schema :attribute v-ident})
         (-> (assoc-in db [:schema v-ident] (merge (or (schema e) {}) (hash-map a-ident v-ident)))
-            (assoc-in [:schema e] v-ident)                  ;; TODO: delete or remove ref-ident-map?
+            (assoc-in [:schema e] v-ident)
             (assoc-in [:ident-ref-map v-ident] e)
             (assoc-in [:ref-ident-map e] v-ident)))
       (if-let [schema-entry (schema e)]
@@ -1294,12 +1302,12 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)
-        a-ident (if attribute-refs? (ref-ident-map a) a)
-        v-ident (if (and (contains? system-entities a)
+        a-ident (if attribute-refs? (-ident-for db a) a)
+        v-ident (if (and (contains? (-system-entities db) a)
                          (not (nil? (ref-ident-map v))))
                   (ref-ident-map v)
                   v)]
-    (when (and attribute-refs? (contains? system-entities e))
+    (when (and attribute-refs? (contains? (-system-entities db) e))
       (raise "System schema entity cannot be changed"
              {:error :retract/schema :entity-id e}))
     (if (= a-ident :db/ident)

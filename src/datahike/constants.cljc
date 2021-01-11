@@ -107,8 +107,6 @@
    {:db/id 34
     :db/ident :db/isComponent}])
 
-(def ^:const system-entities (set (map :db/id system-schema)))
-
 (defn system-map
   "Maps IDs of system entities to their names (keyword) and attribute names to the attribute's specification"
   [system-schema]
@@ -119,9 +117,10 @@
    {}
    system-schema))
 
-(def ^:const non-ref-implicit-schema {:db/ident {:db/unique :db.unique/identity}
-                                      :db.entity/attrs {:db/cardinality :db.cardinality/many}
-                                      :db.entity/preds {:db/cardinality :db.cardinality/many}})
+(def ^:const non-ref-implicit-schema
+  {:db/ident {:db/unique :db.unique/identity}
+   :db.entity/attrs {:db/cardinality :db.cardinality/many}
+   :db.entity/preds {:db/cardinality :db.cardinality/many}})
 
 (def ^:const ref-implicit-schema
   "Maps attribute names to the attribute's specification"
