@@ -28,3 +28,4 @@ lsp/
 /public
 /out
 /.clj-kondo
+*.lsp
