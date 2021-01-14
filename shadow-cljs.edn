@@ -1,4 +1,5 @@
 {:deps {:aliases [:cljs]}
+ :repl {:runtime-select :latest}
 
  :builds
  {:app
