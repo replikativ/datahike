@@ -436,7 +436,7 @@
 
 (defrecord-updatable HistoricalDB [origin-db]
   #?@(:cljs
-      [IEquiv (-equiv [db other] (equiv-db db other))
+      [IEquiv (-equiv [db other] (ha/<?? (equiv-db db other)))
        ISeqable (-seq [db] (ha/<?? (-datoms db :eavt [])))
        ICounted (-count [db] (count (ha/<?? (-datoms db :eavt []))))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
@@ -496,7 +496,7 @@
    (->> datoms
         (map datom-tx)
         (distinct)
-        (map (fn [tx] (ha/<? (temporal-datoms db :eavt [tx]))))
+        (map (fn [tx] (ha/go-try (ha/<? (temporal-datoms db :eavt [tx])))))
         (async/merge)
         (async/into [])
         (ha/<?)
@@ -528,7 +528,7 @@
   (ha/go-try
    (let [as-of-pred (fn [^Datom d]
                       (if (date? time-point)
-                        (.before ^Date (.-v d) ^Date time-point)
+                        (< (.getTime ^Date (.-v d)) (.getTime ^Date time-point))
                         (<= (dd/datom-tx d) time-point)))
          filtered-tx-ids (ha/<? (filter-txInstant datoms as-of-pred db))
          filtered-datoms (->> datoms
@@ -627,7 +627,7 @@
   (ha/go-try
    (let [since-pred (fn [^Datom d]
                       (if (date? time-point)
-                        (.after ^Date (.-v d) ^Date time-point)
+                        (> (.getTime ^Date (.-v d)) (.getTime ^Date time-point))
                         (>= (.-tx d) time-point)))
          filtered-tx-ids (ha/<? (filter-txInstant datoms since-pred db))]
      (->> datoms
@@ -637,7 +637,7 @@
 (defn- filter-before [datoms ^Date before-date db]
   (ha/go-try
    (let [before-pred (fn [^Datom d]
-                       (.before ^Date (.-v d) before-date))
+                       (< (.getTime ^Date (.-v d)) (.getTime before-date)))
          filtered-tx-ids (ha/<? (filter-txInstant datoms before-pred db))]
      (filter
       (fn [^Datom d]
@@ -1228,9 +1228,12 @@
                      update-rschema))
        (if-some [removing ^Datom (first (ha/<? (-search db [(.-e datom) (.-a datom) (.-v datom)])))]
          (cond-> db
-           true (update-in [:eavt] #(di/-remove % removing :eavt))
-           true (update-in [:aevt] #(di/-remove % removing :aevt))
-           indexing? (update-in [:avet] #(di/-remove % removing :avet))
+           true (ha/update-in< [:eavt] #(di/-remove % removing :eavt))
+           true (ha/<?)
+           true (ha/update-in< [:aevt] #(di/-remove % removing :aevt))
+           true (ha/<?)
+           indexing? (ha/update-in< [:avet] #(di/-remove % removing :avet))
+           indexing? (ha/<?)
            true (update :hash - (hash removing))
            schema? (-> (remove-schema datom) update-rschema)
            keep-history? (ha/update-in< [:temporal-eavt] #(di/-insert % removing :eavt))
@@ -1267,10 +1270,11 @@
        (and history? indexing?) (update-in [:temporal-avet] #(di/-remove % history-datom :avet))))))
 
 (defn- transact-report [report datom]
-  (ha/go-try (-> report
-                 (ha/update-in< [:db-after] with-datom datom)
-                 (ha/<?)
-                 (update-in [:tx-data] conj datom))))
+  (ha/go-try
+   (-> report
+       (ha/update-in< [:db-after] with-datom datom)
+       (ha/<?)
+       (update-in [:tx-data] conj datom))))
 
 (defn- check-upsert-conflict [entity acc]
   (let [[e a v] acc
@@ -1384,7 +1388,7 @@
          (ha/<? (transact-report report new-datom))
          report)
        (let [old-datom (first (ha/<? (-search db [e a])))  ;;TODO: review type hints in core.async or open bug report
-             ov (get-datom-value old-datom)]               
+             ov (get-datom-value old-datom)]
          (if old-datom
            (if (= ov v)
              report
@@ -1675,8 +1679,7 @@
                 (recur (allocate-eid report v (next-eid db)) es))
 
               (= op :db/add)
-              (let [new-report (ha/<? (transact-add report entity))]
-                (recur new-report entities))
+              (recur (ha/<? (transact-add report entity)) entities)
 
               (= op :db/retract)
               (if-some [e (ha/<? (entid db e))]
@@ -1725,46 +1728,40 @@
 
 
             ;; assert required attributes
-              
+
 
               (= op :db.ensure/attrs)
-              (do
-                (println "Loop Point: " 20)
-                (let [{:keys [tx-data]} report
-                      asserting-datoms (filter (fn [^Datom d] (= e (.-e d))) tx-data)
-                      asserting-attributes (map (fn [^Datom d] (.-a d)) asserting-datoms)
-                      diff (clojure.set/difference (set v) (set asserting-attributes))]
-                  (if (empty? diff)
-                    (recur report entities)
-                    (raise "Entity " e " missing attributes " diff " of spec " a
-                           {:error :transact/ensure
-                            :operation op
-                            :tx-data entity
-                            :asserting-datoms asserting-datoms}))))
+              (let [{:keys [tx-data]} report
+                    asserting-datoms (filter (fn [^Datom d] (= e (.-e d))) tx-data)
+                    asserting-attributes (map (fn [^Datom d] (.-a d)) asserting-datoms)
+                    diff (clojure.set/difference (set v) (set asserting-attributes))]
+                (if (empty? diff)
+                  (recur report entities)
+                  (raise "Entity " e " missing attributes " diff " of spec " a
+                         {:error :transact/ensure
+                          :operation op
+                          :tx-data entity
+                          :asserting-datoms asserting-datoms})))
 
             ;; assert entity predicates
               (= op :db.ensure/preds)
-              (do
-                (println "Loop Point: " 21)
-                (let [{:keys [db-after]} report
-                      preds (assert-preds db-after entity)]
-                  (if-not (empty? preds)
-                    (raise "Entity " e " failed predicates " preds " of spec " a
-                           {:error :transact/ensure
-                            :operation op
-                            :tx-data entity})
-                    (recur report entities))))
+              (let [{:keys [db-after]} report
+                    preds (assert-preds db-after entity)]
+                (if-not (empty? preds)
+                  (raise "Entity " e " failed predicates " preds " of spec " a
+                         {:error :transact/ensure
+                          :operation op
+                          :tx-data entity})
+                  (recur report entities)))
 
               :else
               (raise "Unknown operation at " entity ", expected :db/add, :db/retract, :db.fn/call, :db.fn/retractAttribute, :db.fn/retractEntity or an ident corresponding to an installed transaction function (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)" {:error :transact/syntax, :operation op, :tx-data entity})))
 
           (datom? entity)
-          (do
-            (println "Loop Point: " 22)
-            (let [[e a v tx added] entity]
-              (if added
-                (recur (ha/<? (transact-add report [:db/add e a v tx])) entities)
-                (recur report (cons [:db/retract e a v] entities)))))
+          (let [[e a v tx added] entity]
+            (if added
+              (recur (ha/<? (transact-add report [:db/add e a v tx])) entities)
+              (recur report (cons [:db/retract e a v] entities))))
 
           :else
           (raise "Bad entity type at " entity ", expected map or vector"

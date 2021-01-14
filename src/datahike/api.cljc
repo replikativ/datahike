@@ -3,7 +3,7 @@
   (:require [datahike.connector :as dc]
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
-            [datahike.db :as db ] ;#?@(:cljs [:refer [CurrentDB]])
+            [datahike.db :as db #?@(:cljs [:refer [HistoricalDB AsOfDB SinceDB FilteredDB]])] ;
             [datahike.impl.entity :as de])
   #?(:clj
      (:import [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
@@ -429,12 +429,12 @@ Connect to a database with persistent store:
   {:pre [(de/entity? entity)]}
   (.-db entity))
 
-#_(defn is-filtered
+(defn is-filtered
   "Returns `true` if this database was filtered using [[filter]], `false` otherwise."
   [x]
   (instance? FilteredDB x))
 
-#_(defn filter
+(defn filter
   "Returns a view over database that has same interface but only includes datoms for which the `(pred db datom)` is true. Can be applied multiple times.
 
    Filtered DB gotchas:
@@ -453,7 +453,7 @@ Connect to a database with persistent store:
       (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
     (FilteredDB. db #(pred db %))))
 
-#_(defn- is-temporal? [x]
+(defn- is-temporal? [x]
   (or (instance? HistoricalDB x)
       (instance? AsOfDB x)
       (instance? SinceDB x)))
@@ -463,7 +463,7 @@ Connect to a database with persistent store:
   ([db tx-data] (with db tx-data nil))
   ([db tx-data tx-meta]
    {:pre [(db/db? db)]}
-   (if #_(or (is-filtered db) (is-temporal? db)) false
+   (if (or (is-filtered db) (is-temporal? db)) 
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
      (db/transact-tx-data (db/map->TxReport
                            {:db-before db
@@ -483,18 +483,21 @@ Connect to a database with persistent store:
   [conn]
   @conn)
 
-#_(defn history
+(defn history
   "Returns the full historical state of the database you may interact with."
   [db]
-  (if (db/-temporal-index? db)
-    (HistoricalDB. db)
-    (throw (ex-info "history is only allowed on temporal indexed databases." {:config (db/-config db)}))))
+  (do
+    (println "history is called")
+    (js/console.log "temp-index?" (db/-temporal-index? db))
+    (if (db/-temporal-index? db)
+      (HistoricalDB. db)
+      (throw (ex-info "history is only allowed on temporal indexed databases." {:config (db/-config db)})))))
 
 (defn- date? [d]
   #?(:cljs (instance? js/Date d)
      :clj  (instance? Date d)))
 
-#_(defn as-of
+(defn as-of
   "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long)."
   [db timepoint]
   {:pre [(or (int? timepoint) (date? timepoint))]}
@@ -502,7 +505,7 @@ Connect to a database with persistent store:
     (AsOfDB. db timepoint)
     (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
-#_(defn since
+(defn since
   "Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
   Be aware: the database contains only the datoms that were added since the date."
   [db timepoint]
