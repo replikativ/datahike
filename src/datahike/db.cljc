@@ -209,7 +209,7 @@
        IReversible (-rseq [db] (-rseq (.-eavt db)))
        ICounted (-count [db] (count (.-eavt db)))
        IEmptyableCollection (-empty [db] (empty-db (.-schema db)))
-       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts)) 
+       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
        IEditableCollection (-as-transient [db] (db-transient db))
        ITransientCollection (-conj! [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
        (-persistent! [db] (db-persistent! db))]
@@ -263,7 +263,7 @@
                                    index-type)))))
 
   (-rseek-datoms [db index-type cs]
-                 (do 
+                 (do
                    (println "-rseek-datoms")
                    (-> (ha/<??
                         (ha/go-try
@@ -279,7 +279,7 @@
                   (raise "Attribute" attr "should be marked as :db/index true" {}))
                 (validate-attr attr (list '-index-range 'db attr start end) db)
                 (let [{:keys [avet]} db]
-                  (do 
+                  (do
                     (println "-index-range")
                     (ha/<??
                      (-slice avet
@@ -292,7 +292,7 @@
 
   clojure.data/Diff
   (diff-similar [a b]
-                (do 
+                (do
                   (println "diff-similar")
                   (let [datoms-a (ha/<?? (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))
                         datoms-b (ha/<?? (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))]
@@ -544,7 +544,6 @@
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on AsOfDB")))
-
 
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on AsOfDB")))
                         ([_ _ _] (throw (js/Error. "-lookup is not supported on AsOfDB"))))
@@ -961,12 +960,12 @@
   (when a (validate-attr a (list 'resolve-datom 'db e a v t) db))
   (ha/go-try
    (datom
-    (or (ha/<? (entid-some db e)) default-e)                        ;; e
+    (or (ha/<? (entid-some db e)) default-e)                ;; e
     a                                                       ;; a
     (if (and (some? v) (ref? db a))                         ;; v
       (ha/<? (entid-strict db v))
       v)
-    (or (ha/<? (entid-some db t)) default-tx))))                     ;; t
+    (or (ha/<? (entid-some db t)) default-tx))))            ;; t
 
 (defn components->pattern [db index [c0 c1 c2 c3] default-e default-tx]
   (case index
@@ -1005,7 +1004,6 @@
 (defn entid [db eid]
   {:pre [(db? db)]}
   (ha/go-try
-
    (cond
      (and (number? eid) (pos? eid))
      eid
@@ -1024,7 +1022,7 @@
          :else
          (-> (ha/<? (-datoms db :avet eid)) first :e)))
 
-     #?@(:cljs [(array? eid) (entid db (array-seq eid))])  ;; TODO: reintroduce recur here?
+     #?@(:cljs [(array? eid) (ha/<? (entid db (array-seq eid)))])  ;; TODO: reintroduce recur here?
 
      (keyword? eid)
      (-> (ha/<? (-datoms db :avet [:db/ident eid])) first :e)
@@ -1766,7 +1764,6 @@
           :else
           (raise "Bad entity type at " entity ", expected map or vector"
                  {:error :transact/syntax, :tx-data entity}))))))
-
 
 (defn transact-entities-directly [initial-report initial-es]
   (ha/go-try                                                   ;; TODO: do a take on this at all call sites

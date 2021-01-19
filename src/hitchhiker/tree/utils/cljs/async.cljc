@@ -74,9 +74,9 @@
   [go-f s]
   (go-try
    (loop [res []
-          [f & r] s]
+          s s]
      (if (seq s)
-       (recur (conj res (<? (go-f f))) r)
+       (recur (conj res (<? (go-f (first s)))) (rest s))
        res))))
 
 (defn reduce<

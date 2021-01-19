@@ -65,6 +65,7 @@
                            [?e :name ?v]]]))))
 
 
+
   (go (println (<! (d/q '[:find ?e ?v
                           :in $
                           :where [?e :name ?v]]
@@ -76,6 +77,11 @@
                         @conn-idb
                         '[[(r ?e ?v)
                            [?e :name ?v]]]))))
+
+  ;; Use the pull API
+  (go (println (<! (d/pull @conn-idb [:db/id, :name, :age] 6))))
+  (go (println (<! (d/pull @conn-idb '[*] 6))))
+  (go (println (<! (d/pull-many @conn-idb '[:name :age] [5 6]))))
 
 
   ;; Use the Entity API
@@ -281,10 +287,6 @@
 
 
   (async/go (println (<! ((<! (d/entity @conn-idb-3 :counter)) :counter/count))))
-
-
-
-
 
 
   ;; Blocks auto-format from wrapping the paren at last form
