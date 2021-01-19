@@ -36,12 +36,9 @@ We are interested in tooling experience and suggestions. In particular we care a
 - Transact
 - Query
 - Entity
-
-**Not yet included:**
-
 - History functionality
 - Pull
-- Some special cases
+
 
 ### Setup
 
@@ -117,6 +114,11 @@ We now show how to interact with the database interactively. All API calls retur
   (go
     (let [e (<! (d/entity @conn-idb 6))]
       (println (<! (e :name)))))
+
+
+  ;; Use the pull API
+  (go (println (<! (d/pull @conn-idb [:name :age] 6))))
+  (go (println (<! (d/pull-many @conn-idb '[:name :age] [5 6]))))
 
   ;; Release the connection from the store.
   ;; This is necessary for deletion.
