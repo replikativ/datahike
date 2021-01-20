@@ -46,7 +46,7 @@ You can include this preview in your `deps.edn` with the code below. This is cur
 
 ```clojure
 io.replikativ/datahike {:git/url "https://github.com/replikativ/datahike.git"
-                        :sha "684cf719d93618a4630565078f3efb4b85858070"}
+                        :sha "f581f6fd92aab8160831e931212ab0575ccf53d8"}
 ```
 
 The following is an example of how to use Datahike in your project.
