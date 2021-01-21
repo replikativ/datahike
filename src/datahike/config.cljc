@@ -70,8 +70,8 @@
               (Boolean/parseBoolean bool-str)
               (catch Exception _ default))
        :cljs default #_(if (or (= bool-str "true") (= bool-str "false")) ;; TODO: fix environment settings for browsers
-               (edn/read-string bool-str)
-               (throw (js/Error. (str "Datom/-nth: Index out of bounds: " bool-str))))))
+                         (edn/read-string bool-str)
+                         (throw (js/Error. (str "Datom/-nth: Index out of bounds: " bool-str))))))
 
   (defn map-from-env [key default]
     (try

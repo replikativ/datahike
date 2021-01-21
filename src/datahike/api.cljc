@@ -76,8 +76,7 @@ Connect to a database with persistent store:
   (create-database {:store {:backend :mem :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"}
 
   create-database
-  dc/create-database
-  )
+  dc/create-database)
 
 (def ^{:arglists '([config])
        :doc      "Deletes a database given a database configuration. Storage configuration `:store` is mandatory.
@@ -463,7 +462,7 @@ Connect to a database with persistent store:
   ([db tx-data] (with db tx-data nil))
   ([db tx-data tx-meta]
    {:pre [(db/db? db)]}
-   (if (or (is-filtered db) (is-temporal? db)) 
+   (if (or (is-filtered db) (is-temporal? db))
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
      (db/transact-tx-data (db/map->TxReport
                            {:db-before db

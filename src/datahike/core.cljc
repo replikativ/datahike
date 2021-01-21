@@ -325,11 +325,11 @@
    - Will not return datoms that are not part of the index (e.g. attributes with no `:db/index` in schema when querying `:avet` index).
      - `:eavt` and `:aevt` contain all datoms.
      - `:avet` only contains datoms for references, `:db/unique` and `:db/index` attributes."
-  ([db index] {:pre [(db/db? db)]} (db/-datoms db index []))
-  ([db index c1] {:pre [(db/db? db)]} (db/-datoms db index [c1]))
-  ([db index c1 c2] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2]))
-  ([db index c1 c2 c3] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3]))
-  ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3 c4])))
+  ([db index] {:pre [(db/db? db)]} (ha/go-try (ha/<? (db/-datoms db index []))))
+  ([db index c1] {:pre [(db/db? db)]} (ha/go-try (ha/<? (db/-datoms db index [c1]))))
+  ([db index c1 c2] {:pre [(db/db? db)]} (ha/go-try (ha/<? (db/-datoms db index [c1 c2]))))
+  ([db index c1 c2 c3] {:pre [(db/db? db)]} (ha/go-try (ha/<? (db/-datoms db index [c1 c2 c3]))))
+  ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (ha/go-try (ha/<? (db/-datoms db index [c1 c2 c3 c4])))))
 
 (defn seek-datoms
   "Similar to [[datoms]], but will return datoms starting from specified components and including rest of the database until the end of the index.
@@ -422,8 +422,8 @@
 
 (defn conn-from-datoms
   "Creates an empty DB and a mutable reference to it. See [[create-conn]]."
-  ([datoms] (conn-from-db (init-db datoms)))
-  ([datoms schema] (conn-from-db (init-db datoms schema))))
+  ([datoms] (ha/go-try (conn-from-db (ha/<? (init-db datoms)))))
+  ([datoms schema] (ha/go-try (conn-from-db (ha/<? (init-db datoms schema))))))
 
 (defn create-conn
   "Creates a mutable reference (a “connection”) to an empty immutable database.
@@ -431,8 +431,8 @@
    Connections are lightweight in-memory structures (~atoms) with direct support of transaction listeners ([[listen!]], [[unlisten!]]) and other handy DataScript APIs ([[transact!]], [[reset-conn!]], [[db]]).
 
    To access underlying immutable DB value, deref: `@conn`."
-  ([] (conn-from-db (empty-db)))
-  ([schema] (conn-from-db (empty-db schema))))
+  ([] (ha/go-try  (conn-from-db (ha/<? (empty-db)))))
+  ([schema] (ha/go-try (conn-from-db (ha/<? (empty-db schema))))))
 
 (defn ^:no-doc -transact! [conn tx-data tx-meta]
   {:pre [(conn? conn)]}
@@ -537,25 +537,26 @@
    {:pre [(conn? conn)]}
    (let [report (-transact! conn tx-data tx-meta)]
      #_(doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
-       (println "inside callback")
-       (callback report))
+         (println "inside callback")
+         (callback report))
      report)))
 
 (defn reset-conn!
   "Forces underlying `conn` value to become `db`. Will generate a tx-report that will remove everything from old value and insert everything from the new one."
   ([conn db] (reset-conn! conn db nil))
   ([conn db tx-meta]
-   (let [report (db/map->TxReport
-                 {:db-before @conn
-                  :db-after  db
-                  :tx-data   (concat
-                              (map #(assoc % :added false) (datoms @conn :eavt))
-                              (datoms db :eavt))
-                  :tx-meta   tx-meta})]
-     (reset! conn db)
-     (doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
-       (callback report))
-     db)))
+   (ha/go-try
+    (let [report (db/map->TxReport
+                  {:db-before @conn
+                   :db-after  db
+                   :tx-data   (concat
+                               (map #(assoc % :added false) (ha/<? (datoms @conn :eavt)))
+                               (ha/<? (datoms db :eavt)))
+                   :tx-meta   tx-meta})]
+      (reset! conn db)
+      (doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
+        (callback report))
+      db))))
 
 (defn- atom? [a]
   #?(:cljs (instance? Atom a)
@@ -656,8 +657,7 @@
   ([conn tx-data tx-meta]
    {:pre [(conn? conn)]}
    (ha/go-try
-    (let [res (ha/<? (transact! conn tx-data tx-meta))
-          ]
+    (let [res (ha/<? (transact! conn tx-data tx-meta))]
       (reify-res res)
       #_#?(:cljs
            (reify

@@ -201,7 +201,7 @@
 
 (defn- -missing?
   [db e a]
-  (nil? (get (de/entity db e) a)))
+  (nil? (get (ha/<?? (de/entity db e)) a)))
 
 (defn- and-fn [& args]
   (reduce (fn [a b]

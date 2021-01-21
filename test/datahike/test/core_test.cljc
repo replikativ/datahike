@@ -79,7 +79,7 @@
 
 ;; Core tests
 
-#_#?(:cljs
+#?(:cljs
      (deftest test-protocols
        (async done
               (async/go
@@ -88,11 +88,10 @@
                           (d/db-with (async/<! (d/empty-db schema))
                                      [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
                                       {:db/id 2 :name "Petr" :age 37 :huh? false}]))]
-                  (is (= 2 2))
-                  #_(is (async/<! (= (async/<! (d/empty-db schema))
-                                     (async/<! (empty db)))))
-                ;(is (= 6 (count db)))
-                  #_(is (= (set (async/<! (seq db)))
+                  (is (= (async/<! (d/empty-db schema))
+                         (async/<! (empty db))))
+                  (is (= 6 (count db))) ;; TODO: check this as we a get of :children for this in defrecord-updatable DB
+                  (is (= (set (async/<! (seq db)))
                            #{(d/datom 1 :aka "IV")
                              (d/datom 1 :aka "Terrible")
                              (d/datom 1 :name "Ivan")
@@ -101,48 +100,58 @@
                              (d/datom 2 :huh? false)}))
                   (done))))))
 
+(comment
+  ;; REPL-driven code
+
+  (def schema {:aka {:db/cardinality :db.cardinality/many}})
+
+  (go (def db (async/<!
+               (d/db-with (async/<! (d/empty-db schema))
+                          [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
+                           {:db/id 2 :name "Petr" :age 37 :huh? false}]))))
+
+  (go (println (count db)))
+  (go (println (count (:children (.-eavt db)))))
+
+  (set (seq db))
+
+  ;;
+  )
+
 (defn empty-db-helper []
   (+ 1 1)
-  (db/empty-db)
-  )
+  (db/empty-db))
 
 #?(:cljs (deftest compliance-test-cljs
            (db/empty-db)
            #_(async done
-                  (go
-                    (let [c (async/chan 1)
-                          v #_(ha/<?) (empty-db-helper)]
-                      (is (= 1 1))
-                      (async/>! c 1)
-                      (is (= 1 (ha/<? c)))
-                      (done))))))
-
-
+                    (go
+                      (let [c (async/chan 1)
+                            v #_(ha/<?) (empty-db-helper)]
+                        (is (= 1 1))
+                        (async/>! c 1)
+                        (is (= 1 (ha/<? c)))
+                        (done))))))
 
 #_(defn with
-  "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
-  ([db tx-data] (with db tx-data nil))
-  ([db tx-data tx-meta]
-   {:pre [(db/db? db)]}
-   (db/transact-tx-data (db/map->TxReport
-                         {:db-before db
-                          :db-after  db
-                          :tx-data   []
-                          :tempids   {}
-                          :tx-meta   tx-meta}) tx-data)))
-
-
-
+    "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
+    ([db tx-data] (with db tx-data nil))
+    ([db tx-data tx-meta]
+     {:pre [(db/db? db)]}
+     (db/transact-tx-data (db/map->TxReport
+                           {:db-before db
+                            :db-after  db
+                            :tx-data   []
+                            :tempids   {}
+                            :tx-meta   tx-meta}) tx-data)))
 
 #_#?(:cljs (deftest sandbox
-           (ha/go-try (let [bob-db (:db-after (ha/<? (with (ha/<? (db/empty-db)) [{:name "bob" :age 5}])))]))))
-
+             (ha/go-try (let [bob-db (:db-after (ha/<? (with (ha/<? (db/empty-db)) [{:name "bob" :age 5}])))]))))
 
 (comment
   ;; REPL code
 
   (def schema {:aka {:db/cardinality :db.cardinality/many}})
-
 
   (async/go
     (def db (async/<! (d/db-with (async/<! (d/empty-db schema))

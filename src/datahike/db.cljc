@@ -207,9 +207,9 @@
        IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (-seq (.-eavt db)))
        IReversible (-rseq [db] (-rseq (.-eavt db)))
-       ICounted (-count [db] (count (.-eavt db)))
+       ICounted (-count [db] (count (:children (.-eavt db))))
        IEmptyableCollection (-empty [db] (empty-db (.-schema db)))
-       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
+       ;IPrintWithWriter (-pr-writer [db w opts] (do (println "calling printer updatable") (pr-db db w opts)))
        IEditableCollection (-as-transient [db] (db-transient db))
        ITransientCollection (-conj! [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
        (-persistent! [db] (db-persistent! db))]
@@ -309,7 +309,7 @@
       [IEquiv (-equiv [db other] (ha/<?? (equiv-db db other)))
        ISeqable (-seq [db] (ha/<?? (-datoms db :eavt [])))
        ICounted (-count [db] (count (ha/<?? (-datoms db :eavt []))))
-       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
+       IPrintWithWriter (-pr-writer [db w opts] (do (println "calling printer filtered") (pr-db db w opts)))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
 
@@ -888,6 +888,7 @@
 
 #?(:cljs
    (defn pr-db [db w opts]
+     (println "inside of pr-db")
      (-write w "#datahike/DB {")
      (-write w (str ":max-tx " (-max-tx db) " "))
      (-write w (str ":max-eid " (-max-eid db) " "))
@@ -950,6 +951,7 @@
      (defmethod pp/simple-dispatch FilteredDB [db] (pp-db db *out*))))
 
 (defn db-from-reader [{:keys [schema datoms]}]
+  (println "called db-from-reader")
   (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema))
 
 ;; ----------------------------------------------------------------------------

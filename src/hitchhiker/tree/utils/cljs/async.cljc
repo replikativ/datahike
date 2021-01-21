@@ -70,14 +70,26 @@
         ch))))
 
 (defn map<
-  "Maps over a sequence s with a go function go-f."
-  [go-f s]
-  (go-try
-   (loop [res []
-          s s]
-     (if (seq s)
-       (recur (conj res (<? (go-f (first s)))) (rest s))
-       res))))
+  "Maps over a coll or colls with a go function go-f."
+  ([go-f s]
+   (go-try
+    (loop [res []
+           s s]
+      (if (seq s)
+        (recur (conj res (<? (go-f (first s)))) (rest s))
+        res))))
+  ([go-f s1 s2]
+   (go-try
+    (loop [res []
+           s1 s1
+           s2 s2]
+      (if (and (seq s1) (seq s2))
+        (recur (conj res (<? (go-f (first s1) (first s2)))) (rest s1) (rest s2))
+        res)))))
+
+
+
+
 
 (defn reduce<
   "Reduces over a sequence s with a go function go-f given the initial value
@@ -89,6 +101,19 @@
      (if f
        (recur (<? (go-f res f)) r)
        res))))
+
+(defn mapv<
+  "Returns a vector consisting of the result of applying f to the
+  set of first items of each coll, followed by applying f to the set
+  of second items in each coll, until any one of the colls is
+  exhausted.  Any remaining items in other colls are ignored. Function
+  f should accept number-of-colls arguments."
+  {:added "1.4"
+   :static true}
+  ([go-f coll]
+   (reduce< (fn [v o] (go-try (conj! v (<? (go-f o))))) [] coll))
+  ([go-f c1 c2]
+   (go-try (into [] (<? (map< go-f c1 c2))))))
 
 (defn update-in< [m ks go-f & args]
   (let [up (fn up [m ks go-f args]

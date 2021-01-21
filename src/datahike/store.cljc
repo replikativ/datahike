@@ -75,13 +75,11 @@
 
 (defmethod empty-store :mem [{:keys [id]}]
   (go-try S
-   (if-let [store (get @memory id)]
-     store
-     (let [store (<? S (mem/new-mem-store))]
-       (swap! memory assoc id store)
-       store))))
-
-
+          (if-let [store (get @memory id)]
+            store
+            (let [store (<? S (mem/new-mem-store))]
+              (swap! memory assoc id store)
+              store))))
 
 (defmethod delete-store :mem [{:keys [id]}]
   (swap! memory dissoc id))
@@ -110,12 +108,11 @@
           (kons/add-hitchhiker-tree-handlers
            (<?? S (fs/new-fs-store path)))))
 
-
 #_#?(:clj (defmethod delete-store  :indexeddb [{:keys [id]}]
-          (fs/delete-store id)))
+            (fs/delete-store id)))
 
 #?(:cljs (defmethod delete-store :file [{:keys [path]}]
-          (fs/delete-store path)))
+           (fs/delete-store path)))
 
 #?(:clj (defmethod connect-store :file [{:keys [path]}]
           (<?? S (fs/new-fs-store path))))
@@ -126,15 +123,12 @@
 
 @indexeddb
 
-
-
 #?(:cljs (defmethod empty-store :indexeddb [{:keys [id]}]
            (go-try S
                    (let [store (kons/add-hitchhiker-tree-handlers
                                 (<? S (new-indexeddb-store id :serializer (ser/fressian-serializer))))]
                      (swap! indexeddb assoc id store)
                      store))))
-
 
 #?(:cljs (defmethod connect-store :indexeddb [{:keys [id]}]
            (go-try S
@@ -143,7 +137,6 @@
                                     (<? S (new-indexeddb-store id :serializer (ser/fressian-serializer))))]
                          (swap! indexeddb assoc id store)
                          store)))))
-
 
 #?(:cljs (defmethod release-store :indexeddb [{:keys [id]}]
            (do
@@ -154,12 +147,9 @@
 #?(:cljs (defmethod delete-store :indexeddb [{:keys [id]}]
            (go-try S
                    (let [deleted? (ha/<? (delete-indexeddb-store id))]
-                     (when deleted? 
+                     (when deleted?
                        (swap! indexeddb dissoc id)
                        (println "Database deleted: " id))))))
-
-
-
 
 (defmethod scheme->index :file [_]
   :datahike.index/hitchhiker-tree)

@@ -1,5 +1,7 @@
 (ns api-sandbox
   (:require [datahike.api :as d]
+            [clojure.core.async :as async]
+            [hitchhiker.tree.utils.cljs.async :as ha]
             [datahike.impl.entity :as de]
             [clojure.core.async :as async :refer [go <!]]
             [datahike.db :as db]))
@@ -32,23 +34,27 @@
   ;; REPL-driven code
 
 
+
+
   ;; Create an indexeddb store
-  (d/create-database cfg-idb)
+  (go (println "created db" (<! (d/create-database cfg-idb))))
 
   ;; Connect to the indexeddb store
   (go (def conn-idb (<! (d/connect cfg-idb))))
 
 
   ;; Transact some data to the store
-  (d/transact conn-idb [{:name "Alice"
-                         :age  26}
-                        {:name "Bob"
-                         :age  35
-                         :_friend [{:name "Mike"
-                                    :age 28}]}
-                        {:name  "Charlie"
-                         :age   45
-                         :sibling [[:name "Alice"] [:name "Bob"]]}])
+  (go (js/console.log "called transact in sandbox"
+                      (<! (d/transact conn-idb [{:name "Alice"
+                                                 :age  26}
+                                                {:name "Bob"
+                                                 :age  35
+                                                 :_friend [{:name "Mike"
+                                                            :age 28}]}
+                                                {:name  "Charlie"
+                                                 :age   45
+                                                 :sibling [[:name "Alice"] [:name "Bob"]]}]))))
+
 
   ;; Run queries against the store
   (go (println (<! (d/q '[:find ?e ?a ?v ?t
@@ -56,6 +62,8 @@
                           :where [?e :name ?v ?t] [?e :age ?a]]
                         @conn-idb
                         26))))
+
+
 
   (go (println (<! (d/q '[:find ?e ?v
                           :in $ %
@@ -287,6 +295,28 @@
 
 
   (async/go (println (<! ((<! (d/entity @conn-idb-3 :counter)) :counter/count))))
+
+
+  (go (def test-db (<! (datahike.core/db-with (<! (datahike.core/empty-db))
+                             [{:db/id 1 :name "Ivan" :age 10}
+                              {:db/id 2 :name "Ivan" :age 20}
+                              {:db/id 3 :name "Oleg" :age 10}
+                              {:db/id 4 :name "Oleg" :age 20}
+                              {:db/id 5 :name "Ivan" :age 10}
+                              {:db/id 6 :name "Ivan" :age 20}]))))
+  (println test-db)
+  (go (println (set (<! (d/q (vec (concat '[:find [?e ...] :where] (quote [[?e :name]
+                                                                           (not [?e :name "Ivan"])
+                                                                           (not [?e :age 10])]))) test-db)))))
+  
+  (go (println (set (<! (d/q
+                         (vec (concat '[:find [?e ...] :where]
+                                      (quote [[?e :name]
+                                              (not
+                                               [?e :name "Ivan"]
+                                               [?e :age  10])])))
+                         test-db)))))
+  
 
 
   ;; Blocks auto-format from wrapping the paren at last form

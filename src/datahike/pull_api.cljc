@@ -1,7 +1,7 @@
 (ns ^:no-doc datahike.pull-api
   (:require
    [datahike.db :as db]
-   [clojure.core.async :as async]
+   [clojure.core.async :as async :refer [go <!]]
    [hitchhiker.tree.utils.cljs.async :as ha]
    #?(:cljs [datahike.datom :refer [Datom]])
    #?(:cljs [datalog.parser.pull :refer [PullSpec]])
