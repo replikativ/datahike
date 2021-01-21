@@ -4,22 +4,20 @@ At database creation _Datahike_ supports features that can be configured based o
 
 ## Configuration
 
-Configuring _Datahike_ is now possible via the [environ library made by weavejester](https://github.com/weavejester/environ). That means you can use the lein-environ plugins for leiningen or boot to read variables from `.lein-env` or `.boot.env`. Without using the plugins you can use environment variables, java system properties and passing a config-map as argument.
+Configuring _Datahike_ is now possible via the [environ library made by weavejester](https://github.com/weavejester/environ). You can use environment variables, java system properties and passing a config-map as argument.
 
 The sources are resolved in following order:
-1. A .lein-env file in the project directory
-2. A .boot-env file on the classpath
-3. Environment variables
-4. Java system properties
-5. Argument to load-config
+1. Environment variables
+2. Java system properties
+3. Argument to load-config
 
 That means passing a config as argument overwrites java system properties and using java system properties overwrite environment variables etc. Currently the configuration map looks like this per default:
 
 ```
-{:store 	     {:backend  :mem        ;keyword
+{:store              {:backend  :mem        ;keyword
                       :id       "default"}  ;string
  :name               (generated)            ;string
- :schema-flexibility :write    		    ;keyword
+ :schema-flexibility :write                 ;keyword
  :keep-history?      true}                  ;boolean
 ```
 

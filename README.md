@@ -2,8 +2,8 @@
     Datahike
 </h1>
 <p align="center">
-<a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://img.shields.io/badge/clojurians%20slack-join%20channel-blueviolet"/></a>
-<a href="https://gitter.im/replikativ/replikativ?utm_source=badge&amp;utm_medium=badge&amp;utm_campaign=pr-badge&amp;utm_content=badge"><img src="https://camo.githubusercontent.com/da2edb525cde1455a622c58c0effc3a90b9a181c/68747470733a2f2f6261646765732e6769747465722e696d2f4a6f696e253230436861742e737667" alt="Gitter" data-canonical-src="https://badges.gitter.im/Join%20Chat.svg" style="max-width:100%;"></a>
+<a href="https://discord.com/invite/kEBzMvb"><img src="https://img.shields.io/discord/735146089241509909?label=discord&logo=Discord"/></a>
+<a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://badgen.net/badge/-/slack?icon=slack&label"/></a>
 <a href="https://clojars.org/io.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/io.replikativ/datahike.svg" /></a>
 <a href="https://circleci.com/gh/replikativ/datahike"><img src="https://circleci.com/gh/replikativ/datahike.svg?style=shield"/></a>
 <a href="https://github.com/replikativ/datahike/tree/development"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/development"/></a>
@@ -22,7 +22,9 @@ building on the two projects and the storage backends for the hitchhiker-tree
 through [konserve](https://github.com/replikativ/konserve). We would like to
 hear experience reports and are happy if you join us.
 
-You may find articles on Datahike on our company's [blog page](https://lambdaforge.io/articles).
+You can find [API documentation on cljdoc](https://cljdoc.org/d/io.replikativ/datahike) and articles on Datahike on our company's [blog page](https://lambdaforge.io/articles).
+
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
 
 We presented Datahike also at meetups,for example at:
 
@@ -32,7 +34,7 @@ We presented Datahike also at meetups,for example at:
 
 ## Usage
 
-Add to your leiningen dependencies:
+Add to your dependencies:
 
 [![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
 
@@ -117,7 +119,7 @@ Refer to the docs for more information:
 - [differences from Datomic](./doc/datomic_differences.md)
 - [backend development](./doc/backend-development.md)
 - [logging and error handling](./doc/logging_and_error_handling.md)
-- [releasing Datahike](./doc/release.md)
+- [contributing to Datahike](./doc/contributing.md)
 
 
 For simple examples have a look at the projects in the `examples` folder.
@@ -135,7 +137,7 @@ There is a small command line utility integrated in this project to measure the 
 To run the benchmarks, navigate to the project folder in your terminal and run 
 
 ```bash
-lein with-profile benchmark run 
+clj -A:benchmark
 ```
 
 You will receive a list containing information about what has been tested and the mean of measured times in milliseconds as follows:

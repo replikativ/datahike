@@ -19,7 +19,7 @@ function teardown() {
 
 CONTAINER_NAME=$(setup)
 
-lein kaocha integration
+bin/kaocha --focus :integration
 
-DATAHIKE_STORE_BACKEND=pg DATAHIKE_STORE_HOST=localhost DATAHIKE_STORE_PORT=5432 DATAHIKE_STORE_USER=alice DATAHIKE_STORE_PASSWORD=foo DATAHIKE_STORE_DBNAME=config-test lein kaocha integration --focus datahike.integration-test.config-record-test
+DATAHIKE_STORE_BACKEND=pg DATAHIKE_STORE_HOST=localhost DATAHIKE_STORE_PORT=5432 DATAHIKE_STORE_USER=alice DATAHIKE_STORE_PASSWORD=foo DATAHIKE_STORE_DBNAME=config-test bin/kaocha --focus datahike.integration-test.config-record-test
 

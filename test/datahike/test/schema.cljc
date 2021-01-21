@@ -5,6 +5,7 @@
    [datahike.api :as d]
    [datahike.schema :as ds]
    [datahike.db :as dd]
+   [datahike.datom :as da]
    [datahike.test.core :as tdc])
   (:import [java.lang System]))
 
@@ -83,7 +84,7 @@
 
     (testing "insert schema with incorrect value type"
       (is (thrown-msg?
-           "Bad entity value :string at [:db/add 3 :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/number :db.type/instant :db.type/boolean :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/symbol}"
+           "Bad entity value :string at [:db/add 3 :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/number :db.type/instant :db.type/tuple :db.type/boolean :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/symbol}"
            (d/transact conn [{:db/ident       :phone
                               :db/cardinality :db.cardinality/one
                               :db/valueType   :string}]))))))
@@ -324,3 +325,15 @@
         (d/transact conn [{:message "important" :tag :important} {:message "archive" :tag [:important :archive]}])
         (is (= #{["important" :important] ["archive" :important] ["archive" :archive]}
                (d/q '[:find ?m ?t :where [?e :message ?m] [?e :tag ?te] [?te :db/ident ?t]] (d/db conn))))))))
+
+(deftest test-remove-schema
+  (let [cfg "datahike:mem://test-empty-db"
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        conn (d/connect cfg)
+        db (d/db conn)]
+    (testing "non existing schema should throw exception"
+      (is (thrown-msg? "Schema with attribute :name does not exist"
+                       (dd/remove-schema db (da/datom 1 :db/ident :name)))))
+    (testing "when upserting a non existing schema, it should not throw an exception"
+      (is (d/transact conn [name-schema])))))

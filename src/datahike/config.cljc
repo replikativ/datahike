@@ -1,4 +1,4 @@
-(ns datahike.config
+(ns ^:no-doc datahike.config
   (:require [clojure.edn :as edn]
             [clojure.spec.alpha :as s]
             [zufall.core :as z]
@@ -124,7 +124,6 @@
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
                  :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}
          merged-config ((comp remove-nils deep-merge) config config-as-arg)
-         _             (log/debug "Using config " merged-config)
          {:keys [keep-history? name schema-flexibility index initial-tx store]} merged-config
          config-spec (ds/config-spec store)]
      (when config-spec

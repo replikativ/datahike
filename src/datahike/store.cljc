@@ -1,10 +1,11 @@
-(ns datahike.store
+(ns ^:no-doc datahike.store
   (:require [hitchhiker.tree.bootstrap.konserve :as kons]
             [clojure.spec.alpha :as s]
             [konserve.filestore :as fs]
             [konserve.memory :as mem]
             [superv.async :refer [<?? S]]
-            [environ.core :refer [env]]))
+            [environ.core :refer [env]]
+            [datahike.index.hitchhiker-tree.upsert :as ups]))
 
 (defmulti empty-store
   "Creates an empty store"
@@ -96,8 +97,9 @@
 ;; file
 
 (defmethod empty-store :file [{:keys [path]}]
-  (kons/add-hitchhiker-tree-handlers
-   (<?? S (fs/new-fs-store path))))
+  (ups/add-upsert-handler
+   (kons/add-hitchhiker-tree-handlers
+    (<?? S (fs/new-fs-store path)))))
 
 (defmethod delete-store :file [{:keys [path]}]
   (fs/delete-store path))

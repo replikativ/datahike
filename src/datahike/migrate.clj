@@ -1,4 +1,4 @@
-(ns datahike.migrate
+(ns ^:no-doc datahike.migrate
   (:require [datahike.api :as api]
             [datahike.db :as db]
             [clojure.java.io :as io]))

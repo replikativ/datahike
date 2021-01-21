@@ -132,7 +132,7 @@
        (containsKey [e k] (not= ::nf (lookup-entity e k ::nf)))
        (entryAt [e k]     (some->> (lookup-entity e k) (clojure.lang.MapEntry. k)))
 
-       (empty [e]         (throw (UnsupportedOperationException.)))
+       (empty [e]         {})
        (assoc [e k v]     (throw (UnsupportedOperationException.)))
        (cons  [e [k v]]   (throw (UnsupportedOperationException.)))
        (count [e]         (touch e) (count @(.-cache e)))

@@ -1,4 +1,4 @@
-(ns datahike.index
+(ns ^:no-doc datahike.index
   (:require [datahike.index.hitchhiker-tree :as dih]
             [datahike.index.persistent-set :as dip])
   #?(:clj (:import [hitchhiker.tree DataNode IndexNode]
@@ -10,6 +10,8 @@
   (-seq [index])
   (-count [index])
   (-insert [index datom index-type])
+  (-upsert [index datom index-type])
+  (-temporal-upsert [index datom index-type])
   (-remove [index datom index-type])
   (-slice [index from to index-type])
   (-flush [index backend])
@@ -26,6 +28,10 @@
     (dih/-count eavt-tree :eavt))
   (-insert [tree datom index-type]
     (dih/-insert tree datom index-type))
+  (-upsert [tree datom index-type]
+    (dih/-upsert tree datom index-type))
+  (-temporal-upsert [tree datom index-type]
+    (dih/-temporal-upsert tree datom index-type))
   (-remove [tree datom index-type]
     (dih/-remove tree datom index-type))
   (-slice [tree from to index-type]
@@ -47,6 +53,10 @@
     (dih/-count eavt-tree :eavt))
   (-insert [tree datom index-type]
     (dih/-insert tree datom index-type))
+  (-upsert [tree datom index-type]
+    (dih/-upsert tree datom index-type))
+  (-temporal-upsert [tree datom index-type]
+    (dih/-temporal-upsert tree datom index-type))
   (-remove [tree datom index-type]
     (dih/-remove tree datom index-type))
   (-slice [tree from to index-type]
@@ -68,6 +78,10 @@
     (dip/-count eavt-set))
   (-insert [set datom index-type]
     (dip/-insert set datom index-type))
+  (-upsert [set datom index-type]
+    (dip/-upsert set datom index-type))
+  (-temporal-upsert [set datom index-type]
+    (dip/-temporal-upsert set datom index-type))
   (-remove [set datom index-type]
     (dip/-remove set datom index-type))
   (-slice [set from to _]

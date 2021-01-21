@@ -1,4 +1,4 @@
-(ns datahike.query
+(ns ^:no-doc datahike.query
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    [clojure.set :as set]
@@ -242,7 +242,8 @@
                 'count      count, 'range range, 'not-empty not-empty, 'empty? empty, 'contains? contains?,
                 'str        str, 'pr-str pr-str, 'print-str print-str, 'println-str println-str, 'prn-str prn-str, 'subs subs,
                 're-find    re-find, 're-matches re-matches, 're-seq re-seq,
-                '-differ?   -differ?, 'get-else -get-else, 'get-some -get-some, 'missing? -missing?, 'ground identity, 'before? -lesser?, 'after? -greater?})
+                '-differ?   -differ?, 'get-else -get-else, 'get-some -get-some, 'missing? -missing?, 'ground identity, 'before? -lesser?, 'after? -greater?
+                'tuple vector, 'untuple identity})
 
 (def built-in-aggregates
   (letfn [(sum [coll] (reduce + 0 coll))
@@ -989,15 +990,16 @@
 
 (defmulti q (fn [query & args] (type query)))
 
-(defmethod q clojure.lang.LazySeq [query & inputs]
-  (q {:query query :args inputs}))
+(defmethod q clojure.lang.LazySeq [query & args]
+  (q {:query query :args args}))
 
-(defmethod q clojure.lang.PersistentVector [query & inputs]
-  (q {:query query :args inputs}))
+(defmethod q clojure.lang.PersistentVector [query & args]
+  (q {:query query :args args}))
 
-(defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
+(defmethod q clojure.lang.PersistentArrayMap [query-map & args]
   (let [query         (if (contains? query-map :query) (:query query-map) query-map)
-        args          (if (contains? query-map :args) (:args query-map) inputs)
+        query         (if (string? query) (edn/read-string query) query)
+        args          (if (contains? query-map :args) (:args query-map) args)
         parsed-q      (memoized-parse-query query)
         find          (:qfind parsed-q)
         find-elements (dpip/find-elements find)

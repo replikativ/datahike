@@ -39,7 +39,10 @@
     (let [conn (d/connect config)]
       (d/transact conn [{:db/id 1, :name "Alice"}])
       (is (= me.tonsky.persistent_sorted_set.PersistentSortedSet
-             (-> @conn :eavt type))))))
+             (-> @conn :eavt type)))
+      ;; test upsert
+      (d/transact conn [{:db/id 1, :name "Paula"}])
+      (is (= "Paula" (:name (d/entity @conn 1)))))))
 
 (deftest test-hitchhiker-tree-index
   (let [config {:store {:backend :mem
