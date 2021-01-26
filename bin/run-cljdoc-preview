@@ -4,8 +4,8 @@ rm -rf /tmp/cljdoc
 mkdir -p /tmp/cljdoc
 version=$(xmllint --xpath '/*[local-name()="project"]/*[local-name()="version"]/text()' pom.xml)
 
-clj -A:build
-clj -A:install
+clj -M:build
+clj -Sdeps '{:deps {slipset/deps-deploy {:mvn/version "0.1.5"}}}' -m deps-deploy.deps-deploy install replikativ-datahike.jar
 
 echo "---- cljdoc preview: ingesting datahike"
 docker run --rm
