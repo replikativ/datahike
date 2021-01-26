@@ -1,14 +1,12 @@
 (ns datahike.test.core
   (:require
-   [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
-   [clojure.string :as str]
+   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
+      :clj [clojure.test :as t :refer [is are deftest testing]])
    #?(:clj [kaocha.stacktrace])
    [datahike.core :as d]
    [datahike.impl.entity :as de]
    [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
-                           :clj  [:refer [defrecord-updatable]])]
+                           :clj [:refer [defrecord-updatable]])]
    #?(:cljs [datahike.test.cljs])))
 
 #?(:cljs
@@ -39,9 +37,9 @@
 
 (defn wrap-res [f]
   #?(:cljs (do (f) (clj->js @test-summary))
-     :clj  (let [res (f)]
-             (when (pos? (+ (:fail res) (:error res)))
-               (System/exit 1)))))
+     :clj (let [res (f)]
+            (when (pos? (+ (:fail res) (:error res)))
+              (System/exit 1)))))
 
 ;; utils
 #?(:clj

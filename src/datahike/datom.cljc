@@ -256,3 +256,11 @@
           (== diff 0) (recur only-a only-b (conj both first-a) (next a) (next b))
           (< diff 0) (recur (conj only-a first-a) only-b both (next a) b)
           (> diff 0) (recur only-a (conj only-b first-b) both a (next b)))))))
+
+(defn coll->datoms
+  "Converts a collection with elements of form [e a v t] into a collection of Datoms."
+  [coll]
+  (map
+   (fn [[e a v t]]
+     (datom e a v t))
+   coll))

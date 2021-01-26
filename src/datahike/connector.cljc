@@ -31,9 +31,9 @@
         temporal-avet-flushed (when keep-history? (di/-flush temporal-avet backend))]
     (<?? S (k/assoc-in store [:db]
                        (merge
-                        {:schema   schema
-                         :rschema  rschema
-                         :config   config
+                        {:schema schema
+                         :rschema rschema
+                         :config config
                          :hash hash
                          :max-tx max-tx
                          :eavt-key eavt-flushed
@@ -170,11 +170,11 @@
           (db/empty-db nil config)
           backend (kons/->KonserveBackend store)]
       (<?? S (k/assoc-in store [:db]
-                         (merge {:schema   schema
+                         (merge {:schema schema
                                  :max-tx max-tx
                                  :hash hash
-                                 :rschema  rschema
-                                 :config   config
+                                 :rschema rschema
+                                 :config config
                                  :eavt-key (di/-flush eavt backend)
                                  :aevt-key (di/-flush aevt backend)
                                  :avet-key (di/-flush avet backend)}

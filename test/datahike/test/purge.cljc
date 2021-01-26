@@ -37,13 +37,13 @@
   (let [conn (create-test-db "datahike:mem://test-purge")]
     (testing "retract datom, data is removed from current db and found in history"
       (let [name "Alice"]
-        (d/transact conn [[:db/retract [:name "Alice"] :age 25]])
+        (d/transact conn [[:db/retract [:name name] :age 25]])
         (are [x y] (= x y)
           true (nil? (find-age @conn name))
           25 (find-age (d/history @conn) name))))
     (testing "purge datom from current index and from history"
       (let [name "Bob"]
-        (d/transact conn [[:db/purge [:name "Bob"] :age 35]])
+        (d/transact conn [[:db/purge [:name name] :age 35]])
         (are [x y] (= x y)
           true (nil? (find-age @conn name))
           true (nil? (find-age (d/history @conn) name)))))
@@ -54,11 +54,39 @@
           true (nil? (find-age @conn name))
           true (nil? (find-age (d/history @conn) name)))))))
 
+(let [conn (create-test-db "datahike:mem://test-purge-attribute")]
+  (let [name "Alice"]
+    (println "test1")
+    (println "datoms" (d/datoms @conn :eavt))
+    (d/transact conn [[:db.purge/attribute [:name name] :age]])
+    (println "datoms" (d/datoms @conn :eavt))
+    (println (find-age @conn name))
+    (println (find-age (d/history @conn) name))
+    (println (d/q '[:find ?n :where [_ :name ?n]] @conn)))
+
+  (let [name "Bob"]
+    (println "test2")
+    (println "datoms before" (filter #(= 4 (.-e %)) (d/datoms @conn :eavt)))
+    (d/transact conn [[:db.fn/retractAttribute [:name name] :age]])
+    (println "datoms after" (filter #(= 4 (.-e %)) (d/datoms @conn :eavt)))
+    (println (find-age @conn name))
+    (println (find-age (d/history @conn) name))
+    (println (d/q '[:find ?n :where [_ :name ?n]] @conn))
+
+  (println "test3")
+  (println "datoms before" (filter #(= 4 (.-e %)) (d/datoms @conn :eavt)))
+  (d/transact conn [[:db.purge/entity [:name name] :age]])
+  (println "datoms after" (filter #(= 4 (.-e %)) (d/datoms @conn :eavt)))
+  (println (find-age @conn name))
+  (println (find-age (d/history @conn) name))
+  (println (d/q '[:find ?n :where [_ :name ?n]] @conn))))
+
+
 (deftest test-purge-attribute
   (let [conn (create-test-db "datahike:mem://test-purge-attribute")]
     (testing "purge attribute from current index"
       (let [name "Alice"]
-        (d/transact conn [[:db.purge/attribute [:name "Alice"] :age]])
+        (d/transact conn [[:db.purge/attribute [:name name] :age]])
         (are [x y] (= x y)
           true (nil? (find-age @conn name))
           true (nil? (find-age (d/history @conn) name))

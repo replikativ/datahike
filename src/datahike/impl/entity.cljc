@@ -168,10 +168,14 @@
          v
          (if @(.-touched this)
            not-found
-           (if-some [datoms (not-empty (db/-search (.-db this) [(.-eid this) attr]))]
-             (let [value (entity-attr (.-db this) attr datoms)]
-               (vreset! (.-cache this) (assoc @(.-cache this) attr value))
-               value)
+           (if-let [a (if (:attribute-refs? (db/-config (.-db this)))
+                        (db/-ref-for (.-db this) attr)
+                        attr)]
+             (if-some [datoms (not-empty (db/-search (.-db this) [(.-eid this) a]))]
+               (let [value (entity-attr (.-db this) a datoms)]
+                 (vreset! (.-cache this) (assoc @(.-cache this) attr value))
+                 value)
+               not-found)
              not-found)))))))
 
 (defn touch-components [db a->v]
@@ -185,9 +189,12 @@
              {} a->v))
 
 (defn- datoms->cache [db datoms]
-  (reduce (fn [acc part]
-            (let [a (:a (first part))]
-              (assoc acc a (entity-attr db a part))))
+  (reduce (fn [acc partition]
+            (let [a (:a (first partition))
+                  a-ident (if (:attribute-refs? (db/-config db))
+                            (db/-ident-for db a)
+                            a)]
+              (assoc acc a-ident (entity-attr db a-ident partition))))
           {} (partition-by :a datoms)))
 
 (defn touch [^Entity e]

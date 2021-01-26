@@ -109,6 +109,7 @@
                                    :db/tupleAttrs {:db/valueType :db.type/tuple
                                                    :db/cardinality :db.cardinality/one}})
 
+
 (def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleType :db/tupleTypes :db/tupleAttrs})
 
 (s/def ::old-schema-val (s/keys :req [:db/valueType :db/cardinality]
@@ -124,28 +125,30 @@
 (defn explain-old-schema [schema]
   (s/explain-data ::old-schema schema))
 
-(defn meta-attr? [attr]
-  (s/valid? ::meta-attribute attr))
+(defn meta-attr? [a-ident]
+  (s/valid? ::meta-attribute a-ident))
 
-(defn schema-attr? [attr]
-  (s/valid? ::schema-attribute attr))
+(defn schema-attr? [a-ident]
+  (s/valid? ::schema-attribute a-ident))
 
-(defn entity-spec-attr? [attr]
-  (s/valid? ::entity-spec-attribute attr))
+(defn entity-spec-attr? [a-ident]
+  (s/valid? ::entity-spec-attribute a-ident))
 
-(defn value-valid? [[_ _ a v _] schema]
-  (let [schema (if (or (meta-attr? a) (schema-attr? a) (entity-spec-attr? a))
+(defn value-valid? [a-ident v-ident schema]
+  (let [schema (if (or (meta-attr? a-ident) (schema-attr? a-ident) (entity-spec-attr? a-ident))
                  implicit-schema-spec
                  schema)
-        value-type (get-in schema [a :db/valueType])]
-    (s/valid? value-type v)))
+        value-type (get-in schema [a-ident :db/valueType])]
+    (s/valid? value-type v-ident)))
 
-(defn instant? [^Datom datom schema]
-  (let [a (.-a datom)
-        schema (if (or (meta-attr? a) (schema-attr? a))
+(defn instant? [db ^Datom datom schema]
+  (let [a-ident (if (:attribute-refs? (:config db))
+                  ((:ref-ident-map db) (.-a datom))
+                  (.-a datom))
+        schema (if (or (meta-attr? a-ident) (schema-attr? a-ident))
                  implicit-schema-spec
                  schema)]
-    (= (get-in schema [a :db/valueType]) :db.type/instant)))
+    (= (get-in schema [a-ident :db/valueType]) :db.type/instant)))
 
 (defn schema-entity? [entity]
   (some #(contains? entity %) schema-keys))
@@ -173,3 +176,12 @@
            (assoc m attr-def [old-value new-value])))))
    {}
    (dissoc entity :db/id)))
+
+(defn is-system-keyword? [value]
+  (and (or (keyword? value) (string? value))
+       (if-let [ns (namespace (keyword value))]
+         (= "db" (first (clojure.string/split ns #"\.")))
+         false)))
+
+(defn get-user-schema [{:keys [schema] :as db}]
+  (into {} (filter #(not (is-system-keyword? (key %))) schema)))

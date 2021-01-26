@@ -6,7 +6,7 @@
    [datahike.schema :as ds]
    [datahike.db :as dd]
    [datahike.datom :as da]
-   [datahike.test.core :as tdc])
+   [datahike.constants :as c])
   (:import [java.lang System]))
 
 #?(:clj
@@ -34,7 +34,7 @@
         db (d/db conn)
         tx [{:name "Alice"}]]
 
-    (is (= dd/implicit-schema (dd/-schema db)))
+    (is (= c/non-ref-implicit-schema (dd/-schema db)))
 
     (testing "transact without schema present"
       (is (thrown-msg?
@@ -45,7 +45,7 @@
       (d/transact conn [name-schema])
       (is (= #{[:name :db.type/string :db.cardinality/one]}
              (d/q find-schema-q (d/db conn))))
-      (is (= (merge dd/implicit-schema
+      (is (= (merge c/non-ref-implicit-schema
                     {:name     #:db{:ident       :name
                                     :valueType   :db.type/string
                                     :cardinality :db.cardinality/one}
@@ -97,7 +97,7 @@
 
     (testing "schema existence"
       (let [db (d/db conn)]
-        (is (= (merge dd/implicit-schema
+        (is (= (merge c/non-ref-implicit-schema
                       {:name     #:db{:ident       :name
                                       :valueType   :db.type/string
                                       :cardinality :db.cardinality/one}
@@ -114,7 +114,7 @@
                          :db/valueType   :db.type/long
                          :db/cardinality :db.cardinality/one}])
       (let [db (d/db conn)]
-        (is (= (merge dd/implicit-schema
+        (is (= (merge c/non-ref-implicit-schema
                       {:name     #:db{:ident       :name
                                       :valueType   :db.type/string
                                       :cardinality :db.cardinality/one}
@@ -135,7 +135,7 @@
       (d/transact conn [{:db/ident :name
                          :db/cardinality :db.cardinality/many}])
       (let [db (d/db conn)]
-        (is (= (merge dd/implicit-schema
+        (is (= (merge c/non-ref-implicit-schema
                       {:name     #:db{:ident       :name
                                       :valueType   :db.type/string
                                       :cardinality :db.cardinality/many}
