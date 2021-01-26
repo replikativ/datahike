@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.tools
   (:require
-   [taoensso.timbre :as log]))
+    [superv.async :refer [throw-if-exception-]]
+    [taoensso.timbre :as log]))
 
 (defn combine-hashes [x y]
   #?(:clj  (clojure.lang.Util/hashCombine x y)
@@ -35,3 +36,35 @@
     (list `(log/log! :error :p ~fragments ~{:?line (:line (meta &form))})
           `(throw #?(:clj  (ex-info (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data)
                      :cljs (error (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data))))))
+
+(defn throwable-promise
+  "Returns a promise object that can be read with deref/@, and set,
+  once only, with deliver. Calls to deref/@ prior to delivery will
+  block, unless the variant of deref with timeout is used. All
+  subsequent derefs will return the same delivered value without
+  blocking. See also - realized?."
+  {:added "1.1"
+   :static true}
+  []
+  (let [d (java.util.concurrent.CountDownLatch. 1)
+        v (atom d)]
+    (reify
+      clojure.lang.IDeref
+      (deref [_] (.await d) (throw-if-exception- @v))
+      clojure.lang.IBlockingDeref
+      (deref
+        [_ timeout-ms timeout-val]
+        (if (.await d timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+          (throw-if-exception- @v)
+          timeout-val))
+      clojure.lang.IPending
+      (isRealized [this]
+        (zero? (.getCount d)))
+      clojure.lang.IFn
+      (invoke
+        [this x]
+        (when (and (pos? (.getCount d))
+                   (compare-and-set! v d x))
+          (.countDown d)
+          this)))))
+
