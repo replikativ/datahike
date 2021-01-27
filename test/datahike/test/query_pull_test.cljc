@@ -110,13 +110,13 @@
                                          db1 db2)))
                            #{[1 {:name "Ivan"}]}))
 
-                    #_(is (= (set (<! (d/q '[:find ?e (pull $2 ?e [:name])
+                    (is (= (set (<! (d/q '[:find ?e (pull $2 ?e [:name])
                                            :in $1 $2
                                            :where [$2 ?e :age 25]]
                                          db1 db2)))
                            #{[1 {:name "Petr"}]}))
 
-                    #_(testing "$ is default source"
+                    (testing "$ is default source"
                       (is (= (set (<! (d/q '[:find ?e (pull ?e [:name])
                                              :in $1 $
                                              :where [$ ?e :age 25]]

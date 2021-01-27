@@ -9,7 +9,7 @@
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
-(deftest test-query-fns
+#_(deftest test-query-fns
   #?(:cljs
      (t/async done (go
                      (testing "predicate without free variables"

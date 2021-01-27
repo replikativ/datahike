@@ -209,7 +209,7 @@
        IReversible (-rseq [db] (-rseq (.-eavt db)))
        ICounted (-count [db] (count (:children (.-eavt db))))
        IEmptyableCollection (-empty [db] (empty-db (.-schema db)))
-       ;IPrintWithWriter (-pr-writer [db w opts] (do (println "calling printer updatable") (pr-db db w opts)))
+       IPrintWithWriter (-pr-writer [db w opts] (do (println "calling printer updatable") (pr-db db w opts)))
        IEditableCollection (-as-transient [db] (db-transient db))
        ITransientCollection (-conj! [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
        (-persistent! [db] (db-persistent! db))]
@@ -240,9 +240,10 @@
 
   ISearch
   (-search [db pattern]
-           (let [[_ a _ _] pattern
-                 {:keys [eavt aevt avet]} db]
-             (search-indices eavt aevt avet pattern (indexing? db a) false)))
+           (ha/go-try
+            (let [[_ a _ _] pattern
+                  {:keys [eavt aevt avet]} db]
+              (ha/<? (search-indices eavt aevt avet pattern (indexing? db a) false)))))
 
   IIndexAccess
   (-datoms [db index-type cs]
@@ -254,48 +255,51 @@
                      index-type))))
 
   (-seek-datoms [db index-type cs]
-                (do
-                  (println "-seek-datoms")
-                  (ha/<?? (ha/go-try
-                           (-slice (get db index-type)
-                                   (ha/<? (components->pattern db index-type cs e0 tx0))
-                                   (datom emax nil nil txmax)
-                                   index-type)))))
+                (ha/go-try
+                 (ha/<? (-slice (get db index-type)
+                                (ha/<? (components->pattern db index-type cs e0 tx0))
+                                (datom emax nil nil txmax)
+                                index-type))))
 
   (-rseek-datoms [db index-type cs]
-                 (do
-                   (println "-rseek-datoms")
-                   (-> (ha/<??
-                        (ha/go-try
-                         (-slice (get db index-type)
-                                 (ha/<? (components->pattern db index-type cs e0 tx0))
-                                 (datom emax nil nil txmax)
-                                 index-type)))
-                       vec
-                       rseq)))
+                 (ha/go-try
+                  (let [result (ha/<? (-slice (get db index-type)
+                                              (ha/<? (components->pattern db index-type cs e0 tx0))
+                                              (datom emax nil nil txmax)
+                                              index-type))
+                        _ (println "the -rseek-datoms in db.cljc result: " result)
+                        _ (println "the -rseek-datoms in db.cljc result: cs" cs)
+                        _ (println "the -rseek-datoms in db.cljc result: index-type" index-type)
+                        _ (println "the -rseek-datoms in db.cljc result: (get db index-type)" (get db index-type))
+                        _ (println "the -rseek-datoms in db.cljc result: (ha/<? (components->pattern db index-type cs e0 tx0))" (ha/<? (components->pattern db index-type cs e0 tx0)))]
+                    (rseq (vec result)))
+                  #_(->
+                   (ha/<? (-slice (get db index-type)
+                                  (ha/<? (components->pattern db index-type cs e0 tx0))
+                                  (datom emax nil nil txmax)
+                                  index-type))
+                   vec
+                   rseq)))
 
   (-index-range [db attr start end]
                 (when-not (indexing? db attr)
                   (raise "Attribute" attr "should be marked as :db/index true" {}))
                 (validate-attr attr (list '-index-range 'db attr start end) db)
-                (let [{:keys [avet]} db]
-                  (do
-                    (println "-index-range")
-                    (ha/<??
-                     (-slice avet
-                             (ha/<? (resolve-datom db nil attr start nil e0 tx0))
-                             (ha/<? (resolve-datom db nil attr end nil emax txmax))
-                             :avet)))))
+                (ha/go-try
+                 (let [{:keys [avet]} db]
+                   (ha/<? (-slice avet
+                                  (ha/<? (resolve-datom db nil attr start nil e0 tx0))
+                                  (ha/<? (resolve-datom db nil attr end nil emax txmax))
+                                  :avet)))))
 
   clojure.data/EqualityPartition
   (equality-partition [x] :datahike/db)
 
   clojure.data/Diff
   (diff-similar [a b]
-                (do
-                  (println "diff-similar")
-                  (let [datoms-a (ha/<?? (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))
-                        datoms-b (ha/<?? (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))]
+                (ha/go-try
+                  (let [datoms-a (ha/<? (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))
+                        datoms-b (ha/<? (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))]
                     (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick)))))
 
 (defn db? [x]
@@ -350,20 +354,25 @@
 
   ISearch
   (-search [db pattern]
-           (filter (.-pred db) (-search (.-unfiltered-db db) pattern)))
+           (ha/go-try
+            (filter (.-pred db) (ha/<? (-search (.-unfiltered-db db) pattern)))))
 
   IIndexAccess
   (-datoms [db index cs]
-           (filter (.-pred db) (-datoms (.-unfiltered-db db) index cs)))
+           (ha/go-try
+            (filter (.-pred db) (ha/<? (-datoms (.-unfiltered-db db) index cs)))))
 
   (-seek-datoms [db index cs]
-                (filter (.-pred db) (-seek-datoms (.-unfiltered-db db) index cs)))
+                (ha/go-try
+                 (filter (.-pred db) (ha/<? (-seek-datoms (.-unfiltered-db db) index cs)))))
 
   (-rseek-datoms [db index cs]
-                 (filter (.-pred db) (-rseek-datoms (.-unfiltered-db db) index cs)))
+                 (ha/go-try 
+                  (filter (.-pred db) (ha/<? (-rseek-datoms (.-unfiltered-db db) index cs)))))
 
   (-index-range [db attr start end]
-                (filter (.-pred db) (-index-range (.-unfiltered-db db) attr start end))))
+                (ha/go-try
+                 (filter (.-pred db) (ha/<? (-index-range (.-unfiltered-db db) attr start end))))))
 
 (defn- search-current-indices [^DB db pattern]
   (let [[_ a _ _] pattern]
@@ -480,16 +489,17 @@
 
   ISearch
   (-search [db pattern]
-           (temporal-search (.-origin-db db) pattern))
+           (ha/go-try
+            (ha/<? (temporal-search (.-origin-db db) pattern))))
 
   IIndexAccess
   (-datoms [db index-type cs] (ha/go-try (ha/<? (temporal-datoms (.-origin-db db) index-type cs))))
 
-  (-seek-datoms [db index-type cs] (ha/<?? (temporal-seek-datoms (.-origin-db db) index-type cs)))
+  (-seek-datoms [db index-type cs] (ha/go-try (ha/<? (temporal-seek-datoms (.-origin-db db) index-type cs))))
 
-  (-rseek-datoms [db index-type cs] (ha/<?? (temporal-rseek-datoms (.-origin-db db) index-type cs)))
+  (-rseek-datoms [db index-type cs] (ha/go-try (ha/<? (temporal-rseek-datoms (.-origin-db db) index-type cs))))
 
-  (-index-range [db attr start end] (ha/<?? (temporal-index-range (.-origin-db db) db attr start end))))
+  (-index-range [db attr start end] (ha/go-try (ha/<? (temporal-index-range (.-origin-db db) db attr start end)))))
 
 (defn filter-txInstant [datoms pred db]  ; TODO: was a transducer before. May want to keep the transducer for JVM
   (ha/go-try
@@ -600,27 +610,24 @@
 
   (-seek-datoms [db index-type cs]
                 (let [origin-db (.-origin-db db)]
-                  (ha/<??
-                   (ha/go-try
-                    (-> (ha/<? (temporal-seek-datoms origin-db index-type cs))
-                        (filter-as-of-datoms (.-time-point db) origin-db)
-                        (ha/<?))))))
+                  (ha/go-try
+                   (-> (ha/<? (temporal-seek-datoms origin-db index-type cs))
+                       (filter-as-of-datoms (.-time-point db) origin-db)
+                       (ha/<?)))))
 
   (-rseek-datoms [db index-type cs]
                  (let [origin-db (.-origin-db db)]
-                   (ha/<??
-                    (ha/go-try
-                     (-> (ha/<? (temporal-rseek-datoms origin-db index-type cs))
-                         (filter-as-of-datoms (.-time-point db) origin-db)
-                         (ha/<?))))))
+                   (ha/go-try
+                    (-> (ha/<? (temporal-rseek-datoms origin-db index-type cs))
+                        (filter-as-of-datoms (.-time-point db) origin-db)
+                        (ha/<?)))))
 
   (-index-range [db attr start end]
                 (let [origin-db (.-origin-db db)]
-                  (ha/<??
-                   (ha/go-try
-                    (-> (ha/<? (temporal-index-range origin-db db attr start end))
-                        (filter-as-of-datoms (.-time-point db) origin-db)
-                        (ha/<?)))))))
+                  (ha/go-try
+                   (-> (ha/<? (temporal-index-range origin-db db attr start end))
+                       (filter-as-of-datoms (.-time-point db) origin-db)
+                       (ha/<?))))))
 
 (defn- filter-since [datoms time-point db]
   (ha/go-try
@@ -706,27 +713,24 @@
 
   (-seek-datoms [db index-type cs]
                 (let [origin-db (.-origin-db db)]
-                  (ha/<??
-                   (ha/go-try
-                    (-> (ha/<? (temporal-seek-datoms origin-db index-type cs))
-                        (filter-since (.-time-point db) origin-db)
-                        (ha/<?))))))
+                  (ha/go-try
+                   (-> (ha/<? (temporal-seek-datoms origin-db index-type cs))
+                       (filter-since (.-time-point db) origin-db)
+                       (ha/<?)))))
 
   (-rseek-datoms [db index-type cs]
                  (let [origin-db (.-origin-db db)]
-                   (ha/<??
-                    (ha/go-try
-                     (-> (ha/<? (temporal-rseek-datoms origin-db index-type cs))
-                         (filter-since (.-time-point db) origin-db)
-                         (ha/<?))))))
+                   (ha/go-try
+                    (-> (ha/<? (temporal-rseek-datoms origin-db index-type cs))
+                        (filter-since (.-time-point db) origin-db)
+                        (ha/<?)))))
 
   (-index-range [db attr start end]
                 (let [origin-db (.-origin-db db)]
-                  (ha/<??
-                   (ha/go-try
-                    (-> (ha/<? (temporal-index-range origin-db db attr start end))
-                        (filter-since (.-time-point db) origin-db)
-                        (ha/<?)))))))
+                  (ha/go-try
+                   (-> (ha/<? (temporal-index-range origin-db db attr start end))
+                       (filter-since (.-time-point db) origin-db)
+                       (ha/<?))))))
 
 ;; ----------------------------------------------------------------------------
 

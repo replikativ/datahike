@@ -4,6 +4,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
+   [datahike.impl.entity :as de]
    [datahike.db :as db]
    [clojure.core.async :refer [go <!]]
    [datahike.test.core-test :as tdc])
@@ -34,9 +35,9 @@
                     (is (= false (contains? (<! (d/touch e)) :not-found)))
                     (is (= (into {}  e)
                            {:name "Ivan", :age 19, :aka #{"X" "Y"}}))
-                    #_(is (= (into {} (<! (d/entity db 1)))
+                    (is (= (into {} (<! (d/touch (<! (d/entity db 1)))))
                            {:name "Ivan", :age 19, :aka #{"X" "Y"}}))
-                    #_(is (= (into {} (<! (d/entity db 2)))
+                    (is (= (into {} (<! (d/touch (<! (d/entity db 2)))))
                            {:name "Ivan", :sex "male", :aka #{"Z"}}))
                     #_(let [e3 (<! (d/entity db 3))]
                       (is (= (into {} e3) {:huh? false})) ; Force caching.
@@ -97,27 +98,25 @@
                       (is (= (<! (:children (<! (e 100)))) nil)))
 
                     (testing "nested navigation"
-                      (is (= (-> (<! (e 1)) :children (<!) first  :children) #{(<! (e 100)) (<! (e 101))}))
+                      (is (= (-> (<! (e 1)) :children (<!) first  :children (<!)) #{(<! (e 100)) (<! (e 101))}))
                       (is (= (-> (<! (e 10)) :children (<!) first :father (<!)) (<! (e 10))))
-                      (is (= (-> (<! (e 10)) :father (<!) :children ) #{(<! (e 10))})
-                          
-                          )
+                      (is (= (-> (<! (e 10)) :father (<!) :children (<!)) #{(<! (e 10))}))
 
                       (testing "after touch"
                         (let [e1  (<! (e 1))
                               e10 (<! (e 10))]
-                          (d/touch e1)
-                          (d/touch e10)
-                          (is (= (-> e1 (<!) :children first :children) #{(<! (e 100)) (<! (e 101))}))
-                          (is (= (-> e10 (<!) :children first :father) (<! (e 10))))
-                          (is (= (-> e10 (<!) :father :children) #{(<! (e 10))})))))
+                          (<! (de/touch e1))
+                          (<! (de/touch e10))
+                          (is (= (->  e1  :children (<!) first :children (<!)) #{(<! (e 100)) (<! (e 101))}))
+                          (is (= (-> e10  :children (<!) first :father (<!)) (<! (e 10))))
+                          (is (= (-> e10 :father (<!) :children (<!)) #{(<! (e 10))})))))
 
-                    #_(testing "backward navigation"
-                      (is (= (:_children (e 1))  nil))
-                      (is (= (:_father   (e 1))  #{(e 10)}))
-                      (is (= (:_children (e 10)) #{(e 1)}))
-                      (is (= (:_father   (e 10)) #{(e 100) (e 101)}))
-                      (is (= (-> (e 100) :_children first :_children) #{(e 1)})))
+                    (testing "backward navigation"
+                      (is (= (<! (:_children (<! (e 1))))  nil))
+                      (is (= (<! (:_father   (<! (e 1))))  #{(<! (e 10))}))
+                      (is (= (<! (:_children (<! (e 10)))) #{(<! (e 1))}))
+                      (is (= (<! (:_father   (<! (e 10)))) #{(<! (e 100)) (<! (e 101))}))
+                      (is (= (-> (<! (e 100)) :_children (<!) first :_children (<!)) #{(<! (e 1))})))
                     (done))))
      :clj (let [db (-> (d/empty-db {:father   {:db/valueType   :db.type/ref}
                                     :children {:db/valueType   :db.type/ref

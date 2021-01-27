@@ -231,19 +231,20 @@
                                      :temporal-aevt-key (ha/<? (di/-flush temporal-aevt backend))
                                      :temporal-avet-key (ha/<? (di/-flush temporal-avet backend))}))))
          (ds/release-store store-config store)
-         (when initial-tx
-           (let [conn (<? S (-connect config))
-                 created-db (<? S (transact conn initial-tx))]
-             #?(:cljs (js/console.log "created db:" created-db))
-             (release conn)
-             (println "Database initialised: " (get-in config [:store :id]))
-             created-db))))))
+         (println "Database initialised: " (get-in config [:store :id]))
+         (if initial-tx
+             (let [conn (<? S (-connect config))
+                   created-db (<? S (transact conn initial-tx))]
+               #?(:cljs (js/console.log "created db:" created-db))
+               (release conn)
+               created-db)
+           store-config)))))
 
   (-delete-database [config]
     (ha/go-try
      (if (ha/<? (-database-exists? config))
        (let [config (dc/load-config config {})]
-         (ds/delete-store (:store config)))
+         (ha/<? (ds/delete-store (:store config))))
        (do (println "Database doesn't exist") nil)))))
 
 (defn connect

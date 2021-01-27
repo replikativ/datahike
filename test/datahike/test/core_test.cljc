@@ -8,6 +8,7 @@
    [clojure.string :as str]
    #?(:clj [kaocha.stacktrace])
    [datahike.core :as d]
+   [clojure.walk :as walk]
    [datahike.impl.entity :as de]
    [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
                            :clj  [:refer [defrecord-updatable]])]
@@ -58,12 +59,63 @@
                    (t/do-report {:type :fail, :message ~msg, :expected '~form, :actual e#})))
                e#)))))
 
-(defn entity-map [db e]
-  (when-let [entity (d/entity db e)]
-    (->> (assoc (into {} entity) :db/id (:db/id entity))
-         (clojure.walk/prewalk #(if (de/entity? %)
-                                  {:db/id (:db/id %)}
-                                  %)))))
+#?(:cljs
+   (defn walk<
+     "Traverses form, an arbitrary data structure.  inner and outer are
+  functions.  Applies inner to each element of form, building up a
+  data structure of the same type, then applies outer to the result.
+  Recognizes all Clojure data structures. Consumes seqs as with doall."
+
+     {:added "1.1"}
+     [go-inner go-outer form]
+     (ha/go-try
+      (cond
+        (list? form) 
+        (ha/<? (go-outer (apply list (ha/map< go-inner form))))
+        
+        ;(instance? MapEntry form)
+        ;(ha/<? (go-outer (cljs.lang.MapEntry/create (ha/<? (go-inner (key form))) (ha/<? (go-inner (val form))))))
+        
+        (seq? form) 
+        (ha/<? (go-outer (doall (ha/map< go-inner form))))
+        
+        (instance? IRecord form)
+        (ha/<? (go-outer (ha/reduce< (fn [r x] (ha/<? (conj r (ha/<? (go-inner x))))) form form)))
+        
+        (coll? form) 
+        (ha/<? (go-outer (into (empty form) (ha/map< go-inner form))))
+        
+        :else (ha/<? (go-outer form))))))
+
+
+
+ #?(:cljs (defn prewalk<
+           "Like postwalk, but does pre-order traversal."
+           {:added "1.1"}
+           [go-f form]
+           (walk< (partial prewalk< go-f) identity (go-f form))))
+
+
+(defn entity-map [db e]  ;;TODO: fix this or rethink it
+  #?(:cljs
+     #_(ha/go-try
+      (when-let [entity (ha/<? (de/touch (ha/<? (d/entity db e))))]
+        (->> (assoc (into {} entity) :db/id (:db/id entity))
+             (clojure.walk/prewalk #(if (ha/<? (de/entity? %))
+                                      {:db/id (:db/id %)}
+                                      %)))))
+     (ha/go-try
+        (when-let [entity (<! (de/touch (ha/<? (d/entity db e))))]
+          (->> (assoc (into {} entity) :db/id (:db/id entity))
+               (prewalk< #(ha/go-try
+                           (if (ha/<? (de/entity? %))
+                             {:db/id (:db/id %)}
+                             %))))))
+     :clj (when-let [entity (d/entity db e)]
+            (->> (assoc (into {} entity) :db/id (:db/id entity))
+                 (clojure.walk/prewalk #(if (de/entity? %)
+                                          {:db/id (:db/id %)}
+                                          %))))))
 
 (defn all-datoms [db]
   (into #{} (map (juxt :e :a :v)) (d/datoms db :eavt)))
@@ -80,25 +132,25 @@
 ;; Core tests
 
 #?(:cljs
-     (deftest test-protocols
-       (async done
-              (async/go
-                (let [schema {:aka {:db/cardinality :db.cardinality/many}}
-                      db (async/<!
-                          (d/db-with (async/<! (d/empty-db schema))
-                                     [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
-                                      {:db/id 2 :name "Petr" :age 37 :huh? false}]))]
-                  (is (= (async/<! (d/empty-db schema))
-                         (async/<! (empty db))))
-                  (is (= 6 (count db))) ;; TODO: check this as we a get of :children for this in defrecord-updatable DB
-                  (is (= (set (async/<! (seq db)))
-                           #{(d/datom 1 :aka "IV")
-                             (d/datom 1 :aka "Terrible")
-                             (d/datom 1 :name "Ivan")
-                             (d/datom 2 :age 37)
-                             (d/datom 2 :name "Petr")
-                             (d/datom 2 :huh? false)}))
-                  (done))))))
+   (deftest test-protocols
+     (async done
+            (async/go
+              (let [schema {:aka {:db/cardinality :db.cardinality/many}}
+                    db (async/<!
+                        (d/db-with (async/<! (d/empty-db schema))
+                                   [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
+                                    {:db/id 2 :name "Petr" :age 37 :huh? false}]))]
+                (is (= (async/<! (d/empty-db schema))
+                       (async/<! (empty db))))
+                (is (= 6 (count db))) ;; TODO: check this as we a get of :children for this in defrecord-updatable DB
+                (is (= (set (async/<! (seq db)))
+                       #{(d/datom 1 :aka "IV")
+                         (d/datom 1 :aka "Terrible")
+                         (d/datom 1 :name "Ivan")
+                         (d/datom 2 :age 37)
+                         (d/datom 2 :name "Petr")
+                         (d/datom 2 :huh? false)}))
+                (done))))))
 
 (comment
   ;; REPL-driven code
@@ -124,14 +176,14 @@
 
 #?(:cljs (deftest compliance-test-cljs
            (db/empty-db)
-           #_(async done
-                    (go
-                      (let [c (async/chan 1)
-                            v #_(ha/<?) (empty-db-helper)]
-                        (is (= 1 1))
-                        (async/>! c 1)
-                        (is (= 1 (ha/<? c)))
-                        (done))))))
+           (async done
+                  (go
+                    (let [c (async/chan 1)
+                          v (empty-db-helper)]
+                      (is (= 1 1))
+                      (async/>! c 1)
+                      (is (= 1 (ha/<? c)))
+                      (done))))))
 
 #_(defn with
     "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."

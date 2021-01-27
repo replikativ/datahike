@@ -201,13 +201,12 @@
 
 
 (defn touch-components [db a->v]
-  ;; becomes async
   (ha/reduce< (fn [acc [a v]]
                 (ha/go-try
                  (assoc acc a
                         (if (db/component? db a)
                           (if (db/multival? db a)
-                            (set (ha/map< touch v))
+                            (set (ha/<? (ha/map< touch v)))
                             (ha/<? (touch v)))
                           v))))
               {} a->v))

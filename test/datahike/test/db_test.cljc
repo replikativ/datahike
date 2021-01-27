@@ -37,7 +37,7 @@
     (is (= (subs (str (d/squuid)) 0 8)
            (subs (str (d/squuid)) 0 8)))))
 
-#_(deftest test-diff
+(deftest test-diff
   #?(:cljs (async done 
                   (go 
                     (is (= [[(d/datom 1 :b 2) (d/datom 1 :c 4) (d/datom 2 :a 1)]
@@ -121,46 +121,70 @@
   ;; format blocker
   )
 
-#_#?(:cljs
-     (deftest test-diff
+(deftest test-fn-hash-changes
+  #?(:cljs
+     (t/async done
+              (go (let [db (<! (d/db-with (<! (d/empty-db))
+                                          [{:db/id 1 :name "Konrad"}]))
+                        r1 (<! (d/db-with db [[:db.fn/retractEntity 1]]))
+                        r2 (<! (d/db-with db [[:db.fn/retractEntity 1]]))]
+                    (is (= (hash r1) (hash r2))))
+                  (done)))
+     :clj (let [db (d/db-with (d/empty-db)
+                              [{:db/id 1 :name "Konrad"}])
+                r1 (d/db-with db [[:db.fn/retractEntity 1]])
+                r2 (d/db-with db [[:db.fn/retractEntity 1]])]
+            (is (= (hash r1) (hash r2))))))
+
+
+
+
+(deftest test-equiv-db-hash
+    #?(:cljs 
        (t/async done
-                (async/go
-                  (is (= [[(d/datom 1 :b 2) (d/datom 1 :c 4) (d/datom 2 :a 1)]
-                          [(d/datom 1 :b 3) (d/datom 1 :d 5)]
-                          [(d/datom 1 :a 1)]]
-
-                         (clojure.data/diff
-                          (async/<! (d/db-with (async/<! (d/empty-db)) [{:a 1 :b 2 :c 4} {:a 1}]))
-                          (async/<! (d/db-with (async/<! (d/empty-db)) [{:a 1 :b 3 :d 5}])))))
-                  (done)))))
-
-#_#?(:cljs (deftest test-fn-hash-changes
-             (let [db (async/<! (d/db-with (async/<! (d/empty-db))
+               (go (let [db (<! (d/db-with (<! (d/empty-db))
                                            [{:db/id 1 :name "Konrad"}]))
-                   r1 (async/<! (d/db-with db [[:db.fn/retractEntity 1]]))
-                   r2 (async/<! (d/db-with db [[:db.fn/retractEntity 1]]))]
-               (is (= (hash r1) (hash r2))))))
+                         r1 (<! (d/db-with db [[:db.fn/retractEntity 1]]))]
+                     (is (= (hash (<! (d/empty-db))) (hash r1))))  ;; TODO: make sure this is correct
+                   (done)))
+       :clj (let [db (d/db-with (d/empty-db)
+                                [{:db/id 1 :name "Konrad"}])
+                  r1 (d/db-with db [[:db.fn/retractEntity 1]])]
+              (is (= (hash (d/empty-db)) (hash r1))))))
 
-#_(deftest test-equiv-db-hash
-    (let [db (d/db-with (d/empty-db)
-                        [{:db/id 1 :name "Konrad"}])
-          r1 (d/db-with db [[:db.fn/retractEntity 1]])]
-      (is (= (hash (d/empty-db)) (hash r1)))))
+(deftest empty-db-with-schema
+    #?(:cljs 
+       (t/async done 
+               (go (testing "Test old write schema"
+                     #_(is (thrown-msg?
+                            "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
+                            (d/empty-db {:name {:db/cardinality :db.cardinality/many}} {:schema-flexibility :write})))
+                     (is (= (merge db/implicit-schema
+                                   {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}})
+                            (:schema (<! (d/empty-db {:name {:db/cardinality :db.cardinality/one
+                                                             :db/valueType :db.type/string}}
+                                                     {:schema-flexibility :write})))))
 
-#_(deftest empty-db-with-schema
-    (testing "Test old write schema"
-      (is (thrown-msg?
-           "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
-           (d/empty-db {:name {:db/cardinality :db.cardinality/many}} {:schema-flexibility :write})))
-      (is (= (merge db/implicit-schema
-                    {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}})
-             (:schema (d/empty-db {:name {:db/cardinality :db.cardinality/one
-                                          :db/valueType :db.type/string}}
-                                  {:schema-flexibility :write}))))
+                     (is (= (merge db/implicit-schema
+                                   {:name {:db/ident :name :db/cardinality :db.cardinality/one :db/valueType :db.type/string}})
+                            (:schema (<! (d/empty-db [{:db/ident :name
+                                                       :db/cardinality :db.cardinality/one
+                                                       :db/valueType :db.type/string}]
+                                                     {:schema-flexibility :write}))))))
+                   (done)))
+       :clj (testing "Test old write schema"
+              (is (thrown-msg?
+                   "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
+                   (d/empty-db {:name {:db/cardinality :db.cardinality/many}} {:schema-flexibility :write})))
+              (is (= (merge db/implicit-schema
+                            {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}})
+                     (:schema (d/empty-db {:name {:db/cardinality :db.cardinality/one
+                                                  :db/valueType :db.type/string}}
+                                          {:schema-flexibility :write}))))
 
-      (is (= (merge db/implicit-schema
-                    {:name {:db/ident :name :db/cardinality :db.cardinality/one :db/valueType :db.type/string}})
-             (:schema (d/empty-db [{:db/ident :name
-                                    :db/cardinality :db.cardinality/one
-                                    :db/valueType :db.type/string}]
-                                  {:schema-flexibility :write}))))))
+              (is (= (merge db/implicit-schema
+                            {:name {:db/ident :name :db/cardinality :db.cardinality/one :db/valueType :db.type/string}})
+                     (:schema (d/empty-db [{:db/ident :name
+                                            :db/cardinality :db.cardinality/one
+                                            :db/valueType :db.type/string}]
+                                          {:schema-flexibility :write})))))))
