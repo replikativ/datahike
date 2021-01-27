@@ -535,11 +535,11 @@
   ([conn tx-data] (transact! conn tx-data nil))
   ([conn tx-data tx-meta]
    {:pre [(conn? conn)]}
-   (let [report (-transact! conn tx-data tx-meta)]
-     #_(doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
-         (println "inside callback")
-         (callback report))
-     report)))
+   (ha/go-try
+    (let [report (ha/<? (-transact! conn tx-data tx-meta))]
+      (doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
+        (callback report))
+      report))))
 
 (defn reset-conn!
   "Forces underlying `conn` value to become `db`. Will generate a tx-report that will remove everything from old value and insert everything from the new one."
