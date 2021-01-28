@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
    [datahike.db :as db]
+   [datahike.pull-api :as p]
    [datahike.constants :refer [tx0]]
    [datahike.test.core :as tdc]))
 
@@ -16,7 +17,6 @@
    :enemy  {:db/cardinality :db.cardinality/many
             :db/valueType :db.type/ref}
    :father {:db/valueType :db.type/ref}
-
    :part   {:db/valueType :db.type/ref
             :db/isComponent true
             :db/cardinality :db.cardinality/many}
@@ -139,7 +139,7 @@
     (testing "Like explicit recursion, expansion will not allow loops"
       (is (= rpart (d/pull recdb '[:name :part] 10))))))
 
-(deftest test-pull-wildcard
+(deftest test-pull-wildcard-pattern
   (is (= {:db/id 1 :name "Petr" :aka ["Devil" "Tupen"]
           :child [{:db/id 2} {:db/id 3}]}
          (d/pull test-db '[*] 1)))
@@ -230,7 +230,8 @@
                                 [:db/add 4 :enemy 6]
                                 [:db/add 5 :enemy 7]
                                 [:db/add 6 :enemy 8]
-                                [:db/add 7 :enemy 4]]))
+                                [:db/add 7 :enemy 4]
+                                ]))
         friends {:db/id 4
                  :name "Lucy"
                  :friend
@@ -283,27 +284,27 @@
 
 (deftest test-dual-recursion
   (let [empty (d/empty-db {:part {:db/valueType :db.type/ref}
-                           :spec {:db/valueType :db.type/ref}})]
-    (let [db (d/db-with empty [[:db/add 1 :part 2]
-                               [:db/add 2 :part 3]
-                               [:db/add 3 :part 1]
-                               [:db/add 1 :spec 2]
-                               [:db/add 2 :spec 1]])]
-      (is (= (d/pull db '[:db/id {:part ...} {:spec ...}] 1)
-             {:db/id 1,
-              :spec {:db/id 2
-                     :spec {:db/id 1,
-                            :spec {:db/id 2}, :part {:db/id 2}}
-                     :part {:db/id 3,
-                            :part {:db/id 1,
-                                   :spec {:db/id 2},
-                                   :part {:db/id 2}}}}
-              :part {:db/id 2
-                     :spec {:db/id 1, :spec {:db/id 2}, :part {:db/id 2}}
-                     :part {:db/id 3,
-                            :part {:db/id 1,
-                                   :spec {:db/id 2},
-                                   :part {:db/id 2}}}}})))))
+                           :spec {:db/valueType :db.type/ref}})
+        db (d/db-with empty [[:db/add 1 :part 2]
+                             [:db/add 2 :part 3]
+                             [:db/add 3 :part 1]
+                             [:db/add 1 :spec 2]
+                             [:db/add 2 :spec 1]])]
+    (is (= (d/pull db '[:db/id {:part ...} {:spec ...}] 1)
+           {:db/id 1,
+            :spec {:db/id 2
+                   :spec {:db/id 1,
+                          :spec {:db/id 2}, :part {:db/id 2}}
+                   :part {:db/id 3,
+                          :part {:db/id 1,
+                                 :spec {:db/id 2},
+                                 :part {:db/id 2}}}}
+            :part {:db/id 2
+                   :spec {:db/id 1, :spec {:db/id 2}, :part {:db/id 2}}
+                   :part {:db/id 3,
+                          :part {:db/id 1,
+                                 :spec {:db/id 2},
+                                 :part {:db/id 2}}}}}))))
 
 (deftest test-deep-recursion
   (let [start 100
@@ -325,4 +326,149 @@
     (is (= (str "Person-" (dec depth))
            (:name (get-in pulled path))))))
 
-#_(t/test-ns 'datahike.test.pull-api)
+;; Helper functions
+
+(def empty-frame
+  "Needs at least eids, specs, pattern to be assigned"
+  {:multi? false
+   :state :pattern
+   :specs '()
+   :recursion {:depth {}, :seen #{}}
+   :wildcard? false})
+
+(deftest test-pull-spec
+  (let [spec #datalog.parser.pull.PullSpec{:wildcard? false :attrs {:name {:attr :name}}}]
+    (is (= (p/pull-spec test-db spec [1] false)
+           {:name "Petr"}))
+    (is (= (p/pull-spec test-db spec [1] true)
+           [{:name "Petr"}]))))
+
+(deftest test-pull-pattern
+  (let [frame (merge empty-frame
+                     {:eids [1]
+                      :specs '([:name {:attr :name}])
+                      :pattern #datalog.parser.pull.PullSpec{:wildcard? false :attrs {:name {:attr :name}}}
+                      :results (transient [])
+                      :kvps (transient {})})]
+    (is (= (p/pull-pattern test-db [frame])
+           {:name "Petr"}))))
+
+(deftest test-pull-pattern-frame
+  (let [frame (merge empty-frame
+                     {:eids [1]
+                      :specs '([:name {:attr :name}])
+                      :pattern #datalog.parser.pull.PullSpec{:wildcard? false :attrs {:name {:attr :name}}}
+                      :kvps (transient {})})
+        ppf (p/pull-pattern-frame test-db [frame])]
+    (is (= (count ppf) 1))
+    (is (= (persistent! (:kvps (first ppf)))
+            {:name "Petr"}))))
+
+(deftest test-pull-attr
+  (let [frame (merge empty-frame
+                     {:eids [1]
+                      :pattern #datalog.parser.pull.PullSpec{:wildcard? false :attrs {:name {:attr :name}}}
+                      :kvps (transient {})})
+        res (p/pull-attr test-db [:name {:attr :name}] 1 [frame])]
+    (is (= (persistent! (:kvps (first res)))
+           {:name "Petr"}))))
+
+(deftest test-pull-attr-datoms
+  (let [datom (d/datom 1 :name "Petr" 536870912 true)
+        opts {:attr :name}
+        frame (merge empty-frame
+                     {:eids [1]
+                      :pattern #datalog.parser.pull.PullSpec{:wildcard? false :attrs {:name {:attr :name}}}
+                      :kvps (transient {})})
+        res (p/pull-attr-datoms test-db :name {:attr :name} 1 true [datom] opts [frame])]
+    (is (= (persistent! (:kvps (first res)))
+           {:name "Petr"}))))
+
+(deftest test-pull-wildcard
+  (let [frame (merge empty-frame
+                        {:eids [1]
+                         :eid 1
+                         :wildcard? false
+                         :pattern #datalog.parser.pull.PullSpec{:wildcard? true, :attrs {}}
+                         :results (transient [])
+                         :kvps (transient {})})
+        res (p/pull-wildcard test-db frame nil)]
+    (is (= (persistent! (:kvps (first res)))
+           {:db/id 1, :aka ["Devil" "Tupen"]}))))
+
+(deftest test-pull-wildcard-expand
+  (let [pattern #datalog.parser.pull.PullSpec{:wildcard? true, :attrs {}}
+        frame {:multi? false,
+               :eids [1]
+               :state :pattern
+               :recursion {:depth {}, :seen #{}},
+               :specs '(),
+               :wildcard? false,
+               :results (transient [])
+               :kvps (transient {})
+               :pattern pattern}
+        res (p/pull-wildcard-expand test-db frame nil 1 pattern)]
+    (is (= (persistent! (:kvps (first res)))
+           {:db/id 1, :aka ["Devil" "Tupen"]}))))
+
+(deftest test-pull-expand-frame
+  (let [parent {:state :pattern
+                :specs '()
+                :results (transient [])
+                :kvps (transient {})
+                :eids [1]
+                :pattern #datalog.parser.pull.PullSpec{:wildcard? true, :attrs {}}}
+        frame {:state :expand
+               :kvps (transient {})
+               :eid 1
+               :pattern #datalog.parser.pull.PullSpec{:wildcard? true, :attrs {}}
+               :datoms (list [:aka [(d/datom 1 :aka "Devil" 536870912 true)
+                                    (d/datom 1 :aka "Tupen" 536870912 true)]]
+                             [:child [(d/datom 1 :child 2 536870912 true)
+                                      (d/datom 1 :child 3 536870912 true)]]
+                             [:name [(d/datom 1 :name "Petr" 536870912 true)]])
+               :recursion {:depth {}, :seen #{}}}
+
+        frames (seq [frame parent])
+        res (p/pull-expand-frame test-db frames)]
+    (is (= (persistent! (:kvps (first res)))
+           {:aka ["Devil" "Tupen"]}))
+    (is (= (:datoms (first res))
+           (list [:child [(d/datom 1 :child 2 536870912 true)
+                          (d/datom 1 :child 3 536870912 true)]]
+                 [:name [(d/datom 1 :name "Petr" 536870912 true)]])))))
+
+(deftest test-pull-recursion-frame
+  (let [db (d/db-with test-db [[:db/add 4 :friend 5]
+                               [:db/add 5 :friend 6]])
+        parent {:state :pattern
+                :multi? false
+                :eids [5]
+                :recursion {:depth {:friend 1} :seen #{5}}
+                :specs '()
+                :wildcard? false
+                :kvps (transient {:db/id 5, :name "Elizabeth"})
+                :pattern #datalog.parser.pull.PullSpec{:wildcard? false, :attrs {:db/id {:attr :db/id},
+                                                                                 :name {:attr :name}
+                                                                                 :friend {:attr :friend, :recursion nil}}},
+                :attr :datahike.pull-api/recursion
+                :results (transient [])}
+        frame {:state :recursion,
+               :pattern #datalog.parser.pull.PullSpec{:wildcard? false,
+                                                      :attrs {:db/id {:attr :db/id},
+                                                              :name {:attr :name},
+                                                              :friend {:attr :friend, :recursion nil}}},
+               :attr :friend,
+               :multi? true,
+               :eids [6],
+               :recursion {:depth {:friend 1}, :seen #{5}},
+               :results (transient [])}
+        frames (seq [frame parent])
+        res (p/pull-recursion-frame db frames)]
+    (is (= (:recursion (first res))
+           {:depth {:friend 2} :seen #{5 6}}))
+    (is (= (:multi? (first res)) false))
+    (is (= (:specs (first res))
+           '([:db/id {:attr :db/id}]
+             [:name {:attr :name}]
+             [:friend {:attr :friend :recursion nil}])))))
