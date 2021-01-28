@@ -343,5 +343,38 @@
                                         [3 31 "Ivan"]
                                         [3 21 "Petr"]})))))
 
-#_(require 'datahike.test.query :reload)
-#_(clojure.test/test-ns 'datahike.test.query)
+#_(deftest test-clause-order-invariance                     ;; TODO: this is what should happen after rewirite of query engine
+    (let [db (-> (d/empty-db)
+                 (d/db-with [{:db/id 1, :name  "Ivan", :age   15}
+                             {:db/id 2, :name  "Petr", :age   37}
+                             {:db/id 3, :name  "Ivan", :age   37}
+                             {:db/id 4, :age 15}]))]
+      (testing "Clause order does not matter for predicates"
+        (is (= (d/q {:query '{:find [?e]
+                              :where [[?e :age ?age]
+                                      [(= ?age 37)]]}
+                     :args [db]})
+               #{[2] [3]}))
+        (is (= (d/q {:query '{:find [?e]
+                              :where [[(= ?age 37)]
+                                      [?e :age ?age]]}
+                     :args [db]})
+               #{[2] [3]})))))
+
+(deftest test-clause-order
+  (let [db (-> (d/empty-db)
+               (d/db-with [{:db/id 1, :name  "Ivan", :age   15}
+                           {:db/id 2, :name  "Petr", :age   37}
+                           {:db/id 3, :name  "Ivan", :age   37}
+                           {:db/id 4, :age 15}]))]
+    (testing "Predicate clause before variable binding throws exception"
+      (is (= (d/q {:query '{:find [?e]
+                            :where [[?e :age ?age]
+                                    [(= ?age 37)]]}
+                   :args [db]})
+             #{[2] [3]}))
+      (is (thrown-msg? "Insufficient bindings: #{?age} not bound in [(= ?age 37)]"
+                       (d/q {:query '{:find [?e]
+                                      :where [[(= ?age 37)]
+                                              [?e :age ?age]]}
+                             :args [db]}))))))
