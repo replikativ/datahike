@@ -230,8 +230,7 @@
                                 [:db/add 4 :enemy 6]
                                 [:db/add 5 :enemy 7]
                                 [:db/add 6 :enemy 8]
-                                [:db/add 7 :enemy 4]
-                                ]))
+                                [:db/add 7 :enemy 4]]))
         friends {:db/id 4
                  :name "Lucy"
                  :friend
@@ -362,7 +361,7 @@
         ppf (p/pull-pattern-frame test-db [frame])]
     (is (= (count ppf) 1))
     (is (= (persistent! (:kvps (first ppf)))
-            {:name "Petr"}))))
+           {:name "Petr"}))))
 
 (deftest test-pull-attr
   (let [frame (merge empty-frame
@@ -386,12 +385,12 @@
 
 (deftest test-pull-wildcard
   (let [frame (merge empty-frame
-                        {:eids [1]
-                         :eid 1
-                         :wildcard? false
-                         :pattern #datalog.parser.pull.PullSpec{:wildcard? true, :attrs {}}
-                         :results (transient [])
-                         :kvps (transient {})})
+                     {:eids [1]
+                      :eid 1
+                      :wildcard? false
+                      :pattern #datalog.parser.pull.PullSpec{:wildcard? true, :attrs {}}
+                      :results (transient [])
+                      :kvps (transient {})})
         res (p/pull-wildcard test-db frame nil)]
     (is (= (persistent! (:kvps (first res)))
            {:db/id 1, :aka ["Devil" "Tupen"]}))))
