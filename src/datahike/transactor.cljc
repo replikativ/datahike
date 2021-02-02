@@ -39,7 +39,11 @@
         (do
           (log/debug "Transactor rx thread gracefully closed"))))))
 
-(defn create-transactor
+(defmulti create-transactor
+  (fn [transactor-config conn update-and-flush-db]
+    (or (:backend transactor-config) :local)))
+
+(defmethod create-transactor :local
   [{:keys [rx-buffer-size]} connection update-and-flush-db]
   (let [rx-queue (chan rx-buffer-size)
         rx-thread (create-rx-thread connection rx-queue update-and-flush-db)]
