@@ -59,7 +59,7 @@
   {:pre [(d/conn? connection)]}
   (let [p (throwable-promise)]
     (go
-      (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data d/transact))]
+      (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data 'datahike.core/transact))]
         (deliver p tx-report)))
     p))
 
@@ -81,7 +81,7 @@
 (defn load-entities [connection entities]
   (let [p (throwable-promise)]
     (go
-      (let [tx-report (<! (t/send-transaction! (:transactor @connection) entities d/load-entities))]
+      (let [tx-report (<! (t/send-transaction! (:transactor @connection) entities 'datahike.core/load-entities))]
         (deliver p tx-report)))
     p))
 
