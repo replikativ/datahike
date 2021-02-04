@@ -7,7 +7,7 @@ clj -M:repl
 
 ## Starting the benchmark
 ```
-clj -M:benchmark
+TIMBRE_LEVEL=':info' clj -M:benchmark
 ```
 
 ## Building a Datahike jar
