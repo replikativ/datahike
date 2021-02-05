@@ -201,14 +201,22 @@
                    (filter (fn [d] (= tx (datom-tx d))) (ha/<? (-all eavt))) ;; _ _ _ tx
                    (ha/<? (-all eavt))])))))
 
+(defn diff-similar 
+  "Utility function like clojure.data/diff-similar but might return a core.async channel depending on *if-async*"
+  [a b]
+  (ha/go-try
+   (let [datoms-a (ha/<? (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))
+         datoms-b (ha/<? (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))]
+     (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
+
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx rschema hash config]
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
-       ISeqable (-seq [db] (-seq (.-eavt db)))
-       IReversible (-rseq [db] (-rseq (.-eavt db)))
-       ICounted (-count [db] (count (:children (.-eavt db))))
-       IEmptyableCollection (-empty [db] (empty-db (.-schema db)))
+       ;ISeqable (-seq [db] (-seq (.-eavt db)))      ;; Seqs won't work for ClojureScript. Could expose a function that is channel aware
+       ;IReversible (-rseq [db] (-rseq (.-eavt db)))
+       ;ICounted (-count [db] (count (:children (.-eavt db))))   ;; could fix with keeping active count of database
+       ;IEmptyableCollection (-empty [db] (empty-db (.-schema db)))
        IPrintWithWriter (-pr-writer [db w opts] (do (println "calling printer updatable") (pr-db db w opts)))
        IEditableCollection (-as-transient [db] (db-transient db))
        ITransientCollection (-conj! [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
@@ -295,12 +303,15 @@
   clojure.data/EqualityPartition
   (equality-partition [x] :datahike/db)
 
-  clojure.data/Diff
-  (diff-similar [a b]
-                (ha/go-try
-                  (let [datoms-a (ha/<? (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))
-                        datoms-b (ha/<? (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))]
-                    (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick)))))
+
+
+  #?@(:clj
+      [clojure.data/Diff
+       (diff-similar [a b]
+                     (let [datoms-a (ha/<?? (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))
+                           datoms-b (ha/<?? (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))]
+                       (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick)))]))
+  
 
 (defn db? [x]
   (and (satisfies? ISearch x)
@@ -885,10 +896,11 @@
   (reduce #(+ %1 (hash %2)) 0 datoms))
 
 (defn- equiv-db [db other]
-  (ha/go-try
-   (and (or (instance? DB other) (instance? FilteredDB other))
-        (= (-schema db) (-schema other))
-        (equiv-db-index (ha/<? (-datoms db :eavt [])) (ha/<? (-datoms other :eavt []))))))
+  ;(ha/go-try)
+  (and (or (instance? DB other) (instance? FilteredDB other))
+       (= (-schema db) (-schema other))
+       (= (:hash db) (:hash other))
+       #_(equiv-db-index (ha/<? (-datoms db :eavt [])) (ha/<? (-datoms other :eavt [])))))
 
 #?(:cljs
    (defn pr-db [db w opts]
@@ -955,7 +967,7 @@
      (defmethod pp/simple-dispatch FilteredDB [db] (pp-db db *out*))))
 
 (defn db-from-reader [{:keys [schema datoms]}]
-  (println "called db-from-reader")
+  #?(:cljs (js/console.log "called db-from-reader"))
   (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema))
 
 ;; ----------------------------------------------------------------------------
