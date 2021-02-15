@@ -26,11 +26,11 @@
    :multi?    multi?
    :recursion {:depth {} :seen #{}}})
 
-(defn- subpattern-frame
+(defn subpattern-frame
   [pattern eids multi? attr]
   (assoc (initial-frame pattern eids multi?) :attr attr))
 
-(defn- reset-frame
+(defn reset-frame
   [frame eids kvps]
   (let [pattern (:pattern frame)]
     (assoc frame
@@ -41,39 +41,39 @@
            :results   (cond-> (:results frame)
                         (seq kvps) (conj! kvps)))))
 
-(defn- push-recursion
+(defn push-recursion
   [rec attr eid]
   (let [{:keys [depth seen]} rec]
     (assoc rec
            :depth (update depth attr (fnil inc 0))
            :seen (conj seen eid))))
 
-(defn- seen-eid?
+(defn seen-eid?
   [frame eid]
   (-> frame
       (get-in [:recursion :seen] #{})
       (contains? eid)))
 
-(defn- pull-seen-eid
+(defn pull-seen-eid
   [frame frames eid]
   (when (seen-eid? frame eid)
     (conj frames (update frame :results conj! {:db/id eid}))))
 
-(defn- single-frame-result
+(defn single-frame-result
   [key frame]
   (some-> (:kvps frame) persistent! (get key)))
 
-(defn- recursion-result [frame]
+(defn recursion-result [frame]
   (single-frame-result ::recursion frame))
 
-(defn- recursion-frame
+(defn recursion-frame
   [parent eid]
   (let [attr (:attr parent)
         rec  (push-recursion (:recursion parent) attr eid)]
     (assoc (subpattern-frame (:pattern parent) [eid] false ::recursion)
            :recursion rec)))
 
-(defn- pull-recursion-frame
+(defn pull-recursion-frame
   [db [frame & frames]]
   (if-let [eids (seq (:eids frame))]
     (let [frame  (reset-frame frame (rest eids) (recursion-result frame))
@@ -85,7 +85,7 @@
                     (seq kvps) (conj! kvps))]
       (conj frames (assoc frame :state :done :results results)))))
 
-(defn- recurse-attr
+(defn recurse-attr
   [db attr multi? eids eid parent frames]
   (let [{:keys [recursion pattern]} parent
         depth  (-> recursion (get :depth) (get attr 0))]
@@ -107,7 +107,7 @@
           (subpattern-frame eids multi? attr-key)
           (assoc :recursion rec)))))
 
-(defn- pull-attr-datoms
+(defn pull-attr-datoms
   [db attr-key attr eid forward? datoms opts [parent & frames]]
   (let [limit (get opts :limit +default-limit+)
         attr-key (or (:as opts) attr-key)
@@ -150,7 +150,7 @@
              (update :kvps assoc! attr-key (:default opts)))
            (conj frames)))))
 
-(defn- pull-attr
+(defn pull-attr
   [db spec eid frames]
   (let [[attr-key opts] spec]
     (if (= :db/id attr-key)
@@ -169,26 +169,26 @@
 (def ^:private filter-reverse-attrs
   (filter (fn [[k v]] (not= k (:attr v)))))
 
-(defn- expand-reverse-subpattern-frame
+(defn expand-reverse-subpattern-frame
   [parent eid rattrs]
   (-> (:pattern parent)
       (assoc :attrs rattrs :wildcard? false)
       (subpattern-frame [eid] false ::expand-rev)))
 
-(defn- expand-result
+(defn expand-result
   [frames kvps]
   (->> kvps
        (persistent!)
        (update (first frames) :kvps into!)
        (conj (rest frames))))
 
-(defn- pull-expand-reverse-frame
+(defn pull-expand-reverse-frame
   [db [frame & frames]]
   (->> (or (single-frame-result ::expand-rev frame) {})
        (into! (:expand-kvps frame))
        (expand-result frames)))
 
-(defn- pull-expand-frame
+(defn pull-expand-frame
   [db [frame & frames]]
   (if-let [datoms-by-attr (seq (:datoms frame))]
     (let [[attr datoms] (first datoms-by-attr)
@@ -209,7 +209,7 @@
              (conj frames frame)))
       (expand-result frames (:kvps frame)))))
 
-(defn- pull-wildcard-expand
+(defn pull-wildcard-expand
   [db frame frames eid pattern]
   (let [datoms (group-by (fn [d] (.-a ^Datom d)) (db/-datoms db :eavt [eid]))
         {:keys [attr recursion]} frame
@@ -221,13 +221,13 @@
          (conj frames frame)
          (pull-expand-frame db))))
 
-(defn- pull-wildcard
+(defn pull-wildcard
   [db frame frames]
   (let [{:keys [eid pattern]} frame]
     (or (pull-seen-eid frame frames eid)
         (pull-wildcard-expand db frame frames eid pattern))))
 
-(defn- pull-pattern-frame
+(defn pull-pattern-frame
   [db [frame & frames]]
   (if-let [eids (seq (:eids frame))]
     (if (:wildcard? frame)
@@ -248,7 +248,7 @@
              (recur db))))
     (conj frames (assoc frame :state :done))))
 
-(defn- pull-pattern
+(defn pull-pattern
   [db frames]
   (case (:state (first frames))
     :expand     (recur db (pull-expand-frame db frames))
