@@ -1,7 +1,6 @@
 (ns datahike.integration-test.return-map-test
-  (:require
-   [clojure.test :refer :all]
-   [datahike.api :as d]))
+  (:require [clojure.test :refer :all]
+            [datahike.api :as d]))
 
 (defn return-map-test-fixture [f]
   (d/delete-database)
