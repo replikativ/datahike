@@ -115,7 +115,6 @@
    {:db/id 38
     :db/ident :db.type/tuple}])
 
-
 (def ^:const system-entities
   "Holds the entity IDs of system attributes"
   (set (reduce

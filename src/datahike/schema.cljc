@@ -109,7 +109,6 @@
                                    :db/tupleAttrs {:db/valueType :db.type/tuple
                                                    :db/cardinality :db.cardinality/one}})
 
-
 (def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleType :db/tupleTypes :db/tupleAttrs})
 
 (s/def ::old-schema-val (s/keys :req [:db/valueType :db/cardinality]

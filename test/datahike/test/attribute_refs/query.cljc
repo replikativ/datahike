@@ -9,7 +9,6 @@
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
-
 (deftest test-joins
   (let [entities [{:db/id 1, :name "Ivan", :age 15}
                   {:db/id 2, :name "Petr", :age 37}

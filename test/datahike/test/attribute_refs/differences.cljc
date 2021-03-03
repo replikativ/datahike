@@ -313,8 +313,8 @@
                         {:name "Bob"}])
       (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name)
              #{["Alice"] ["Bob"]}))
-      (is (thrown-msg? "Mapping between attribute keywords and reference values is only supported for reference databases."
-                       (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn (ref :name))))
+      (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn (ref :name))
+             #{["Alice"] ["Bob"]}))
       (is (= (d/q '[:find ?n :in $ :where [_ :name ?n]] @conn)
              #{["Alice"] ["Bob"]}))
       (is (= (d/q '[:find ?n :in $ :where [_ ?a ?n] [?a :db/ident :name]] @conn)

@@ -1,8 +1,7 @@
 (ns datahike.test.purge
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
-   [datahike.test.core :as tdc]
+      :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.api :as d]))
 
 (def schema-tx [{:db/ident       :name
@@ -51,36 +50,8 @@
       (let [name "Alice"]
         (d/transact conn [[:db/purge [:name name] :age 25]])
         (are [x y] (= x y)
-          true (nil? (find-age @conn name))
-          true (nil? (find-age (d/history @conn) name)))))))
-
-(let [conn (create-test-db "datahike:mem://test-purge-attribute")]
-  (let [name "Alice"]
-    (println "test1")
-    (println "datoms" (d/datoms @conn :eavt))
-    (d/transact conn [[:db.purge/attribute [:name name] :age]])
-    (println "datoms" (d/datoms @conn :eavt))
-    (println (find-age @conn name))
-    (println (find-age (d/history @conn) name))
-    (println (d/q '[:find ?n :where [_ :name ?n]] @conn)))
-
-  (let [name "Bob"]
-    (println "test2")
-    (println "datoms before" (filter #(= 4 (.-e %)) (d/datoms @conn :eavt)))
-    (d/transact conn [[:db.fn/retractAttribute [:name name] :age]])
-    (println "datoms after" (filter #(= 4 (.-e %)) (d/datoms @conn :eavt)))
-    (println (find-age @conn name))
-    (println (find-age (d/history @conn) name))
-    (println (d/q '[:find ?n :where [_ :name ?n]] @conn))
-
-  (println "test3")
-  (println "datoms before" (filter #(= 4 (.-e %)) (d/datoms @conn :eavt)))
-  (d/transact conn [[:db.purge/entity [:name name] :age]])
-  (println "datoms after" (filter #(= 4 (.-e %)) (d/datoms @conn :eavt)))
-  (println (find-age @conn name))
-  (println (find-age (d/history @conn) name))
-  (println (d/q '[:find ?n :where [_ :name ?n]] @conn))))
-
+          nil (find-age @conn name)
+          nil (find-age (d/history @conn) name))))))
 
 (deftest test-purge-attribute
   (let [conn (create-test-db "datahike:mem://test-purge-attribute")]
@@ -163,5 +134,5 @@
         (is (= #{[25 false] [30 true]}
                (find-ages (d/history @conn) name)))
         (d/transact conn [[:db.history.purge/before (java.util.Date.)]])
-        (is (= #{[30 true]}
+        (is (= #{[30 true]}                                 ;; TODO: fails
                (find-ages (d/history @conn) name)))))))

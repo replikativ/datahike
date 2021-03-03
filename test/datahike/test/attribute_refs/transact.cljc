@@ -69,7 +69,7 @@
                   db (+ ref-e0 2))
              #{[:name "Petr"] [:age 37]})))
 
-    (is (= (d/db-with db [[:db.fn/retractEntity (+ ref-e0 1)]]) ; TODO: Why not equal?
+    (is (= (d/db-with db [[:db.fn/retractEntity (+ ref-e0 1)]])
            (d/db-with db [[:db/retractEntity (+ ref-e0 1)]])))
 
     (testing "Retract entity with incoming refs"
