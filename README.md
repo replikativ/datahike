@@ -7,7 +7,6 @@
 <a href="https://clojars.org/io.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/io.replikativ/datahike.svg" /></a>
 <a href="https://circleci.com/gh/replikativ/datahike"><img src="https://circleci.com/gh/replikativ/datahike.svg?style=shield"/></a>
 <a href="https://github.com/replikativ/datahike/tree/development"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/development"/></a>
-<a href="https://versions.deps.co/replikativ/datahike" title="Dependencies Status"><img src="https://versions.deps.co/replikativ/datahike/status.svg" /></a>
 </p>
 
 Datahike is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
