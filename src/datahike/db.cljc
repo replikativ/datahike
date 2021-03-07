@@ -979,7 +979,6 @@
      (defmethod pp/simple-dispatch FilteredDB [db] (pp-db db *out*))))
 
 (defn db-from-reader [{:keys [schema datoms]}]
-  #?(:cljs (js/console.log "called db-from-reader"))
   (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema))
 
 ;; ----------------------------------------------------------------------------
@@ -1732,7 +1731,7 @@
                   (= op :db/retractEntity))
               (if-let [e (ha/<? (entid db e))]
                 (let [e-datoms (vec (ha/<? (-search db [e])))
-                      v-datoms (vec (mapcat (fn [a] (ha/<? (-search db [nil a e]))) (-attrs-by db :db.type/ref)))
+                      v-datoms (vec (apply concat (ha/<? (ha/map< (fn [a] (ha/go-try (ha/<? (-search db [nil a e])))) (-attrs-by db :db.type/ref)))))
                       retracted-comps (retract-components db e-datoms)]
                   (recur (ha/<? (ha/reduce< transact-retract-datom report (concat e-datoms v-datoms)))
                          (concat retracted-comps entities)))
