@@ -118,7 +118,8 @@
   (-slice tree (dd/datom e0 nil nil tx0) (dd/datom emax nil nil txmax) index-type))
 
 (defn -count [tree index-type]
-  (count (-seq tree index-type)))
+  (ha/go-try
+   (count (ha/<? (-seq tree index-type)))))
 
 (defn -all [tree index-type]
   (ha/go-try

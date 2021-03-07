@@ -82,7 +82,7 @@
                                         [?e :name ?n]] db))
                              #{["Petr"] ["Evgeny"]})))
 
-                    #_(is (thrown-msg? "Bad attribute :_parent: reverse attribute name requires {:db/valueType :db.type/ref} in schema"
+                    (is (thrown-msg? "Bad attribute :_parent: reverse attribute name requires {:db/valueType :db.type/ref} in schema"
                                        (d/db-with db0 [{:name "Sergey" :_parent 1}]))))
                   (done)))
      :clj (let [db0 (d/empty-db {:children {:db/valueType :db.type/ref
@@ -103,7 +103,7 @@
                             [?e :name ?n]] db)
                      #{["Petr"] ["Evgeny"]})))
 
-            #_(is (thrown-msg? "Bad attribute :_parent: reverse attribute name requires {:db/valueType :db.type/ref} in schema"
+            (is (thrown-msg? "Bad attribute :_parent: reverse attribute name requires {:db/valueType :db.type/ref} in schema"
                                (d/db-with db0 [{:name "Sergey" :_parent 1}]))))))
 
 (deftest test-explode-nested-maps

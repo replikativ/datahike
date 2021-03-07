@@ -24,9 +24,10 @@
   to maintain a full stack trace when jumping between multiple contexts."
   [x]
   (if (instance? #?(:clj Exception :cljs js/Error) x)
-    (throw (ex-info (or #?(:clj (.getMessage ^Exception x)) (str x))
-                    (or (ex-data x) {})
-                    x))
+    (throw #_(ex-info (or #?(:clj (.getMessage ^Exception x)) (str x))
+                      (or (ex-data x) {})
+                      x)
+           x)
     x))
 
 (defn promise-chan

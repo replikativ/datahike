@@ -4,6 +4,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [clojure.core.async :refer [go <!]]
+   [datahike.impl.entity :as de]
    [datahike.core :as d]
    [datahike.db :as db]
    [datahike.test.core-test :as tdc]))
@@ -17,9 +18,9 @@
   #?(:cljs
 (t/async done 
          (go
-           #_(is (thrown-msg? "Bad attribute specification for :profile: {:db/isComponent true} should also have {:db/valueType :db.type/ref}"
+           (is (thrown-msg? "Bad attribute specification for :profile: {:db/isComponent true} should also have {:db/valueType :db.type/ref}"
                             (d/empty-db {:profile {:db/isComponent true}})))
-           #_(is (thrown-msg? "Bad attribute specification for {:profile {:db/isComponent \"aaa\"}}, expected one of #{true false}"
+           (is (thrown-msg? "Bad attribute specification for {:profile {:db/isComponent \"aaa\"}}, expected one of #{true false}"
                             (d/empty-db {:profile {:db/isComponent "aaa" :db/valueType :db.type/ref}})))
 
            (let [db (<! (d/db-with
@@ -57,7 +58,7 @@
                         #{}))))
 
              (testing "reverse navigation"
-               (is (= (visible (<! (:_profile (<! (d/entity db 3)))))
+               (is (= (visible (<! (de/lookup-entity (<! (d/entity db 3)) :_profile)))
                       {:db/id 1}))))
            (done)))
      :clj
@@ -137,7 +138,7 @@
                              #{}))))
 
                   (testing "reverse navigation"
-                    (is (= (visible (<! (:_profile (<! (d/entity db 3)))))
+                    (is (= (visible (<! (de/lookup-entity (<! (d/entity db 3)) :_profile)))
                            {:db/id 1}))))
                 (done)))
      :clj

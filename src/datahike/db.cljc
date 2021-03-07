@@ -209,15 +209,27 @@
          datoms-b (ha/<? (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))]
      (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
 
+(defn count<
+  "Utility function for counting all datoms."
+  [db]
+  (di/-count (:eavt db)))
+
+(defn seq<
+  "Utility function for returning a seq of datoms in eavt order."
+  [db]
+  (-seq (:eavt db)))
+
+
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx rschema hash config]
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
-       ;ISeqable (-seq [db] (-seq (.-eavt db)))      ;; Seqs won't work for ClojureScript. Could expose a function that is channel aware
-       ;IReversible (-rseq [db] (-rseq (.-eavt db)))
-       ;ICounted (-count [db] (count (:children (.-eavt db))))   ;; could fix with keeping active count of database
-       ;IEmptyableCollection (-empty [db] (empty-db (.-schema db)))
-       IPrintWithWriter (-pr-writer [db w opts] (do (println "calling printer updatable") (pr-db db w opts)))
+       ISeqable (-seq [db] (throw (ex-info "seq not supported for async implementation. Use seq< utility function." {})))
+       IReversible (-rseq [db] (throw (ex-info "rseq not supported for async implementation." {})))
+       ;; could fix with keeping active count of database
+       ICounted (-count [db] (throw (ex-info "count not supported for async implementation. Use count< utility function." {})))   
+       IEmptyableCollection (-empty [db] (throw (ex-info "empty not supported for async implementation. Use empty-db directly." {})))
+       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
        IEditableCollection (-as-transient [db] (db-transient db))
        ITransientCollection (-conj! [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
        (-persistent! [db] (db-persistent! db))]

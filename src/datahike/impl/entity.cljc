@@ -82,10 +82,10 @@
              (if (= attr ":db/id")
                eid
                (if (db/reverse-ref? attr)
-                 (do 
+                 (do
                    (println "reverse lookup")
                    (-> (ha/<? (-lookup-backwards db eid (db/reverse-ref attr) nil))
-                         multival->js))
+                       multival->js))
                  (cond-> (ha/<? (lookup-entity this attr))
                    (db/multival? db attr) multival->js)))))
        #_(forEach [this f]
@@ -122,12 +122,20 @@
                  (throw (js/Error. "Entity not touched."))))
 
        ILookup
-       (-lookup [this attr]           (lookup-entity this attr nil))
-       (-lookup [this attr not-found] (lookup-entity this attr not-found))
+       (-lookup [this attr]           (-lookup this attr nil))
+       (-lookup [this attr not-found] (if @(.-touched this)
+                                        (if-not (db/reverse-ref? attr)
+                                          (if (= attr :db/id)
+                                            eid
+                                            (clojure.core/get @cache attr not-found))
+                                          (throw (js/Error. "Reverse lookup not supported. Use lookup-entity function.")))
+                                        (throw (js/Error. "Entity not touched."))))
 
        IAssociative
-       (-contains-key? [this k]
-                       (contains? @cache k)
+       (-contains-key? [this k]              ;; Is this called for anything?
+                       (if @(.-touched this)
+                         (contains? @cache k)
+                         (throw (js/Error. "Entity not touched.")))
                        #_(not= ::nf (lookup-entity this k ::nf)))
 
        IFn
@@ -180,8 +188,7 @@
    ;; (= db  (.-db ^Entity that))
    (= (.-eid this) (.-eid ^Entity that))))
 
-(defn- lookup-entity
-  ;; becomes async
+(defn lookup-entity
   ([this attr] (lookup-entity this attr nil))
   ([^Entity this attr not-found]
    (ha/go-try
@@ -191,7 +198,7 @@
         (ha/<? (-lookup-backwards (.-db this) (.-eid this) (db/reverse-ref attr) not-found))
         (if-some [v (@(.-cache this) attr)]
           v
-          (if @(.-touched this) 
+          (if @(.-touched this)
             not-found
             (if-some [datoms (not-empty (ha/<? (db/-search (.-db this) [(.-eid this) attr])))]
               (let [value (ha/<? (entity-attr (.-db this) attr datoms))]
@@ -219,11 +226,8 @@
           {} (partition-by :a datoms)))
 
 (defn touch [^Entity e]
-  ;; becomes async
   {:pre [(entity? e)]}
-  #_(println "inside touch")
   (ha/go-try    ; This is kind of a lingering go-try maybe it needs to be closed?
-   #_(println "touched? " @(.-touched e))
    (when-not @(.-touched e)
      (do
        (when-let [datoms (not-empty (ha/<? (db/-search (.-db e) [(.-eid e)])))]
@@ -232,9 +236,7 @@
                                    (ha/<?)
                                    (touch-components (.-db e))
                                    (ha/<?)))
-         (vreset! (.-touched e) true)
-         #_(println "after touched? " @(.-touched e))
-         )))
+         (vreset! (.-touched e) true))))
    e))
 
 #?(:cljs (goog/exportSymbol "datahike.impl.entity.Entity" Entity))

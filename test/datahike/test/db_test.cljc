@@ -90,7 +90,7 @@
     #?(:cljs 
        (t/async done 
                (go (testing "Test old write schema"
-                     #_(is (thrown-msg?
+                     (is (thrown-msg?
                             "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
                             (d/empty-db {:name {:db/cardinality :db.cardinality/many}} {:schema-flexibility :write})))
                      (is (= (merge db/implicit-schema

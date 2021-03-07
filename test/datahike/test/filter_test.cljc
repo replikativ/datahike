@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
+   [datahike.impl.entity :as de]
    [clojure.core.async :refer [go <!]]
    [datahike.db :as db]
    [datahike.test.core-test :as tdc]))
@@ -30,7 +31,7 @@
                         remove-ivan (fn [_ datom] (not= 2 (:e datom)))
                         long-akas   (fn [udb datom] (or (not= :aka (:a datom))
                                         ;; has just 1 aka
-                                                        (<= (count (:aka (<! (d/entity udb (:e datom))))) 1)
+                                                        (<= (count (:aka (<! (de/touch (<! (d/entity udb (:e datom))))))) 1)
                                         ;; or aka longer that 4 chars
                                                         (>= (count (:v datom)) 4)))]
 
@@ -42,17 +43,17 @@
 
                     (are [_db _res] (= (<! (d/q '[:find ?v :where [_ :aka ?v]] _db)) _res)
                       db                        #{["I"] ["Great"] ["Terrible"] ["IV"] ["II"]}
-                      ;(d/filter db remove-pass) #{["I"] ["Great"] ["Terrible"] ["IV"] ["II"]}
-                      ;(d/filter db remove-ivan) #{["I"] ["Great"] ["II"]}
-                      ;(d/filter db long-akas)   #{["Great"] ["Terrible"] ["II"]}
-                      #_(-> db (d/filter remove-ivan) (d/filter long-akas)) #{["Great"] ["II"]}
-                      #_(-> db (d/filter long-akas) (d/filter remove-ivan)) #{["Great"] ["II"]})
+                      (d/filter db remove-pass) #{["I"] ["Great"] ["Terrible"] ["IV"] ["II"]}
+                      (d/filter db remove-ivan) #{["I"] ["Great"] ["II"]}
+                      (d/filter db long-akas)   #{["Great"] ["Terrible"] ["II"]}
+                      (-> db (d/filter remove-ivan) (d/filter long-akas)) #{["Great"] ["II"]}
+                      (-> db (d/filter long-akas) (d/filter remove-ivan)) #{["Great"] ["II"]})
 
                     (testing "Entities"
-                      (is (= (<! (:password (<! (d/entity db 1)))) "<SECRET>"))
-                      (is (= (<! (:password (<! (d/entity (d/filter db remove-pass) 1)) ::not-found)) ::not-found))
-                      (is (= (<! (:aka (<! (d/entity db 2)))) #{"Terrible" "IV"}))
-                      (is (= (<! (:aka (<! (d/entity (d/filter db long-akas) 2)))) #{"Terrible"})))
+                      (is (= (:password (<! (de/touch (<! (d/entity db 1))))) "<SECRET>"))
+                      (is (= (:password (<! (de/touch (<! (d/entity (d/filter db remove-pass) 1)))) ::not-found) ::not-found))
+                      (is (= (:aka (<! (de/touch (<! (d/entity db 2))))) #{"Terrible" "IV"}))
+                      (is (= (:aka (<! (de/touch (<! (d/entity (d/filter db long-akas) 2))))) #{"Terrible"})))
 
                     (testing "Index access"
                       (is (= (map :v (<! (d/datoms db :aevt :password)))

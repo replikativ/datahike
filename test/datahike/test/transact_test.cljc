@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
+   [datahike.impl.entity :as de]
    [datahike.db :as db]
    [clojure.core.async :as async :refer [go <!]]
    [datahike.test.core-test :as tdc]))
@@ -334,34 +335,34 @@
               (go
                 (let [conn (<! (d/create-conn))]
                   (<! (d/transact! conn [[:db/cas 1 :weight nil 100]]))
-                  (is (= (<! (:weight (<! (d/entity @conn 1)))) 100))
+                  (is (= (:weight (<! (de/touch (<! (d/entity @conn 1))))) 100))
                   (<! (d/transact! conn [[:db/add 1 :weight 200]]))
                   (<! (d/transact! conn [[:db.fn/cas 1 :weight 200 300]]))
-                  (is (= (<! (:weight (<! (d/entity @conn 1)))) 300))
+                  (is (= (:weight (<! (de/touch (<! (d/entity @conn 1))))) 300))
                   (<! (d/transact! conn [[:db/cas 1 :weight 300 400]]))
-                  (is (= (<! (:weight (<! (d/entity @conn 1)))) 400))
-                  #_(is (thrown-msg? ":db.fn/cas failed on datom [1 :weight 400], expected 200"
-                                   (d/transact! conn [[:db.fn/cas 1 :weight 200 210]]))))
+                  (is (= (:weight (<! (de/touch (<! (d/entity @conn 1))))) 400))
+                  (is (thrown-msg? ":db.fn/cas failed on datom [1 :weight 400], expected 200"
+                                   (<! (d/transact! conn [[:db.fn/cas 1 :weight 200 210]])))))
 
                 (let [conn (<! (d/create-conn {:label {:db/cardinality :db.cardinality/many}}))]
                   (<! (d/transact! conn [[:db/add 1 :label :x]]))
                   (<! (d/transact! conn [[:db/add 1 :label :y]]))
                   (<! (d/transact! conn [[:db.fn/cas 1 :label :y :z]]))
-                  (is (= (<! (:label (<! (d/entity @conn 1)))) #{:x :y :z}))
-                  #_(is (thrown-msg? ":db.fn/cas failed on datom [1 :label (:x :y :z)], expected :s"
-                                   (d/transact! conn [[:db.fn/cas 1 :label :s :t]]))))
+                  (is (= (:label (de/touch  (<! (d/entity @conn 1)))) #{:x :y :z}))
+                  (is (thrown-msg? ":db.fn/cas failed on datom [1 :label (:x :y :z)], expected :s"
+                                   (<! (d/transact! conn [[:db.fn/cas 1 :label :s :t]])))))
 
                 (let [conn (<! (d/create-conn))]
                   (<! (d/transact! conn [[:db/add 1 :name "Ivan"]]))
                   (<! (d/transact! conn [[:db.fn/cas 1 :age nil 42]]))
-                  (is (= (<! (:age (<! (d/entity @conn 1)))) 42))
-                  #_(is (thrown-msg? ":db.fn/cas failed on datom [1 :age 42], expected nil"
+                  (is (= (:age (de/touch (<! (d/entity @conn 1)))) 42))
+                  (is (thrown-msg? ":db.fn/cas failed on datom [1 :age 42], expected nil"
                                    (d/transact! conn [[:db.fn/cas 1 :age nil 4711]]))))
 
                 (let [conn (<! (d/create-conn))]
-                  #_(is (thrown-msg? "Can't use tempid in '[:db.fn/cas -1 :attr nil :val]'. Tempids are allowed in :db/add only"
-                                   (d/transact! conn [[:db/add    -1 :name "Ivan"]
-                                                      [:db.fn/cas -1 :attr nil :val]]))))
+                  (is (thrown-msg? "Can't use tempid in '[:db.fn/cas -1 :attr nil :val]'. Tempids are allowed in :db/add only"
+                                   (<! (d/transact! conn [[:db/add    -1 :name "Ivan"]
+                                                          [:db.fn/cas -1 :attr nil :val]])))))
                 (done)))
      :clj (do
             (let [conn (d/create-conn)]

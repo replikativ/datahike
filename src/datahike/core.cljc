@@ -15,6 +15,7 @@
       [datahike.impl.entity Entity]
       [java.util UUID])))
 
+
 (def ^:const ^:no-doc tx0 dc/tx0)
 
 
@@ -768,3 +769,13 @@
      :cljs (-> (subs (str uuid) 0 8)
                (js/parseInt 16)
                (* 1000))))
+
+;; Utility
+
+(def ^{:arglists '([db])
+       :doc "Utility function for counting all datoms."}
+  count< db/count<)
+
+(def ^{:arglists '([db])
+       :doc "Utility function for returning a seq of datoms in eavt order."}
+  seq< db/seq<)
