@@ -99,6 +99,22 @@
              [1 [:name] {:name "Petr"}]
              [1 [:age]  {:age 44}]})))
 
+
+(comment 
+  ;;
+  
+
+  (println "---------------")
+  (go (let [db1 (<! (d/db-with (<! (d/empty-db)) [{:db/id 1 :name "Ivan" :age 25}]))
+            db2 (<! (d/db-with (<! (d/empty-db)) [{:db/id 1 :name "Petr" :age 25}]))]
+
+        (println (<! (d/q '[:find ?e (pull $1 ?e [:name])
+                                  :in $1 $2
+                                  :where [$1 ?e :age 25]]
+                                db1 db2)))))
+  ;;
+  )
+
 (deftest test-multiple-sources
   #?(:cljs 
      (t/async done 
@@ -144,8 +160,40 @@
                                db1 db2))
                      #{[1 {:name "Petr"}]}))))))
 
+
+(comment
+  ;;
+
+  (go (def result (<! (d/q '[:find (pull ?e [:name]) .
+                             :where [?e :age 25]]
+                           (<! test-db)))))
+  
+  (go  (println (<! test-db)))
+
+
+  
+  ;;  
+  )
+
 (deftest test-find-spec
-  #?(:clj
+  #?(:cljs 
+     (t/async done 
+              (go (is (= (<! (d/q '[:find (pull ?e [:name]) .
+                                    :where [?e :age 25]]
+                                  (<! (test-db))))
+                         {:name "Ivan"}))
+
+                  (is (= (set (<! (d/q '[:find [(pull ?e [:name]) ...]
+                                         :where [?e :age ?a]]
+                                       (<! (test-db)))))
+                         #{{:name "Ivan"} {:name "Petr"} {:name "Oleg"}}))
+
+                  (is (= (<! (d/q '[:find [?e (pull ?e [:name])]
+                                    :where [?e :age 25]]
+                                  (<! (test-db))))
+                         [2 {:name "Ivan"}]))
+                  (done)))
+     :clj
      (do (is (= (d/q '[:find (pull ?e [:name]) .
                        :where [?e :age 25]]
                      test-db)
@@ -162,7 +210,21 @@
                 [2 {:name "Ivan"}])))))
 
 (deftest test-find-spec-input
-  #?(:clj
+  #?(:cljs
+     (t/async done
+              (go
+                (is (= (<! (d/q '[:find (pull ?e ?p) .
+                                  :in $ ?p
+                                  :where [(ground 2) ?e]]
+                                (<! (test-db)) [:name]))
+                       {:name "Ivan"}))
+                (is (= (<! (d/q '[:find (pull ?e p) .
+                                  :in $ p
+                                  :where [(ground 2) ?e]]
+                                (<! (test-db)) [:name]))
+                       {:name "Ivan"}))
+                (done)))
+     :clj
      (do (is (= (d/q '[:find (pull ?e ?p) .
                        :in $ ?p
                        :where [(ground 2) ?e]]
@@ -175,7 +237,19 @@
                 {:name "Ivan"})))))
 
 (deftest test-aggregates
-  #?(:clj
+  #?(:cljs (t/async done
+                    (go  (let [db (<! (d/db-with (<! (d/empty-db {:value {:db/cardinality :db.cardinality/many}}))
+                                                 [{:db/id 1 :name "Petr" :value [10 20 30 40]}
+                                                  {:db/id 2 :name "Ivan" :value [14 16]}
+                                                  {:db/id 3 :name "Oleg" :value 1}]))]
+                           (is (= (set (<! (d/q '[:find ?e (pull ?e [:name]) (min ?v) (max ?v)
+                                                  :where [?e :value ?v]]
+                                                db)))
+                                  #{[1 {:name "Petr"} 10 40]
+                                    [2 {:name "Ivan"} 14 16]
+                                    [3 {:name "Oleg"} 1 1]})))
+                         (done)))
+     :clj
      (let [db (d/db-with (d/empty-db {:value {:db/cardinality :db.cardinality/many}})
                          [{:db/id 1 :name "Petr" :value [10 20 30 40]}
                           {:db/id 2 :name "Ivan" :value [14 16]}

@@ -283,23 +283,10 @@
 
   (-rseek-datoms [db index-type cs]
                  (ha/go-try
-                  (let [result (ha/<? (-slice (get db index-type)
-                                              (ha/<? (components->pattern db index-type cs e0 tx0))
-                                              (datom emax nil nil txmax)
-                                              index-type))
-                        _ (println "the -rseek-datoms in db.cljc result: " result)
-                        _ (println "the -rseek-datoms in db.cljc result: cs" cs)
-                        _ (println "the -rseek-datoms in db.cljc result: index-type" index-type)
-                        _ (println "the -rseek-datoms in db.cljc result: (get db index-type)" (get db index-type))
-                        _ (println "the -rseek-datoms in db.cljc result: (ha/<? (components->pattern db index-type cs e0 tx0))" (ha/<? (components->pattern db index-type cs e0 tx0)))]
-                    (rseq (vec result)))
-                  #_(->
-                   (ha/<? (-slice (get db index-type)
-                                  (ha/<? (components->pattern db index-type cs e0 tx0))
-                                  (datom emax nil nil txmax)
-                                  index-type))
-                   vec
-                   rseq)))
+                  (rseq (vec (ha/<? (-slice (get db index-type)
+                                            (ha/<? (components->pattern db index-type cs e0 tx0))
+                                            (datom emax nil nil txmax)
+                                            index-type))))))
 
   (-index-range [db attr start end]
                 (when-not (indexing? db attr)
@@ -333,9 +320,10 @@
 ;; ----------------------------------------------------------------------------
 (defrecord-updatable FilteredDB [unfiltered-db pred]
   #?@(:cljs
-      [IEquiv (-equiv [db other] (ha/<?? (equiv-db db other)))
-       ISeqable (-seq [db] (ha/<?? (-datoms db :eavt [])))
-       ICounted (-count [db] (count (ha/<?? (-datoms db :eavt []))))
+      [IEquiv (-equiv [db other] (equiv-db db other))
+       ISeqable (-seq [db] (throw (ex-info "seq not supported for async implementation. Use seq< utility function." {})))
+              ;; could fix with keeping active count of database
+       ICounted (-count [db] (throw (ex-info "count not supported for async implementation. Use count< utility function." {})))
        IPrintWithWriter (-pr-writer [db w opts] (do (println "calling printer filtered") (pr-db db w opts)))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))

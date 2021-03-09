@@ -5,6 +5,7 @@
    [datahike.core :as d]
    [datahike.db :as db]
    [clojure.core.async :refer [go <!]]
+   [hitchhiker.tree.utils.cljs.async :as ha]
    [datahike.test.core-test :as tdc]))
 
 #?(:cljs
@@ -61,6 +62,25 @@
                          :where [1 :aka ?v]] @conn)
                   #{["Devil"] ["Tupen"]})))))))
 
+(comment 
+  ;
+  
+  
+  (go  (def db-x (<! (d/empty-db {:children {:db/valueType :db.type/ref
+                                             :db/cardinality :db.cardinality/many}}))))
+  
+  (go (ha/<? (d/db-with db-x [{:name "Sergey" :_parent 1}])))
+
+
+  (thrown-msg? "Bad attribute specification for {:profile {:db/isComponent \"aaa\"}}, expected one of #{true false}"
+               (d/empty-db {:profile {:db/isComponent "aaa" :db/valueType :db.type/ref}}))
+  
+  (println db-x)
+  
+  ;
+  )
+
+
 (deftest test-explode-ref
   #?(:cljs 
      (t/async done
@@ -81,9 +101,10 @@
                                         :where [_ :children ?e]
                                         [?e :name ?n]] db))
                              #{["Petr"] ["Evgeny"]})))
+                    
 
                     (is (thrown-msg? "Bad attribute :_parent: reverse attribute name requires {:db/valueType :db.type/ref} in schema"
-                                       (d/db-with db0 [{:name "Sergey" :_parent 1}]))))
+                                    (d/db-with db0 [{:name "Sergey" :_parent 1}]))))
                   (done)))
      :clj (let [db0 (d/empty-db {:children {:db/valueType :db.type/ref
                                             :db/cardinality :db.cardinality/many}})]

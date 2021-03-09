@@ -15,7 +15,6 @@
       [datahike.impl.entity Entity]
       [java.util UUID])))
 
-
 (def ^:const ^:no-doc tx0 dc/tx0)
 
 
@@ -227,14 +226,17 @@
   ([db tx-data] (with db tx-data nil))
   ([db tx-data tx-meta]
    {:pre [(db/db? db)]}
-   (if (is-filtered db)
-     (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
-     (db/transact-tx-data (db/map->TxReport
-                           {:db-before db
-                            :db-after  db
-                            :tx-data   []
-                            :tempids   {}
-                            :tx-meta   tx-meta}) tx-data))))
+   (do ;(js/console.log "inside with")
+     (if (is-filtered db)
+       (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
+       (let [result (db/transact-tx-data (db/map->TxReport
+                                          {:db-before db
+                                           :db-after  db
+                                           :tx-data   []
+                                           :tempids   {}
+                                           :tx-meta   tx-meta}) tx-data)]
+         ;(js/console.log "result inside with: " result)
+         result)))))
 
 (defn load-entities-with [db entities]
   (db/transact-entities-directly
@@ -245,11 +247,14 @@
                       :tx-meta []})
    entities))
 
+
+
 (defn db-with
   "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
   [db tx-data]
   {:pre [(db/db? db)]}
-  (ha/go-try (:db-after (ha/<? (with db tx-data)))))
+  (ha/go-try
+   (:db-after (ha/<? (with db tx-data)))))
 
 
 ; Index lookups
@@ -439,9 +444,16 @@
   {:pre [(conn? conn)]}
   (ha/go-try
    (let [db @conn
-         r (ha/<? (with db tx-data tx-meta))]
-     (reset! conn (:db-after r)) ; assumes connection being locked outside
-     r)))
+         ;_ (js/console.log "inside of transact")
+         r (ha/<? (with db tx-data tx-meta))
+         ;_ (js/console.log "after calling with")
+         ;_ (js/console.log "r: " r)
+         ]
+     (if-let [r (ha/<? (with db tx-data tx-meta))]
+       (do (reset! conn (:db-after r))
+           r)
+       db)#_(reset! conn (:db-after r)) ; assumes connection being locked outside
+     #_r)))
 
 (defn -load-entities! [conn entities]
   (let [report (atom nil)]

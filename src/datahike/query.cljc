@@ -386,7 +386,10 @@
     (update context :rels conj (in->rel binding value))))
 
 (defn resolve-ins [context bindings values]
-  (reduce resolve-in context (zipmap bindings values)))
+  (let [result
+        (reduce resolve-in context (zipmap bindings values))]
+    (js/console.log "resolve-ins: " result)
+    result))
 
 ;;
 
@@ -536,6 +539,7 @@
     [(update context :rels #(remove (set rels) %)) production]))
 
 (defn -call-fn [context rel f args]
+  ;(js/console.log "point 1")
   (let [sources (:sources context)
         attrs (:attrs rel)
         len (count args)
@@ -562,7 +566,7 @@
              (when-some [v (resolve sym)] @v))))
 
 (def ^:private find-method
-  #?(:cljs nil
+  #?(:cljs (do (js/console.log "point 2") nil)
      :clj (memoize
            (fn find-method-impl [^Class this-class method-name args-classes]
              (or (->> this-class
@@ -593,6 +597,7 @@
                     (Reflector/prepRet (.getReturnType method) (.invoke method this (into-array Object args))))))))))
 
 (defn filter-by-pred [context clause]
+  ;(js/console.log "point 3")
   (let [[[f & args]] clause
         pred (or (get built-ins f)
                  (context-resolve-val context f)
@@ -609,6 +614,7 @@
     (update context :rels conj new-rel)))
 
 (defn bind-by-fn [context clause]
+  ;(js/console.log "point 4")
   (let [[[f & args] out] clause
         binding (dpi/parse-binding out)
         fun (or (get built-ins f)
@@ -635,6 +641,7 @@
 ;;; RULES
 
 (defn rule? [context clause]
+  ;(js/console.log "point 5")
   (and (sequential? clause)
        (contains? (:rules context)
                   (if (source? (first clause))
@@ -644,6 +651,7 @@
 (def rule-seqid (atom 0))
 
 (defn expand-rule [clause context used-args]
+  ;(js/console.log "point 6")
   (let [[rule & call-args] clause
         seqid (swap! rule-seqid inc)
         branches (get (:rules context) rule)]
@@ -659,12 +667,14 @@
        clauses))))
 
 (defn remove-pairs [xs ys]
+  ;(js/console.log "point 7")
   (let [pairs (->> (map vector xs ys)
                    (remove (fn [[x y]] (= x y))))]
     [(map first pairs)
      (map second pairs)]))
 
 (defn rule-gen-guards [rule-clause used-args]
+  ;(js/console.log "point 8")
   (let [[rule & call-args] rule-clause
         prev-call-args (get used-args rule)]
     (for [prev-args prev-call-args
@@ -672,20 +682,24 @@
       [(concat ['-differ?] call-args prev-args)])))
 
 (defn walk-collect [form pred]
+  ;(js/console.log "point 9")
   (let [res (atom [])]
     (walk/postwalk #(do (when (pred %) (swap! res conj %)) %) form)
     @res))
 
 (defn collect-vars [clause]
+  ;(js/console.log "point 10")
   (set (walk-collect clause free-var?)))
 
 (defn split-guards [clauses guards]
+  ;(js/console.log "point 11")
   (let [bound-vars (collect-vars clauses)
         pred (fn [[[_ & vars]]] (every? bound-vars vars))]
     [(filter pred guards)
      (remove pred guards)]))
 
 (defn solve-rule [context clause]
+  ;(js/console.log "point 12")
   (ha/go-try
    (let [final-attrs (filter free-var? clause)
          final-attrs-map (zipmap final-attrs (range))
@@ -743,18 +757,21 @@
          rel)))))
 
 (defn resolve-pattern-lookup-refs [source pattern]
-  (if (satisfies? db/IDB source)
-    (let [[e a v tx added] pattern]
-      (->
-       [(if (or (lookup-ref? e) (attr? e)) (db/entid-strict source e) e)
-        a
-        (if (and v (attr? a) (db/ref? source a) (or (lookup-ref? v) (attr? v))) (db/entid-strict source v) v)
-        (if (lookup-ref? tx) (db/entid-strict source tx) tx)
-        added]
-       (subvec 0 (count pattern))))
-    pattern))
+  ;(js/console.log "point 13")
+  (ha/go-try
+   (if (satisfies? db/IDB source)
+     (let [[e a v tx added] pattern]
+       (->
+        [(if (or (lookup-ref? e) (attr? e)) (ha/<? (db/entid-strict source e)) e)
+         a
+         (if (and v (attr? a) (db/ref? source a) (or (lookup-ref? v) (attr? v))) (ha/<? (db/entid-strict source v)) v)
+         (if (lookup-ref? tx) (ha/<? (db/entid-strict source tx)) tx)
+         added]
+        (subvec 0 (count pattern))))
+     pattern)))
 
 (defn dynamic-lookup-attrs [source pattern]
+  ;(js/console.log "point 14")
   (let [[e a v tx] pattern]
     (cond-> #{}
       (free-var? e) (conj e)
@@ -787,6 +804,7 @@
    (-resolve-clause context clause clause))
   ([context clause orig-clause]
    (ha/go-try
+    ;(js/console.log "point 15")
     (condp looks-like? clause
       [[symbol? '*]]                                         ;; predicate [(pred ?a ?b ?c)]
       (filter-by-pred context clause)
@@ -860,7 +878,11 @@
 
       '[*]                                                   ;; pattern
       (let [source (:implicit-source context)
-            pattern (resolve-pattern-lookup-refs source clause)
+            _ (js/console.log "-resolve-clause [*] - source" source)
+            pattern (ha/<? (resolve-pattern-lookup-refs source clause))
+            _ (js/console.log "-resolve-clause [*] - pattern" pattern)
+             _ (js/console.log "-resolve-clause [*] - satisfied source" (satisfies? db/IDB source))
+             _ (js/console.log "-resolve-clause [*] - dynamic source" (dynamic-lookup-attrs source pattern))
             relation (ha/<? (lookup-pattern source pattern))]
         (binding [*lookup-attrs* (if (satisfies? db/IDB source)
                                    (dynamic-lookup-attrs source pattern)
@@ -869,6 +891,7 @@
           (update context :rels collapse-rels relation)))))))
 
 (defn resolve-clause [context clause]
+  (js/console.log "resolve-clause: " context)
   (ha/go-try
    (if (rule? context clause)
      (if (source? (first clause))
@@ -972,14 +995,16 @@
                      [(-context-resolve (:source find) context)
                       (dpp/parse-pull
                        (-context-resolve (:pattern find) context))]))]
-    (for [tuple resultset]
-      (mapv (fn [env el]
-              (if env
-                (let [[src spec] env]
-                  (dpa/pull-spec src spec [el] false))
-                el))
-            resolved
-            tuple))))
+    (ha/map<
+     (fn [tuple] (ha/map< (fn [env el]
+                            (ha/go-try
+                             (if env
+                               (let [[src spec] env]
+                                 (ha/<? (dpa/pull-spec src spec [el] false)))
+                               el)))
+                          resolved
+                          tuple))
+     resultset)))
 
 (def ^:private query-cache (volatile! (datahike.lru/lru lru-cache-size)))
 
@@ -1015,21 +1040,26 @@
       :strs (convert-fn (map str mapping-keys))
       :syms (convert-fn (map symbol mapping-keys)))))
 
-(defmulti q (fn [query & args] (type query)))
+(defmulti q (fn [query & _args]
+              (cond
+                (map? query) :map
+                (seq? query) :vec
+                (vector? query) :vec)))
 
-(defmethod q #?(:cljs cljs.core/LazySeq
+#_(defmethod q #?(:cljs cljs.core/LazySeq
                 :clj clojure.lang.LazySeq)  [query & inputs]
   (q {:query query :args inputs}))
 
-(defmethod q #?(:cljs cljs.core/PersistentVector
+(defmethod q :vec #_#?(:cljs cljs.core/PersistentVector
                 :clj clojure.lang.PersistentVector) [query & inputs]
   (q {:query query :args inputs}))
 
-(defmethod q #?(:cljs cljs.core/PersistentArrayMap
+(defmethod q :map #_#?(:cljs cljs.core/PersistentArrayMap
                 :clj clojure.lang.PersistentArrayMap) [query-map & inputs]
   (ha/go-try
    (let [query         (if (contains? query-map :query) (:query query-map) query-map)
          args          (if (contains? query-map :args) (:args query-map) inputs)
+         _             #?(:cljs (js/console.log "args: " args) :clj nil)
          parsed-q      (memoized-parse-query query)
          find          (:qfind parsed-q)
          find-elements (dpip/find-elements find)
@@ -1044,14 +1074,18 @@
          wheres        (:where query)
          context       (-> (Context. [] {} {})
                            (resolve-ins (:qin parsed-q) args))
+         _             (js/console.log "inspect context: " context)
          resultset     (-> context
                            (-q wheres)
                            (ha/<?)
+                           ((fn [x] (js/console.log x) x))
                            (collect all-vars))]
+     (js/console.log "the resultset" resultset "args:" args)
      (cond->> resultset
        (:with query)                                 (mapv #(vec (subvec % 0 result-arity)))
        (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
        (some #(instance? Pull %) find-elements)      (pull find-elements context)
+       (some #(instance? Pull %) find-elements)      (ha/<?)
        true                                          (-post-process find)
        true                                          (paginate (:offset query-map)
                                                                (:limit query-map))

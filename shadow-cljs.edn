@@ -12,6 +12,7 @@
   :browser-test
   {:target :browser-test
    :test-dir  "resources/public/js/test"
+   :ns-regexp "datahike.test.lookup-refs-test"
    :devtools {:http-port 8021
               :http-root "resources/public/js/test"}}
 
