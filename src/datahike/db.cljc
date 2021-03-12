@@ -201,7 +201,7 @@
                    (filter (fn [d] (= tx (datom-tx d))) (ha/<? (-all eavt))) ;; _ _ _ tx
                    (ha/<? (-all eavt))])))))
 
-(defn diff-similar 
+(defn diff-similar
   "Utility function like clojure.data/diff-similar but might return a core.async channel depending on *if-async*"
   [a b]
   (ha/go-try
@@ -227,7 +227,7 @@
        ISeqable (-seq [db] (throw (ex-info "seq not supported for async implementation. Use seq< utility function." {})))
        IReversible (-rseq [db] (throw (ex-info "rseq not supported for async implementation." {})))
        ;; could fix with keeping active count of database
-       ICounted (-count [db] (throw (ex-info "count not supported for async implementation. Use count< utility function." {})))   
+       ICounted (-count [db] (throw (ex-info "count not supported for async implementation. Use count< utility function." {})))
        IEmptyableCollection (-empty [db] (throw (ex-info "empty not supported for async implementation. Use empty-db directly." {})))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
        IEditableCollection (-as-transient [db] (db-transient db))
@@ -310,7 +310,7 @@
                      (let [datoms-a (ha/<?? (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))
                            datoms-b (ha/<?? (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt))]
                        (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick)))]))
-  
+
 
 (defn db? [x]
   (and (satisfies? ISearch x)
@@ -320,11 +320,11 @@
 ;; ----------------------------------------------------------------------------
 (defrecord-updatable FilteredDB [unfiltered-db pred]
   #?@(:cljs
-      [IEquiv (-equiv [db other] (equiv-db db other))
+      [;IEquiv (-equiv [db other] (equiv-db db other))
        ISeqable (-seq [db] (throw (ex-info "seq not supported for async implementation. Use seq< utility function." {})))
               ;; could fix with keeping active count of database
        ICounted (-count [db] (throw (ex-info "count not supported for async implementation. Use count< utility function." {})))
-       IPrintWithWriter (-pr-writer [db w opts] (do (println "calling printer filtered") (pr-db db w opts)))
+       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
 
@@ -366,23 +366,30 @@
   ISearch
   (-search [db pattern]
            (ha/go-try
-            (filter (.-pred db) (ha/<? (-search (.-unfiltered-db db) pattern)))))
+            (ha/<? (ha/filter< (.-pred db) (ha/<? (-search (.-unfiltered-db db) pattern))))))
 
   IIndexAccess
   (-datoms [db index cs]
            (ha/go-try
-            (filter (.-pred db) (ha/<? (-datoms (.-unfiltered-db db) index cs)))))
+            (ha/<? (ha/filter< (.-pred db) (ha/<? (-datoms (.-unfiltered-db db) index cs))))))
+
 
   (-seek-datoms [db index cs]
                 (ha/go-try
-                 (filter (.-pred db) (ha/<? (-seek-datoms (.-unfiltered-db db) index cs)))))
+                 (do
+                   (println "-seek-datoms" (.-pred db))
+                   (filter (.-pred db) (ha/<? (-seek-datoms (.-unfiltered-db db) index cs))))))
 
   (-rseek-datoms [db index cs]
-                 (ha/go-try 
-                  (filter (.-pred db) (ha/<? (-rseek-datoms (.-unfiltered-db db) index cs)))))
+                 (ha/go-try
+                  (do
+                    (println (.-pred db))
+                    (filter (.-pred db) (ha/<? (-rseek-datoms (.-unfiltered-db db) index cs))))))
 
   (-index-range [db attr start end]
                 (ha/go-try
+                 (do
+                   (println "-index-range " (.-pred db)))
                  (filter (.-pred db) (ha/<? (-index-range (.-unfiltered-db db) attr start end))))))
 
 (defn- search-current-indices [^DB db pattern]
@@ -456,9 +463,11 @@
 
 (defrecord-updatable HistoricalDB [origin-db]
   #?@(:cljs
-      [IEquiv (-equiv [db other] (ha/<?? (equiv-db db other)))
-       ISeqable (-seq [db] (ha/<?? (-datoms db :eavt [])))
-       ICounted (-count [db] (count (ha/<?? (-datoms db :eavt []))))
+      [IEquiv (-equiv [db other] (equiv-db db other))
+       ISeqable (-seq [db] (throw (ex-info "seq not supported for async implementation. Use seq< utility function." {})))
+       ;; could fix with keeping active count of database
+       ICounted (-count [db] (throw (ex-info "count not supported for async implementation. Use count< utility function." {})))
+       
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on HistoricalDB")))
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on HistoricalDB")))
@@ -895,16 +904,37 @@
   [datoms]
   (reduce #(+ %1 (hash %2)) 0 datoms))
 
+
 (defn- equiv-db [db other]
   ;(ha/go-try)
-  (and (or (instance? DB other) (instance? FilteredDB other))
-       (= (-schema db) (-schema other))
-       (= (:hash db) (:hash other))
-       #_(equiv-db-index (ha/<? (-datoms db :eavt [])) (ha/<? (-datoms other :eavt [])))))
+  (if
+   (and (instance? DB db) (instance? DB other)) (and (= (-schema db) (-schema other))
+                                                     (= (:hash db) (:hash other)))
+   false
+   #_(equiv-db-index (ha/<? (-datoms db :eavt [])) (ha/<? (-datoms other :eavt [])))))
+
+(defn equiv-db<
+  ([db other]
+   (ha/go-try
+    (if
+     (and (instance? DB db) (instance? DB other)) (and (= (-schema db) (-schema other))
+                                                       (= (:hash db) (:hash other)))
+     (and (= (-schema db) (-schema other))
+          (equiv-db-index (ha/<? (-datoms db :eavt [])) (ha/<? (-datoms other :eavt [])))))))
+  ([db other & more]
+   (ha/go-try
+    (loop [=? (ha/<? (equiv-db< db other))
+           more more]
+      (if-not =?
+        false
+        (if (seq more)
+          (recur (ha/<? (equiv-db< db (first more)))
+                 (rest more))
+          true))))))
+
 
 #?(:cljs
    (defn pr-db [db w opts]
-     (println "inside of pr-db")
      (-write w "#datahike/DB {")
      (-write w (str ":max-tx " (-max-tx db) " "))
      (-write w (str ":max-eid " (-max-eid db) " "))
@@ -1717,13 +1747,15 @@
 
               (or (= op :db.fn/retractEntity)
                   (= op :db/retractEntity))
-              (if-let [e (ha/<? (entid db e))]
-                (let [e-datoms (vec (ha/<? (-search db [e])))
-                      v-datoms (vec (apply concat (ha/<? (ha/map< (fn [a] (ha/go-try (ha/<? (-search db [nil a e])))) (-attrs-by db :db.type/ref)))))
-                      retracted-comps (retract-components db e-datoms)]
-                  (recur (ha/<? (ha/reduce< transact-retract-datom report (concat e-datoms v-datoms)))
-                         (concat retracted-comps entities)))
-                (recur report entities))
+              (do
+                ;(js/console.log ":db.fn/retractEntity called")
+                (if-let [e (ha/<? (entid db e))]
+                  (let [e-datoms (vec (ha/<? (-search db [e])))
+                        v-datoms (vec (apply concat (ha/<? (ha/map< (fn [a] (ha/go-try (ha/<? (-search db [nil a e])))) (-attrs-by db :db.type/ref)))))
+                        retracted-comps (retract-components db e-datoms)]
+                    (recur (ha/<? (ha/reduce< transact-retract-datom report (concat e-datoms v-datoms)))
+                           (concat retracted-comps entities)))
+                  (recur report entities)))
 
               (= op :db/purge)
               (when-let [[report es] (purge db report entities op entity [e a v])]

@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
    [datahike.impl.entity :as de]
+   [hitchhiker.tree.utils.cljs.async :as ha]
    [clojure.core.async :refer [go <!]]
    [datahike.db :as db]
    [datahike.test.core-test :as tdc]))
@@ -29,11 +30,12 @@
                                (<!))
                         remove-pass (fn [_ datom] (not= :password (:a datom)))
                         remove-ivan (fn [_ datom] (not= 2 (:e datom)))
-                        long-akas   (fn [udb datom] (or (not= :aka (:a datom))
+                        long-akas   (fn [udb datom] (ha/go-try
+                                                     (or (not= :aka (:a datom))
                                         ;; has just 1 aka
-                                                        (<= (count (:aka (<! (de/touch (<! (d/entity udb (:e datom))))))) 1)
+                                                         (<= (count (:aka (<! (de/touch (<! (d/entity udb (:e datom))))))) 1)
                                         ;; or aka longer that 4 chars
-                                                        (>= (count (:v datom)) 4)))]
+                                                         (>= (count (:v datom)) 4))))]
 
                     (are [_db _res] (= (<! (d/q '[:find ?v :where [_ :password ?v]] _db)) _res)
                       db                        #{["<SECRET>"] ["<PROTECTED>"] ["<UNKWOWN>"]}
@@ -62,19 +64,19 @@
                              [])))
 
                     (testing "equiv"
-                      (is (= (<! (d/db-with db [[:db.fn/retractEntity 2]]))
-                             (d/filter db remove-ivan)))
-                      (is (= empty-db
-                             (d/filter empty-db (constantly true))
-                             (d/filter db (constantly false))))))
+                      (is (true? (<! (db/equiv-db< (<! (d/db-with db [[:db.fn/retractEntity 2]]))
+                                                   (d/filter db remove-ivan)))))
+                      (is (true? (<! (db/equiv-db< empty-db
+                                                   (d/filter empty-db (constantly true))
+                                                   (d/filter db (constantly false))))))))
 
                   (testing "double filtering"
                     (let [db       (<! (d/db-with (<! (d/empty-db {}))
                                                   [{:db/id 1, :name "Petr", :age 32}
                                                    {:db/id 2, :name "Oleg"}
                                                    {:db/id 3, :name "Ivan", :age 12}]))
-                          has-age? (fn [db datom] (go (some? (<! (:age (<! (d/entity db (:e datom))))))))
-                          adult?   (fn [db datom] (go (>= (:age (<! (d/entity db (:e datom)))) 18)))
+                          has-age? (fn [db datom] (go (some? (:age (<! (de/touch (<! (d/entity db (:e datom)))))))))
+                          adult?   (fn [db datom] (go (>= (:age (<! (de/touch (<! (d/entity db (:e datom)))))) 18)))
                           names    (fn [db] (go (map :v (<! (d/datoms db :aevt :name)))))]
                       (is (= ["Petr" "Oleg" "Ivan"] (<! (names db))))
                       (is (= ["Petr" "Ivan"]        (<! (names (-> db (d/filter has-age?))))))

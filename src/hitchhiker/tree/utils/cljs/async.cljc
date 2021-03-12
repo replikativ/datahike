@@ -1,6 +1,7 @@
 (ns hitchhiker.tree.utils.cljs.async
   #?(:cljs (:require-macros [hitchhiker.tree.utils.cljs.async :refer [go-try <? if-async?]]))
-  (:require [clojure.core.async :as async]))
+  (:require [clojure.core.async :as async]
+            [clojure.core.async.impl.protocols :as async-protocols]))
 
 
 ;;  This namespace override exists purely for development work on porting to cljs
@@ -86,6 +87,32 @@
            s2 s2]
       (if (and (seq s1) (seq s2))
         (recur (conj res (<? (go-f (first s1) (first s2)))) (rest s1) (rest s2))
+        res)))))
+
+
+
+(defmacro maybe<?
+  [ch]
+  (if-async?
+   `(if (satisfies? async-protocols/ReadPort ~ch)
+     (throw-if-exception (async/<! ~ch))
+     ~ch)
+   ch))
+
+
+
+(defn filter<
+  "Filters a collection. If the function is async it returns "
+  ([pred s]
+   (go-try
+    (loop [res []
+           s s]
+      (if (seq s)
+        (let [to-conj? (pred (first s))
+              to-conj? (if (satisfies? async-protocols/WritePort to-conj?) (<? to-conj?) to-conj?)]
+          (if to-conj?
+            (recur (conj res (first s)) (rest s))
+            (recur  res (rest s))))
         res)))))
 
 

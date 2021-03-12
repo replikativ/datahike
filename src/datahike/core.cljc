@@ -8,6 +8,7 @@
    [datahike.constants :as dc]
    [datahike.impl.entity :as de]
    [clojure.core.async :as async]
+   [clojure.core.async.impl.protocols :as async-protocols]
    [hitchhiker.tree.utils.cljs.async :as ha])
   #?(:clj
      (:import
@@ -214,7 +215,7 @@
     (let [^FilteredDB fdb db
           orig-pred (.-pred fdb)
           orig-db (.-unfiltered-db fdb)]
-      (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
+      (FilteredDB. orig-db #(ha/go-try (and (ha/maybe<? (orig-pred %)) (ha/maybe<? (pred orig-db %))))))
     (FilteredDB. db #(pred db %))))
 
 
