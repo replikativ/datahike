@@ -485,12 +485,9 @@ Connect to a database with persistent store:
 (defn history
   "Returns the full historical state of the database you may interact with."
   [db]
-  (do
-    (println "history is called")
-    (js/console.log "temp-index?" (db/-temporal-index? db))
-    (if (db/-temporal-index? db)
-      (HistoricalDB. db)
-      (throw (ex-info "history is only allowed on temporal indexed databases." {:config (db/-config db)})))))
+  (if (db/-temporal-index? db)
+    (HistoricalDB. db)
+    (throw (ex-info "history is only allowed on temporal indexed databases." {:config (db/-config db)}))))
 
 (defn- date? [d]
   #?(:cljs (instance? js/Date d)
