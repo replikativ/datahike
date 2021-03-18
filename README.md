@@ -119,7 +119,7 @@ We now show how to interact with the database interactively. All API calls retur
                                  :siblings [[:name "Alice"] [:name "Bob"]]}])))
 
 
-    ;; Find the :name of the person with :age of 26
+  ;; Find the :name of the person with :age of 26
   (go (println (<! (d/q '[:find ?v
                           :in $ ?a
                           :where
@@ -241,7 +241,8 @@ We now show how to interact with the database interactively. All API calls retur
   ;#{[Alice 55]}
 
 
-  ;; 🎉 Cross-db joins for some fun.
+ 
+  ;; 🎉 Cross-db joins for some fun. 
 
   ;; Create a second database and connect to it. We will use this later.
   (go (<! (d/create-database national-dish-idb))
@@ -268,7 +269,7 @@ We now show how to interact with the database interactively. All API calls retur
                         "United Kingdom"))))
 
 
-  ;; Let's do a cross db join to see what dishes Alice might like based on their country
+  ;; Let's do a cross db join to see what dishes Alice might like based on the country
   (go (println (<! (d/q '[:find ?name ?d
                           :in $1 $2 ?name
                           :where
