@@ -1,10 +1,7 @@
 (ns demo
   (:require [datahike.api :as d]
-            [clojure.core.async :as async]
-            [hitchhiker.tree.utils.cljs.async :as ha]
             [datahike.impl.entity :as de]
-            [clojure.core.async :as async :refer [go <!]]
-            [datahike.db :as db]))
+            [clojure.core.async :as async :refer [go <!]]))
 
 
 
@@ -53,7 +50,6 @@
 
 
   ;; Create a second database and connect to it. We will use this later.
-
   (go (<! (d/create-database national-dish-idb))
       (def conn-idb-2 (<! (d/connect national-dish-idb))))
 
@@ -101,9 +97,6 @@
 
 
   ;; Use the Entity API
-
-
-
   (go (def touched-entity (<! (de/touch (<! (d/entity @conn-idb 8))))))
 
   (go (println (:name touched-entity)))
@@ -118,14 +111,15 @@
 
 
   ;; History functionality
-
-
   (go (println (<! (d/q '[:find ?a ?v
                           :in $
                           :where [?e :name ?v] [?e :age ?a]]
                         @conn-idb))))
   ;; #{[26 Alice] [35 Bob] [28 Mike] [45 Charlie]}
-  ;; We get back the age and name of each entity in the database so far
+  ;; We get back the age and name of each entity in the database we initially transacted
+
+
+  ;; Let's proceed to make changes to the database
 
   (d/transact conn-idb [{:name "Alice"
                          :age  20}])
@@ -151,51 +145,43 @@
   ;; Now Alice and Bob have changed their ages
 
 
+  ;; 👇 Get the full history of ages that has existed for "Alice" in the database and it's transaction
   (go (println (<! (d/q '[:find ?a ?t
                           :where
                           [?e :name "Alice"]
                           [?e :age ?a ?t]]
                         (d/history @conn-idb)))))
-  ;; #{[55 536870917] [20 -536870916] [20 536870915] [26 -536870915] [26 536870914] [40 -536870917] [40 536870916]}
-  ;; Get the full history of ages that has existed for "Alice" in the database and it's transaction
+  ;; Result: #{[55 536870917] [20 -536870916] [20 536870915] [26 -536870915] [26 536870914] [40 -536870917] [40 536870916]}
 
 
 
 
-
+  ;; 👇 We can also query the state of the db at a certain point in time. Using the transaction id or date.
   (go (println (<! (d/q '[:find ?n ?a
                           :where
                           [?e :name ?n]
                           [?e :age ?a]]
-                        (d/as-of @conn-idb 536870915))))) ; 536870915 = transaction-id when Alice was set to 20
-   ;#{[Mike 28] [Charlie 45] [Alice 20] [Bob 35]}
-   ;
+                        (d/as-of @conn-idb 536870915)))))
+   ;; Result: #{[Mike 28] [Charlie 45] [Alice 20] [Bob 35]}
+   ;; 536870915 = transaction-id when Alice was set to 20    
+
   (go (println (<! (d/q '[:find ?n ?a
                           :where
                           [?e :name ?n]
                           [?e :age ?a]]
                         (d/as-of @conn-idb first-date-snapshot)))))
-   ;#{[Mike 28] [Charlie 45] [Alice 20] [Bob 35]}
+   ;; Result: #{[Mike 28] [Charlie 45] [Alice 20] [Bob 35]}
+   ;; You can also pass the date in as a parameter   
 
   (go (println (<! (d/q '[:find ?n ?a
                           :where
                           [?e :name ?n]
                           [?e :age ?a]]
                         (d/as-of @conn-idb second-date-snapshot)))))
-   ;#{[Bob 20] [Mike 28] [Charlie 45] [Alice 40]}
+   ;; Result: #{[Bob 20] [Mike 28] [Charlie 45] [Alice 40]}
 
 
-  (go (println (<! (d/q '[:find ?n ?a
-                          :in $ $since
-                          :where
-                          [$ ?e :name ?n]
-                          [$since ?e :age ?a]]
-                        @conn-idb
-                        (d/since @conn-idb 536870915))))) ; 536870915 = transaction-id when Alice was set to 20
-  ;#{[Alice 55] [Bob 20] [Alice 20] [Alice 40]}
-
-
-
+  ;; 👇 All the changes since a point in time or transaction id
   (go (println (<! (d/q '[:find ?n ?a
                           :in $ $since
                           :where
@@ -203,7 +189,8 @@
                           [$since ?e :age ?a]]
                         @conn-idb
                         (d/since @conn-idb first-date-snapshot)))))
-  ;#{[Alice 55] [Bob 20] [Alice 40]}
+  ;; Result: #{[Alice 55] [Bob 20] [Alice 40]}
+
 
   (go (println (<! (d/q '[:find ?n ?a
                           :in $ $since
@@ -238,7 +225,7 @@
                         "Alice"))))
 
 
-  ;; We can even pass a list of people to the query and get the results of what dishes they might like by using the country dish db
+  ;; We can even pass a list of people to the query and get the results of what dishes they might like by using the national dish db
   (go (println (<! (d/q '[:find ?name ?d
                           :in $1 $2 [?name ...]
                           :where
@@ -261,7 +248,7 @@
   (d/release conn-idb-2)
   (d/delete-database national-dish-idb)
 
-  
+
 
   ;; format blocker
   )
