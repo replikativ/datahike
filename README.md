@@ -8,7 +8,7 @@ __Disclaimer: This is experimental work in progress and subject to change.__
 
 # ClojureScript and IndexedDB support for Datahike
 
-This branch contains initial work on ClojureScript support for Datahike with persistence to IndexedDB in the browser. Our goal is a full port on a rebase of the Datahike `development` branch including new features such as tuple support and improved transaction performance in Q1 2021. We will support all major browsers, web workers, node.js and embedded JS environment. 
+This branch contains initial work on ClojureScript support for Datahike with persistence to IndexedDB in the browser. Our goal is a full port on a rebase of the Datahike `development` branch including new features such as tuple support and improved transaction performance. We will support all major browsers, web workers, node.js and embedded JS environment. 
 Our vision is a distributed unified address space for client and server side databases along the lines of the semantic web, but built based on fast P2P replication of our read scalable, immutable fractal tree data structure. 
 
 
@@ -120,23 +120,23 @@ We now show how to interact with the database interactively. All API calls retur
 
 
   ;; Find the :name of the person with :age of 26
-  (go (println (<! (d/q '[:find ?v
+  (go (println (<! (d/q '[:find ?e ?v
                           :in $ ?a
                           :where
                           [?e :name ?v]
                           [?e :age ?a]]
                         @conn-idb
-                        26))))
+                        45))))
 
 
   ;; Use the pull API
   (go (println (<! (d/pull @conn-idb [:name, :age] 7))))
   (go (println (<! (d/pull @conn-idb '[*] 7))))
-  (go (println (<! (d/pull-many @conn-idb '[:name :age] [5 6]))))
+  (go (println (<! (d/pull-many @conn-idb '[:name :age] [7 9]))))
 
 
   ;; Use the Entity API
-  (go (def touched-entity (<! (de/touch (<! (d/entity @conn-idb 8))))))
+  (go (def touched-entity (<! (de/touch (<! (d/entity @conn-idb 9))))))
 
   (go (println (:name touched-entity)))
   (go (println (:age touched-entity)))
