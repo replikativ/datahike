@@ -27,6 +27,16 @@
   (and (some (comp not nil?) server-description)
        (not (full-server-description? server-description))))
 
+(defn time-statistics [times]
+  (let [mean (/ (apply + times) (count times))
+        std (->> times
+                 (map #(* (- % mean) (- % mean)))
+                 (apply +)
+                 (* (/ 1.0 (count times)))
+                 Math/sqrt)]
+    {:mean-time mean
+     :std-time std}))
+
 (defn -main [& args]
   (let [{:keys [options errors summary]} (cli/parse-opts args cli-options)
         server-info-keys [:db-server-url :db-token :db-name]
@@ -57,8 +67,7 @@
                            (apply concat)
                            (group-by :context)
                            (map (fn [[context group]]
-                                  (assoc context :mean-time (/ (reduce (fn [x y] (+ x (:time y))) 0 group)
-                                                               (count group))))))
+                                  (merge context (time-statistics (map :time group))))))
             tagged (if (empty? tags)
                      (vec processed)
                      (mapv (fn [entity] (assoc entity :tag (vec tags))) processed))]
