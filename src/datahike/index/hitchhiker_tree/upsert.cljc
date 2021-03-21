@@ -21,9 +21,11 @@
   (when-let [old (old-key kvs new)]
     (remove-fn old)))
 
-(defrecord UpsertOp [key]
+(defrecord UpsertOp [key counter]
   op/IOperation
-  (-affects-key [_] key)
+  (-affects-key [_]
+    ;; Replaces 'v' by the op counter. This way, when the tree sorts the upsert ops, they are kept in the order they were created.
+    (assoc key 2 counter))
   (-apply-op-to-coll [_ kvs]
     (-> (or (remove-old kvs key (partial dissoc kvs)) kvs)
         (assoc key nil)))
@@ -62,8 +64,11 @@
             tree)
           (tree/insert key nil)))))
 
+
+(def counter (atom 0))
+
 (defn new-UpsertOp [key]
-  (UpsertOp. key))
+  (UpsertOp. key (swap! counter inc)))
 
 (defn new-temporal-UpsertOp [key]
   (temporal-UpsertOp. key))
