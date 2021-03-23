@@ -20,7 +20,7 @@ jobs:
           keys:
             - deps-{{ checksum "deps.edn" }}
             - deps-
-      - run: clojure -P
+      - run: clojure -e nil
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
@@ -40,18 +40,6 @@ jobs:
           paths:
             - .m2
             - replikativ
-  benchmark:
-    machine:
-      image: ubuntu-2004:202101-01
-    environment:
-      TIMBRE_LEVEL: ":warn"
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run: curl -O https://download.clojure.org/install/linux-install-1.10.2.796.sh
-      - run: chmod +x linux-install-1.10.2.796.sh
-      - run: sudo ./linux-install-1.10.2.796.sh
-      - run: cd ~/replikativ && clojure -M:benchmark --db-server-url ${DB_URL} --db-name ${DB_NAME} --db-token ${DB_TOKEN} --tag ${CIRCLE_SHA1}
 
 workflows:
   build-test-and-deploy:
@@ -73,10 +61,6 @@ workflows:
       - tools/build:
           jarname: "datahike"
           context: dockerhub-deploy
-          requires:
-            - setup
-      - benchmark:
-          context: benchmark-db
           requires:
             - setup
       - tools/deploy-snapshot:
