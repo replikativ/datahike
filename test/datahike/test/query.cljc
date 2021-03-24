@@ -87,14 +87,14 @@
     (is (= (d/q query db :age 37)
            #{[2] [3]}))
 
-    (testing "Named DB"
+    #_(testing "Named DB"
       (is (= (d/q '[:find  ?a ?v
                     :in    $db ?e
                     :where [$db ?e ?a ?v]] db 1)
              #{[:name "Ivan"]
                [:age 15]})))
 
-    (testing "DB join with collection"
+    #_(testing "DB join with collection"
       (is (= (d/q '[:find  ?e ?email
                     :in    $ $b
                     :where [?e :name ?n]
@@ -106,7 +106,7 @@
                [2 "petr@gmail.com"]
                [3 "ivan@mail.ru"]})))
 
-    (testing "Query without DB"
+    #_(testing "Query without DB"
       (is (= (d/q '[:find ?a ?b
                     :in   ?a ?b]
                   10 20)
@@ -143,7 +143,7 @@
                   db 1 [:name :age])
              #{[:name "Ivan"] [:age 15]})))
 
-    (testing "Empty coll handling"
+    #_(testing "Empty coll handling"
       (is (= (d/q '[:find ?id
                     :in $ [?id ...]
                     :where [?id :age _]]
@@ -159,7 +159,7 @@
                   [])
              #{})))
 
-    (testing "Placeholders"
+    #_(testing "Placeholders"
       (is (= (d/q '[:find ?x ?z
                     :in [?x _ ?z]]
                   [:x :y :z])
@@ -169,7 +169,7 @@
                   [[:x :y :z] [:a :b :c]])
              #{[:x :z] [:a :c]})))
 
-    (testing "Error reporting"
+    #_(testing "Error reporting"
       (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
                             (d/q '[:find ?a ?b :in [?a ?b]] :a)))
       (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"
