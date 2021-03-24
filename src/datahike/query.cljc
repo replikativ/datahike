@@ -870,9 +870,11 @@
   ([context symbols]
    (println "symbols" symbols)
    (let [rels (:rels context)
-
-         _ (println "coll " (-collect [(da/make-array (count symbols))] rels symbols))]
-     (-collect [(da/make-array (count symbols))] rels symbols)))
+         start-array (to-array (map #(get (:consts context) %) symbols))
+         _ (println "coll " (-collect [start-array] rels symbols))
+         _ (println "coll2 " (-collect [(da/make-array (count symbols))] rels symbols))
+         ]
+     (-collect [start-array] rels symbols)))
   ([acc rels symbols]
    (println "symbols" symbols)
    (println "rels" rels)
@@ -885,7 +887,7 @@
                len (count symbols)]
            (recur (for [#?(:cljs t1
                            :clj  ^{:tag "[[Ljava.lang.Object;"} t1) acc
-                        t2 (:tuples rel)]
+                        t2 (:tuples rel)] ;; outer product?
                     (let [res (aclone t1)]
                       (dotimes [i len]
                         (when-some [idx (aget copy-map i)]
