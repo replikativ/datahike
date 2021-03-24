@@ -515,9 +515,11 @@
   (some #(when (contains? (:attrs %) sym) %) (:rels context)))
 
 (defn- context-resolve-val [context sym]
-  (when-some [rel (rel-with-attr context sym)]
-    (when-some [tuple (first (:tuples rel))]
-      (#?(:cljs da/aget :clj get) tuple ((:attrs rel) sym)))))
+  (if-let [replacement (get (:consts context) sym)]
+    replacement
+    (when-some [rel (rel-with-attr context sym)]
+      (when-some [tuple (first (:tuples rel))]
+        (#?(:cljs da/aget :clj get) tuple ((:attrs rel) sym))))))
 
 (defn- rel-contains-attrs? [rel attrs]
   (some #(contains? (:attrs rel) %) attrs))
@@ -868,17 +870,10 @@
 
 (defn -collect
   ([context symbols]
-   (println "symbols" symbols)
    (let [rels (:rels context)
-         start-array (to-array (map #(get (:consts context) %) symbols))
-         _ (println "coll " (-collect [start-array] rels symbols))
-         _ (println "coll2 " (-collect [(da/make-array (count symbols))] rels symbols))
-         ]
+         start-array (to-array (map #(get (:consts context) %) symbols))]
      (-collect [start-array] rels symbols)))
   ([acc rels symbols]
-   (println "symbols" symbols)
-   (println "rels" rels)
-   (println "acc" acc)
    (if-some [rel (first rels)]
      (let [keep-attrs (select-keys (:attrs rel) symbols)]
        (if (empty? keep-attrs)
