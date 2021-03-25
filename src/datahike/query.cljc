@@ -16,8 +16,6 @@
    [datalog.parser.impl.proto :as dpip]
    [datahike.pull-api :as dpa]
    [datalog.parser :refer [parse]]
-   [datalog.parser.util :as dpu]
-   [datalog.parser.impl.util :as dpiu]
    [datalog.parser.pull :as dpp])
   #?(:clj (:import [clojure.lang Reflector]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
@@ -365,6 +363,7 @@
               (map #(in->rel %1 %2) (:bindings binding) coll)))))
 
 (defn resolve-in [context [binding value]]
+  (println "binding " binding value)
    (cond
     (and (instance? BindScalar binding)
          (instance? SrcVar (:variable binding)))
@@ -538,9 +537,11 @@
     (dotimes [i len]
       (let [arg (nth args i)]
         (if (symbol? arg)
-          (if-some [source (get sources arg)]
-            (da/aset static-args i source)
-            (da/aset tuples-args i (get attrs arg)))
+          (if-let [const (get (:consts context) arg)]
+            (da/aset static-args i const)
+            (if-some [source (get sources arg)]
+              (da/aset static-args i source)
+              (da/aset tuples-args i (get attrs arg))))
           (da/aset static-args i arg))))
     (fn [tuple]
       ;; TODO raise if not all args are bound
@@ -767,7 +768,8 @@
                     (keep #(limit-rel % vars)))))
 
 (defn check-bound [context vars form]
-  (let [bound (into #{} (mapcat #(keys (:attrs %)) (:rels context)))]
+  (let [bound (set/union (into #{} (mapcat #(keys (:attrs %)) (:rels context)))
+                         (set (keys (:consts context))))]
     (when-not (set/subset? vars bound)
       (let [missing (set/difference (set vars) bound)]
         (raise "Insufficient bindings: " missing " not bound in " form
@@ -780,7 +782,10 @@
    (-resolve-clause context clause clause))
   ([context clause orig-clause]
    (let [_ (println "caluse before " clause)
-         clause (replace (:consts context) clause)      ;; TODO: for all clauses
+         _ (println "coll?" (mapv coll? clause))
+         _ (println "coll?" (mapv seq? clause))
+         _ (println "coll?" (mapv sequential? clause))
+         clause (replace (:consts context) clause)                                 ;; TODO: for all clauses
          _ (println "caluse after " clause)]
      (condp looks-like? clause
        [[symbol? '*]]                                       ;; predicate [(pred ?a ?b ?c)]
@@ -850,6 +855,7 @@
        '[*]                                                 ;; pattern
        (let [source *implicit-source*
              pattern (resolve-pattern-lookup-refs source clause)
+             _ (println "pattern" pattern)
              relation (lookup-pattern source pattern)]
          (binding [*lookup-attrs* (if (satisfies? db/IDB source)
                                     (dynamic-lookup-attrs source pattern)
