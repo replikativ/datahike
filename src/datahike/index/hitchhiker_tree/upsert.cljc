@@ -64,7 +64,6 @@
             tree)
           (tree/insert key nil)))))
 
-
 (defn current-timestamp []
   #?(:clj (System/currentTimeMillis)
      :cljs (.getTime (js/Date.))))
