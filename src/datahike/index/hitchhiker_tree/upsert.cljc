@@ -67,7 +67,7 @@
 
 (defn current-timestamp []
   #?(:clj (System/currentTimeMillis)
-    :cljs (.getTime (js/Date.))))
+     :cljs (.getTime (js/Date.))))
 
 (defn new-UpsertOp [key]
   (UpsertOp. key (current-timestamp)))
