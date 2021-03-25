@@ -168,12 +168,12 @@
              #{[:x :z] [:a :c]})))
 
     #_(testing "Error reporting"
-      (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
-                            (d/q '[:find ?a ?b :in [?a ?b]] :a)))
-      (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"
-                            (d/q '[:find ?a :in [?a ...]] :a)))
-      (is (thrown-with-msg? ExceptionInfo #"Not enough elements in a collection \[:a\] to bind tuple \[\?a \?b\]"
-                            (d/q '[:find ?a ?b :in [?a ?b]] [:a]))))))
+        (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
+                              (d/q '[:find ?a ?b :in [?a ?b]] :a)))
+        (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"
+                              (d/q '[:find ?a :in [?a ...]] :a)))
+        (is (thrown-with-msg? ExceptionInfo #"Not enough elements in a collection \[:a\] to bind tuple \[\?a \?b\]"
+                              (d/q '[:find ?a ?b :in [?a ?b]] [:a]))))))
 
 (deftest test-nested-bindings
   (is (= (d/q '[:find  ?k ?v

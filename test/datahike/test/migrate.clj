@@ -31,7 +31,7 @@
                         "Windows 10" (str (System/getProperty "java.io.tmpdir") "eavt-dump")
                         "/tmp/eavt-dump")
           result     (-> (d/transact conn tx-data)
-                         :tx-data )
+                         :tx-data)
           tx-instant (-> (filter #(= :db/txInstant (second %)) result)
                          first
                          (nth 2))

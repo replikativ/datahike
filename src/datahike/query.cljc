@@ -363,7 +363,7 @@
               (map #(in->rel %1 %2) (:bindings binding) coll)))))
 
 (defn resolve-in [context [binding value]]
-   (cond
+  (cond
     (and (instance? BindScalar binding)
          (instance? SrcVar (:variable binding)))
     (update context :sources assoc (get-in binding [:variable :symbol]) value)
