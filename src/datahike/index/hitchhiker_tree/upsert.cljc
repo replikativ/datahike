@@ -21,11 +21,10 @@
   (when-let [old (old-key kvs new)]
     (remove-fn old)))
 
-(defrecord UpsertOp [key counter]
+(defrecord UpsertOp [key ts]
   op/IOperation
-  (-affects-key [_]
-    ;; Replaces 'v' by the op counter. This way, when the tree sorts the upsert ops, they are kept in the order they were created.
-    (assoc key 2 counter))
+  (-insertion-ts [_] ts)
+  (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
     (-> (or (remove-old kvs key (partial dissoc kvs)) kvs)
         (assoc key nil)))
@@ -45,8 +44,9 @@
       ;; '-' means it is retracted and 'nt' is the current transaction time.
       [a b c (- nt)])))
 
-(defrecord temporal-UpsertOp [key]
+(defrecord temporal-UpsertOp [key ts]
   op/IOperation
+  (-insertion-ts [_] ts)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
     (let [old-retracted  (old-retracted kvs key)]
@@ -65,13 +65,15 @@
           (tree/insert key nil)))))
 
 
-(def counter (atom 0))
+(defn current-timestamp []
+  #?(:clj (System/currentTimeMillis)
+    :cljs (.getTime (js/Date.))))
 
 (defn new-UpsertOp [key]
-  (UpsertOp. key (swap! counter inc)))
+  (UpsertOp. key (current-timestamp)))
 
 (defn new-temporal-UpsertOp [key]
-  (temporal-UpsertOp. key))
+  (temporal-UpsertOp. key (current-timestamp)))
 
 (defn add-upsert-handler
   "Tells the store how to deserialize upsert related operations"
