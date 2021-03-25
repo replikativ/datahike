@@ -363,7 +363,6 @@
               (map #(in->rel %1 %2) (:bindings binding) coll)))))
 
 (defn resolve-in [context [binding value]]
-  (println "binding " binding value)
    (cond
     (and (instance? BindScalar binding)
          (instance? SrcVar (:variable binding)))
@@ -464,7 +463,11 @@
 (defn lookup-pattern-db [db pattern]
   ;; TODO optimize with bound attrs min/max values here
   (let [search-pattern (mapv #(if (symbol? %) nil %) pattern)
-        datoms (db/-search db search-pattern)
+        datoms  (if (first search-pattern)
+                  (if-let [eid (db/entid db (first search-pattern))]
+                    (db/-search db (assoc search-pattern 0 eid))
+                    [])
+                  (db/-search db search-pattern))
         attr->prop (->> (map vector pattern ["e" "a" "v" "tx" "added"])
                         (filter (fn [[s _]] (free-var? s)))
                         (into {}))]
@@ -495,7 +498,7 @@
 
 (defn lookup-pattern [source pattern]
   (cond
-    (satisfies? db/ISearch source)
+    (satisfies? db/IDB source)
     (lookup-pattern-db source pattern)
     :else
     (lookup-pattern-coll source pattern)))
@@ -740,7 +743,7 @@
   (if (satisfies? db/IDB source)
     (let [[e a v tx added] pattern]
       (->
-       [(if (or (lookup-ref? e) (attr? e)) (db/entid-strict source e) e)
+       [e
         a
         (if (and v (attr? a) (db/ref? source a) (or (lookup-ref? v) (attr? v))) (db/entid-strict source v) v)
         (if (lookup-ref? tx) (db/entid-strict source tx) tx)
@@ -781,12 +784,7 @@
   ([context clause]
    (-resolve-clause context clause clause))
   ([context clause orig-clause]
-   (let [_ (println "caluse before " clause)
-         _ (println "coll?" (mapv coll? clause))
-         _ (println "coll?" (mapv seq? clause))
-         _ (println "coll?" (mapv sequential? clause))
-         clause (replace (:consts context) clause)                                 ;; TODO: for all clauses
-         _ (println "caluse after " clause)]
+   (let [clause (replace (:consts context) clause)]
      (condp looks-like? clause
        [[symbol? '*]]                                       ;; predicate [(pred ?a ?b ?c)]
        (do (check-bound context (identity (filter free-var? (first clause))) orig-clause)
@@ -855,7 +853,6 @@
        '[*]                                                 ;; pattern
        (let [source *implicit-source*
              pattern (resolve-pattern-lookup-refs source clause)
-             _ (println "pattern" pattern)
              relation (lookup-pattern source pattern)]
          (binding [*lookup-attrs* (if (satisfies? db/IDB source)
                                     (dynamic-lookup-attrs source pattern)

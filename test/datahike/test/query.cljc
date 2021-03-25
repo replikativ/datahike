@@ -1,11 +1,9 @@
 (ns datahike.test.query
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.core :as d]
-   [datahike.query :as dq]
-   [datahike.db :as db]
-   [datahike.test.core :as tdc])
+   [datahike.query :as dq])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
@@ -87,14 +85,14 @@
     (is (= (d/q query db :age 37)
            #{[2] [3]}))
 
-    #_(testing "Named DB"
+    (testing "Named DB"
       (is (= (d/q '[:find  ?a ?v
                     :in    $db ?e
                     :where [$db ?e ?a ?v]] db 1)
              #{[:name "Ivan"]
                [:age 15]})))
 
-    #_(testing "DB join with collection"
+    (testing "DB join with collection"
       (is (= (d/q '[:find  ?e ?email
                     :in    $ $b
                     :where [?e :name ?n]
@@ -106,7 +104,7 @@
                [2 "petr@gmail.com"]
                [3 "ivan@mail.ru"]})))
 
-    #_(testing "Query without DB"
+    (testing "Query without DB"
       (is (= (d/q '[:find ?a ?b
                     :in   ?a ?b]
                   10 20)
@@ -143,7 +141,7 @@
                   db 1 [:name :age])
              #{[:name "Ivan"] [:age 15]})))
 
-    #_(testing "Empty coll handling"
+    (testing "Empty coll handling"
       (is (= (d/q '[:find ?id
                     :in $ [?id ...]
                     :where [?id :age _]]
@@ -159,7 +157,7 @@
                   [])
              #{})))
 
-    #_(testing "Placeholders"
+    (testing "Placeholders"
       (is (= (d/q '[:find ?x ?z
                     :in [?x _ ?z]]
                   [:x :y :z])

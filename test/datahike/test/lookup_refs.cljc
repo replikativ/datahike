@@ -259,7 +259,7 @@
                   db)
              #{[1]}))
 
-      (is (thrown-msg? "Nothing found for entity id [:name \"Valery\"]"
-                       (d/q '[:find ?e
-                              :where [[:name "Valery"] :friend ?e]]
-                            db))))))
+      (is (= (d/q '[:find ?e
+                    :where [[:name "Valery"] :friend ?e]]
+                  db)
+             #{})))))

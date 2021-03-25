@@ -2,9 +2,7 @@
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-   [datahike.core :as d]
-   [datahike.db :as db]
-   [datahike.test.core :as tdc]))
+   [datahike.core :as d]))
 
 (def test-db (d/db-with (d/empty-db)
                         [{:db/id 1 :name "Petr" :age 44}
