@@ -64,15 +64,11 @@
             tree)
           (tree/insert key nil)))))
 
-(defn current-timestamp []
-  #?(:clj (System/currentTimeMillis)
-     :cljs (.getTime (js/Date.))))
+(defn new-UpsertOp [key op-count]
+  (UpsertOp. key op-count))
 
-(defn new-UpsertOp [key]
-  (UpsertOp. key (current-timestamp)))
-
-(defn new-temporal-UpsertOp [key]
-  (temporal-UpsertOp. key (current-timestamp)))
+(defn new-temporal-UpsertOp [key op-count]
+  (temporal-UpsertOp. key op-count))
 
 (defn add-upsert-handler
   "Tells the store how to deserialize upsert related operations"
