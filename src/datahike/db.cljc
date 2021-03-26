@@ -846,9 +846,10 @@
    (let [{:keys [index schema-flexibility keep-history?] :as config} (merge (dc/storeless-config) config)
          rschema (rschema (merge implicit-schema schema))
          indexed (:db/index rschema)
-         eavt (di/init-index index datoms indexed :eavt 0)
-         aevt (di/init-index index datoms indexed :aevt 0)
-         avet (di/init-index index datoms indexed :avet 0)
+         op-count 0
+         eavt (di/init-index index datoms indexed :eavt op-count)
+         aevt (di/init-index index datoms indexed :aevt op-count)
+         avet (di/init-index index datoms indexed :avet op-count)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
          op-count (count datoms)]
