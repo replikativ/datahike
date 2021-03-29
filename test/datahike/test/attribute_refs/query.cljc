@@ -58,7 +58,6 @@
                 :in [$ ?attr ?value]
                 :where [[?e ?attr ?value]]}
         ref (fn [key] (get-in db [:ident-ref-map key]))]
-    (println "name" (ref name))
     (is (= (d/q query db (ref :name) "Ivan")
            #{[(+ ref-e0 1)]}))
     (is (= (d/q query db (ref :age) 37)
