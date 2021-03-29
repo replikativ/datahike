@@ -498,7 +498,7 @@
 
 (defn lookup-pattern [source pattern]
   (cond
-    (satisfies? db/IDB source)
+    (satisfies? db/ISearch source)
     (lookup-pattern-db source pattern)
     :else
     (lookup-pattern-coll source pattern)))
