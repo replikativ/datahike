@@ -118,23 +118,23 @@
                            {:db/id 2, :name "Petr", :age 37}
                            {:db/id 3, :name "Ivan", :age 37}]))]
     (testing "Relation binding"
-        (is (= (d/q '[:find  ?e ?email
-                      :in    $ [[?n ?email]]
-                      :where [?e :name ?n]]
-                    db
-                    [["Ivan" "ivan@mail.ru"]
-                     ["Petr" "petr@gmail.com"]])
-               #{[1 "ivan@mail.ru"]
-                 [2 "petr@gmail.com"]
-                 [3 "ivan@mail.ru"]})))
+      (is (= (d/q '[:find  ?e ?email
+                    :in    $ [[?n ?email]]
+                    :where [?e :name ?n]]
+                  db
+                  [["Ivan" "ivan@mail.ru"]
+                   ["Petr" "petr@gmail.com"]])
+             #{[1 "ivan@mail.ru"]
+               [2 "petr@gmail.com"]
+               [3 "ivan@mail.ru"]})))
 
     (testing "Tuple binding"
-        (is (= (d/q '[:find  ?e
-                      :in    $ [?name ?age]
-                      :where [?e :name ?name]
-                      [?e :age ?age]]
-                    db ["Ivan" 37])
-               #{[3]})))
+      (is (= (d/q '[:find  ?e
+                    :in    $ [?name ?age]
+                    :where [?e :name ?name]
+                    [?e :age ?age]]
+                  db ["Ivan" 37])
+             #{[3]})))
 
     (testing "Collection binding"
       (is (= (d/q '[:find  ?attr ?value
@@ -144,38 +144,38 @@
              #{[:name "Ivan"] [:age 15]})))
 
     (testing "Empty coll handling"
-        (is (= (d/q '[:find ?id
-                      :in $ [?id ...]
-                      :where [?id :age _]]
-                    [[1 :name "Ivan"]
-                     [2 :name "Petr"]]
-                    [])
-               #{}))
-        (is (= (d/q '[:find ?id
-                      :in $ [[?id]]
-                      :where [?id :age _]]
-                    [[1 :name "Ivan"]
-                     [2 :name "Petr"]]
-                    [])
-               #{})))
+      (is (= (d/q '[:find ?id
+                    :in $ [?id ...]
+                    :where [?id :age _]]
+                  [[1 :name "Ivan"]
+                   [2 :name "Petr"]]
+                  [])
+             #{}))
+      (is (= (d/q '[:find ?id
+                    :in $ [[?id]]
+                    :where [?id :age _]]
+                  [[1 :name "Ivan"]
+                   [2 :name "Petr"]]
+                  [])
+             #{})))
 
     (testing "Placeholders"
-        (is (= (d/q '[:find ?x ?z
-                      :in [?x _ ?z]]
-                    [:x :y :z])
-               #{[:x :z]}))
-        (is (= (d/q '[:find ?x ?z
-                      :in [[?x _ ?z]]]
-                    [[:x :y :z] [:a :b :c]])
-               #{[:x :z] [:a :c]})))
+      (is (= (d/q '[:find ?x ?z
+                    :in [?x _ ?z]]
+                  [:x :y :z])
+             #{[:x :z]}))
+      (is (= (d/q '[:find ?x ?z
+                    :in [[?x _ ?z]]]
+                  [[:x :y :z] [:a :b :c]])
+             #{[:x :z] [:a :c]})))
 
     (testing "Error reporting"
-        (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
-                              (d/q '[:find ?a ?b :in [?a ?b]] :a)))
-        (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"
-                              (d/q '[:find ?a :in [?a ...]] :a)))
-        (is (thrown-with-msg? ExceptionInfo #"Not enough elements in a collection \[:a\] to bind tuple \[\?a \?b\]"
-                              (d/q '[:find ?a ?b :in [?a ?b]] [:a]))))))
+      (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to tuple \[\?a \?b\]"
+                            (d/q '[:find ?a ?b :in [?a ?b]] :a)))
+      (is (thrown-with-msg? ExceptionInfo #"Cannot bind value :a to collection \[\?a \.\.\.\]"
+                            (d/q '[:find ?a :in [?a ...]] :a)))
+      (is (thrown-with-msg? ExceptionInfo #"Not enough elements in a collection \[:a\] to bind tuple \[\?a \?b\]"
+                            (d/q '[:find ?a ?b :in [?a ?b]] [:a]))))))
 
 (deftest test-nested-bindings
   (is (= (d/q '[:find  ?k ?v
