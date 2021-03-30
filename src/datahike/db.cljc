@@ -1251,7 +1251,7 @@
         true (advance-max-eid (.-e datom))
         true (update :hash + (hash datom))
         schema? (-> (update-schema datom)
-                  update-rschema)
+                    update-rschema)
         true (update :op-count + 1))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (cond-> db
@@ -1334,7 +1334,7 @@
   (let [indexing?     (indexing? db (.-a datom))
         schema?       (ds/schema-attr? (.-a datom))
         keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom)))
-                        (not= :db/txInstant (.-a datom)))
+                           (not= :db/txInstant (.-a datom)))
         op-count      (.op-count db)]
     (cond-> db
       ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
