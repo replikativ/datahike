@@ -1252,7 +1252,7 @@
         true (update :hash + (hash datom))
         schema? (-> (update-schema datom)
                     update-rschema)
-        true (update :op-count + 1))
+        true (update :op-count inc))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (cond-> db
           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
@@ -1261,12 +1261,12 @@
           true (update :hash - (hash removing))
           schema? (-> (remove-schema datom) update-rschema)
           keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt op-count))
-          keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt (+ 1 op-count)))
+          keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt (inc op-count)))
           keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt op-count))
-          keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt (+ 1 op-count)))
+          keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt (inc op-count)))
           keep-history? (update :hash + (hash datom))
           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet op-count))
-          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet (+ 1 op-count)))
+          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet (inc op-count)))
           true (update :op-count + (if (or keep-history? indexing?) 2 1)))
         db))))
 
@@ -1287,7 +1287,7 @@
       history? (update-in [:temporal-eavt] #(di/-remove % history-datom :eavt op-count))
       history? (update-in [:temporal-aevt] #(di/-remove % history-datom :aevt op-count))
       (and history? indexing?) (update-in [:temporal-avet] #(di/-remove % history-datom :avet op-count))
-      (or current? history?) (update :op-count + 1))))
+      (or current? history?) (update :op-count inc))))
 
 (defn- queue-tuple [queue tuple idx db e v]
   (let [tuple-value  (or (get queue tuple)
@@ -1352,7 +1352,7 @@
       (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count))
       indexing?                     (update-in [:avet] #(di/-insert % datom :avet op-count))
 
-      true    (update :op-count + 1)
+      true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))
       true    (update :hash + (hash datom))
       schema? (-> (update-schema datom) update-rschema))))
