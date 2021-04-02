@@ -116,31 +116,31 @@
     :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]
     (throw (IllegalArgumentException. (str "Unknown index-type: " index-type)))))
 
-(defn -insert [tree ^Datom datom index-type]
-  (hmsg/insert tree (datom->node datom index-type) nil))
+(defn -insert [tree ^Datom datom index-type op-count]
+  (hmsg/insert tree (datom->node datom index-type) nil op-count))
 
-(defn -upsert [tree ^Datom datom index-type]
+(defn -upsert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec)
+    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec op-count)
                                           :tag (h/uuid))]))))
 
-(defn -temporal-upsert [tree ^Datom datom index-type]
+(defn -temporal-upsert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-temporal-UpsertOp datom-as-vec)
+    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-temporal-UpsertOp datom-as-vec op-count)
                                           :tag (h/uuid))]))))
 
 (defn init-tree
   "Create tree with datoms"
-  [datoms index-type]
+  [datoms index-type op-count]
   (async/<??
    (async/reduce<
-    (fn [tree datom]
-      (-insert tree datom index-type))
+    (fn [tree [idx datom]]
+      (-insert tree datom index-type (+ idx op-count)))
     (empty-tree)
-    (seq datoms))))
+    (map-indexed (fn [idx datom] [idx datom]) (seq datoms)))))
 
-(defn -remove [tree ^Datom datom index-type]
-  (async/<?? (hmsg/delete tree (datom->node datom index-type))))
+(defn -remove [tree ^Datom datom index-type op-count]
+  (async/<?? (hmsg/delete tree (datom->node datom index-type) op-count)))
 
 (defn -flush [tree backend]
   (:tree (async/<?? (tree/flush-tree-without-root tree backend))))

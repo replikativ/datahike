@@ -5,9 +5,13 @@
 clj -M:repl
 ```
 
+## Running the tests
+- `./bin/run-unittests` or `./bin/run-unittests --watch`
+- `./bin/run-integrationtests` (Docker needed)
+
 ## Starting the benchmark
 ```
-clj -M:benchmark
+TIMBRE_LEVEL=':info' clj -M:benchmark
 ```
 
 ## Building a Datahike jar
@@ -23,7 +27,7 @@ clj -M:format
 ```
 or fix the formatting:
 ```
-clj -Sdeps '{:deps {cljfmt/cljfmt {:mvn/version "0.7.0"}}}' -m cljfmt.main fix
+clj -M:ffix
 ```
 
 ## Releasing Datahike

@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 
-TIMBRE_LEVEL=':fatal' ./bin/kaocha --focus :clj
+set -o errexit
+set -o pipefail
+
+TIMBRE_LEVEL=':fatal' ./bin/kaocha --focus :clj $@
