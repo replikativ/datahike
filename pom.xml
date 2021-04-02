@@ -4,7 +4,7 @@
   <groupId>io.replikativ</groupId>
   <artifactId>datahike</artifactId>
   <packaging>jar</packaging>
-  <version>0.3.4-SNAPSHOT</version>
+  <version>0.3.4</version>
   <name>datahike</name>
   <description>A durable datalog implementation adaptable for distribution.</description>
   <url>https://github.com/replikativ/datahike</url>
