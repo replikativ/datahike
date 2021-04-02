@@ -307,6 +307,6 @@ feature, please let us know.
 
 ## License
 
-Copyright © 2014–2020 Konrad Kühne, Christian Weilbach, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov
+Copyright © 2014–2021 Konrad Kühne, Christian Weilbach, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov, Ryan Sundberg
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).
