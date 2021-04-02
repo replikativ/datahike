@@ -2,7 +2,7 @@
   (:require [datahike.core :as d]
             [superv.async :refer [<?? <??- S thread-try]]
             [taoensso.timbre :as log]
-            [clojure.core.async :refer [>!! chan close! promise-chan]]))
+            [clojure.core.async :refer [>!! chan close! promise-chan put!]]))
 
 (defprotocol PTransactor
   ; Send a transaction. Returns a channel that resolves when the transaction finalizes.
@@ -36,7 +36,7 @@
                                  ; Any other exceptions should crash the transactor and signal the supervisor.
                                  (catch clojure.lang.ExceptionInfo e e))]
               (when (some? callback)
-                (>!! callback tx-report)))
+                (put! callback tx-report)))
             (recur))
           (do
             (log/debug "Transactor rx thread gracefully closed")))))))
