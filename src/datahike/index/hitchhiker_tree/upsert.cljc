@@ -21,8 +21,9 @@
   (when-let [old (old-key kvs new)]
     (remove-fn old)))
 
-(defrecord UpsertOp [key]
+(defrecord UpsertOp [key ts]
   op/IOperation
+  (-insertion-ts [_] ts)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
     (-> (or (remove-old kvs key (partial dissoc kvs)) kvs)
@@ -43,8 +44,9 @@
       ;; '-' means it is retracted and 'nt' is the current transaction time.
       [a b c (- nt)])))
 
-(defrecord temporal-UpsertOp [key]
+(defrecord temporal-UpsertOp [key ts]
   op/IOperation
+  (-insertion-ts [_] ts)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
     (let [old-retracted  (old-retracted kvs key)]
@@ -62,11 +64,11 @@
             tree)
           (tree/insert key nil)))))
 
-(defn new-UpsertOp [key]
-  (UpsertOp. key))
+(defn new-UpsertOp [key op-count]
+  (UpsertOp. key op-count))
 
-(defn new-temporal-UpsertOp [key]
-  (temporal-UpsertOp. key))
+(defn new-temporal-UpsertOp [key op-count]
+  (temporal-UpsertOp. key op-count))
 
 (defn add-upsert-handler
   "Tells the store how to deserialize upsert related operations"

@@ -195,7 +195,7 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx rschema hash config]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config]
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -818,7 +818,8 @@
         :avet    (di/empty-index index :avet)
         :max-eid e0
         :max-tx  tx0
-        :hash    0}
+        :hash    0
+        :op-count 0}
        (when keep-history?
          {:temporal-eavt (di/empty-index index :eavt)
           :temporal-aevt (di/empty-index index :aevt)
@@ -845,11 +846,13 @@
    (let [{:keys [index schema-flexibility keep-history?] :as config} (merge (dc/storeless-config) config)
          rschema (rschema (merge implicit-schema schema))
          indexed (:db/index rschema)
-         eavt (di/init-index index datoms indexed :eavt)
-         aevt (di/init-index index datoms indexed :aevt)
-         avet (di/init-index index datoms indexed :avet)
+         op-count 0
+         eavt (di/init-index index datoms indexed :eavt op-count)
+         aevt (di/init-index index datoms indexed :aevt op-count)
+         avet (di/init-index index datoms indexed :avet op-count)
          max-eid (init-max-eid eavt)
-         max-tx (get-max-tx eavt)]
+         max-tx (get-max-tx eavt)
+         op-count (count datoms)]
      (map->DB (merge {:schema  (merge schema (when (= :read schema-flexibility) implicit-schema))
                       :rschema rschema
                       :config  config
@@ -858,6 +861,7 @@
                       :avet    avet
                       :max-eid max-eid
                       :max-tx  max-tx
+                      :op-count op-count
                       :hash    (hash-datoms datoms)}
                      (when keep-history?
                        {:temporal-eavt (di/empty-index index :eavt)
@@ -1237,30 +1241,33 @@
   (let [indexing? (indexing? db (.-a datom))
         a (.-a datom)
         schema? (or (ds/schema-attr? a) (ds/entity-spec-attr? a))
-        keep-history? (and (-keep-history? db) (not (no-history? db a)))]
+        keep-history? (and (-keep-history? db) (not (no-history? db a)))
+        op-count (.op-count db)]
     (if (datom-added datom)
       (cond-> db
-        true (update-in [:eavt] #(di/-insert % datom :eavt))
-        true (update-in [:aevt] #(di/-insert % datom :aevt))
-        indexing? (update-in [:avet] #(di/-insert % datom :avet))
+        true (update-in [:eavt] #(di/-insert % datom :eavt op-count))
+        true (update-in [:aevt] #(di/-insert % datom :aevt op-count))
+        indexing? (update-in [:avet] #(di/-insert % datom :avet op-count))
         true (advance-max-eid (.-e datom))
         true (update :hash + (hash datom))
         schema? (-> (update-schema datom)
-                    update-rschema))
+                    update-rschema)
+        true (update :op-count inc))
       (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (cond-> db
-          true (update-in [:eavt] #(di/-remove % removing :eavt))
-          true (update-in [:aevt] #(di/-remove % removing :aevt))
-          indexing? (update-in [:avet] #(di/-remove % removing :avet))
+          true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
+          true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
+          indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
           true (update :hash - (hash removing))
           schema? (-> (remove-schema datom) update-rschema)
-          keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt))
-          keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt))
-          keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt))
-          keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt))
+          keep-history? (update-in [:temporal-eavt] #(di/-insert % removing :eavt op-count))
+          keep-history? (update-in [:temporal-eavt] #(di/-insert % datom :eavt (inc op-count)))
+          keep-history? (update-in [:temporal-aevt] #(di/-insert % removing :aevt op-count))
+          keep-history? (update-in [:temporal-aevt] #(di/-insert % datom :aevt (inc op-count)))
           keep-history? (update :hash + (hash datom))
-          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet))
-          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet)))
+          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % removing :avet op-count))
+          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-insert % datom :avet (inc op-count)))
+          true (update :op-count + (if (or keep-history? indexing?) 2 1)))
         db))))
 
 (defn- with-temporal-datom [db ^Datom datom]
@@ -1269,16 +1276,18 @@
         current-datom ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))
         history-datom ^Datom (first (search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
         current? (not (nil? current-datom))
-        history? (not (nil? history-datom))]
+        history? (not (nil? history-datom))
+        op-count (.op-count db)]
     (cond-> db
-      current? (update-in [:eavt] #(di/-remove % current-datom :eavt))
-      current? (update-in [:aevt] #(di/-remove % current-datom :aevt))
-      (and current? indexing?) (update-in [:avet] #(di/-remove % current-datom :avet))
+      current? (update-in [:eavt] #(di/-remove % current-datom :eavt op-count))
+      current? (update-in [:aevt] #(di/-remove % current-datom :aevt op-count))
+      (and current? indexing?) (update-in [:avet] #(di/-remove % current-datom :avet op-count))
       current? (update :hash - (hash current-datom))
       (and current? schema?) (-> (remove-schema datom) update-rschema)
-      history? (update-in [:temporal-eavt] #(di/-remove % history-datom :eavt))
-      history? (update-in [:temporal-aevt] #(di/-remove % history-datom :aevt))
-      (and history? indexing?) (update-in [:temporal-avet] #(di/-remove % history-datom :avet)))))
+      history? (update-in [:temporal-eavt] #(di/-remove % history-datom :eavt op-count))
+      history? (update-in [:temporal-aevt] #(di/-remove % history-datom :aevt op-count))
+      (and history? indexing?) (update-in [:temporal-avet] #(di/-remove % history-datom :avet op-count))
+      (or current? history?) (update :op-count inc))))
 
 (defn- queue-tuple [queue tuple idx db e v]
   (let [tuple-value  (or (get queue tuple)
@@ -1325,23 +1334,25 @@
   (let [indexing?     (indexing? db (.-a datom))
         schema?       (ds/schema-attr? (.-a datom))
         keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom)))
-                           (not= :db/txInstant (.-a datom)))]
+                           (not= :db/txInstant (.-a datom)))
+        op-count      (.op-count db)]
     (cond-> db
-      ;; Optimistic removal of the schema entry (we don't know whether it is present or not)
+      ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
       schema? (try
                 (-> db (remove-schema datom) update-rschema)
                 (catch clojure.lang.ExceptionInfo e
                   db))
 
-      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt))
-      true          (update-in [:eavt] #(di/-upsert % datom :eavt))
+      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt op-count))
+      true          (update-in [:eavt] #(di/-upsert % datom :eavt op-count))
 
-      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt))
-      true          (update-in [:aevt] #(di/-upsert % datom :aevt))
+      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt op-count))
+      true          (update-in [:aevt] #(di/-upsert % datom :aevt op-count))
 
-      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet))
-      indexing?                     (update-in [:avet] #(di/-insert % datom :avet))
+      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count))
+      indexing?                     (update-in [:avet] #(di/-insert % datom :avet op-count))
 
+      true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))
       true    (update :hash + (hash datom))
       schema? (-> (update-schema datom) update-rschema))))
