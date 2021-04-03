@@ -4,9 +4,7 @@
         org.clojure/tools.reader                    {:mvn/version "1.3.3"}
         environ/environ                             {:mvn/version "1.2.0"}
         com.taoensso/timbre                         {:mvn/version "5.1.0"}
-        ;;io.replikativ/hitchhiker-tree               {:mvn/version "0.1.7"}
-        io.replikativ/hitchhiker-tree               {:git/url "https://github.com/replikativ/hitchhiker-tree.git"
-                                                     :sha "4d332a2a00d460ec59ab8cc5468eb7272e99fe3e"}
+        io.replikativ/hitchhiker-tree               {:mvn/version "0.1.10"}
         io.replikativ/superv.async                  {:mvn/version "0.2.11"}
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.8"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
