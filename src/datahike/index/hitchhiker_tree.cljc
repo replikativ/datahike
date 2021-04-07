@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.index.hitchhiker-tree
   (:require [datahike.index.hitchhiker-tree.upsert :as ups]
-            [hitchhiker.tree.utils.async :as async]
+            #?(:clj [hitchhiker.tree.utils.clojure.async :as async]
+               :cljs [hitchhiker.tree.utils.cljs.async :as async])
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
