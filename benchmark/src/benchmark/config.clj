@@ -7,14 +7,21 @@
 (def initial-datoms [0 1000])                                                         ;; later 100,000
 
 (def db-configs
-  [{:store          {:backend :mem :id "performance-hht"}
-    :schema-flexibility :write
-    :keep-history? true
-    :index          :datahike.index/hitchhiker-tree}
-   {:store          {:backend :file :path "/tmp/performance-hht"}
-    :schema-flexibility :write
-    :keep-history? true
-    :index          :datahike.index/hitchhiker-tree}])
+  [{:name "mem-set"
+    :config {:store {:backend :mem :id "performance-hht"}
+             :schema-flexibility :write
+             :keep-history? true
+             :index :datahike.index/persistent-set}}
+   {:name "mem-hht"
+    :config {:store {:backend :mem :id "performance-hht"}
+             :schema-flexibility :write
+             :keep-history? true
+             :index :datahike.index/hitchhiker-tree}}
+   {:name "file"
+    :config {:store {:backend :file :path "/tmp/performance-hht"}
+             :schema-flexibility :write
+             :keep-history? true
+             :index :datahike.index/hitchhiker-tree}}])
 
 (def schema
    [{:db/ident       :s1
@@ -32,22 +39,24 @@
 
 (defn rand-entity []
    {:s1 (format "%15d" (rand-int max-int))
-    :i1 (rand-int max-int)})
+    :s2 (format "%15d" (rand-int max-int))
+    :i1 (rand-int max-int)
+    :i2 (rand-int max-int)})
 
 (defn rand-int-not-in [int-set]
   (loop [i (rand-int max-int)]
     (if (contains? int-set i)
-      i
-      (recur (rand-int max-int)))))
+      (recur (rand-int max-int))
+      i)))
 
 (defn rand-str-not-in [str-set]
   (loop [s (format "%15d" (rand-int max-int))]
     (if (contains? str-set s)
-      s
-      (recur (rand-int max-int)))))
+      (recur (rand-int max-int))
+      s)))
 
 (defn vec-of [n f]
-  (vec (repeatedly n (f))))
+  (vec (repeatedly n f)))
 
 ;;; Queries
 
@@ -88,35 +97,32 @@
                 (conj '[?e] attr '?v))
    :args [db vals]})
 
-(defn less-than-query-1-fixed [db attr comp-val]
-  {:query (conj '[:find ?e :where]
-                (conj '[?e] attr '?v)
-                (conj '[]
-                      (conj '(< ?v) comp-val)))
-   :args [db]})
-
-(defn equals-query-1-fixed [db attr comp-val]
-  {:query (conj '[:find ?e :where]
-                (conj '[?e] attr '?v)
-                (conj '[]
-                      (conj '(= ?v) comp-val)))
-   :args [db]})
-
-
 (defn less-than-query [db attr]
   {:query (conj '[:find ?e1 ?e2 :where]
                 (conj '[?e1] attr '?v1)
                 (conj '[?e2] attr '?v2)
-                (conj '[]
-                      (conj '(< ?v1 ?v2))))
+                '[(< ?v1 ?v2)])
    :args [db]})
 
 (defn equals-query [db attr]
   {:query (conj '[:find ?e1 ?e2 :where]
                 (conj '[?e1] attr '?v1)
                 (conj '[?e2] attr '?v2)
+                '[(= ?v1 ?v2)])
+   :args [db]})
+
+(defn less-than-query-1-fixed [db attr comp-val]
+  {:query (conj '[:find ?e :where]
+                (conj '[?e] attr '?v)
                 (conj '[]
-                      (conj '(= ?v1 ?v2))))
+                      (sequence (conj '[= ?v] comp-val))))
+   :args [db]})
+
+(defn equals-query-1-fixed [db attr comp-val]
+  {:query (conj '[:find ?e :where]
+                (conj '[?e] attr '?v)
+                (conj '[]
+                      (sequence (conj '[= ?v] comp-val))))
    :args [db]})
 
 (defn queries [db entities]
@@ -210,20 +216,20 @@
      {:function :less-than-query
       :query (less-than-query db :i1)
       :details {:data-type "int"}}
-     {:function :less-than-query
+     #_{:function :less-than-query                          ;; class cast error
       :query (less-than-query db :s1)
       :details {:data-type "str"}}
 
      {:function :equals-query-1-fixed
-      :query (equals-query-1-fixed db :i1 (/ max-int 2.0))
+      :query (equals-query-1-fixed db :i1 (int (/ max-int 2.0)))
       :details {:data-type "int"}}
      {:function :equals-query-1-fixed
-      :query (equals-query-1-fixed db :s1 (format "%15d" (/ max-int 2.0)))
+      :query (equals-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
       :details {:data-type "str"}}
 
      {:function :less-than-query
-      :query (less-than-query-1-fixed db :i1 (/ max-int 2.0))
+      :query (less-than-query-1-fixed db :i1 (int (/ max-int 2.0)))
       :details {:data-type "int"}}
      {:function :less-than-query
-      :query (less-than-query-1-fixed db :s1 (format "%15d" (/ max-int 2.0)))
+      :query (less-than-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
       :details {:data-type "str"}}]))

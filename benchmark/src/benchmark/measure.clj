@@ -1,6 +1,8 @@
 (ns benchmark.measure
   (:require [benchmark.config :as c]
-            [datahike.api :as d]))
+            [taoensso.timbre :as log]
+            [datahike.api :as d])
+  (:import [java.util UUID]))
 
 
 (defmacro timed
@@ -25,24 +27,28 @@
      tx))
 
 
-(defn measure-performance-full [initial-size n-datoms config]
-  (init-db initial-size config)
-  (let [simple-config (-> config
+(defn measure-performance-full [initial-size n-datoms {:keys [name config]}]
+  (log/debug (str "Measuring database with config named '" name "', database size " initial-size " and " n-datoms " datom" (when (not= n-datoms 1) "s") " in transaction..."))
+  (let [unique-config (assoc config :name (str (UUID/randomUUID)))
+        _ (init-db initial-size unique-config)
+        simple-config (-> config
                           (assoc :dh-backend (get-in config [:store :backend]))
                           (dissoc :store))
         final-size (+ initial-size n-datoms)
 
-        {conn :res t-connection-0 :t} (timed (d/connect config))
+        {conn :res t-connection-0 :t} (timed (d/connect unique-config))
         entity-count (int (Math/ceil (/ n-datoms (count c/schema))))
         entities (vec (repeatedly entity-count c/rand-entity))
         t-transaction-n (:t (timed (d/transact conn entities)))
 
         _ (d/release conn)
-        t-connection-n (:t (timed (d/connect config)))
+        t-connection-n (:t (timed (d/connect unique-config)))
 
         queries (vec (for [{:keys [function query details]} (c/queries @conn entities)]
-                         {:time (:t (timed (d/q (:q query) @conn)))
-                          :context {:db-config simple-config :function function :exec-details details :db-size final-size}}))]
+                       (do (log/debug (str " Querying with " function " using " details "..."))
+                           (println "  Query: " query)
+                           {:time (:t (timed (d/q query @conn)))
+                            :context {:db-config simple-config :function function :exec-details details :db-size final-size}})))]
     (d/release conn)
     (conj queries
           {:time t-connection-0  :context {:db-config simple-config :function :connection  :db-size initial-size}}
