@@ -32,6 +32,7 @@
   (let [unique-config (assoc config :name (str (UUID/randomUUID)))
         _ (init-db initial-size unique-config)
         simple-config (-> config
+                          (assoc :name name)
                           (assoc :dh-backend (get-in config [:store :backend]))
                           (dissoc :store))
         final-size (+ initial-size n-datoms)
@@ -46,11 +47,10 @@
 
         queries (vec (for [{:keys [function query details]} (c/queries @conn entities)]
                        (do (log/debug (str " Querying with " function " using " details "..."))
-                           (println "  Query: " query)
                            {:time (:t (timed (d/q query @conn)))
-                            :context {:db-config simple-config :function function :exec-details details :db-size final-size}})))]
+                            :context {:db simple-config :function function :exec-details details :db-size final-size}})))]
     (d/release conn)
     (conj queries
-          {:time t-connection-0  :context {:db-config simple-config :function :connection  :db-size initial-size}}
-          {:time t-transaction-n :context {:db-config simple-config :function :transaction :db-size initial-size :tx-size n-datoms}}
-          {:time t-connection-n  :context {:db-config simple-config :function :connection  :db-size final-size}})))
+          {:time t-connection-0  :context {:db simple-config :function :connection  :db-size initial-size}}
+          {:time t-transaction-n :context {:db simple-config :function :transaction :db-size initial-size :tx-size n-datoms}}
+          {:time t-connection-n  :context {:db simple-config :function :connection  :db-size final-size}})))
