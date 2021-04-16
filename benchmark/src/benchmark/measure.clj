@@ -54,3 +54,25 @@
           {:time t-connection-0  :context {:db simple-config :function :connection  :db-size initial-size}}
           {:time t-transaction-n :context {:db simple-config :function :transaction :db-size initial-size :tx-size n-datoms}}
           {:time t-connection-n  :context {:db simple-config :function :connection  :db-size final-size}})))
+
+(defn time-statistics [times]
+  (let [n (count times)
+        mean (/ (apply + times) n)]
+    {:mean mean
+     :median (nth (sort times) (int (/ n 2)))
+     :std (->> times
+               (map #(* (- % mean) (- % mean)))
+               (apply +)
+               (* (/ 1.0 n))
+               Math/sqrt)}))
+
+(defn get-measurements [databases]
+  (->> (for [config databases
+             initial-size c/initial-datoms
+             n c/datom-counts
+             _ (range c/iterations)]
+         (measure-performance-full initial-size n config))
+       (apply concat)
+       (group-by :context)
+       (map (fn [[context group]] {:context context
+                                   :time (time-statistics (map :time group))}))))
