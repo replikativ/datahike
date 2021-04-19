@@ -33,16 +33,44 @@
   (every? #(not (nil? %)) server-description))
 
 (def csv-cols
-  [{:title "DB"                        :path [:context :db :name]}
+  [{:title "DB"                        :path [:context :dh-config :name]}
    {:title "Function"                  :path [:context :function]}
    {:title "DB Size"                   :path [:context :db-size]}
-   {:title "TX Size"                   :path [:context :tx-size]}
-   {:title "Data Type"                 :path [:context :exec-details :data-type]}
-   {:title "Queried Data in Database?" :path [:context :exec-details :data-in-db?]}
+   {:title "TX Size"                   :path [:context :execution :tx-size]}
+   {:title "Data Type"                 :path [:context :execution :data-type]}
+   {:title "Queried Data in Database?" :path [:context :execution :data-in-db?]}
    {:title "Tags"                      :path [:tag]}
    {:title "Mean Time"                 :path [:time :mean]}
    {:title "Median Time"               :path [:time :median]}
    {:title "Time Std"                  :path [:time :std]}])
+
+(defn add-ns-to-keys [current-ns hmap]
+  (reduce-kv (fn [m k v]
+               (let [next-key (if (= current-ns "") k (keyword (str current-ns "/" (name k))))
+                     next-ns (name k)
+                     next-val (cond
+                                (map? v)
+                                (add-ns-to-keys next-ns v)
+
+                                (and (vector? v) (map? (first v)))
+                                (mapv (partial add-ns-to-keys next-ns) v)
+
+                                :else v)]
+                 (assoc m next-key next-val)))
+             {}
+             hmap))
+
+(defn save-measurements-to-file [paths measurements]
+    (let [filename (first paths)]
+      (try
+        (if (pos? (count paths))
+          (do (spit filename measurements)
+              (println "Measurements successfully saved to" filename))
+          (println measurements))
+        (catch Exception e
+          (println measurements)
+          (println (str "Something went wrong while trying to save measurements to file " filename ":"))
+          (.printStackTrace e)))))
 
 (defn -main [& args]
   (let [{:keys [options errors summary] :as parsed-opts} (cli/parse-opts args cli-options)
@@ -70,24 +98,34 @@
       (case cmd
         "compare" (compare-benchmarks paths)
         "run" (let [measurements (get-measurements (if config-name
-                                                     (filter #(= (:name %) config-name) c/db-configs)
+                                                     (filter #(= (:config-name %) config-name) c/db-configs)
                                                      c/db-configs))
                     tagged (if (empty? tag)
                              (vec measurements)
                              (mapv (fn [entity] (assoc entity :tag (join " " tag))) measurements))]
                 (case output-format
-                  "remote-db" (let [rdb (apply ->RemoteDB server-description)]
+                  "remote-db" (let [rdb (apply ->RemoteDB server-description)
+                                    db-entry (mapv #(->> (dissoc % :context)
+                                                         (merge (:context %))
+                                                         (add-ns-to-keys ""))
+                                                   tagged)]
                                 (println "Database used:" rdb)
-                                (transact-missing-schema rdb)
-                                (transact-results rdb tagged))
+                                (try
+                                  (transact-missing-schema rdb)
+                                  (transact-results rdb db-entry)
+                                  (println "Successfully saved measurements to remote database.")
+                                  (catch Exception e
+                                    (println tagged)
+                                    (println (str "Something went wrong while trying to save measurements to remote database:"))
+                                    (.printStackTrace e))))
                   "csv" (let [col-paths (map :path csv-cols)
-                              titles (map :title csv-cols)]
-                          (println (join "\t" titles))
-                          (run! (fn [result]
-                                  (println (join "\t" (map (fn [path] (get-in result path))
-                                                           col-paths))))
-                                tagged))
-                  "edn" (pprint tagged)
+                              titles (map :title csv-cols)
+                              csv (str (join "\t" titles) "\n"
+                                       (join "\n" (for [result tagged]
+                                                    (join "\t" (map (fn [path] (get-in result path))
+                                                                    col-paths)))))]
+                          (save-measurements-to-file paths csv))
+                  "edn" (save-measurements-to-file paths tagged)
                   (pprint tagged)))
 
         (throw (Exception. (str "Command '" cmd "' does not exist. Valid commands are 'run' and 'compare'"))))))

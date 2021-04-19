@@ -27,13 +27,13 @@
      tx))
 
 
-(defn measure-performance-full [initial-size n-datoms {:keys [name config]}]
+(defn measure-performance-full [initial-size n-datoms {:keys [config-name config] }]
   (log/debug (str "Measuring database with config named '" name "', database size " initial-size " and " n-datoms " datom" (when (not= n-datoms 1) "s") " in transaction..."))
   (let [unique-config (assoc config :name (str (UUID/randomUUID)))
         _ (init-db initial-size unique-config)
         simple-config (-> config
-                          (assoc :name name)
-                          (assoc :dh-backend (get-in config [:store :backend]))
+                          (assoc :name config-name)
+                          (assoc :backend (get-in config [:store :backend]))
                           (dissoc :store))
         final-size (+ initial-size n-datoms)
 
@@ -48,12 +48,12 @@
         queries (vec (for [{:keys [function query details]} (c/queries @conn entities)]
                        (do (log/debug (str " Querying with " function " using " details "..."))
                            {:time (:t (timed (d/q query @conn)))
-                            :context {:db simple-config :function function :exec-details details :db-size final-size}})))]
+                            :context {:dh-config simple-config :function function :execution details :db-size final-size}})))]
     (d/release conn)
     (conj queries
-          {:time t-connection-0  :context {:db simple-config :function :connection  :db-size initial-size}}
-          {:time t-transaction-n :context {:db simple-config :function :transaction :db-size initial-size :tx-size n-datoms}}
-          {:time t-connection-n  :context {:db simple-config :function :connection  :db-size final-size}})))
+          {:time t-connection-0  :context {:dh-config simple-config :function :connection  :db-size initial-size}}
+          {:time t-transaction-n :context {:dh-config simple-config :function :transaction :db-size initial-size :execution {:tx-size n-datoms}}}
+          {:time t-connection-n  :context {:dh-config simple-config :function :connection  :db-size final-size}})))
 
 (defn time-statistics [times]
   (let [n (count times)
@@ -64,7 +64,8 @@
                (map #(* (- % mean) (- % mean)))
                (apply +)
                (* (/ 1.0 n))
-               Math/sqrt)}))
+               Math/sqrt)
+     :count n}))
 
 (defn get-measurements [databases]
   (->> (for [config databases

@@ -7,17 +7,18 @@
 (def initial-datoms [0 1000])                                                         ;; later 100,000
 
 (def db-configs
-  [{:name "mem-set"
-    :config {:store {:backend :mem :id "performance-hht"}
+  [{:config-name "mem-set"
+    :config {:store {:backend :mem :id "performance-set"}
              :schema-flexibility :write
              :keep-history? true
-             :index :datahike.index/persistent-set}}
-   {:name "mem-hht"
+             :index :datahike.index/persistent-set
+             :name "mem-set"}}
+   {:config-name "mem-hht"
     :config {:store {:backend :mem :id "performance-hht"}
              :schema-flexibility :write
              :keep-history? true
              :index :datahike.index/hitchhiker-tree}}
-   {:name "file"
+   {:config-name "file"
     :config {:store {:backend :file :path "/tmp/performance-hht"}
              :schema-flexibility :write
              :keep-history? true
@@ -136,100 +137,100 @@
         known-s2-set (set known-s2)]
     [{:function :simple-query
       :query (simple-query db :i1 (rand-nth known-i1))
-      :details {:data-type "int" :data-in-db? true}}
+      :details {:data-type :int :data-in-db? true}}
      {:function :simple-query
       :query (simple-query db :s1 (rand-nth known-s1))
-      :details {:data-type "str" :data-in-db? true}}
+      :details {:data-type :str :data-in-db? true}}
      {:function :simple-query
       :query (simple-query db :i1 (rand-int-not-in known-i1-set))
-      :details {:data-type "int" :data-in-db? false}}
+      :details {:data-type :int :data-in-db? false}}
      {:function :simple-query
       :query (simple-query db :s1 (rand-str-not-in known-i1-set))
-      :details {:data-type "str" :data-in-db? false}}
+      :details {:data-type :str :data-in-db? false}}
 
      {:function :one-join-query
       :query (one-join-query db :i1 :i2)
-      :details {:data-type "int"}}
+      :details {:data-type :int}}
      {:function :one-join-query
       :query (one-join-query db :s1 :s2)
-      :details {:data-type "int"}}
+      :details {:data-type :int}}
 
      {:function :one-join-query-first-fixed
       :query (one-join-query-first-fixed db :i1 (rand-nth known-i1) :i2)
-      :details {:data-type "int" :data-in-db? true}}
+      :details {:data-type :int :data-in-db? true}}
      {:function :one-join-query-first-fixed
       :query (one-join-query-first-fixed db :i1 (rand-int-not-in known-i1-set) :i2)
-      :details {:data-type "int" :data-in-db? false}}
+      :details {:data-type :int :data-in-db? false}}
      {:function :one-join-query-first-fixed
       :query (one-join-query-first-fixed db :s1 (rand-nth known-s1) :s2)
-      :details {:data-type "str" :data-in-db? true}}
+      :details {:data-type :str :data-in-db? true}}
      {:function :one-join-query-first-fixed
       :query (one-join-query-first-fixed db :s1 (rand-str-not-in known-s1-set) :s2)
-      :details {:data-type "str" :data-in-db? false}}
+      :details {:data-type :str :data-in-db? false}}
 
      {:function :one-join-query-second-fixed
       :query (one-join-query-second-fixed db :i1 :i2 (rand-nth known-i2))
-      :details {:data-type "int" :data-in-db? true}}
+      :details {:data-type :int :data-in-db? true}}
      {:function :one-join-query-second-fixed
       :query (one-join-query-second-fixed db :i1 :i2 (rand-int-not-in known-i2-set))
-      :details {:data-type "int" :data-in-db? false}}
+      :details {:data-type :int :data-in-db? false}}
      {:function :one-join-query-second-fixed
       :query (one-join-query-second-fixed db :s1 :s2 (rand-nth known-s2))
-      :details {:data-type "str" :data-in-db? true}}
+      :details {:data-type :str :data-in-db? true}}
      {:function :one-join-query-second-fixed
       :query (one-join-query-second-fixed db :s1 :s2 (rand-str-not-in known-s2-set))
-      :details {:data-type "str" :data-in-db? false}}
+      :details {:data-type :str :data-in-db? false}}
 
      {:function :scalar-arg-query
       :query (scalar-arg-query db :i1 (rand-nth known-i1))
-      :details {:data-type "int" :data-in-db? true}}
+      :details {:data-type :int :data-in-db? true}}
      {:function :scalar-arg-query
       :query (scalar-arg-query db :i1 (rand-int-not-in known-i1-set))
-      :details {:data-type "int" :data-in-db? true}}
+      :details {:data-type :int :data-in-db? true}}
      {:function :scalar-arg-query
       :query (scalar-arg-query db :s1 (rand-nth known-s1))
-      :details {:data-type "str" :data-in-db? true}}
+      :details {:data-type :str :data-in-db? true}}
      {:function :scalar-arg-query
       :query (scalar-arg-query db :s1 (rand-str-not-in known-s1-set))
-      :details {:data-type "str" :data-in-db? true}}
+      :details {:data-type :str :data-in-db? true}}
 
      {:function :vector-arg-query
       :query (vector-arg-query db :i1 (vec-of 1 #(rand-nth known-i1)))
-      :details {:data-type "int" :data-in-db? true}}
+      :details {:data-type :int :data-in-db? true}}
      {:function :vector-arg-query
       :query (vector-arg-query db :i1 (vec-of 1 #(rand-int-not-in known-i1-set)))
-      :details {:data-type "int" :data-in-db? true}}
+      :details {:data-type :int :data-in-db? true}}
      {:function :vector-arg-query
       :query (vector-arg-query db :s1 (vec-of 1 #(rand-nth known-s1)))
-      :details {:data-type "str" :data-in-db? true}}
+      :details {:data-type :str :data-in-db? true}}
      {:function :vector-arg-query
       :query (vector-arg-query db :s1 (vec-of 1 #(rand-str-not-in known-s1-set)))
-      :details {:data-type "str" :data-in-db? true}}
+      :details {:data-type :str :data-in-db? true}}
 
      {:function :equals-query
       :query (equals-query db :i1)
-      :details {:data-type "int"}}
+      :details {:data-type :int}}
      {:function :equals-query
       :query (equals-query db :s1)
-      :details {:data-type "str"}}
+      :details {:data-type :int}}
 
      {:function :less-than-query
       :query (less-than-query db :i1)
-      :details {:data-type "int"}}
+      :details {:data-type :int}}
      #_{:function :less-than-query                          ;; class cast error
       :query (less-than-query db :s1)
       :details {:data-type "str"}}
 
      {:function :equals-query-1-fixed
       :query (equals-query-1-fixed db :i1 (int (/ max-int 2.0)))
-      :details {:data-type "int"}}
+      :details {:data-type :int}}
      {:function :equals-query-1-fixed
       :query (equals-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
-      :details {:data-type "str"}}
+      :details {:data-type :str}}
 
      {:function :less-than-query
       :query (less-than-query-1-fixed db :i1 (int (/ max-int 2.0)))
-      :details {:data-type "int"}}
+      :details {:data-type :int}}
      {:function :less-than-query
       :query (less-than-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
-      :details {:data-type "str"}}]))
+      :details {:data-type :str}}]))
