@@ -1,10 +1,23 @@
 (ns benchmark.config)
 
-
-(def datom-counts [1 10 100 1000])                                                    ;; later 100,000
-(def iterations 10)
 (def max-int 1000000)
-(def initial-datoms [0 1000])                                                         ;; later 100,000
+
+(def context-cell-order [:function :dh-config :db-datoms :tx-datoms :data-type :data-in-db? :tag])
+
+(def csv-cols
+  [{:title "Function"                  :path [:context :function]}
+   {:title "DB"                        :path [:context :dh-config :name]}
+   {:title "DB Datoms"                 :path [:context :db-datoms]}
+   {:title "DB Entities"               :path [:context :db-entities]}
+   {:title "TX Datoms"                 :path [:context :execution :tx-datoms]}
+   {:title "TX Entities"               :path [:context :execution :tx-entities]}
+   {:title "Data Type"                 :path [:context :execution :data-type]}
+   {:title "Queried Data in Database?" :path [:context :execution :data-in-db?]}
+   {:title "Mean Time"                 :path [:time :mean]}
+   {:title "Median Time"               :path [:time :median]}
+   {:title "Time Std"                  :path [:time :std]}
+   {:title "Time Count"                :path [:time :count]}
+   {:title "Tags"                      :path [:tag]}])
 
 (def db-configs
   [{:config-name "mem-set"

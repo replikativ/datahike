@@ -1,21 +1,20 @@
 (ns benchmark.compare
   (:require [clojure.edn :as edn]
-            [clojure.string :refer [join]]))
+            [clojure.string :refer [join]]
+            [benchmark.config :as c]))
 
 (defn comparison-table [group filenames]
   (let [grouped (group-by :context group)
-        unique-contexts (sort-by (juxt :function #(get-in % [:dh-config :name]) :db-size :tx-size :data-type :data-in-db?)
-                                 (keys grouped))
-        unique-context-keys (->> (map keys unique-contexts) (apply concat) set vec)
+        unique-contexts (sort-by (apply juxt c/context-cell-order) (keys grouped))
         unique-context-key-spaces (map (fn [k] (max (count (name k))
                                                     (apply max (map #(count (str (get % k)))
                                                                     unique-contexts))))
-                                       unique-context-keys)
+                                       c/context-cell-order)
         num-space 8
         col-width (+ 6 (* 3 num-space))
-        titles (concat (map name unique-context-keys) filenames)
+        titles (concat (map name c/context-cell-order) filenames)
         title-spaces (concat unique-context-key-spaces (repeat (count filenames) col-width))
-        subtitles (concat (repeat (count unique-context-keys) "")
+        subtitles (concat (repeat (count c/context-cell-order) "")
                           (apply concat (repeat (count filenames)
                                                 ["median" "mean" "std"])))
         subtitle-spaces (concat unique-context-key-spaces
@@ -26,12 +25,12 @@
          "  |-" (join "-+-" (map (fn [s] (apply str (repeat s "-"))) title-spaces))    "-|\n"
          "  | " (join " | " (map #(format (str-fmt %2) %1) subtitles subtitle-spaces)) " |\n"
          "  |-" (join "-+-" (map (fn [s] (apply str (repeat s "-"))) subtitle-spaces)) "-|\n"
-         (join "\n" (for [[context results] (sort-by (fn [[{:keys [db db-size function tx-size]} _]] [function db-size tx-size db])
+         (join "\n" (for [[context results] (sort-by #((apply juxt c/context-cell-order) (key %))
                                                      grouped)]
                       (let [times (map (fn [filename] (->> results (filter #(= (:source %) filename)) first :time))
                                        filenames)
                             context-cells (map #(format (str-fmt %2) (get context %1 ""))
-                                               unique-context-keys unique-context-key-spaces)
+                                               c/context-cell-order unique-context-key-spaces)
                             measurement-cells (map (fn [measurements] (join " | " (map (fn [stat] (format dbl-fmt (stat measurements)))
                                                                                        [:median :mean :std])))
                                                    times)]

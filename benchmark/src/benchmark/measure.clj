@@ -20,40 +20,52 @@
   (let [entity-count (int (Math/floor (/ initial-size (count c/schema))))
         tx           (vec (repeatedly entity-count c/rand-entity))
         conn (d/connect config)]
-     (d/transact conn c/schema)
-     (when (pos? (count tx))
-        (d/transact conn tx))
-     (d/release conn)
-     tx))
+    (d/transact conn c/schema)
+    (when (pos? (count tx))
+      (d/transact conn tx))
+    (d/release conn)
+    entity-count))
 
 
 (defn measure-performance-full [initial-size n-datoms {:keys [config-name config] }]
-  (log/debug (str "Measuring database with config named '" name "', database size " initial-size " and " n-datoms " datom" (when (not= n-datoms 1) "s") " in transaction..."))
+  (log/debug (str "Measuring database with config named '" name 
+                  ", schema size " (count c/schema)
+                  "', database datoms " initial-size 
+                  " and " n-datoms " datom" (when (not= n-datoms 1) "s") 
+                  " in transaction..."))
   (let [unique-config (assoc config :name (str (UUID/randomUUID)))
-        _ (init-db initial-size unique-config)
+        initial-entities (init-db initial-size unique-config)
+        initial-datoms (* initial-entities (count c/schema))
+
+        {conn :res t-connection-0 :t} (timed (d/connect unique-config))
+        tx-entities (int (Math/ceil (/ n-datoms (count c/schema))))
+        tx-datoms (* tx-entities (count c/schema))
+
+        tx (vec (repeatedly tx-entities c/rand-entity))
+        t-transaction-n (:t (timed (d/transact conn tx)))
+
+        final-datoms (+ initial-datoms tx-datoms)
+        final-entities (+ initial-entities tx-entities)
+
+        _ (d/release conn)
+        t-connection-0n (:t (timed (d/connect unique-config)))
+
         simple-config (-> config
                           (assoc :name config-name)
                           (assoc :backend (get-in config [:store :backend]))
                           (dissoc :store))
-        final-size (+ initial-size n-datoms)
-
-        {conn :res t-connection-0 :t} (timed (d/connect unique-config))
-        entity-count (int (Math/ceil (/ n-datoms (count c/schema))))
-        entities (vec (repeatedly entity-count c/rand-entity))
-        t-transaction-n (:t (timed (d/transact conn entities)))
-
-        _ (d/release conn)
-        t-connection-n (:t (timed (d/connect unique-config)))
-
-        queries (vec (for [{:keys [function query details]} (c/queries @conn entities)]
+        
+        queries (vec (for [{:keys [function query details]} (c/queries @conn tx)]
                        (do (log/debug (str " Querying with " function " using " details "..."))
                            {:time (:t (timed (d/q query @conn)))
-                            :context {:dh-config simple-config :function function :execution details :db-size final-size}})))]
+                            :context {:dh-config simple-config :function function :db-entities final-entities :db-datoms final-datoms
+                                      :execution details}})))]
     (d/release conn)
     (conj queries
-          {:time t-connection-0  :context {:dh-config simple-config :function :connection  :db-size initial-size}}
-          {:time t-transaction-n :context {:dh-config simple-config :function :transaction :db-size initial-size :execution {:tx-size n-datoms}}}
-          {:time t-connection-n  :context {:dh-config simple-config :function :connection  :db-size final-size}})))
+          {:time t-connection-0  :context {:dh-config simple-config :function :connection  :db-entities initial-entities :db-datoms initial-datoms}}
+          {:time t-transaction-n :context {:dh-config simple-config :function :transaction :db-entities initial-entities :db-datoms initial-datoms 
+                                           :execution {:tx-entities tx-entities :tx-datoms tx-datoms}}}
+          {:time t-connection-0n  :context {:dh-config simple-config :function :connection  :db-entities final-entities :db-datoms final-datoms}})))
 
 (defn time-statistics [times]
   (let [n (count times)
@@ -67,11 +79,13 @@
                Math/sqrt)
      :count n}))
 
-(defn get-measurements [databases]
-  (->> (for [config databases
-             initial-size c/initial-datoms
-             n c/datom-counts
-             _ (range c/iterations)]
+(defn get-measurements [{:keys [db-datom-counts tx-datom-counts config-name iterations]}]
+  (->> (for [config (if config-name
+                      (filter #(= (:config-name %) config-name) c/db-configs)
+                      c/db-configs)
+             initial-size db-datom-counts
+             n tx-datom-counts
+             _ (range iterations)]
          (measure-performance-full initial-size n config))
        (apply concat)
        (group-by :context)
