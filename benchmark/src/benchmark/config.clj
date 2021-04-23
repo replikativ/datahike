@@ -152,11 +152,11 @@
       :query (simple-query db :i1 (rand-nth known-i1))
       :details {:data-type :int :data-in-db? true}}
      {:function :simple-query
-      :query (simple-query db :s1 (rand-nth known-s1))
-      :details {:data-type :str :data-in-db? true}}
-     {:function :simple-query
       :query (simple-query db :i1 (rand-int-not-in known-i1-set))
       :details {:data-type :int :data-in-db? false}}
+     {:function :simple-query
+      :query (simple-query db :s1 (rand-nth known-s1))
+      :details {:data-type :str :data-in-db? true}}
      {:function :simple-query
       :query (simple-query db :s1 (rand-str-not-in known-i1-set))
       :details {:data-type :str :data-in-db? false}}
@@ -166,7 +166,7 @@
       :details {:data-type :int}}
      {:function :one-join-query
       :query (one-join-query db :s1 :s2)
-      :details {:data-type :int}}
+      :details {:data-type :str}}
 
      {:function :one-join-query-first-fixed
       :query (one-join-query-first-fixed db :i1 (rand-nth known-i1) :i2)
@@ -199,40 +199,40 @@
       :details {:data-type :int :data-in-db? true}}
      {:function :scalar-arg-query
       :query (scalar-arg-query db :i1 (rand-int-not-in known-i1-set))
-      :details {:data-type :int :data-in-db? true}}
+      :details {:data-type :int :data-in-db? false}}
      {:function :scalar-arg-query
       :query (scalar-arg-query db :s1 (rand-nth known-s1))
       :details {:data-type :str :data-in-db? true}}
      {:function :scalar-arg-query
       :query (scalar-arg-query db :s1 (rand-str-not-in known-s1-set))
-      :details {:data-type :str :data-in-db? true}}
+      :details {:data-type :str :data-in-db? false}}
 
      {:function :vector-arg-query
       :query (vector-arg-query db :i1 (vec-of 1 #(rand-nth known-i1)))
       :details {:data-type :int :data-in-db? true}}
      {:function :vector-arg-query
       :query (vector-arg-query db :i1 (vec-of 1 #(rand-int-not-in known-i1-set)))
-      :details {:data-type :int :data-in-db? true}}
+      :details {:data-type :int :data-in-db? false}}
      {:function :vector-arg-query
       :query (vector-arg-query db :s1 (vec-of 1 #(rand-nth known-s1)))
       :details {:data-type :str :data-in-db? true}}
      {:function :vector-arg-query
       :query (vector-arg-query db :s1 (vec-of 1 #(rand-str-not-in known-s1-set)))
-      :details {:data-type :str :data-in-db? true}}
+      :details {:data-type :str :data-in-db? false}}
 
      {:function :equals-query
       :query (equals-query db :i1)
       :details {:data-type :int}}
      {:function :equals-query
       :query (equals-query db :s1)
-      :details {:data-type :int}}
+      :details {:data-type :str}}
 
      {:function :less-than-query
       :query (less-than-query db :i1)
       :details {:data-type :int}}
-     #_{:function :less-than-query                          ;; class cast error
+     #_{:function :less-than-query                          ;; class cast error due comparator
       :query (less-than-query db :s1)
-      :details {:data-type "str"}}
+      :details {:data-type :str}}
 
      {:function :equals-query-1-fixed
       :query (equals-query-1-fixed db :i1 (int (/ max-int 2.0)))
@@ -241,9 +241,9 @@
       :query (equals-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
       :details {:data-type :str}}
 
-     {:function :less-than-query
+     {:function :less-than-query-1-fixed
       :query (less-than-query-1-fixed db :i1 (int (/ max-int 2.0)))
       :details {:data-type :int}}
-     {:function :less-than-query
+     {:function :less-than-query-1-fixed
       :query (less-than-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
       :details {:data-type :str}}]))

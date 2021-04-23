@@ -49,14 +49,12 @@
                           (map #(assoc % :source filename)
                                (edn/read-string (slurp filename))))
                         filenames)
-
         grouped-benchmarks (->> (apply concat benchmarks)
                                 (map #(assoc % :context
-                                               (merge (dissoc (:context %) :execution)
-                                                      {:dh-config (get-in % [:context :dh-config :name])}
-                                                      (get (:context %) :execution))))
+                                             (merge (dissoc (:context %) :execution)
+                                                    {:dh-config (get-in % [:context :dh-config :name])}
+                                                    (get (:context %) :execution))))
                                 (group-by #(get-in % [:context :function])))
-
         output (str "Connection Measurements (in s):\n"
                     (comparison-table (:connection grouped-benchmarks) filenames)
                     "\n"
