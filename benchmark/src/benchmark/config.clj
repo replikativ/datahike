@@ -139,7 +139,44 @@
                       (sequence (conj '[= ?v] comp-val))))
    :args [db]})
 
-(defn queries [db entities]
+
+(defn non-var-queries [db]
+  [{:function :one-join-query
+    :query (one-join-query db :i1 :i2)
+    :details {:data-type :int}}
+   {:function :one-join-query
+    :query (one-join-query db :s1 :s2)
+    :details {:data-type :str}}
+
+   {:function :equals-query
+    :query (equals-query db :i1)
+    :details {:data-type :int}}
+   {:function :equals-query
+    :query (equals-query db :s1)
+    :details {:data-type :str}}
+
+   {:function :less-than-query
+    :query (less-than-query db :i1)
+    :details {:data-type :int}}
+   #_{:function :less-than-query                          ;; class cast error due comparator
+      :query (less-than-query db :s1)
+      :details {:data-type :str}}
+
+   {:function :equals-query-1-fixed
+    :query (equals-query-1-fixed db :i1 (int (/ max-int 2.0)))
+    :details {:data-type :int}}
+   {:function :equals-query-1-fixed
+    :query (equals-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
+    :details {:data-type :str}}
+
+   {:function :less-than-query-1-fixed
+    :query (less-than-query-1-fixed db :i1 (int (/ max-int 2.0)))
+    :details {:data-type :int}}
+   {:function :less-than-query-1-fixed
+    :query (less-than-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
+    :details {:data-type :str}}])
+
+(defn var-queries [db entities]
   (let [known-s1 (mapv :s1 entities)
         known-s2 (mapv :s2 entities)
         known-i1 (mapv :i1 entities)
@@ -160,13 +197,6 @@
      {:function :simple-query
       :query (simple-query db :s1 (rand-str-not-in known-i1-set))
       :details {:data-type :str :data-in-db? false}}
-
-     {:function :one-join-query
-      :query (one-join-query db :i1 :i2)
-      :details {:data-type :int}}
-     {:function :one-join-query
-      :query (one-join-query db :s1 :s2)
-      :details {:data-type :str}}
 
      {:function :one-join-query-first-fixed
       :query (one-join-query-first-fixed db :i1 (rand-nth known-i1) :i2)
@@ -218,32 +248,8 @@
       :details {:data-type :str :data-in-db? true}}
      {:function :vector-arg-query
       :query (vector-arg-query db :s1 (vec-of 1 #(rand-str-not-in known-s1-set)))
-      :details {:data-type :str :data-in-db? false}}
+      :details {:data-type :str :data-in-db? false}}]))
 
-     {:function :equals-query
-      :query (equals-query db :i1)
-      :details {:data-type :int}}
-     {:function :equals-query
-      :query (equals-query db :s1)
-      :details {:data-type :str}}
-
-     {:function :less-than-query
-      :query (less-than-query db :i1)
-      :details {:data-type :int}}
-     #_{:function :less-than-query                          ;; class cast error due comparator
-      :query (less-than-query db :s1)
-      :details {:data-type :str}}
-
-     {:function :equals-query-1-fixed
-      :query (equals-query-1-fixed db :i1 (int (/ max-int 2.0)))
-      :details {:data-type :int}}
-     {:function :equals-query-1-fixed
-      :query (equals-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
-      :details {:data-type :str}}
-
-     {:function :less-than-query-1-fixed
-      :query (less-than-query-1-fixed db :i1 (int (/ max-int 2.0)))
-      :details {:data-type :int}}
-     {:function :less-than-query-1-fixed
-      :query (less-than-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
-      :details {:data-type :str}}]))
+(defn all-queries [db entities]
+  (concat (non-var-queries db)
+          (var-queries db entities)))

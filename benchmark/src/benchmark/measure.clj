@@ -57,7 +57,9 @@
         t-connection-0n (:t (timed (d/connect unique-config)))
 
 
-        queries0n (vec (for [{:keys [function query details]} (c/queries @conn tx)]
+        queries0n (vec (for [{:keys [function query details]} (if (pos? (count tx))
+                                                                (c/all-queries @conn tx)
+                                                                (c/non-var-queries @conn))]
                         (do (log/debug (str " Querying with " function " using " details "..."))
                             {:time (:t (timed (d/q query @conn)))
                              :context {:dh-config simple-config :function function :db-entities final-entities :db-datoms final-datoms
