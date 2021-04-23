@@ -34,8 +34,7 @@
     :parse-fn read-string
     :validate [vector? "Must be a vector of non-negative integers." 
                #(every? nat-int? %) "Vector must consist of non-negative integers."]]
-   ["-i" "--iterations ITERATIONS"
-    "Number of iterations as string of space-separated integers of 1. connection 2. transaction and 3. query measurements (ignored for criterium)"
+   ["-i" "--iterations ITERATIONS" "Number of iterations of each measurement"
     :default 10
     :parse-fn read-string
     :validate [nat-int? "Must be a non-negative integer."]]
@@ -135,4 +134,8 @@
         (throw (Exception. (str "Command '" cmd "' does not exist. Valid commands are 'run' and 'compare'"))))))
 
   (shutdown-agents))
+
+(comment
+  (-main "run" "-x" "[0 10000 5000]" "-t" "test-bench" "-o" "edn" "bench.edn")
+  )
 
