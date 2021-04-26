@@ -1,7 +1,7 @@
 (ns ^:no-doc datahike.tools
   (:require
-    [superv.async :refer [throw-if-exception-]]
-    [taoensso.timbre :as log]))
+   [superv.async :refer [throw-if-exception-]]
+   [taoensso.timbre :as log]))
 
 (defn combine-hashes [x y]
   #?(:clj  (clojure.lang.Util/hashCombine x y)
