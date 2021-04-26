@@ -4,7 +4,7 @@
   <groupId>io.replikativ</groupId>
   <artifactId>datahike</artifactId>
   <packaging>jar</packaging>
-  <version>0.3.4-SNAPSHOT</version>
+  <version>0.3.6</version>
   <name>datahike</name>
   <description>A durable datalog implementation adaptable for distribution.</description>
   <url>https://github.com/replikativ/datahike</url>
@@ -97,7 +97,7 @@
     <dependency>
       <groupId>io.replikativ</groupId>
       <artifactId>hitchhiker-tree</artifactId>
-      <version>0.1.7</version>
+      <version>0.1.11</version>
     </dependency>
     <dependency>
       <groupId>org.clojure</groupId>

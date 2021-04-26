@@ -13,7 +13,7 @@
 
 (defn upsert-helper
   [t k]
-  (ha/<?? (msg/enqueue t [(htu/new-UpsertOp k)])))
+  (ha/<?? (msg/enqueue t [(htu/new-UpsertOp k 0)])))
 
 (deftest hh-tree-upsert
   (let [new-tree (tree/b-tree (tree/->Config 3 3 2))
