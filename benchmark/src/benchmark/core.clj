@@ -18,23 +18,23 @@
    ["-t" "--tag TAG" "Add tag to measurements"
     :default #{}
     :assoc-fn (fn [m k v] (assoc m k (conj (get m k) v)))]
-   ["-o" "--output-format FORMAT" "Determines how the results will be processed. Possible are 'remote-db', 'edn' and 'csv'"
+   ["-o" "--output-format FORMAT" "Determines how the results will be processed. Possible are 'remote-db', 'edn' and 'csv'."
     :default "edn"
     :validate [output-formats  #(str "Format " % " has not been implemented. Possible formats are " output-formats)]]
    ["-c" "--config-name CONFIGNAME" "Name of database configuration to use. Available are 'mem-set' 'mem-hht' and 'file'. If not set all configs will be tested"
     :default nil
     :validate [config-names  #(str "A configuration named " % " has not been implemented. Possible configurations are " config-names)]]
-   ["-d" "--db-datom-counts VECTOR" "Numbers of datoms in database for which benchmarks should be run. Used in 'connection' and 'transaction'. Range must be given as triple of integers 'start stop step' which are given as input for range function (range start stop step)"
+   ["-d" "--db-datom-counts VECTOR" "Numbers of datoms in database for which benchmarks should be run. Must be given as a clojure vector of non-negative integers like '[0 10 100 1000]'."
     :default [0 1000]
     :parse-fn read-string
     :validate [vector? "Must be a vector of non-negative integers."
                #(every? nat-int? %) "vector must consist of non-negative integers."]]
-   ["-x" "--tx-datom-counts VECTOR" "Numbers of datoms in database for which benchmarks should be run. Used in 'transaction'. Range must be given as triple of integers 'start stop step' which are given as input for range function (range start stop step)"
+   ["-x" "--tx-datom-counts VECTOR" "Numbers of datoms in database for which benchmarks should be run. Used in 'transaction'. Must be given as a clojure vector of non-negative integers like '[0 10 100 1000]'."
     :default [1 10 100 1000]
     :parse-fn read-string
     :validate [vector? "Must be a vector of non-negative integers." 
                #(every? nat-int? %) "Vector must consist of non-negative integers."]]
-   ["-i" "--iterations ITERATIONS" "Number of iterations of each measurement"
+   ["-i" "--iterations ITERATIONS" "Number of iterations of each measurement."
     :default 10
     :parse-fn read-string
     :validate [nat-int? "Must be a non-negative integer."]]
