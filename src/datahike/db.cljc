@@ -959,7 +959,7 @@
          indexed (if attribute-refs?
                    (set (map ident-ref-map (:db/index rschema)))
                    (:db/index rschema))
-         
+
          new-datoms (if attribute-refs? (concat ref-datoms datoms) datoms)
          indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) new-datoms)
          op-count 0
