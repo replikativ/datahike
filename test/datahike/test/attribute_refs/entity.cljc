@@ -6,9 +6,7 @@
    [datahike.api :as d]
    [datahike.core :as dc]
    [datahike.test.attribute-refs.util :refer [ref-db ref-e0 shift-entities]]
-   [datahike.test.core :as tdc])
-  #?(:clj
-     (:import [clojure.lang ExceptionInfo])))
+   [datahike.test.core :as tdc]))
 
 (t/use-fixtures :once tdc/no-namespace-maps)
 

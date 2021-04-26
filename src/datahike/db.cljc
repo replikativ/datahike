@@ -901,14 +901,14 @@
                    (set (map ident-ref-map (:db/index rschema)))
                    (:db/index rschema))
          eavt (if attribute-refs?
-                (di/init-index index ref-datoms indexed :eavt)
+                (di/init-index index ref-datoms indexed :eavt 0)
                 (di/empty-index index :eavt))
          aevt (if attribute-refs?
-                (di/init-index index ref-datoms indexed :aevt)
+                (di/init-index index ref-datoms indexed :aevt 0)
                 (di/empty-index index :aevt))
          indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) ref-datoms)
          avet (if attribute-refs?
-                (di/init-index index indexed-datoms indexed :avet)
+                (di/init-index index indexed-datoms indexed :avet 0)
                 (di/empty-index index :avet))
          max-eid (if attribute-refs? ue0 e0)
          max-tx (if attribute-refs? utx0 tx0)]
@@ -926,7 +926,7 @@
         :system-entities system-entities
         :ref-ident-map ref-ident-map
         :ident-ref-map ident-ref-map
-        :op-count 0}
+        :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt (di/empty-index index :eavt)
           :temporal-aevt (di/empty-index index :aevt)
@@ -946,8 +946,8 @@
   ([datoms schema] (init-db datoms schema nil))
   ([datoms schema config]
    (validate-schema schema)
-   (let [{:keys [index schema-flexibility keep-history?] :as complete-config}  (merge (dc/storeless-config) config)
-         {:keys [index keep-history? attribute-refs?]} complete-config
+   (let [{:keys [index schema-flexibility keep-history? attribute-refs?] :as complete-config}  (merge (dc/storeless-config) config)
+         _ (dc/validate-config complete-config)
          complete-schema (merge schema
                                 (if attribute-refs?
                                   c/ref-implicit-schema
@@ -959,18 +959,16 @@
          indexed (if attribute-refs?
                    (set (map ident-ref-map (:db/index rschema)))
                    (:db/index rschema))
+         
+         new-datoms (if attribute-refs? (concat ref-datoms datoms) datoms)
+         indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) new-datoms)
          op-count 0
-         indexed-system-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) ref-datoms)
-         indexed-user-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) datoms)
-         indexed-datoms (if attribute-refs?
-                          (concat indexed-system-datoms indexed-user-datoms)
-                          indexed-user-datoms)
-         avet (di/init-index index indexed-datoms indexed :avet)
-         eavt (di/init-index index datoms indexed :eavt)
-         aevt (di/init-index index datoms indexed :aevt)
+         avet (di/init-index index indexed-datoms indexed :avet op-count)
+         eavt (di/init-index index new-datoms indexed :eavt op-count)
+         aevt (di/init-index index new-datoms indexed :aevt op-count)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
-         op-count (count datoms)]
+         op-count (count new-datoms)]
      (map->DB (merge {:schema complete-schema
                       :rschema rschema
                       :config complete-config

@@ -6,9 +6,7 @@
    [datahike.api :as d]
    [datahike.constants :as c]
    [datahike.db :as db :refer [ref-datoms]])
-  #?(:clj (:import [clojure.lang AMapEntry]
-                   [java.util Date]
-                   [datahike.datom Datom])))
+  #?(:clj (:import [datahike.datom Datom])))
 
 (def no-ref-cfg
   {:store {:backend :mem :id "attr-no-refs-test"}
