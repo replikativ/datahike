@@ -2,7 +2,7 @@
 
 - Add a generic remote transactor interface (#281)
 - Improve and add more benchmarks (#307)
-- Improve query engine performance by optmising hash joins (#306)
+- Improve query engine performance by optimising hash joins (#306)
 - Use the latest version of the hitchhiker tree which fixes an issue with comparators (#258)
 
 # 0.3.5
