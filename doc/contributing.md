@@ -96,3 +96,22 @@ For this to work you need to set following option at the [appropriate level](htt
 git config push.followTags true
 ```
 Only then the tag will be pushed without a second push with the `--tags` option.
+
+### The release process step by step
+- Make sure the versions of dependencies declared in deps.edn and pom.xml match.
+- Set the new version in pom.xml.
+  + If you just want to create a snapshot version add '-SNAPSHOT' to the version, e.g <version>0.3.6-SNAPSHOT</version>.
+- Create the PR ask it to be merged to the development branch
+- Once approved, merge the PR to dev.
+  + This will create a SNAPSHOT version on clojars, if the version in pom contains '-SNAPSHOT'.
+- Repeat the above process for the other PRs to be released.
+- Optional: ideally try to import the new jar into a project and test that it works.
+
+- Create a new branch for the release called e.g. 'Release v0.3.6'
+  + Set the new version number in pom.xml, i.e., <version>0.3.6</version> (without '-SNAPSHOT' this time).
+  + Update the CHANGELOG.md file.
+- Create a PR with the new release branch with 'master' as target.
+- Once approved, merge the PR to master.
+  + This will deploy the new release to clojars.
+- Test the new jar (e.g. using in a real project).
+- Create a new release/tag on github https://github.com/replikativ/datahike/releases.
