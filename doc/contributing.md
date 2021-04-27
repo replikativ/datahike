@@ -101,7 +101,7 @@ Only then the tag will be pushed without a second push with the `--tags` option.
 - Make sure the versions of dependencies declared in deps.edn and pom.xml match.
 - Set the new version in pom.xml.
   + If you just want to create a snapshot version add '-SNAPSHOT' to the version, e.g <version>0.3.6-SNAPSHOT</version>.
-- Create the PR ask it to be merged to the development branch
+- Create the PR and ask for it to be merged to the development branch.
 - Once approved, merge the PR to dev.
   + This will create a SNAPSHOT version on clojars, if the version in pom contains '-SNAPSHOT'.
 - Repeat the above process for the other PRs to be released.
@@ -114,4 +114,4 @@ Only then the tag will be pushed without a second push with the `--tags` option.
 - Once approved, merge the PR to master.
   + This will deploy the new release to clojars.
 - Test the new jar (e.g. using in a real project).
-- Create a new release/tag on github https://github.com/replikativ/datahike/releases.
+- Create a new release/tag on github https://github.com/replikativ/datahike/releases
