@@ -1,3 +1,21 @@
+# 0.3.6
+
+- Add a generic remote transactor interface (#281)
+- Improve and add more benchmarks (#307)
+- Improve query engine performance by optmising hash joins (#306)
+- Use the latest version of the hitchhiker tree which fixes an issue with comparators (#258)
+
+# 0.3.5
+
+- Fix a dependency issue with release v0.3.4.
+
+# 0.3.4
+
+- Fix issue with upsert operations not always executed in the right order
+- Fix an issue with transactions on import
+- Add more tests
+- Improve benchmarks
+
 # 0.3.3
 
 - Support for tuples (#104)
