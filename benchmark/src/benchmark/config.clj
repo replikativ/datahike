@@ -116,6 +116,14 @@
                 (conj '[?e] attr '?v))
    :args [db val]})
 
+(defn scalar-arg-query-with-join [db attr val]
+  {:query (conj '[:find ?e1 ?e2 ?v2
+                  :in $ ?v1
+                  :where]
+                (conj '[?e1] attr '?v1)
+                (conj '[?e2] attr '?v2))
+   :args [db val]})
+
 (defn vector-arg-query [db attr vals]
   {:query (conj '[:find ?e
                   :in $ ?v
@@ -263,6 +271,19 @@
       :details {:data-type :str :data-in-db? true}}
      {:function :scalar-arg-query
       :query (scalar-arg-query db :s1 (rand-str-not-in known-s1-set))
+      :details {:data-type :str :data-in-db? false}}
+     
+     {:function :scalar-arg-query-with-join
+      :query (scalar-arg-query-with-join db :i1 (rand-nth known-i1))
+      :details {:data-type :int :data-in-db? true}}
+     {:function :scalar-arg-query-with-join
+      :query (scalar-arg-query-with-join db :i1 (rand-int-not-in known-i1-set))
+      :details {:data-type :int :data-in-db? false}}
+     {:function :scalar-arg-query-with-join
+      :query (scalar-arg-query-with-join db :s1 (rand-nth known-s1))
+      :details {:data-type :str :data-in-db? true}}
+     {:function :scalar-arg-query-with-join
+      :query (scalar-arg-query-with-join db :s1 (rand-str-not-in known-s1-set))
       :details {:data-type :str :data-in-db? false}}
 
      {:function :vector-arg-query

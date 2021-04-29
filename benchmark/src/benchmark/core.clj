@@ -120,7 +120,6 @@
                     tagged (if (empty? tag)
                              (vec measurements)
                              (mapv (fn [entity] (assoc entity :tag (join " " tag))) measurements))]
-                (println "tagged" tagged)
                 (case output-format
                   "remote-db" (let [rdb (apply ->RemoteDB server-description)
                                     db-entry (mapv #(->> (dissoc % :context)

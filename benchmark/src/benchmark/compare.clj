@@ -68,13 +68,16 @@ output (str "Connection Measurements (in s):\n"
 (defn p [x] (println x) x)
 
 (defn create-plots [data] ;; 1 plot per function and context
+  (let [tags (map :tag data)]
   (doall (for [function (distinct (map #(get-in % [:context :function]) data))
                config (distinct (map #(get-in % [:context :dh-config :name]) data))
                execution-details (distinct (map #(get-in % [:context :execution]) data))]
-           (let [filename (str (name function)
+           (let [
+                 filename (str (name function)
                                "_config-" (name config)
                                (when (pos? (count execution-details))
                                  (str "_exec-" execution-details))
+                               "_tags-" tags
                                ".png")
 
                  plot-data (->> data
@@ -98,7 +101,7 @@ output (str "Connection Measurements (in s):\n"
                 (charts/set-stroke-color plot (java.awt.Color. 0 0 0 0) :dataset 0)
                 (run! (fn [[tag group]] (charts/add-points plot (map :x group) (map :y group) :series-label tag))
                       (group-by :tag plot-data))
-                (ic/save plot (str "plots/" filename)))))))
+                (ic/save plot (str "plots/" filename))))))))
 
 (defn compare-benchmarks [filenames plots?]
   (run! check-file-format filenames)
