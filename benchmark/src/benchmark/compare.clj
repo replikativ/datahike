@@ -1,6 +1,8 @@
 (ns benchmark.compare
   (:require [clojure.edn :as edn]
             [clojure.string :refer [join]]
+            [incanter.core :as ic]
+            [incanter.charts :as charts]
             [benchmark.config :as c]))
 
 (defn comparison-table [group filenames]
@@ -42,28 +44,70 @@
   (when-not (.endsWith filename ".edn")
     (throw (Exception. (str "File " filename "has an unsupported file type. Supported are only edn files.")))))
 
-(defn compare-benchmarks [filenames]
-  (run! check-file-format filenames)
 
-  (let [benchmarks (map (fn [filename]
-                          (map #(assoc % :source filename)
-                               (edn/read-string (slurp filename))))
-                        filenames)
-        grouped-benchmarks (->> (apply concat benchmarks)
+(defn report [benchmarks filenames]
+  (let [grouped-benchmarks (->> benchmarks
                                 (map #(assoc % :context
                                              (merge (dissoc (:context %) :execution)
                                                     {:dh-config (get-in % [:context :dh-config :name])}
                                                     (get (:context %) :execution))))
                                 (group-by #(get-in % [:context :function])))
-        output (str "Connection Measurements (in s):\n"
-                    (comparison-table (:connection grouped-benchmarks) filenames)
-                    "\n"
-                    "Transaction Measurements (in s):\n"
-                    (comparison-table (:transaction grouped-benchmarks) filenames)
-                    "\n"
-                    "Query Measurements (in s):\n"
-                    (let [query-benchmarks (->> (dissoc grouped-benchmarks :connection :transaction)
-                                                vals
-                                                (apply concat))]
-                      (comparison-table query-benchmarks filenames)))]
+output (str "Connection Measurements (in s):\n"
+            (comparison-table (:connection grouped-benchmarks) filenames)
+            "\n"
+            "Transaction Measurements (in s):\n"
+            (comparison-table (:transaction grouped-benchmarks) filenames)
+            "\n"
+            "Query Measurements (in s):\n"
+            (let [query-benchmarks (->> (dissoc grouped-benchmarks :connection :transaction)
+                                        vals
+                                        (apply concat))]
+              (comparison-table query-benchmarks filenames)))] 
     (println output)))
+
+(defn p [x] (println x) x)
+
+(defn create-plots [data] ;; 1 plot per function and context
+  (doall (for [function (distinct (map #(get-in % [:context :function]) data))
+               config (distinct (map #(get-in % [:context :dh-config :name]) data))
+               execution-details (distinct (map #(get-in % [:context :execution]) data))]
+           (let [filename (str (name function)
+                               "_config-" (name config)
+                               (when (pos? (count execution-details))
+                                 (str "_exec-" execution-details))
+                               ".png")
+
+                 plot-data (->> data
+                                (filter #(and (= (get-in % [:context :function]) function)
+                                              (= (get-in % [:context :dh-config :name]) config)
+                                              (= (get-in % [:context :execution]) execution-details)))
+                                (map #(assoc % :x (get-in % [:context :db-entities])))
+                                (map #(mapv (fn [time] (assoc % :y time))
+                                            (get-in % [:time :observations])))
+                                (apply concat))
+                 plot (charts/scatter-plot nil nil 
+                                           :title  (str "Execution time of function " function "\n"
+                                                        "for configuration " (name config) " and\n"
+                                                        "execution parameters " execution-details)
+                                           :y-label "Time (s)"
+                                           :x-label "Entities in database (1 entity = 4 datoms)"
+                                           :gradient true
+                                           :legend true
+                                           :series-label "")]
+              (when (seq plot-data)
+                (charts/set-stroke-color plot (java.awt.Color. 0 0 0 0) :dataset 0)
+                (run! (fn [[tag group]] (charts/add-points plot (map :x group) (map :y group) :series-label tag))
+                      (group-by :tag plot-data))
+                (ic/save plot (str "plots/" filename)))))))
+
+(defn compare-benchmarks [filenames plots?]
+  (run! check-file-format filenames)
+
+  (let [benchmarks (->> filenames
+                        (map (fn [filename]
+                          (map #(assoc % :source filename)
+                               (edn/read-string (slurp filename)))))
+                        (apply concat))]
+    (if plots?
+      (create-plots benchmarks)
+      (report benchmarks filenames))))

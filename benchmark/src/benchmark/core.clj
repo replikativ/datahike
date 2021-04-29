@@ -11,26 +11,37 @@
 (def config-names #{"mem-set" "mem-hht" "file"})
 
 (def cli-options
-  [["-u" "--db-server-url URL" "Base URL for datahike server, e.g. http://localhost:3000"
+  [;; CMD run
+   
+   ["-u" "--db-server-url URL" "Base URL for datahike server, e.g. http://localhost:3000"
     :default nil]
    ["-n" "--db-name DBNAME" "Database name for datahike server" :default nil]
    ["-g" "--db-token TOKEN" "Token for datahike server" :default nil]
    ["-t" "--tag TAG" "Add tag to measurements"
     :default #{}
     :assoc-fn (fn [m k v] (assoc m k (conj (get m k) v)))]
-   ["-o" "--output-format FORMAT" "Determines how the results will be processed. Possible are 'remote-db', 'edn' and 'csv'."
+   ["-o" "--output-format FORMAT" (str "Determines how the results will be processed. "
+                                       "Possible are 'remote-db', 'edn' and 'csv'.")
     :default "edn"
-    :validate [output-formats  #(str "Format " % " has not been implemented. Possible formats are " output-formats)]]
-   ["-c" "--config-name CONFIGNAME" "Name of database configuration to use. Available are 'mem-set' 'mem-hht' and 'file'. If not set all configs will be tested"
+    :validate [output-formats  #(str "Format " % " has not been implemented. "
+                                     "Possible formats are " output-formats)]]
+   ["-c" "--config-name CONFIGNAME"
+    (str "Name of database configuration to use. Available are 'mem-set' 'mem-hht' and 'file'. "
+         "If not set all configs will be tested")
     :default nil
-    :validate [config-names  #(str "A configuration named " % " has not been implemented. Possible configurations are " config-names)]]
-   ["-d" "--db-datom-counts VECTOR" "Numbers of datoms in database for which benchmarks should be run. Must be given as a clojure vector of non-negative integers like '[0 10 100 1000]'."
+    :validate [config-names  #(str "A configuration named " % " has not been implemented. "
+                                   "Possible configurations are " config-names)]]
+   ["-d" "--db-entity-counts VECTOR"
+    (str "Numbers of entities in database for which benchmarks should be run. "
+         "Must be given as a clojure vector of non-negative integers like '[0 10 100 1000]'.")
     :default [0 1000]
     :parse-fn read-string
     :validate [vector? "Must be a vector of non-negative integers."
-               #(every? nat-int? %) "vector must consist of non-negative integers."]]
-   ["-x" "--tx-datom-counts VECTOR" "Numbers of datoms in database for which benchmarks should be run. Used in 'transaction'. Must be given as a clojure vector of non-negative integers like '[0 10 100 1000]'."
-    :default [1 10 100 1000]
+               #(every? nat-int? %) "Vector must consist of non-negative integers."]]
+   ["-x" "--tx-entity-counts VECTOR"
+    (str  "Numbers of entities in transaction for which benchmarks should be run.  "
+          "Must be given as a clojure vector of non-negative integers like '[0 10 100 1000]'.")
+    :default [0 1000]
     :parse-fn read-string
     :validate [vector? "Must be a vector of non-negative integers." 
                #(every? nat-int? %) "Vector must consist of non-negative integers."]]
@@ -38,8 +49,13 @@
     :default 10
     :parse-fn read-string
     :validate [nat-int? "Must be a non-negative integer."]]
+   
+   ;; CMD compare
 
+   ["-p" "--[no-]plots" "Output comparison as plots."]
+   
    ["-h" "--help"]])
+
 
 (defn print-usage-info [summary]
   (println (str "Usage: clj -M:benchmark CMD [OPTIONS] [FILEPATHS] \n\n  Options for command 'run':\n" summary)))
@@ -99,11 +115,12 @@
 
       :else
       (case cmd
-        "compare" (compare-benchmarks paths)
+        "compare" (compare-benchmarks paths (:plots options))
         "run" (let [measurements (get-measurements options)
                     tagged (if (empty? tag)
                              (vec measurements)
                              (mapv (fn [entity] (assoc entity :tag (join " " tag))) measurements))]
+                (println "tagged" tagged)
                 (case output-format
                   "remote-db" (let [rdb (apply ->RemoteDB server-description)
                                     db-entry (mapv #(->> (dissoc % :context)
@@ -136,6 +153,4 @@
   (shutdown-agents))
 
 (comment
-  (-main "run" "-x" "[0 10000 5000]" "-t" "test-bench" "-o" "edn" "bench.edn")
-  )
-
+  (-main "run" "-x" "[0 10000 5000]" "-t" "test-bench" "-o" "edn" "bench.edn"))

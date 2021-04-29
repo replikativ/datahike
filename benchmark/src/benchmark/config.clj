@@ -51,7 +51,7 @@
      :db/valueType   :db.type/bigint
      :db/cardinality :db.cardinality/one}])
 
-(defn rand-entity []
+(defn rand-entity [max-int]
    {:s1 (format "%15d" (rand-int max-int))
     :s2 (format "%15d" (rand-int max-int))
     :i1 (rand-int max-int)
@@ -79,19 +79,31 @@
                 (conj '[?e] attr val))
    :args [db]})
 
-(defn one-join-query [db attr1 attr2]
-  {:query (conj '[:find ?v1 ?v2 :where]
-                (conj '[?e] attr1 '?v1)
-                (conj '[?e] attr2 '?v2))
+(defn e-join-query [db attr1 attr2] ;; entity-count res lines
+  {:query (conj '[:find ?e :where]
+                (conj '[?e] attr1 '?v1) ;; pulls entity-count datoms
+                (conj '[?e] attr2 '?v2)) ;; pulls entity-count datoms
    :args [db]})
 
-(defn one-join-query-first-fixed [db attr1 val1 attr2]
+(defn a-join-query [db attr] ;; entity-count res lines
+  {:query (conj '[:find ?v1 ?v2 :where]
+                (conj '[?e1] attr '?v1) ;; pulls entity-count datoms
+                (conj '[?e2] attr '?v2)) ;; pulls entity-count datoms
+   :args [db]})
+
+(defn v-join-query [db attr1 attr2] ;; on average entity-count res lines
+  {:query (conj '[:find ?e1 ?e2 :where]
+                (conj '[?e1] attr1 '?v) ;; pulls entity-count datoms
+                (conj '[?e2] attr2 '?v)) ;; pulls entity-count datoms
+   :args [db]})
+
+(defn e-join-query-first-fixed [db attr1 val1 attr2]
   {:query (conj '[:find ?v2 :where]
                 (conj '[?e] attr1 val1)
                 (conj '[?e] attr2 '?v2))
    :args [db]})
 
-(defn one-join-query-second-fixed [db attr1 attr2 val2]
+(defn e-join-query-second-fixed [db attr1 attr2 val2]
   {:query (conj '[:find ?v1 :where]
                 (conj '[?e] attr1 '?v1)
                 (conj '[?e] attr2 val2))
@@ -141,11 +153,26 @@
 
 
 (defn non-var-queries [db]
-  [{:function :one-join-query
-    :query (one-join-query db :i1 :i2)
+  [
+   {:function :e-join-query
+    :query (e-join-query db :i1 :i2)
     :details {:data-type :int}}
-   {:function :one-join-query
-    :query (one-join-query db :s1 :s2)
+   {:function :e-join-query
+    :query (e-join-query db :s1 :s2)
+    :details {:data-type :str}}
+
+   {:function :a-join-query
+    :query (a-join-query db :i1)
+    :details {:data-type :int}}
+   {:function :a-join-query
+    :query (a-join-query db :s1)
+    :details {:data-type :str}}
+
+   {:function :v-join-query
+    :query (v-join-query db :i1 :i2)
+    :details {:data-type :int}}
+   {:function :v-join-query
+    :query (v-join-query db :s1 :s2)
     :details {:data-type :str}}
 
    {:function :equals-query
@@ -158,7 +185,7 @@
    {:function :less-than-query
     :query (less-than-query db :i1)
     :details {:data-type :int}}
-   #_{:function :less-than-query                          ;; class cast error due comparator
+   #_{:function :less-than-query                          ;; class cast error due to comparator
       :query (less-than-query db :s1)
       :details {:data-type :str}}
 
@@ -185,6 +212,7 @@
         known-i2-set (set known-i2)
         known-s1-set (set known-s1)
         known-s2-set (set known-s2)]
+
     [{:function :simple-query
       :query (simple-query db :i1 (rand-nth known-i1))
       :details {:data-type :int :data-in-db? true}}
@@ -195,33 +223,33 @@
       :query (simple-query db :s1 (rand-nth known-s1))
       :details {:data-type :str :data-in-db? true}}
      {:function :simple-query
-      :query (simple-query db :s1 (rand-str-not-in known-i1-set))
+      :query (simple-query db :s1 (rand-str-not-in known-s1-set))
       :details {:data-type :str :data-in-db? false}}
 
-     {:function :one-join-query-first-fixed
-      :query (one-join-query-first-fixed db :i1 (rand-nth known-i1) :i2)
+     {:function :e-join-query-first-fixed
+      :query (e-join-query-first-fixed db :i1 (rand-nth known-i1) :i2)
       :details {:data-type :int :data-in-db? true}}
-     {:function :one-join-query-first-fixed
-      :query (one-join-query-first-fixed db :i1 (rand-int-not-in known-i1-set) :i2)
+     {:function :e-join-query-first-fixed
+      :query (e-join-query-first-fixed db :i1 (rand-int-not-in known-i1-set) :i2)
       :details {:data-type :int :data-in-db? false}}
-     {:function :one-join-query-first-fixed
-      :query (one-join-query-first-fixed db :s1 (rand-nth known-s1) :s2)
+     {:function :e-join-query-first-fixed
+      :query (e-join-query-first-fixed db :s1 (rand-nth known-s1) :s2)
       :details {:data-type :str :data-in-db? true}}
-     {:function :one-join-query-first-fixed
-      :query (one-join-query-first-fixed db :s1 (rand-str-not-in known-s1-set) :s2)
+     {:function :e-join-query-first-fixed
+      :query (e-join-query-first-fixed db :s1 (rand-str-not-in known-s1-set) :s2)
       :details {:data-type :str :data-in-db? false}}
 
-     {:function :one-join-query-second-fixed
-      :query (one-join-query-second-fixed db :i1 :i2 (rand-nth known-i2))
+     {:function :e-join-query-second-fixed
+      :query (e-join-query-second-fixed db :i1 :i2 (rand-nth known-i2))
       :details {:data-type :int :data-in-db? true}}
-     {:function :one-join-query-second-fixed
-      :query (one-join-query-second-fixed db :i1 :i2 (rand-int-not-in known-i2-set))
+     {:function :e-join-query-second-fixed
+      :query (e-join-query-second-fixed db :i1 :i2 (rand-int-not-in known-i2-set))
       :details {:data-type :int :data-in-db? false}}
-     {:function :one-join-query-second-fixed
-      :query (one-join-query-second-fixed db :s1 :s2 (rand-nth known-s2))
+     {:function :e-join-query-second-fixed
+      :query (e-join-query-second-fixed db :s1 :s2 (rand-nth known-s2))
       :details {:data-type :str :data-in-db? true}}
-     {:function :one-join-query-second-fixed
-      :query (one-join-query-second-fixed db :s1 :s2 (rand-str-not-in known-s2-set))
+     {:function :e-join-query-second-fixed
+      :query (e-join-query-second-fixed db :s1 :s2 (rand-str-not-in known-s2-set))
       :details {:data-type :str :data-in-db? false}}
 
      {:function :scalar-arg-query
