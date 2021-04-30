@@ -23,18 +23,18 @@
   [{:config-name "mem-set"
     :config {:store {:backend :mem :id "performance-set"}
              :schema-flexibility :write
-             :keep-history? true
+             :keep-history? false
              :index :datahike.index/persistent-set
              :name "mem-set"}}
    {:config-name "mem-hht"
     :config {:store {:backend :mem :id "performance-hht"}
              :schema-flexibility :write
-             :keep-history? true
+             :keep-history? false
              :index :datahike.index/hitchhiker-tree}}
    {:config-name "file"
     :config {:store {:backend :file :path "/tmp/performance-hht"}
              :schema-flexibility :write
-             :keep-history? true
+             :keep-history? false
              :index :datahike.index/hitchhiker-tree}}])
 
 (def schema

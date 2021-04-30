@@ -22,7 +22,8 @@
     (d/transact conn c/schema)
     (when (pos? (count tx))
       (d/transact conn tx))
-    (d/release conn)))
+    (d/release conn)
+    tx))
 
 
 (defn measure-performance-full [db-entity-count tx-entity-count {:keys [config-name config] }]
@@ -35,7 +36,7 @@
                           (assoc :name config-name)
                           (assoc :backend (get-in config [:store :backend]))
                           (dissoc :store))
-        _ (init-db db-entity-count unique-config)
+        initial-tx (init-db db-entity-count unique-config)
 
         initial-entities db-entity-count
         initial-datoms (* initial-entities (count c/schema))
@@ -50,13 +51,13 @@
 
         final-datoms (+ initial-datoms tx-datoms)
         final-entities (+ initial-entities tx-entities)
+        final-tx (vec (concat initial-tx tx))
 
         _ (d/release conn)
         t-connection-0n (:t (timed (d/connect unique-config)))
-
-
-        queries0n (vec (for [{:keys [function query details]} (if (pos? (count tx))
-                                                                (c/all-queries @conn tx)
+        
+        queries0n (vec (for [{:keys [function query details]} (if (pos? (count final-tx))
+                                                                (c/all-queries @conn final-tx)
                                                                 (c/non-var-queries @conn))]
                         (do (log/debug (str " Querying with " function " using " details "..."))
                             {:time (:t (timed (d/q query @conn)))

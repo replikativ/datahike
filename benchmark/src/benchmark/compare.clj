@@ -3,7 +3,8 @@
             [clojure.string :refer [join]]
             [incanter.core :as ic]
             [incanter.charts :as charts]
-            [benchmark.config :as c]))
+            [benchmark.config :as c])
+  (:import [java.awt Color]))
 
 (defn comparison-table [group filenames]
   (let [grouped (group-by :context group)
@@ -68,12 +69,12 @@ output (str "Connection Measurements (in s):\n"
 (defn p [x] (println x) x)
 
 (defn create-plots [data] ;; 1 plot per function and context
-  (let [tags (map :tag data)]
+  (let [tags (join "," (distinct (map :tag data)))
+        colors [Color/red Color/blue Color/green Color/cyan Color/magenta Color/orange Color/yellow]]
   (doall (for [function (distinct (map #(get-in % [:context :function]) data))
                config (distinct (map #(get-in % [:context :dh-config :name]) data))
                execution-details (distinct (map #(get-in % [:context :execution]) data))]
-           (let [
-                 filename (str (name function)
+           (let [filename (str (name function)
                                "_config-" (name config)
                                (when (pos? (count execution-details))
                                  (str "_exec-" execution-details))
@@ -84,24 +85,33 @@ output (str "Connection Measurements (in s):\n"
                                 (filter #(and (= (get-in % [:context :function]) function)
                                               (= (get-in % [:context :dh-config :name]) config)
                                               (= (get-in % [:context :execution]) execution-details)))
-                                (map #(assoc % :x (get-in % [:context :db-entities])))
-                                (map #(mapv (fn [time] (assoc % :y time))
-                                            (get-in % [:time :observations])))
-                                (apply concat))
+                                (map #(assoc % :x (get-in % [:context :db-entities]))))
+                 
                  plot (charts/scatter-plot nil nil 
                                            :title  (str "Execution time of function " function "\n"
                                                         "for configuration " (name config) " and\n"
                                                         "execution parameters " execution-details)
                                            :y-label "Time (s)"
                                            :x-label "Entities in database (1 entity = 4 datoms)"
-                                           :gradient true
                                            :legend true
                                            :series-label "")]
               (when (seq plot-data)
                 (charts/set-stroke-color plot (java.awt.Color. 0 0 0 0) :dataset 0)
-                (run! (fn [[tag group]] (charts/add-points plot (map :x group) (map :y group) :series-label tag))
-                      (group-by :tag plot-data))
-                (ic/save plot (str "plots/" filename))))))))
+                (doall (map-indexed (fn [idx [tag group]]
+                        (let [entities (map :x group) 
+                              time (map :time group)
+
+                              time-obs (apply concat (map :observations time))
+                              entities-rep (apply concat (map #(repeat (count (:observations %2)) %1) entities time))]
+                          
+                        (charts/add-points plot entities-rep time-obs :series-label tag)
+                        (charts/set-stroke-color plot (get colors idx) :dataset (+ 1 (* idx 2)))
+                        (charts/add-lines plot entities (map :median time) :series-label tag))
+                        (charts/set-stroke-color plot (get colors idx) :dataset (+ 2 (* idx 2))))
+                          (group-by :tag plot-data)))
+                (ic/save plot (str "plots/" filename)
+                         :width 800
+                         :height 600)))))))
 
 (defn compare-benchmarks [filenames plots?]
   (run! check-file-format filenames)
