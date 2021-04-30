@@ -148,7 +148,7 @@
             (sum-rel a)
             (sum-rel b))))))
 
-(defn prod-rel
+(defn ^Relation prod-rel
   ([] (Relation. {} [(da/make-array 0)]))
   ([rel1 rel2]
    (let [attrs1 (keys (:attrs rel1))
@@ -325,7 +325,7 @@
     (Relation. (zipmap vars (range)) [])))
 
 (defprotocol IBinding
-  (in->rel [binding value]))
+  ^Relation (in->rel [binding value]))
 
 (extend-protocol IBinding
   BindIgnore
