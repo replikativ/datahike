@@ -1,6 +1,6 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.10.1"}
         org.clojure/clojurescript                   {:mvn/version "1.10.597"}
-        io.replikativ/hitchhiker-tree               {:mvn/version "0.1.10"}
+        io.replikativ/hitchhiker-tree               {:mvn/version "0.1.11"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.1.2"}
         org.clojure/tools.reader                    {:mvn/version "1.3.3"}
         environ/environ                             {:mvn/version "1.2.0"}
@@ -47,6 +47,11 @@
 
            :build {:extra-deps {seancorfield/depstar {:mvn/version "1.1.136"}}
                    :main-opts ["-m" "hf.depstar.jar" "replikativ-datahike.jar"]}
+
+           :install {:extra-deps {slipset/deps-deploy {:mvn/version "0.1.5"}}
+                     :exec-fn deps-deploy.deps-deploy/deploy
+                     :exec-args {:installer :local
+                                 :artifact "replikativ-datahike.jar"}}
 
            :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.7.0"}}
                     :main-opts ["-m" "cljfmt.main" "check"]}

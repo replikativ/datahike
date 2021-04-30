@@ -56,6 +56,7 @@
             - `:read` validates the data when your read data from the database, `:write` validates the data when you transact new data.
           - `:index` defines the data type of the index. Available are `:datahike.index/hitchhiker-tree`, `:datahike.index/persistent-set` (only available with in-memory storage)
           - `:name` defines your database name optionally, if not set, a random name is created
+          - `:transactor` optionally configures a transactor as a hash map. If not set, the default local transactor is used.
 
           Default configuration has in-memory store, keeps history with write schema flexibility, and has no initial transaction:
           {:store {:backend :mem :id \"default\"} :keep-history? true :schema-flexibility :write}
