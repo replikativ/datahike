@@ -152,16 +152,6 @@
 
 (def ^:private caches (ConcurrentHashMap.))
 
-(defmacro wrap-cache
-  [store pattern body]
-  `(let [cache# (.get ^ConcurrentHashMap caches ~store)]
-     (if-some [cached# (get ^LRU cache# ~pattern nil)]
-       cached#
-       (let [res# ~body]
-         (.put ^ConcurrentHashMap caches ~store (assoc cache# ~pattern res#))
-         res#))))
-
-
 (defn db-transient [db]
   (-> db
       (update :eavt -transient)
@@ -210,6 +200,15 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
+(defmacro wrap-cache
+  [store pattern body]
+  `(let [cache# (.get ^ConcurrentHashMap caches ~store)]
+     (if-some [cached# (get ^LRU cache# ~pattern nil)]
+       cached#
+       (let [res# ~body]
+         (.put ^ConcurrentHashMap caches ~store (assoc cache# ~pattern res#))
+         res#))))
+
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config]
   #?@(:cljs
       [IHash (-hash [db] hash)
@@ -250,39 +249,47 @@
   ISearch
   (-search [db pattern]
            (let [[e a v t] pattern]
-             (wrap-cache (-hash db) 
+             (wrap-cache (-hash db)
                          [:search e a v t]
                          (search-indices eavt aevt avet pattern (indexing? db a) false))))
 
   IIndexAccess
   (-datoms [db index-type cs]
-           (-slice (get db index-type)
-                   (components->pattern db index-type cs e0 tx0)
-                   (components->pattern db index-type cs emax txmax)
-                   index-type))
-
+           (wrap-cache (-hash db)
+                       [:seek-datoms index-type cs]
+                       (-slice (get db index-type)
+                               (components->pattern db index-type cs e0 tx0)
+                               (components->pattern db index-type cs emax txmax)
+                               index-type)))
+  
   (-seek-datoms [db index-type cs]
-                (-slice (get db index-type)
-                        (components->pattern db index-type cs e0 tx0)
-                        (datom emax nil nil txmax)
-                        index-type))
+                (wrap-cache (-hash db)
+                            [:seek-datoms index-type cs]
+                            (-slice (get db index-type)
+                                    (components->pattern db index-type cs e0 tx0)
+                                    (datom emax nil nil txmax)
+                                    index-type)))
 
   (-rseek-datoms [db index-type cs]
-                 (-> (-slice (get db index-type)
-                             (components->pattern db index-type cs e0 tx0)
-                             (datom emax nil nil txmax)
-                             index-type)
-                     vec
-                     rseq))
+                 (wrap-cache (-hash db)
+                             [:rseek-datoms index-type cs]
+                             (-> (-slice (get db index-type)
+                                         (components->pattern db index-type cs e0 tx0)
+                                         (datom emax nil nil txmax)
+                                         index-type)
+                                 vec
+                                 rseq)))
 
   (-index-range [db attr start end]
-                (when-not (indexing? db attr)
-                  (raise "Attribute" attr "should be marked as :db/index true" {}))
-                (validate-attr attr (list '-index-range 'db attr start end) db)
-                (-slice avet
-                        (resolve-datom db nil attr start nil e0 tx0)
-                        (resolve-datom db nil attr end nil emax txmax)
-                        :avet))
+                (wrap-cache (-hash db)
+                            [:rseek-datoms index-type cs]
+                            (when-not (indexing? db attr)
+                              (raise "Attribute" attr "should be marked as :db/index true" {}))
+                            (validate-attr attr (list '-index-range 'db attr start end) db)
+                            (-slice avet
+                                    (resolve-datom db nil attr start nil e0 tx0)
+                                    (resolve-datom db nil attr end nil emax txmax)
+                                    :avet)))
 
   clojure.data/EqualityPartition
   (equality-partition [x] :datahike/db)
