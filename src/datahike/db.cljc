@@ -9,6 +9,7 @@
    [datahike.constants :refer [e0 tx0 emax txmax]]
    [datahike.tools :refer [get-time case-tree raise]]
    [datahike.schema :as ds]
+   [datahike.lru :as lru]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
    [datahike.config :as dc]
    [clojure.spec.alpha :as s])
@@ -18,7 +19,9 @@
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [java.util Date]
-                   [datahike.datom Datom])))
+                   [datahike.lru LRU]
+                   [datahike.datom Datom]
+                   [java.util.concurrent ConcurrentHashMap])))
 
 ;; ----------------------------------------------------------------------------
 
@@ -147,6 +150,18 @@
 (declare hash-datoms equiv-db empty-db resolve-datom validate-attr components->pattern indexing?)
 #?(:cljs (declare pr-db))
 
+(def ^:private caches (ConcurrentHashMap.))
+
+(defmacro wrap-cache
+  [store pattern body]
+  `(let [cache# (.get ^ConcurrentHashMap caches ~store)]
+     (if-some [cached# (get ^LRU cache# ~pattern nil)]
+       cached#
+       (let [res# ~body]
+         (.put ^ConcurrentHashMap caches ~store (assoc cache# ~pattern res#))
+         res#))))
+
+
 (defn db-transient [db]
   (-> db
       (update :eavt -transient)
@@ -234,8 +249,10 @@
 
   ISearch
   (-search [db pattern]
-           (let [[_ a _ _] pattern]
-             (search-indices eavt aevt avet pattern (indexing? db a) false)))
+           (let [[e a v t] pattern]
+             (wrap-cache (-hash db) 
+                         [:search e a v t]
+                         (search-indices eavt aevt avet pattern (indexing? db a) false))))
 
   IIndexAccess
   (-datoms [db index-type cs]
