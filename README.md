@@ -27,6 +27,7 @@ You can find [API documentation on cljdoc](https://cljdoc.org/d/io.replikativ/da
 
 We presented Datahike also at meetups,for example at:
 
+- [2021 Bay Area Clojure meetup](https://www.youtube.com/watch?v=GG-S-xrDS5M)
 - [2019 scicloj online meetup](https://www.youtube.com/watch?v=Hjo4TEV81sQ).
 - [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
 - [2018 Dutch clojure meetup](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
