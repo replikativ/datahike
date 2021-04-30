@@ -106,7 +106,7 @@ output (str "Connection Measurements (in s):\n"
                           
                         (charts/add-points plot entities-rep time-obs :series-label tag)
                         (charts/set-stroke-color plot (get colors idx) :dataset (+ 1 (* idx 2)))
-                        (charts/add-lines plot entities (map :median time) :series-label tag))
+                        (charts/add-lines plot entities (map :median time) :series-label (str tag " median")))
                         (charts/set-stroke-color plot (get colors idx) :dataset (+ 2 (* idx 2))))
                           (group-by :tag plot-data)))
                 (ic/save plot (str "plots/" filename)
