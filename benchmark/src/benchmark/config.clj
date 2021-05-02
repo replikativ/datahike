@@ -24,8 +24,7 @@
     :config {:store {:backend :mem :id "performance-set"}
              :schema-flexibility :write
              :keep-history? false
-             :index :datahike.index/persistent-set
-             :name "mem-set"}}
+             :index :datahike.index/persistent-set}}
    {:config-name "mem-hht"
     :config {:store {:backend :mem :id "performance-hht"}
              :schema-flexibility :write
@@ -38,36 +37,49 @@
              :index :datahike.index/hitchhiker-tree}}])
 
 (def schema
-   [{:db/ident       :s1
-     :db/valueType   :db.type/string
-     :db/cardinality :db.cardinality/one}
-    {:db/ident       :s2
-     :db/valueType   :db.type/string
-     :db/cardinality :db.cardinality/one}
-    {:db/ident       :i1
-     :db/valueType   :db.type/bigint
-     :db/cardinality :db.cardinality/one}
-    {:db/ident       :i2
-     :db/valueType   :db.type/bigint
-     :db/cardinality :db.cardinality/one}])
+  [{:db/ident       :s1
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident       :s2
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident       :i1
+    :db/valueType   :db.type/bigint
+    :db/cardinality :db.cardinality/one}
+   {:db/ident       :i2
+    :db/valueType   :db.type/bigint
+    :db/cardinality :db.cardinality/one}])
+
+(defn rand-str [max-int]
+  (format "%15d" (rand-int max-int)))
 
 (defn rand-entity [max-int]
-   {:s1 (format "%15d" (rand-int max-int))
-    :s2 (format "%15d" (rand-int max-int))
-    :i1 (rand-int max-int)
-    :i2 (rand-int max-int)})
+  {:s1 (rand-str max-int)
+   :s2 (rand-str max-int)
+   :i1 (rand-int max-int)
+   :i2 (rand-int max-int)})
 
-(defn rand-int-not-in [int-set]
-  (loop [i (rand-int max-int)]
-    (if (contains? int-set i)
-      (recur (rand-int max-int))
-      i)))
+(defn known [attr entities]
+  (mapv attr entities))
 
-(defn rand-str-not-in [str-set]
-  (loop [s (format "%15d" (rand-int max-int))]
-    (if (contains? str-set s)
-      (recur (rand-int max-int))
-      s)))
+(def m-known (memoize known))
+
+(defn known-set [attr entities]
+  (set (m-known attr entities)))
+
+(def m-known-set (memoize known-set))
+
+(defn rand-val-not-in [datatype val-set]
+  (let [rand-gen (if (= datatype :int) rand-int rand-str)]
+    (loop [i (rand-gen max-int)]
+      (if (contains? val-set i)
+        (recur (rand-gen max-int))
+        i))))
+
+(defn rand-attr-val [datatype attr entities in-set?]
+  (if in-set?
+    #(rand-nth (m-known attr entities))
+    #(rand-val-not-in datatype (m-known-set attr entities))))
 
 (defn vec-of [n f]
   (vec (repeatedly n f)))
@@ -161,143 +173,73 @@
 
 
 (defn non-var-queries [db]
-  [
-   {:function :e-join-query
-    :query (e-join-query db :i1 :i2)
-    :details {:data-type :int}}
-   {:function :e-join-query
-    :query (e-join-query db :s1 :s2)
-    :details {:data-type :str}}
+  (apply concat 
+         (for [data-type [:int :str]]
+    (let [[attr1 attr2 middle-elem] (if (= data-type :int) 
+                                      [:i1 :i2 (int (/ max-int 2.0))]
+                                      [:s1 :s2 (format "%15d" (int (/ max-int 2.0)))] )]
+      
+  [{:function :e-join-query
+    :query (e-join-query db attr1 attr2)
+    :details {:data-type data-type}}
 
    {:function :a-join-query
-    :query (a-join-query db :i1)
-    :details {:data-type :int}}
-   {:function :a-join-query
-    :query (a-join-query db :s1)
-    :details {:data-type :str}}
+    :query (a-join-query db attr1)
+    :details {:data-type data-type}}
 
    {:function :v-join-query
-    :query (v-join-query db :i1 :i2)
-    :details {:data-type :int}}
-   {:function :v-join-query
-    :query (v-join-query db :s1 :s2)
-    :details {:data-type :str}}
+    :query (v-join-query db attr1 attr2)
+    :details {:data-type data-type}}
 
    {:function :equals-query
-    :query (equals-query db :i1)
-    :details {:data-type :int}}
-   {:function :equals-query
-    :query (equals-query db :s1)
-    :details {:data-type :str}}
+    :query (equals-query db attr1)
+    :details {:data-type data-type}}
 
    {:function :less-than-query
-    :query (less-than-query db :i1)
-    :details {:data-type :int}}
-   #_{:function :less-than-query                          ;; class cast error due to comparator
-      :query (less-than-query db :s1)
-      :details {:data-type :str}}
+    :query (less-than-query db attr1)
+    :details {:data-type data-type}}
 
    {:function :equals-query-1-fixed
-    :query (equals-query-1-fixed db :i1 (int (/ max-int 2.0)))
-    :details {:data-type :int}}
-   {:function :equals-query-1-fixed
-    :query (equals-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
-    :details {:data-type :str}}
+    :query (equals-query-1-fixed db :attr1 middle-elem)
+    :details {:data-type data-type}}
 
    {:function :less-than-query-1-fixed
-    :query (less-than-query-1-fixed db :i1 (int (/ max-int 2.0)))
-    :details {:data-type :int}}
-   {:function :less-than-query-1-fixed
-    :query (less-than-query-1-fixed db :s1 (format "%15d" (int (/ max-int 2.0))))
-    :details {:data-type :str}}])
+    :query (less-than-query-1-fixed db :attr1 middle-elem)
+    :details {:data-type data-type}}]))))
 
 (defn var-queries [db entities]
-  (let [known-s1 (mapv :s1 entities)
-        known-s2 (mapv :s2 entities)
-        known-i1 (mapv :i1 entities)
-        known-i2 (mapv :i2 entities)
-        known-i1-set (set known-i1)
-        known-i2-set (set known-i2)
-        known-s1-set (set known-s1)
-        known-s2-set (set known-s2)]
+  (apply concat
+  (for [data-type [:int :str]
+        data-in-db? [true false]]
 
-    [{:function :simple-query
-      :query (simple-query db :i1 (rand-nth known-i1))
-      :details {:data-type :int :data-in-db? true}}
-     {:function :simple-query
-      :query (simple-query db :i1 (rand-int-not-in known-i1-set))
-      :details {:data-type :int :data-in-db? false}}
-     {:function :simple-query
-      :query (simple-query db :s1 (rand-nth known-s1))
-      :details {:data-type :str :data-in-db? true}}
-     {:function :simple-query
-      :query (simple-query db :s1 (rand-str-not-in known-s1-set))
-      :details {:data-type :str :data-in-db? false}}
+    (let [attr1 (if (= data-type :int) :i1 :s1)
+          attr2 (if (= data-type :int) :i2 :s2)
+          rand-val1 (rand-attr-val data-type attr1 entities data-in-db?)
+          rand-val2 (rand-attr-val data-type attr2 entities data-in-db?)]
 
-     {:function :e-join-query-first-fixed
-      :query (e-join-query-first-fixed db :i1 (rand-nth known-i1) :i2)
-      :details {:data-type :int :data-in-db? true}}
-     {:function :e-join-query-first-fixed
-      :query (e-join-query-first-fixed db :i1 (rand-int-not-in known-i1-set) :i2)
-      :details {:data-type :int :data-in-db? false}}
-     {:function :e-join-query-first-fixed
-      :query (e-join-query-first-fixed db :s1 (rand-nth known-s1) :s2)
-      :details {:data-type :str :data-in-db? true}}
-     {:function :e-join-query-first-fixed
-      :query (e-join-query-first-fixed db :s1 (rand-str-not-in known-s1-set) :s2)
-      :details {:data-type :str :data-in-db? false}}
+      [{:function :simple-query
+        :query (simple-query db attr1 (rand-val1))
+        :details {:data-type data-type :data-in-db? data-in-db?}}
 
-     {:function :e-join-query-second-fixed
-      :query (e-join-query-second-fixed db :i1 :i2 (rand-nth known-i2))
-      :details {:data-type :int :data-in-db? true}}
-     {:function :e-join-query-second-fixed
-      :query (e-join-query-second-fixed db :i1 :i2 (rand-int-not-in known-i2-set))
-      :details {:data-type :int :data-in-db? false}}
-     {:function :e-join-query-second-fixed
-      :query (e-join-query-second-fixed db :s1 :s2 (rand-nth known-s2))
-      :details {:data-type :str :data-in-db? true}}
-     {:function :e-join-query-second-fixed
-      :query (e-join-query-second-fixed db :s1 :s2 (rand-str-not-in known-s2-set))
-      :details {:data-type :str :data-in-db? false}}
+       {:function :e-join-query-first-fixed
+        :query (e-join-query-first-fixed db :i1 (rand-val1) :i2)
+        :details {:data-type data-type :data-in-db? data-in-db?}}
 
-     {:function :scalar-arg-query
-      :query (scalar-arg-query db :i1 (rand-nth known-i1))
-      :details {:data-type :int :data-in-db? true}}
-     {:function :scalar-arg-query
-      :query (scalar-arg-query db :i1 (rand-int-not-in known-i1-set))
-      :details {:data-type :int :data-in-db? false}}
-     {:function :scalar-arg-query
-      :query (scalar-arg-query db :s1 (rand-nth known-s1))
-      :details {:data-type :str :data-in-db? true}}
-     {:function :scalar-arg-query
-      :query (scalar-arg-query db :s1 (rand-str-not-in known-s1-set))
-      :details {:data-type :str :data-in-db? false}}
-     
-     {:function :scalar-arg-query-with-join
-      :query (scalar-arg-query-with-join db :i1 (rand-nth known-i1))
-      :details {:data-type :int :data-in-db? true}}
-     {:function :scalar-arg-query-with-join
-      :query (scalar-arg-query-with-join db :i1 (rand-int-not-in known-i1-set))
-      :details {:data-type :int :data-in-db? false}}
-     {:function :scalar-arg-query-with-join
-      :query (scalar-arg-query-with-join db :s1 (rand-nth known-s1))
-      :details {:data-type :str :data-in-db? true}}
-     {:function :scalar-arg-query-with-join
-      :query (scalar-arg-query-with-join db :s1 (rand-str-not-in known-s1-set))
-      :details {:data-type :str :data-in-db? false}}
+       {:function :e-join-query-second-fixed
+        :query (e-join-query-second-fixed db :i1 :i2 (rand-val2))
+        :details {:data-type data-type :data-in-db? data-in-db?}}
 
-     {:function :vector-arg-query
-      :query (vector-arg-query db :i1 (vec-of 1 #(rand-nth known-i1)))
-      :details {:data-type :int :data-in-db? true}}
-     {:function :vector-arg-query
-      :query (vector-arg-query db :i1 (vec-of 1 #(rand-int-not-in known-i1-set)))
-      :details {:data-type :int :data-in-db? false}}
-     {:function :vector-arg-query
-      :query (vector-arg-query db :s1 (vec-of 1 #(rand-nth known-s1)))
-      :details {:data-type :str :data-in-db? true}}
-     {:function :vector-arg-query
-      :query (vector-arg-query db :s1 (vec-of 1 #(rand-str-not-in known-s1-set)))
-      :details {:data-type :str :data-in-db? false}}]))
+       {:function :scalar-arg-query
+        :query (scalar-arg-query db :i1 (rand-val1))
+        :details {:data-type data-type :data-in-db? data-in-db?}}
+
+       {:function :scalar-arg-query-with-join
+        :query (scalar-arg-query-with-join db :i1 (rand-val1))
+        :details {:data-type data-type :data-in-db? data-in-db?}}
+
+       {:function :vector-arg-query
+        :query (vector-arg-query db :i1 (vec-of 10 rand-val1))
+        :details {:data-type data-type :data-in-db? data-in-db?}}]))) )
 
 (defn all-queries [db entities]
   (concat (non-var-queries db)
