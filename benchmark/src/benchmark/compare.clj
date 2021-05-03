@@ -3,6 +3,7 @@
             [clojure.string :refer [join]]
             [incanter.core :as ic]
             [incanter.charts :as charts]
+            [incanter.stats :refer [quantile]]
             [benchmark.config :as c]
             [taoensso.timbre :as log]
             [clojure.java.io :as io])
@@ -98,8 +99,8 @@ output (str "Connection Measurements (in s):\n"
                 (let [filepath (str directory "/" filename)
                       all-y (apply concat (map #(get-in % [:time :observations]) plot-data))
                       ymin 0
-                 ;    ymax (percentile 0.9 all-y) ;; TODO: activate!
-
+                      ymax (apply max all-y)
+                     ; ymax (quantile all-y :probs 0.9)
                       plot (charts/scatter-plot nil nil
                                                 :title  (str "Execution time of function " function "\n"
                                                              "for configuration " (name config) " and\n"
@@ -109,10 +110,11 @@ output (str "Connection Measurements (in s):\n"
                                                 :legend true
                                                 :series-label "")]
                 (charts/set-stroke-color plot (java.awt.Color. 0 0 0 0) :dataset 0)
+                (charts/set-y-range plot ymin ymax)
                 (doall (map-indexed (fn [idx [tag group]]
-                        (let [entities (map :x group) 
-                              time (map :time group)
-
+                        (let [sorted (sort-by :x group)
+                              entities (map :x sorted)
+                              time (map :time sorted)
                               time-obs (apply concat (map :observations time))
                               entities-rep (apply concat (map #(repeat (count (:observations %2)) %1) entities time))]
                           

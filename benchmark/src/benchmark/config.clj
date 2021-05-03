@@ -2,7 +2,7 @@
 
 (def max-int 1000000)
 
-(def context-cell-order [:function :dh-config :db-datoms :tx-datoms :data-type :data-in-db? :tag])
+(def context-cell-order [:function :dh-config :db-datoms :tx-datoms :data-type :data-in-db?])
 
 (def csv-cols
   [{:title "Function"                  :path [:context :function]}
