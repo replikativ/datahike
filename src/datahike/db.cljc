@@ -201,12 +201,12 @@
                   (-all eavt)]))))
 
 (defmacro wrap-cache
-  [store pattern body]
-  `(let [cache# (.get ^ConcurrentHashMap caches ~store)]
+  [db-key pattern body]
+  `(let [cache# (.get ^ConcurrentHashMap caches ~db-key)]
      (if-some [cached# (get ^LRU cache# ~pattern nil)]
        cached#
        (let [res# ~body]
-         (.put ^ConcurrentHashMap caches ~store (assoc cache# ~pattern res#))
+         (.put ^ConcurrentHashMap caches ~db-key (assoc cache# ~pattern res#))
          res#))))
 
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config]
@@ -248,22 +248,22 @@
 
   ISearch
   (-search [db pattern]
-           (let [[e a v t] pattern]
-             (wrap-cache (-hash db)
-                         [:search e a v t]
+           (let [[_e a _v _t] pattern]
+             (wrap-cache hash
+                         [:search pattern]
                          (search-indices eavt aevt avet pattern (indexing? db a) false))))
 
   IIndexAccess
   (-datoms [db index-type cs]
-           (wrap-cache (-hash db)
-                       [:seek-datoms index-type cs]
+           (wrap-cache hash
+                       [:datoms index-type cs]
                        (-slice (get db index-type)
                                (components->pattern db index-type cs e0 tx0)
                                (components->pattern db index-type cs emax txmax)
                                index-type)))
   
   (-seek-datoms [db index-type cs]
-                (wrap-cache (-hash db)
+                (wrap-cache hash
                             [:seek-datoms index-type cs]
                             (-slice (get db index-type)
                                     (components->pattern db index-type cs e0 tx0)
@@ -271,7 +271,7 @@
                                     index-type)))
 
   (-rseek-datoms [db index-type cs]
-                 (wrap-cache (-hash db)
+                 (wrap-cache hash
                              [:rseek-datoms index-type cs]
                              (-> (-slice (get db index-type)
                                          (components->pattern db index-type cs e0 tx0)
@@ -281,11 +281,11 @@
                                  rseq)))
 
   (-index-range [db attr start end]
-                (wrap-cache (-hash db)
-                            [:rseek-datoms index-type cs]
-                            (when-not (indexing? db attr)
-                              (raise "Attribute" attr "should be marked as :db/index true" {}))
-                            (validate-attr attr (list '-index-range 'db attr start end) db)
+                (when-not (indexing? db attr)
+                   (raise "Attribute" attr "should be marked as :db/index true" {}))
+                (validate-attr attr (list '-index-range 'db attr start end) db)
+                (wrap-cache hash
+                            [:index-range attr start end]
                             (-slice avet
                                     (resolve-datom db nil attr start nil e0 tx0)
                                     (resolve-datom db nil attr end nil emax txmax)
@@ -296,9 +296,11 @@
 
   clojure.data/Diff
   (diff-similar [a b]
-                (let [datoms-a (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
-                      datoms-b (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
-                  (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
+                (wrap-cache (min (clojure.core/hash a) (clojure.core/hash b))
+                            [:diff-similar a b] 
+                            (let [datoms-a (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
+                                  datoms-b (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
+                              (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick)))))
 
 (defn db? [x]
   (and (satisfies? ISearch x)
