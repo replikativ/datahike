@@ -9,10 +9,20 @@
 
 (def output-formats #{"remote-db" "edn" "csv"})
 (def config-names #{"mem-set" "mem-hht" "file"})
+(def implemented-queries #{:simple-query
+                           :e-join-query :e-join-query-first-fixed :e-join-query-second-fixed
+                           :a-join-query
+                           :v-join-query
+                           :equals-query :equals-query-1-fixed
+                           :less-than-query :less-than-query-1-fixed
+                           :scalar-arg-query :scalar-arg-query-with-join
+                           :vector-arg-query})
+(def implemented-functions #{:connection :transaction :query})
+(def implemented-data-types #{:int :str})
 
 (def cli-options
   [;; CMD run
-   
+
    ["-u" "--db-server-url URL" "Base URL for datahike server, e.g. http://localhost:3000"
     :default nil]
    ["-n" "--db-name DBNAME" "Database name for datahike server" :default nil]
@@ -20,14 +30,16 @@
    ["-t" "--tag TAG" "Add tag to measurements"
     :default #{}
     :assoc-fn (fn [m k v] (assoc m k (conj (get m k) v)))]
-   ["-o" "--output-format FORMAT" (str "Determines how the results will be processed. "
-                                       "Possible are 'remote-db', 'edn' and 'csv'.")
+   ["-o" "--output-format FORMAT" 
+    (str "Determines how the results will be processed. "
+         "Possible are 'remote-db', 'edn' and 'csv'. " 
+         "Currently only edn format is supported for comparisons.")
     :default "edn"
     :validate [output-formats  #(str "Format " % " has not been implemented. "
                                      "Possible formats are " output-formats)]]
    ["-c" "--config-name CONFIGNAME"
     (str "Name of database configuration to use. Available are 'mem-set' 'mem-hht' and 'file'. "
-         "If not set all configs will be tested")
+         "If not set all configurations will be tested")
     :default nil
     :validate [config-names  #(str "A configuration named " % " has not been implemented. "
                                    "Possible configurations are " config-names)]]
@@ -43,17 +55,42 @@
           "Must be given as a clojure vector of non-negative integers like '[0 10 100 1000]'.")
     :default [0 1000]
     :parse-fn read-string
-    :validate [vector? "Must be a vector of non-negative integers." 
+    :validate [vector? "Must be a vector of non-negative integers."
                #(every? nat-int? %) "Vector must consist of non-negative integers."]]
-   ["-i" "--iterations ITERATIONS" "Number of iterations of each measurement."
+   ["-y" "--data-types TYPEVECTOR" 
+    "Vector of datatypes to test queries on."
+    :default [:int :str]
+    :parse-fn read-string
+    :validate [vector? "Must be a vector of keywords."
+               #(every? implemented-data-types %) (str "Vector must consist of keywords for datatypes. "
+                                                       "Available are " implemented-data-types)]]
+   ["-z" "--data-found-opts OPTS" 
+    "Vector of booleans indicating if query is run for existent or nonexistent values in the database."
+    :default :all
+    :parse-fn read-string
+    :validate [#{true false :all} "Must be a boolean value or keyword :all."]]
+   ["-i" "--iterations ITERATIONS" 
+    "Number of iterations of each measurement."
     :default 10
     :parse-fn read-string
     :validate [nat-int? "Must be a non-negative integer."]]
-   
+   ["-q" "--query QUERYNAME" 
+    "Name of query to test."
+    :default :all
+    :parse-fn read-string
+    :validate [implemented-queries (str "Must be a keyword for a implemented database query "
+                                        "Possible are: " implemented-queries)]]
+   ["-f" "--function FUNCTIONNAME"  
+    "Name of function to test."
+    :default :all
+    :parse-fn read-string
+    :validate [implemented-functions (str "Must be a keyword for implemented database function. "
+                                          "Possible are: " implemented-functions)]]
+
    ;; CMD compare
 
    ["-p" "--[no-]plots" "Output comparison as plots."]
-   
+
    ["-h" "--help"]])
 
 
@@ -151,5 +188,3 @@
 
   (shutdown-agents))
 
-(comment
-  (-main "run" "-x" "[0 10000 5000]" "-t" "test-bench" "-o" "edn" "bench.edn"))

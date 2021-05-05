@@ -56,17 +56,17 @@
                                                     {:dh-config (get-in % [:context :dh-config :name])}
                                                     (get (:context %) :execution))))
                                 (group-by #(get-in % [:context :function])))
-output (str "Connection Measurements (in s):\n"
-            (comparison-table (:connection grouped-benchmarks) filenames)
-            "\n"
-            "Transaction Measurements (in s):\n"
-            (comparison-table (:transaction grouped-benchmarks) filenames)
-            "\n"
-            "Query Measurements (in s):\n"
-            (let [query-benchmarks (->> (dissoc grouped-benchmarks :connection :transaction)
-                                        vals
-                                        (apply concat))]
-              (comparison-table query-benchmarks filenames)))] 
+        output (str "Connection Measurements (in s):\n"
+                    (comparison-table (:connection grouped-benchmarks) filenames)
+                    "\n"
+                    "Transaction Measurements (in s):\n"
+                    (comparison-table (:transaction grouped-benchmarks) filenames)
+                    "\n"
+                    "Query Measurements (in s):\n"
+                    (let [query-benchmarks (->> (dissoc grouped-benchmarks :connection :transaction)
+                                                vals
+                                                (apply concat))]
+                      (comparison-table query-benchmarks filenames)))] 
     (println output)))
 
 (defn create-plots [data] ;; 1 plot per function and context
