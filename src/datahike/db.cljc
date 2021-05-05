@@ -261,7 +261,7 @@
                                (components->pattern db index-type cs e0 tx0)
                                (components->pattern db index-type cs emax txmax)
                                index-type)))
-  
+
   (-seek-datoms [db index-type cs]
                 (wrap-cache hash
                             [:seek-datoms index-type cs]
@@ -282,7 +282,7 @@
 
   (-index-range [db attr start end]
                 (when-not (indexing? db attr)
-                   (raise "Attribute" attr "should be marked as :db/index true" {}))
+                  (raise "Attribute" attr "should be marked as :db/index true" {}))
                 (validate-attr attr (list '-index-range 'db attr start end) db)
                 (wrap-cache hash
                             [:index-range attr start end]
@@ -297,7 +297,7 @@
   clojure.data/Diff
   (diff-similar [a b]
                 (wrap-cache (min (clojure.core/hash a) (clojure.core/hash b))
-                            [:diff-similar a b] 
+                            [:diff-similar a b]
                             (let [datoms-a (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
                                   datoms-b (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
                               (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick)))))
