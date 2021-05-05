@@ -13,13 +13,13 @@
         (prn d)))))
 
 (defn update-max-tx-from-file
-  "Find bigest tx in file and update max-tx of db.
+  "Find biggest tx in file and update max-tx of db.
   Note: the last tx might not be the biggest if the db
   has been imported before."
   [db file]
   (let [max-tx (->> (line-seq (io/reader file))
                     (map read-string)
-                    (reduce #(max %1 (nth %2 3)) 0))]
+                    (reduce #(max ^long %1 ^long (nth %2 3)) 0))]
     (assoc db :max-tx max-tx)))
 
 (defn import-db

@@ -40,7 +40,7 @@
   [kvs key]
   (when-let [old (old-key kvs key)]
     (let [[a b c _] old
-          [_ _ _ nt] key]
+          [_ _ _ ^long nt] key]
       ;; '-' means it is retracted and 'nt' is the current transaction time.
       [a b c (- nt)])))
 

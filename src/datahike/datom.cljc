@@ -7,7 +7,7 @@
 (declare hash-datom equiv-datom seq-datom nth-datom assoc-datom val-at-datom)
 
 (defprotocol IDatom
-  (datom-tx [this])
+  (datom-tx ^long [this])
   (datom-added [this]))
 
 (deftype Datom #?(:clj  [^int e a v ^long tx ^:unsynchronized-mutable ^int _hash]
@@ -91,7 +91,7 @@
 (defn ^Datom datom
   ([e a v] (Datom. e a v tx0 0))
   ([e a v tx] (Datom. e a v tx 0))
-  ([e a v tx added] (Datom. e a v (if added tx (- tx)) 0)))
+  ([e a v tx added] (Datom. e a v (if added tx (- ^long tx)) 0)))
 
 (defn datom? [x] (instance? Datom x))
 
@@ -173,7 +173,7 @@
          (recur
           (next comps)
           `(let [c# ~(first comps)]
-             (if (== 0 c#)
+             (if (== 0 ^int c#)
                ~res
                c#)))
          res))))
@@ -236,8 +236,8 @@
   (combine-cmp
    (cmp-attr-quick (.-a d1) (.-a d2))
    (compare (.-v d1) (.-v d2))
-   (#?(:clj Integer/compare :cljs -) (.-e d1) (.-e d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+   (#?(:clj Integer/compare :cljs -) ^int (.-e d1) ^int (.-e d2))
+   (#?(:clj Long/compare :cljs -) ^long (datom-tx d1) ^long (datom-tx d2))))
 
 (defn diff-sorted [a b cmp]
   (loop [only-a []
@@ -251,7 +251,7 @@
       :else
       (let [first-a (first a)
             first-b (first b)
-            diff (cmp first-a first-b)]
+            diff ^long (cmp first-a first-b)]
         (cond
           (== diff 0) (recur only-a only-b (conj both first-a) (next a) (next b))
           (< diff 0) (recur (conj only-a first-a) only-b both (next a) b)

@@ -195,7 +195,7 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet ^long max-eid ^long max-tx ^long op-count rschema ^long hash config]
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -499,7 +499,7 @@
   (let [as-of-pred (fn [^Datom d]
                      (if (date? time-point)
                        (.before ^Date (.-v d) ^Date time-point)
-                       (<= (dd/datom-tx d) time-point)))
+                       (<= ^long (dd/datom-tx d) ^long time-point)))
         filtered-tx-ids (filter-txInstant datoms as-of-pred db)
         filtered-datoms (->> datoms
                              (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
@@ -878,7 +878,7 @@
 
 (defn- hash-datoms
   [datoms]
-  (reduce #(+ %1 (hash %2)) 0 datoms))
+  (reduce #(+ ^long %1 ^long (hash %2)) 0 datoms))
 
 (defn- equiv-db [db other]
   (and (or (instance? DB other) (instance? FilteredDB other))
@@ -1038,7 +1038,7 @@
 (defn entid [db eid]
   {:pre [(db? db)]}
   (cond
-    (and (number? eid) (pos? eid))
+    (and (number? eid) (pos? ^long eid))
     eid
 
     (sequential? eid)
@@ -1163,9 +1163,9 @@
 (defn- #?@(:clj  [^Boolean tempid?]
            :cljs [^boolean tempid?])
   [x]
-  (or (and (number? x) (neg? x)) (string? x)))
+  (or (and (number? x) (neg? ^long x)) (string? x)))
 
-(defn advance-max-eid [db eid]
+(defn advance-max-eid [db ^long eid]
   (cond-> db
     (and (> eid (:max-eid db))
          (< eid tx0))                                 ;; do not trigger advance if transaction id was referenced
@@ -1236,13 +1236,13 @@
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
 
-(defn- with-datom [db ^Datom datom]
+(defn- with-datom [^DB db ^Datom datom]
   (validate-datom db datom)
   (let [indexing? (indexing? db (.-a datom))
         a (.-a datom)
         schema? (or (ds/schema-attr? a) (ds/entity-spec-attr? a))
         keep-history? (and (-keep-history? db) (not (no-history? db a)))
-        op-count (.op-count db)]
+        op-count (.-op-count db)]
     (if (datom-added datom)
       (cond-> db
         true (update-in [:eavt] #(di/-insert % datom :eavt op-count))
@@ -1270,14 +1270,14 @@
           true (update :op-count + (if (or keep-history? indexing?) 2 1)))
         db))))
 
-(defn- with-temporal-datom [db ^Datom datom]
+(defn- with-temporal-datom [^DB db ^Datom datom]
   (let [indexing? (indexing? db (.-a datom))
         schema? (ds/schema-attr? (.-a datom))
         current-datom ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))
         history-datom ^Datom (first (search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
         current? (not (nil? current-datom))
         history? (not (nil? history-datom))
-        op-count (.op-count db)]
+        op-count (.-op-count db)]
     (cond-> db
       current? (update-in [:eavt] #(di/-remove % current-datom :eavt op-count))
       current? (update-in [:aevt] #(di/-remove % current-datom :aevt op-count))
@@ -1329,13 +1329,13 @@
                 :attribute (.-a datom)
                 :datom     datom})))))
 
-(defn- with-datom-upsert [db ^Datom datom]
+(defn- with-datom-upsert [^DB db ^Datom datom]
   (validate-datom-upsert db datom)
   (let [indexing?     (indexing? db (.-a datom))
         schema?       (ds/schema-attr? (.-a datom))
         keep-history? (and (-keep-history? db) (not (no-history? db (.-a datom)))
                            (not= :db/txInstant (.-a datom)))
-        op-count      (.op-count db)]
+        op-count      (.-op-count db)]
     (cond-> db
       ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
       schema? (try
@@ -1373,12 +1373,12 @@
       report')))
 
 (defn- check-upsert-conflict [entity acc]
-  (let [[e a v] acc
-        _e (:db/id entity)]
+  (let [[^long e a v] acc
+         _e (:db/id entity)]
     (if (or (nil? _e)
             (tempid? _e)
             (nil? acc)
-            (== _e e))
+            (== ^long _e e))
       acc
       (raise "Conflicting upsert: " [a v] " resolves to " e
              ", but entity already has :db/id " _e

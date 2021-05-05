@@ -247,7 +247,7 @@
 
 (def built-in-aggregates
   (letfn [(sum [coll] (reduce + 0 coll))
-          (avg [coll] (/ (sum coll) (count coll)))
+          (avg [coll] (/ ^double (sum coll) (count coll)))
           (median
             [coll]
             (let [terms (sort coll)
@@ -255,13 +255,13 @@
                   med (bit-shift-right size 1)]
               (cond-> (nth terms med)
                 (even? size)
-                (-> (+ (nth terms (dec med)))
+                (-> (+ ^double (nth terms (dec med)))
                     (/ 2)))))
           (variance
             [coll]
             (let [mean (avg coll)
                   sum (sum (for [x coll
-                                 :let [delta (- x mean)]]
+                                 :let [delta (- ^double x ^double mean)]]
                              (* delta delta)))]
               (/ sum (count coll))))
           (stddev
@@ -277,7 +277,7 @@
                                          (if (neg? (compare x acc))
                                            x acc))
                                        (first coll) (next coll)))
-                       ([n coll]
+                       ([^long n coll]
                         (vec
                          (reduce (fn [acc x]
                                    (cond
@@ -292,7 +292,7 @@
                                          (if (pos? (compare x acc))
                                            x acc))
                                        (first coll) (next coll)))
-                       ([n coll]
+                       ([^long n coll]
                         (vec
                          (reduce (fn [acc x]
                                    (cond
@@ -964,13 +964,13 @@
       (vswap! query-cache assoc q qp)
       qp)))
 
-(defn paginate [offset limit resultset]
+(defn paginate [^long offset limit resultset]
   (if (or offset limit)
     (let [length (count resultset)
           start (or offset 0)
-          limit (if (or (nil? limit) (< limit 0))
-                  length
-                  limit)
+          limit ^long (if (or (nil? limit) (< ^long limit 0))
+                        length
+                        limit)
           part (+ start limit)
           end (if (< length part)
                 length

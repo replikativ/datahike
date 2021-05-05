@@ -3,7 +3,7 @@
 (declare assoc-lru cleanup-lru)
 
 #?(:cljs
-   (deftype LRU [key-value gen-key key-gen gen limit]
+   (deftype LRU [key-value gen-key key-gen gen ^long limit]
      IAssociative
      (-assoc [this k v] (assoc-lru this k v))
      (-contains-key? [_ k] (-contains-key? key-value k))
@@ -14,7 +14,7 @@
      (-pr-writer [_ writer opts]
        (-pr-writer (persistent! key-value) writer opts)))
    :clj
-   (deftype LRU [^clojure.lang.Associative key-value gen-key key-gen gen limit]
+   (deftype LRU [^clojure.lang.Associative key-value gen-key key-gen gen ^long limit]
      clojure.lang.ILookup
      (valAt [_ k]           (.valAt key-value k))
      (valAt [_ k not-found] (.valAt key-value k not-found))

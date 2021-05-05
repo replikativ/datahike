@@ -12,7 +12,7 @@
 
 (extend-protocol kc/IKeyCompare
   clojure.lang.PersistentVector
-  (-compare [key1 key2]
+  (-compare ^int [key1 key2]
     (if-not (= (class key2) clojure.lang.PersistentVector)
       (if (nil? key2)
         +1    ;; Case for tuples. E.g. (compare [100 200] nil)
@@ -25,13 +25,13 @@
          (kc/-compare c g)
          (kc/-compare d h)))))
   java.lang.String
-  (-compare [key1 key2]
+  (-compare ^int [key1 key2]
     (compare key1 key2))
   clojure.lang.Keyword
-  (-compare [key1 key2]
+  (-compare ^int [key1 key2]
     (compare key1 key2))
   nil
-  (-compare [key1 key2]
+  (-compare ^int [key1 key2]
     (if (nil? key2)
       0 -1)))
 

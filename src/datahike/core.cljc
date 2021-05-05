@@ -395,7 +395,7 @@
    {:pre [(conn? conn)]}
    (future-call #(transact! conn tx-data tx-meta))))
 
-(defn- rand-bits [pow]
+(defn- rand-bits [^long pow]
   (rand-int (bit-shift-left 1 pow)))
 
 #?(:cljs
@@ -414,7 +414,7 @@
   ([]
    (squuid #?(:clj  (System/currentTimeMillis)
               :cljs (.getTime (js/Date.)))))
-  ([msec]
+  ([^long msec]
    #?(:clj
       (let [uuid (UUID/randomUUID)
             time (int (/ msec 1000))
