@@ -257,4 +257,4 @@
 (defn all-queries [db entities datatypes data-found-opts]
   (concat (non-var-queries db datatypes)
           (var-queries db entities datatypes data-found-opts)
-          (var-queries db entities datatypes data-found-opts)))
+          (cache-check-queries db entities datatypes data-found-opts)))

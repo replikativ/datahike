@@ -76,11 +76,14 @@
         _ (d/delete-database unique-config)
         transaction-times (if (#{:all :transaction} function)
                             (for [tx-entities tx-entity-counts
-                                   _ (range iterations)]
+                                  _ (range iterations)]
                               (let [unique-config (assoc config :name (str (UUID/randomUUID)))
                                     {:keys [conn]} (init-db db-entities unique-config)
-                                    tx (vec (repeatedly tx-entities c/rand-entity))]
-                                [{:time (:t (timed (d/transact conn tx)))
+                                    tx (vec (repeatedly tx-entities c/rand-entity))
+                                    t (:t (timed (d/transact conn tx)))]
+                                (d/release conn)
+                                (d/delete-database unique-config)
+                                [{:time t
                                   :context {:dh-config simple-config
                                             :function :transaction
                                             :db-entities db-entities
