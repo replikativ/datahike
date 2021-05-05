@@ -38,9 +38,8 @@
     :validate [output-formats  #(str "Format " % " has not been implemented. "
                                      "Possible formats are " output-formats)]]
    ["-c" "--config-name CONFIGNAME"
-    (str "Name of database configuration to use. Available are 'mem-set' 'mem-hht' and 'file'. "
-         "If not set all configurations will be tested")
-    :default nil
+    (str "Name of database configuration to use. Available are 'mem-set' 'mem-hht' and 'file'. ")
+    :default :all
     :validate [config-names  #(str "A configuration named " % " has not been implemented. "
                                    "Possible configurations are " config-names)]]
    ["-d" "--db-entity-counts VECTOR"
