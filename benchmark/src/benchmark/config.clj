@@ -171,76 +171,75 @@
                       (sequence (conj '[= ?v] comp-val))))
    :args [db]})
 
-
-(defn non-var-queries [db]
-  (apply concat 
-         (for [data-type [:int :str]]
-    (let [[attr1 attr2 middle-elem] (if (= data-type :int) 
-                                      [:i1 :i2 (int (/ max-int 2.0))]
-                                      [:s1 :s2 (format "%15d" (int (/ max-int 2.0)))] )]
-      
-  [{:function :e-join-query
-    :query (e-join-query db attr1 attr2)
-    :details {:data-type data-type}}
-
-   {:function :a-join-query
-    :query (a-join-query db attr1)
-    :details {:data-type data-type}}
-
-   {:function :v-join-query
-    :query (v-join-query db attr1 attr2)
-    :details {:data-type data-type}}
-
-   {:function :equals-query
-    :query (equals-query db attr1)
-    :details {:data-type data-type}}
-
-   {:function :less-than-query
-    :query (less-than-query db attr1)
-    :details {:data-type data-type}}
-
-   {:function :equals-query-1-fixed
-    :query (equals-query-1-fixed db :attr1 middle-elem)
-    :details {:data-type data-type}}
-
-   {:function :less-than-query-1-fixed
-    :query (less-than-query-1-fixed db :attr1 middle-elem)
-    :details {:data-type data-type}}]))))
-
-(defn var-queries [db entities]
+(defn non-var-queries [db datatypes]
   (apply concat
-  (for [data-type [:int :str]
-        data-in-db? [true false]]
+         (for [data-type datatypes]
+           (let [[attr1 attr2 middle-elem] (if (= data-type :int)
+                                             [:i1 :i2 (int (/ max-int 2.0))]
+                                             [:s1 :s2 (format "%15d" (int (/ max-int 2.0)))])]
 
-    (let [attr1 (if (= data-type :int) :i1 :s1)
-          attr2 (if (= data-type :int) :i2 :s2)
-          rand-val1 (rand-attr-val data-type attr1 entities data-in-db?)
-          rand-val2 (rand-attr-val data-type attr2 entities data-in-db?)]
+             [{:function :e-join-query
+               :query (e-join-query db attr1 attr2)
+               :details {:data-type data-type}}
 
-      [{:function :simple-query
-        :query (simple-query db attr1 (rand-val1))
-        :details {:data-type data-type :data-in-db? data-in-db?}}
+              {:function :a-join-query
+               :query (a-join-query db attr1)
+               :details {:data-type data-type}}
 
-       {:function :e-join-query-first-fixed
-        :query (e-join-query-first-fixed db :i1 (rand-val1) :i2)
-        :details {:data-type data-type :data-in-db? data-in-db?}}
+              {:function :v-join-query
+               :query (v-join-query db attr1 attr2)
+               :details {:data-type data-type}}
 
-       {:function :e-join-query-second-fixed
-        :query (e-join-query-second-fixed db :i1 :i2 (rand-val2))
-        :details {:data-type data-type :data-in-db? data-in-db?}}
+              {:function :equals-query
+               :query (equals-query db attr1)
+               :details {:data-type data-type}}
 
-       {:function :scalar-arg-query
-        :query (scalar-arg-query db :i1 (rand-val1))
-        :details {:data-type data-type :data-in-db? data-in-db?}}
+              {:function :less-than-query
+               :query (less-than-query db attr1)
+               :details {:data-type data-type}}
 
-       {:function :scalar-arg-query-with-join
-        :query (scalar-arg-query-with-join db :i1 (rand-val1))
-        :details {:data-type data-type :data-in-db? data-in-db?}}
+              {:function :equals-query-1-fixed
+               :query (equals-query-1-fixed db :attr1 middle-elem)
+               :details {:data-type data-type}}
 
-       {:function :vector-arg-query
-        :query (vector-arg-query db :i1 (vec-of 10 rand-val1))
-        :details {:data-type data-type :data-in-db? data-in-db?}}]))) )
+              {:function :less-than-query-1-fixed
+               :query (less-than-query-1-fixed db :attr1 middle-elem)
+               :details {:data-type data-type}}]))))
 
-(defn all-queries [db entities]
-  (concat (non-var-queries db)
-          (var-queries db entities)))
+(defn var-queries [db entities datatypes data-found-opts]
+  (apply concat
+         (for [data-type datatypes
+               data-in-db? data-found-opts]
+
+           (let [attr1 (if (= data-type :int) :i1 :s1)
+                 attr2 (if (= data-type :int) :i2 :s2)
+                 rand-val1 (rand-attr-val data-type attr1 entities data-in-db?)
+                 rand-val2 (rand-attr-val data-type attr2 entities data-in-db?)]
+
+             [{:function :simple-query
+               :query (simple-query db attr1 (rand-val1))
+               :details {:data-type data-type :data-in-db? data-in-db?}}
+
+              {:function :e-join-query-first-fixed
+               :query (e-join-query-first-fixed db :i1 (rand-val1) :i2)
+               :details {:data-type data-type :data-in-db? data-in-db?}}
+
+              {:function :e-join-query-second-fixed
+               :query (e-join-query-second-fixed db :i1 :i2 (rand-val2))
+               :details {:data-type data-type :data-in-db? data-in-db?}}
+
+              {:function :scalar-arg-query
+               :query (scalar-arg-query db :i1 (rand-val1))
+               :details {:data-type data-type :data-in-db? data-in-db?}}
+
+              {:function :scalar-arg-query-with-join
+               :query (scalar-arg-query-with-join db :i1 (rand-val1))
+               :details {:data-type data-type :data-in-db? data-in-db?}}
+
+              {:function :vector-arg-query
+               :query (vector-arg-query db :i1 (vec-of 10 rand-val1))
+               :details {:data-type data-type :data-in-db? data-in-db?}}]))))
+
+(defn all-queries [db entities datatypes data-found-opts]
+  (concat (non-var-queries db datatypes)
+          (var-queries db entities datatypes data-found-opts)))
