@@ -240,6 +240,21 @@
                :query (vector-arg-query db :i1 (vec-of 10 rand-val1))
                :details {:data-type data-type :data-in-db? data-in-db?}}]))))
 
+(defn cache-check-queries [db entities datatypes data-found-opts]
+  (apply concat
+         (for [data-type datatypes
+               data-in-db? data-found-opts]
+           (let [attr (if (= data-type :int) :i1 :s1)
+                 rand-val (rand-attr-val data-type attr entities data-in-db?)
+                 val (rand-val)]
+             [{:function :simple-query-first-run
+               :query (simple-query db attr val)
+               :details {:data-type data-type :data-in-db? data-in-db?}}
+              {:function :simple-query-second-run
+               :query (simple-query db attr val)
+               :details {:data-type data-type :data-in-db? data-in-db?}}]))))
+
 (defn all-queries [db entities datatypes data-found-opts]
   (concat (non-var-queries db datatypes)
+          (var-queries db entities datatypes data-found-opts)
           (var-queries db entities datatypes data-found-opts)))

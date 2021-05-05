@@ -53,46 +53,40 @@
                       (let [data-found (case data-found-opts
                                          true [true]
                                          false [false]
-                                         :all [true false]) 
+                                         :all [true false])
                             queries (if (pos? (count initial-tx))
                                       (c/all-queries @conn2 initial-tx data-types data-found)
                                       (c/non-var-queries @conn2 data-types))
                             filtered-queries (if (= query :all)
                                                queries
                                                (filter #(= query (:function %)) queries))]
-                      (vec (for [{:keys [function query details]} filtered-queries]
-                             (do (log/debug (str " Querying with " function " using " details "..."))
-                                 (try
-                                   {:time (:t (timed (d/q query @conn2)))
-                                    :context {:dh-config simple-config
-                                              :function function
-                                              :db-entities db-entities
-                                              :db-datoms db-datoms
-                                              :execution details}}
-                                   (catch Exception e
-                                     (log/error (str "Error executing query " query ": " (.getMessage e)))))))))
+                        (vec (for [{:keys [function query details]} filtered-queries]
+                               (do (log/debug (str " Querying with " function " using " details "..."))
+                                   (try
+                                     {:time (:t (timed (d/q query @conn2)))
+                                      :context {:dh-config simple-config
+                                                :function function
+                                                :db-entities db-entities
+                                                :db-datoms db-datoms
+                                                :execution details}}
+                                     (catch Exception e
+                                       (log/error (str "Error executing query " query ": " (.getMessage e)))))))))
                       [])
         _ (d/release conn)
         _ (d/delete-database unique-config)
-
         transaction-times (if (#{:all :transaction} function)
-                            (loop [ents tx-entity-counts
-                                   i (range iterations)
-                                   times []]
-                              (if (= i 0)
-                                times
-                                (let [tx-entities (first ents)
-                                      unique-config (assoc config :name (str (UUID/randomUUID)))
-                                      {:keys [conn]} (init-db db-entities unique-config)
-                                      tx (vec (repeatedly tx-entities c/rand-entity))
-                                      m {:time (:t (timed (d/transact conn tx)))
-                                         :context {:dh-config simple-config
-                                                   :function :transaction
-                                                   :db-entities db-entities
-                                                   :db-datoms db-datoms
-                                                   :execution {:tx-entities tx-entities
-                                                               :tx-datoms (* (count c/schema) tx-entities)}}}]
-                                  (recur (rest ents) (dec i) (conj times m)))))
+                            (for [tx-entities tx-entity-counts
+                                   _ (range iterations)]
+                              (let [unique-config (assoc config :name (str (UUID/randomUUID)))
+                                    {:keys [conn]} (init-db db-entities unique-config)
+                                    tx (vec (repeatedly tx-entities c/rand-entity))]
+                                [{:time (:t (timed (d/transact conn tx)))
+                                  :context {:dh-config simple-config
+                                            :function :transaction
+                                            :db-entities db-entities
+                                            :db-datoms db-datoms
+                                            :execution {:tx-entities tx-entities
+                                                        :tx-datoms (* (count c/schema) tx-entities)}}}]))
                             [])]
     (concat query-times connection-times transaction-times)))
 
@@ -110,9 +104,9 @@
      :observations (vec times)}))
 
 (defn get-measurements [{:keys [db-entity-counts  config-name iterations] :as options}]
-  (->> (for [config (if config-name
-                      (filter #(= (:config-name %) config-name) c/db-configs)
-                      c/db-configs)
+  (->> (for [config (if (= config-name :all)
+                      c/db-configs
+                      (filter #(= (:config-name %) config-name) c/db-configs))
              db-entities db-entity-counts
              _ (range iterations)]
          (measure-performance-full db-entities options config))
