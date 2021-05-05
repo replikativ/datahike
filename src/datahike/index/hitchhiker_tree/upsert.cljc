@@ -6,28 +6,21 @@
   "Returns the old version of the given 'new' key if it exists in 'old-keys'.
   If there are multiple old versions, the one with the biggest transaction time is returned."
   [old-keys new indices]
-  (let [;;new [1 2 3 4 5]
-        ;;pos-vec [2 3]
-        mask (reduce (fn [mask pos]
-;;                         (println mask "--- " pos)
-                         (assoc mask pos (nth new pos)))
-                       (vec (take (count  new) (repeat nil)))
-                       indices)
-        ;;[a _ b _] new
-        ]
-
+  (let [mask (reduce (fn [mask pos]
+                       (assoc mask pos (nth new pos)))
+               (vec (take (count  new) (repeat nil)))
+               indices)]
     (when (seq old-keys)
-      (when-let [candidates (subseq old-keys >= mask #_[a nil nil nil])]
+      (when-let [candidates (subseq old-keys >= mask)]
         (->> candidates
-             (map first)
-             (filter #(reduce (fn [acc pos]
-                                (and acc (= (nth % pos) (nth new pos))))
-                        true
-                        indices) #_[[1 2 3 4 5] [0 2 3 7 8] [0 7 0 4 5]])
-;;             (filter #(and (= a (first %)) (= b (nth % 2))))
-          ;;(take-while #(and (= a (first %)) (= b (nth % 2))))
-             reverse
-             first)))))
+          (map first)
+          (filter #(reduce (fn [acc pos]
+                             (and acc (= (nth % pos) (nth new pos))))
+                     true
+                     indices))
+          ((fn [datoms]
+             (when (seq datoms)
+               (apply max-key #(nth % 3) datoms)))))))))
 
 (defn remove-old
   "Removes old key from the 'kvs' map using 'remove-fn' function if 'new' and 'old' keys' first two entries match."
