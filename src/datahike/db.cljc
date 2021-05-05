@@ -1374,7 +1374,7 @@
 
 (defn- check-upsert-conflict [entity acc]
   (let [[^long e a v] acc
-         _e (:db/id entity)]
+        _e (:db/id entity)]
     (if (or (nil? _e)
             (tempid? _e)
             (nil? acc)
