@@ -7,13 +7,13 @@
 (declare hash-datom equiv-datom seq-datom nth-datom assoc-datom val-at-datom)
 
 (defprotocol IDatom
-  (datom-tx ^long [this])
+  (datom-tx [this])
   (datom-added [this]))
 
 (deftype Datom #?(:clj  [^int e a v ^long tx ^:unsynchronized-mutable ^int _hash]
                   :cljs [^number e a v ^number tx ^:mutable ^number _hash])
   IDatom
-  (datom-tx [d] (if (pos? tx) tx (- tx)))
+  (datom-tx ^long [d] (if (pos? tx) tx (- tx)))
   (datom-added [d] (pos? tx))
 
   #?@(:cljs

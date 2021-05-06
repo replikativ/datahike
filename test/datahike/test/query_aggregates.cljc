@@ -65,7 +65,7 @@
       (is (= (ffirst (d/q '[:find (avg ?x)
                             :in [?x ...]]
                           [10 15 20 35 75]))
-             31)))
+             31.0)))
 
     (testing "median aggregate"
       (is (= (ffirst (d/q '[:find (median ?x)
@@ -77,7 +77,7 @@
       (is (= (ffirst (d/q '[:find (variance ?x)
                             :in [?x ...]]
                           [10 15 20 35 75]))
-             554)))
+             554.0)))
 
     (testing "stddev aggregate"
       (is (= (ffirst (d/q '[:find (stddev ?x)

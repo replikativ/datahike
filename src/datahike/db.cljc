@@ -195,7 +195,7 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet ^long max-eid ^long max-tx ^long op-count rschema ^long hash config]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config]
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -1038,7 +1038,7 @@
 (defn entid [db eid]
   {:pre [(db? db)]}
   (cond
-    (and (number? eid) (pos? ^long eid))
+    (and (number? eid) (pos? eid))
     eid
 
     (sequential? eid)
@@ -1163,9 +1163,9 @@
 (defn- #?@(:clj  [^Boolean tempid?]
            :cljs [^boolean tempid?])
   [x]
-  (or (and (number? x) (neg? ^long x)) (string? x)))
+  (or (and (number? x) (neg? x)) (string? x)))
 
-(defn advance-max-eid [db ^long eid]
+(defn advance-max-eid [db eid]
   (cond-> db
     (and (> eid (:max-eid db))
          (< eid tx0))                                 ;; do not trigger advance if transaction id was referenced
@@ -1373,12 +1373,12 @@
       report')))
 
 (defn- check-upsert-conflict [entity acc]
-  (let [[^long e a v] acc
+  (let [[e a v] acc
         _e (:db/id entity)]
     (if (or (nil? _e)
             (tempid? _e)
             (nil? acc)
-            (== ^long _e e))
+            (== _e e))
       acc
       (raise "Conflicting upsert: " [a v] " resolves to " e
              ", but entity already has :db/id " _e
