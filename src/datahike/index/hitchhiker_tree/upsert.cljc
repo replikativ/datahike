@@ -2,7 +2,6 @@
   (:require [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 
-
 (defn- max-t
   "Returns the key with the max 't' component"
   [ks]
@@ -23,10 +22,11 @@
       (when-let [candidates (subseq old-keys >= mask)]
         (->> candidates
              (map first)
-             (filter #(reduce (fn [bool i]
-                                (and bool (= (nth % i) (nth new i))))
-                              true
-                              indices))
+             ((if (= [0 2] indices) filter take-while)
+              #(reduce (fn [bool i]
+                         (and bool (= (nth % i) (nth new i))))
+                       true
+                       indices))
              max-t)))))
 
 (defn remove-old
