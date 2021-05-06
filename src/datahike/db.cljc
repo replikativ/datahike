@@ -21,8 +21,7 @@
                    [java.util Date]
                    [datahike.lru LRU]
                    [datahike.datom Datom]
-                   ;[java.util.concurrent ConcurrentHashMap]
-                   )))
+                   [java.util.concurrent ConcurrentHashMap])))
 
 ;; ----------------------------------------------------------------------------
 
@@ -199,7 +198,7 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config cache]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config]
 
   #?@(:cljs
       [IHash (-hash [db] hash)
@@ -658,23 +657,20 @@
 
 ;; ----------------------------------------------------------------------------
 
-(defn memoize-in [cache key f]
-  (println "get-cache-key" key)
-  (println "limit " (.-limit cache))
-  (println "get-cache-key-res" (get cache key nil))
-  (if-some [cached-res (get cache key nil)]
-    cached-res
-    (let [res (f)]
-      (println "not cached")
-      (assoc cache key res)
-      (println cache)
-      (println (get cache key nil))
-      res)))
+(def db-caches (ConcurrentHashMap.))
+
+(defn memoize-for [db key f] ;; TODO: where delete?
+  (if (zero? (.-hash db)) ;; empty db
+    (f)
+    (let [db-cache (.get db-caches (.-hash db))]
+      (if-some [cached-res (get db-cache key nil)]
+        cached-res
+        (let [res (f)]
+          (.put db-caches (.-hash db) (assoc db-cache key res))
+          res)))))
 
 (defn- search-current-indices [^DB db pattern]
-  (println "pattern " pattern)
-  (memoize-in (.-cache db)
-              1;(cons :search pattern)
+  (memoize-for db [:search pattern]
               #(let [[_ a _ _] pattern]
                  (search-indices (.-eavt db)
                                  (.-aevt db)
@@ -684,19 +680,18 @@
                                  false))))
 
 (defn- search-temporal-indices [^DB db pattern]
-  (memoize-in (.-cache db)
-              [:temporal-search pattern]
-              #(let [[_ a _ _ added] pattern
-                     result (search-indices (.-temporal-eavt db)
-                                            (.-temporal-aevt db)
-                                            (.-temporal-avet db)
-                                            pattern
-                                            (indexing? db a)
-                                            true)]
-                 (case added
-                   true (filter datom-added result)
-                   false (remove datom-added result)
-                   nil result))))
+  (memoize-for db [:temporal-search pattern]
+               #(let [[_ a _ _ added] pattern
+                      result (search-indices (.-temporal-eavt db)
+                                             (.-temporal-aevt db)
+                                             (.-temporal-avet db)
+                                             pattern
+                                             (indexing? db a)
+                                             true)]
+                  (case added
+                    true (filter datom-added result)
+                    false (remove datom-added result)
+                    nil result))))
 
 (defn attr->properties [k v]
   (case v
@@ -840,8 +835,7 @@
         :max-eid e0
         :max-tx  tx0
         :hash    0
-        :op-count 0
-        :cache (lru/lru db-cache-size)}
+        :op-count 0}
        (when keep-history?
          {:temporal-eavt (di/empty-index index :eavt)
           :temporal-aevt (di/empty-index index :aevt)
@@ -875,7 +869,8 @@
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
          op-count (count datoms)
-         cache (lru/lru db-cache-size)]
+         db-hash (hash-datoms datoms)]
+     (.put db-caches db-hash (lru/lru db-cache-size))
      (map->DB (merge {:schema  (merge schema (when (= :read schema-flexibility) implicit-schema))
                       :rschema rschema
                       :config  config
@@ -885,8 +880,7 @@
                       :max-eid max-eid
                       :max-tx  max-tx
                       :op-count op-count
-                      :hash    (hash-datoms datoms)
-                      :cache cache}
+                      :hash    db-hash}
                      (when keep-history?
                        {:temporal-eavt (di/empty-index index :eavt)
                         :temporal-aevt (di/empty-index index :aevt)

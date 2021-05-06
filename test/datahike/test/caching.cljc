@@ -26,6 +26,3 @@
     (println "t1 " t1 " t2 " t2)
     (is (= res1 res2))
     (is (< t2 t1))))
-(let [{res1 :res t1 :t} (timed (dh/q '[:find ?e :where [?e :i 50]] test-db))
-      {res2 :res t2 :t} (timed (dh/q '[:find ?e :where [?e :i 50]] test-db))]
-  (println "t1 " t1 " t2 " t2))
