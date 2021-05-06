@@ -123,9 +123,7 @@
       (is (= [[3 :age 11]
               [2 :age 25]
               [1 :age 44]]
-            (map dvec (dc/datoms db :avet)))))))
-
-
+             (map dvec (dc/datoms db :avet)))))))
 
 (def schema [{:db/ident       :name
               :db/valueType   :db.type/string
@@ -139,7 +137,6 @@
               :age  25}
              {:name "Bob"
               :age  35}])
-
 
 (deftest temporal-upsert
   (let [cfg {:store {:backend :mem
@@ -161,7 +158,7 @@
                [20 (+ const/tx0 2) true]
                [20 (+ const/tx0 3) false]
                [10 (+ const/tx0 3) true]}
-            (d/q query (d/history @conn)))))
+             (d/q query (d/history @conn)))))
     (testing "when only one transaction"
       (let [conn (setup-db cfg)]
         (d/transact conn [[:db/add [:name "Alice"] :age 20]
@@ -172,4 +169,4 @@
                  [20 (+ const/tx0 2) true]
                  [20 (+ const/tx0 2) false]
                  [10 (+ const/tx0 2) true]}
-              (d/q query (d/history @conn))))))))
+               (d/q query (d/history @conn))))))))
