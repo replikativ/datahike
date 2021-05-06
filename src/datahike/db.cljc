@@ -659,15 +659,22 @@
 ;; ----------------------------------------------------------------------------
 
 (defn memoize-in [cache key f]
+  (println "get-cache-key" key)
+  (println "limit " (.-limit cache))
+  (println "get-cache-key-res" (get cache key nil))
   (if-some [cached-res (get cache key nil)]
     cached-res
     (let [res (f)]
+      (println "not cached")
       (assoc cache key res)
+      (println cache)
+      (println (get cache key nil))
       res)))
 
 (defn- search-current-indices [^DB db pattern]
-  (memoize-in (:cache db)
-              [:search pattern]
+  (println "pattern " pattern)
+  (memoize-in (.-cache db)
+              1;(cons :search pattern)
               #(let [[_ a _ _] pattern]
                  (search-indices (.-eavt db)
                                  (.-aevt db)
