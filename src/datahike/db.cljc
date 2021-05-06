@@ -200,7 +200,7 @@
                   (-all eavt)]))))
 
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config cache]
-  
+
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -660,37 +660,36 @@
 
 (defn memoize-in [cache key f]
   (if-some [cached-res (get cache key nil)]
-     cached-res
-     (let [res (f)]
-       (assoc cache key res)
-       res)))
+    cached-res
+    (let [res (f)]
+      (assoc cache key res)
+      res)))
 
 (defn- search-current-indices [^DB db pattern]
   (memoize-in (:cache db)
               [:search pattern]
               #(let [[_ a _ _] pattern]
-                (search-indices (.-eavt db)
-                                (.-aevt db)
-                                (.-avet db)
-                                pattern
-                                (indexing? db a)
-                                false))))
-
+                 (search-indices (.-eavt db)
+                                 (.-aevt db)
+                                 (.-avet db)
+                                 pattern
+                                 (indexing? db a)
+                                 false))))
 
 (defn- search-temporal-indices [^DB db pattern]
   (memoize-in (.-cache db)
               [:temporal-search pattern]
-      #(let [[_ a _ _ added] pattern
-        result (search-indices (.-temporal-eavt db)
-                               (.-temporal-aevt db)
-                               (.-temporal-avet db)
-                               pattern
-                               (indexing? db a)
-                               true)]
-    (case added
-      true (filter datom-added result)
-      false (remove datom-added result)
-      nil result))))
+              #(let [[_ a _ _ added] pattern
+                     result (search-indices (.-temporal-eavt db)
+                                            (.-temporal-aevt db)
+                                            (.-temporal-avet db)
+                                            pattern
+                                            (indexing? db a)
+                                            true)]
+                 (case added
+                   true (filter datom-added result)
+                   false (remove datom-added result)
+                   nil result))))
 
 (defn attr->properties [k v]
   (case v
