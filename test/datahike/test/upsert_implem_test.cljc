@@ -6,6 +6,9 @@
    [hitchhiker.tree :as tree]
    [hitchhiker.tree.messaging :as msg]
    [datahike.index.hitchhiker-tree.upsert :as htu]
+   [datahike.test.utils :refer [setup-db]]
+   [datahike.constants :as const]
+   [datahike.core :as dc]
    [datahike.api :as d]))
 
 #?(:cljs
@@ -106,4 +109,66 @@
           conn (connect)]
       (is (d/transact conn txs))
       (is (not (d/datoms @conn :eavt 199 :name "Peter"))) ;; no history
-      (is (d/datoms (d/history @conn) :eavt 199 :name "Peter")))))
+      (is (d/datoms (d/history @conn) :eavt 199 :name "Peter"))))
+
+  (testing "transacting the same datoms twice should work with :avet"
+    (let [dvec #(vector (:e %) (:a %) (:v %))
+          txs [[:db/add 1 :age 44]
+               [:db/add 2 :age 25]
+               [:db/add 3 :age 11]]
+          db (-> (dc/empty-db {:age {:db/index true}})
+                 (dc/db-with txs)
+                 ;; transacting again
+                 (dc/db-with txs))]
+      (is (= [[3 :age 11]
+              [2 :age 25]
+              [1 :age 44]]
+            (map dvec (dc/datoms db :avet)))))))
+
+
+
+(def schema [{:db/ident       :name
+              :db/valueType   :db.type/string
+              :db/unique      :db.unique/identity
+              :db/index       true
+              :db/cardinality :db.cardinality/one}
+             {:db/ident       :age
+              :db/valueType   :db.type/long
+              :db/cardinality :db.cardinality/one}
+             {:name "Alice"
+              :age  25}
+             {:name "Bob"
+              :age  35}])
+
+
+(deftest temporal
+  (let [cfg {:store {:backend :mem
+                     :id "test-upsert-history"}
+             :keep-history? true
+             :schema-flexibility :read
+             :initial-tx schema}
+        conn (setup-db cfg)
+        query '[:find ?a ?t ?op
+                :where
+                [?e :name "Alice"]
+                [?e :age ?a ?t ?op]]]
+    (testing "when multiple transactions"
+      (d/transact conn [[:db/add [:name "Alice"] :age 20]
+                        [:db/add [:name "Bob"] :age 15]])
+      (d/transact conn [[:db/add [:name "Alice"] :age 10]])
+      (is (= #{[25 (+ const/tx0 1) true]
+               [25 (+ const/tx0 2) false]
+               [20 (+ const/tx0 2) true]
+               [20 (+ const/tx0 3) false]
+               [10 (+ const/tx0 3) true]}
+            (d/q query (d/history @conn)))))
+    (testing "when only one transaction"
+      (d/transact conn [[:db/add [:name "Alice"] :age 20]
+                        [:db/add [:name "Bob"] :age 15]
+                        [:db/add [:name "Alice"] :age 10]])
+      (is (= #{[25 (+ const/tx0 1) true]
+               [25 (+ const/tx0 2) false]
+               [20 (+ const/tx0 2) true]
+               [20 (+ const/tx0 2) false]
+               [10 (+ const/tx0 2) true]}
+             (d/q query (d/history @conn)))))))
