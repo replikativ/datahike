@@ -2,6 +2,13 @@
   (:require [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 
+
+(defn- max-t
+  "Returns the key with the max 't' component"
+  [ks]
+  (when (seq ks)
+    (apply max-key #(nth % 3) ks)))
+
 (defn old-key
   "Returns the old version of the given 'new' key if it exists in 'old-keys'.
   If there are multiple old versions, the one with the biggest transaction time is returned.
@@ -20,9 +27,7 @@
                                 (and bool (= (nth % i) (nth new i))))
                               true
                               indices))
-             ((fn [ks]
-                (when (seq ks)
-                  (apply max-key #(nth % 3) ks)))))))))
+             max-t)))))
 
 (defn remove-old
   "Removes old key from the 'kvs' map using 'remove-fn' function if 'new' and 'old' keys' first two entries match."
