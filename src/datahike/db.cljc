@@ -6,7 +6,7 @@
    #?(:clj [clojure.pprint :as pp])
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   [datahike.constants :refer [e0 tx0 emax txmax]]
+   [datahike.constants :refer [e0 tx0 emax txmax db-cache-size]]
    [datahike.tools :refer [get-time case-tree raise]]
    [datahike.schema :as ds]
    [datahike.lru :as lru]
@@ -21,7 +21,8 @@
                    [java.util Date]
                    [datahike.lru LRU]
                    [datahike.datom Datom]
-                   [java.util.concurrent ConcurrentHashMap])))
+                   ;[java.util.concurrent ConcurrentHashMap]
+                   )))
 
 ;; ----------------------------------------------------------------------------
 
@@ -147,10 +148,8 @@
 ;; ----------------------------------------------------------------------------
 
 
-(declare hash-datoms equiv-db empty-db resolve-datom validate-attr components->pattern indexing?)
+(declare hash-datoms equiv-db empty-db resolve-datom validate-attr components->pattern indexing? search-current-indices search-temporal-indices)
 #?(:cljs (declare pr-db))
-
-(def ^:private caches (ConcurrentHashMap.))
 
 (defn db-transient [db]
   (-> db
@@ -200,16 +199,8 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
-(defmacro wrap-cache
-  [db-key pattern body]
-  `(let [cache# (.get ^ConcurrentHashMap caches ~db-key)]
-     (if-some [cached# (get ^LRU cache# ~pattern nil)]
-       cached#
-       (let [res# ~body]
-         (.put ^ConcurrentHashMap caches ~db-key (assoc cache# ~pattern res#))
-         res#))))
-
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config cache]
+  
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -247,60 +238,46 @@
   (-config [db] (.-config db))
 
   ISearch
-  (-search [db pattern]
-           (let [[_e a _v _t] pattern]
-             (wrap-cache hash
-                         [:search pattern]
-                         (search-indices eavt aevt avet pattern (indexing? db a) false))))
+  (-search [db pattern] (search-current-indices db pattern))
 
   IIndexAccess
   (-datoms [db index-type cs]
-           (wrap-cache hash
-                       [:datoms index-type cs]
-                       (-slice (get db index-type)
-                               (components->pattern db index-type cs e0 tx0)
-                               (components->pattern db index-type cs emax txmax)
-                               index-type)))
+           (-slice (get db index-type)
+                   (components->pattern db index-type cs e0 tx0)
+                   (components->pattern db index-type cs emax txmax)
+                   index-type))
 
   (-seek-datoms [db index-type cs]
-                (wrap-cache hash
-                            [:seek-datoms index-type cs]
-                            (-slice (get db index-type)
-                                    (components->pattern db index-type cs e0 tx0)
-                                    (datom emax nil nil txmax)
-                                    index-type)))
+                (-slice (get db index-type)
+                        (components->pattern db index-type cs e0 tx0)
+                        (datom emax nil nil txmax)
+                        index-type))
 
   (-rseek-datoms [db index-type cs]
-                 (wrap-cache hash
-                             [:rseek-datoms index-type cs]
-                             (-> (-slice (get db index-type)
-                                         (components->pattern db index-type cs e0 tx0)
-                                         (datom emax nil nil txmax)
-                                         index-type)
-                                 vec
-                                 rseq)))
+                 (-> (-slice (get db index-type)
+                             (components->pattern db index-type cs e0 tx0)
+                             (datom emax nil nil txmax)
+                             index-type)
+                     vec
+                     rseq))
 
   (-index-range [db attr start end]
                 (when-not (indexing? db attr)
                   (raise "Attribute" attr "should be marked as :db/index true" {}))
                 (validate-attr attr (list '-index-range 'db attr start end) db)
-                (wrap-cache hash
-                            [:index-range attr start end]
-                            (-slice avet
-                                    (resolve-datom db nil attr start nil e0 tx0)
-                                    (resolve-datom db nil attr end nil emax txmax)
-                                    :avet)))
+                (-slice avet
+                        (resolve-datom db nil attr start nil e0 tx0)
+                        (resolve-datom db nil attr end nil emax txmax)
+                        :avet))
 
   clojure.data/EqualityPartition
   (equality-partition [x] :datahike/db)
 
   clojure.data/Diff
   (diff-similar [a b]
-                (wrap-cache (min (clojure.core/hash a) (clojure.core/hash b))
-                            [:diff-similar a b]
-                            (let [datoms-a (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
-                                  datoms-b (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
-                              (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick)))))
+                (let [datoms-a (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
+                      datoms-b (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
+                  (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
 
 (defn db? [x]
   (and (satisfies? ISearch x)
@@ -369,28 +346,6 @@
 
   (-index-range [db attr start end]
                 (filter (.-pred db) (-index-range (.-unfiltered-db db) attr start end))))
-
-(defn- search-current-indices [^DB db pattern]
-  (let [[_ a _ _] pattern]
-    (search-indices (.-eavt db)
-                    (.-aevt db)
-                    (.-avet db)
-                    pattern
-                    (indexing? db a)
-                    false)))
-
-(defn- search-temporal-indices [^DB db pattern]
-  (let [[_ a _ _ added] pattern
-        result (search-indices (.-temporal-eavt db)
-                               (.-temporal-aevt db)
-                               (.-temporal-avet db)
-                               pattern
-                               (indexing? db a)
-                               true)]
-    (case added
-      true (filter datom-added result)
-      false (remove datom-added result)
-      nil result)))
 
 (defn temporal-search [^DB db pattern]
   (concat (search-current-indices db pattern)
@@ -703,6 +658,40 @@
 
 ;; ----------------------------------------------------------------------------
 
+(defn memoize-in [cache key f]
+  (if-some [cached-res (get cache key nil)]
+     cached-res
+     (let [res (f)]
+       (assoc cache key res)
+       res)))
+
+(defn- search-current-indices [^DB db pattern]
+  (memoize-in (:cache db)
+              [:search pattern]
+              #(let [[_ a _ _] pattern]
+                (search-indices (.-eavt db)
+                                (.-aevt db)
+                                (.-avet db)
+                                pattern
+                                (indexing? db a)
+                                false))))
+
+
+(defn- search-temporal-indices [^DB db pattern]
+  (memoize-in (.-cache db)
+              [:temporal-search pattern]
+      #(let [[_ a _ _ added] pattern
+        result (search-indices (.-temporal-eavt db)
+                               (.-temporal-aevt db)
+                               (.-temporal-avet db)
+                               pattern
+                               (indexing? db a)
+                               true)]
+    (case added
+      true (filter datom-added result)
+      false (remove datom-added result)
+      nil result))))
+
 (defn attr->properties [k v]
   (case v
     :db.unique/identity [:db/unique :db.unique/identity :db/index]
@@ -845,7 +834,8 @@
         :max-eid e0
         :max-tx  tx0
         :hash    0
-        :op-count 0}
+        :op-count 0
+        :cache (lru/lru db-cache-size)}
        (when keep-history?
          {:temporal-eavt (di/empty-index index :eavt)
           :temporal-aevt (di/empty-index index :aevt)
@@ -878,7 +868,8 @@
          avet (di/init-index index datoms indexed :avet op-count)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
-         op-count (count datoms)]
+         op-count (count datoms)
+         cache (lru/lru db-cache-size)]
      (map->DB (merge {:schema  (merge schema (when (= :read schema-flexibility) implicit-schema))
                       :rschema rschema
                       :config  config
@@ -888,7 +879,8 @@
                       :max-eid max-eid
                       :max-tx  max-tx
                       :op-count op-count
-                      :hash    (hash-datoms datoms)}
+                      :hash    (hash-datoms datoms)
+                      :cache cache}
                      (when keep-history?
                        {:temporal-eavt (di/empty-index index :eavt)
                         :temporal-aevt (di/empty-index index :aevt)
