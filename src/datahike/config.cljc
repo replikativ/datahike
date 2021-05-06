@@ -5,8 +5,10 @@
             [environ.core :refer [env]]
             [taoensso.timbre :as log]
             [datahike.store :as ds]
-            [datahike.constants :as c])
-  (:import [java.net URI]))
+            [datahike.constants :as c]
+            [datahike.tools :as t])
+  (:import [java.net URI]
+           [java.util UUID Date]))
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
@@ -104,8 +106,8 @@
     (throw (ex-info "Attribute references cannot be used with schema-flexibility ':read'." config))))
 
 (defn storeless-config []
-  {:store nil
-   :keep-history? false
+  {:store              nil
+   :keep-history?      false
    :schema-flexibility :read
    :name (z/rand-german-mammal)
    :attribute-refs? false
