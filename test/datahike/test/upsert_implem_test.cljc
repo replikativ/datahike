@@ -141,7 +141,7 @@
               :age  35}])
 
 
-(deftest temporal
+(deftest temporal-upsert
   (let [cfg {:store {:backend :mem
                      :id "test-upsert-history"}
              :keep-history? true
