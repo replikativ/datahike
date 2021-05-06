@@ -686,8 +686,8 @@
                        :db/unique :db.unique/identity}]]
       (d/transact conn new-schema)
       (is (= {:name {:db/id 1
-                        :db/ident :name
-                        :db/unique :db.unique/identity}}
+                     :db/ident :name
+                     :db/unique :db.unique/identity}}
              (d/schema @conn)))
       (is (= {:db/ident #{:name}
               :db/unique #{:name}
@@ -754,4 +754,16 @@
                                 :db/valueType :db.type/tuple
                                 :db/tupleTypes [:db.type/long :db.type/long]
                                 :db/cardinality :db.cardinality/one}}
-             (d/schema @conn))))))
+             (d/schema @conn)))
+      (is (= {:db.type/tuple #{:bakery/location}
+              :db.unique/identity #{:bakery/name}
+              :db/index #{:bakery/name :bakery/breads}
+              :db/unique #{:bakery/name}
+              :db.type/ref #{:bakery/breads}
+              :db/isComponent #{:bakery/breads}
+              :db/ident
+              #{:bakery/name :bread/cost :bread/name :bakery/location
+                :bakery/breads}
+              :db.cardinality/many #{:bakery/breads}
+              :db/attrTuples #{}}
+             (d/reverse-schema @conn))))))
