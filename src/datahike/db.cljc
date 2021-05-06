@@ -910,7 +910,9 @@
   ([schema] (empty-db schema nil))
   ([schema user-config]
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
-   (let [complete-config (merge (dc/storeless-config) user-config)
+   (let [complete-config (-> (dc/storeless-config)
+                             (merge user-config)
+                             (dissoc :initial-tx))
          _ (dc/validate-config complete-config)
          {:keys [keep-history? index schema-flexibility attribute-refs?]} complete-config
          on-read? (= :read schema-flexibility)
