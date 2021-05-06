@@ -8,6 +8,7 @@ Each change requires updating the `IConfiguration` from `datahike.connector` whe
 ## Options
 
 ### Refactoring
+
 Adjust the database record `DB` and combine fields into categories. Proposed fields:
 
 - `:indexes`: all index nodes
@@ -19,16 +20,36 @@ Adjust the database record `DB` and combine fields into categories. Proposed fie
 
 ![datahike-db-record](../assets/datahike-db-record.svg)
 
+Additionally simplify `DB` copy process after connections and transactions.
+
 #### Pro
 
-- cleaner DB record
-- extensible
+- unified and cleaner DB record
+- more extensible through nested structures
+- creates prerequisits for future metrics and additional meta data like migration history that needs to be stored in the record 
 
 #### Contra
 
-- possibily breaking changes if not every old field is mapped to the new way
+- possibily breaking changes if not every old field is mapped to the new implementation
+- migration path adds more friction
 - a lot of documentation needs to be adjusted
 - refactoring needs to be done on sensitive code (`datahike.api`, `datahike.connector`, `datahike.db`)
+
+### Extension
+
+Instead of refactoring all new fields should be added into categories as proposed in the first [option](#refactoring).
+
+#### Pro
+
+- only little impact to existing versions
+- no refactoring necessary
+
+
+#### Contra
+
+- unclear how `DB` fields relate to each other
+- mixed `DB` fields with categories and plain fields
+- `datahike.connector` extensions more complex due to complex `DB` copy code
 
 ## Status
 
