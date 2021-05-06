@@ -206,6 +206,9 @@
   {:arglists '([value & more])}
   (fn [value & more] (class value)))
 
+(defmethod -lesser? String [^String s0 ^String s1]
+  (neg? (compare s0 s1)))
+
 (defmethod -lesser? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.before ^Date d0 ^Date d1)
      :cljs (< d0 d1)))
@@ -215,6 +218,9 @@
 
 (defmulti -greater? {:arglists '([value & more])}
   (fn [value & more] (class value)))
+
+(defmethod -lesser? String [^String s0 ^String s1]
+  (pos? (compare s0 s1)))
 
 (defmethod -greater? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.after ^Date d0 ^Date d1)
@@ -964,10 +970,10 @@
       (vswap! query-cache assoc q qp)
       qp)))
 
-(defn paginate [^long offset limit resultset]
+(defn paginate [offset limit resultset]
   (if (or offset limit)
     (let [length (count resultset)
-          start (or offset 0)
+          start ^long (or offset 0)
           limit ^long (if (or (nil? limit) (< ^long limit 0))
                         length
                         limit)

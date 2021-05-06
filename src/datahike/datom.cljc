@@ -172,8 +172,8 @@
        (if (not-empty comps)
          (recur
           (next comps)
-          `(let [c# ~(first comps)]
-             (if (== 0 ^int c#)
+          `(let [c# ^int ~(first comps)]
+             (if (== 0 c#)
                ~res
                c#)))
          res))))
