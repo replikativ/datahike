@@ -751,22 +751,21 @@
   unlisten
   dcore/unlisten!)
 
-
 (defn ^{:arglists '([db])
         :doc "Returns current schema definition."}
   schema
   [db]
   {:pre [(db/db? db)]}
   (reduce-kv
-    (fn [m k v]
-      (cond
-        (and (keyword? k)
-             (not (or (ds/entity-spec-attr? k)
-                      (ds/schema-attr? k)))) (update m k #(merge % v))
-        (number? k) (update m v #(merge % {:db/id k}))
-        :else m))
-    {}
-    (db/-schema db)))
+   (fn [m k v]
+     (cond
+       (and (keyword? k)
+            (not (or (ds/entity-spec-attr? k)
+                     (ds/schema-attr? k)))) (update m k #(merge % v))
+       (number? k) (update m v #(merge % {:db/id k}))
+       :else m))
+   {}
+   (db/-schema db)))
 
 (defn ^{:arglists '([db])
         :doc "Returns current reverse schema definition."}
@@ -774,10 +773,10 @@
   [db]
   {:pre [(db/db? db)]}
   (reduce-kv
-    (fn [m k v]
-      (assoc m k (->> v
-                      (remove #(or (ds/entity-spec-attr? %)
-                                   (ds/schema-attr? %)))
-                      (into #{}))))
-    {}
-    (db/-rschema db)))
+   (fn [m k v]
+     (assoc m k (->> v
+                     (remove #(or (ds/entity-spec-attr? %)
+                                  (ds/schema-attr? %)))
+                     (into #{}))))
+   {}
+   (db/-rschema db)))
