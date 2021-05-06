@@ -4,6 +4,7 @@
             [datahike.core :as dcore]
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
+            [datahike.schema :as ds]
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
             [datahike.impl.entity :as de])
   #?(:clj
@@ -749,3 +750,34 @@
        :doc "Removes registered listener from connection. See also [[listen]]."}
   unlisten
   dcore/unlisten!)
+
+
+(defn ^{:arglists '([db])
+        :doc "Returns current schema definition."}
+  schema
+  [db]
+  {:pre [(db/db? db)]}
+  (reduce-kv
+    (fn [m k v]
+      (cond
+        (and (keyword? k)
+             (not (or (ds/entity-spec-attr? k)
+                      (ds/schema-attr? k)))) (update m k #(merge % v))
+        (number? k) (update m v #(merge % {:db/id k}))
+        :else m))
+    {}
+    (db/-schema db)))
+
+(defn ^{:arglists '([db])
+        :doc "Returns current reverse schema definition."}
+  reverse-schema
+  [db]
+  {:pre [(db/db? db)]}
+  (reduce-kv
+    (fn [m k v]
+      (assoc m k (->> v
+                      (remove #(or (ds/entity-spec-attr? %)
+                                   (ds/schema-attr? %)))
+                      (into #{}))))
+    {}
+    (db/-rschema db)))
