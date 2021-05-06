@@ -1,5 +1,7 @@
-(ns sandbox
-  (:require [datahike.api :as d]))
+(ns user
+  (:require [datahike.api :as d]
+            [datahike.db :as dd]
+            [datahike.schema :as ds]))
 
 (comment
 
@@ -20,11 +22,6 @@
             :schema-flexibility :write
             :attribute-refs? false})
 
-  (def cfg {:store {:backend :mem :id "sandbox"}
-            :keep-history? true
-            :schema-flexibility :write
-            :attribute-refs? true})
-
   (def conn (do
               (d/delete-database cfg)
               (d/create-database cfg)
@@ -37,6 +34,12 @@
   (d/datoms @conn :eavt)
 
   (:max-eid @conn)
+
+  (d/schema @conn)
+
+  (d/reverse-schema @conn)
+
+  (:store @conn)
 
   (d/transact conn [{:name "Alice"
                      :age  25}])
@@ -51,6 +54,7 @@
          [?e :name ?v ?t]
          [?e :age ?a]]
        @conn
+<<<<<<< HEAD:dev/sandbox.clj
        25)
 
   (d/q '[:find ?e ?at ?v
@@ -65,3 +69,8 @@
 
 
   )
+=======
+       35)
+
+  )
+>>>>>>> move sandbox to user namespace:env/dev/user.clj
