@@ -254,7 +254,40 @@
                :query (simple-query db attr val)
                :details {:data-type data-type :data-in-db? data-in-db?}}]))))
 
+(defn aggregate-queries [entities]
+  [{:function :sum-query
+    :query {:query '[:find (sum ?x)
+                     :in [?x ...]]
+            :args [(repeatedly (count entities) #(rand-int 100))]}
+    :details {:data-type :int}}
+   {:function :avg-query
+    :query {:query '[:find (avg ?x)
+                     :in [?x ...]]
+            :args [(repeatedly (count entities) #(rand-int 100))]}
+    :details {:data-type :int}}
+   {:function :median-query
+    :query {:query '[:find (median ?x)
+                     :in [?x ...]]
+            :args [(repeatedly (count entities) #(rand-int 100))]}
+    :details {:data-type :int}}
+   {:function :variance-query
+    :query {:query '[:find (variance ?x)
+                     :in [?x ...]]
+            :args [(repeatedly (count entities) #(rand-int 100))]}
+    :details {:data-type :int}}
+   {:function :stddev-query
+    :query {:query '[:find (stddev ?x)
+                     :in [?x ...]]
+            :args [(repeatedly (count entities) #(rand-int 100))]}
+    :details {:data-type :int}}
+   {:function :max-query
+    :query {:query '[:find (max ?x)
+                     :in [?x ...]]
+            :args [(repeatedly (count entities) #(rand-int 100))]}
+    :details {:data-type :int}}])
+
 (defn all-queries [db entities datatypes data-found-opts]
   (concat (non-var-queries db datatypes)
           (var-queries db entities datatypes data-found-opts)
-          (cache-check-queries db entities datatypes data-found-opts)))
+          (cache-check-queries db entities datatypes data-found-opts)
+          (aggregate-queries entities)))
