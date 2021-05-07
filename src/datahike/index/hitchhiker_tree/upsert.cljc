@@ -7,7 +7,7 @@
   This is equivalent to check whether the elements increase by one and contains 0.
   E.g., [0 1 2] => true, [0 2 3] => false, [1 2] => false."
   [indices]
-  (if (.contains indices 0)
+  (if (and indices (.contains indices 0))
     (let [m (apply max indices)
           s (apply + indices)]
       (= s (/ (* m (+ 1 m)) 2)))
