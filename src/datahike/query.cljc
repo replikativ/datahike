@@ -204,8 +204,7 @@
 
 (defmulti -lesser?
   {:arglists '([value & more])}
-  (fn [value & more]
-    (class value)))
+  (fn [value & _more] (class value)))
 
 (defmethod -lesser? java.lang.String [^String s0 & more]
   (reduce (fn [res [s1 ^String s2]]
