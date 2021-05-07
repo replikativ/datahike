@@ -48,7 +48,6 @@
   (when-not (.endsWith filename ".edn")
     (throw (Exception. (str "File " filename "has an unsupported file type. Supported are only edn files.")))))
 
-
 (defn report [benchmarks filenames]
   (let [grouped-benchmarks (->> benchmarks
                                 (map #(assoc % :context
@@ -56,17 +55,19 @@
                                                     {:dh-config (get-in % [:context :dh-config :name])}
                                                     (get (:context %) :execution))))
                                 (group-by #(get-in % [:context :function])))
-        output (str "Connection Measurements (in s):\n"
-                    (comparison-table (:connection grouped-benchmarks) filenames)
-                    "\n"
-                    "Transaction Measurements (in s):\n"
-                    (comparison-table (:transaction grouped-benchmarks) filenames)
-                    "\n"
-                    "Query Measurements (in s):\n"
-                    (let [query-benchmarks (->> (dissoc grouped-benchmarks :connection :transaction)
-                                                vals
-                                                (apply concat))]
-                      (comparison-table query-benchmarks filenames)))] 
+        output (str (when-let [conn-benchmarks (:connection grouped-benchmarks)]
+                      (str "Connection Measurements (in s):\n"
+                           (comparison-table conn-benchmarks filenames)
+                           "\n"))
+                    (when-let [tx-benchmarks (:transaction grouped-benchmarks)]
+                      (str "Transaction Measurements (in s):\n"
+                           (comparison-table tx-benchmarks filenames)
+                           "\n"))
+                    (when-let [query-benchmarks (->> (dissoc grouped-benchmarks :connection :transaction)
+                                                     vals
+                                                     (apply concat))]
+                      (str "Query Measurements (in s):\n"
+                           (comparison-table query-benchmarks filenames))))]
     (println output)))
 
 (defn create-plots [data] ;; 1 plot per function and context
