@@ -204,10 +204,17 @@
 
 (defmulti -lesser?
   {:arglists '([value & more])}
-  (fn [value & more] (class value)))
+  (fn [value & more] 
+    (class value)))
 
-(defmethod -lesser? String [^String s0 ^String s1]
-  (neg? (compare s0 s1)))
+(defmethod -lesser? java.lang.String [^String s0 & more]
+  (reduce (fn [res [s1 ^String s2]]
+            (if (neg? (compare s1 s2))
+              res
+              (reduced false)))
+          true
+          (partition 2 1 (cons s0 more))))
+
 
 (defmethod -lesser? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.before ^Date d0 ^Date d1)
@@ -217,10 +224,14 @@
   (apply < value more))
 
 (defmulti -greater? {:arglists '([value & more])}
-  (fn [value & more] (class value)))
+  (fn [value & _more] (class value)))
 
-(defmethod -lesser? String [^String s0 ^String s1]
-  (pos? (compare s0 s1)))
+(defmethod -greater? java.lang.String [^String s0 & more]
+  (reduce (fn [res [s1 ^String s2]] (if (pos? (compare s1 s2))
+                                      res
+                                      (reduced false)))
+          true
+          (partition 2 1 (cons s0 more))))
 
 (defmethod -greater? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.after ^Date d0 ^Date d1)
