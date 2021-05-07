@@ -2,8 +2,21 @@
   (:require [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 
+(defn- increase-by-one?
+  "Returns true if elements in vector 'indices' form a prefix of the vector indices.
+  This is equivalent to check whether the elements increase by one and contains 0.
+  E.g., [0 1 2] => true, [0 2 3] => false, [1 2] => false."
+  [indices]
+  (if (.contains indices 0)
+    (let [m (apply max indices)
+          s (apply + indices)]
+      (= s (/ (* m (+ 1 m)) 2)))
+    false))
+
+(def prefix? (memoize increase-by-one?))
+
 (defn- max-t
-  "Returns the key with the max 't' component"
+  "Returns the key with max 't' component."
   [ks]
   (when (seq ks)
     (apply max-key #(nth % 3) ks)))
@@ -12,7 +25,7 @@
   "Returns the old version of the given 'new' key if it exists in 'old-keys'.
   If there are multiple old versions, the one with the biggest transaction time is returned.
   'indices' is a vector of integer indicating which positions in keys are significant,
-  e.g., [0 2] means that the first and third entry in the key are used for filtering."
+  i.e., [0 2] means that the first and third entry in the key are used for filtering."
   [old-keys new indices]
   (let [mask (reduce (fn [mask pos]
                        (assoc mask pos (nth new pos)))
@@ -22,7 +35,7 @@
       (when-let [candidates (subseq old-keys >= mask)]
         (->> candidates
              (map first)
-             ((if (= [0 2] indices) filter take-while)
+             ((if (prefix? indices) take-while filter)
               #(reduce (fn [bool i]
                          (and bool (= (nth % i) (nth new i))))
                        true
