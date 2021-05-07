@@ -204,7 +204,7 @@
 
 (defmulti -lesser?
   {:arglists '([value & more])}
-  (fn [value & more] 
+  (fn [value & more]
     (class value)))
 
 (defmethod -lesser? java.lang.String [^String s0 & more]
@@ -214,7 +214,6 @@
               (reduced false)))
           true
           (partition 2 1 (cons s0 more))))
-
 
 (defmethod -lesser? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.before ^Date d0 ^Date d1)

@@ -269,7 +269,7 @@
        :where [?e :name ?n]
        [(> "M" ?n)]]
       #{[1 "Ivan"] [2 "Ivan"]})
-    
+
     (let [pred (fn [db e a]
                  (= a (:age (d/entity db e))))]
       (is (= (d/q '[:find ?e
@@ -277,25 +277,7 @@
                     :where [?e :age ?a]
                     [(?pred $ ?e 10)]]
                   db pred)
-             #{[1] [3]})))
-
-             ))
- #_(comment
-
-      ;; greater predicate for string
-   [:find  ?e ?n
-    :where [?e :name ?n]
-    [(> ?n "M")]]
-   #{[3 "Oleg"] [4 "Oleg"]}
-
-       ;; lesser predicate for string
-   [:find  ?e ?n
-    :where [?e :name ?n]
-    [(> "M" ?n)]]
-   #{[1 "Ivan"] [2 "Ivan"]}
-
-     
-     )
+             #{[1] [3]})))))
 
 (deftest test-exceptions
   (is (thrown-with-msg? ExceptionInfo #"Unknown predicate 'fun in \[\(fun \?e\)\]"
