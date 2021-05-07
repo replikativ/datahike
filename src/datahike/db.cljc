@@ -6,7 +6,7 @@
    #?(:clj [clojure.pprint :as pp])
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   [datahike.constants :refer [e0 tx0 emax txmax db-cache-size]]
+   [datahike.constants :refer [e0 tx0 emax txmax max-db-caches]]
    [datahike.tools :refer [get-time case-tree raise]]
    [datahike.schema :as ds]
    [datahike.lru :as lru]
@@ -18,10 +18,9 @@
                             [datahike.tools :refer [case-tree raise]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry]
-                   [java.util Date]
+                   [java.util Date HashMap]
                    [datahike.lru LRU]
-                   [datahike.datom Datom]
-                   [java.util.concurrent ConcurrentHashMap])))
+                   [datahike.datom Datom])))
 
 ;; ----------------------------------------------------------------------------
 
@@ -657,27 +656,44 @@
 
 ;; ----------------------------------------------------------------------------
 
-(def db-caches (ConcurrentHashMap.))
+(def db-caches (atom {}))
 
-(defn memoize-for [db key f] ;; TODO: where delete?
-  (if (zero? (.-hash db)) ;; empty db
+(defn insert-cache [db-hash cache]
+  (let [caches @db-caches]
+    (println "cc" (count caches))
+    (if (>= (count caches) max-db-caches)
+      (let [[last-used-db _] (reduce (fn [[d-hash1 [c1 ^Date last-accessed1]]
+                                          [d-hash2 [c2 ^Date last-accessed2]]]
+                                       (if (.after last-accessed1 last-accessed2)
+                                         [d-hash2 [c2 last-accessed2]]
+                                         [d-hash1 [c1 last-accessed1]]))
+                                     caches)]
+        (swap! db-caches dissoc last-used-db))
+      (swap! db-caches assoc db-hash [cache (Date.)]))))
+
+(defn memoize-for [^DB db key f]
+  (if (or (zero? (:cache-size (.-config db)))
+          (zero? (.-hash db))) ;; empty db
     (f)
-    (let [db-cache (.get db-caches (.-hash db))]
+    (let [[db-cache] (or (get @db-caches (.-hash db))
+                         (let [new-cache (lru/lru (:cache-size (.-config db)))]
+                           (insert-cache (.-hash db) new-cache)
+                           [new-cache]))]
       (if-some [cached-res (get db-cache key nil)]
         cached-res
         (let [res (f)]
-          (.put db-caches (.-hash db) (assoc db-cache key res))
+          (swap! db-caches assoc (.-hash db) [(assoc db-cache key res) (Date.)])
           res)))))
 
 (defn- search-current-indices [^DB db pattern]
   (memoize-for db [:search pattern]
-              #(let [[_ a _ _] pattern]
-                 (search-indices (.-eavt db)
-                                 (.-aevt db)
-                                 (.-avet db)
-                                 pattern
-                                 (indexing? db a)
-                                 false))))
+               #(let [[_ a _ _] pattern]
+                  (search-indices (.-eavt db)
+                                  (.-aevt db)
+                                  (.-avet db)
+                                  pattern
+                                  (indexing? db a)
+                                  false))))
 
 (defn- search-temporal-indices [^DB db pattern]
   (memoize-for db [:temporal-search pattern]
@@ -870,7 +886,6 @@
          max-tx (get-max-tx eavt)
          op-count (count datoms)
          db-hash (hash-datoms datoms)]
-     (.put db-caches db-hash (lru/lru db-cache-size))
      (map->DB (merge {:schema  (merge schema (when (= :read schema-flexibility) implicit-schema))
                       :rschema rschema
                       :config  config
