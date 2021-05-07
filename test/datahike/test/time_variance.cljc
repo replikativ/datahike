@@ -1,7 +1,7 @@
 (ns datahike.test.time-variance
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+      :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.constants :as const]
    [datahike.api :as d]
    [datahike.test.utils :refer [setup-db]])
@@ -159,8 +159,7 @@
                 (assoc-in [:store :id] "test-no-history")
                 (assoc :initial-tx initial-tx))
         conn (setup-db cfg)
-        query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-        first-date (now)]
+        query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]]
     (testing "all names and ages are present in history"
       (is (= #{["Alice" 25] ["Bob" 35]}
              (d/q query (d/history @conn)))))
