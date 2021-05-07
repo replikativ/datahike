@@ -206,6 +206,9 @@
   {:arglists '([value & more])}
   (fn [value & more] (class value)))
 
+(defmethod -lesser? String [^String s0 ^String s1]
+  (neg? (compare s0 s1)))
+
 (defmethod -lesser? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.before ^Date d0 ^Date d1)
      :cljs (< d0 d1)))
@@ -215,6 +218,9 @@
 
 (defmulti -greater? {:arglists '([value & more])}
   (fn [value & more] (class value)))
+
+(defmethod -lesser? String [^String s0 ^String s1]
+  (pos? (compare s0 s1)))
 
 (defmethod -greater? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.after ^Date d0 ^Date d1)
