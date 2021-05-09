@@ -204,7 +204,15 @@
 
 (defmulti -lesser?
   {:arglists '([value & more])}
-  (fn [value & more] (class value)))
+  (fn [value & _more] (class value)))
+
+(defmethod -lesser? java.lang.String [^String s0 & more]
+  (reduce (fn [res [s1 ^String s2]]
+            (if (neg? (compare s1 s2))
+              res
+              (reduced false)))
+          true
+          (partition 2 1 (cons s0 more))))
 
 (defmethod -lesser? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.before ^Date d0 ^Date d1)
@@ -214,7 +222,14 @@
   (apply < value more))
 
 (defmulti -greater? {:arglists '([value & more])}
-  (fn [value & more] (class value)))
+  (fn [value & _more] (class value)))
+
+(defmethod -greater? java.lang.String [^String s0 & more]
+  (reduce (fn [res [s1 ^String s2]] (if (pos? (compare s1 s2))
+                                      res
+                                      (reduced false)))
+          true
+          (partition 2 1 (cons s0 more))))
 
 (defmethod -greater? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.after ^Date d0 ^Date d1)
@@ -417,32 +432,46 @@
       (persistent! hash-table))))
 
 (defn hash-join [rel1 rel2]
-  (let [tuples1 (:tuples rel1)
-        tuples2 (:tuples rel2)
-        attrs1 (:attrs rel1)
-        attrs2 (:attrs rel2)
+  (let [tuples1      (:tuples rel1)
+        tuples2      (:tuples rel2)
+        attrs1       (:attrs rel1)
+        attrs2       (:attrs rel2)
         common-attrs (vec (intersect-keys (:attrs rel1) (:attrs rel2)))
         common-gtrs1 (map #(getter-fn attrs1 %) common-attrs)
         common-gtrs2 (map #(getter-fn attrs2 %) common-attrs)
-        keep-attrs1 (keys attrs1)
-        keep-attrs2 (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
-        keep-idxs1 (to-array (map attrs1 keep-attrs1))
-        keep-idxs2 (to-array (map attrs2 keep-attrs2))
-        key-fn1 (tuple-key-fn common-gtrs1)
-        hash (hash-attrs key-fn1 tuples1)
-        key-fn2 (tuple-key-fn common-gtrs2)
-        new-tuples (->>
-                    (reduce (fn [acc tuple2]
-                              (let [key (key-fn2 tuple2)]
-                                (if-some [tuples1 (get hash key)]
-                                  (reduce (fn [acc tuple1]
-                                            (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                          acc tuples1)
-                                  acc)))
-                            (transient []) tuples2)
-                    (persistent!))]
-    (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
-               new-tuples)))
+        keep-attrs1  (keys attrs1)
+        keep-attrs2  (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
+        keep-idxs1   (to-array (map attrs1 keep-attrs1))
+        keep-idxs2   (to-array (map attrs2 keep-attrs2))
+        key-fn1      (tuple-key-fn common-gtrs1)
+        key-fn2      (tuple-key-fn common-gtrs2)]
+    (if (< (count tuples1) (count tuples2))
+      (let [hash       (hash-attrs key-fn1 tuples1)
+            new-tuples (->>
+                        (reduce (fn [acc tuple2]
+                                  (let [key (key-fn2 tuple2)]
+                                    (if-some [tuples1 (get hash key)]
+                                      (reduce (fn [acc tuple1]
+                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
+                                              acc tuples1)
+                                      acc)))
+                                (transient []) tuples2)
+                        (persistent!))]
+        (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
+                   new-tuples))
+      (let [hash       (hash-attrs key-fn2 tuples2)
+            new-tuples (->>
+                        (reduce (fn [acc tuple1]
+                                  (let [key (key-fn1 tuple1)]
+                                    (if-some [tuples2 (get hash key)]
+                                      (reduce (fn [acc tuple2]
+                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
+                                              acc tuples2)
+                                      acc)))
+                                (transient []) tuples1)
+                        (persistent!))]
+        (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
+                   new-tuples)))))
 
 (defn subtract-rel [a b]
   (let [{attrs-a :attrs, tuples-a :tuples} a

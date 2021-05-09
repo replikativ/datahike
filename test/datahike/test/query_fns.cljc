@@ -205,7 +205,7 @@
                   {:db/id 4 :name "Oleg" :age 20}]
         db (d/db-with (d/empty-db) entities)]
     (are [q res] (= (d/q (quote q) db) res)
-      ;; plain predicate
+      ;; plain predicate for integer
       [:find  ?e ?a
        :where [?e :age ?a]
        [(> ?a 10)]]
@@ -244,7 +244,32 @@
        :where [?e :name "Ivan"]
        [?e :age 20]
        [(= ?e 1)]]
-      #{})
+      #{}
+
+      ;; lesser predicate for string
+      [:find  ?e ?n
+       :where [?e :name ?n]
+       [(< ?n "M")]]
+      #{[1 "Ivan"] [2 "Ivan"]}
+
+      ;; lesser predicate for string
+      [:find  ?e ?n
+       :where [?e :name ?n]
+       [(< "M" ?n)]]
+      #{[3 "Oleg"] [4 "Oleg"]}
+
+      ;; greater predicate for string
+      [:find  ?e ?n
+       :where [?e :name ?n]
+       [(> ?n "M")]]
+      #{[3 "Oleg"] [4 "Oleg"]}
+
+      ;; greater predicate for string
+      [:find  ?e ?n
+       :where [?e :name ?n]
+       [(> "M" ?n)]]
+      #{[1 "Ivan"] [2 "Ivan"]})
+
     (let [pred (fn [db e a]
                  (= a (:age (d/entity db e))))]
       (is (= (d/q '[:find ?e
