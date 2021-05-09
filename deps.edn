@@ -11,9 +11,6 @@
         junit/junit                                 {:mvn/version "4.13.1"}}
 
  :paths ["src" "target/classes"]
- 
- :jvm-opts ["-Xmx2g"                                       ;; max 2GB Heap size, default usually 1GB
-            ]
 
  :aliases {:1.9 {:override-deps {org.clojure/clojure {:mvn/version "1.9.0"}}}
 

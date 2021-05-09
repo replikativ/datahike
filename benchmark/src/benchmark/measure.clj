@@ -26,7 +26,7 @@
 (defn measure-performance-full [db-entities
                                 {:keys [iterations function query data-found-opts data-types tx-entity-counts] :as _options}
                                 {:keys [config-name config]}]
-  (log/debug (str "Measuring database with config named '" config-name ", "
+  (log/info (str "Measuring database with config named '" config-name ", "
                   (count c/schema) " attributes in entity, and "
                   db-entities " entities in database"))
   
@@ -62,25 +62,25 @@
                                                (filter #(= query (:function %)) queries))]
                         (vec (for [{:keys [function query details]} filtered-queries]
                                (do (log/debug (str " Querying with " function " using " details "..."))
-                                   (try
-                                     {:time (:t (timed (d/q query @conn2)))
+                                    {:time (:t (timed (d/q query @conn2)))
                                       :context {:dh-config simple-config
                                                 :function function
                                                 :db-entities db-entities
                                                 :db-datoms db-datoms
-                                                :execution details}}
-                                     (catch Exception e
-                                       (log/error (str "Error executing query " query ": " (.getMessage e)))))))))
+                                                :execution details}} ))))
                       [])
         _ (d/release conn)
         _ (d/delete-database unique-config)
         transaction-times (if (#{:all :transaction} function)
                             (for [tx-entities tx-entity-counts
-                                   _ (range iterations)]
+                                  _ (range iterations)]
                               (let [unique-config (assoc config :name (str (UUID/randomUUID)))
                                     {:keys [conn]} (init-db db-entities unique-config)
-                                    tx (vec (repeatedly tx-entities c/rand-entity))]
-                                [{:time (:t (timed (d/transact conn tx)))
+                                    tx (vec (repeatedly tx-entities c/rand-entity))
+                                    t (:t (timed (d/transact conn tx)))]
+                                (d/release conn)
+                                (d/delete-database unique-config)
+                                [{:time t
                                   :context {:dh-config simple-config
                                             :function :transaction
                                             :db-entities db-entities
