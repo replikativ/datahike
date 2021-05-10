@@ -1,4 +1,4 @@
-# Architecture Decision Record Template
+# DB record cleanup and specification 
 
 ## Context
 
@@ -11,7 +11,7 @@ Each change requires updating the `IConfiguration` from `datahike.connector` whe
 
 Adjust the database record `DB` and combine fields into categories. Proposed fields:
 
-- `:indexes`: all index nodes
+- `indexes`: all index nodes
 - `config`: as it is now with cleanup
 - `meta`: fixed meta data created by Datahike like `:id`, `:created-at`, `version`
 - `metrics`: db metrics like `max-eid` or `op-count`
@@ -43,7 +43,6 @@ Instead of refactoring all new fields should be added into categories as propose
 
 - only little impact to existing versions
 - no refactoring necessary
-
 
 #### Contra
 
