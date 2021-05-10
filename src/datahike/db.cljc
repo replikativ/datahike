@@ -660,7 +660,6 @@
 
 (defn insert-cache [db-hash cache]
   (let [caches @db-caches]
-    (println "cc" (count caches))
     (if (>= (count caches) max-db-caches)
       (let [[last-used-db _] (reduce (fn [[d-hash1 [c1 ^Date last-accessed1]]
                                           [d-hash2 [c2 ^Date last-accessed2]]]
