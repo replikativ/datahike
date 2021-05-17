@@ -5,12 +5,20 @@
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
-            [datahike.impl.entity :as de])
+            [datahike.impl.entity :as de]
+            [datahike.spec :as spec]
+            [clojure.spec.alpha :as s])
   #?(:clj
      (:import [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
               [datahike.impl.entity Entity]
               [java.util Date])))
 
+(s/fdef
+  connect
+  :args (s/alt :config spec/Config
+               :uri string?
+               :nil (s/cat)) ;; no arguments
+  :ret spec/ConnectionAtom)
 (def
   ^{:arglists '([] [config])
     :doc "Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
@@ -34,6 +42,11 @@
 
   connect dc/connect)
 
+(s/fdef
+  database-exists?
+  :args (s/alt :config spec/Config
+               :uri string?)
+  :ret boolean?)
 (def
   ^{:arglists '([config])
     :doc "Checks if a database exists via configuration map.
@@ -42,6 +55,12 @@
               (database-exists? {:store {:backend :mem :id \"example\"}})"}
   database-exists? dc/database-exists?)
 
+(s/fdef
+  create-database
+  :args (s/cat :config (s/or :config spec/Config
+                             :uri string?) ;; TODO: the URI version is deprecated?
+               :initial-tx (s/? (s/cat :k (s/? (s/and #(= % :initial-tx))) :v spec/Transactions)))                   ;; TODO spec transaction
+  :ret nil?)
 (def
   ^{:arglists '([] [config & deprecated-opts])
     :doc "Creates a database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
@@ -80,6 +99,7 @@
   create-database
   dc/create-database)
 
+;; (m/=> delete-database [:=> [:cat s/Config] nil?])
 (def ^{:arglists '([config])
        :doc      "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
                   For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
