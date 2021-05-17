@@ -1,4 +1,10 @@
-#kaocha/v1 {:tests [{:id :clj
+#kaocha/v1 {:plugins [:orchestra
+                      :preloads]
+            ;; We preload the namespaces that have specs, so they can be instrumented
+            :kaocha.plugin.preloads/ns-names [datahike.api]
+            ;; More verbose than the default reporter, and with prettier errors
+            :kaocha/reporter [kaocha.report/documentation]
+            :tests [{:id :clj
                      :ns-patterns ["datahike.test."]}
                     #_{:id :cljs
                        :type :kaocha.type/cljs

@@ -346,7 +346,7 @@
 (deftest test-update-schema
   (let [cfg "datahike:mem://test-empty-db"
         _ (d/delete-database cfg)
-        _ (d/create-database cfg :initial-schema [name-schema personal-id-schema])
+        _ (d/create-database cfg :initial-tx [name-schema personal-id-schema])
         conn (d/connect cfg)
         db (d/db conn)
 

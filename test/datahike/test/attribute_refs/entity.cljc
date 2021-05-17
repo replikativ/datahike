@@ -77,9 +77,6 @@
                                  [{:db/id 1, :name "Ivan"}
                                   {:db/id 2, :name "Oleg"}])
         db (d/db-with ref-db entities)]
-    (is (nil? (d/entity db nil)))
-    (is (nil? (d/entity db "abc")))
-    (is (nil? (d/entity db :keyword)))
     (is (nil? (d/entity db [:name "Petr"])))
     (is (= 777 (:db/id (d/entity db 777))))
     (is (thrown-msg? "Lookup ref attribute should be marked as :db/unique: [:not-an-attr 777]"
