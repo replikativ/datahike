@@ -131,6 +131,7 @@
     :aevt [0 1]
     :avet [0 2]
     (throw (UnsupportedOperationException. "Unknown index type: " index-type))))
+
 (defn -upsert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
     (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec op-count (index-type->indices index-type))

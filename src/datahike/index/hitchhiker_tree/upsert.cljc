@@ -7,7 +7,7 @@
   This is equivalent to check whether the elements increase by one and contains 0.
   E.g., [0 1 2] => true, [0 2 3] => false, [1 2] => false."
   [indices]
-  (if (and indices (.contains indices 0))
+  (if (.contains indices 0)
     (let [m (apply max indices)
           s (apply + indices)]
       (= s (/ (* m (+ 1 m)) 2)))
@@ -21,23 +21,28 @@
   (when (seq ks)
     (apply max-key #(nth % 3) ks)))
 
+(defn mask [new indices]
+  (reduce (fn [mask pos]
+            (assoc mask pos (nth new pos)))
+          [nil nil nil nil]
+          indices))
+
 (defn old-key
   "Returns the old version of the given 'new' key if it exists in 'old-keys'.
   If there are multiple old versions, the one with the biggest transaction time is returned.
   'indices' is a vector of integer indicating which positions in keys are significant,
   i.e., [0 2] means that the first and third entry in the key are used for filtering."
   [old-keys new indices]
-  (let [mask (reduce (fn [mask pos]
-                       (assoc mask pos (nth new pos)))
-                     [nil nil nil nil]
-                     indices)]
-    (when (seq old-keys)
+  (when (seq old-keys)
+    (let [mask (mask new indices)]
       (when-let [candidates (subseq old-keys >= mask)]
         (->> candidates
              (map first)
              ((if (prefix? indices) take-while filter)
-              #(reduce (fn [bool i]
-                         (and bool (= (nth % i) (nth new i))))
+              #(reduce (fn [_ i]
+                         (if (= (nth % i) (nth new i))
+                           true
+                           (reduced false)))
                        true
                        indices))
              max-t)))))
@@ -103,10 +108,10 @@
   (swap! (:read-handlers store)
          merge
          {'datahike.index.hitchhiker_tree.upsert.UpsertOp
-          (fn [{:keys [key value]}]
-            (map->UpsertOp {:key key :value value}))
+          (fn [{:keys [key value op-count indices]}]
+            (map->UpsertOp {:key key :value value :op-count op-count :indices indices}))
 
           'datahike.index.hitchhiker_tree.upsert.temporal-UpsertOp
-          (fn [{:keys [key value]}]
-            (map->temporal-UpsertOp {:key key :value value}))})
+          (fn [{:keys [key value op-count indices]}]
+            (map->temporal-UpsertOp {:key key :value value :op-count op-count :indices indices}))})
   store)
