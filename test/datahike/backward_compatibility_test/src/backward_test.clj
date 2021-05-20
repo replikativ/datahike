@@ -20,11 +20,9 @@
   (d/delete-database cfg)
   (d/create-database cfg)
   (let [conn (d/connect cfg)]
-    (do
-      (d/transact conn
-                  (vec (for [i (range size)]
-                         [:db/add (inc i) :age i])))
-      nil))
+    (d/transact conn
+                (vec (for [i (range size)]
+                       [:db/add (inc i) :age i]))))
   (println "----- Wrote " size " entries."))
 
 
