@@ -2,7 +2,6 @@
   (:require [datahike.api :as d]
             [taoensso.timbre :as t]))
 
-
 (def schema [{:db/ident       :age
               :db/cardinality :db.cardinality/one
               :db/valueType   :db.type/long}])
@@ -24,7 +23,6 @@
                 (vec (for [i (range size)]
                        [:db/add (inc i) :age i]))))
   (println "----- Wrote " size " entries."))
-
 
 (defn read [opt]
   (println "----- Reading using latest code ....")
