@@ -57,7 +57,6 @@
       (is (= hitchhiker.tree.DataNode
              (-> @conn :eavt type))))))
 
-
 (deftest test-binary-support
   (doseq [index [:datahike.index/persistent-set :datahike.index/hitchhiker-tree]]
     (let [config {:store {:backend :mem
