@@ -18,8 +18,8 @@
 
     ;; for equal length arrays we do an element-wise comparison
     (is (zero? (compare-arrays (byte-array [5 2 3 5]) (byte-array [5 2 3 5]))))
-    (is (=  1 (compare-arrays (byte-array [5 2 2 5]) (byte-array [5 2 3 1]))))
-    (is (= -1 (compare-arrays (byte-array [6 2 2 5]) (byte-array [5 2 3 5]))))))
+    (is (= -1 (compare-arrays (byte-array [5 2 2 5]) (byte-array [5 2 3 1]))))
+    (is (=  1 (compare-arrays (byte-array [6 2 2 5]) (byte-array [5 2 3 5]))))))
 
 (deftest test-extended-equality
   (testing "Testing extended equality with support for arrays."
