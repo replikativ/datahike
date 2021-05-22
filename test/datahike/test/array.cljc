@@ -11,15 +11,15 @@
     (is (zero? (compare-arrays (byte-array []) (byte-array []))))
 
     ;; ordering is by dimensionality first
-    (is (= -1 (compare-arrays (byte-array []) (byte-array [5 2 3 5]))))
-    (is (=  1 (compare-arrays (byte-array [5 2 3 5]) (byte-array []))))
-    (is (= -1 (compare-arrays (byte-array [5 2 3]) (byte-array [5 2 3 5]))))
-    (is (=  1 (compare-arrays (byte-array [5 2 3 5]) (byte-array [5 2 3]))))
+    (is (neg? (compare-arrays (byte-array []) (byte-array [5 2 3 5]))))
+    (is (pos? (compare-arrays (byte-array [5 2 3 5]) (byte-array []))))
+    (is (neg? (compare-arrays (byte-array [5 2 3]) (byte-array [5 2 3 5]))))
+    (is (pos? (compare-arrays (byte-array [5 2 3 5]) (byte-array [5 2 3]))))
 
     ;; for equal length arrays we do an element-wise comparison
     (is (zero? (compare-arrays (byte-array [5 2 3 5]) (byte-array [5 2 3 5]))))
-    (is (= -1 (compare-arrays (byte-array [5 2 2 5]) (byte-array [5 2 3 1]))))
-    (is (=  1 (compare-arrays (byte-array [6 2 2 5]) (byte-array [5 2 3 5]))))))
+    (is (neg?  (compare-arrays (byte-array [5 2 2 5]) (byte-array [5 2 3 1]))))
+    (is (pos?  (compare-arrays (byte-array [6 2 2 5]) (byte-array [5 2 3 5]))))))
 
 (deftest test-extended-equality
   (testing "Testing extended equality with support for arrays."

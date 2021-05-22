@@ -1,5 +1,6 @@
 (ns datahike.array
-  (:require [hitchhiker.tree.node :as n]))
+  (:require [hitchhiker.tree.node :as n])
+  (:import [java.util Arrays]))
 
 (defn compare-arrays
   "Compare two arrays a and b element-wise in ascending order. If one array is a
@@ -11,23 +12,7 @@
       (catch ClassCastException _
         (- (n/-order-on-edn-types a)
            (n/-order-on-edn-types b))))
-    (let [bl (alength b)
-          al (alength a)]
-      (loop [i 1]
-        (cond (and (> i bl) (> i al))
-              0
-
-              (> i bl)
-              1 ;; b is a prefix of a
-
-              (> i al)
-              -1 ;; a is a prefix of b
-
-              :else
-              (let [ec (compare (aget a (dec i)) (aget b (dec i)))]
-                (if (not (zero? ec))
-                  ec
-                  (recur (inc i)))))))))
+    (Arrays/compare a b)))
 
 (defn a=
   "Extension of Clojure's equality to things we also want to treat like values,
