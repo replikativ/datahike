@@ -1,10 +1,8 @@
 (ns datahike.array
-  (:require [hitchhiker.tree.key-compare :as kc]
-            [hitchhiker.tree.node :as n]))
+  (:require [hitchhiker.tree.node :as n]))
 
 (defn compare-arrays [a b]
   ;; TODO can avoid some of these safety checks?
-  (def foo [a b])
   (if (not (and (bytes? a) (bytes? b)))
     (try
       (compare a b)
