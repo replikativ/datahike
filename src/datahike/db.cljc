@@ -1473,9 +1473,7 @@
         v (if (ref? db a) (entid-strict db v) v)
         new-datom (datom e a v tx)]
     (if (multival? db a)
-      (if (empty? (-search db [e a v]))
-        (transact-report report new-datom)
-        report)
+      (transact-report report new-datom)
       (transact-report-upsert report new-datom))))
 
 (defn- transact-retract-datom [report ^Datom d]
