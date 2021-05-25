@@ -1236,7 +1236,7 @@
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
 
-(defn- with-datom [db ^Datom datom]
+(defn- with-datom [^DB db ^Datom datom]
   (validate-datom db datom)
   (let [indexing? (indexing? db (.-a datom))
         a (.-a datom)
@@ -1270,7 +1270,7 @@
           true (update :op-count + (if (or keep-history? indexing?) 2 1)))
         db))))
 
-(defn- with-temporal-datom [db ^Datom datom]
+(defn- with-temporal-datom [^DB db ^Datom datom]
   (let [indexing? (indexing? db (.-a datom))
         schema? (ds/schema-attr? (.-a datom))
         current-datom ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))
@@ -1329,7 +1329,7 @@
                 :attribute (.-a datom)
                 :datom     datom})))))
 
-(defn- with-datom-upsert [db ^Datom datom]
+(defn- with-datom-upsert [^DB db ^Datom datom]
   (validate-datom-upsert db datom)
   (let [indexing?     (indexing? db (.-a datom))
         schema?       (ds/schema-attr? (.-a datom))

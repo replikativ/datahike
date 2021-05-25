@@ -104,8 +104,10 @@
 (defmethod delete-store :file [{:keys [path]}]
   (fs/delete-store path))
 
-(defmethod connect-store :file [{:keys [path]}]
-  (<?? S (fs/new-fs-store path)))
+(defmethod connect-store :file [{:keys [path config]}]
+  (if config
+    (<?? S (fs/new-fs-store path :config config))
+    (<?? S (fs/new-fs-store path))))
 
 (defmethod scheme->index :file [_]
   :datahike.index/hitchhiker-tree)

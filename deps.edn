@@ -1,11 +1,22 @@
-{:deps {org.clojure/clojure                         {:mvn/version "1.10.1"}
+{:deps {org.clojure/clojure                         {:mvn/version "1.10.3"}
         org.clojure/clojurescript                   {:mvn/version "1.10.597"}
+        org.clojure/tools.cli                       {:mvn/version "1.0.194"}
         io.replikativ/hitchhiker-tree               {:mvn/version "0.1.11"}
+        io.replikativ/konserve                      {;; :mvn/version "0.6.0-alpha3"
+                                                     :git/url "https://github.com/replikativ/konserve.git"
+                                                     :sha "02c903e75cfd8d19272ec13efe8207fe38bcdddb"
+                                                     }
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.1.2"}
         org.clojure/tools.reader                    {:mvn/version "1.3.3"}
         environ/environ                             {:mvn/version "1.2.0"}
-        com.taoensso/timbre                         {:mvn/version "5.1.0"}
-        io.replikativ/superv.async                  {:mvn/version "0.2.11"}
+        com.taoensso/timbre                         {:mvn/version "5.1.2"}
+        io.replikativ/superv.async                  {;; :mvn/version "0.2.11"
+                                                     :local/root "/home/christian/Development/superv.async/"
+                                                     ;; Unfortunately this is not yet finding the manifest file,
+                                                     ;; please checkout manually
+                                                     ;; :git/url "https://github.com/replikativ/superv.async.git"
+                                                     ;; :sha "fb2bebc85289481fa00a47511ba1d00822e1246a"
+                                                     }
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.8"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
         junit/junit                                 {:mvn/version "4.13.1"}}
@@ -57,4 +68,14 @@
                     :main-opts ["-m" "cljfmt.main" "check"]}
 
            :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.7.0"}}
-                  :main-opts ["-m" "cljfmt.main" "fix"]}}}
+                  :main-opts ["-m" "cljfmt.main" "fix"]}
+           :native-image
+           {:main-opts ["-m" "clj.native-image" "datahike.cli"
+                        "--initialize-at-build-time"
+                        ;; optional native image name override
+                        "-H:Name=datahike"]
+            :jvm-opts ["-Dclojure.compiler.direct-linking=true"]
+            :extra-deps
+            {clj.native-image/clj.native-image
+             {:git/url "https://github.com/taylorwood/clj.native-image.git"
+              :sha "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}}}
