@@ -210,6 +210,11 @@
   #?(:clj  (.before ^Date d0 ^Date d1)
      :cljs (< d0 d1)))
 
+(defmethod -lesser? String [^String s0 & more]
+  (reduce (fn [_ s] (when (pos? (compare ^String s0 s))
+                        (reduced false))) 
+          true more))
+
 (defmethod -lesser? :default [value & more]
   (apply < value more))
 
@@ -219,6 +224,11 @@
 (defmethod -greater? java.util.Date [^Date d0 ^Date d1]
   #?(:clj  (.after ^Date d0 ^Date d1)
      :cljs (> d0 d1)))
+
+(defmethod -greater? String [^String s0 & more]
+  (reduce (fn [_ s] (when (neg? (compare ^String s0 s))
+                      (reduced false)))
+          true more))
 
 (defmethod -greater? :default [value & more]
   (apply > value more))
