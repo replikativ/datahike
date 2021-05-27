@@ -2,7 +2,6 @@
   (:require [hitchhiker.tree.node :as n])
   (:import [java.util Arrays]))
 
-
 #?(:clj
    (defn java8? []
      (try
