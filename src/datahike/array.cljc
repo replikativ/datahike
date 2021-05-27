@@ -15,22 +15,22 @@
     (if (java8?)
       ;; slow fallback for Java 8, but has same semantics
       `(let [bl# (alength ~b)
-            al# (alength ~a)]
-        (loop [i# 1]
-          (cond (and (> i# bl#) (> i# al#))
-                0
+             al# (alength ~a)]
+         (loop [i# 1]
+           (cond (and (> i# bl#) (> i# al#))
+                 0
 
-                (> i# bl#)
-                1 ;; b is a prefix of a
+                 (> i# bl#)
+                 1 ;; b is a prefix of a
 
-                (> i# al#)
-                -1 ;; a is a prefix of b
+                 (> i# al#)
+                 -1 ;; a is a prefix of b
 
-                :else
-                (let [ec# (compare (aget ~a (dec i#)) (aget ~b (dec i#)))]
-                  (if (not (zero? ec#))
-                    ec#
-                    (recur (inc i#)))))))
+                 :else
+                 (let [ec# (compare (aget ~a (dec i#)) (aget ~b (dec i#)))]
+                   (if (not (zero? ec#))
+                     ec#
+                     (recur (inc i#)))))))
       `(Arrays/compare ~a ~b))))
 
 (defn compare-arrays
