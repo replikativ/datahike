@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+
+cd test/datahike/backward_compatibility_test;
+./backward_compatibility_test.sh
