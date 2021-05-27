@@ -4,6 +4,7 @@
    [clojure.walk]
    [clojure.data]
    #?(:clj [clojure.pprint :as pp])
+   [datahike.array :refer [a=]]
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    [datahike.constants :refer [e0 tx0 emax txmax]]
@@ -170,10 +171,10 @@
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
                   (-slice eavt (datom e a nil tx0) (datom e a nil txmax) :eavt) ;; e a _ _
                   (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ v tx
-                       (filter (fn [^Datom d] (and (= v (.-v d))
+                       (filter (fn [^Datom d] (and (a= v (.-v d))
                                                    (= tx (datom-tx d))))))
                   (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ v _
-                       (filter (fn [^Datom d] (= v (.-v d)))))
+                       (filter (fn [^Datom d] (a= v (.-v d)))))
                   (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ tx
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
                   (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ _
@@ -181,17 +182,17 @@
                     (->> (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
                          (filter (fn [^Datom d] (= tx (datom-tx d)))))
                     (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
-                         (filter (fn [^Datom d] (and (= v (.-v d))
+                         (filter (fn [^Datom d] (and (a= v (.-v d))
                                                      (= tx (datom-tx d)))))))
                   (if indexed?                              ;; _ a v _
                     (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
                     (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
-                         (filter (fn [^Datom d] (= v (.-v d))))))
+                         (filter (fn [^Datom d] (a= v (.-v d))))))
                   (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ tx
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
                   (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ _
-                  (filter (fn [^Datom d] (and (= v (.-v d)) (= tx (datom-tx d)))) (-all eavt)) ;; _ _ v tx
-                  (filter (fn [^Datom d] (= v (.-v d))) (-all eavt)) ;; _ _ v _
+                  (filter (fn [^Datom d] (and (a= v (.-v d)) (= tx (datom-tx d)))) (-all eavt)) ;; _ _ v tx
+                  (filter (fn [^Datom d] (a= v (.-v d))) (-all eavt)) ;; _ _ v _
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
@@ -1473,9 +1474,7 @@
         v (if (ref? db a) (entid-strict db v) v)
         new-datom (datom e a v tx)]
     (if (multival? db a)
-      (if (empty? (-search db [e a v]))
-        (transact-report report new-datom)
-        report)
+      (transact-report report new-datom)
       (transact-report-upsert report new-datom))))
 
 (defn- transact-retract-datom [report ^Datom d]

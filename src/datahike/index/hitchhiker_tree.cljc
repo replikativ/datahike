@@ -4,6 +4,7 @@
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
+            [datahike.array :refer [compare-arrays]]
             [datahike.datom :as dd]
             [datahike.constants :refer [e0 tx0 emax txmax]]
             [hasch.core :as h])
@@ -34,6 +35,11 @@
   (-compare [key1 key2]
     (if (nil? key2)
       0 -1)))
+
+(extend-protocol kc/IKeyCompare
+  (Class/forName "[B")
+  (-compare [key1 key2]
+    (compare-arrays key1 key2)))
 
 (def ^:const br 300) ;; TODO name better, total node size; maybe(!) make configurable
 (def ^:const br-sqrt (long (Math/sqrt br))) ;; branching factor

@@ -56,3 +56,24 @@
       (d/transact conn [{:db/id 1, :name "Alice"}])
       (is (= hitchhiker.tree.DataNode
              (-> @conn :eavt type))))))
+
+(deftest test-binary-support
+  (doseq [index [:datahike.index/persistent-set :datahike.index/hitchhiker-tree]]
+    (let [config {:store {:backend :mem
+                          :id "test-hitchhiker-tree-binary-support"}
+                  :schema-flexibility :read
+                  :keep-history? false
+                  :index index}]
+      (d/delete-database config)
+      (d/create-database config)
+      (let [conn (d/connect config)]
+        (d/transact conn [{:db/id 1, :name "Jiayi", :payload (byte-array [0 2 3])}
+                          {:db/id 2, :name "Peter", :payload (byte-array [1 2 3])}])
+        (is (= "Jiayi"
+               (d/q '[:find ?n .
+                      :in $ ?arr
+                      :where
+                      [?e :payload ?arr]
+                      [?e :name ?n]]
+                    @conn
+                    (byte-array [0 2 3]))))))))
