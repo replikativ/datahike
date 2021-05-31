@@ -578,7 +578,7 @@
 
    Exists for Datomic API compatibility. Prefer using `@conn` directly if possible."
   [conn]
-  @conn)
+  (dc/deref-db conn))
 
 (defn- ^:no-doc date? [d]
   #?(:cljs (instance? js/Date d)

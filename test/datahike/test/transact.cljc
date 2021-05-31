@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
+   [datahike.connector :as dc]
    [datahike.db :as db]
    [datahike.test.core :as tdc]))
 
@@ -173,7 +174,7 @@
                #{:house1 :kitchen :bath :house2 :office :attic}))))))
 
 (deftest test-transact!
-  (let [conn (d/create-conn {:aka {:db/cardinality :db.cardinality/many}})]
+  (let [conn (dc/create-conn {:aka {:db/cardinality :db.cardinality/many}})]
     (d/transact! conn [[:db/add 1 :name "Ivan"]])
     (d/transact! conn [[:db/add 1 :name "Petr"]])
     (d/transact! conn [[:db/add 1 :aka  "Devil"]])
@@ -187,7 +188,7 @@
            #{["Devil"] ["Tupen"]}))))
 
 (deftest test-db-fn-cas
-  (let [conn (d/create-conn)]
+  (let [conn (dc/create-conn)]
     (d/transact! conn [[:db/cas 1 :weight nil 100]])
     (is (= (:weight (d/entity @conn 1)) 100))
     (d/transact! conn [[:db/add 1 :weight 200]])
@@ -198,7 +199,7 @@
     (is (thrown-msg? ":db.fn/cas failed on datom [1 :weight 400], expected 200"
                      (d/transact! conn [[:db.fn/cas 1 :weight 200 210]]))))
 
-  (let [conn (d/create-conn {:label {:db/cardinality :db.cardinality/many}})]
+  (let [conn (dc/create-conn {:label {:db/cardinality :db.cardinality/many}})]
     (d/transact! conn [[:db/add 1 :label :x]])
     (d/transact! conn [[:db/add 1 :label :y]])
     (d/transact! conn [[:db.fn/cas 1 :label :y :z]])
@@ -206,20 +207,20 @@
     (is (thrown-msg? ":db.fn/cas failed on datom [1 :label (:x :y :z)], expected :s"
                      (d/transact! conn [[:db.fn/cas 1 :label :s :t]]))))
 
-  (let [conn (d/create-conn)]
+  (let [conn (dc/create-conn)]
     (d/transact! conn [[:db/add 1 :name "Ivan"]])
     (d/transact! conn [[:db.fn/cas 1 :age nil 42]])
     (is (= (:age (d/entity @conn 1)) 42))
     (is (thrown-msg? ":db.fn/cas failed on datom [1 :age 42], expected nil"
                      (d/transact! conn [[:db.fn/cas 1 :age nil 4711]]))))
 
-  (let [conn (d/create-conn)]
+  (let [conn (dc/create-conn)]
     (is (thrown-msg? "Can't use tempid in '[:db.fn/cas -1 :attr nil :val]'. Tempids are allowed in :db/add only"
                      (d/transact! conn [[:db/add    -1 :name "Ivan"]
                                         [:db.fn/cas -1 :attr nil :val]])))))
 
 (deftest test-db-fn
-  (let [conn (d/create-conn {:aka {:db/cardinality :db.cardinality/many}})
+  (let [conn (dc/create-conn {:aka {:db/cardinality :db.cardinality/many}})
         inc-age (fn [db name]
                   (if-let [[eid age] (first (d/q '{:find [?e ?age]
                                                    :in [$ ?name]
@@ -247,7 +248,7 @@
       (is (:had-birthday e)))))
 
 #_(deftest test-db-ident-fn ;; TODO: check for :db/ident support within hhtree
-    (let [conn    (d/create-conn {:name {:db/unique :db.unique/identity}})
+    (let [conn    (dc/create-conn {:name {:db/unique :db.unique/identity}})
           inc-age (fn [db name]
                     (if-some [ent (d/entity db [:name name])]
                       [{:db/id (:db/id ent)
@@ -272,7 +273,7 @@
         (is (:had-birthday e)))))
 
 (deftest test-resolve-eid
-  (let [conn (d/create-conn)
+  (let [conn (dc/create-conn)
         t1   (d/transact! conn [[:db/add -1 :name "Ivan"]
                                 [:db/add -1 :age 19]
                                 [:db/add -2 :name "Petr"]
@@ -289,8 +290,8 @@
                   [?e :age ?a]] @conn)))))
 
 (deftest test-resolve-eid-refs
-  (let [conn (d/create-conn {:friend {:db/valueType :db.type/ref
-                                      :db/cardinality :db.cardinality/many}})
+  (let [conn (dc/create-conn {:friend {:db/valueType :db.type/ref
+                                       :db/cardinality :db.cardinality/many}})
         tx   (d/transact! conn [{:name "Sergey"
                                  :friend [-1 -2]}
                                 [:db/add -1  :name "Ivan"]
@@ -312,7 +313,7 @@
 (deftest test-resolve-current-tx
   (doseq [tx-tempid [:db/current-tx "datomic.tx" "datahike.tx"]]
     (testing tx-tempid
-      (let [conn (d/create-conn {:created-at {:db/valueType :db.type/ref}})
+      (let [conn (dc/create-conn {:created-at {:db/valueType :db.type/ref}})
             tx1  (d/transact! conn [{:name "X", :created-at tx-tempid}
                                     {:db/id tx-tempid, :prop1 "prop1"}
                                     [:db/add tx-tempid :prop2 "prop2"]

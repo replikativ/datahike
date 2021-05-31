@@ -3,11 +3,12 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
+   [datahike.connector :as dc]
    [datahike.datom :as dd]
    [datahike.test.core :as tdc]))
 
 (deftest test-listen!
-  (let [conn    (d/create-conn)
+  (let [conn    (dc/create-conn)
         reports (atom [])]
     (d/transact! conn [[:db/add -1 :name "Alex"]
                        [:db/add -2 :name "Boris"]])

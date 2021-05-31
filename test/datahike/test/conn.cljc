@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
+   [datahike.connector :as dc]
    [datahike.db :as db]
    [datahike.test.core :as tdc]))
 
@@ -13,32 +14,32 @@
               (d/datom 1 :name "Ivan")})
 
 (deftest test-ways-to-create-conn
-  (let [conn (d/create-conn)]
+  (let [conn (dc/create-conn)]
     (is (= #{} (set (d/datoms @conn :eavt))))
     (is (= db/implicit-schema (:schema @conn))))
 
-  (let [conn (d/create-conn schema)]
+  (let [conn (dc/create-conn schema)]
     (is (= #{} (set (d/datoms @conn :eavt))))
     (is (= schema (:schema @conn))))
 
-  (let [conn (d/conn-from-datoms datoms)]
+  (let [conn (dc/conn-from-datoms datoms)]
     (is (= datoms (set (d/datoms @conn :eavt))))
     (is (= db/implicit-schema (:schema @conn))))
 
-  (let [conn (d/conn-from-datoms datoms schema)]
+  (let [conn (dc/conn-from-datoms datoms schema)]
     (is (= datoms (set (d/datoms @conn :eavt))))
     (is (= schema (:schema @conn))))
 
-  (let [conn (d/conn-from-db (d/init-db datoms))]
+  (let [conn (dc/conn-from-db (d/init-db datoms))]
     (is (= datoms (set (d/datoms @conn :eavt))))
     (is (= db/implicit-schema (:schema @conn))))
 
-  (let [conn (d/conn-from-db (d/init-db datoms schema))]
+  (let [conn (dc/conn-from-db (d/init-db datoms schema))]
     (is (= datoms (set (d/datoms @conn :eavt))))
     (is (= schema (:schema @conn)))))
 
 (deftest test-reset-conn!
-  (let [conn    (d/conn-from-datoms datoms schema)
+  (let [conn    (dc/conn-from-datoms datoms schema)
         report  (atom nil)
         _       (d/listen! conn #(reset! report %))
         datoms' #{(d/datom 1 :age 20)

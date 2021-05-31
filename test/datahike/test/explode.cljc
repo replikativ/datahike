@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
+   [datahike.connector :as dc]
    [datahike.db :as db]
    [datahike.test.core :as tdc]))
 
@@ -15,8 +16,8 @@
                 '("Devil" "Tupen")
                 (to-array ["Devil" "Tupen"])]]
     (testing coll
-      (let [conn (d/create-conn {:aka {:db/cardinality :db.cardinality/many}
-                                 :also {:db/cardinality :db.cardinality/many}})]
+      (let [conn (dc/create-conn {:aka {:db/cardinality :db.cardinality/many}
+                                  :also {:db/cardinality :db.cardinality/many}})]
         (d/transact! conn [{:db/id -1
                             :name  "Ivan"
                             :age   16
