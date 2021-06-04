@@ -305,8 +305,7 @@
           schema [{:db/ident :name
                    :db/cardinality :db.cardinality/one
                    :db/valueType :db.type/string}]
-          ref (fn [ident] (db/-ref-for @conn ident))
-          ]
+          ref (fn [ident] (db/-ref-for @conn ident))]
       (d/transact conn schema)
       (d/transact conn [{:name "Alice"}
                         {:name "Bob"}])
