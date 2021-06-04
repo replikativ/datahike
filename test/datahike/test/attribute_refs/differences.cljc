@@ -305,20 +305,21 @@
           schema [{:db/ident :name
                    :db/cardinality :db.cardinality/one
                    :db/valueType :db.type/string}]
-          ref (fn [ident] (db/-ref-for @conn ident))]
+          ref (fn [ident] (db/-ref-for @conn ident))
+          ]
       (d/transact conn schema)
       (d/transact conn [{:name "Alice"}
                         {:name "Bob"}])
-      (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name)
-             #{["Alice"] ["Bob"]}))
-      (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn (ref :name))
-             #{["Alice"] ["Bob"]}))
-      (is (= (d/q '[:find ?n :in $ :where [_ :name ?n]] @conn)
-             #{["Alice"] ["Bob"]}))
-      (is (= (d/q '[:find ?n :in $ :where [_ ?a ?n] [?a :db/ident :name]] @conn)
-             #{}))
-      (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name)
-             #{["Alice"] ["Bob"]}))))
+      (is (= #{["Alice"] ["Bob"]}
+             (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name)))
+      (is (= #{["Alice"] ["Bob"]}
+             (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn (ref :name))))
+      (is (= #{["Alice"] ["Bob"]}
+             (d/q '[:find ?n :in $ :where [_ :name ?n]] @conn)))
+      (is (= #{}
+             (d/q '[:find ?n :in $ :where [_ ?a ?n] [?a :db/ident :name]] @conn)))
+      (is (= #{["Alice"] ["Bob"]}
+             (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name)))))
 
   (testing "Query keyword translation reference db"
     (let [conn (setup-db ref-cfg)
@@ -329,16 +330,16 @@
       (d/transact conn schema)
       (d/transact conn [{:name "Alice"}
                         {:name "Bob"}])
-      (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name)
-             #{}))
-      (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn (ref :name))
-             #{["Alice"] ["Bob"]}))
-      (is (= (d/q '[:find ?n :in $ :where [_ :name ?n]] @conn)
-             #{["Alice"] ["Bob"]}))
-      (is (= (d/q '[:find ?n :in $ :where [_ ?a ?n] [?a :db/ident :name]] @conn)
-             #{["Alice"] ["Bob"]}))
-      (is (= (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name)
-             #{})))))
+      (is (= #{["Alice"] ["Bob"]}
+             (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name)))
+      (is (= #{["Alice"] ["Bob"]}
+             (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn (ref :name))))
+      (is (= #{["Alice"] ["Bob"]}
+             (d/q '[:find ?n :in $ :where [_ :name ?n]] @conn)))
+      (is (= #{["Alice"] ["Bob"]}
+             (d/q '[:find ?n :in $ :where [_ ?a ?n] [?a :db/ident :name]] @conn)))
+      (is (= #{["Alice"] ["Bob"]}
+             (d/q '[:find ?n :in $ ?a :where [_ ?a ?n]] @conn :name))))))
 
 (deftest test-pull-ref-db
   (let [conn (setup-db ref-cfg)

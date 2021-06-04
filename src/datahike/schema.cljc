@@ -8,6 +8,7 @@
 (s/def :db.type/bigdec decimal?)
 (s/def :db.type/bigint integer?)
 (s/def :db.type/boolean boolean?)
+(s/def :db.type/bytes bytes?)
 (s/def :db.type/double double?)
 (s/def :db.type/float float?)
 (s/def :db.type/number number?)
@@ -24,6 +25,7 @@
   #{:db.type/bigdec
     :db.type/bigint
     :db.type/boolean
+    :db.type/bytes
     :db.type/double
     :db.type/float
     :db.type/number

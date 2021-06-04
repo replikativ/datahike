@@ -1,7 +1,7 @@
 (ns datahike.test.time-variance
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+      :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.constants :as const]
    [datahike.api :as d]
    [datahike.test.utils :refer [setup-db]])
@@ -49,12 +49,11 @@
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
       (d/transact conn [[:db/retractEntity [:name "Alice"]]])
-      (are [x y]
-           (= x y)
-        #{}
-        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
-        #{[30] [25]}
-        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
+      (is (thrown-msg?
+           "Nothing found for entity id [:name \"Alice\"]"
+           (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])))
+      (is (= #{[30] [25]}
+             (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"]))))
     (testing "find retracted values"
       (is (= #{["Alice" 25] ["Alice" 30]}
              (d/q '[:find ?n ?a :where [?r :age ?a _ false] [?r :name ?n _ false]] (d/history @conn)))))
@@ -159,8 +158,7 @@
                 (assoc-in [:store :id] "test-no-history")
                 (assoc :initial-tx initial-tx))
         conn (setup-db cfg)
-        query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-        first-date (now)]
+        query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]]
     (testing "all names and ages are present in history"
       (is (= #{["Alice" 25] ["Bob" 35]}
              (d/q query (d/history @conn)))))

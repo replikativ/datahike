@@ -4,14 +4,16 @@
             [datahike.index :as di]
             [datahike.store :as ds]
             [datahike.config :as dc]
-            [datahike.tools :as dt]
+            [datahike.tools :as dt :refer [throwable-promise]]
             [datahike.index.hitchhiker-tree.upsert :as ups]
+            [datahike.transactor :as t]
             [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
             [konserve.cache :as kc]
             [superv.async :refer [<?? S]]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
+            [clojure.core.async :refer [go <!]]
             [clojure.core.cache :as cache])
   (:import [java.net URI]))
 
@@ -56,9 +58,11 @@
 (defn transact!
   [connection {:keys [tx-data]}]
   {:pre [(d/conn? connection)]}
-  (future
-    (locking connection
-      (update-and-flush-db connection tx-data d/transact))))
+  (let [p (throwable-promise)]
+    (go
+      (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data 'datahike.core/transact))]
+        (deliver p tx-report)))
+    p))
 
 (defn transact [connection arg-map]
   (let [arg (cond
@@ -76,11 +80,14 @@
         (throw (.getCause e))))))
 
 (defn load-entities [connection entities]
-  (future
-    (locking connection
-      (update-and-flush-db connection entities d/load-entities))))
+  (let [p (throwable-promise)]
+    (go
+      (let [tx-report (<! (t/send-transaction! (:transactor @connection) entities 'datahike.core/load-entities))]
+        (deliver p tx-report)))
+    p))
 
 (defn release [connection]
+  (<?? S (t/shutdown (:transactor @connection)))
   (ds/release-store (get-in @connection [:config :store]) (:store @connection)))
 
 ;; deprecation begin
@@ -141,24 +148,25 @@
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
           {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx op-count hash]
-           :or   {op-count 0}} stored-db
-          empty (db/empty-db nil config)]
-      (d/conn-from-db
-       (assoc empty
-              :max-tx max-tx
-              :config config
-              :schema schema
-              :hash hash
-              :max-eid (db/init-max-eid eavt-key)
-              :op-count op-count
-              :eavt eavt-key
-              :aevt aevt-key
-              :avet avet-key
-              :temporal-eavt temporal-eavt-key
-              :temporal-aevt temporal-aevt-key
-              :temporal-avet temporal-avet-key
-              :rschema rschema
-              :store store))))
+           :or {op-count 0}} stored-db
+          empty (db/empty-db nil config)
+          conn (d/conn-from-db (assoc empty
+                                      :max-tx max-tx
+                                      :config config
+                                      :schema schema
+                                      :hash hash
+                                      :max-eid (db/init-max-eid eavt-key)
+                                      :op-count op-count
+                                      :eavt eavt-key
+                                      :aevt aevt-key
+                                      :avet avet-key
+                                      :temporal-eavt temporal-eavt-key
+                                      :temporal-aevt temporal-aevt-key
+                                      :temporal-avet temporal-avet-key
+                                      :rschema rschema
+                                      :store store))]
+      (swap! conn assoc :transactor (t/create-transactor (:transactor config) conn update-and-flush-db))
+      conn))
 
   (-create-database [config & deprecated-config]
     (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)

@@ -5,36 +5,71 @@
 (defrecord RemoteDB [baseurl token dbname])
 
 (def schema
-  [{:db/ident :db-config
+  [{:db/ident :dh-config
     :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one}
-   {:db/ident :mean-time
+   {:db/ident :dh-config/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :dh-config/index
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :dh-config/keep-history?
+    :db/valueType :db.type/boolean
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :dh-config/schema-flexibility
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :dh-config/backend
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+
+   {:db/ident :time
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/isComponent true}
+   {:db/ident :time/mean
     :db/valueType :db.type/double
     :db/cardinality :db.cardinality/one}
+   {:db/ident :time/median
+    :db/valueType :db.type/double
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :time/std
+    :db/valueType :db.type/double
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :time/std
+    :db/valueType :db.type/double
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :time/count
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+
    {:db/ident :function
     :db/valueType :db.type/keyword
     :db/cardinality :db.cardinality/one}
+
    {:db/ident :db-size
     :db/valueType :db.type/long
     :db/cardinality :db.cardinality/one}
-   {:db/ident :tx-size
+
+   {:db/ident :execution
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/isComponent true}
+   {:db/ident :execution/tx-size
     :db/valueType :db.type/long
     :db/cardinality :db.cardinality/one}
-   {:db/ident :tag                                          ;; for branch identifier
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/many}
-   {:db/ident :index
+   {:db/ident :execution/data-type
     :db/valueType :db.type/keyword
     :db/cardinality :db.cardinality/one}
-   {:db/ident :keep-history?
+   {:db/ident :execution/data-in-db?
     :db/valueType :db.type/boolean
     :db/cardinality :db.cardinality/one}
-   {:db/ident :schema-flexibility
-    :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :dh-backend
-    :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one}])
+
+   {:db/ident :tag                                          ;; for branch identifier
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/many}])
 
 
 (defn parse-body [{:keys [body] :as response}]
@@ -71,28 +106,8 @@
 (defn get-schema [db]
   (db-request db :get "schema"))
 
-(defn db-config-eid
-  "Get existing entity ID for database configuration or transact config and get ID from new entry"
-  [db {:keys [dh-backend index keep-history? schema-flexibility] :as db-config}]
-  (let [query {:query '[:find ?e
-                        :in $ ?b ?i ?h ?s
-                        :where
-                        [?e :dh-backend ?b]
-                        [?e :index ?i]
-                        [?e :keep-history? ?h]
-                        [?e :schema-flexibility ?s]]
-               :args [dh-backend index keep-history? schema-flexibility]}
-        existing-eid (ffirst (request-data db query))
-        eid (if (nil? existing-eid)
-              (first (second (:tx-data (transact-data db [db-config])))) ;; get new eid
-              existing-eid)]
-    eid))
-
 (defn transact-results [db results]
-  (let [config-mapping (memoize db-config-eid)
-        tx-data (time (map #(update % :db-config (partial config-mapping db))
-                           results))]
-    (transact-data db tx-data)))
+  (transact-data db results))
 
 (defn transact-missing-schema [db]
   (let [current-schema (get-schema db)
