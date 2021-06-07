@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+
+# Write to db using the latest released version of datahike
+clojure -Sdeps '{:deps {io.replikativ/datahike {:mvn/version "RELEASE"}} :paths ["test/datahike/backward_compatibility_test/src"]}' -X backward-test/write
+
+
+# Read the db with the current datahike code living in this repository
+clojure -Sdeps '{:deps {io.replikativ/datahike {:local/root "."}} :paths ["test/datahike/backward_compatibility_test/src"]}' -X backward-test/read
