@@ -108,10 +108,10 @@
   (swap! (:read-handlers store)
          merge
          {'datahike.index.hitchhiker_tree.upsert.UpsertOp
-          (fn [{:keys [key value op-count indices]}]
-            (map->UpsertOp {:key key :value value :op-count op-count :indices (or indices [0 1])}))
+          (fn [{:keys [key value ts indices]}]
+            (map->UpsertOp {:key key :value value :ts ts :indices (or indices [0 1])}))
 
           'datahike.index.hitchhiker_tree.upsert.temporal-UpsertOp
-          (fn [{:keys [key value op-count indices]}]
-            (map->temporal-UpsertOp {:key key :value value :op-count op-count :indices (or indices [0 1])}))})
+          (fn [{:keys [key value ts indices]}]
+            (map->temporal-UpsertOp {:key key :value value :ts ts :indices (or indices [0 1])}))})
   store)
