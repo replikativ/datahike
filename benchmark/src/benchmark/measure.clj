@@ -56,37 +56,37 @@
                                          :all [true false])
                             queries (if (pos? (count initial-tx))
                                       (c/all-queries @conn2 initial-tx data-types data-found)
-                                      (c/non-var-queries @conn2 data-types))
+                                      (c/non-var-queries @conn2 data-types (count initial-tx)))
                             filtered-queries (if (= query :all)
                                                queries
                                                (filter #(= query (:function %)) queries))]
                         (vec (for [{:keys [function query details]} filtered-queries]
                                (do (log/debug (str " Querying with " function " using " details "..."))
                                     {:time (:t (timed (d/q query @conn2)))
-                                      :context {:dh-config simple-config
-                                                :function function
-                                                :db-entities db-entities
-                                                :db-datoms db-datoms
-                                                :execution details}} ))))
+                                     :context {:dh-config simple-config
+                                               :function function
+                                               :db-entities db-entities
+                                               :db-datoms db-datoms
+                                               :execution details}} ))))
                       [])
         _ (d/release conn)
         _ (d/delete-database unique-config)
-        transaction-times (if (#{:all :transaction} function)
-                            (for [tx-entities tx-entity-counts
-                                  _ (range iterations)]
-                              (let [unique-config (assoc config :name (str (UUID/randomUUID)))
-                                    {:keys [conn]} (init-db db-entities unique-config)
-                                    tx (vec (repeatedly tx-entities c/rand-entity))
-                                    t (:t (timed (d/transact conn tx)))]
-                                (d/release conn)
-                                (d/delete-database unique-config)
-                                [{:time t
-                                  :context {:dh-config simple-config
-                                            :function :transaction
-                                            :db-entities db-entities
-                                            :db-datoms db-datoms
-                                            :execution {:tx-entities tx-entities
-                                                        :tx-datoms (* (count c/schema) tx-entities)}}}]))
+        transaction-times (if (contains? #{:all :transaction} function)
+                            (vec (for [tx-entities tx-entity-counts
+                                       _ (range iterations)]
+                                   (let [unique-config (assoc config :name (str (UUID/randomUUID)))
+                                         {:keys [conn]} (init-db db-entities unique-config)
+                                         tx (vec (repeatedly tx-entities (partial c/rand-entity Integer/MAX_VALUE)))
+                                         t (:t (timed (d/transact conn tx)))]
+                                     (d/release conn)
+                                     (d/delete-database unique-config)
+                                     {:time t
+                                      :context {:dh-config simple-config
+                                                :function :transaction
+                                                :db-entities db-entities
+                                                :db-datoms db-datoms
+                                                :execution {:tx-entities tx-entities
+                                                            :tx-datoms (* (count c/schema) tx-entities)}}})))
                             [])]
     (concat query-times connection-times transaction-times)))
 
@@ -103,7 +103,7 @@
      :count n
      :observations (vec times)}))
 
-(defn get-measurements [{:keys [db-entity-counts  config-name iterations] :as options}]
+(defn get-measurements [{:keys [db-entity-counts config-name iterations] :as options}]
   (->> (for [config (if (= config-name :all)
                       c/db-configs
                       (filter #(= (:config-name %) config-name) c/db-configs))

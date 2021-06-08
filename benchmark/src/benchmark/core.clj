@@ -27,12 +27,13 @@
     :default nil]
    ["-n" "--db-name DBNAME" "Database name for datahike server" :default nil]
    ["-g" "--db-token TOKEN" "Token for datahike server" :default nil]
+
    ["-t" "--tag TAG" "Add tag to measurements"
     :default #{}
     :assoc-fn (fn [m k v] (assoc m k (conj (get m k) v)))]
-   ["-o" "--output-format FORMAT" 
+   ["-o" "--output-format FORMAT"
     (str "Determines how the results will be processed. "
-         "Available are " output-formats " " 
+         "Available are " output-formats " "
          "Currently only edn format is supported for comparisons.")
     :default "edn"
     :validate [output-formats  #(str "Format " % " has not been implemented. "
@@ -56,30 +57,30 @@
     :parse-fn read-string
     :validate [vector? "Must be a vector of non-negative integers."
                #(every? nat-int? %) "Vector must consist of non-negative integers."]]
-   ["-y" "--data-types TYPEVECTOR" 
+   ["-y" "--data-types TYPEVECTOR"
     (str "Vector of datatypes to test queries on. Available are " implemented-data-types)
     :default [:int :str]
     :parse-fn read-string
     :validate [vector? "Must be a vector of keywords."
                #(every? implemented-data-types %) (str "Vector must consist of keywords for datatypes. "
                                                        "Available are " implemented-data-types)]]
-   ["-z" "--data-found-opts OPTS" 
+   ["-z" "--data-found-opts OPTS"
     (str "Vector of booleans indicating if query is run for existent or nonexistent values in the database.")
     :default :all
     :parse-fn read-string
     :validate [#{true false :all} "Must be a boolean value or keyword :all."]]
-   ["-i" "--iterations ITERATIONS" 
+   ["-i" "--iterations ITERATIONS"
     (str "Number of iterations of each measurement.")
     :default 10
     :parse-fn read-string
     :validate [nat-int? "Must be a non-negative integer."]]
-   ["-q" "--query QUERYNAME" 
+   ["-q" "--query QUERYNAME"
     (str "Name of query to test. Available are " implemented-queries)
     :default :all
     :parse-fn read-string
     :validate [implemented-queries (str "Must be a keyword for a implemented database query "
                                         "Available are: " implemented-queries)]]
-   ["-f" "--function FUNCTIONNAME"  
+   ["-f" "--function FUNCTIONNAME"
     (str "Name of function to test. Available are " implemented-functions)
     :default :all
     :parse-fn read-string
@@ -116,16 +117,16 @@
              hmap))
 
 (defn save-measurements-to-file [paths measurements]
-    (let [filename (first paths)]
-      (try
-        (if (pos? (count paths))
-          (do (spit filename measurements)
-              (println "Measurements successfully saved to" filename))
-          (println measurements))
-        (catch Exception e
-          (println measurements)
-          (println (str "Something went wrong while trying to save measurements to file " filename ":"))
-          (.printStackTrace e)))))
+  (let [filename (first paths)]
+    (try
+      (if (pos? (count paths))
+        (do (spit filename measurements)
+            (println "Measurements successfully saved to" filename))
+        (println measurements))
+      (catch Exception e
+        (println measurements)
+        (println (str "Something went wrong while trying to save measurements to file " filename ":"))
+        (.printStackTrace e)))))
 
 (defn -main [& args]
   (let [{:keys [options errors summary] :as parsed-opts} (cli/parse-opts args cli-options)
@@ -133,7 +134,6 @@
         server-info-keys [:db-server-url :db-token :db-name]
         server-description (map options server-info-keys)
         {:keys [tag output-format]} options]
-
     (cond
       (some? errors)
       (do (println "Errors:" errors)
@@ -174,8 +174,8 @@
                   "csv" (let [col-paths (map :path c/csv-cols)
                               titles (map :title c/csv-cols)
                               csv (str (join "\t" titles) "\n"
-                                       (join "\n" (for [result (sort-by (apply juxt (map (fn [path] (fn [measurement] (get-in measurement path))) 
-                                                                                         col-paths)) 
+                                       (join "\n" (for [result (sort-by (apply juxt (map (fn [path] (fn [measurement] (get-in measurement path)))
+                                                                                         col-paths))
                                                                         tagged)]
                                                     (join "\t" (map (fn [path] (get-in result path ""))
                                                                     col-paths)))))]

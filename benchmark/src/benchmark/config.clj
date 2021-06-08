@@ -1,7 +1,5 @@
 (ns benchmark.config)
 
-(def max-int 1000000)
-
 (def context-cell-order [:function :dh-config :db-datoms :tx-datoms :data-type :data-in-db?])
 
 (def csv-cols
@@ -71,9 +69,9 @@
 
 (defn rand-val-not-in [datatype val-set]
   (let [rand-gen (if (= datatype :int) rand-int rand-str)]
-    (loop [i (rand-gen max-int)]
+    (loop [i (rand-gen Integer/MAX_VALUE)]
       (if (contains? val-set i)
-        (recur (rand-gen max-int))
+        (recur (rand-gen Integer/MAX_VALUE))
         i))))
 
 (defn rand-attr-val [datatype attr entities in-set?]
@@ -171,7 +169,7 @@
                       (sequence (conj '[= ?v] comp-val))))
    :args [db]})
 
-(defn non-var-queries [db datatypes]
+(defn non-var-queries [db datatypes max-int]
   (apply concat
          (for [data-type datatypes]
            (let [[attr1 attr2 middle-elem] (if (= data-type :int)
@@ -287,7 +285,7 @@
     :details {:data-type :int}}])
 
 (defn all-queries [db entities datatypes data-found-opts]
-  (concat (non-var-queries db datatypes)
+  (concat (non-var-queries db datatypes (count entities))
           (var-queries db entities datatypes data-found-opts)
           (cache-check-queries db entities datatypes data-found-opts)
           (aggregate-queries entities)))
