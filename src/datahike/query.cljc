@@ -212,7 +212,7 @@
 
 (defmethod -lesser? String [^String s0 & more]
   (reduce (fn [_ s] (when (pos? (compare ^String s0 s))
-                        (reduced false))) 
+                      (reduced false)))
           true more))
 
 (defmethod -lesser? :default [value & more]
