@@ -53,9 +53,9 @@
   (when-let [old (old-key kvs new indices)]
     (remove-fn old)))
 
-(defrecord UpsertOp [key ts indices]
+(defrecord UpsertOp [key op-count indices]
   op/IOperation
-  (-insertion-ts [_] ts)
+  (-insertion-ts [_] op-count)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
     (-> (or (remove-old kvs key (partial dissoc kvs) indices) kvs)
@@ -76,9 +76,9 @@
       ;; '-' means it is retracted and 'nt' is the current transaction time.
       [a b c (- nt)])))
 
-(defrecord temporal-UpsertOp [key ts indices]
+(defrecord temporal-UpsertOp [key op-count indices]
   op/IOperation
-  (-insertion-ts [_] ts)
+  (-insertion-ts [_] op-count)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
     (let [old-retracted  (old-retracted kvs key indices)]
@@ -108,10 +108,11 @@
   (swap! (:read-handlers store)
          merge
          {'datahike.index.hitchhiker_tree.upsert.UpsertOp
-          (fn [{:keys [key value ts indices]}]
-            (map->UpsertOp {:key key :value value :ts ts :indices (or indices [0 1])}))
+          ;; TODO Remove ts when Wanderung is available.
+          (fn [{:keys [key value op-count ts indices]}]
+            (map->UpsertOp {:key key :value value :op-count (or op-count ts) :indices (or indices [0 1])}))
 
           'datahike.index.hitchhiker_tree.upsert.temporal-UpsertOp
-          (fn [{:keys [key value ts indices]}]
-            (map->temporal-UpsertOp {:key key :value value :ts ts :indices (or indices [0 1])}))})
+          (fn [{:keys [key value op-count ts indices]}]
+            (map->temporal-UpsertOp {:key key :value value :op-count (or op-count ts) :indices (or indices [0 1])}))})
   store)
