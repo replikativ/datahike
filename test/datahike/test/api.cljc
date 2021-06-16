@@ -204,14 +204,14 @@
                           [3 :likes "pie"]
                           [4 :likes "pizza"]}]})))
 
-    (is (= #{["pizza"]}
+    (is (= #{["pie"]}
            (d/q {:query '[:find ?value :where [_ :likes ?value]]
                  :offset 2
                  :limit 1
-                 :args [#{[1 :likes "fries"]
-                          [2 :likes "candy"]
-                          [3 :likes "pie"]
-                          [4 :likes "pizza"]}]})))
+                 :args [[[1 :likes "fries"]
+                         [2 :likes "candy"]
+                         [3 :likes "pie"]
+                         [4 :likes "pizza"]]]})))
 
     (is (= #{["fries"] ["pie"] ["candy"] ["pizza"]}
            (d/q {:query '[:find ?value :where [_ :likes ?value]]
@@ -222,14 +222,14 @@
                           [3 :likes "pie"]
                           [4 :likes "pizza"]}]})))
 
-    (is (= #{["candy"] ["pizza"]}
+    (is (= #{["pie"] ["pizza"]}
            (d/q {:query '[:find ?value :where [_ :likes ?value]]
                  :offset 2
                  :timeout 50
-                 :args [#{[1 :likes "fries"]
-                          [2 :likes "candy"]
-                          [3 :likes "pie"]
-                          [4 :likes "pizza"]}]})))
+                 :args [[[1 :likes "fries"]
+                         [2 :likes "candy"]
+                         [3 :likes "pie"]
+                         [4 :likes "pizza"]]]})))
 
     (is (= #{["fries"] ["candy"] ["pie"] ["pizza"]}
            (d/q '{:find [?value] :where [[_ :likes ?value]]}

@@ -27,7 +27,7 @@
       (is (= (d/q '[:find (sum ?heads)
                     :in   [[?monster ?heads]]]
                   monsters)
-             [[4]])))
+             #{[6]})))
 
     (testing "Multiple aggregates, correct grouping with :with"
       (is (= (d/q '[:find (sum ?heads) (min ?heads) (max ?heads) (count ?heads) (count-distinct ?heads)
@@ -45,12 +45,12 @@
       (is (= (d/q '[:find (min ?x) (max ?x)
                     :in [?x ...]]
                   [:a-/b :a/b])
-             [[:a/b :a-/b]]))
+             #{[:a/b :a-/b]}))
 
       (is (= (d/q '[:find (min 2 ?x) (max 2 ?x)
                     :in [?x ...]]
                   [:a/b :a-/b :a/c])
-             [[[:a/b :a/c] [:a/c :a-/b]]])))
+             #{[[:a/b :a/c] [:a/c :a-/b]]})))
 
     (testing "Grouping and parameter passing"
       (is (= (set (d/q '[:find ?color (max ?amount ?x) (min ?amount ?x)

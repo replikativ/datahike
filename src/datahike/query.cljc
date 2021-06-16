@@ -948,11 +948,6 @@
                   symbols))))
      acc)))
 
-(defn collect [context symbols]
-  (->> (-collect context symbols)
-       (map vec)
-       set))
-
 (defprotocol IContextResolve
   (-context-resolve [var context]))
 
@@ -996,17 +991,21 @@
       (-aggregate find-elements context tuples))))
 
 (defprotocol IPostProcess
-  (-post-process [find tuples]))
+  (-post-process [find tuples with-query? result-arity]))
 
 (extend-protocol IPostProcess
   FindRel
-  (-post-process [_ tuples] tuples)
+  (-post-process [_ with-query? result-arity tuples] (if with-query?
+                                                       (mapv #(vec (take result-arity %)) tuples)
+                                                       (set (map vec tuples))))
   FindColl
-  (-post-process [_ tuples] (into [] (map first) tuples))
+  (-post-process [_ _ _ tuples] (into [] (map first) tuples))
   FindScalar
-  (-post-process [_ tuples] (ffirst tuples))
+  (-post-process [_ _ _ tuples] (ffirst tuples))
   FindTuple
-  (-post-process [_ tuples] (first tuples)))
+  (-post-process [_ with-query? result-arity tuples] (if with-query?
+                                                       (vec (take result-arity (first tuples)))
+                                                       (vec (first tuples)))))
 
 (defn- pull [find-elements context resultset]
   (let [resolved (for [find find-elements]
@@ -1014,14 +1013,14 @@
                      [(-context-resolve (:source find) context)
                       (dpp/parse-pull
                        (-context-resolve (:pattern find) context))]))]
-    (for [tuple resultset]
-      (mapv (fn [env el]
-              (if env
-                (let [[src spec] env]
-                  (dpa/pull-spec src spec [el] false))
-                el))
-            resolved
-            tuple))))
+    (for [tuple (distinct (map vec resultset))]
+      (map (fn [env el]
+             (if env
+               (let [[src spec] env]
+                 (dpa/pull-spec src spec [el] false))
+               el))
+           resolved
+           tuple))))
 
 (def ^:private query-cache (volatile! (datahike.lru/lru lru-cache-size)))
 
@@ -1033,20 +1032,13 @@
       qp)))
 
 (defn paginate [offset limit resultset]
-  (if (or offset limit)
-    (let [length (count resultset)
-          start (or offset 0)
-          limit (if (or (nil? limit) (< limit 0))
-                  length
-                  limit)
-          part (+ start limit)
-          end (if (< length part)
-                length
-                part)]
-      (if (< start end)
-        (-> resultset vec (subvec start end) set)
-        #{}))
-    resultset))
+  (let [start (or offset 0)
+        limit (if (or (nil? limit) (neg? limit))
+                (count resultset)
+                limit)]
+    (if (pos? limit)
+      (->> resultset (drop start) (take limit))
+      '())))
 
 (defn convert-to-return-maps [{:keys [mapping-type mapping-keys]} resultset]
   (let [mapping-keys (map #(get % :mapping-key) mapping-keys)
@@ -1083,14 +1075,15 @@
         wheres        (:where query)
         context       (-> (Context. [] {} {} {})
                           (resolve-ins (:qin parsed-q) args))
-        resultset     (-> context
-                          (-q wheres)
-                          (collect all-vars))]
-    (cond->> resultset
-      (:with query)                                 (mapv #(vec (subvec % 0 result-arity)))
+        resultseq       (-> context
+                            (-q wheres)
+                            (-collect all-vars))
+        {:keys [limit offset]} query-map]
+    (cond->> resultseq
+      (or limit offset)                             (paginate offset limit) ;; before or after aggregate?
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
       (some #(instance? Pull %) find-elements)      (pull find-elements context)
-      true                                          (-post-process find)
-      true                                          (paginate (:offset query-map)
-                                                              (:limit query-map))
+     ; (:with query)                                 (map #(vec (take result-arity %)))
+      ;(not (:with query))                           (map vec)
+      true                                          (-post-process find (:with query) result-arity)
       returnmaps                                    (convert-to-return-maps returnmaps))))

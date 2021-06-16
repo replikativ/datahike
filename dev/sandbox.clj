@@ -38,4 +38,19 @@
          :in $ ?a
          :where [?e :name ?v ?t] [?e :age ?a]]
        @conn
-       35))
+       35)
+
+  (d/transact conn (vec (repeatedly 1000 (fn [] {:age (long (rand-int 1000))
+                                                 :name (str (rand-int 1000))}))))
+
+  (time
+   (d/q {:query '[:find ?e ?v
+                  :in $
+                  :where [?e :name ?v]]
+        :args [@conn]
+         ;:offset 0
+         ;:limit 10
+         
+         }))
+         
+         )
