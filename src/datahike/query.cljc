@@ -202,47 +202,118 @@
   (reduce (fn [a b]
             (if b (reduced b) b)) nil args))
 
-(defmulti -lesser?
-  {:arglists '([value & more])}
-  (fn [value & more] (class value)))
+(defprotocol CollectionOrder
+  (-strictly-decreasing? [x more])
+  (-decreasing? [x more])
+  (-strictly-increasing? [x more])
+  (-increasing? [x more]))
 
-(defmethod -lesser? java.util.Date [^Date d0 ^Date d1]
-  #?(:clj (.before ^Date d0 ^Date d1)
-     :cljs (< d0 d1)))
+(extend-protocol CollectionOrder
 
-(defmethod -lesser? :default [value & more]
-  (apply < value more))
+  Number
+  (-strictly-decreasing? [x more] (apply < x more))
+  (-decreasing? [x more] (apply <= x more))
+  (-strictly-increasing? [x more] (apply > x more))
+  (-increasing? [x more] (apply >= x more))
 
-(defmulti -greater? {:arglists '([value & more])}
-  (fn [value & more] (class value)))
+  java.util.Date
+  (-strictly-decreasing? [x more] #?(:clj (reduce (fn [res [d1 d2]] (if (.before ^Date d1 ^Date d2)
+                                                                      res
+                                                                      (reduced false)))
+                                                  true (map vector (cons x more) more))
+                                     :cljs (apply < x more)))
+  (-decreasing? [x more] #?(:clj (reduce (fn [res [d1 d2]] (if (.after ^Date d1 ^Date d2)
+                                                             (reduced false)
+                                                             res))
+                                         true (map vector (cons x more) more))
+                            :cljs (apply <= x more)))
+  (-strictly-increasing? [x more] #?(:clj (reduce (fn [res [d1 d2]] (if (.after ^Date d1 ^Date d2)
+                                                                      res
+                                                                      (reduced false)))
+                                                  true (map vector (cons x more) more))
+                                     :cljs (apply > x more)))
+  (-increasing? [x more] #?(:clj (reduce (fn [res [d1 d2]] (if (.before ^Date d1 ^Date d2)
+                                                             (reduced false)
+                                                             res))
+                                         true (map vector (cons x more) more))
+                            :cljs (apply >= x more))))
 
-(defmethod -greater? java.util.Date [^Date d0 ^Date d1]
-  #?(:clj (.after ^Date d0 ^Date d1)
-     :cljs (> d0 d1)))
+(defn- lesser? [& args]
+  (if (satisfies? CollectionOrder (first args))
+    (-strictly-decreasing? (first args) (rest args))
+    (reduce (fn [res [v1 s2]] (if (neg? (compare  v1 s2))
+                                res
+                                (reduced false)))
+            true (map vector args (rest args)))))
 
-(defmethod -greater? :default [value & more]
-  (apply > value more))
+(defn- lesser-equal? [& args]
+  (if (satisfies? CollectionOrder (first args))
+    (-decreasing? (first args) (rest args))
+    (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
+                                (reduced false)
+                                res))
+            true (map vector args (rest args)))))
 
-(defn- -lesser-equal? [value & more]
-  (or (apply = value more)
-      (apply -lesser? value more)))
+(defn- greater? [& args]
+  (if (satisfies? CollectionOrder (first args))
+    (-strictly-increasing? (first args) (rest args))
+    (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
+                                res
+                                (reduced false)))
+            true (map vector args (rest args)))))
 
-(defn- -greater-equal? [value & more]
-  (or (apply = value more)
-      (apply -greater? value more)))
+(defn- greater-equal? [& args]
+  (if (satisfies? CollectionOrder (first args))
+    (-increasing? (first args) (rest args))
+    (reduce (fn [res [v1 v2]] (if (neg? (compare v1 v2))
+                                (reduced false)
+                                res))
+            true (map vector args (rest args)))))
 
-(def built-ins {'= =, '== ==, 'not= not=, '!= not=, '< -lesser?, '> -greater?, '<= -lesser-equal?, '>= -greater-equal?, '+ +, '- -,
-                '* *, '/ /, 'quot quot, 'rem rem, 'mod mod, 'inc inc, 'dec dec, 'max max, 'min min,
-                'zero? zero?, 'pos? pos?, 'neg? neg?, 'even? even?, 'odd? odd?, 'compare compare,
-                'rand rand, 'rand-int rand-int,
-                'true? true?, 'false? false?, 'nil? nil?, 'some? some?, 'not not, 'and and-fn, 'or or-fn,
-                'complement complement, 'identical? identical?,
-                'identity   identity, 'meta meta, 'name name, 'namespace namespace, 'type type,
-                'vector     vector, 'list list, 'set set, 'hash-map hash-map, 'array-map array-map,
-                'count      count, 'range range, 'not-empty not-empty, 'empty? empty, 'contains? contains?,
-                'str        str, 'pr-str pr-str, 'print-str print-str, 'println-str println-str, 'prn-str prn-str, 'subs subs,
-                're-find    re-find, 're-matches re-matches, 're-seq re-seq,
-                '-differ?   -differ?, 'get-else -get-else, 'get-some -get-some, 'missing? -missing?, 'ground identity, 'before? -lesser?, 'after? -greater?
+(defn -min
+  ([coll] (reduce (fn [acc x]
+                    (if (neg? (compare x acc))
+                      x acc))
+                  (first coll) (next coll)))
+  ([n coll]
+   (vec
+    (reduce (fn [acc x]
+              (cond
+                (< (count acc) n)
+                (sort compare (conj acc x))
+                (neg? (compare x (last acc)))
+                (sort compare (conj (butlast acc) x))
+                :else acc))
+            [] coll))))
+
+(defn -max
+  ([coll] (reduce (fn [acc x]
+                    (if (pos? (compare x acc))
+                      x acc))
+                  (first coll) (next coll)))
+  ([n coll]
+   (vec
+    (reduce (fn [acc x]
+              (cond
+                (< (count acc) n)
+                (sort compare (conj acc x))
+                (pos? (compare x (first acc)))
+                (sort compare (conj (next acc) x))
+                :else acc))
+            [] coll))))
+
+(def built-ins {'=          =, '== ==, 'not= not=, '!= not=, '< lesser?, '> greater?, '<= lesser-equal?, '>= greater-equal?, '+ +, '- -
+                '*          *, '/ /, 'quot quot, 'rem rem, 'mod mod, 'inc inc, 'dec dec, 'max -max, 'min -min
+                'zero?      zero?, 'pos? pos?, 'neg? neg?, 'even? even?, 'odd? odd?, 'compare compare
+                'rand       rand, 'rand-int rand-int
+                'true?      true?, 'false? false?, 'nil? nil?, 'some? some?, 'not not, 'and and-fn, 'or or-fn
+                'complement complement, 'identical? identical?
+                'identity   identity, 'meta meta, 'name name, 'namespace namespace, 'type type
+                'vector     vector, 'list list, 'set set, 'hash-map hash-map, 'array-map array-map
+                'count      count, 'range range, 'not-empty not-empty, 'empty? empty, 'contains? contains?
+                'str        str, 'pr-str pr-str, 'print-str print-str, 'println-str println-str, 'prn-str prn-str, 'subs subs
+                're-find    re-find, 're-matches re-matches, 're-seq re-seq
+                '-differ?   -differ?, 'get-else -get-else, 'get-some -get-some, 'missing? -missing?, 'ground identity, 'before? lesser?, 'after? greater?
                 'tuple vector, 'untuple identity})
 
 (def built-in-aggregates
@@ -267,53 +338,21 @@
           (stddev
             [coll]
             (#?(:cljs js/Math.sqrt :clj Math/sqrt) (variance coll)))]
-    {'avg avg
-     'median median
-     'variance variance
-     'stddev stddev
-     'distinct set
-     'min (fn
-            ([coll] (reduce (fn [acc x]
-                              (if (neg? (compare x acc))
-                                x acc))
-                            (first coll) (next coll)))
-            ([n coll]
-             (vec
-              (reduce (fn [acc x]
-                        (cond
-                          (< (count acc) n)
-                          (sort compare (conj acc x))
-                          (neg? (compare x (last acc)))
-                          (sort compare (conj (butlast acc) x))
-                          :else acc))
-                      [] coll))))
-     'max (fn
-            ([coll] (reduce (fn [acc x]
-                              (if (pos? (compare x acc))
-                                x acc))
-                            (first coll) (next coll)))
-            ([n coll]
-             (vec
-              (reduce (fn [acc x]
-                        (cond
-                          (< (count acc) n)
-                          (sort compare (conj acc x))
-                          (pos? (compare x (first acc)))
-                          (sort compare (conj (next acc) x))
-                          :else acc))
-                      [] coll))))
-     'sum sum
-     'rand (fn
-             ([coll] (rand-nth coll))
-             ([n coll] (vec (repeatedly n #(rand-nth coll)))))
-     'sample (fn [n coll]
-               (vec (take n (shuffle coll))))
-     'count count
+    {'avg            avg
+     'median         median
+     'variance       variance
+     'stddev         stddev
+     'distinct       set
+     'min            -min
+     'max            -max
+     'sum            sum
+     'rand           (fn
+                       ([coll] (rand-nth coll))
+                       ([n coll] (vec (repeatedly n #(rand-nth coll)))))
+     'sample         (fn [n coll]
+                       (vec (take n (shuffle coll))))
+     'count          count
      'count-distinct (fn [coll] (count (distinct coll)))}))
-
-
-;;
-
 
 (defn parse-rules [rules]
   (let [rules (if (string? rules) (edn/read-string rules) rules)] ;; for datahike.js interop

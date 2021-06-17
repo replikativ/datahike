@@ -2,9 +2,21 @@
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-   [datahike.core :as d])
+   [datahike.core :as d]
+   [datahike.db :as db]
+   [datahike.test.core :as tdc])
+  (:import [java.util UUID Date])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
+
+(let [db (-> (d/empty-db {:parent {:db/valueType :db.type/ref}})
+             (d/db-with [{:db/id 1, :name  "Ivan",  :age   15}
+                         {:db/id 2, :name  "Petr",  :age   22, :height 240, :parent 1}
+                         {:db/id 3, :name  "Slava", :age   37, :parent 2}]))]
+  (d/q '[:find  ?e1 ?e2
+         :where [?e1 :age ?a1]
+         [?e2 :age ?a2]
+         [(< ?a1 18 ?a2)]] db))
 
 (deftest test-query-fns
   (testing "predicate without free variables"
@@ -279,3 +291,152 @@
    (deftest test-symbol-resolution
      (is (= 42 (d/q '[:find ?x .
                       :where [(datahike.test.query-fns/sample-query-fn) ?x]])))))
+
+(deftest test-built-in-predicates-types
+  (let [uuids (sort (repeatedly 3 #(UUID/randomUUID)))
+        dates (map #(-> (Date.) .getTime (+ (* % 86400 1000)) Date.) (range 3))
+        entities [{:db/id 1 :uuid (nth uuids 0) :birthday (nth dates 0) :symbol 'a :name "Alek" :age 20
+                   :group :a :collegues [1 2] :married? false}
+                  {:db/id 2 :uuid (nth uuids 1) :birthday (nth dates 1) :symbol 'i :name "Ivan" :age 30
+                   :group :b :collegues [2 3] :married? true}
+                  {:db/id 3 :uuid (nth uuids 2) :birthday (nth dates 2) :symbol 'o :name "Oleg" :age 40
+                   :group :c :collegues [3 4] :married? true}
+                  {:db/id 4 :uuid (nth uuids 2) :birthday (nth dates 2) :symbol 'o :name "Oleg" :age 40
+                   :group :c :collegues [3 4] :married? true}]
+        db (d/db-with (d/empty-db) entities)]
+
+    (testing "lesser"
+      (are [attr] (=  #{[1 2] [1 3] [1 4] [2 3] [2 4]}
+                      (d/q (into '[:find  ?e1 ?e2 :where]
+                                 [['?e1 attr '?a1]
+                                  ['?e2 attr '?a2]
+                                  ['(< ?a1 ?a2)]])
+                           db))
+        :uuid :birthday :symbol :name :age :group :collegues)
+      (is (=  #{[1 2] [1 3] [1 4]}
+              (d/q (into '[:find  ?e1 ?e2 :where]
+                         [['?e1 :married? '?a1]
+                          ['?e2 :married? '?a2]
+                          ['(< ?a1 ?a2)]])
+                   db)))
+      (are [attr] (=  #{[1 2 3] [1 2 4]}
+                      (d/q (into '[:find  ?e1 ?e2 ?e3 :where]
+                                 [['?e1 attr '?a1]
+                                  ['?e2 attr '?a2]
+                                  ['?e3 attr '?a3]
+                                  ['(< ?a1 ?a2 ?a3)]])
+
+                           db))
+        :uuid :birthday :symbol :name :age :group :collegues)
+      (is (=  #{}
+              (d/q (into '[:find  ?e1 ?e2 ?e3 :where]
+                         [['?e1 :married? '?a1]
+                          ['?e2 :married? '?a2]
+                          ['?e3 :married? '?a3]
+                          ['(< ?a1 ?a2 ?a3)]])
+
+                   db)))
+
+      (testing "greater"
+        (are [attr] (=  #{[4 1] [3 1] [2 1] [4 2] [3 2]}
+                        (d/q (into '[:find  ?e1 ?e2 :where]
+                                   [['?e1 attr '?a1]
+                                    ['?e2 attr '?a2]
+                                    ['(> ?a1 ?a2)]])
+                             db))
+          :uuid :birthday :symbol :name :age :group :collegues)
+        (is (=  #{[4 1] [3 1] [2 1]}
+                (d/q (into '[:find  ?e1 ?e2 :where]
+                           [['?e1 :married? '?a1]
+                            ['?e2 :married? '?a2]
+                            ['(> ?a1 ?a2)]])
+                     db)))
+        (are [attr] (=  #{[3 2 1] [4 2 1]}
+                        (d/q (into '[:find  ?e1 ?e2 ?e3 :where]
+                                   [['?e1 attr '?a1]
+                                    ['?e2 attr '?a2]
+                                    ['?e3 attr '?a3]
+                                    ['(> ?a1 ?a2 ?a3)]])
+                             db))
+          :uuid :birthday :symbol :name :age :group :collegues)
+        (is (=  #{}
+                (d/q (into '[:find  ?e1 ?e2 ?e3 :where]
+                           [['?e1 :married? '?a1]
+                            ['?e2 :married? '?a2]
+                            ['?e3 :married? '?a3]
+                            ['(> ?a1 ?a2 ?a3)]])
+                     db))))
+
+      (testing "lesser-equal"
+        (are [attr] (=  #{[1 2] [1 3] [1 4] [2 3] [2 4] [1 1] [2 2] [3 3] [3 4] [4 3] [4 4]}
+                        (d/q (into '[:find  ?e1 ?e2 :where]
+                                   [['?e1 attr '?a1]
+                                    ['?e2 attr '?a2]
+                                    ['(<= ?a1 ?a2)]])
+                             db))
+          :uuid :birthday :symbol :name :age :group :collegues)
+        (is (=  #{[4 3] [2 2] [2 3] [3 3] [1 1] [3 4] [4 2] [1 4] [1 3] [2 4] [4 4] [1 2] [3 2]}
+                (d/q (into '[:find  ?e1 ?e2 :where]
+                           [['?e1 :married? '?a1]
+                            ['?e2 :married? '?a2]
+                            ['(<= ?a1 ?a2)]])
+                     db)))
+        (are [attr] (=  #{[1 1 1] [1 1 2] [1 1 3] [1 1 4] [1 2 2] [1 2 3] [1 2 4] [1 3 3]
+                          [1 3 4] [1 4 3] [1 4 4] [2 2 2] [2 2 3] [2 2 4] [2 3 3] [2 3 4]
+                          [2 4 3] [2 4 4] [3 3 3] [3 3 4] [3 4 3] [3 4 4] [4 3 3] [4 3 4]
+                          [4 4 3] [4 4 4]}
+                        (d/q (into '[:find  ?e1 ?e2 ?e3 :where]
+                                   [['?e1 attr '?a1]
+                                    ['?e2 attr '?a2]
+                                    ['?e3 attr '?a3]
+                                    ['(<= ?a1 ?a2 ?a3)]])
+                             db))
+          :uuid :birthday :symbol :name :age :group :collegues)
+        (is (=  #{[2 4 4] [3 2 4] [4 4 2] [1 4 3] [2 4 2] [2 2 4] [1 3 2] [4 3 2]
+                  [3 4 3] [4 4 3] [4 2 4] [3 4 2] [1 1 3] [1 3 4] [1 4 4] [2 3 2]
+                  [1 1 1] [2 2 2] [3 2 2] [3 3 3] [1 3 3] [3 2 3] [2 3 4] [4 3 4]
+                  [2 2 3] [4 3 3] [4 4 4] [1 2 3] [1 1 4] [2 3 3] [3 4 4] [1 1 2]
+                  [2 4 3] [3 3 4] [1 2 2] [1 2 4] [4 2 2] [4 2 3] [1 4 2] [3 3 2]}
+                (d/q (into '[:find  ?e1 ?e2 ?e3 :where]
+                           [['?e1 :married? '?a1]
+                            ['?e2 :married? '?a2]
+                            ['?e3 :married? '?a3]
+                            ['(<= ?a1 ?a2 ?a3)]])
+                     db))))
+
+      (testing "greater-equal"
+        (are [attr] (=  #{[4 1] [3 1] [2 1] [4 2] [3 2] [1 1] [2 2] [3 3] [3 4] [4 3] [4 4]}
+                        (d/q (into '[:find  ?e1 ?e2 :where]
+                                   [['?e1 attr '?a1]
+                                    ['?e2 attr '?a2]
+                                    ['(>= ?a1 ?a2)]])
+                             db))
+          :uuid :birthday :symbol :name :age :group :collegues)
+        (is (=  #{[4 3] [2 2] [2 3] [3 3] [1 1] [3 4] [4 2] [4 1] [2 4] [3 1] [2 1] [4 4] [3 2]}
+                (d/q (into '[:find  ?e1 ?e2 :where]
+                           [['?e1 :married? '?a1]
+                            ['?e2 :married? '?a2]
+                            ['(>= ?a1 ?a2)]])
+                     db)))
+        (are [attr] (=  #{[3 2 1] [4 2 1] [4 3 1] [4 3 2] [1 1 1] [2 1 1] [2 2 1] [2 2 2]
+                          [3 1 1] [3 2 2] [3 3 1] [3 3 2] [3 3 3] [3 3 4] [3 4 1] [3 4 2]
+                          [3 4 3] [3 4 4] [4 1 1] [4 2 2] [4 3 3] [4 3 4] [4 4 1] [4 4 2]
+                          [4 4 3] [4 4 4]}
+                        (d/q (into '[:find  ?e1 ?e2 ?e3 :where]
+                                   [['?e1 attr '?a1]
+                                    ['?e2 attr '?a2]
+                                    ['?e3 attr '?a3]
+                                    ['(>= ?a1 ?a2 ?a3)]])
+                             db))
+          :uuid :birthday :symbol :name :age :group :collegues)
+        (is (=  #{[2 4 4] [2 3 1] [2 4 1] [3 2 4] [4 4 2] [3 4 1] [2 4 2] [2 2 4]
+                  [3 1 1] [4 3 2] [3 4 3] [4 4 3] [4 2 4] [3 4 2] [2 3 2] [4 4 1]
+                  [1 1 1] [2 2 2] [3 2 2] [3 3 3] [3 2 3] [4 2 1] [2 2 1] [4 3 1]
+                  [2 3 4] [4 3 4] [2 2 3] [3 3 1] [4 3 3] [4 4 4] [2 1 1] [4 1 1]
+                  [2 3 3] [3 4 4] [3 2 1] [2 4 3] [3 3 4] [4 2 2] [4 2 3] [3 3 2]}
+                (d/q (into '[:find  ?e1 ?e2 ?e3 :where]
+                           [['?e1 :married? '?a1]
+                            ['?e2 :married? '?a2]
+                            ['?e3 :married? '?a3]
+                            ['(>= ?a1 ?a2 ?a3)]])
+                     db)))))))

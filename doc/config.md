@@ -14,10 +14,10 @@ The sources are resolved in following order:
 That means passing a config as argument overwrites java system properties and using java system properties overwrite environment variables etc. Currently the configuration map looks like this per default:
 
 ```
-{:store              {:backend  :mem        ;keyword
+{:store 	         {:backend  :mem        ;keyword
                       :id       "default"}  ;string
  :name               (generated)            ;string
- :schema-flexibility :write                 ;keyword
+ :schema-flexibility :write    		        ;keyword
  :keep-history?      true}                  ;boolean
 ```
 
