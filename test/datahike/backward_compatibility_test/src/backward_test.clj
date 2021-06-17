@@ -13,7 +13,7 @@
 (def size 10000)
 
 (defn write [opt]
-  (t/info "----- Writing to db using latest released version of datahike ....")
+  (t/info "Writing to db using latest released version of datahike ....")
   (t/set-level! :warn)
 
   (d/delete-database cfg)
@@ -22,14 +22,14 @@
     (d/transact conn
                 (vec (for [i (range size)]
                        [:db/add (inc i) :age i]))))
-  (t/info "----- Wrote " size " entries."))
+  (t/info "Wrote " size " entries."))
 
 (defn read [opt]
-  (t/info "----- Reading using latest code ....")
+  (t/info "Reading using latest code ....")
   (let [conn (d/connect cfg)
         res (first (d/q '[:find (count ?a)
                           :in $
                           :where [?e :age ?a]]
                         @conn))]
     (assert (= [size] res))
-    (t/info "----- Read " (first res) " entries.")))
+    (t/info "Read " (first res) " entries.")))
