@@ -54,6 +54,10 @@ workflows:
           context: dockerhub-deploy
           requires:
             - setup
+      - tools/backward-compatibility-test:
+          context: dockerhub-deploy
+          requires:
+            - setup
       - tools/integrationtest-postgresql:
           context: dockerhub-deploy
           requires:
@@ -75,6 +79,7 @@ workflows:
             - setup
             - tools/format
             - tools/unittest
+            - tools/backward-compatibility-test
             - tools/integrationtest-postgresql
             - tools/build
       - tools/deploy-release:
@@ -89,5 +94,6 @@ workflows:
             - setup
             - tools/format
             - tools/unittest
+            - tools/backward-compatibility-test
             - tools/integrationtest-postgresql
             - tools/build
