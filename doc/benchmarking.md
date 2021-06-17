@@ -19,7 +19,7 @@ clj -A:benchmark run [OPTIONS] [OUTPUTFILEPATH]+
 Options:
 
 | Short | Long                      | Description                                                            | Default       |
-|-------+---------------------------+------------------------------------------------------------------------+---------------|
+|:-----:|---------------------------|------------------------------------------------------------------------|---------------|
 | -u    | --db-server-url URL       | Base URL for datahike server for benchmark output.                     |               |
 | -n    | --db-name DBNAME          | Database name for datahike server for benchmark output.                |               |
 | -g    | --db-token TOKEN          | Token for datahike server for benchmark output.                        |               | 
