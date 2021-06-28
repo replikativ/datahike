@@ -15,6 +15,7 @@
 (def ^:private ^:const +default-limit+ 1000)
 
 (defn- initial-frame
+  "Creates an empty pattern frame according to pattern information."
   [pattern eids multi?]
   {:state     :pattern
    :pattern   pattern
@@ -27,10 +28,12 @@
    :recursion {:depth {} :seen #{}}})
 
 (defn subpattern-frame
+  "Returns frame specific for given attribute"
   [pattern eids multi? attr]
   (assoc (initial-frame pattern eids multi?) :attr attr))
 
 (defn reset-frame
+  "Recalculate frame attributes from frame pattern and transfer end results to frame-specific result section"
   [frame eids kvps]
   (let [pattern (:pattern frame)]
     (assoc frame
@@ -42,6 +45,7 @@
                         (seq kvps) (conj! kvps)))))
 
 (defn push-recursion
+  "Push newly processed entity and increase recursion depth."
   [rec attr eid]
   (let [{:keys [depth seen]} rec]
     (assoc rec
@@ -55,6 +59,7 @@
       (contains? eid)))
 
 (defn pull-seen-eid
+  "Add eid to result set if entity already seen. Else return nil."
   [frame frames eid]
   (when (seen-eid? frame eid)
     (conj frames (update frame :results conj! {:db/id eid}))))
@@ -74,6 +79,10 @@
            :recursion rec)))
 
 (defn pull-recursion-frame
+  "Processes recursion for one entity ID or collects results.
+  Replaces current frame with
+  - one frame with remaining entiy IDs and
+  - one subpattern frame"
   [db [frame & frames]]
   (if-let [eids (seq (:eids frame))]
     (let [frame  (reset-frame frame (rest eids) (recursion-result frame))
@@ -86,6 +95,7 @@
       (conj frames (assoc frame :state :done :results results)))))
 
 (defn recurse-attr
+  "Adds recursion frame to frame set if maximum recursion depth not reached"
   [db attr multi? eids eid parent frames]
   (let [{:keys [recursion pattern]} parent
         depth  (-> recursion (get :depth) (get attr 0))]
@@ -99,7 +109,7 @@
               :recursion recursion
               :results (transient [])})))))
 
-(let [pattern (PullSpec. true {})]
+(let [pattern (PullSpec. true {})]                          ;; For performance purposes?
   (defn- expand-frame
     [parent eid attr-key multi? eids]
     (let [rec (push-recursion (:recursion parent) attr-key eid)]
@@ -108,6 +118,15 @@
           (assoc :recursion rec)))))
 
 (defn pull-attr-datoms
+  "Processes datoms found to requested pattern for given attribute, i.e.
+   - limits the result set to specified or default limit,
+   - renames attribute key if requested,
+   - adds default value on missing attributes if requested.
+   Adds frame if
+   - subpattern requested on attribute,
+   - recursion requested,
+   - attribute is reference.
+   Returns frame set."
   [db attr-key attr eid forward? datoms opts [parent & frames]]
   (let [limit (get opts :limit +default-limit+)
         attr-key (or (:as opts) attr-key)
@@ -117,8 +136,10 @@
     (if found
       (let [ref?       (db/ref? db attr)
             component? (and ref? (db/component? db attr))
-            multi?     (if forward? (db/multival? db attr) (not component?))
-            datom-val  (if forward? (fn [d] (.-v ^Datom d)) (fn [d] (.-e ^Datom d)))]
+            multi?     (if forward? (db/multival? db attr)
+                           (not component?))
+            datom-val  (if forward? (fn [d] (.-v ^Datom d))
+                           (fn [d] (.-e ^Datom d)))]
         (cond
           (contains? opts :subpattern)
           (->> (subpattern-frame (:subpattern opts)
@@ -151,6 +172,7 @@
            (conj frames)))))
 
 (defn pull-attr
+  "Retrieve datoms for given entity id and specification from database"
   [db spec eid frames]
   (let [[attr-key opts] spec]
     (if (= :db/id attr-key)
@@ -160,9 +182,15 @@
         frames)
       (let [attr     (:attr opts)
             forward? (= attr-key attr)
-            results  (if forward?
-                       (db/-datoms db :eavt [eid attr])
-                       (db/-datoms db :avet [attr eid]))]
+            a (if (and (:attribute-refs? (db/-config db))
+                       (not (number? attr)))
+                (db/-ref-for db attr)
+                attr)
+            results  (if (nil? a)
+                       []
+                       (if forward?
+                         (db/-datoms db :eavt [eid a])
+                         (db/-datoms db :avet [a eid])))]
         (pull-attr-datoms db attr-key attr eid forward?
                           results opts frames)))))
 
@@ -176,6 +204,7 @@
       (subpattern-frame [eid] false ::expand-rev)))
 
 (defn expand-result
+  "Add intermediate result to frame next in line. Return frame set."
   [frames kvps]
   (->> kvps
        (persistent!)
@@ -183,12 +212,15 @@
        (conj (rest frames))))
 
 (defn pull-expand-reverse-frame
+  "Adds expand results of current frame to next frame in frame set."
   [db [frame & frames]]
   (->> (or (single-frame-result ::expand-rev frame) {})
        (into! (:expand-kvps frame))
        (expand-result frames)))
 
 (defn pull-expand-frame
+  "Processes datoms for one attribute or changes frame state to process reverse attributes
+  and spawns new frame for subpattern."
   [db [frame & frames]]
   (if-let [datoms-by-attr (seq (:datoms frame))]
     (let [[attr datoms] (first datoms-by-attr)
@@ -211,7 +243,10 @@
 
 (defn pull-wildcard-expand
   [db frame frames eid pattern]
-  (let [datoms (group-by (fn [d] (.-a ^Datom d)) (db/-datoms db :eavt [eid]))
+  (let [datoms (group-by (fn [d] (if (:attribute-refs? (db/-config db))
+                                   (db/-ident-for db (.-a ^Datom d))
+                                   (.-a ^Datom d)))
+                         (db/-datoms db :eavt [eid]))
         {:keys [attr recursion]} frame
         rec (cond-> recursion
               (some? attr) (push-recursion attr eid))]
@@ -239,7 +274,6 @@
                      frames)
       (if-let [specs (seq (:specs frame))]
         (let [spec       (first specs)
-              pattern    (:pattern frame)
               new-frames (conj frames (assoc frame :specs (rest specs)))]
           (pull-attr db spec (first eids) new-frames))
         (->> frame :kvps persistent! not-empty

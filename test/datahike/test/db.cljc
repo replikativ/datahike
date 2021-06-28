@@ -4,6 +4,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
+   [datahike.constants :as c]
    [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
                            :clj  [:refer [defrecord-updatable]])]))
 
@@ -61,13 +62,13 @@
     (is (thrown-msg?
          "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
          (d/empty-db {:name {:db/cardinality :db.cardinality/many}} {:schema-flexibility :write})))
-    (is (= (merge db/implicit-schema
+    (is (= (merge c/non-ref-implicit-schema
                   {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}})
            (:schema (d/empty-db {:name {:db/cardinality :db.cardinality/one
                                         :db/valueType :db.type/string}}
                                 {:schema-flexibility :write}))))
 
-    (is (= (merge db/implicit-schema
+    (is (= (merge c/non-ref-implicit-schema
                   {:name {:db/ident :name :db/cardinality :db.cardinality/one :db/valueType :db.type/string}})
            (:schema (d/empty-db [{:db/ident :name
                                   :db/cardinality :db.cardinality/one

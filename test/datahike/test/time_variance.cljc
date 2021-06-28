@@ -49,12 +49,11 @@
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
       (d/transact conn [[:db/retractEntity [:name "Alice"]]])
-      (are [x y]
-           (= x y)
-        #{}
-        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
-        #{[30] [25]}
-        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
+      (is (thrown-msg?
+           "Nothing found for entity id [:name \"Alice\"]"
+           (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])))
+      (is (= #{[30] [25]}
+             (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"]))))
     (testing "find retracted values"
       (is (= #{["Alice" 25] ["Alice" 30]}
              (d/q '[:find ?n ?a :where [?r :age ?a _ false] [?r :name ?n _ false]] (d/history @conn)))))

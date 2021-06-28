@@ -1,4 +1,4 @@
-(ns datahike.test.tuples-test
+(ns datahike.test.tuples
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
@@ -30,35 +30,35 @@
 (deftest test-transaction
   (testing "homogeneous tuple"
     (let [conn (connect)]
-      (d/transact conn [{:db/ident       :db/prices
+      (d/transact conn [{:db/ident       :prices
                          :db/valueType   :db.type/tuple
                          :db/tupleType   :db.type/number
                          :db/cardinality :db.cardinality/one}])
       (testing "of less than 9 values"
-        (is (d/transact conn [{:db/prices [1 2 3 4 5 6 7 8]}]))
+        (is (d/transact conn [{:prices [1 2 3 4 5 6 7 8]}]))
         (testing "are of different types"
           (is (thrown-with-msg? ExceptionInfo #".*Cannot store homogeneous tuple with values of different type.*"
-                                (d/transact! conn [{:db/prices [1 2 3 4 5 6 "fdsfdsf"]}]))))
+                                (d/transact! conn [{:prices [1 2 3 4 5 6 "fdsfdsf"]}]))))
         (testing "are of wrong type"
           (is (thrown-with-msg? ExceptionInfo #".*Cannot store homogeneous tuple. Values are of wrong type.*"
-                                (d/transact! conn [{:db/prices ["a" "b" "fdsfdsf"]}])))))
+                                (d/transact! conn [{:prices ["a" "b" "fdsfdsf"]}])))))
       (testing "of more than 8 values"
         (is (thrown-with-msg? ExceptionInfo #".*Cannot store more than 8 values .*"
-                              (d/transact! conn [{:db/prices [1 2 3 4 5 6 7 8 9]}]))))))
+                              (d/transact! conn [{:prices [1 2 3 4 5 6 7 8 9]}]))))))
 
   (testing "heterogeneous tuple"
     (let [conn (connect)]
-      (d/transact conn [{:db/ident       :db/coord
+      (d/transact conn [{:db/ident       :coord
                          :db/valueType   :db.type/tuple
                          :db/tupleTypes  [:db.type/long :db.type/keyword]
                          :db/cardinality :db.cardinality/one}])
-      (is (d/transact conn [{:db/coord [100 :coord/west]}]))
+      (is (d/transact conn [{:coord [100 :coord/west]}]))
       (testing "with wrong number of values"
         (is (thrown-with-msg? ExceptionInfo #".*Cannot store heterogeneous tuple: expecting 2 values, got 3.*"
-                              (d/transact! conn [{:db/coord [100 :coord/west 9]}]))))
+                              (d/transact! conn [{:coord [100 :coord/west 9]}]))))
       (testing "with type mismatch"
         (is (thrown-with-msg? ExceptionInfo #".*Cannot store heterogeneous tuple: there is a mismatch between values.* and their types.*"
-                              (d/transact! conn [{:db/coord [100 9]}]))))))
+                              (d/transact! conn [{:coord [100 9]}]))))))
 
   (testing "composite tuple"
     (let [conn (connect)
@@ -83,25 +83,25 @@
 (deftest test-transact-and-query-non-composite
   (testing "heterogeneous"
     (let [conn (connect)]
-      (d/transact conn [{:db/ident       :db/coord
+      (d/transact conn [{:db/ident       :coord
                          :db/valueType   :db.type/tuple
                          :db/tupleTypes  [:db.type/long :db.type/keyword]
                          :db/cardinality :db.cardinality/one}])
-      (d/transact conn [[:db/add 100 :db/coord [100 :coord/west]]])
+      (d/transact conn [[:db/add 100 :coord [100 :coord/west]]])
       (is (= #{[[100 :coord/west]]}
              (d/q '[:find ?v
-                    :where [_ :db/coord ?v]]
+                    :where [_ :coord ?v]]
                   @conn)))))
   (testing "homogeneous"
     (let [conn (connect)]
-      (d/transact conn [{:db/ident       :db/coord
+      (d/transact conn [{:db/ident       :coord
                          :db/valueType   :db.type/tuple
                          :db/tupleType   :db.type/long
                          :db/cardinality :db.cardinality/one}])
-      (d/transact conn [[:db/add 100 :db/coord [100 200 300]]])
+      (d/transact conn [[:db/add 100 :coord [100 200 300]]])
       (is (= #{[[100 200 300]]}
              (d/q '[:find ?v
-                    :where [_ :db/coord ?v]]
+                    :where [_ :coord ?v]]
                   @conn))))))
 
 (deftest test-transact-and-query-composite

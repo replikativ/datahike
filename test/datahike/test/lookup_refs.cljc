@@ -228,7 +228,6 @@
            #{[[:name "Ivan"] [:name "Petr"]]
              [[:name "Petr"] [:name "Oleg"]]}))
 
-    ;; https://github.com/tonsky/datahike/issues/214
     (is (= (d/q '[:find ?e
                   :in $ [?e ...]
                   :where [?e :friend 3]]
@@ -259,7 +258,9 @@
                   db)
              #{[1]}))
 
-      (is (= (d/q '[:find ?e
-                    :where [[:name "Valery"] :friend ?e]]
-                  db)
-             #{})))))
+      (is (thrown-msg? "Nothing found for entity id [:name \"Valery\"]"
+                       (d/q '[:find ?e
+                              :where [[:name "Valery"] :friend ?e]]
+                            db))))))
+
+

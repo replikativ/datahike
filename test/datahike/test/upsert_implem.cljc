@@ -1,4 +1,4 @@
-(ns datahike.test.upsert-implem-test
+(ns datahike.test.upsert-implem
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
