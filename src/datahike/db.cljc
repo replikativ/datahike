@@ -1535,7 +1535,7 @@
       true          (update-in [:aevt] #(di/-upsert % datom :aevt op-count))
 
       (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count))
-      indexing?                     (update-in [:avet] #(di/-insert % datom :avet op-count))
+      indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count))
 
       true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))
