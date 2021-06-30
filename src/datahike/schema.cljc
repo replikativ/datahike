@@ -167,14 +167,18 @@
        (when (and (not= old-value new-value) 
                   (= "db" (namespace attr-def)))
          (case attr-def
-           :db/cardinality (if (= new-value :db.cardinality/many)
-                             (if (get-in attr-schema [:db/unique])
-                               (assoc m attr-def [old-value new-value])
-                               nil)
-                             (assoc m attr-def [old-value new-value]))
-           :db/unique (when-not (get-in attr-schema [:db/unique])
-                        (when-not (= (get-in attr-schema [:db/cardinality]) :db.cardinality/one)
-                          (assoc m attr-def [old-value new-value])))
+           :db/cardinality 
+           ;; Prohibit update from :db.cardinality/one to :db.cardinality/many, if there is a :db/unique constraint.
+           (when (and (= new-value :db.cardinality/many)
+                      (#{:db.unique/value :db.unique/identity} (:db/unique attr-schema)))
+             (assoc m attr-def [old-value new-value]))
+
+           :db/unique 
+           (when (or (not (:db/unique attr-schema))
+                     (not= :db.cardinality/one (:db/cardinality attr-schema)))
+             (assoc m attr-def [old-value new-value]))
+            
+           ;; Always allow docs to be updated. 
            :db/doc nil
            (assoc m attr-def [old-value new-value])))))
    {}
