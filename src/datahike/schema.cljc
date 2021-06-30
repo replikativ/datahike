@@ -178,8 +178,11 @@
                      (not= :db.cardinality/one (:db/cardinality attr-schema)))
              (assoc m attr-def [old-value new-value]))
             
-           ;; Always allow docs to be updated. 
+           ;; Always allow these attributes to be updated. 
            :db/doc nil
+           :db/noHistory nil
+           :db/isComponent nil
+
            (assoc m attr-def [old-value new-value])))))
    {}
    (dissoc entity :db/id)))
