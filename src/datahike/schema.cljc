@@ -175,6 +175,7 @@
            :db/unique (when-not (get-in attr-schema [:db/unique])
                         (when-not (= (get-in attr-schema [:db/cardinality]) :db.cardinality/one)
                           (assoc m attr-def [old-value new-value])))
+           :db/doc nil
            (assoc m attr-def [old-value new-value])))))
    {}
    (dissoc entity :db/id)))
