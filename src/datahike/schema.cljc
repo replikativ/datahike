@@ -164,7 +164,8 @@
   (reduce-kv
    (fn [m attr-def new-value]
      (let [old-value (get-in attr-schema [attr-def])]
-       (when-not (= old-value new-value)
+       (when (and (not= old-value new-value) 
+                  (= "db" (namespace attr-def)))
          (case attr-def
            :db/cardinality (if (= new-value :db.cardinality/many)
                              (if (get-in attr-schema [:db/unique])
