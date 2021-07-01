@@ -6,11 +6,14 @@
             [datahike.query :as dq]
             [datahike.schema :as ds]
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
+            [taoensso.timbre :as timbre]
             [datahike.impl.entity :as de])
   #?(:clj
      (:import [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
               [datahike.impl.entity Entity]
               [java.util Date])))
+
+(timbre/set-level! :fatal)
 
 (def
   ^{:arglists '([] [config])
