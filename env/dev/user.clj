@@ -27,17 +27,17 @@
 
   (def conn (d/connect cfg))
 
-  (d/transact conn schema)
+  (d/transact conn {:tx-data schema})
 
-  (d/transact conn [{:name "Alice"
-                     :age  25}
-                    {:name "Bob"
-                     :age 30}])
+  (d/transact conn {:tx-data [{:name "Alice"
+                               :age  25}
+                              {:name "Bob"
+                               :age 30}]})
 
-  (d/transact conn [{:name    "Charlie"
-                     :age     5
-                     :parents [{:name "Alice"}
-                               {:name "Bob"}]}])
+  (d/transact conn {:tx-data [{:name    "Charlie"
+                               :age     5
+                               :parents [{:name "Alice"}
+                                         {:name "Bob"}]}]})
 
   (d/q '[:find ?e ?a ?v ?t
          :in $ ?a
@@ -55,4 +55,8 @@
 
   (d/q '[:find ?e :where [?e :name "Alice"]] @conn)
 
-  (:schema @conn))
+  (:schema @conn)
+
+  (:meta @conn)
+
+  )
