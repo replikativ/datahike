@@ -9,7 +9,7 @@
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    [datahike.constants :as c :refer [ue0 e0 tx0 utx0 emax txmax system-schema]]
-   [datahike.tools :refer [get-time case-tree raise]]
+   [datahike.tools :refer [get-time case-tree raise get-version]]
    [datahike.schema :as ds]
    [datahike.lru :refer [lru-datom-cache-factory]]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
@@ -22,7 +22,7 @@
                             [datahike.tools :refer [case-tree raise]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry]
-                   [java.util Date]
+                   [java.util Date UUID]
                    [datahike.datom Datom])))
 
 ;; ----------------------------------------------------------------------------
@@ -891,6 +891,12 @@
    {}
    schema))
 
+(defn create-meta []
+  {:version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT")
+   :id #?(:clj (UUID/randomUUID)
+          :cljs "NOT_SUPPORTED")
+   :created-at (get-time)})
+
 (defn ^DB empty-db
   "Prefer create-database in api, schema only in index for attribute reference database."
   ([] (empty-db nil nil))
@@ -929,12 +935,14 @@
                 (di/init-index index indexed-datoms indexed :avet 0)
                 (di/empty-index index :avet))
          max-eid (if attribute-refs? ue0 e0)
-         max-tx (if attribute-refs? utx0 tx0)]
+         max-tx (if attribute-refs? utx0 tx0)
+         meta (create-meta)]
      (map->DB
       (merge
        {:schema complete-schema
         :rschema rschema
         :config complete-config
+        :meta meta
         :eavt eavt
         :aevt aevt
         :avet avet
@@ -977,7 +985,6 @@
          indexed (if attribute-refs?
                    (set (map ident-ref-map (:db/index rschema)))
                    (:db/index rschema))
-
          new-datoms (if attribute-refs? (concat ref-datoms datoms) datoms)
          indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) new-datoms)
          op-count 0
@@ -986,10 +993,12 @@
          aevt (di/init-index index new-datoms indexed :aevt op-count)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
+         meta (create-meta)
          op-count (count new-datoms)]
      (map->DB (merge {:schema complete-schema
                       :rschema rschema
                       :config complete-config
+                      :meta meta
                       :eavt eavt
                       :aevt aevt
                       :avet avet
