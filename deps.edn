@@ -6,6 +6,7 @@
         environ/environ                             {:mvn/version "1.2.0"}
         com.taoensso/timbre                         {:mvn/version "5.1.0"}
         io.replikativ/superv.async                  {:mvn/version "0.2.11"}
+        io.replikativ/konserve                      {:mvn/version "0.6.0-alpha3"}
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.8"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
         junit/junit                                 {:mvn/version "4.13.1"}}
@@ -28,9 +29,7 @@
            :test {:extra-paths ["test"]
                   :extra-deps {org.clojure/clojurescript {:mvn/version "1.10.516"}
                                lambdaisland/kaocha       {:mvn/version "1.0.632"}
-                               lambdaisland/kaocha-cljs  {:mvn/version "0.0-71"}
-                               io.replikativ/datahike-leveldb {:mvn/version "0.1.0"}
-                               io.replikativ/datahike-postgres {:mvn/version "0.3.1-SNAPSHOT"}}}
+                               lambdaisland/kaocha-cljs  {:mvn/version "0.0-71"}}}
 
            :repl {:extra-deps {cider/cider-nrepl           {:mvn/version "0.25.9"}
                                nrepl/nrepl                 {:mvn/version "0.8.3"}
