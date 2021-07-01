@@ -6,7 +6,6 @@
         environ/environ                             {:mvn/version "1.2.0"}
         com.taoensso/timbre                         {:mvn/version "5.1.0"}
         io.replikativ/superv.async                  {:mvn/version "0.2.11"}
-        io.replikativ/konserve                      {:mvn/version "0.6.0-alpha3"}
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.8"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
         junit/junit                                 {:mvn/version "4.13.1"}}
