@@ -1,7 +1,6 @@
 (ns datahike.test.db
   (:require
    [clojure.data]
-   [datahike.test]
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
