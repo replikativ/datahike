@@ -15,12 +15,13 @@
             [clojure.spec.alpha :as s]
             [clojure.core.async :refer [go <!]]
             [clojure.core.cache :as cache])
-  (:import [java.net URI]))
+  (:import #?(:clj [java.net URI])
+           [clojure.lang Atom]))
 
-(s/def ::connection #(instance? clojure.lang.Atom %))
+(s/def ::connection #(instance? Atom %))
 
-(defn update-and-flush-db [connection tx-data update-fn]
-  (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
+(defn update-and-flush-db [connection tx-data tx-meta update-fn]
+  (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data tx-meta)
         {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx op-count hash meta]} db-after
         store (:store @connection)
         backend (kons/->KonserveBackend store)
@@ -57,11 +58,11 @@
     tx-report))
 
 (defn transact!
-  [connection {:keys [tx-data]}]
+  [connection {:keys [tx-data tx-meta]}]
   {:pre [(d/conn? connection)]}
   (let [p (throwable-promise)]
     (go
-      (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data 'datahike.core/transact))]
+      (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data tx-meta 'datahike.core/transact))]
         (deliver p tx-report)))
     p))
 
@@ -83,7 +84,7 @@
 (defn load-entities [connection entities]
   (let [p (throwable-promise)]
     (go
-      (let [tx-report (<! (t/send-transaction! (:transactor @connection) entities 'datahike.core/load-entities))]
+      (let [tx-report (<! (t/send-transaction! (:transactor @connection) entities nil 'datahike.core/load-entities))]
         (deliver p tx-report)))
     p))
 
