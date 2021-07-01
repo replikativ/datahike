@@ -22,7 +22,7 @@
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx op-count hash]} db-after
+        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx op-count hash meta]} db-after
         store (:store @connection)
         backend (kons/->KonserveBackend store)
         eavt-flushed (di/-flush eavt backend)
@@ -40,6 +40,7 @@
                          :ident-ref-map ident-ref-map
                          :ref-ident-map ref-ident-map
                          :config config
+                         :meta meta
                          :hash hash
                          :max-tx max-tx
                          :op-count op-count
@@ -153,12 +154,13 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
-          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash]
+          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash meta]
            :or {op-count 0}} stored-db
           empty (db/empty-db nil config)
           conn (d/conn-from-db (assoc empty
                                       :max-tx max-tx
                                       :config config
+                                      :meta meta
                                       :schema schema
                                       :hash hash
                                       :max-eid (db/init-max-eid eavt-key)
@@ -186,7 +188,7 @@
           stored-db (<?? S (k/get-in store [:db]))
           _ (when stored-db
               (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
-          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash]}
+          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash meta]}
           (db/empty-db nil config)
           backend (kons/->KonserveBackend store)]
       (<?? S (k/assoc-in store [:db]
@@ -194,6 +196,7 @@
                                  :max-tx max-tx
                                  :op-count op-count
                                  :hash hash
+                                 :meta meta
                                  :rschema rschema
                                  :system-entities system-entities
                                  :ident-ref-map ident-ref-map
