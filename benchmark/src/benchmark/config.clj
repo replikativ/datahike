@@ -89,6 +89,13 @@
                 (conj '[?e] attr val))
    :args [db]})
 
+(defn limit-query [db attr]
+  {:query (conj '[:find ?e ?v :where] ;; pulls entity-count datoms
+                (conj '[?e] attr '?v))
+   :offset 0
+   :limit 100
+   :args [db]})
+
 (defn e-join-query [db attr1 attr2] ;; entity-count res lines
   {:query (conj '[:find ?e :where]
                 (conj '[?e] attr1 '?v1) ;; pulls entity-count datoms
@@ -197,12 +204,16 @@
                :details {:data-type data-type}}
 
               {:function :equals-query-1-fixed
-               :query (equals-query-1-fixed db :attr1 middle-elem)
+               :query (equals-query-1-fixed db attr1 middle-elem)
                :details {:data-type data-type}}
 
               {:function :less-than-query-1-fixed
-               :query (less-than-query-1-fixed db :attr1 middle-elem)
-               :details {:data-type data-type}}]))))
+               :query (less-than-query-1-fixed db attr1 middle-elem)
+               :details {:data-type data-type}}
+               
+               {:function :limit-query
+                :query (limit-query db attr1)
+                :details {:data-type data-type}}]))))
 
 (defn var-queries [db entities datatypes data-found-opts]
   (apply concat
