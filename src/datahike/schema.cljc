@@ -164,8 +164,7 @@
   (reduce-kv
    (fn [m attr-def new-value]
      (let [old-value (get-in attr-schema [attr-def])]
-       (when (and (not= old-value new-value) 
-                  (= "db" (namespace attr-def)))
+       (when (not= old-value new-value)
          (case attr-def
            :db/cardinality 
            ;; Prohibit update from :db.cardinality/one to :db.cardinality/many, if there is a :db/unique constraint.
