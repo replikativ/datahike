@@ -204,7 +204,7 @@
                           [3 :likes "pie"]
                           [4 :likes "pizza"]}]})))
 
-    (is (= #{["pizza"]}
+    (is (= #{["fries"]}
            (d/q {:query '[:find ?value :where [_ :likes ?value]]
                  :offset 2
                  :limit 1
@@ -222,7 +222,7 @@
                           [3 :likes "pie"]
                           [4 :likes "pizza"]}]})))
 
-    (is (= #{["candy"] ["pizza"]}
+    (is (= #{["candy"] ["fries"]}
            (d/q {:query '[:find ?value :where [_ :likes ?value]]
                  :offset 2
                  :timeout 50

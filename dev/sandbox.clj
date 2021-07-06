@@ -63,5 +63,20 @@
 
   (:schema @conn)
 
+  (d/transact conn (vec (repeatedly 5000 (fn [] {:age (long (rand-int 1000))
+                                                 :name (str (rand-int 1000))}))))
 
-  )
+  (time
+   (d/q {:query '[:find ?e ?v
+                  :in $
+                  :where [?e :name ?v]]
+         :args [@conn]
+         :offset 0
+         :limit 10}))
+
+  (time
+   (do (d/q {:query '[:find ?v1 ?v2
+                      :in $
+                      :where [?e1 :name ?v1] [?e2 :name ?v2]]
+             :args [@conn]})
+       nil)))
