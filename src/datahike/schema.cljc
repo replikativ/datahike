@@ -142,15 +142,6 @@
         value-type (get-in schema [a-ident :db/valueType])]
     (s/valid? value-type v-ident)))
 
-(defn instant? [db ^Datom datom schema]
-  (let [a-ident (if (:attribute-refs? (:config db))
-                  ((:ref-ident-map db) (.-a datom))
-                  (.-a datom))
-        schema (if (or (meta-attr? a-ident) (schema-attr? a-ident))
-                 implicit-schema-spec
-                 schema)]
-    (= (get-in schema [a-ident :db/valueType]) :db.type/instant)))
-
 (defn schema-entity? [entity]
   (some #(contains? entity %) schema-keys))
 
