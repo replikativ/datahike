@@ -37,7 +37,13 @@
     :db.type/symbol
     :db.type/uuid
     :db.type/value
-    :db.type/tuple})
+    :db.type/tuple
+    :db.type/cardinality
+    :db.type.install/attribute
+    :db.type/valueType
+    :db.type/unique})
+
+(s/def :db.part/types #{:db.part/tx :db.part/sys :db.part/user})
 
 ;; TODO: add bytes
 
@@ -111,6 +117,17 @@
                                    :db/tupleAttrs {:db/valueType :db.type/tuple
                                                    :db/cardinality :db.cardinality/one}})
 
+(s/def :db/helpers #{:db.install/attribute :db})
+
+(s/def :db.meta/attributes #{:db/txInstant})
+
+(s/def ::sys-idents (s/or :value :db.type/value
+                          :cardinality :db.type/cardinality
+                          :parts :db.part/types
+                          :helpers :db/helpers
+                          :meta :db.meta/attributes
+                          :unique :db.type/unique))
+
 (def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleType :db/tupleTypes :db/tupleAttrs})
 
 (s/def ::old-schema-val (s/keys :req [:db/valueType :db/cardinality]
@@ -131,6 +148,9 @@
 
 (defn schema-attr? [a-ident]
   (s/valid? ::schema-attribute a-ident))
+
+(defn sys-ident? [a-ident]
+  (s/valid? ::sys-idents a-ident))
 
 (defn entity-spec-attr? [a-ident]
   (s/valid? ::entity-spec-attribute a-ident))
