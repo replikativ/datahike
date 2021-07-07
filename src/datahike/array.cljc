@@ -1,6 +1,6 @@
 (ns datahike.array
   (:require [hitchhiker.tree.node :as n])
-  (:import [java.util Arrays]))
+  #?(:clj (:import [java.util Arrays])))
 
 #?(:clj
    (defn java8? []

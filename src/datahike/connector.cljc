@@ -6,18 +6,22 @@
             [datahike.config :as dc]
             [datahike.tools :as dt :refer [throwable-promise]]
             [datahike.index.hitchhiker-tree.upsert :as ups]
-            [datahike.transactor :as t]
+            #?(:clj [datahike.transactor :as t])
             [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
             [konserve.cache :as kc]
-            [superv.async :refer [<?? S]]
+            [superv.async :refer [<? <?? S]]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.core.async :refer [go <!]]
-            [clojure.core.cache :as cache])
-  (:import [java.net URI]))
+            #?(:clj [clojure.core.cache :as cache]
+               :cljs [cljs.cache :as cache])))
 
-(s/def ::connection #(instance? clojure.lang.Atom %))
+#?(:cljs
+   (do
+     (def Exception js/Error)))
+
+(s/def ::connection #(instance? Atom %))
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
@@ -31,7 +35,7 @@
         temporal-eavt-flushed (when keep-history? (di/-flush temporal-eavt backend))
         temporal-aevt-flushed (when keep-history? (di/-flush temporal-aevt backend))
         temporal-avet-flushed (when keep-history? (di/-flush temporal-avet backend))]
-    (<?? S (k/assoc-in store [:db]
+    (#?(:clj <?? :cljs <?) S (k/assoc-in store [:db]
                        (merge
                         {:schema schema
                          :rschema rschema
@@ -58,11 +62,12 @@
 (defn transact!
   [connection {:keys [tx-data]}]
   {:pre [(d/conn? connection)]}
-  (let [p (throwable-promise)]
-    (go
-      (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data 'datahike.core/transact))]
-        (deliver p tx-report)))
-    p))
+  #?(:clj
+     (let [p (throwable-promise)]
+       (go
+         (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data 'datahike.core/transact))]
+           #?(deliver p tx-report)))
+       p)))
 
 (defn transact [connection arg-map]
   (let [arg (cond
@@ -80,14 +85,15 @@
         (throw (.getCause e))))))
 
 (defn load-entities [connection entities]
-  (let [p (throwable-promise)]
-    (go
-      (let [tx-report (<! (t/send-transaction! (:transactor @connection) entities 'datahike.core/load-entities))]
-        (deliver p tx-report)))
-    p))
+  #?(:clj
+     (let [p (throwable-promise)]
+       (go
+         (let [tx-report (<! (t/send-transaction! (:transactor @connection) entities 'datahike.core/load-entities))]
+           (deliver p tx-report)))
+       p)))
 
 (defn release [connection]
-  (<?? S (t/shutdown (:transactor @connection)))
+  #?(:clj (<?? S (t/shutdown (:transactor @connection))))
   (ds/release-store (get-in @connection [:config :store]) (:store @connection)))
 
 ;; deprecation begin
@@ -98,12 +104,12 @@
   (-database-exists? [config]))
 
 (extend-protocol IConfiguration
-  String
+  #?(:clj String :cljs string)
   (-connect [uri]
     (-connect (dc/uri->config uri)))
 
-  (-create-database [uri & opts]
-    (apply -create-database (dc/uri->config uri) opts))
+  (-create-database [uri opts]
+    (-create-database (dc/uri->config uri) opts))
 
   (-delete-database [uri]
     (-delete-database (dc/uri->config uri)))
@@ -111,7 +117,7 @@
   (-database-exists? [uri]
     (-database-exists? (dc/uri->config uri)))
 
-  clojure.lang.IPersistentMap
+  #?(:clj clojure.lang.IPersistentMap :cljs PersistentArrayMap)
   (-database-exists? [config]
     (let [config (dc/load-config config)
           store-config (:store config)
@@ -122,7 +128,7 @@
                       (kc/ensure-cache
                        raw-store
                        (atom (cache/lru-cache-factory {} :threshold 1000)))))
-              stored-db (<?? S (k/get-in store [:db]))]
+              stored-db (#?(:clj <?? :cljs <?) S (k/get-in store [:db]))]
           (ds/release-store store-config store)
           (not (nil? stored-db)))
         (do
@@ -142,7 +148,7 @@
                   (kc/ensure-cache
                    raw-store
                    (atom (cache/lru-cache-factory {} :threshold 1000)))))
-          stored-db (<?? S (k/get-in store [:db]))
+          stored-db (#?(:clj <?? :cljs <?) S (k/get-in store [:db]))
           _ (when-not stored-db
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
@@ -165,22 +171,22 @@
                                       :temporal-avet temporal-avet-key
                                       :rschema rschema
                                       :store store))]
-      (swap! conn assoc :transactor (t/create-transactor (:transactor config) conn update-and-flush-db))
+      #?(:clj (swap! conn assoc :transactor (t/create-transactor (:transactor config) conn update-and-flush-db)))
       conn))
 
-  (-create-database [config & deprecated-config]
+  (-create-database [config deprecated-config]
     (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)
           store-config (:store config)
           store (kc/ensure-cache
                  (ds/empty-store store-config)
                  (atom (cache/lru-cache-factory {} :threshold 1000)))
-          stored-db (<?? S (k/get-in store [:db]))
+          stored-db (#?(:clj <?? :cljs <?) S (k/get-in store [:db]))
           _ (when stored-db
               (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
           {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx op-count hash]}
           (db/empty-db nil config)
           backend (kons/->KonserveBackend store)]
-      (<?? S (k/assoc-in store [:db]
+      (#?(:clj <?? :cljs <?) S (k/assoc-in store [:db]
                          (merge {:schema schema
                                  :max-tx max-tx
                                  :op-count op-count
