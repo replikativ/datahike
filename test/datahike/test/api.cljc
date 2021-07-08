@@ -673,34 +673,13 @@
               (is (not= hash-1 hash-2))
               (is (not= hash-0 hash-2)))))))))
 
-(deftest test-schema
-  (testing "Simple schema with read flexibility"
-    (let [cfg {:store {:backend :mem
-                       :id "api-schema-read-test"}
-               :keep-history? false
-               :schema-flexibility :read}
-          _ (do (d/delete-database cfg)
-                (d/create-database cfg))
-          conn (d/connect cfg)
-          new-schema [{:db/ident :name
-                       :db/unique :db.unique/identity}]]
-      (d/transact conn new-schema)
-      (is (= {:name {:db/id 1
-                     :db/ident :name
-                     :db/unique :db.unique/identity}}
-             (d/schema @conn)))
-      (is (= {:db/ident #{:name}
-              :db/unique #{:name}
-              :db.unique/identity #{:name}
-              :db/index #{:name}
-              :db.cardinality/many #{}
-              :db/attrTuples #{}}
-             (d/reverse-schema @conn)))))
-  (testing "Mixed schema with write flexibility"
-    (let [cfg {:store {:backend :mem
-                       :id "api-schema-write-test"}
-               :keep-history? false
-               :schema-flexibility :read}
+(defn test-write-schema [id cfg]
+  (testing (str "Mixed schema with write flexibility " id)
+    (let [cfg (merge {:store {:backend :mem
+                              :id (str "api-schema-" id "-test")}
+                      :keep-history? false
+                      :schema-flexibility :write}
+                     cfg)
           _ (do (d/delete-database cfg)
                 (d/create-database cfg))
           conn (d/connect cfg)
@@ -726,35 +705,40 @@
                        :db/valueType :db.type/long
                        :db/cardinality :db.cardinality/one
                        :db/doc "A breads's cost"}]
-          _         (d/transact conn new-schema)]
-      (is (= {:bakery/name {:db/id 1
-                            :db/ident :bakery/name
+          _ (d/transact conn new-schema)]
+      (is (= {:bakery/name {:db/ident :bakery/name
                             :db/valueType :db.type/string
                             :db/unique :db.unique/identity
                             :db/cardinality :db.cardinality/one
                             :db/doc "A bakery's name"}
-              :bread/name {:db/id 4
-                           :db/ident :bread/name
+              :bread/name {:db/ident :bread/name
                            :db/valueType :db.type/string
                            :db/cardinality :db.cardinality/one
                            :db/doc "A breads's name"}
               :bread/cost {:db/ident :bread/cost
                            :db/valueType :db.type/long
                            :db/cardinality :db.cardinality/one
-                           :db/doc "A breads's cost"
-                           :db/id 5}
-              :bakery/breads {:db/id 3
-                              :db/ident :bakery/breads
+                           :db/doc "A breads's cost"}
+              :bakery/breads {:db/ident :bakery/breads
                               :db/valueType :db.type/ref
                               :db/isComponent true
                               :db/cardinality :db.cardinality/many
                               :db/doc "A bakery's breads"}
-              :bakery/location {:db/id 2
-                                :db/ident :bakery/location
+              :bakery/location {:db/ident :bakery/location
                                 :db/valueType :db.type/tuple
                                 :db/tupleTypes [:db.type/long :db.type/long]
                                 :db/cardinality :db.cardinality/one}}
-             (d/schema @conn)))
+             (->> (d/schema @conn)
+                  (reduce-kv
+                   (fn [m k v]
+                     (assoc m k
+                            (reduce-kv (fn [m2 k2 v2]
+                                         (case k2
+                                           :db/id m2
+                                           (assoc m2 k2 v2)))
+                                       {}
+                                       v)))
+                   {}))))
       (is (= {:db.type/tuple #{:bakery/location}
               :db.unique/identity #{:bakery/name}
               :db/index #{:bakery/name :bakery/breads}
@@ -764,6 +748,39 @@
               :db/ident
               #{:bakery/name :bread/cost :bread/name :bakery/location
                 :bakery/breads}
-              :db.cardinality/many #{:bakery/breads}
+              :db.cardinality/many #{:bakery/breads}}
+             (->> @conn
+                  d/reverse-schema
+                  (reduce-kv
+                   (fn [m k v]
+                     (if (empty? v)
+                       m
+                       (assoc m k v)))
+                   {})))))))
+
+(deftest test-schema
+  (testing "Simple schema with read flexibility"
+    (let [cfg {:store {:backend :mem
+                       :id "api-schema-read-test"}
+               :keep-history? false
+               :schema-flexibility :read}
+          _ (do (d/delete-database cfg)
+                (d/create-database cfg))
+          conn (d/connect cfg)
+          new-schema [{:db/ident :name
+                       :db/unique :db.unique/identity}]]
+      (d/transact conn new-schema)
+      (is (= {:name {:db/id 1
+                     :db/ident :name
+                     :db/unique :db.unique/identity}}
+             (d/schema @conn)))
+      (is (= {:db/ident #{:name}
+              :db/unique #{:name}
+              :db.unique/identity #{:name}
+              :db/index #{:name}
+              :db.cardinality/many #{}
               :db/attrTuples #{}}
-             (d/reverse-schema @conn))))))
+             (d/reverse-schema @conn)))))
+  (test-write-schema "write-flex" {:schema-flexibility :write})
+  (test-write-schema "write-flex+attr-refs" {:schema-flexibility :write
+                                             :attribute-refs? true}))
