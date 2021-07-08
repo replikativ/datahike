@@ -164,16 +164,24 @@
   (reduce-kv
    (fn [m attr-def new-value]
      (let [old-value (get-in attr-schema [attr-def])]
-       (when-not (= old-value new-value)
+       (when (not= old-value new-value)
          (case attr-def
-           :db/cardinality (if (= new-value :db.cardinality/many)
-                             (if (get-in attr-schema [:db/unique])
-                               (assoc m attr-def [old-value new-value])
-                               nil)
-                             (assoc m attr-def [old-value new-value]))
-           :db/unique (when-not (get-in attr-schema [:db/unique])
-                        (when-not (= (get-in attr-schema [:db/cardinality]) :db.cardinality/one)
-                          (assoc m attr-def [old-value new-value])))
+           :db/cardinality 
+           ;; Prohibit update from :db.cardinality/one to :db.cardinality/many, if there is a :db/unique constraint.
+           (when (and (= new-value :db.cardinality/many)
+                      (#{:db.unique/value :db.unique/identity} (:db/unique attr-schema)))
+             (assoc m attr-def [old-value new-value]))
+
+           :db/unique 
+           (when (or (not (:db/unique attr-schema))
+                     (not= :db.cardinality/one (:db/cardinality attr-schema)))
+             (assoc m attr-def [old-value new-value]))
+            
+           ;; Always allow these attributes to be updated. 
+           :db/doc nil
+           :db/noHistory nil
+           :db/isComponent nil
+
            (assoc m attr-def [old-value new-value])))))
    {}
    (dissoc entity :db/id)))
