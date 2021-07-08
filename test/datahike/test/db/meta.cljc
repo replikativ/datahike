@@ -44,7 +44,7 @@
       (is (= (:meta @conn)
              (:meta @new-conn)))))
   (testing "On non-empty DB"
-    (let [cfg (create-file-db-cfg "/db-meta-data-non-empty-test") 
+    (let [cfg (create-file-db-cfg "/db-meta-data-non-empty-test")
           conn (setup-db cfg)
           _ (d/transact conn [{:name "Alice" :age 25} {:name "Bob" :age 30} {:name "Charlie" :age 35}])
           new-conn (d/connect cfg)]
