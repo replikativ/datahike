@@ -780,6 +780,7 @@
    (fn [m k v]
      (assoc m k (->> v
                      (remove #(or (ds/entity-spec-attr? %)
+                                  (ds/sys-ident? %)
                                   (ds/schema-attr? %)))
                      (into #{}))))
    {}
