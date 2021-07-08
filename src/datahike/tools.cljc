@@ -1,7 +1,9 @@
 (ns ^:no-doc datahike.tools
   (:require
    [superv.async :refer [throw-if-exception-]]
-   [taoensso.timbre :as log]))
+   #?(:clj [clojure.java.io :as io])
+   [taoensso.timbre :as log])
+  #?(:clj (:import [java.util Properties])))
 
 (defn combine-hashes [x y]
   #?(:clj  (clojure.lang.Util/hashCombine x y)
@@ -75,3 +77,13 @@
           (.countDown d)
           this)))))
 
+(defn get-version
+  "Retrieves the current version of a dependency. Thanks to https://stackoverflow.com/a/33070806/10978897"
+  [dep]
+  (let [path (str "META-INF/maven/" (or (namespace dep) (name dep))
+                  "/" (name dep) "/pom.properties")
+        props (io/resource path)]
+    (when props
+      (with-open [stream (io/input-stream props)]
+        (let [props (doto (Properties.) (.load stream))]
+          (.getProperty props "version"))))))
