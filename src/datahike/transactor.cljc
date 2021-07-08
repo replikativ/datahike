@@ -2,7 +2,7 @@
   (:require [datahike.core :as d]
             [superv.async :refer [<?? <??- S thread-try]]
             [taoensso.timbre :as log]
-            [clojure.core.async :refer [>!! chan close! promise-chan put!]]))
+            [clojure.core.async :refer [#?(:clj >!! :cljs >!) chan close! promise-chan put!]]))
 
 (defprotocol PTransactor
   ; Send a transaction. Returns a channel that resolves when the transaction finalizes.
@@ -15,7 +15,7 @@
   PTransactor
   (send-transaction! [_ tx-data tx-fn]
     (let [p (promise-chan)]
-      (>!! rx-queue {:tx-data tx-data :callback p :tx-fn tx-fn})
+      (#?(:clj >!! :cljs >!) rx-queue {:tx-data tx-data :callback p :tx-fn tx-fn})
       p))
 
   (shutdown [_]

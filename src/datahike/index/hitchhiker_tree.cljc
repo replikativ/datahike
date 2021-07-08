@@ -1,20 +1,26 @@
 (ns ^:no-doc datahike.index.hitchhiker-tree
+  #?(:cljs (:refer-clojure :exclude [-count -persistent! -flush -seq]))
   (:require [datahike.index.hitchhiker-tree.upsert :as ups]
             [hitchhiker.tree.utils.async :as async]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
             [datahike.array :refer [compare-arrays]]
-            [datahike.datom :as dd]
+            [datahike.datom :as dd #?@(:cljs [:refer-macros [combine-cmp]])]
             [datahike.constants :refer [e0 tx0 emax txmax]]
             [hasch.core :as h])
-  #?(:clj (:import [clojure.lang AMapEntry]
+  #?(:clj (:import [clojure.lang AMapEntry PersistentVector Keyword]
                    [datahike.datom Datom])))
 
+#?(:cljs
+   (do
+     (def IllegalArgumentException js/Error)
+     (def UnsupportedOperationException js/Error)))
+
 (extend-protocol kc/IKeyCompare
-  clojure.lang.PersistentVector
+  PersistentVector
   (-compare [key1 key2]
-    (if-not (= (class key2) clojure.lang.PersistentVector)
+    (if-not (= (type key2) PersistentVector)
       (if (nil? key2)
         +1    ;; Case for tuples. E.g. (compare [100 200] nil)
         -1)   ;; HACK for nil
@@ -25,10 +31,10 @@
          (kc/-compare b f)
          (kc/-compare c g)
          (kc/-compare d h)))))
-  java.lang.String
+  #?(:clj String :cljs string)
   (-compare [key1 key2]
     (compare key1 key2))
-  clojure.lang.Keyword
+  Keyword
   (-compare [key1 key2]
     (compare key1 key2))
   nil
@@ -36,10 +42,11 @@
     (if (nil? key2)
       0 -1)))
 
-(extend-protocol kc/IKeyCompare
-  (Class/forName "[B")
-  (-compare [key1 key2]
-    (compare-arrays key1 key2)))
+#?(:clj
+   (extend-protocol kc/IKeyCompare
+     (Class/forName "[B")
+     (-compare [key1 key2]
+       (compare-arrays key1 key2))))
 
 (def ^:const br 300) ;; TODO name better, total node size; maybe(!) make configurable
 (def ^:const br-sqrt (long (Math/sqrt br))) ;; branching factor

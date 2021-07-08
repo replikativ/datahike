@@ -52,10 +52,11 @@
 ;;  https://github.com/Prismatic/schema/commit/e31c419c56555c83ef9ee834801e13ef3c112597
 ;;
 
-(defn- cljs-env?
-  "Take the &env from a macro, and tell whether we are expanding into cljs."
-  [env]
-  (boolean (:ns env)))
+#?(:clj
+   (defn- cljs-env?
+     "Take the &env from a macro, and tell whether we are expanding into cljs."
+     [env]
+     (boolean (:ns env))))
 
 #?(:clj
    (defmacro if-cljs
@@ -253,7 +254,7 @@
   ISearch
   (-search [db pattern]
            (let [[_ a _ _] pattern]
-             (search-indices eavt aevt avet pattern (indexing? db a) false)))
+             (search-indices (.-eavt db) (.-aevt db) (.-avet db) pattern (indexing? db a) false)))
 
   IIndexAccess
   (-datoms [db index-type cs]
@@ -280,7 +281,7 @@
                 (when-not (indexing? db attr)
                   (raise "Attribute" attr "should be marked as :db/index true" {}))
                 (validate-attr attr (list '-index-range 'db attr start end) db)
-                (-slice avet
+                (-slice (.-avet db)
                         (resolve-datom db nil attr start nil e0 tx0)
                         (resolve-datom db nil attr end nil emax txmax)
                         :avet))
@@ -307,7 +308,6 @@
        ICounted (-count [db] (count (-datoms db :eavt [])))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
 
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on FilteredDB")))
@@ -436,7 +436,6 @@
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on HistoricalDB")))
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on HistoricalDB")))
 
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on HistoricalDB")))
                         ([_ _ _] (throw (js/Error. "-lookup is not supported on HistoricalDB"))))
@@ -539,7 +538,6 @@
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on AsOfDB")))
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on AsOfDB")))
 
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on AsOfDB")))
                         ([_ _ _] (throw (js/Error. "-lookup is not supported on AsOfDB"))))
@@ -635,7 +633,6 @@
        ICounted (-count [db] (count (-datoms db :eavt [])))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on SinceDB")))
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on SinceDB")))
 
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on SinceDB")))
@@ -938,9 +935,6 @@
    (fn [^Datom d]
      (datom (+ (.-e d) offset) (.-a d) (.-v d) (.-tx d)))
    datoms))
-
-(defn get-max-tx [eavt]
-  (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
 
 (defn ^DB init-db
   ([datoms] (init-db datoms nil nil))
@@ -1398,8 +1392,7 @@
       (if-not (schema v-ident)
         (let [err-msg (str "Schema with attribute " v-ident " does not exist")
               err-map {:error :retract/schema :attribute v-ident}]
-          (throw #?(:clj (ex-info err-msg err-map)
-                    :cljs (error err-msg err-map))))
+          (throw (ex-info err-msg err-map)))
         (-> (assoc-in db [:schema e] (dissoc (schema v-ident) a-ident))
             (update-in [:schema] #(dissoc % v-ident))
             (update-in [:ident-ref-map] #(dissoc % v-ident))
@@ -1410,8 +1403,7 @@
           (update-in db [:schema e] #(dissoc % a-ident v-ident)))
         (let [err-msg (str "Schema with entity id " e " does not exist")
               err-map {:error :retract/schema :entity-id e :attribute a :value e}]
-          (throw #?(:clj (ex-info err-msg err-map)
-                    :cljs (error err-msg err-map))))))))
+          (throw (ex-info err-msg err-map)))))))
 
 
 ;; In context of `with-datom` we can use faster comparators which
@@ -1725,12 +1717,15 @@
       (transact-tx-data report' es))))
 
 (defn assert-preds [db [_ e _ preds]]
-  (reduce
-   (fn [coll pred]
-     (if ((resolve pred) db e)
-       coll
-       (conj coll pred)))
-   #{} preds))
+  ;; Functions can only be resolved at compile time in ClojureScript
+  ;; https://stackoverflow.com/questions/54227193/clojure-clojurescript-argument-to-resolve-must-be-a-quoted-symbol
+  #?(:cljs #{}
+     :clj (reduce
+            (fn [coll pred]
+              (if ((resolve pred) db e)
+                coll
+                (conj coll pred)))
+            #{} preds)))
 
 (def builtin-fn?
   #{:db.fn/call

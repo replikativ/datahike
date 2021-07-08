@@ -2,10 +2,15 @@
   (:require [clojure.edn :as edn]
             [clojure.spec.alpha :as s]
             [zufall.core :as z]
-            [environ.core :refer [env]]
+            #?(:clj [environ.core :refer [env]])
             [taoensso.timbre :as log]
             [datahike.store :as ds])
-  (:import [java.net URI]))
+  #?(:clj (:import [java.net URI])))
+
+#?(:cljs
+   (do
+     (def Exception js/Error)
+     (def env {})))
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
@@ -45,7 +50,7 @@
                         :path path
                         :host host
                         :port port
-                        :id (str (java.util.UUID/randomUUID))}
+                        :id (str #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid)))}
                    :level {:path path}
                    :file {:path path}))
    :index index
@@ -57,13 +62,16 @@
 (defn int-from-env
   [key default]
   (try
-    (Integer/parseInt (get env key (str default)))
+    (#?(:clj Integer/parseInt :cljs js/parseInt) (get env key (str default)))
     (catch Exception _ default)))
 
 (defn bool-from-env
   [key default]
   (try
-    (Boolean/parseBoolean (get env key default))
+    #?(:clj
+       (Boolean/parseBoolean (get env key default))
+       :cljs
+       (= "true" (get env key default)))
     (catch Exception _ default)))
 
 (defn map-from-env [key default]
@@ -141,7 +149,7 @@
      (when (and attribute-refs? (= :read schema-flexibility))
        (throw (ex-info "Attribute references cannot be used with schema-flexibility ':read'." config)))
      (if (string? initial-tx)
-       (update merged-config :initial-tx (fn [path] (-> path slurp read-string)))
+       (update merged-config :initial-tx (fn [path] #?(:clj (-> path slurp edn/read-string))))
        merged-config))))
 
 ;; deprecation begin
@@ -157,30 +165,31 @@
                                      :opt-un [::username ::password ::path ::host ::port]))
 
 (defn uri->config [uri]
-  (let [base-uri (URI. uri)
-        _ (when-not (= (.getScheme base-uri) "datahike")
-            (throw (ex-info "URI scheme is not datahike conform." {:uri uri})))
-        sub-uri (URI. (.getSchemeSpecificPart base-uri))
-        backend (keyword (.getScheme sub-uri))
-        [username password] (when-let [user-info (.getUserInfo sub-uri)]
-                              (clojure.string/split user-info #":"))
-        credentials (when-not (and (nil? username) (nil? password))
-                      {:username username
-                       :password password})
-        port (.getPort sub-uri)
-        path (.getPath sub-uri)
-        host (.getHost sub-uri)
-        config (merge
-                {:backend backend
-                 :uri uri}
-                credentials
-                (when host
-                  {:host host})
-                (when-not (empty? path)
-                  {:path path})
-                (when (<= 0 port)
-                  {:port port}))]
-    config))
+  #?(:clj
+     (let [base-uri (URI. uri)
+           _ (when-not (= (.getScheme base-uri) "datahike")
+               (throw (ex-info "URI scheme is not datahike conform." {:uri uri})))
+           sub-uri (URI. (.getSchemeSpecificPart base-uri))
+           backend (keyword (.getScheme sub-uri))
+           [username password] (when-let [user-info (.getUserInfo sub-uri)]
+                                 (clojure.string/split user-info #":"))
+           credentials (when-not (and (nil? username) (nil? password))
+                         {:username username
+                          :password password})
+           port (.getPort sub-uri)
+           path (.getPath sub-uri)
+           host (.getHost sub-uri)
+           config (merge
+                    {:backend backend
+                     :uri     uri}
+                    credentials
+                    (when host
+                      {:host host})
+                    (when-not (empty? path)
+                      {:path path})
+                    (when (<= 0 port)
+                      {:port port}))]
+       config)))
 
 (defn validate-config-depr [config]
   (when-not (s/valid? :datahike/config-depr config)

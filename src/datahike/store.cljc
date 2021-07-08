@@ -4,7 +4,7 @@
             [konserve.filestore :as fs]
             [konserve.memory :as mem]
             [superv.async :refer [<?? S]]
-            [environ.core :refer [env]]
+            #?(:clj [environ.core :refer [env]])
             [datahike.index.hitchhiker-tree.upsert :as ups]))
 
 (defmulti empty-store

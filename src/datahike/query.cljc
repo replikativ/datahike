@@ -9,15 +9,15 @@
    [me.tonsky.persistent-sorted-set.arrays :as da]
    [datahike.lru]
    [datahike.impl.entity :as de]
-   #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple Constant
-                                          FindColl FindRel FindScalar FindTuple PlainSymbol
-                                          RulesVar SrcVar Variable]])
+   #?(:cljs [datalog.parser.type :refer [Aggregate BindColl BindIgnore BindScalar BindTuple Constant
+                                         FindColl FindRel FindScalar FindTuple PlainSymbol Pull
+                                         RulesVar SrcVar Variable]])
    [datalog.parser.impl :as dpi]
    [datalog.parser.impl.proto :as dpip]
    [datahike.pull-api :as dpa]
    [datalog.parser :refer [parse]]
    [datalog.parser.pull :as dpp])
-  #?(:clj (:import [clojure.lang Reflector]
+  #?(:clj (:import [clojure.lang Reflector PersistentVector PersistentArrayMap LazySeq]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
                     Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                     RulesVar SrcVar Variable]
@@ -209,14 +209,13 @@
   (-increasing? [x more]))
 
 (extend-protocol CollectionOrder
-
-  Number
+  #?(:clj Number :cljs number)
   (-strictly-decreasing? [x more] (apply < x more))
   (-decreasing? [x more] (apply <= x more))
   (-strictly-increasing? [x more] (apply > x more))
   (-increasing? [x more] (apply >= x more))
 
-  java.util.Date
+  #?(:clj java.util.Date :cljs js/Date)
   (-strictly-decreasing? [x more] #?(:clj (reduce (fn [res [d1 d2]] (if (.before ^Date d1 ^Date d2)
                                                                       res
                                                                       (reduced false)))
@@ -1069,13 +1068,13 @@
 
 (defmulti q (fn [query & args] (type query)))
 
-(defmethod q clojure.lang.LazySeq [query & args]
+(defmethod q LazySeq [query & args]
   (q {:query query :args args}))
 
-(defmethod q clojure.lang.PersistentVector [query & args]
+(defmethod q PersistentVector [query & args]
   (q {:query query :args args}))
 
-(defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
+(defmethod q PersistentArrayMap [query-map & inputs]
   (let [query (if (contains? query-map :query) (:query query-map) query-map)
         query (if (string? query) (edn/read-string query) query)
         args (if (contains? query-map :args) (:args query-map) inputs)

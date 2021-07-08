@@ -1,8 +1,9 @@
 (ns ^:no-doc datahike.index
+  #?(:cljs (:refer-clojure :exclude [-seq -count -remove -flush -transient -persistent!]))
   (:require [datahike.index.hitchhiker-tree :as dih]
-            [datahike.index.persistent-set :as dip])
-  #?(:clj (:import [hitchhiker.tree DataNode IndexNode]
-                   [me.tonsky.persistent_sorted_set PersistentSortedSet])))
+            [datahike.index.persistent-set :as dip]
+            [hitchhiker.tree]
+            [me.tonsky.persistent-sorted-set]))
 
 ;; TODO add doc to each function
 (defprotocol IIndex
@@ -18,7 +19,7 @@
   (-transient [index])
   (-persistent! [index]))
 
-(extend-type DataNode
+(extend-type hitchhiker.tree.DataNode
   IIndex
   (-all [eavt-tree]
     (dih/-all eavt-tree :eavt))
@@ -43,7 +44,7 @@
   (-persistent! [tree]
     (dih/-persistent! tree)))
 
-(extend-type IndexNode
+(extend-type hitchhiker.tree.IndexNode
   IIndex
   (-all [eavt-tree]
     (dih/-all eavt-tree :eavt))
@@ -68,7 +69,7 @@
   (-persistent! [tree]
     (dih/-persistent! tree)))
 
-(extend-type PersistentSortedSet
+(extend-type #?(:clj me.tonsky.persistent_sorted_set.PersistentSortedSet :cljs me.tonsky.persistent-sorted-set.BTSet)
   IIndex
   (-all [eavt-set]
     (dip/-all eavt-set))

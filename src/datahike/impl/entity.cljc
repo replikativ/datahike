@@ -2,7 +2,7 @@
   (:refer-clojure :exclude [keys get])
   (:require [#?(:cljs cljs.core :clj clojure.core) :as c]
             [datahike.db :as db])
-  (:import [datahike.java IEntity]))
+  #?(:clj (:import [datahike.java IEntity])))
 
 (declare entity ->Entity equiv-entity lookup-entity touch)
 
