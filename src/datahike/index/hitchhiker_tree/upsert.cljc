@@ -37,7 +37,6 @@
 
 (defn old-key
   "Returns the old version of the given 'new' key if it exists in 'old-keys'.
-  If there are multiple old versions, the one with the biggest transaction time is returned.
   'indices' is a vector of integer indicating which positions in keys are significant,
   i.e., [0 2] means that the first and third entry in the key are used for filtering."
   [old-keys new indices]
@@ -57,7 +56,7 @@
              not-retracted-key)))))
 
 (defn remove-old
-  "Removes old key from the 'kvs' map using 'remove-fn' function if 'new' and 'old' keys' first two entries match."
+  "Removes old key from the 'kvs' map using 'remove-fn' function."
   [kvs new remove-fn indices]
   (when-let [old (old-key kvs new indices)]
     (remove-fn old)))
@@ -77,7 +76,8 @@
           (tree/insert key nil)))))
 
 (defn old-retracted
-  "Returns a new datom to insert in the tree to signal the retraction of the old datom."
+  "Returns a new datom to be inserted in the tree to signal the retraction of
+  its corresponding old datom."
   [kvs key indices]
   (when-let [old (old-key kvs key indices)]
     (let [[a b c _] old
