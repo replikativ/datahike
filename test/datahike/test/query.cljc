@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.core :as d]
+   [datahike.api :as da]
    [datahike.query :as dq])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
@@ -376,3 +377,25 @@
                                       :where [[(= ?age 37)]
                                               [?e :age ?age]]}
                              :args [db]}))))))
+
+(deftest test-zeros-in-pattern
+  (let [cfg {:store {:backend :mem
+                     :id "sandbox"}
+             :index :datahike.index/hitchhiker-tree
+             :keep-history? true
+             :schema-flexibility :write
+             :attribute-refs? false}
+        conn (do
+               (da/delete-database cfg)
+               (da/create-database cfg)
+               (da/connect cfg))]
+    (da/transact conn [{:db/ident :version/id
+                       :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one
+                       :db/unique :db.unique/identity}
+                      {:version/id 0}
+                      {:version/id 1}])
+    (is (= 1
+           (count (da/q '[:find ?t :in $ :where
+                          [?t :version/id 0]]
+                        @conn))))))
