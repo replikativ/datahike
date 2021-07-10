@@ -390,11 +390,11 @@
                (da/create-database cfg)
                (da/connect cfg))]
     (da/transact conn [{:db/ident :version/id
-                       :db/valueType :db.type/long
-                       :db/cardinality :db.cardinality/one
-                       :db/unique :db.unique/identity}
-                      {:version/id 0}
-                      {:version/id 1}])
+                        :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one
+                        :db/unique :db.unique/identity}
+                       {:version/id 0}
+                       {:version/id 1}])
     (is (= 1
            (count (da/q '[:find ?t :in $ :where
                           [?t :version/id 0]]
