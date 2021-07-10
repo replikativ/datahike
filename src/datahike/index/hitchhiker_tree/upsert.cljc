@@ -15,11 +15,19 @@
 
 (def prefix? (memoize increase-by-one?))
 
-(defn- max-t
-  "Returns the key with max 't' component."
+(defn- not-retracted-key
+  "From 'ks', returns the key which has not been retracted. There will only be one such key.
+  Because of the ordering in 'ks', we know that when two successive keys have a positive
+  :t value then the second key is our answer, the one that has not been retracted."
   [ks]
   (when (seq ks)
-    (apply max-key #(nth % 3) ks)))
+    (reduce (fn [prev-pos? k]
+              (let [curr-pos? (pos? (nth k 3))]
+                (if (and curr-pos? prev-pos?)
+                  (reduced k)
+                  curr-pos?)))
+      true
+      ks)))
 
 (defn mask [new indices]
   (reduce (fn [mask pos]
@@ -39,13 +47,14 @@
         (->> candidates
              (map first)
              ((if (prefix? indices) take-while filter)
+              ;; keep only those matching 'new''s :e and :a.
               #(reduce (fn [_ i]
                          (if (= (nth % i) (nth new i))
                            true
                            (reduced false)))
                        true
                        indices))
-             max-t)))))
+             not-retracted-key)))))
 
 (defn remove-old
   "Removes old key from the 'kvs' map using 'remove-fn' function if 'new' and 'old' keys' first two entries match."
