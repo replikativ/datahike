@@ -1,0 +1,110 @@
+<map version="freeplane 1.7.0">
+<!--To view this file, download free mind mapping software Freeplane from http://freeplane.sourceforge.net -->
+<node TEXT="Datahike DB Record" FOLDED="false" ID="ID_1348652315" CREATED="1620296248300" MODIFIED="1620305103995" STYLE="oval">
+<font SIZE="18"/>
+<hook NAME="MapStyle" zoom="3.0943992">
+    <properties edgeColorConfiguration="#808080ff,#ff0000ff,#0000ffff,#00ff00ff,#ff00ffff,#00ffffff,#7c0000ff,#00007cff,#007c00ff,#7c007cff,#007c7cff,#7c7c00ff" fit_to_viewport="false"/>
+
+<map_styles>
+<stylenode LOCALIZED_TEXT="styles.root_node" STYLE="oval" UNIFORM_SHAPE="true" VGAP_QUANTITY="24.0 pt">
+<font SIZE="24"/>
+<stylenode LOCALIZED_TEXT="styles.predefined" POSITION="right" STYLE="bubble">
+<stylenode LOCALIZED_TEXT="default" ICON_SIZE="12.0 pt" COLOR="#000000" STYLE="fork">
+<font NAME="SansSerif" SIZE="10" BOLD="false" ITALIC="false"/>
+</stylenode>
+<stylenode LOCALIZED_TEXT="defaultstyle.details"/>
+<stylenode LOCALIZED_TEXT="defaultstyle.attributes">
+<font SIZE="9"/>
+</stylenode>
+<stylenode LOCALIZED_TEXT="defaultstyle.note" COLOR="#000000" BACKGROUND_COLOR="#ffffff" TEXT_ALIGN="LEFT"/>
+<stylenode LOCALIZED_TEXT="defaultstyle.floating">
+<edge STYLE="hide_edge"/>
+<cloud COLOR="#f0f0f0" SHAPE="ROUND_RECT"/>
+</stylenode>
+</stylenode>
+<stylenode LOCALIZED_TEXT="styles.user-defined" POSITION="right" STYLE="bubble">
+<stylenode LOCALIZED_TEXT="styles.topic" COLOR="#18898b" STYLE="fork">
+<font NAME="Liberation Sans" SIZE="10" BOLD="true"/>
+</stylenode>
+<stylenode LOCALIZED_TEXT="styles.subtopic" COLOR="#cc3300" STYLE="fork">
+<font NAME="Liberation Sans" SIZE="10" BOLD="true"/>
+</stylenode>
+<stylenode LOCALIZED_TEXT="styles.subsubtopic" COLOR="#669900">
+<font NAME="Liberation Sans" SIZE="10" BOLD="true"/>
+</stylenode>
+<stylenode LOCALIZED_TEXT="styles.important">
+<icon BUILTIN="yes"/>
+</stylenode>
+</stylenode>
+<stylenode LOCALIZED_TEXT="styles.AutomaticLayout" POSITION="right" STYLE="bubble">
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level.root" COLOR="#000000" STYLE="oval" SHAPE_HORIZONTAL_MARGIN="10.0 pt" SHAPE_VERTICAL_MARGIN="10.0 pt">
+<font SIZE="18"/>
+</stylenode>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,1" COLOR="#0033ff">
+<font SIZE="16"/>
+</stylenode>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,2" COLOR="#00b439">
+<font SIZE="14"/>
+</stylenode>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,3" COLOR="#990000">
+<font SIZE="12"/>
+</stylenode>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,4" COLOR="#111111">
+<font SIZE="10"/>
+</stylenode>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,5"/>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,6"/>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,7"/>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,8"/>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,9"/>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,10"/>
+<stylenode LOCALIZED_TEXT="AutomaticLayout.level,11"/>
+</stylenode>
+</stylenode>
+</map_styles>
+</hook>
+<hook NAME="AutomaticEdgeColor" COUNTER="18" RULE="ON_BRANCH_CREATION"/>
+<node TEXT="indexes" POSITION="left" ID="ID_881921784" CREATED="1620296284402" MODIFIED="1620304983610" HGAP_QUANTITY="32.74999944120647 pt" VSHIFT_QUANTITY="85.49999745190149 pt">
+<edge COLOR="#0000ff"/>
+<node TEXT="eavt" ID="ID_1683531117" CREATED="1620296335894" MODIFIED="1620296348560"/>
+<node TEXT="aevt" ID="ID_1996124872" CREATED="1620296352745" MODIFIED="1620296354685"/>
+<node TEXT="avet" ID="ID_1976323487" CREATED="1620296350922" MODIFIED="1620305016908"/>
+<node TEXT="temporal-eavt" ID="ID_1802007988" CREATED="1620296355398" MODIFIED="1620296357562"/>
+<node TEXT="temporal-aevt" ID="ID_827175883" CREATED="1620296358438" MODIFIED="1620296361394"/>
+<node TEXT="temporal-avet" ID="ID_1081443721" CREATED="1620296361742" MODIFIED="1620296364730"/>
+</node>
+<node TEXT="config" POSITION="right" ID="ID_26344241" CREATED="1620301569995" MODIFIED="1620305101655" HGAP_QUANTITY="34.249999396503014 pt" VSHIFT_QUANTITY="-8.24999975413083 pt">
+<edge COLOR="#007c00"/>
+<node TEXT="schema-flexibility" ID="ID_950463641" CREATED="1620296669279" MODIFIED="1620296684754"/>
+<node TEXT="index" ID="ID_348233999" CREATED="1620296666267" MODIFIED="1620296669107"/>
+<node TEXT="keep-history?" ID="ID_587770139" CREATED="1620296662171" MODIFIED="1620296665958"/>
+<node TEXT="name" ID="ID_499596563" CREATED="1620296658050" MODIFIED="1620296659885"/>
+<node TEXT="store" ID="ID_781792589" CREATED="1620296660274" MODIFIED="1620296661814">
+<node TEXT="backend" ID="ID_33728987" CREATED="1620296738430" MODIFIED="1620296742842"/>
+<node TEXT="id" ID="ID_564777690" CREATED="1620296743423" MODIFIED="1620296744418"/>
+<node TEXT="path" ID="ID_730071631" CREATED="1620296744615" MODIFIED="1620296745575"/>
+<node TEXT="..." ID="ID_5888783" CREATED="1620296746078" MODIFIED="1620296751106"/>
+</node>
+</node>
+<node TEXT="store" POSITION="left" ID="ID_890988686" CREATED="1620303730834" MODIFIED="1620304551623" HGAP_QUANTITY="43.249999128282106 pt" VSHIFT_QUANTITY="6.749999798834296 pt">
+<edge COLOR="#007c7c"/>
+</node>
+<node TEXT="metrics" POSITION="left" ID="ID_791348908" CREATED="1620296268930" MODIFIED="1620304792461" HGAP_QUANTITY="33.499999418854735 pt" VSHIFT_QUANTITY="16.499999508261684 pt">
+<edge COLOR="#ff0000"/>
+<node TEXT="max-eid" ID="ID_1571660244" CREATED="1620296620927" MODIFIED="1620296624378"/>
+<node TEXT="max-tx" ID="ID_250279037" CREATED="1620296624959" MODIFIED="1620296626586"/>
+<node TEXT="op-count" ID="ID_245483399" CREATED="1620296626983" MODIFIED="1620301692169" HGAP_QUANTITY="14.749999977648258 pt" VSHIFT_QUANTITY="-2.9999999105930364 pt"/>
+<node TEXT="entity-count" ID="ID_625394326" CREATED="1620296635427" MODIFIED="1620301293452"/>
+<node TEXT="hash" ID="ID_1162763330" CREATED="1620304763662" MODIFIED="1620304792459" HGAP_QUANTITY="16.24999993294478 pt" VSHIFT_QUANTITY="-8.249999754130847 pt"/>
+</node>
+<node TEXT="schema" POSITION="left" ID="ID_860560075" CREATED="1620296400938" MODIFIED="1620304548119" HGAP_QUANTITY="32.74999944120646 pt" VSHIFT_QUANTITY="-124.49999628961096 pt">
+<edge COLOR="#7c007c"/>
+</node>
+<node TEXT="meta" POSITION="right" ID="ID_476275664" CREATED="1620304504887" MODIFIED="1620305235268" HGAP_QUANTITY="57.49999870359902 pt" VSHIFT_QUANTITY="-13.499999597668662 pt">
+<edge COLOR="#00ff00"/>
+<node TEXT="id" ID="ID_1865335737" CREATED="1620296433502" MODIFIED="1620305235266" HGAP_QUANTITY="31.24999948590996 pt" VSHIFT_QUANTITY="54.749998368322906 pt"/>
+<node TEXT="version" ID="ID_216223674" CREATED="1620299327562" MODIFIED="1620305233301" HGAP_QUANTITY="29.749999530613458 pt" VSHIFT_QUANTITY="0.7499999776482524 pt"/>
+<node TEXT="created-at" ID="ID_1087926773" CREATED="1620301751354" MODIFIED="1620305109315" HGAP_QUANTITY="28.249999575316913 pt" VSHIFT_QUANTITY="-53.999998390674634 pt"/>
+</node>
+</node>
+</map>

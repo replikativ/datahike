@@ -1,4 +1,4 @@
-(ns sandbox
+(ns user
   (:require [datahike.api :as d]))
 
 (comment
@@ -8,42 +8,36 @@
                 :db/index       true
                 :db/unique      :db.unique/identity
                 :db/valueType   :db.type/string}
-               {:db/ident       :sibling
+               {:db/ident       :parents
                 :db/cardinality :db.cardinality/many
                 :db/valueType   :db.type/ref}
                {:db/ident       :age
                 :db/cardinality :db.cardinality/one
                 :db/valueType   :db.type/long}])
 
-  (def cfg {:store {:backend :mem :id "sandbox"}
-            :keep-history? true
-            :schema-flexibility :write
-            :attribute-refs? false})
-
-  (def cfg {:store {:backend :mem :id "sandbox"}
+  (def cfg {:store {:backend :mem
+                    :id "sandbox"}
+            :name "sandbox"
             :keep-history? true
             :schema-flexibility :write
             :attribute-refs? true})
 
-  (def conn (do
-              (d/delete-database cfg)
-              (d/create-database cfg)
-              (d/connect cfg)))
+  (d/delete-database cfg)
+  (d/create-database cfg)
 
-  (d/transact conn schema)
+  (def conn (d/connect cfg))
 
-  (d/datoms @conn :avet)
-  (d/datoms @conn :aevt)
-  (d/datoms @conn :eavt)
+  (d/transact conn {:tx-data schema})
 
-  (:max-eid @conn)
+  (d/transact conn {:tx-data [{:name "Alice"
+                               :age  25}
+                              {:name "Bob"
+                               :age 30}]})
 
-  (d/transact conn [{:name "Alice"
-                     :age  25}])
-
-  (d/transact conn [{:name    "Charlie"
-                     :age     45
-                     :sibling [{:name "Alice"} {:name "Bob"}]}])
+  (d/transact conn {:tx-data [{:name    "Charlie"
+                               :age     5
+                               :parents [{:name "Alice"}
+                                         {:name "Bob"}]}]})
 
   (d/q '[:find ?e ?a ?v ?t
          :in $ ?a
@@ -63,5 +57,6 @@
 
   (:schema @conn)
 
+  (:meta @conn)
 
   )
