@@ -2,7 +2,6 @@
   (:require [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 
-
 (defn mask [new indices]
   (reduce (fn [mask pos]
             (assoc mask pos (nth new pos)))
@@ -18,28 +17,28 @@
     (let [mask (mask new indices)]
       (when-let [candidates (subseq old-keys >= mask)]
         (let [res (->> candidates
-                    (map first)
-                    ;; Returns the key which has not been retracted.
-                    ;; There will at most be one such key.
-                    ;; Because of the ordering in keys, we know that
-                    ;; when two successive keys have a positive
-                    ;; :t value, then the second key is our answer,
-                    ;; the one that has not been retracted."
-                    (reduce (fn [prev-pos? k]
-                              (let [curr-pos? (pos? (nth k 3))]
-                                (if (and curr-pos?
-                                      prev-pos?
-                                      ;; Compares whether 'new and 'k' have the same
-                                      ;; value at positions indicated by 'indices'
-                                      (reduce (fn [_ i]
-                                                (if (= (nth k i) (nth new i))
-                                                  true
-                                                  (reduced false)))
-                                        true
-                                        indices))
-                                  (reduced k)
-                                  curr-pos?)))
-                      true))]
+                       (map first)
+                       ;; Returns the key which has not been retracted.
+                       ;; There will at most be one such key.
+                       ;; Because of the ordering in keys, we know that
+                       ;; when two successive keys have a positive
+                       ;; :t value, then the second key is our answer,
+                       ;; the one that has not been retracted."
+                       (reduce (fn [prev-pos? k]
+                                 (let [curr-pos? (pos? (nth k 3))]
+                                   (if (and curr-pos?
+                                            prev-pos?
+                                            ;; Compares whether 'new and 'k' have the same
+                                            ;; value at positions indicated by 'indices'
+                                            (reduce (fn [_ i]
+                                                      (if (= (nth k i) (nth new i))
+                                                        true
+                                                        (reduced false)))
+                                                    true
+                                                    indices))
+                                     (reduced k)
+                                     curr-pos?)))
+                               true))]
           (if (boolean? res) nil res))))))
 
 (defn remove-old
