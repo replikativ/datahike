@@ -1,5 +1,5 @@
-{:deps {org.clojure/clojure                         {:mvn/version "1.10.1"}
-        org.clojure/clojurescript                   {:mvn/version "1.10.597"}
+{:deps {org.clojure/clojure                         {:mvn/version "1.10.3"}
+        org.clojure/clojurescript                   {:mvn/version "1.10.758"}
         io.replikativ/hitchhiker-tree               {:mvn/version "0.1.11"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.1.2"}
         org.clojure/tools.reader                    {:mvn/version "1.3.3"}
@@ -8,6 +8,8 @@
         io.replikativ/superv.async                  {:mvn/version "0.2.11"}
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.8"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
+        metosin/spec-tools                          {:mvn/version "0.10.5"}
+        orchestra/orchestra                         {:mvn/version "2021.01.01-1"}
         junit/junit                                 {:mvn/version "4.13.1"}}
 
  :paths ["src" "target/classes"]
@@ -27,7 +29,7 @@
 
            :test {:extra-paths ["test"]
                   :extra-deps {org.clojure/clojurescript {:mvn/version "1.10.516"}
-                               lambdaisland/kaocha       {:mvn/version "1.0.632"}
+                               lambdaisland/kaocha       {:mvn/version "1.0.829"}
                                lambdaisland/kaocha-cljs  {:mvn/version "0.0-71"}
                                io.replikativ/datahike-leveldb {:mvn/version "0.1.0"}
                                io.replikativ/datahike-postgres {:mvn/version "0.3.1-SNAPSHOT"}}}

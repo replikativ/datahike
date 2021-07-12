@@ -5,12 +5,20 @@
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
-            [datahike.impl.entity :as de])
+            [datahike.impl.entity :as de]
+            [datahike.spec :as spec]
+            [clojure.spec.alpha :as s])
   #?(:clj
      (:import [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
               [datahike.impl.entity Entity]
               [java.util Date])))
 
+(s/fdef
+  connect
+  :args (s/alt :config spec/Config
+               :uri string?
+               :nil (s/cat)) ;; no arguments
+  :ret spec/ConnectionAtom)
 (def
   ^{:arglists '([] [config])
     :doc "Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
@@ -34,6 +42,11 @@
 
   connect dc/connect)
 
+(s/fdef
+  database-exists?
+  :args (s/alt :config spec/Config
+               :uri string?)
+  :ret boolean?)
 (def
   ^{:arglists '([config])
     :doc "Checks if a database exists via configuration map.
@@ -42,6 +55,14 @@
               (database-exists? {:store {:backend :mem :id \"example\"}})"}
   database-exists? dc/database-exists?)
 
+(s/fdef
+  create-database
+  :args (s/cat :config (s/or :config spec/Config
+                             :uri string?) ;; TODO: the URI version is deprecated?
+               :initial-tx (s/? (s/cat :k (s/? (s/and #(= % :initial-tx))) :v spec/Transactions))
+               :temporal-index (s/? (s/cat :k (s/? (s/and #(= % :temporal-index))) :v boolean?))
+               :schema-on-read (s/? (s/cat :k (s/? (s/and #(= % :schema-on-read))) :v boolean?)))
+  :ret nil?)
 (def
   ^{:arglists '([] [config & deprecated-opts])
     :doc "Creates a database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
@@ -80,12 +101,22 @@
   create-database
   dc/create-database)
 
+(s/fdef
+  delete-database
+  :args (s/alt :config spec/Config
+               :uri string?
+               :nil (s/cat)) ; Picks up the default database
+  :ret (s/nilable map?)) ; TODO: why is this nilable?
 (def ^{:arglists '([config])
        :doc      "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
                   For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
   delete-database
   dc/delete-database)
 
+(s/fdef
+  transact
+  :args (s/cat :conn spec/ConnectionAtom :txs spec/Transactions)
+  :ret spec/TransactionReport)
 (def ^{:arglists '([conn arg-map])
        :doc      "Applies transaction to the underlying database value and atomically updates the connection reference to point to the result of that transaction, the new db value.
 
@@ -175,20 +206,37 @@
   transact
   dc/transact)
 
+(s/fdef
+  transact!
+  :args (s/cat :conn spec/ConnectionAtom :txs spec/Transactions)
+  :ret #(s/valid? spec/TransactionReport @%))
 (def ^{:arglists '([conn tx-data tx-meta])
        :no-doc    true}
   transact!
   dc/transact!)
 
+(s/fdef
+  load-entities
+  :args (s/cat :conn spec/ConnectionAtom :txs spec/Transactions)
+  :ret #(s/valid? spec/TransactionReport @%)) ; This returns a throwable promise, so we have to dereference it..
 (def ^{:arglists '([conn tx-data])
        :doc "Load entities directly"}
   load-entities
   dc/load-entities)
 
+(s/fdef
+  release
+  :args (s/cat :conn spec/ConnectionAtom)
+  :ret nil?)
 (def ^{:arglists '([conn])
        :doc      "Releases a database connection"}
   release dc/release)
 
+(s/fdef
+  pull
+  :args (s/alt :simple (s/cat :db spec/DB :opts spec/PullOptions)
+               :full (s/cat :db spec/DB :selector coll? :eid spec/EId))
+  :ret map?) ; TODO we could specify an :fn spec here to ensure that the keys of the map are the same of the selector
 (def ^{:arglists '([db selector eid] [db arg-map])
        :doc      "Fetches data from database using recursive declarative description. See [docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html).
 
@@ -204,6 +252,11 @@
                   The arity-2 version takes :selector and :eid in arg-map."}
   pull dp/pull)
 
+(s/fdef
+  pull-many
+  :args (s/alt :simple (s/cat :db spec/DB :opts spec/PullOptions)
+               :full (s/cat :db spec/DB :selector coll? :eid spec/EId))
+  :ret (s/coll-of map?)) ; TODO we could specify an :fn spec here to ensure that the keys of the map are the same of the selector
 (def ^{:arglists '([db selector eids])
        :doc      "Same as [[pull]], but accepts sequence of ids and returns sequence of maps.
 
@@ -213,6 +266,12 @@
                                                                 {:db/id 2, :name \"Oleg\"}]"}
   pull-many dp/pull-many)
 
+; TODO: this currently fails a bunch of tests so I'm not quite sure what's the correct signature here
+#_(s/fdef
+  q
+  :args (s/alt :argmap (s/cat :map spec/QueryArgs)
+               :with-params (s/cat :q (s/or :vec vector? :map map?) :args any?)) ; TODO figure out why the doc is out of sync
+  :ret (s/coll-of coll?)) ; TODO maybe have this more specific?
 (def ^{:arglists '([query & args] [arg-map])
        :doc "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
 
@@ -453,6 +512,11 @@
 
 (def ^:private last-tempid (atom -1000000))
 
+(s/fdef
+  tempid
+  :args (s/alt :part any?
+               :full (s/cat :part any? :x int?))
+  :ret int?) ;; TODO: neg-int
 (def ^{:arglists '([part] [part x])
        :doc "Allocates and returns a unique temporary id (a negative integer). Ignores `part`. Returns `x` if it is specified.
 
@@ -460,6 +524,10 @@
   tempid
   dcore/tempid)
 
+(s/fdef
+  entity
+  :args (s/cat :db spec/DB :eid-or-attr (s/alt :eid spec/EId :attr coll?))
+  :ret (s/nilable de/entity?))
 (def ^{:arglists '([db eid])
        :doc      "Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate Datahike database content.
 
@@ -511,12 +579,20 @@
                   - When printing, only cached attributes (the ones you have accessed before) are printed. See [[touch]]."}
   entity de/entity)
 
+(s/fdef
+  entity-db
+  :args (s/cat :entity de/entity?)
+  :ret spec/DB)
 (defn entity-db
   "Returns a db that entity was created from."
   [^Entity entity]
   {:pre [(de/entity? entity)]}
   (.-db entity))
 
+(s/fdef
+  is-filtered
+  :args any?
+  :ret boolean?)
 (defn is-filtered
   "Returns `true` if this database was filtered using [[filter]], `false` otherwise."
   [x]
@@ -540,6 +616,10 @@
       (instance? AsOfDB x)
       (instance? SinceDB x)))
 
+(s/fdef
+  with
+  :args any? ;(s/cat :db spec/DB :argmap spec/WithArgs) ; TODO figure out why this fails tests
+  :ret spec/TransactionReport)
 (def ^{:arglists '([db arg-map])
        :doc "Same as [[transact]]`, but applies to an immutable database value. Returns transaction report (see [[transact]]).
 
@@ -573,6 +653,10 @@
     {:pre [(db/db? db)]}
     (:db-after (with db tx-data))))
 
+(s/fdef
+  db
+  :args (s/cat :conn spec/ConnectionAtom)
+  :ret spec/DB)
 (defn db
   "Returns the underlying immutable database value from a connection.
 
@@ -735,6 +819,12 @@
     {:pre [(db/db? db)]}
     (db/-index-range db attrid start end)))
 
+(s/fdef
+  listen
+  :args (s/alt :no-key (s/cat :conn spec/ConnectionAtom :callback fn?)
+               :with-key (s/cat :conn spec/ConnectionAtom :key any? :callback fn?))
+  :ret any?
+  :fn #(= (:ret %) (-> % :args :key)))
 (def ^{:arglists '([conn callback] [conn key callback])
        :doc "Listen for changes on the given connection. Whenever a transaction is applied to the database via
              [[transact!]], the callback is called with the transaction report. `key` is any opaque unique value.
@@ -745,6 +835,10 @@
   listen
   dcore/listen!)
 
+(s/fdef
+  unlisten
+  :args (s/cat :conn spec/ConnectionAtom :key any?)
+  :ret nil?)
 (def ^{:arglists '([conn key])
        :doc "Removes registered listener from connection. See also [[listen]]."}
   unlisten
