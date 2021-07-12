@@ -366,21 +366,21 @@
 
     (testing "Allow to update :db/unique only if it already exists"
       (is (thrown-msg? "Update not supported for these schema attributes"
-            (d/transact conn {:tx-data [(assoc name-schema :db/unique :db.unique/value)]}))
-        "It shouldn't be allowed to update :db/unique if it doesn't exist already.")
+                       (d/transact conn {:tx-data [(assoc name-schema :db/unique :db.unique/value)]}))
+          "It shouldn't be allowed to update :db/unique if it doesn't exist already.")
       (is (d/transact conn {:tx-data [(assoc personal-id-schema :db/unique :db.unique/value)]})
-        "It should be allowed to update :db/unique if it exists already."))
+          "It should be allowed to update :db/unique if it exists already."))
 
     (testing "Allow to update :db/cardinality "
       (testing "if :db/unique is not set"
         (is (update-name-attr :db/cardinality :db.cardinality/many)
-          "It should be allowed to update :db/cardinality to :db.cardinality/many.")
+            "It should be allowed to update :db/cardinality to :db.cardinality/many.")
         (is (update-name-attr :db/cardinality :db.cardinality/one)
-          "It should be allowed to update :db/cardinality to :db.cardinality/one."))
+            "It should be allowed to update :db/cardinality to :db.cardinality/one."))
 
       (testing "if :db/unique is set"
         (is (d/transact conn {:tx-data [(assoc personal-id-schema :db/cardinality :db.cardinality/one)]})
-          "It should be allowed to update :db/cardinality to :db.cardinality/one.")
+            "It should be allowed to update :db/cardinality to :db.cardinality/one.")
         (is (thrown-msg? "Update not supported for these schema attributes"
-              (d/transact conn {:tx-data [(assoc personal-id-schema :db/cardinality :db.cardinality/many)]}))
-          "It shouldn't be allowed to update :db/cardinality to :db.cardinality/many")))))
+                         (d/transact conn {:tx-data [(assoc personal-id-schema :db/cardinality :db.cardinality/many)]}))
+            "It shouldn't be allowed to update :db/cardinality to :db.cardinality/many")))))

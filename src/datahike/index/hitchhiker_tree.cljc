@@ -50,21 +50,26 @@
     :avet (fn [a v e tx] (dd/datom e a v tx true))
     (fn [e a v tx] (dd/datom e a v tx true))))
 
-(defn- from-datom [^Datom datom index-type]
-  (let [datom-seq (case index-type
-                    :aevt (list  (.-a datom) (.-e datom) (.-v datom) (.-tx datom))
-                    :avet (list (.-a datom) (.-v datom)  (.-e datom) (.-tx datom))
-                    (list (.-e datom) (.-a datom) (.-v datom) (.-tx datom)))]
+(defn- from-datom [^Datom datom index-type start?]
+  (let [e (fn [datom] (when-not (or (and start? (= e0 (.-e datom)))
+                                    (and (not start?) (= emax (.-e datom))))
+                        (.-e datom)))
+        tx (fn [datom] (when-not (or (and start? (= tx0 (.-tx datom)))
+                                     (and (not start?) (= txmax (.-tx datom))))
+                         (.-tx datom)))
+        datom-seq (case index-type
+                    :aevt (list (.-a datom) (e datom) (.-v datom) (tx datom))
+                    :avet (list (.-a datom) (.-v datom) (e datom) (tx datom))
+                    (list (e datom) (.-a datom) (.-v datom) (tx datom)))]
     (->> datom-seq
-         (remove #{e0 tx0 emax txmax})
-         (remove nil?)
+         (take-while some?)
          vec)))
 
 (defn -slice
   [tree from to index-type]
   (let [create-datom (index-type->datom-fn index-type)
-        [a b c d] (from-datom from index-type)
-        [e f g h] (from-datom to index-type)
+        [a b c d] (from-datom from index-type true)
+        [e f g h] (from-datom to index-type false)
         xf (comp
             (take-while (fn [^AMapEntry kv]
                            ;; prefix scan
