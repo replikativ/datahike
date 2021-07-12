@@ -163,10 +163,15 @@
       (let [conn (setup-db cfg)]
         (d/transact conn [[:db/add [:name "Alice"] :age 20]
                           [:db/add [:name "Bob"] :age 15]
-                          [:db/add [:name "Alice"] :age 10]])
+                          [:db/add [:name "Alice"] :age 10]
+                          [:db/add [:name "Alice"] :age 1]])
         (is (= #{[25 (+ const/tx0 1) true]
                  [25 (+ const/tx0 2) false]
                  [20 (+ const/tx0 2) true]
                  [20 (+ const/tx0 2) false]
-                 [10 (+ const/tx0 2) true]}
+                 [10 (+ const/tx0 2) true]
+                 [10 (+ const/tx0 2) false]
+                 [1 (+ const/tx0 2) true]
+
+                 }
                (d/q query (d/history @conn))))))))
