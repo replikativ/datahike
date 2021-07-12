@@ -153,11 +153,14 @@
       (d/transact conn [[:db/add [:name "Alice"] :age 20]
                         [:db/add [:name "Bob"] :age 15]])
       (d/transact conn [[:db/add [:name "Alice"] :age 10]])
+      (d/transact conn [[:db/add [:name "Alice"] :age 1]])
       (is (= #{[25 (+ const/tx0 1) true]
                [25 (+ const/tx0 2) false]
                [20 (+ const/tx0 2) true]
                [20 (+ const/tx0 3) false]
-               [10 (+ const/tx0 3) true]}
+               [10 (+ const/tx0 3) true]
+               [10 (+ const/tx0 4) false]
+               [1 (+ const/tx0 4) true]}
              (d/q query (d/history @conn)))))
     (testing "when only one transaction"
       (let [conn (setup-db cfg)]
@@ -171,7 +174,5 @@
                  [20 (+ const/tx0 2) false]
                  [10 (+ const/tx0 2) true]
                  [10 (+ const/tx0 2) false]
-                 [1 (+ const/tx0 2) true]
-
-                 }
+                 [1 (+ const/tx0 2) true]}
                (d/q query (d/history @conn))))))))
