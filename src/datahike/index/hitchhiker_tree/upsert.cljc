@@ -2,10 +2,37 @@
   (:require [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 
+
+
+(defn- increase-by-one?
+  "Returns true if elements in vector 'indices' form a prefix of the vector indices.
+  This is equivalent to check whether the elements increase by one and contains 0.
+  E.g., [0 1 2] => true, [0 2 3] => false, [1 2] => false."
+  [indices]
+  (if (.contains indices 0)
+    (let [m (apply max indices)
+          s (apply + indices)]
+      (= s (/ (* m (+ 1 m)) 2)))
+    false))
+
+(def prefix? (memoize increase-by-one?))
+
 (defn mask [new indices]
   (reduce (fn [mask pos]
             (assoc mask pos (nth new pos)))
           [nil nil nil nil]
+          indices))
+
+
+(defn equals-on-indices
+  "Returns true if 'k1' and 'k2' have the same
+   value at positions indicated by 'indices'"
+  [k1, k2, indices]
+  (reduce (fn [_ i]
+            (if (= (nth k1 i) (nth k2 i))
+              true
+              (reduced false)))
+          true
           indices))
 
 (defn old-key
@@ -16,30 +43,25 @@
   (when (seq old-keys)
     (let [mask (mask new indices)]
       (when-let [candidates (subseq old-keys >= mask)]
-        (let [res (->> candidates
-                       (map first)
-                       ;; Returns the key which has not been retracted.
-                       ;; There will at most be one such key.
-                       ;; Because of the ordering in keys, we know that
-                       ;; when two successive keys have a positive
-                       ;; :t value, then the second key is our answer,
-                       ;; the one that has not been retracted."
-                       (reduce (fn [prev-pos? k]
-                                 (let [curr-pos? (pos? (nth k 3))]
-                                   (if (and curr-pos?
-                                            prev-pos?
-                                            ;; Compares whether 'new and 'k' have the same
-                                            ;; value at positions indicated by 'indices'
-                                            (reduce (fn [_ i]
-                                                      (if (= (nth k i) (nth new i))
-                                                        true
-                                                        (reduced false)))
-                                                    true
-                                                    indices))
-                                     (reduced k)
-                                     curr-pos?)))
-                               true))]
-          (if (boolean? res) nil res))))))
+        (when (or (not (prefix? indices))
+                  (equals-on-indices new (-> candidates first first) indices))
+          (let [res (->> candidates
+                         (map first)
+                         ;; Returns the key which has not been retracted.
+                         ;; There will at most be one such key.
+                         ;; Because of the ordering in keys, we know that
+                         ;; when two successive keys have a positive
+                         ;; :t value, then the second key is our answer,
+                         ;; the one that has not been retracted."
+                         (reduce (fn [prev-pos? k]
+                                   (let [curr-pos? (pos? (nth k 3))]
+                                     (if (and curr-pos?
+                                              prev-pos?
+                                              (equals-on-indices new k indices))
+                                       (reduced k)
+                                       curr-pos?)))
+                                 true))]
+            (if (boolean? res) nil res)))))))
 
 (defn remove-old
   "Removes old key from the 'kvs' map using 'remove-fn' function."
