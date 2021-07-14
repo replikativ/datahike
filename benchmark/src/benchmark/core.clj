@@ -17,6 +17,7 @@
                            :less-than-query :less-than-query-1-fixed
                            :scalar-arg-query :scalar-arg-query-with-join
                            :vector-arg-query
+                           :limit-query
                            :stddev-query :variance-query :max-query :median-query :avg-query})
 (def implemented-functions #{:connection :transaction :query})
 (def implemented-data-types #{:int :str})
