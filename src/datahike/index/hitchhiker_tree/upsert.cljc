@@ -2,8 +2,6 @@
   (:require [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 
-
-
 (defn- increase-by-one?
   "Returns true if elements in vector 'indices' form a prefix of the vector indices.
   This is equivalent to check whether the elements increase by one and contains 0.
@@ -22,7 +20,6 @@
             (assoc mask pos (nth new pos)))
           [nil nil nil nil]
           indices))
-
 
 (defn equals-on-indices
   "Returns true if 'k1' and 'k2' have the same
