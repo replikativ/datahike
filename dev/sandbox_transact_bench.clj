@@ -53,25 +53,25 @@
 
   (defn bench-all [counter]
     (bench {:avet? false
-            :update? true
+            :update? false
             :decreasing? false
             :one-transaction? true}
       counter)
 
     (bench {:avet? false
-            :update? false
+            :update? true
             :decreasing? true
             :one-transaction? true}
       counter)
 
     (bench {:avet? true
-            :update? true
+            :update? false
             :decreasing? false
             :one-transaction? true}
       counter)
 
     (bench {:avet? true
-            :update? false
+            :update? true
             :decreasing? true
             :one-transaction? true}
       counter))
