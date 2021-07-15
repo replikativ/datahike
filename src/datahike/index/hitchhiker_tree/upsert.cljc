@@ -21,7 +21,7 @@
           [nil nil nil nil]
           indices))
 
-(defn equals-on-indices
+(defn equals-on-indices?
   "Returns true if 'k1' and 'k2' have the same
    value at positions indicated by 'indices'"
   [k1, k2, indices]
@@ -41,7 +41,7 @@
     (let [mask (mask new indices)]
       (when-let [candidates (subseq old-keys >= mask)]
         (when (or (not (prefix? indices))
-                  (equals-on-indices new (-> candidates first first) indices))
+                  (equals-on-indices? new (-> candidates first first) indices))
           (let [res (->> candidates
                          (map first)
                          ;; Returns the key which has not been retracted.
@@ -54,7 +54,7 @@
                                    (let [curr-pos? (pos? (nth k 3))]
                                      (if (and curr-pos?
                                               prev-pos?
-                                              (equals-on-indices new k indices))
+                                              (equals-on-indices? new k indices))
                                        (reduced k)
                                        curr-pos?)))
                                  true))]
