@@ -52,7 +52,8 @@
    :keep-history? temporal-index
    :attribute-refs? false
    :initial-tx initial-tx
-   :schema-flexibility (if (true? schema-on-read) :read :write)})
+   :schema-flexibility (if (true? schema-on-read) :read :write)
+   :cache-size 100000})
 
 (defn int-from-env
   [key default]
@@ -98,7 +99,8 @@
    :schema-flexibility :read
    :name (z/rand-german-mammal)
    :attribute-refs? false
-   :index :datahike.index/hitchhiker-tree})
+   :index :datahike.index/hitchhiker-tree
+   :cache-size 100000})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -129,7 +131,8 @@
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}
+                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
+                 :cache-size (:cache-size env 100000)}
          merged-config ((comp remove-nils deep-merge) config config-as-arg)
          {:keys [keep-history? name schema-flexibility index initial-tx store attribute-refs?]} merged-config
          config-spec (ds/config-spec store)]
