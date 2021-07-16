@@ -83,6 +83,17 @@
       (prn " ========================== DONE ============")))
 
 
+  (doall
+    (for [avet [false true]
+          decreasing [false true]
+          update [true false]]
+      (for [_ (range 3)]
+        (bench {:avet? avet
+                :update? update
+                :decreasing? decreasing
+                :one-transaction? true}
+          100000))))
+
 
   ;; if profiling
   ;; (prof/profile (d/transact conn txs))
