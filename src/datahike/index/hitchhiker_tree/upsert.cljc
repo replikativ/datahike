@@ -40,25 +40,27 @@
   (when (seq old-keys)
     (let [mask (mask new indices)]
       (when-let [candidates (subseq old-keys >= mask)]
-        (when (or (not (prefix? indices))
-                  (equals-on-indices? new (-> candidates first first) indices))
-          (let [res (->> candidates
-                         (map first)
-                         ;; Returns the key which has not been retracted.
-                         ;; There will at most be one such key.
-                         ;; Because of the ordering in keys, we know that
-                         ;; when two successive keys have a positive
-                         ;; :t value, then the second key is our answer,
-                         ;; the one that has not been retracted."
-                         (reduce (fn [prev-pos? k]
-                                   (let [curr-pos? (pos? (nth k 3))]
-                                     (if (and curr-pos?
-                                              prev-pos?
-                                              (equals-on-indices? new k indices))
-                                       (reduced k)
-                                       curr-pos?)))
-                                 true))]
-            (if (boolean? res) nil res)))))))
+        (let [first-candidate  (-> candidates first first)]
+          (when (and (= (first new) (first first-candidate))
+                     (or (not (prefix? indices))
+                         (equals-on-indices? new first-candidate indices)))
+            (let [res (->> candidates
+                           (map first)
+                           ;; Returns the key which has not been retracted.
+                           ;; There will at most be one such key.
+                           ;; Because of the ordering in keys, we know that
+                           ;; when two successive keys have a positive
+                           ;; :t value, then the second key is our answer,
+                           ;; the one that has not been retracted."
+                           (reduce (fn [prev-pos? k]
+                                     (let [curr-pos? (pos? (nth k 3))]
+                                       (if (and curr-pos?
+                                                prev-pos?
+                                                (if (prefix? indices) true (equals-on-indices? new k indices)))
+                                         (reduced k)
+                                         curr-pos?)))
+                                   true))]
+              (if (boolean? res) nil res))))))))
 
 (defn remove-old
   "Removes old key from the 'kvs' map using 'remove-fn' function."
