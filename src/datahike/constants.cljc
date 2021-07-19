@@ -54,6 +54,7 @@
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one
     :db/doc "A transaction's time-point"
+    :db/noHistory true
     :db/index true}
    {:db/id 10
     :db/ident :db.cardinality/many}
@@ -124,6 +125,7 @@
 
 (def ^:const non-ref-implicit-schema
   {:db/ident {:db/unique :db.unique/identity}
+   :db/txInstant {:db/noHistory true}
    :db.entity/attrs {:db/cardinality :db.cardinality/many}
    :db.entity/preds {:db/cardinality :db.cardinality/many}})
 

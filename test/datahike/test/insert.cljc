@@ -9,7 +9,7 @@
    (def Throwable js/Error))
 
 (defn duplicate-test [config]
-  (let [expected (datom/datom 502 :block/children 501 536870915)
+  (let [expected (datom/datom 502 :block/children 501 536870916)
         _      (d/create-database config)
         conn   (d/connect config)
         schema [{:db/ident       :block/string
