@@ -14,6 +14,7 @@
    [datahike.lru :refer [lru-datom-cache-factory]]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
    [datahike.config :as dc]
+   [datahike.tx-log :as tx-log]
    [environ.core :refer [env]]
    [clojure.spec.alpha :as s]
    [taoensso.timbre :refer [warn]])
@@ -126,7 +127,9 @@
   (-datoms [db index components])
   (-seek-datoms [db index components])
   (-rseek-datoms [db index components])
-  (-index-range [db attr start end]))
+  (-index-range [db attr start end])
+  (-tx-range [db start end])
+  (-lookup-tx [db tx]))
 
 (defprotocol IDB
   (-schema [db])
@@ -201,7 +204,7 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet tx-log max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map]
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -286,6 +289,20 @@
                         (resolve-datom db nil attr start nil e0 tx0)
                         (resolve-datom db nil attr end nil emax txmax)
                         :avet))
+
+  (-tx-range [db start end]
+             (let [txs (tx-log/-slice (:tx-log db) start end)
+                   xf (map (fn [[tx tx-data]] {:tx (- tx tx0)
+                                               :data (if (:attribute-refs? (:config db))
+                                                       (mapv (fn [d] (update d :a (partial -ident-for db))) tx-data)
+                                                       tx-data)}))]
+               (into [] xf txs)))
+
+  (-lookup-tx [db tx]
+              (let [tx (tx-log/-get (:tx-log db) tx)]
+                (if (:attribute-refs? (:config db))
+                  (mapv (fn [d] (update d :a (partial -ident-for db))) tx)
+                  tx)))
 
   clojure.data/EqualityPartition
   (equality-partition [x] :datahike/db)
@@ -911,7 +928,7 @@
                              (merge config)
                              (dissoc :initial-tx))
          _ (dc/validate-config complete-config)
-         {:keys [keep-history? index schema-flexibility attribute-refs?]} complete-config
+         {:keys [keep-history? index schema-flexibility attribute-refs? keep-log?]} complete-config
          on-read? (= :read schema-flexibility)
          schema (to-old-schema schema)
          _ (if on-read?
@@ -938,6 +955,10 @@
          avet (if attribute-refs?
                 (di/init-index index indexed-datoms indexed :avet 0)
                 (di/empty-index index :avet))
+         tx-log (when keep-log?
+                  (if attribute-refs?
+                    (tx-log/init-log tx0 ref-datoms 0)
+                    (tx-log/empty-log)))
          max-eid (if attribute-refs? ue0 e0)
          max-tx (if attribute-refs? utx0 tx0)
          meta (create-meta)]
@@ -960,7 +981,9 @@
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt (di/empty-index index :eavt)
           :temporal-aevt (di/empty-index index :aevt)
-          :temporal-avet (di/empty-index index :avet)}))))))
+          :temporal-avet (di/empty-index index :avet)})
+       (when keep-log?
+         {:tx-log tx-log}))))))
 
 (defn advance-all-datoms [datoms offset]
   (map
@@ -976,7 +999,7 @@
   ([datoms schema] (init-db datoms schema nil))
   ([datoms schema config]
    (validate-schema schema)
-   (let [{:keys [index schema-flexibility keep-history? attribute-refs?] :as complete-config}  (merge (dc/storeless-config) config)
+   (let [{:keys [index keep-history? attribute-refs? keep-log?] :as complete-config}  (merge (dc/storeless-config) config)
          _ (dc/validate-config complete-config)
          complete-schema (merge schema
                                 (if attribute-refs?
@@ -998,6 +1021,8 @@
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
          meta (create-meta)
+         tx-log (when keep-log?
+                  (tx-log/init-log))
          op-count (count new-datoms)]
      (map->DB (merge {:schema complete-schema
                       :rschema rschema
@@ -1016,7 +1041,9 @@
                      (when keep-history?
                        {:temporal-eavt (di/empty-index index :eavt)
                         :temporal-aevt (di/empty-index index :aevt)
-                        :temporal-avet (di/empty-index index :avet)}))))))
+                        :temporal-avet (di/empty-index index :avet)})
+                     (when keep-log?
+                       {:tx-log tx-log}))))))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)
@@ -1078,7 +1105,10 @@
                                 (pp/write-out (.-v d))
                                 (.write ^java.io.Writer *out* " ")
                                 (pp/pprint-newline :linear)
-                                (pp/write-out (datom-tx d))))
+                                (pp/write-out (datom-tx d))
+                                (.write ^java.io.Writer *out* " ")
+                                (pp/pprint-newline :linear)
+                                (pp/write-out (datom-added d))))
 
      (defn- pp-db [db ^java.io.Writer w]
        (pp/pprint-logical-block :prefix "#datahike/DB {" :suffix "}"
@@ -1571,6 +1601,8 @@
       true    (update :hash + (hash datom))
       schema? (-> (update-schema datom) update-rschema))))
 
+
+
 (defn- transact-report-upsert [report datom]
   (let [db      (:db-after report)
         a       (:a datom)
@@ -1626,6 +1658,12 @@
       entity)
      (check-upsert-conflict entity)
      first)))                                         ;; getting eid from acc
+
+(defn with-tx-report [db current-tx tx-data]
+  (update-in db [:tx-log] tx-log/insert-log current-tx tx-data (:op-count db)))
+
+(defn transact-tx-log [{{:keys [:db/current-tx]} :tempids :keys [tx-data] :as report}]
+  (update-in report [:db-after] with-tx-report current-tx tx-data))
 
 
 ;; multivals/reverse can be specified as coll or as a single value, trying to guess
@@ -1798,6 +1836,8 @@
      []
      (::queued-tuples report))))
 
+
+
 (defn transact-tx-data [initial-report initial-es]
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
@@ -1820,10 +1860,11 @@
             db db-after]
         (cond
           (empty? es)
-          (-> report
-              (assoc-in [:tempids :db/current-tx] (current-tx report))
-              (update-in [:db-after :max-tx] inc)
-              (update :db-after persistent!))
+          (let [final-report (-> report
+                                 (assoc-in [:tempids :db/current-tx] (current-tx report))
+                                 (update-in [:db-after :max-tx] inc)
+                                 transact-tx-log)]
+            (update final-report :db-after persistent!))
 
           (nil? entity)
           (recur report entities)

@@ -102,6 +102,7 @@
    :name (z/rand-german-mammal)
    :attribute-refs? false
    :index :datahike.index/hitchhiker-tree
+   :keep-log? false
    :cache-size 100000})
 
 (defn remove-nils
@@ -130,6 +131,7 @@
          config {:store store-config
                  :initial-tx (:datahike-intial-tx env)
                  :keep-history? (bool-from-env :datahike-keep-history true)
+                 :keep-log? (bool-from-env :datahike-keep-log true)
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
