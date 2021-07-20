@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [filter])
   (:require [datahike.connector :as dc]
             [datahike.core :as dcore]
+            [datahike.constants :as const]
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
             [datahike.schema :as ds]
@@ -785,3 +786,19 @@
                      (into #{}))))
    {}
    (db/-rschema db)))
+
+(defn ^{:arglists '([db] [db {:keys [offset limit] :as opts}])
+        :doc "Returns transaction log given database and options with :offset and :limit"}
+  tx-range
+  ([db]
+   (db/-tx-range db 0 nil))
+  ([db {:keys [offset limit] :as opts}]
+   (let [start (+ const/tx0 offset)
+         end (+ start (dec limit))]
+     (db/-tx-range db start end))))
+
+(defn ^{:arglists '([db tx])
+        :doc "Returns transaction log given database and transaction ID"}
+  get-tx
+  [db tx]
+  (db/-lookup-tx db tx))

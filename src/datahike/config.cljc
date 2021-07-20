@@ -115,7 +115,8 @@
    :cache-size 100000
    :index-config {:index-b-factor       c/default-index-b-factor
                   :index-log-size       c/default-index-log-size
-                  :index-data-node-size c/default-index-data-node-size}})
+                  :index-data-node-size c/default-index-data-node-size}
+   :keep-log? false})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -143,6 +144,7 @@
          config {:store store-config
                  :initial-tx (:datahike-intial-tx env)
                  :keep-history? (bool-from-env :datahike-keep-history true)
+                 :keep-log? (bool-from-env :datahike-keep-log true)
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
