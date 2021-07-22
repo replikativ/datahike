@@ -152,13 +152,13 @@
                           {:db/id 2
                            :name "Oleg"}]))
 
-    (is (= {:db/id   1,
+    (is (= {:db/id   1
             :name    "Ivan"
             :likes   [:pizza]
             :friends [{:db/id 2, :name "Oleg"}]}
            (d/pull @conn '{:selector [:db/id :name :likes {:friends [:db/id :name]}] :eid 1})))
 
-    (is (= {:db/id   1,
+    (is (= {:db/id   1
             :name    "Ivan"
             :likes   [:pizza]
             :friends [{:db/id 2, :name "Oleg"}]}
