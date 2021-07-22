@@ -29,10 +29,3 @@
 
 (defn -get [tree tx]
   (msg/lookup tree tx))
-
-(comment
-
-  (take-while
-   #(< % 10)
-   [1 2 3 4 5 6 9 10 11])
-  )

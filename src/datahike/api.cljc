@@ -793,9 +793,11 @@
   ([db]
    (db/-tx-range db 0 nil))
   ([db {:keys [offset limit] :as opts}]
-   (let [start (+ const/tx0 offset)
-         end (+ start (dec limit))]
-     (db/-tx-range db start end))))
+   (if (neg? offset)
+     (throw (ex-info "Only positive offsets allowed." {:opts opts}))
+     (let [start (+ const/tx0 offset)
+           end (when (some? limit) (+ start (dec limit)))]
+       (db/-tx-range db start end)))))
 
 (defn ^{:arglists '([db tx])
         :doc "Returns transaction log given database and transaction ID"}

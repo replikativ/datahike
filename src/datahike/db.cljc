@@ -140,6 +140,7 @@
   (-max-eid [db])
   (-temporal-index? [db])                                   ;;deprecated
   (-keep-history? [db])
+  (-keep-log? [db])
   (-config [db])
   (-ref-for [db a-ident])
   (-ident-for [db a-ref]))
@@ -238,6 +239,7 @@
   (-attrs-by [db property] ((.-rschema db) property))
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-> db -config :keep-history?))
+  (-keep-log? [db] (-> db -config :keep-log?))
   (-max-tx [db] (.-max-tx db))
   (-max-eid [db] (.-max-eid db))
   (-config [db] (.-config db))
@@ -1660,7 +1662,9 @@
      first)))                                         ;; getting eid from acc
 
 (defn with-tx-report [db current-tx tx-data]
-  (update-in db [:tx-log] tx-log/insert-log current-tx tx-data (:op-count db)))
+  (let [keep-log? (-keep-log? db)]
+    (cond-> db
+      keep-log? (update-in [:tx-log] tx-log/insert-log current-tx tx-data (:op-count db)))))
 
 (defn transact-tx-log [{{:keys [:db/current-tx]} :tempids :keys [tx-data] :as report}]
   (update-in report [:db-after] with-tx-report current-tx tx-data))
