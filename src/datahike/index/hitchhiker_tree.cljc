@@ -1,5 +1,6 @@
 (ns ^:no-doc datahike.index.hitchhiker-tree
   (:require [datahike.index.hitchhiker-tree.upsert :as ups]
+            [datahike.index.hitchhiker-tree.insert :as ins]
             [hitchhiker.tree.utils.async :as async]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
@@ -127,15 +128,17 @@
     :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]
     (throw (IllegalArgumentException. (str "Unknown index-type: " index-type)))))
 
-(defn -insert [tree ^Datom datom index-type op-count]
-  (hmsg/insert tree (datom->node datom index-type) nil op-count))
-
 (defn- index-type->indices [index-type]
   (case index-type
     :eavt [0 1]
     :aevt [0 1]
     :avet [0 2]
     (throw (UnsupportedOperationException. "Unknown index type: " index-type))))
+
+(defn -insert [tree ^Datom datom index-type op-count]
+  (let [datom-as-vec (datom->node datom index-type)]
+    (async/<?? (hmsg/enqueue tree [(assoc (ins/new-InsertOp datom-as-vec op-count)
+                                          :tag (h/uuid))]))))
 
 (defn -upsert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
