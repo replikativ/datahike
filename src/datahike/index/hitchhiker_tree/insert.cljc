@@ -2,7 +2,6 @@
   (:require [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 
-
 (defn mask [new indices]
   (reduce (fn [mask pos]
             (assoc mask pos (nth new pos)))
@@ -16,8 +15,8 @@
             (if (= (nth k2 i) (nth k1 i))
               true
               (reduced false)))
-    true
-    indices))
+          true
+          indices))
 
 (defn exists-old?
   "Returns true if 'new' already exists in 'old-keys'."
@@ -27,9 +26,9 @@
           mask (mask new indices)]
       (when-let [candidates (subseq old-keys >= mask)]
         (->> candidates
-          (map first)
-          first
-          (equals-at-indices? indices new))))))
+             (map first)
+             first
+             (equals-at-indices? indices new))))))
 
 (defrecord InsertOp [key op-count]
   op/IOperation

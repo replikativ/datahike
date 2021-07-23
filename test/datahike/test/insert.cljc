@@ -7,7 +7,6 @@
 #?(:cljs
    (def Throwable js/Error))
 
-
 (deftest cardinality-many-insert
   (let [config {:store {:backend :mem
                         :id      (str "default-" (.toString (java.util.UUID/randomUUID)))}}
@@ -27,11 +26,11 @@
     (d/transact conn [{:db/id 502 :block/children 501}])
 
     (is (= expected
-          (first (d/datoms @conn :eavt 502 :block/children))))
+           (first (d/datoms @conn :eavt 502 :block/children))))
     (is (= expected
-          (first (d/datoms @conn :aevt :block/children 502))))
+           (first (d/datoms @conn :aevt :block/children 502))))
     (is (= expected
-          (first (d/datoms @conn :avet :block/children 501))))
+           (first (d/datoms @conn :avet :block/children 501))))
 
     (d/release conn)
     (d/delete-database config)))
