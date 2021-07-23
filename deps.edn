@@ -1,11 +1,10 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.10.1"}
         org.clojure/clojurescript                   {:mvn/version "1.10.597"}
- ;;       io.replikativ/hitchhiker-tree               {:mvn/version "0.1.11"}
+        io.replikativ/hitchhiker-tree               {:mvn/version "0.1.11"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.1.2"}
         org.clojure/tools.reader                    {:mvn/version "1.3.3"}
         environ/environ                             {:mvn/version "1.2.0"}
         com.taoensso/timbre                         {:mvn/version "5.1.0"}
-io.replikativ/hitchhiker-tree               {:local/root "../hitchhiker-tree"}
         io.replikativ/superv.async                  {:mvn/version "0.2.11"}
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.8"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
