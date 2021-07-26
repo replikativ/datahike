@@ -41,6 +41,7 @@ public class DatahikeTest {
 
     @org.junit.After
     public void tearDown() throws Exception {
+        Datahike.deleteDatabase(uri);
     }
 
     private void transactOnce() {
