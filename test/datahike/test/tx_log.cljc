@@ -119,7 +119,7 @@
               conn (d/connect cfg)
               _ (setup-data conn)]
           (is (thrown-with-msg? ExceptionInfo #"tx-range is only allowed for databases with transaction log. Consider setting \:keep-log\? to true in your configuration."
-                 (d/tx-range @conn))))))
+                                (d/tx-range @conn))))))
     (testing "tx-get"
       (testing "with first transaction"
         (is (= (-> complete-result first :data)
@@ -298,5 +298,5 @@
                (-> @conn
                    (d/get-tx (+ tx1 4))
                    clean-tx)))))
-    
+
     (d/delete-database default-cfg)))
