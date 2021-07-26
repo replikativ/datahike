@@ -32,7 +32,9 @@
                      [?e :db/cardinality ?c]])
 
 (deftest test-empty-db
-  (let [cfg "datahike:mem://test-empty-db"
+  (let [cfg {:store {:backend :mem
+                     :id "test-empty-db"}
+             :keep-log? false}
         _ (d/delete-database cfg)
         _ (d/create-database cfg)
         conn (d/connect cfg)
@@ -95,9 +97,13 @@
                               :db/valueType   :string}]))))))
 
 (deftest test-db-with-initial-schema
-  (let [cfg "datahike:mem://test-db-with-initial-schema"
+  (let [cfg {:store {:backend :mem
+                     :id "test-db-with-initial-schema"}
+             :attribute-refs? false
+             :keep-log? false
+             :initial-tx [name-schema]}
         _ (d/delete-database cfg)
-        _ (d/create-database cfg :initial-tx [name-schema])
+        _ (d/create-database cfg)
         conn (d/connect cfg)]
 
     (testing "schema existence"
@@ -173,7 +179,9 @@
            (d/transact conn [{schema-name wrong-val}]))))))
 
 (deftest test-schema-types
-  (let [cfg "datahike:mem://test-schema-types"
+  (let [cfg {:store {:backend :mem
+                     :id "test-schema-types"}
+             :keep-log? false}
         _ (d/delete-database cfg)
         schema-tx [{:db/ident       :value/bigdec
                     :db/valueType   :db.type/bigdec
@@ -208,7 +216,7 @@
                    {:db/ident       :value/uuid
                     :db/valueType   :db.type/uuid
                     :db/cardinality :db.cardinality/one}]
-        _ (d/create-database cfg :initial-tx schema-tx)
+        _ (d/create-database (assoc cfg :initial-tx schema-tx))
         conn (d/connect cfg)]
 
     (testing-type conn "bigdec" (bigdec 1) 13 1)
@@ -224,7 +232,10 @@
     (testing-type conn "uuid" (random-uuid) 23 1)))
 
 (deftest test-schema-cardinality
-  (let [cfg "datahike:mem://test-schema-cardinality"
+  (let [cfg {:store {:backend :mem
+                     :id "test-schema-cardinality"}
+             :attribute-refs? false
+             :keep-log? false}
         _ (d/delete-database cfg)
         schema-tx [{:db/ident       :owner
                     :db/valueType   :db.type/string
@@ -234,7 +245,7 @@
                    {:db/ident       :cars
                     :db/valueType   :db.type/keyword
                     :db/cardinality :db.cardinality/many}]
-        _ (d/create-database cfg :initial-tx schema-tx)
+        _ (d/create-database (assoc cfg :initial-tx schema-tx))
         conn (d/connect cfg)]
 
     (testing "insert :owner and :cars one by one"
@@ -278,6 +289,7 @@
                  "/tmp/dh-test-persistence")
           cfg {:store {:backend :file
                        :path path}
+               :keep-log? false
                :initial-tx [name-schema]}
           _ (d/delete-database cfg)
           _ (d/create-database cfg)

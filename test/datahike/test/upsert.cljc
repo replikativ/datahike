@@ -194,9 +194,11 @@
 (deftest test-upsert-after-large-coll
   (let [ascii-ish (map char (concat (range 48 58) (range 65 91) (range 97 123)))
         file-cfg {:store {:backend :file
-                          :path "/tmp/upsert-large-test"}}
+                          :path "/tmp/upsert-large-test"}
+                  :keep-log? false}
         mem-cfg {:store {:backend :mem
-                         :id "upsert-large-test"}}
+                         :id "upsert-large-test"}
+                 :keep-log? false}
         _ (if (api/database-exists? file-cfg)
             (do
               (api/delete-database file-cfg)

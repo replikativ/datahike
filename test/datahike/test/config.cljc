@@ -62,6 +62,7 @@
               :keep-history? true
               :schema-flexibility :write
               :index :datahike.index/hitchhiker-tree
+              :keep-log? true
               :cache-size 100000}
              (-> config (dissoc :name)))))))
 

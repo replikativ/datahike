@@ -106,7 +106,20 @@
                               (d/tx-range @conn {:offset -2}))))
       (testing "with offset 3 and no limit"
         (is (= (drop 2 complete-result)
-               (cleanup-txs (d/tx-range @conn {:offset 3}))))))
+               (cleanup-txs (d/tx-range @conn {:offset 3})))))
+      (testing "on database without tx log"
+        (let [cfg {:store {:backend :mem
+                           :id "test-tx-log-cfg-error"}
+                   :keep-history? true
+                   :keep-log? false
+                   :attribute-refs? true
+                   :schema-flexibility :write}
+              _ (d/delete-database cfg)
+              _ (d/create-database cfg)
+              conn (d/connect cfg)
+              _ (setup-data conn)]
+          (is (thrown-with-msg? ExceptionInfo #"tx-range is only allowed for databases with transaction log. Consider setting \:keep-log\? to true in your configuration."
+                 (d/tx-range @conn))))))
     (testing "tx-get"
       (testing "with first transaction"
         (is (= (-> complete-result first :data)
@@ -285,4 +298,5 @@
                (-> @conn
                    (d/get-tx (+ tx1 4))
                    clean-tx)))))
+    
     (d/delete-database default-cfg)))
