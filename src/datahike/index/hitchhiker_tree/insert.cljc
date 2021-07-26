@@ -51,27 +51,12 @@
   (-insertion-ts [_] op-count)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
-    (assoc kvs key nil)
-    #_(let [old-retracted  (old-retracted kvs key indices)]
-      (-> (if old-retracted
-            (assoc kvs old-retracted nil)
-            kvs)
-          (assoc key nil))))
+    (assoc kvs key nil))
   (-apply-op-to-tree [_ tree]
-    (tree/insert tree key nil)
-    #_(let [children  (cond
-                      (tree/data-node? tree) (:children tree)
-                      :else (:children (peek (tree/lookup-path tree key))))
-          old-retracted  (old-retracted children key indices)]
-      (-> (if old-retracted
-            (tree/insert tree old-retracted nil)
-            tree)
-          (tree/insert key nil)))))
-
+    (tree/insert tree key nil)))
 
 (defn new-InsertOp [key op-count]
   (InsertOp. key op-count))
-
 
 (defn new-temporal-InsertOp [key op-count]
   (temporal-InsertOp. key op-count))
