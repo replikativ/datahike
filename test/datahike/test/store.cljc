@@ -23,7 +23,8 @@
 (deftest test-db-file-store
   (test-store {:store {:backend :file :path (case (System/getProperty "os.name")
                                               "Windows 10" (str (System/getProperty "java.io.tmpdir") "api-fs")
-                                              "/tmp/api-fs")}}))
+                                              "/tmp/api-fs")}
+               :keep-log? false}))
 
 (deftest test-db-mem-store
   (test-store {:store {:backend :mem :id "test-mem"}}))
@@ -49,6 +50,7 @@
                         :id "test-hitchhiker-tree"}
                 :schema-flexibility :read
                 :keep-history? false
+                :keep-log? false
                 :index :datahike.index/hitchhiker-tree}]
     (d/delete-database config)
     (d/create-database config)
@@ -63,6 +65,7 @@
                           :id "test-hitchhiker-tree-binary-support"}
                   :schema-flexibility :read
                   :keep-history? false
+                  :keep-log? false
                   :index index}]
       (d/delete-database config)
       (d/create-database config)

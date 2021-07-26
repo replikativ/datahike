@@ -12,6 +12,7 @@
             :id "test-db-meta"}
     :attribute-refs? false
     :keep-history? false
+    :keep-log? false
     :schema-flexibility :read}
    cfg))
 

@@ -16,7 +16,6 @@
     :schema-flexibility :read}
    cfg))
 
-
 (defn datahike-reset-fixture
   [cfg test-function]
   (d/delete-database cfg)

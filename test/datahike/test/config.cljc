@@ -69,6 +69,7 @@
               :index-config       {:index-b-factor       const/default-index-b-factor
                                    :index-log-size       const/default-index-log-size
                                    :index-data-node-size const/default-index-data-node-size}
+              :keep-log? true
               :cache-size 100000}
              (-> config (dissoc :name)))))))
 
