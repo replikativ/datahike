@@ -44,7 +44,11 @@
         _ (arrays/asort arr (index-type->cmp-quick index-type))]
     (set/from-sorted-array (index-type->cmp index-type) arr)))
 
+;; TODO: Add a test against this as I think it is wrong (ie it still allows duplicate)
 (defn -insert [set datom index-type]
+  (set/conj set datom (index-type->cmp-quick index-type)))
+
+(defn -temporal-insert [set datom index-type]
   (set/conj set datom (index-type->cmp-quick index-type)))
 
 (defn -remove [set datom index-type]

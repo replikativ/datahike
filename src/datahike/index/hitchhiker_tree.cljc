@@ -138,6 +138,12 @@
 (defn -insert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
     (async/<?? (hmsg/enqueue tree [(assoc (ins/new-InsertOp datom-as-vec op-count)
+                                     :tag (h/uuid))]))))
+
+
+(defn -temporal-insert [tree ^Datom datom index-type op-count]
+  (let [datom-as-vec (datom->node datom index-type)]
+    (async/<?? (hmsg/enqueue tree [(assoc (ins/new-temporal-InsertOp datom-as-vec op-count)
                                           :tag (h/uuid))]))))
 
 (defn -upsert [tree ^Datom datom index-type op-count]
