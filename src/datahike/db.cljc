@@ -294,11 +294,11 @@
 
   (-tx-range [db start end]
              (let [txs (tx-log/-slice (:tx-log db) start end)
-                   xf (map (fn [[tx tx-data]] {:tx (- tx tx0)
-                                               :data (if (:attribute-refs? (:config db))
-                                                       (mapv (fn [d] (update d :a (partial -ident-for db))) tx-data)
-                                                       tx-data)}))]
-               (into [] xf txs)))
+                   coerce-txs (fn [[tx tx-data]] {:tx (- tx tx0)
+                                                  :data (if (:attribute-refs? (:config db))
+                                                          (mapv (fn [d] (update d :a (partial -ident-for db))) tx-data)
+                                                          tx-data)})]
+               (map coerce-txs txs)))
 
   (-lookup-tx [db tx]
               (let [tx (tx-log/-get (:tx-log db) tx)]
@@ -970,7 +970,7 @@
                 (di/empty-index index :avet index-config))
          tx-log (when keep-log?
                   (if attribute-refs?
-                    (tx-log/init-log tx0 ref-datoms 0)
+                    (tx-log/init-log tx0 (mapv (comp vec seq) ref-datoms) 0)
                     (tx-log/empty-log)))
          max-eid (if attribute-refs? ue0 e0)
          max-tx (if attribute-refs? utx0 tx0)
@@ -1664,13 +1664,15 @@
 (defn with-tx-report [db current-tx tx-data]
   (let [keep-log? (-keep-log? db)]
     (cond-> db
-      keep-log? (update-in [:tx-log] tx-log/insert-log current-tx tx-data (:op-count db)))))
+      keep-log? (update-in [:tx-log] tx-log/insert-log current-tx (mapv (comp vec seq) tx-data) (:op-count db)))))
 
 (defn transact-tx-log [{{:keys [:db/current-tx]} :tempids :keys [tx-data] :as report}]
   (update-in report [:db-after] with-tx-report current-tx tx-data))
 
 
 ;; multivals/reverse can be specified as coll or as a single value, trying to guess
+
+
 (defn- maybe-wrap-multival [db a-ident vs]
   (cond
     ;; not a multival context
@@ -1838,8 +1840,6 @@
         tuples+values))
      []
      (::queued-tuples report))))
-
-
 
 (defn transact-tx-data [initial-report initial-es]
   (when-not (or (nil? initial-es)

@@ -791,13 +791,16 @@
         :doc "Returns transaction log given database and options with :offset and :limit"}
   tx-range
   ([db]
-   (db/-tx-range db 0 nil))
+   (tx-range db {:offset 0
+                 :limit nil}))
   ([db {:keys [offset limit] :as opts}]
-   (if (neg? offset)
-     (throw (ex-info "Only positive offsets allowed." {:opts opts}))
-     (let [start (+ const/tx0 offset)
-           end (when (some? limit) (+ start (dec limit)))]
-       (db/-tx-range db start end)))))
+   (if (datahike.db/-keep-log? db)
+     (if (neg? offset)
+       (throw (ex-info "Only positive offsets allowed." {:opts opts}))
+       (let [start (+ const/tx0 offset)
+             end (when (some? limit) (+ start (dec limit)))]
+         (db/-tx-range db start end)))
+     (throw (ex-info "tx-range is only allowed for databases with transaction log. Consider setting :keep-log? to true in your configuration." (db/-config db))))))
 
 (defn ^{:arglists '([db tx])
         :doc "Returns transaction log given database and transaction ID"}
