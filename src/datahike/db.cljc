@@ -1462,7 +1462,6 @@
           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % removing :aevt op-count))
           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % datom :aevt (inc op-count)))
           keep-history? (update :hash + (hash datom))
-          ;; TODO: add a test against this too. Make it first fail with '-insert' and show that it works with -temporal-insert
           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % removing :avet op-count))
           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % datom :avet (inc op-count)))
           true (update :op-count + (if (or keep-history? indexing?) 2 1)))
