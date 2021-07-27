@@ -8,7 +8,6 @@
 #?(:cljs
    (def Throwable js/Error))
 
-
 (defn duplicate-test [config]
   (let [expected (datom/datom 502 :block/children 501 536870915)
         _      (d/create-database config)
@@ -39,7 +38,6 @@
 
       (d/release conn)
       (d/delete-database config))))
-
 
 (deftest mem-set
   (let [config {:store {:backend :mem :id "performance-set"}
