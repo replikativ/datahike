@@ -564,7 +564,15 @@
            tx-meta (if (:tx-meta arg-map) (:tx-meta arg-map) nil)]
        (with db tx-data tx-meta)))
     ([db tx-data tx-meta]
-     (dcore/with db tx-data tx-meta))))
+     {:pre [(db/db? db)]}
+     (if (is-filtered db)
+       (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
+       (db/transact-tx-data (db/map->TxReport
+                             {:db-before db
+                              :db-after  db
+                              :tx-data   []
+                              :tempids   {}
+                              :tx-meta   tx-meta}) tx-data)))))
 
 (def ^{:arglists '([db tx-data])
        :doc "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."}
