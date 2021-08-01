@@ -3,8 +3,6 @@
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
-   #?(:cljs [datahike.test.cljs :refer [thrown-msg?]]
-      :clj  [datahike.test.cljs :refer [thrown-msg?]])
    [datahike.core :as d]
    [datahike.test.core :as tdc]))
 
