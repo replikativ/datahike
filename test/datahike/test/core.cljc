@@ -90,3 +90,27 @@
              (d/datom 2 :age 37)
              (d/datom 2 :name "Petr")
              (d/datom 2 :huh? false)}))))
+
+(defn- now []
+  #?(:clj  (System/currentTimeMillis)
+     :cljs (.getTime (js/Date.))))
+
+(deftest test-uuid
+  (let [now-ms (loop []
+                 (let [ts (now)]
+                   (if (> (mod ts 1000) 900) ;; sleeping over end of a second
+                     (recur)
+                     ts)))
+        now    (int (/ now-ms 1000))]
+    (is (= (* 1000 now) (d/squuid-time-millis (d/squuid))))
+    (is (not= (d/squuid) (d/squuid)))
+    (is (= (subs (str (d/squuid)) 0 8)
+           (subs (str (d/squuid)) 0 8)))))
+
+(deftest test-diff
+  (is (= [[(d/datom 1 :b 2) (d/datom 1 :c 4) (d/datom 2 :a 1)]
+          [(d/datom 1 :b 3) (d/datom 1 :d 5)]
+          [(d/datom 1 :a 1)]]
+         (clojure.data/diff
+          (d/db-with (d/empty-db) [{:a 1 :b 2 :c 4} {:a 1}])
+          (d/db-with (d/empty-db) [{:a 1 :b 3 :d 5}])))))

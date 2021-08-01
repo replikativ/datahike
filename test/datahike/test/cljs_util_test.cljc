@@ -1,4 +1,4 @@
-(ns datahike.test.cljs
+(ns datahike.test.cljs-util-test
   (:require
    [clojure.string :as str]
    [cljs.test :as t])
