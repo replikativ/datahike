@@ -958,11 +958,6 @@
                   symbols))))
      acc)))
 
-(defn collect [context symbols]
-  (->> (-collect context symbols)
-       (map vec)
-       set))
-
 (defprotocol IContextResolve
   (-context-resolve [var context]))
 
@@ -1010,7 +1005,7 @@
 
 (extend-protocol IPostProcess
   FindRel
-  (-post-process [_ tuples] tuples)
+  (-post-process [_ tuples] (if (seq? tuples) (vec tuples) tuples))
   FindColl
   (-post-process [_ tuples] (into [] (map first) tuples))
   FindScalar
@@ -1043,20 +1038,12 @@
       qp)))
 
 (defn paginate [offset limit resultset]
-  (if (or offset limit)
-    (let [length (count resultset)
-          start (or offset 0)
-          limit (if (or (nil? limit) (< limit 0))
-                  length
-                  limit)
-          part (+ start limit)
-          end (if (< length part)
-                length
-                part)]
-      (if (< start end)
-        (-> resultset vec (subvec start end) set)
-        #{}))
-    resultset))
+  (if (or (nil? limit) (pos? limit))
+    (let [subseq (drop (or offset 0) (distinct resultset))]
+      (if (nil? limit)
+        subseq
+        (take limit subseq)))
+    '()))
 
 (defn convert-to-return-maps [{:keys [mapping-type mapping-keys]} resultset]
   (let [mapping-keys (map #(get % :mapping-key) mapping-keys)
@@ -1066,6 +1053,10 @@
       :keys (convert-fn (map keyword mapping-keys))
       :strs (convert-fn (map str mapping-keys))
       :syms (convert-fn (map symbol mapping-keys)))))
+
+(defn collect [context symbols]
+  (->> (-collect context symbols)
+       (map vec)))
 
 (defmulti q (fn [query & args] (type query)))
 
@@ -1097,10 +1088,11 @@
                           (-q wheres)
                           (collect all-vars))]
     (cond->> resultset
-      (:with query) (mapv #(vec (subvec % 0 result-arity)))
+      (or (:offset query-map) (:limit query-map))   (paginate (:offset query-map)
+                                                              (:limit query-map))
+      true                                          set
+      (:with query)                                 (mapv #(subvec % 0 result-arity))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
-      (some #(instance? Pull %) find-elements) (pull find-elements context)
-      true (-post-process find)
-      true (paginate (:offset query-map)
-                     (:limit query-map))
-      returnmaps (convert-to-return-maps returnmaps))))
+      (some #(instance? Pull %) find-elements)      (pull find-elements context)
+      true                                          (-post-process find)
+      returnmaps                                    (convert-to-return-maps returnmaps))))
