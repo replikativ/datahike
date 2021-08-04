@@ -38,3 +38,10 @@
   (mapv
    (partial apply datom/datom)
    (msg/lookup tree tx)))
+
+(defn -purge [tree datoms op-count]
+  (->> datoms
+       (group-by :tx)
+       (map (fn [[tx datoms]] (let [old-datoms (-get tree tx)]
+                                [tx (remove (set datoms) old-datoms)])))
+       (reduce (fn [t [tx datoms]] (-> t (msg/delete tx op-count) (msg/insert tx datoms op-count))) tree)))

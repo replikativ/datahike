@@ -1,7 +1,7 @@
 (ns datahike.test.tx-log
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing use-fixtures]]
-      :clj  [clojure.test :as t :refer        [is deftest testing use-fixtures]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
    [datahike.constants :as const]
    [datahike.test.utils :as u])
@@ -9,38 +9,38 @@
 
 (def tx1 (inc const/tx0))
 
-(def  complete-result [{:tx 1
-                        :data
-                        [[1 :db/ident :name tx1 true]
-                         [1 :db/cardinality :db.cardinality/one tx1 true]
-                         [1 :db/index true tx1 true]
-                         [1 :db/unique :db.unique/identity tx1 true]
-                         [1 :db/valueType :db.type/string tx1 true]
-                         [2 :db/ident :parents tx1 true]
-                         [2 :db/cardinality :db.cardinality/many tx1 true]
-                         [2 :db/valueType :db.type/ref tx1 true]
-                         [3 :db/ident :age tx1 true]
-                         [3 :db/cardinality :db.cardinality/one tx1 true]
-                         [3 :db/valueType :db.type/long tx1 true]]}
-                       {:tx 2
-                        :data
-                        [[4 :name "Alice" (+ tx1 1) true]
-                         [4 :age 25 (+ tx1 1) true]
-                         [5 :name "Bob" (+ tx1 1) true]
-                         [5 :age 30 (+ tx1 1) true]]}
-                       {:tx 3
-                        :data
-                        [[6 :name "Charlie" (+ tx1 2) true]
-                         [6 :age 5 (+ tx1 2) true]
-                         [6 :parents 4 (+ tx1 2) true]
-                         [6 :parents 5 (+ tx1 2) true]]}
-                       {:tx 4, :data [[4 :age 26 (+ tx1 3) true]]}
-                       {:tx 5
-                        :data
-                        [[6 :age 5 (+ tx1 4) false]
-                         [6 :name "Charlie" (+ tx1 4) false]
-                         [6 :parents 4 (+ tx1 4) false]
-                         [6 :parents 5 (+ tx1 4) false]]}])
+(def complete-result [{:tx 1
+                       :data
+                       [[1 :db/ident :name tx1 true]
+                        [1 :db/cardinality :db.cardinality/one tx1 true]
+                        [1 :db/index true tx1 true]
+                        [1 :db/unique :db.unique/identity tx1 true]
+                        [1 :db/valueType :db.type/string tx1 true]
+                        [2 :db/ident :parents tx1 true]
+                        [2 :db/cardinality :db.cardinality/many tx1 true]
+                        [2 :db/valueType :db.type/ref tx1 true]
+                        [3 :db/ident :age tx1 true]
+                        [3 :db/cardinality :db.cardinality/one tx1 true]
+                        [3 :db/valueType :db.type/long tx1 true]]}
+                      {:tx 2
+                       :data
+                       [[4 :name "Alice" (+ tx1 1) true]
+                        [4 :age 25 (+ tx1 1) true]
+                        [5 :name "Bob" (+ tx1 1) true]
+                        [5 :age 30 (+ tx1 1) true]]}
+                      {:tx 3
+                       :data
+                       [[6 :name "Charlie" (+ tx1 2) true]
+                        [6 :age 5 (+ tx1 2) true]
+                        [6 :parents 4 (+ tx1 2) true]
+                        [6 :parents 5 (+ tx1 2) true]]}
+                      {:tx 4, :data [[4 :age 26 (+ tx1 3) true]]}
+                      {:tx 5
+                       :data
+                       [[6 :age 5 (+ tx1 4) false]
+                        [6 :name "Charlie" (+ tx1 4) false]
+                        [6 :parents 4 (+ tx1 4) false]
+                        [6 :parents 5 (+ tx1 4) false]]}])
 
 (defn setup-data [conn]
   (let [schema [{:db/ident       :name
@@ -101,7 +101,7 @@
       (testing "with limit beyond tx size"
         (is (= []
                (d/tx-range @conn {:offset 200}))))
-      (testing "with negative limit"
+      (testing "with negative offset"
         (is (thrown-with-msg? ExceptionInfo #"Only positive offsets allowed."
                               (d/tx-range @conn {:offset -2}))))
       (testing "with offset 3 and no limit"
@@ -131,6 +131,49 @@
                (-> @conn
                    (d/get-tx (+ tx1 4))
                    clean-tx)))))
+
+    (testing "purge"
+      (let [dirk-entity {:name "Dirk"
+                         :age 3
+                         :parents [[:name "Alice"] [:name "Bob"]]}
+            dirk-datoms [[7 :name "Dirk" 536870918 true]
+                         [7 :age 3 536870918 true]
+                         [7 :parents 4 536870918 true]
+                         [7 :parents 5 536870918 true]]]
+        (d/transact conn {:tx-data [dirk-entity]})
+        (is (= dirk-datoms
+               (-> @conn
+                   (d/get-tx (+ tx1 5))
+                   clean-tx)))
+
+        (d/transact conn [[:db/purge [:name "Dirk"] :age 2]])
+        (is (= dirk-datoms
+               (-> @conn
+                   (d/get-tx (+ tx1 5))
+                   clean-tx)))
+
+        (d/transact conn [[:db/purge [:name "Dirk"] :age 3]])
+        (is (= [[7 :name "Dirk" 536870918 true]
+                [7 :parents 4 536870918 true]
+                [7 :parents 5 536870918 true]]
+               (-> @conn
+                   (d/get-tx (+ tx1 5))
+                   clean-tx)))
+
+        (testing "attribute"
+          (d/transact conn [[:db.purge/attribute [:name "Dirk"] :parents]])
+          (is (= [[7 :name "Dirk" 536870918 true]]
+                 (-> @conn
+                     (d/get-tx (+ tx1 5))
+                     clean-tx))))
+
+        (testing "entity"
+          (d/transact conn [[:db.purge/entity [:name "Dirk"]]])
+          (is (= []
+                 (-> @conn
+                     (d/get-tx (+ tx1 5))
+                     clean-tx))))))
+
     (d/delete-database default-cfg)))
 
 (def attr-ref-result [{:tx 0
@@ -278,10 +321,10 @@
                     (take 2))
                (cleanup-txs (d/tx-range @conn {:offset 2
                                                :limit 2})))))
-      (testing "with limit beyond tx size"
+      (testing "with offset beyond tx size"
         (is (= []
                (d/tx-range @conn {:offset 200}))))
-      (testing "with negative limit"
+      (testing "with negative offset"
         (is (thrown-with-msg? ExceptionInfo #"Only positive offsets allowed."
                               (d/tx-range @conn {:offset -2}))))
       (testing "with offset 3 and no limit"
@@ -298,5 +341,46 @@
                (-> @conn
                    (d/get-tx (+ tx1 4))
                    clean-tx)))))
+    (testing "purge"
+      (let [dirk-entity {:name "Dirk"
+                         :age 3
+                         :parents [[:name "Alice"] [:name "Bob"]]}
+            dirk-datoms [[45 :name "Dirk" 536870918 true]
+                         [45 :age 3 536870918 true]
+                         [45 :parents 42 536870918 true]
+                         [45 :parents 43 536870918 true]]]
+        (d/transact conn {:tx-data [dirk-entity]})
+        (is (= dirk-datoms
+               (-> @conn
+                   (d/get-tx (+ tx1 5))
+                   clean-tx)))
+
+        (d/transact conn [[:db/purge [:name "Dirk"] 41 2]])
+        (is (= dirk-datoms
+               (-> @conn
+                   (d/get-tx (+ tx1 5))
+                   clean-tx)))
+
+        (d/transact conn [[:db/purge [:name "Dirk"] 41 3]])
+        (is (= [[45 :name "Dirk" 536870918 true]
+                [45 :parents 42 536870918 true]
+                [45 :parents 43 536870918 true]]
+               (-> @conn
+                   (d/get-tx (+ tx1 5))
+                   clean-tx)))
+
+        (testing "attribute"
+          (d/transact conn [[:db.purge/attribute [:name "Dirk"] 40]])
+          (is (= [[45 :name "Dirk" 536870918 true]]
+                 (-> @conn
+                     (d/get-tx (+ tx1 5))
+                     clean-tx))))
+
+        (testing "entity"
+          (d/transact conn [[:db.purge/entity [:name "Dirk"]]])
+          (is (= []
+                 (-> @conn
+                     (d/get-tx (+ tx1 5))
+                     clean-tx))))))
 
     (d/delete-database default-cfg)))
