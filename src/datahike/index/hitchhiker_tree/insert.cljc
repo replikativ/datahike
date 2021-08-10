@@ -24,8 +24,8 @@
   (when (seq kvs)
     (let [mask (mask new indices)]
       (when-let [candidate (->> (subseq kvs >= mask)
-                             (map first)
-                             first)]
+                                (map first)
+                                first)]
         (when (equals-at-indices? indices candidate new)
           candidate)))))
 
