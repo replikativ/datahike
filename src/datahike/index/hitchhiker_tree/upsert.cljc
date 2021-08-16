@@ -15,40 +15,53 @@
 
 (def prefix? (memoize increase-by-one?))
 
-(defn- max-t
-  "Returns the key with max 't' component."
-  [ks]
-  (when (seq ks)
-    (apply max-key #(nth % 3) ks)))
-
 (defn mask [new indices]
   (reduce (fn [mask pos]
             (assoc mask pos (nth new pos)))
           [nil nil nil nil]
           indices))
 
+(defn equals-on-indices?
+  "Returns true if 'k1' and 'k2' have the same
+   value at positions indicated by 'indices'"
+  [k1, k2, indices]
+  (reduce (fn [_ i]
+            (if (= (nth k1 i) (nth k2 i))
+              true
+              (reduced false)))
+          true
+          indices))
+
 (defn old-key
   "Returns the old version of the given 'new' key if it exists in 'old-keys'.
-  If there are multiple old versions, the one with the biggest transaction time is returned.
   'indices' is a vector of integer indicating which positions in keys are significant,
   i.e., [0 2] means that the first and third entry in the key are used for filtering."
   [old-keys new indices]
   (when (seq old-keys)
     (let [mask (mask new indices)]
       (when-let [candidates (subseq old-keys >= mask)]
-        (->> candidates
-             (map first)
-             ((if (prefix? indices) take-while filter)
-              #(reduce (fn [_ i]
-                         (if (= (nth % i) (nth new i))
-                           true
-                           (reduced false)))
-                       true
-                       indices))
-             max-t)))))
+        (when (or (not (prefix? indices))
+                  (equals-on-indices? new (-> candidates first first) indices))
+          (let [res (->> candidates
+                         (map first)
+                         ;; Returns the key which has not been retracted.
+                         ;; There will at most be one such key.
+                         ;; Because of the ordering in keys, we know that
+                         ;; when two successive keys have a positive
+                         ;; :t value, then the second key is our answer,
+                         ;; the one that has not been retracted."
+                         (reduce (fn [prev-pos? k]
+                                   (let [curr-pos? (pos? (nth k 3))]
+                                     (if (and curr-pos?
+                                              prev-pos?
+                                              (equals-on-indices? new k indices))
+                                       (reduced k)
+                                       curr-pos?)))
+                                 true))]
+            (if (boolean? res) nil res)))))))
 
 (defn remove-old
-  "Removes old key from the 'kvs' map using 'remove-fn' function if 'new' and 'old' keys' first two entries match."
+  "Removes old key from the 'kvs' map using 'remove-fn' function."
   [kvs new remove-fn indices]
   (when-let [old (old-key kvs new indices)]
     (remove-fn old)))
@@ -68,7 +81,8 @@
           (tree/insert key nil)))))
 
 (defn old-retracted
-  "Returns a new datom to insert in the tree to signal the retraction of the old datom."
+  "Returns a new datom to be inserted in the tree to signal the retraction of
+  its corresponding old datom."
   [kvs key indices]
   (when-let [old (old-key kvs key indices)]
     (let [[a b c _] old
