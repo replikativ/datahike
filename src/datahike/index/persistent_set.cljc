@@ -44,11 +44,19 @@
         _ (arrays/asort arr (index-type->cmp-quick index-type))]
     (set/from-sorted-array (index-type->cmp index-type) arr)))
 
-(defn -insert [set datom index-type]
-  (set/conj set datom (index-type->cmp-quick index-type)))
-
 (defn -remove [set datom index-type]
   (set/disj set datom (index-type->cmp-quick index-type)))
+
+(defn -insert [set datom index-type]
+  (-> (or (when-let [old (first (-slice set
+                                        (dd/datom (.-e datom) (.-a datom) (.-v datom) tx0)
+                                        (dd/datom (.-e datom) (.-a datom) (.-v datom) txmax)))]
+            (-remove set old index-type))
+          set)
+      (set/conj datom (index-type->cmp-quick index-type))))
+
+(defn -temporal-insert [set datom index-type]
+  (set/conj set datom (index-type->cmp-quick index-type)))
 
 (defn -upsert [set datom index-type]
   (-> (or (when-let [old (first (-slice set

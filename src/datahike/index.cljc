@@ -10,6 +10,7 @@
   (-seq [index])
   (-count [index])
   (-insert [index datom index-type op-count])
+  (-temporal-insert [index datom index-type op-count])
   (-upsert [index datom index-type op-count])
   (-temporal-upsert [index datom index-type op-count])
   (-remove [index datom index-type op-count])
@@ -28,6 +29,8 @@
     (dih/-count eavt-tree :eavt))
   (-insert [tree datom index-type op-count]
     (dih/-insert tree datom index-type op-count))
+  (-temporal-insert [tree datom index-type op-count]
+    (dih/-temporal-insert tree datom index-type op-count))
   (-upsert [tree datom index-type op-count]
     (dih/-upsert tree datom index-type op-count))
   (-temporal-upsert [tree datom index-type op-count]
@@ -53,6 +56,8 @@
     (dih/-count eavt-tree :eavt))
   (-insert [tree datom index-type op-count]
     (dih/-insert tree datom index-type op-count))
+  (-temporal-insert [index datom index-type op-count]
+    (dih/-temporal-insert index datom index-type op-count))
   (-upsert [tree datom index-type op-count]
     (dih/-upsert tree datom index-type op-count))
   (-temporal-upsert [tree datom index-type op-count]
@@ -78,6 +83,8 @@
     (dip/-count eavt-set))
   (-insert [set datom index-type op-count]
     (dip/-insert set datom index-type))
+  (-temporal-insert [set datom index-type op-count]
+    (dip/-temporal-insert set datom index-type))
   (-upsert [set datom index-type op-count]
     (dip/-upsert set datom index-type))
   (-temporal-upsert [set datom index-type op-count]
