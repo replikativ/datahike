@@ -208,28 +208,35 @@
                (d/db-with [{:db/id 1, :name  "Alice", :age   15}
                            {:db/id 2, :name  "Bob", :age   37}
                            {:db/id 3, :name  "Charlie", :age   37}]))]
-    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
-                        :args [db]}))
-           3))
-    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
-                        :args [db]
-                        :offset 1
-                        :limit 1}))
-           1))
-    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
-                        :args [db]
-                        :limit 2}))
-           2))
-    (is (= (count  (d/q {:query '[:find ?e :where [?e :name _]]
-                         :args [db]
-                         :offset 1
-                         :limit 2}))
-           2))
-    (is (= (count  (d/q {:query '[:find ?e :where [?e :name _]]
-                         :args [db]
-                         :offset 2
-                         :limit 2}))
-           1))
+    (is (= 3 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :limit -1}))))
+    (is (= 3 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]}))))
+    (is (= 3 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :limit nil}))))
+    (is (= 3 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :offset -1}))))
+    (is (= 3 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :offset nil}))))
+    (is (= 1 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :offset 1
+                          :limit 1}))))
+    (is (= 2 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :limit 2}))))
+    (is (= 2 (count  (d/q {:query '[:find ?e :where [?e :name _]]
+                           :args [db]
+                           :offset 1
+                           :limit 2}))))
+    (is (= 1 (count  (d/q {:query '[:find ?e :where [?e :name _]]
+                           :args [db]
+                           :offset 2
+                           :limit 2}))))
     (is (not (= (d/q {:query '[:find ?e :where [?e :name _]]
                       :args [db]
                       :limit 2})

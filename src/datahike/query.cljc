@@ -1038,12 +1038,10 @@
       qp)))
 
 (defn paginate [offset limit resultset]
-  (if (or (nil? limit) (pos? limit))
-    (let [subseq (drop (or offset 0) (distinct resultset))]
-      (if (nil? limit)
-        subseq
-        (take limit subseq)))
-    '()))
+  (let [subseq (drop (or offset 0) (distinct resultset))]
+    (if (or (nil? limit) (neg? limit))
+      subseq
+      (take limit subseq))))
 
 (defn convert-to-return-maps [{:keys [mapping-type mapping-keys]} resultset]
   (let [mapping-keys (map #(get % :mapping-key) mapping-keys)
