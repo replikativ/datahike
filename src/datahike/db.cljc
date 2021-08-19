@@ -473,15 +473,18 @@
   (-index-range [db attr start end] (temporal-index-range (.-origin-db db) db attr start end)))
 
 (defn filter-txInstant [datoms pred db]
-  (into #{}
-        (comp
-         (map datom-tx)
-         (distinct)
-         (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
-         (keep (fn [^Datom d]
-                 (when (and (= :db/txInstant (.-a d)) (pred d))
-                   (.-e d)))))
-        datoms))
+  (let [txInstant (if (:attribute-refs? (.-config db))
+                    (-ref-for db :db/txInstant)
+                    :db/txInstant)]
+    (into #{}
+          (comp
+           (map datom-tx)
+           (distinct)
+           (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
+           (keep (fn [^Datom d]
+                   (when (and (= txInstant (.-a d)) (pred d))
+                     (.-e d)))))
+          datoms)))
 
 (defn get-current-values [rschema datoms]
   (->> datoms
@@ -505,6 +508,7 @@
                      (if (date? time-point)
                        (.before ^Date (.-v d) ^Date time-point)
                        (<= (dd/datom-tx d) time-point)))
+
         filtered-tx-ids (filter-txInstant datoms as-of-pred db)
         filtered-datoms (->> datoms
                              (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
