@@ -169,6 +169,11 @@
 ;; built-ins
 
 
+(defn- translate-for [db a]
+  (if (and (-> db db/-config :attribute-refs?) (keyword? a))
+    (db/-ref-for db a)
+    a))
+
 (defn- -differ? [& xs]
   (let [l (count xs)]
     (not= (take (/ l 2) xs) (drop (/ l 2) xs))))
@@ -177,7 +182,7 @@
   [db e a else-val]
   (when (nil? else-val)
     (raise "get-else: nil default value is not supported" {:error :query/where}))
-  (if-some [datom (first (db/-search db [e a]))]
+  (if-some [datom (first (db/-search db [e (translate-for db a)]))]
     (:v datom)
     else-val))
 
@@ -185,8 +190,11 @@
   [db e & as]
   (reduce
    (fn [_ a]
-     (when-some [datom (first (db/-search db [e a]))]
-       (reduced [(:a datom) (:v datom)])))
+     (when-some [datom (first (db/-search db [e (translate-for db a)]))]
+       (let [a-ident (if (keyword? (:a datom))
+                       (:a datom)
+                       (.-ident-for db (:a datom)))]
+         (reduced [a-ident (:v datom)]))))
    nil
    as))
 

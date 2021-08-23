@@ -27,6 +27,9 @@
    {:db/ident       :father
     :db/cardinality :db.cardinality/one
     :db/valueType   :db.type/ref}
+   {:db/ident       :parent
+    :db/cardinality :db.cardinality/many
+    :db/valueType   :db.type/ref}
    {:db/ident       :children
     :db/cardinality :db.cardinality/many
     :db/valueType   :db.type/ref}
@@ -34,6 +37,9 @@
     :db/cardinality :db.cardinality/one
     :db/valueType   :db.type/boolean}
    {:db/ident       :weight
+    :db/cardinality :db.cardinality/one
+    :db/valueType   :db.type/long}
+   {:db/ident       :height
     :db/cardinality :db.cardinality/one
     :db/valueType   :db.type/long}
    {:db/ident       :child
