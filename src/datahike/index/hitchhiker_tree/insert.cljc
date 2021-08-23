@@ -66,3 +66,18 @@
 
 (defn new-temporal-InsertOp [key op-count]
   (temporal-InsertOp. key op-count))
+
+(defn add-insert-handler
+  "Tells the store how to deserialize insert related operations"
+  [store]
+  (swap! (:read-handlers store)
+         merge
+         {'datahike.index.hitchhiker_tree.insert.InsertOp
+          ;; TODO Remove ts when Wanderung is available.
+          (fn [{:keys [key op-count ts]}]
+            (map->InsertOp {:key key :op-count (or op-count ts)}))
+
+          'datahike.index.hitchhiker_tree.insert.temporal-InsertOp
+          (fn [{:keys [key op-count ts]}]
+            (map->temporal-InsertOp {:key key :op-count (or op-count ts)}))})
+  store)
