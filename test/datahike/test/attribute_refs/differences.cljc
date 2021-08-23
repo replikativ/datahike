@@ -12,13 +12,15 @@
   {:store {:backend :mem :id "attr-no-refs-test"}
    :keep-history? true
    :attribute-refs? false
-   :schema-flexibility :write})
+   :schema-flexibility :write
+   :name "attr-no-refs-test"})
 
 (def ref-cfg
-  {:store {:backend :mem :id "attr-no-refs-test"}
-   :keep-history? false
+  {:store {:backend :mem :id "attr-refs-test"}
+   :keep-history? true
    :attribute-refs? true
-   :schema-flexibility :write})
+   :schema-flexibility :write
+   :name "attr-refs-test"})
 
 (def name-schema [{:db/ident :name
                    :db/cardinality :db.cardinality/one
@@ -104,7 +106,23 @@
              c/ref-implicit-schema))
       (d/transact conn name-schema)
       (is (= (:schema @conn)
-             (merge c/ref-implicit-schema {:name (first name-schema)} {(+ 1 c/ue0) :name}))))))
+             (merge c/ref-implicit-schema
+                    {:name (first name-schema)}
+                    {(+ 1 c/ue0) :name})))
+      (is (contains? (-> (:rschema @conn) :db/ident) :name))
+      (is (contains? (-> (:ident-ref-map @conn) keys set) :name))
+      (is (contains? (-> (:ref-ident-map @conn) vals set) :name))
+
+      (testing "after reconnection"
+        (d/release conn)
+        (let [conn2 (d/connect ref-cfg)]
+          (is (= (:schema @conn2)
+                 (merge c/ref-implicit-schema
+                        {:name (first name-schema)}
+                        {(+ 1 c/ue0) :name})))
+          (is (contains? (-> (:rschema @conn2) :db/ident) :name))
+          (is (contains? (-> (:ident-ref-map @conn2) keys set) :name))
+          (is (contains? (-> (:ref-ident-map @conn2) vals set) :name)))))))
 
 (deftest test-transact-tempid
   (testing "Tempid resolution for keyword DB"

@@ -1259,7 +1259,6 @@
            {:error :transact/syntax, :attribute ident})))
 
 (defn validate-datom [db ^Datom datom]
-  #_(println "validate datom" datom)
   (when (and (datom-added datom)
              (is-attr? db (.-a datom) :db/unique))
     (when-let [found (not-empty (-datoms db :avet [(.-a datom) (.-v datom)]))]
@@ -2067,7 +2066,6 @@
               (= op :db.history.purge/before)
               (if (-keep-history? db)
                 (let [history (HistoricalDB. db)
-                      ;    _ (println "purge before")
                       into-sorted-set #(apply sorted-set-by dd/cmp-datoms-eavt-quick %)
                       e-datoms (-> (clojure.set/difference
                                     (into-sorted-set (search-temporal-indices db nil))
