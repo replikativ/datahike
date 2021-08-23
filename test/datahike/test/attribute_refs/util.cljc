@@ -61,7 +61,19 @@
    {:db/ident       :spec
     :db/valueType   :db.type/ref
     :db/isComponent true
-    :db/cardinality :db.cardinality/one}])
+    :db/cardinality :db.cardinality/one}
+   {:db/ident       :attr
+    :db/cardinality :db.cardinality/one
+    :db/valueType   :db.type/keyword}
+   {:db/ident       :follow
+    :db/cardinality :db.cardinality/one
+    :db/valueType   :db.type/ref}
+   {:db/ident       :f1
+    :db/cardinality :db.cardinality/one
+    :db/valueType   :db.type/ref}
+   {:db/ident       :f2
+    :db/cardinality :db.cardinality/one
+    :db/valueType   :db.type/ref}])
 
 (defn setup-new-connection []
   (d/delete-database ref-config)
@@ -87,8 +99,16 @@
   (mapv (fn [[e a v]] [op (+ offset e) (db/-ref-for db a) v])
         datoms))
 
+
 (defn shift-entities [offset entities]
   (mapv (fn [entity] (if (:db/id entity)
                        (update entity :db/id (partial + offset))
                        entity))
         entities))
+
+(defn shift-in [coll indices offset]
+  (into (empty coll)
+        (map (fn [item] (reduce (fn [acc i] (update acc i + offset))
+                                 item
+                                 indices))
+             coll)))
