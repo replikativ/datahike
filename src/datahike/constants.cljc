@@ -133,7 +133,7 @@
   (reduce
    (fn [m {:keys [db/ident] :as attr}]
      (when ident
-       (assoc m ident attr)))
+       (assoc m ident (dissoc attr :db/ident))))
    {}
    system-schema))
 

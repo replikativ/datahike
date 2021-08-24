@@ -66,7 +66,7 @@
     :db/cardinality :db.cardinality/one
     :db/valueType   :db.type/keyword}
    {:db/ident       :follow
-    :db/cardinality :db.cardinality/one
+    :db/cardinality :db.cardinality/many
     :db/valueType   :db.type/ref}
    {:db/ident       :f1
     :db/cardinality :db.cardinality/one

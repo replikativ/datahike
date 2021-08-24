@@ -167,6 +167,7 @@
   "Assumes correct pattern form, i.e. refs for ref-database"
   [eavt aevt avet pattern indexed? temporal-db?]
   (let [[e a v tx added?] pattern]
+ ; (println "search indices " pattern )
     (if (and (not temporal-db?) (false? added?))
       '()
       (case-tree [e a (some? v) tx]
@@ -785,6 +786,7 @@
                          m (attr->properties key value)))
                       (update m :db/ident (fn [coll] (if coll (conj coll attr) #{attr}))) keys->values)))
                  {} schema)]
+     ;            (println "attr tuples" (attrTuples schema rschema))
     (assoc rschema :db/attrTuples (attrTuples schema rschema))))
 
 (defn- validate-schema-key [a k v expected]
@@ -905,6 +907,7 @@
          _ (dc/validate-config complete-config)
          {:keys [keep-history? index schema-flexibility attribute-refs?]} complete-config
          on-read? (= :read schema-flexibility)
+ ;       _ (println "schema" schema)
          schema (to-old-schema schema)
          _ (if on-read?
              (validate-schema schema)
@@ -913,7 +916,10 @@
                                 (if attribute-refs?
                                   c/ref-implicit-schema
                                   c/non-ref-implicit-schema))
+  ;      _ (println "schema" schema)
+  ;      _ (println "complete-schema" complete-schema)
          rschema (rschema complete-schema)
+   ;      _ (println "empty-db rschema" rschema)
          ident-ref-map (if attribute-refs? (get-ident-ref-map complete-schema) {})
          ref-ident-map (if attribute-refs? (clojure.set/map-invert ident-ref-map) {})
          system-entities (if attribute-refs? c/system-entities #{})
@@ -973,6 +979,7 @@
                                   c/ref-implicit-schema
                                   c/non-ref-implicit-schema))
          rschema (rschema complete-schema)
+  ;       _ (println "init-db rschema" rschema)
          ident-ref-map (if attribute-refs? (get-ident-ref-map schema) {})
          ref-ident-map (if attribute-refs? (clojure.set/map-invert ident-ref-map) {})
          system-entities (if attribute-refs? c/system-entities #{})
@@ -1397,6 +1404,8 @@
         (assoc-in db [:schema e] (hash-map a-ident v-ident))))))
 
 (defn update-rschema [db]
+;(println "update rschema" (:schema db))
+;(println "update rschema"(rschema (:schema db)))
   (assoc db :rschema (rschema (:schema db))))
 
 (defn remove-schema [db ^Datom datom]
@@ -1539,6 +1548,7 @@
         keep-history? (and (-keep-history? db) (not (no-history? db a-ident))
                            (not= :db/txInstant a-ident))
         op-count      (.op-count db)]
+     ;   (println indexing? a-ident schema? keep-history? op-count)
     (cond-> db
       ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
       schema? (try
@@ -1561,6 +1571,7 @@
       schema? (-> (update-schema datom) update-rschema))))
 
 (defn- transact-report-upsert [report datom]
+;(println "upsert" datom)
   (let [db      (:db-after report)
         a       (:a datom)
         report' (-> report
@@ -1680,6 +1691,7 @@
 (defn- transact-add [{:keys [db-after] :as report} [_ e a v tx :as ent]]
   (validate-attr a ent db-after)
   (validate-val v ent db-after)
+ ;(println "add " ent)
   (let [attribute-refs? (:attribute-refs? (-config db-after))
         tx (or tx (current-tx report))
         db db-after
@@ -1687,9 +1699,12 @@
         a-ident (if attribute-refs? (-ident-for db a) a)
         v (if (ref? db a-ident) (entid-strict db v) v)
         new-datom (datom e a v tx)]
-    (if (multival? db a)
+  ;(println "add 2" new-datom)
+    (let [rep (if (multival? db a)
       (transact-report report new-datom)
-      (transact-report-upsert report new-datom))))
+      (transact-report-upsert report new-datom))]
+  ;    (println "report" rep)
+      rep)))
 
 (defn- transact-retract-datom [report ^Datom d]
   (transact-report report (datom (.-e d) (.-a d) (.-v d) (current-tx report) false)))
@@ -1788,6 +1803,7 @@
      (::queued-tuples report))))
 
 (defn transact-tx-data [initial-report initial-es]
+;(println "init" initial-es initial-report)
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
     (raise "Bad transaction data " initial-es ", expected sequential collection"
@@ -1795,10 +1811,14 @@
   (let [db-before (:db-before initial-report)
         {:keys [attribute-refs? schema-flexibility]} (-config db-before)
         tx-instant (if attribute-refs? (-ref-for db-before :db/txInstant) :db/txInstant)
+  ;      _ (println "rschema:" (-rschema (:db-after initial-report)))
+ ;       _ (println "tuples:" (-attrs-by (:db-after initial-report) :db.type/tuple))
+;_ (println "tuples:"  (seq (-attrs-by (:db-after initial-report) :db.type/tuple)))
         has-tuples? (seq (-attrs-by (:db-after initial-report) :db.type/tuple))
         initial-es' (if has-tuples?
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)]
+;(println "init'" initial-es')
     (loop [report (update initial-report :db-after transient)
            es (if (-keep-history? (:db-before initial-report))
                 (concat [[:db/add (current-tx report) tx-instant (get-time) (current-tx report)]]
@@ -1807,6 +1827,7 @@
       (let [[entity & entities] es
             {:keys [tempids db-after]} report
             db db-after]
+    ;        (println "entity" entity "entities:" entities)
         (cond
           (empty? es)
           (-> report

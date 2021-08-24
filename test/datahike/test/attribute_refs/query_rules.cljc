@@ -7,6 +7,7 @@
                                               wrap-direct-datoms
                                               wrap-ref-datoms
                                               shift-in]]
+   [datahike.db :as db]
    [datahike.api :as d])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
@@ -18,9 +19,10 @@
                 [3 :follow 4]
                 [4 :follow 6]
                 [5 :follow 3]]
-        db (d/db-with ref-db (wrap-ref-datoms ref-db ref-e0 :db/add datoms))]
-        (println "datoms" (d/datoms db :eavt ))
-    (is (= (shift-in #{[1 2] [2 3] [2 4] [3 4] [4 6] [5 3]} [0 1] ref-e0)
+        db (d/db-with ref-db (wrap-ref-datoms ref-db ref-e0 :db/add datoms))
+        all-pairs (shift-in #{[1 2] [2 3] [2 4] [3 4] [4 6] [5 3]} [0 1] ref-e0)
+        all-pairs-reversed (shift-in #{[2 1] [3 2] [4 2] [4 3] [6 4] [3 5]} [0 1] ref-e0)]
+    (is (= all-pairs
            (d/q '[:find  ?e1 ?e2
                   :in    $ %
                   :where (follow ?e1 ?e2)]
@@ -28,8 +30,9 @@
                 '[[(follow ?x ?y)
                    [?x :follow ?y]]])))
 
-    (testing "Joining regular clauses with rule"
-      (is (= (shift-in #{[3 2] [6 4] [4 2]} [0 1] ref-e0)
+    (testing "Joining regular clauses with rule" 
+      (is (= (set (filter (fn [[_ x]] (and (even? x) ((set (map first all-pairs-reversed)) x)))
+                          all-pairs-reversed))
              (d/q '[:find ?y ?x
                     :in $ %
                     :where [_ _ ?x]
@@ -40,14 +43,14 @@
                      [?a :follow ?b]]]))))
 
     (testing "Rule context is isolated from outer context"
-      (is (= #{[:follow]}
+      (is (= (shift-in #{[2] [3] [4] [6]} [0] ref-e0)
              (d/q '[:find ?x
                     :in $ %
                     :where [?e _ _]
                     (rule ?x)]
                   db
                   '[[(rule ?e)
-                     [_ ?e _]]]))))
+                     [_ :follow ?e]]]))))
 
     (testing "Rule with branches"
       (is (= (shift-in #{[2] [3] [4]} [0] ref-e0)
@@ -79,8 +82,8 @@
              (d/q '[:find ?e1 ?e2
                     :in $ %
                     :where (follow ?e1 ?e2)]
-                  (d/db-with ref-db (wrap-direct-datoms ref-db ref-e0 :db/add
-                                                        [[1 :follow 2] [2 :follow 3]]))
+                  (d/db-with ref-db (wrap-ref-datoms ref-db ref-e0 :db/add
+                                                     [[1 :follow 2] [2 :follow 3]]))
                   '[[(follow ?e1 ?e2)
                      [?e1 :follow ?e2]]
                     [(follow ?e1 ?e2)
@@ -90,8 +93,8 @@
              (d/q '[:find ?e1 ?e2
                     :in $ %
                     :where (follow ?e1 ?e2)]
-                  (d/db-with ref-db (wrap-direct-datoms ref-db ref-e0 :db/add
-                                                        [[1 :follow 2] [2 :follow 3] [3 :follow 1]]))
+                  (d/db-with ref-db (wrap-ref-datoms ref-db ref-e0 :db/add
+                                                     [[1 :follow 2] [2 :follow 3] [3 :follow 1]]))
                   '[[(follow ?e1 ?e2)
                      [?e1 :follow ?e2]]
                     [(follow ?e1 ?e2)
@@ -103,7 +106,9 @@
                     [2 :f1 3]
                     [3 :f2 4]
                     [4 :f1 5]
-                    [5 :f2 6]]]
+                    [5 :f2 6]]
+            db2 (d/db-with ref-db (wrap-ref-datoms ref-db ref-e0 :db/add datoms))]
+        (println "datoms" (d/datoms db :eavt))
         (is (= (shift-in #{[0 1] [0 3] [0 5]
                            [1 3] [1 5]
                            [2 3] [2 5]
@@ -112,7 +117,7 @@
                (d/q '[:find  ?e1 ?e2
                       :in    $ %
                       :where (f1 ?e1 ?e2)]
-                    (d/db-with ref-db (wrap-ref-datoms ref-db ref-e0 :db/add datoms))
+                    db2
                     '[[(f1 ?e1 ?e2)
                        [?e1 :f1 ?e2]]
                       [(f1 ?e1 ?e2)
@@ -125,7 +130,8 @@
                        (f1 ?e1 ?t)]])))))
 
     (testing "Passing ins to rule"
-      (is (= (shift-in #{[4 6] [2 4]} [0 1] ref-e0)
+      (is (= (set (filter (fn [[x y]] (and (even? x) (even? y)))
+                          all-pairs)) 
              (d/q '[:find ?x ?y
                     :in $ % ?even
                     :where
@@ -138,7 +144,8 @@
                   even?))))
 
     (testing "Using built-ins inside rule"
-      (is (= (shift-in #{[4 6] [2 4]} [0 1] ref-e0)
+      (is (= (set (filter (fn [[x y]] (and (even? x) (even? y)))
+                          all-pairs))
              (d/q '[:find ?x ?y
                     :in $ %
                     :where (match ?x ?y)]
