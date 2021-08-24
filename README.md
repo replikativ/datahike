@@ -1,6 +1,6 @@
-<h1 align="center">
-    Datahike
-</h1>
+<a href="https://datahike.io" target="_blank">
+  <img align="center" alt="Datahike" src="./doc/assets/datahike-logo.svg">
+</a>
 <p align="center">
 <a href="https://discord.com/invite/kEBzMvb"><img src="https://img.shields.io/discord/735146089241509909?label=discord&logo=Discord"/></a>
 <a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://badgen.net/badge/-/slack?icon=slack&label"/></a>
@@ -9,7 +9,7 @@
 <a href="https://github.com/replikativ/datahike/tree/development"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/development"/></a>
 </p>
 
-Datahike is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
+[Datahike](https://datahike.io) is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
 powered by an efficient Datalog query engine. This project started as a port of
 [DataScript](https://github.com/tonsky/DataScript) to the
 [hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
@@ -226,34 +226,6 @@ yet, then just evaluate the `datahike.migrate` namespace manually in your
 project before exporting.
 
 Have a look at the [change log](./CHANGELOG.md) for recent updates.
-
-## Roadmap
-
-### 0.4.0
-
-- identity and access management
-- CRDT type schema support
-- fast redis backend support
-- query planner and optimizer
-- transaction monitoring
-
-### 0.5.0
-
-- optionally use core.async to handle storage IO
-- ClojureScript support both in the browser and on node
-
-### 0.6.0
-
-- support GC or eager deletion of fragments
-- use hitchhiker-tree synchronization for replication
-- run comprehensive query suite and compare to DataScript and Datomic
-- support anomaly errors (?)
-
-### 1.0.0
-
-- support optimistic write support through attributes with conflict resolution
-  (CRDT-like)
-- investigate https://github.com/usethesource/capsule for faster hh-tree durability
 
 ## Commercial support
 
