@@ -68,6 +68,9 @@
    {:db/ident       :follow
     :db/cardinality :db.cardinality/many
     :db/valueType   :db.type/ref}
+   {:db/ident       :value
+    :db/cardinality :db.cardinality/many
+    :db/valueType   :db.type/long}
    {:db/ident       :f1
     :db/cardinality :db.cardinality/one
     :db/valueType   :db.type/ref}

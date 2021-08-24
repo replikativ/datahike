@@ -7,7 +7,6 @@
                                               wrap-direct-datoms
                                               wrap-ref-datoms
                                               shift-in]]
-   [datahike.db :as db]
    [datahike.api :as d])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
