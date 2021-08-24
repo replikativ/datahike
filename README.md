@@ -227,6 +227,19 @@ project before exporting.
 
 Have a look at the [change log](./CHANGELOG.md) for recent updates.
 
+## Roadmap
+
+### 1.0.0
+- transaction log index
+- import/export overhaul
+- performance improvements
+- remote transactor
+- benchmarks
+
+### 1.0.X
+- remote query
+- remote index access
+
 ## Commercial support
 
 We are happy to provide commercial support with
