@@ -1548,7 +1548,6 @@
         keep-history? (and (-keep-history? db) (not (no-history? db a-ident))
                            (not= :db/txInstant a-ident))
         op-count      (.op-count db)]
-     ;   (println indexing? a-ident schema? keep-history? op-count)
     (cond-> db
       ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
       schema? (try

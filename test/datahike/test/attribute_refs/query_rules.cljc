@@ -3,13 +3,10 @@
    #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
       :clj [clojure.test :as t :refer [is deftest testing]])
    [datahike.test.attribute-refs.util :refer [ref-db ref-e0
-                                              shift-entities
                                               wrap-direct-datoms
                                               wrap-ref-datoms
                                               shift-in]]
-   [datahike.api :as d])
-  #?(:clj
-     (:import [clojure.lang ExceptionInfo])))
+   [datahike.api :as d]))
 
 (deftest test-rules
   (let [datoms [[1 :follow 2]

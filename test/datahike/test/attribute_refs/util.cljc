@@ -12,6 +12,9 @@
     :db/cardinality :db.cardinality/one
     :db/valueType   :db.type/string
     :db/unique      :db.unique/identity}
+   {:db/ident       :mname
+    :db/cardinality :db.cardinality/one
+    :db/valueType   :db.type/string}
    {:db/ident       :aka
     :db/cardinality :db.cardinality/many
     :db/valueType   :db.type/string}
@@ -109,9 +112,14 @@
                        entity))
         entities))
 
-(defn shift-in [coll indices offset]
-  (into (empty coll)
+(defn shift-in [coll-of-coll indices offset]
+  (into (empty coll-of-coll)
         (map (fn [item] (reduce (fn [acc i] (update acc i + offset))
                                  item
                                  indices))
+             coll-of-coll)))
+
+(defn shift [coll offset]
+  (into (empty coll)
+        (map (partial + offset)
              coll)))

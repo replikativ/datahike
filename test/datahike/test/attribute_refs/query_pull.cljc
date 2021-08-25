@@ -4,8 +4,6 @@
       :clj [clojure.test :as t :refer [is deftest testing are]])
    [datahike.test.attribute-refs.util :refer [ref-db ref-e0
                                               shift-entities
-                                              wrap-direct-datoms
-                                              wrap-ref-datoms
                                               shift-in]]
    [datahike.api :as d]))
 
