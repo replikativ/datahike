@@ -8,7 +8,6 @@
                                               shift]]
    [datahike.api :as d]))
 
-
 (def test-db
   (d/db-with ref-db
              (shift-entities ref-e0 [{:db/id 1 :weight 40 :age 10}

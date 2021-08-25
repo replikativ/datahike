@@ -105,7 +105,6 @@
   (mapv (fn [[e a v]] [op (+ offset e) (db/-ref-for db a) v])
         datoms))
 
-
 (defn shift-entities [offset entities]
   (mapv (fn [entity] (if (:db/id entity)
                        (update entity :db/id (partial + offset))
@@ -115,8 +114,8 @@
 (defn shift-in [coll-of-coll indices offset]
   (into (empty coll-of-coll)
         (map (fn [item] (reduce (fn [acc i] (update acc i + offset))
-                                 item
-                                 indices))
+                                item
+                                indices))
              coll-of-coll)))
 
 (defn shift [coll offset]

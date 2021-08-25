@@ -22,7 +22,7 @@
     #{[{:name "Ivan"}] [{:name "Petr"}]}
 
     '[(pull ?e [*])]
-    #{(shift-entities ref-e0 [{:db/id 2 :age 25 :name "Ivan"}]) 
+    #{(shift-entities ref-e0 [{:db/id 2 :age 25 :name "Ivan"}])
       (shift-entities ref-e0 [{:db/id 1 :age 44 :name "Petr"}])}
 
     '[?e (pull ?e [:name])]

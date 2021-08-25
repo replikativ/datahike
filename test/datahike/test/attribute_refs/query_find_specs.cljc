@@ -6,7 +6,6 @@
                                               wrap-direct-datoms]]
    [datahike.api :as d]))
 
-
 (def test-db (d/db-with
               ref-db
               (wrap-direct-datoms ref-db ref-e0 :db/add

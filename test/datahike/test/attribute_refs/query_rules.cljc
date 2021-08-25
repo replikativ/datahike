@@ -26,7 +26,7 @@
                 '[[(follow ?x ?y)
                    [?x :follow ?y]]])))
 
-    (testing "Joining regular clauses with rule" 
+    (testing "Joining regular clauses with rule"
       (is (= (set (filter (fn [[_ x]] (and (even? x) ((set (map first all-pairs-reversed)) x)))
                           all-pairs-reversed))
              (d/q '[:find ?y ?x
@@ -127,7 +127,7 @@
 
     (testing "Passing ins to rule"
       (is (= (set (filter (fn [[x y]] (and (even? x) (even? y)))
-                          all-pairs)) 
+                          all-pairs))
              (d/q '[:find ?x ?y
                     :in $ % ?even
                     :where
