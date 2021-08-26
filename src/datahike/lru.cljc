@@ -111,8 +111,8 @@
            (LRUDatomCache. (dissoc cache key)
                            (dissoc lru key)
                            (dissoc counts key)
-                           (inc tick)
                            (- n-total-datoms (get counts key))
+                           (inc tick)
                            datom-limit)
            this))
   (seed [_ base]
