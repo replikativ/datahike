@@ -54,7 +54,6 @@
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one
     :db/doc "A transaction's time-point"
-    :db/unique :db.unique/identity
     :db/index true}
    {:db/id 10
     :db/ident :db.cardinality/many}
