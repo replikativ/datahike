@@ -1,7 +1,8 @@
 (ns datahike.test.migrate
   (:require [clojure.test :refer :all]
-            [datahike.migrate :as m]
-            [datahike.api :as d]))
+            [datahike.api :as d]
+            [datahike.migrate :as dm]
+            [datahike.datom :as dd]))
 
 (def tx-data [[:db/add 1 :db/cardinality :db.cardinality/one 536870913 true]
               [:db/add 1 :db/ident :name 536870913 true]
@@ -16,7 +17,7 @@
               [:db/add 4 :age 35 536870913 true]
               [:db/add 4 :name "Bob" 536870913 true]])
 
-(deftest export-import-test
+#_(deftest export-import-test
   (testing "Test a roundtrip for exporting and importing."
     (let [os (System/getProperty "os.name")
           path (case os
@@ -75,3 +76,16 @@
         @(d/load-entities conn source-datoms)
         (is (= (into #{} source-datoms)
                (d/q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))))))
+
+(deftest coerce-tx-test
+  (testing "coerce simple transaction report"
+    (let [tx-report {:tx 6,
+                     :data
+                     [(dd/datom 536870918 :db/txInstant #inst "2021-08-27T12:10:08.954-00:00" 536870918 true)
+                      (dd/datom 45 :name "Daisy" 536870918 false)
+                      (dd/datom 45 :age 55 536870918 false)]}]
+      (is (= {:tx 6
+              :data [[536870918 :db/txInstant #inst "2021-08-27T12:10:08.954-00:00" 536870918 true]
+                     [45 :name "Daisy" 536870918 false]
+                     [45 :age 55 536870918 false]]}
+             (dm/coerce-tx tx-report))))))

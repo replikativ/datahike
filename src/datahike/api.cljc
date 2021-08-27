@@ -6,6 +6,7 @@
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
             [datahike.schema :as ds]
+            [datahike.migrate :as dm]
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
             [taoensso.timbre :as timbre]
             [datahike.impl.entity :as de])
@@ -807,3 +808,19 @@
   get-tx
   [db tx]
   (db/-lookup-tx db tx))
+
+(defn ^{:arglists '([conn path]
+                    [conn path {:keys [format]}])
+        :doc "Exports a database using the transaction log into a file given a database connection, a file path, and a format. Supported formats are :edn and :cbor."}
+  export
+  ([conn path]
+   (export conn path {:format :edn}))
+  ([conn path opts]
+   (let [tx-log (tx-range @conn)
+         meta-data {:meta (:meta @conn)
+                    :config (:config @conn)}]
+     (try
+       (dm/export-tx-log tx-log meta-data path opts)
+       true
+       (catch Exception e
+         (throw (ex-info "Could not write export." {:path path :opts opts})))))))
