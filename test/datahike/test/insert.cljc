@@ -73,9 +73,7 @@
                  :db/valueType   :db.type/ref
                  :db/index       true
                  :db/cardinality :db.cardinality/many}]
-        _      #_(if (d/database-exists? config)
-                   (d/delete-database config))
-        (d/create-database config)
+        _      (d/create-database config)
         conn   (d/connect config)]
     (d/transact conn schema)
     (d/transact conn (vec (for [i (range 1000)]
