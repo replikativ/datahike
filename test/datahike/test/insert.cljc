@@ -60,7 +60,6 @@
                 :index :datahike.index/hitchhiker-tree}]
     (duplicate-test config)))
 
-
 (deftest insert-read-handlers
   (let [config {:store {:backend :file :path "/tmp/insert-read-handlers-9"}
                 :schema-flexibility :write

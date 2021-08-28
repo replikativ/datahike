@@ -177,7 +177,6 @@
                  [1 (+ const/tx0 2) true]}
                (d/q query (d/history @conn))))))))
 
-
 (deftest upsert-read-handlers
   (let [config {:store {:backend :file :path "/tmp/upsert-read-handlers"}
                 :schema-flexibility :write
