@@ -59,3 +59,28 @@
                 :keep-history? true
                 :index :datahike.index/hitchhiker-tree}]
     (duplicate-test config)))
+
+(deftest insert-read-handlers
+  (let [config {:store {:backend :file :path "/tmp/insert-read-handlers-9"}
+                :schema-flexibility :write
+                :keep-history? false
+                :index :datahike.index/hitchhiker-tree}
+        schema [{:db/ident       :block/string
+                 :db/valueType   :db.type/string
+                 :db/cardinality :db.cardinality/one}
+                {:db/ident       :block/children
+                 :db/valueType   :db.type/ref
+                 :db/index       true
+                 :db/cardinality :db.cardinality/many}]
+        _      (d/create-database config)
+        conn   (d/connect config)]
+    (d/transact conn schema)
+    (d/transact conn (vec (for [i (range 1000)]
+                            {:db/id (inc i) :block/children (inc i)})))
+    (d/release conn)
+
+    (let [conn (d/connect config)]
+      ;; Would fail if insert read handlers are not present
+      (is (d/datoms @conn :eavt)))
+
+    (d/delete-database config)))
