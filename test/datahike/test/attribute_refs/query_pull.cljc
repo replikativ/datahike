@@ -99,7 +99,6 @@
 
 (deftest test-find-spec-input
   (let [pattern '[*]]
-    (println "pull 1" (d/pull test-db pattern 1))
     (is (= (d/pull test-db pattern 1)
            (d/q '[:find (pull ?e ?p) .
                   :in $ ?p
