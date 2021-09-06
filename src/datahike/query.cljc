@@ -521,18 +521,36 @@
     (assoc a
            :tuples (filterv #(nil? (hash (key-fn-a %))) tuples-a))))
 
-(defn lookup-pattern-db [db pattern]
+(defn var-mapping [pattern indices]
+  (->> (map vector pattern indices)
+       (filter (fn [[s _]] (free-var? s)))
+       (into {})))
+
+(defn lookup-pattern-db [context db pattern orig-pattern]
   ;; TODO optimize with bound attrs min/max values here
-  (let [search-pattern (mapv #(if (symbol? %) nil %) pattern)
+  (let [attr->prop (var-mapping orig-pattern ["e" "a" "v" "tx" "added"])
+        attr->idx (var-mapping orig-pattern (range))
+        search-pattern (mapv #(if (symbol? %) nil %) pattern)
         datoms  (if (first search-pattern)
                   (if-let [eid (db/entid db (first search-pattern))]
                     (db/-search db (assoc search-pattern 0 eid))
                     [])
                   (db/-search db search-pattern))
-        attr->prop (->> (map vector pattern ["e" "a" "v" "tx" "added"])
-                        (filter (fn [[s _]] (free-var? s)))
-                        (into {}))]
-    (Relation. attr->prop datoms)))
+        idx->const (reduce-kv (fn [m k v]
+                                (if-let [c (k (:consts context))]
+                                  (if (= c (get (first datoms) v)) ;; All datoms have same format and same value at position v
+                                    m                              ;; -> avoid unnecessary translations
+                                    (assoc m v c))
+                                  m))
+                              {}
+                              attr->idx)]
+    (if (empty? idx->const)
+      (Relation. attr->prop datoms)
+      (Relation. attr->idx (map #(reduce (fn [datom [k v]]
+                                           (assoc datom k v))
+                                         (vec (seq %))
+                                         idx->const)
+                                datoms)))))
 
 (defn matches-pattern? [pattern tuple]
   (loop [tuple tuple
@@ -545,11 +563,9 @@
           false))
       true)))
 
-(defn lookup-pattern-coll [coll pattern]
-  (let [data (filter #(matches-pattern? pattern %) coll)
-        attr->idx (->> (map vector pattern (range))
-                       (filter (fn [[s _]] (free-var? s)))
-                       (into {}))]
+(defn lookup-pattern-coll [coll pattern orig-pattern]
+  (let [attr->idx (var-mapping orig-pattern (range))
+        data (filter #(matches-pattern? pattern %) coll)]
     (Relation. attr->idx (mapv to-array data))))            ;; FIXME to-array
 
 (defn normalize-pattern-clause [clause]
@@ -557,12 +573,12 @@
     clause
     (concat ['$] clause)))
 
-(defn lookup-pattern [source pattern]
+(defn lookup-pattern [context source pattern orig-pattern]
   (cond
-    (satisfies? db/ISearch source)
-    (lookup-pattern-db source pattern)
+    (db/db? source)
+    (lookup-pattern-db context source pattern orig-pattern)
     :else
-    (lookup-pattern-coll source pattern)))
+    (lookup-pattern-coll source pattern orig-pattern)))
 
 (defn collapse-rels [rels new-rel]
   (loop [rels rels
@@ -688,8 +704,23 @@
                     (if (empty? rels)
                       (prod-rel production (empty-rel binding))
                       (reduce sum-rel rels)))
-                  (prod-rel (assoc production :tuples []) (empty-rel binding)))]
-    (update context :rels collapse-rels new-rel)))
+                  (prod-rel (assoc production :tuples []) (empty-rel binding)))
+
+        idx->const (reduce-kv (fn [m k v]
+                                (if-let [c (k (:consts context))]
+                                  (assoc m v c)     ;; different value at v for each tupple
+                                  m))
+                              {}
+                              (:attrs new-rel))]
+    (if (empty? (:tuples new-rel))
+      (update context :rels collapse-rels new-rel)
+      (-> context                                        ;; filter output binding
+          (update :rels collapse-rels
+                  (update new-rel :tuples #(filter (fn [tuple]
+                                                     (every? (fn [[ind c]]
+                                                               (= c (get tuple ind)))
+                                                             idx->const))
+                                                   %)))))))
 
 ;;; RULES
 
@@ -801,9 +832,9 @@
         rel))))
 
 (defn resolve-pattern-lookup-refs
-  "Translate pattern entries before using pattern for database search?"
+  "Translate pattern entries before using pattern for database search"
   [source pattern]
-  (if (satisfies? db/IDB source)
+  (if (db/db? source)
     (let [[e a v tx added] pattern]
       (->
        [(if (or (lookup-ref? e) (attr? e))
@@ -842,8 +873,8 @@
                     (keep #(limit-rel % vars)))))
 
 (defn check-bound [context vars form]
-  (let [bound (set/union (into #{} (mapcat #(keys (:attrs %)) (:rels context)))
-                         (set (keys (:consts context))))]
+  (let [bound (set (concat (mapcat #(keys (:attrs %)) (:rels context))
+                           (keys (:consts context))))]
     (when-not (set/subset? vars bound)
       (let [missing (set/difference (set vars) bound)]
         (raise "Insufficient bindings: " missing " not bound in " form
@@ -855,80 +886,82 @@
   ([context clause]
    (-resolve-clause context clause clause))
   ([context clause orig-clause]
-   (let [clause (replace (:consts context) clause)]
-     (condp looks-like? clause
-       [[symbol? '*]]                                       ;; predicate [(pred ?a ?b ?c)]
-       (do (check-bound context (identity (filter free-var? (first clause))) orig-clause)
-           (filter-by-pred context clause))
+   (condp looks-like? clause
+     [[symbol? '*]]                                       ;; predicate [(pred ?a ?b ?c)]
+     (do (check-bound context (identity (filter free-var? (first clause))) orig-clause)
+         (filter-by-pred context clause))
 
-       [[symbol? '*] '_]                                    ;; function [(fn ?a ?b) ?res]
-       (bind-by-fn context clause)
+     [[symbol? '*] '_]                                    ;; function [(fn ?a ?b) ?res]
+     (bind-by-fn context clause)
 
-       [source? '*]                                         ;; source + anything
-       (let [[source-sym & rest] clause]
-         (binding [*implicit-source* (get (:sources context) source-sym)]
-           (-resolve-clause context rest clause)))
+     [source? '*]                                         ;; source + anything
+     (let [[source-sym & rest] clause]
+       (binding [*implicit-source* (get (:sources context) source-sym)]
+         (-resolve-clause context rest clause)))
 
-       '[or *]                                              ;; (or ...)
-       (let [[_ & branches] clause
-             contexts (map #(resolve-clause context %) branches)
-             rels (map #(reduce hash-join (:rels %)) contexts)]
-         (assoc (first contexts) :rels [(reduce sum-rel rels)]))
+     '[or *]                                              ;; (or ...)
+     (let [[_ & branches] clause
+           contexts (map #(resolve-clause context %) branches)
+           rels (map #(reduce hash-join (:rels %)) contexts)]
+       (assoc (first contexts) :rels [(reduce sum-rel rels)]))
 
-       '[or-join [[*] *] *]                                 ;; (or-join [[req-vars] vars] ...)
-       (let [[_ [req-vars & vars] & branches] clause]
-         (check-bound context req-vars orig-clause)
-         (recur context (list* 'or-join (concat req-vars vars) branches) clause))
+     '[or-join [[*] *] *]                                 ;; (or-join [[req-vars] vars] ...)
+     (let [[_ [req-vars & vars] & branches] clause]
+       (check-bound context req-vars orig-clause)
+       (recur context (list* 'or-join (concat req-vars vars) branches) clause))
 
-       '[or-join [*] *]                                     ;; (or-join [vars] ...)
+     '[or-join [*] *]                                     ;; (or-join [vars] ...)
        ;; TODO required vars
-       (let [[_ vars & branches] clause
-             vars (set vars)
-             join-context (limit-context context vars)
-             contexts (map #(-> join-context (resolve-clause %) (limit-context vars)) branches)
-             rels (map #(reduce hash-join (:rels %)) contexts)
-             sum-rel (reduce sum-rel rels)]
-         (update context :rels collapse-rels sum-rel))
+     (let [[_ vars & branches] clause
+           vars (set vars)
+           join-context (limit-context context vars)
+           contexts (map #(-> join-context (resolve-clause %) (limit-context vars)) branches)
+           rels (map #(reduce hash-join (:rels %)) contexts)
+           sum-rel (reduce sum-rel rels)]
+       (update context :rels collapse-rels sum-rel))
 
-       '[and *]                                             ;; (and ...)
-       (let [[_ & clauses] clause]
-         (reduce resolve-clause context clauses))
+     '[and *]                                             ;; (and ...)
+     (let [[_ & clauses] clause]
+       (reduce resolve-clause context clauses))
 
-       '[not *]                                             ;; (not ...)
-       (let [[_ & clauses] clause
-             bound-vars (set (mapcat #(keys (:attrs %)) (:rels context)))
-             negation-vars (collect-vars clauses)
-             _ (when (empty? (set/intersection bound-vars negation-vars))
-                 (raise "Insufficient bindings: none of " negation-vars " is bound in " orig-clause
-                        {:error :query/where
-                         :form orig-clause}))
-             context' (assoc context :rels [(reduce hash-join (:rels context))])
-             negation-context (reduce resolve-clause context' clauses)
-             negation (subtract-rel
-                       (single (:rels context'))
-                       (reduce hash-join (:rels negation-context)))]
-         (assoc context' :rels [negation]))
+     '[not *]                                             ;; (not ...)
+     (let [[_ & clauses] clause
+           bound-vars (set (concat (keys (:consts context))
+                                   (mapcat #(keys (:attrs %)) (:rels context))))
+           negation-vars (collect-vars clauses)
+           _ (when (empty? (set/intersection bound-vars negation-vars))
+               (raise "Insufficient bindings: none of " negation-vars " is bound in " orig-clause
+                      {:error :query/where
+                       :form orig-clause}))
+           context' (assoc context :rels [(reduce hash-join (:rels context))])
+           negation-context (reduce resolve-clause context' clauses)
+           negation (subtract-rel
+                     (single (:rels context'))
+                     (reduce hash-join (:rels negation-context)))]
+       (assoc context' :rels [negation]))
 
-       '[not-join [*] *]                                    ;; (not-join [vars] ...)
-       (let [[_ vars & clauses] clause
-             _ (check-bound context vars orig-clause)
-             context' (assoc context :rels [(reduce hash-join (:rels context))])
-             join-context (limit-context context' vars)
-             negation-context (-> (reduce resolve-clause join-context clauses)
-                                  (limit-context vars))
-             negation (subtract-rel
-                       (single (:rels context'))
-                       (reduce hash-join (:rels negation-context)))]
-         (assoc context' :rels [negation]))
+     '[not-join [*] *]                                    ;; (not-join [vars] ...)
+     (let [[_ vars & clauses] clause
+           _ (check-bound context vars orig-clause)
+           context' (assoc context :rels [(reduce hash-join (:rels context))])
+           join-context (limit-context context' vars)
+           negation-context (-> (reduce resolve-clause join-context clauses)
+                                (limit-context vars))
+           negation (subtract-rel
+                     (single (:rels context'))
+                     (reduce hash-join (:rels negation-context)))]
+       (assoc context' :rels [negation]))
 
-       '[*]                                                 ;; pattern
-       (let [source *implicit-source*
-             pattern (resolve-pattern-lookup-refs source clause)
-             relation (lookup-pattern source pattern)]
-         (binding [*lookup-attrs* (if (satisfies? db/IDB source)
-                                    (dynamic-lookup-attrs source pattern)
-                                    *lookup-attrs*)]
-           (update context :rels collapse-rels relation)))))))
+     '[*]                                                 ;; pattern
+     (let [source *implicit-source*
+           pattern (->> clause
+                        (replace (:consts context))
+                        (resolve-pattern-lookup-refs source))
+           relation (lookup-pattern context source pattern clause)]
+       (binding [*lookup-attrs* (if (satisfies? db/IDB source)
+                                  (dynamic-lookup-attrs source pattern)
+                                  *lookup-attrs*)]
+         (update context :rels collapse-rels relation))))))
 
 (defn resolve-clause [context clause]
   (if (rule? context clause)

@@ -9,15 +9,6 @@
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
-(let [db (-> (d/empty-db {:parent {:db/valueType :db.type/ref}})
-             (d/db-with [{:db/id 1, :name  "Ivan",  :age   15}
-                         {:db/id 2, :name  "Petr",  :age   22, :height 240, :parent 1}
-                         {:db/id 3, :name  "Slava", :age   37, :parent 2}]))]
-  (d/q '[:find  ?e1 ?e2
-         :where [?e1 :age ?a1]
-         [?e2 :age ?a2]
-         [(< ?a1 18 ?a2)]] db))
-
 (deftest test-query-fns
   (testing "predicate without free variables"
     (is (= (d/q '[:find ?x
@@ -80,6 +71,14 @@
                     :where [(count ?x) ?c]]
                   ["a" "abc"])
              #{["a" 1] ["abc" 3]})))
+
+    (testing "Function binding filtered by input argument"
+      (is (= (d/q '[:find  ?x
+                    :in    [?x ...] ?c
+                    :where [(count ?x) ?c]]
+                  ["a" "abc"]
+                  3)
+             #{["abc"]})))
 
     (testing "Built-in vector, hashmap"
       (is (= (d/q '[:find [?tx-data ...]

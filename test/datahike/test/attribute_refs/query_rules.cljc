@@ -104,7 +104,6 @@
                     [4 :f1 5]
                     [5 :f2 6]]
             db2 (d/db-with ref-db (wrap-ref-datoms ref-db ref-e0 :db/add datoms))]
-        (println "datoms" (d/datoms db :eavt))
         (is (= (shift-in #{[0 1] [0 3] [0 5]
                            [1 3] [1 5]
                            [2 3] [2 5]
