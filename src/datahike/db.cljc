@@ -1182,6 +1182,13 @@
 
 (defrecord TxReport [db-before db-after tx-data tempids tx-meta])
 
+(defn empty-tx-report [db]
+  (map->TxReport {:db-before db
+                  :db-after  db
+                  :tx-data   []
+                  :tempids   {}
+                  :tx-meta []}))
+
 (defn #?@(:clj [^Boolean is-attr?]
           :cljs [^boolean is-attr?]) [db attr property]
   (let [a-ident (if (and (:attribute-refs? (-config db))
@@ -2226,3 +2233,73 @@
                                 (get-in migration-state [:tids t])
                                 op)]
           (recur (transact-report report new-datom) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))
+
+(defn import-datom [^DB db ^Datom datom]
+  (let [a (:a datom)
+        indexing?        (indexing? db a)
+        {a-ident :ident} (attr-info db a)
+        schema?          (ds/schema-attr? a-ident)
+        op-count         (:op-count db)
+        added? (datom-added datom)
+        multi-val? (multival? db a)
+        history? (not (no-history? db a))
+        updated-datom (if added?
+                        datom
+                        (first (-search db [(:e datom) a (:v datom)])))
+        update-fn (if added?
+                    (if multi-val?
+                      di/-insert
+                      di/-upsert)
+                    di/-remove)]
+    (cond-> db
+
+      schema? (try
+                (-> db (remove-schema datom) update-rschema)
+                (catch clojure.lang.ExceptionInfo _
+                  db))
+
+      true (update-in [:eavt] #(update-fn % updated-datom :eavt op-count))
+      history? (update-in [:temporal-eavt] #(di/-temporal-insert % datom :eavt op-count))
+
+      true (update-in [:aevt] #(update-fn % updated-datom :aevt op-count))
+      history? (update-in [:temporal-aevt] #(di/-temporal-insert % datom :aevt op-count))
+
+      indexing? (update-in [:avet] #(update-fn % updated-datom :avet op-count))
+      (and history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % datom :avet op-count))
+
+      true    (update :op-count inc)
+      true    (advance-max-eid (.-e datom))
+      true    (update :hash + (hash datom))
+      schema? (-> (update-schema datom) update-rschema))))
+
+(defn import-tx-data [{{:keys [config ident-ref-map max-tx]} :db-after :as initial-report} initial-tx-datoms]
+  (loop [{:keys [tx-data] :as report}          (-> initial-report
+                                                   (assoc :tx-data []))
+         [[e a v t op]
+          & more-datoms
+          :as tx-datoms] initial-tx-datoms]
+    (if (empty? tx-datoms)
+      (-> report
+          (update-in [:db-after :max-tx] inc)
+          (update-in [:db-after] with-tx-report (inc max-tx) tx-data)
+          (dissoc :tx-data))
+      (let [a          (if (:attribute-refs? config)
+                         (ident-ref-map a)
+                         a)
+            datom      (datom e a v t op)
+            new-report (-> report
+                           (update-in [:db-after] import-datom datom)
+                           (update-in [:tx-data] conj datom))]
+        (recur new-report more-datoms)))))
+
+(defn import-tx-log [initial-report tx-reports]
+  (loop [[{:keys [data]} & other-reports] tx-reports
+         report                           (-> initial-report
+                                              (assoc :tx-count 0)
+                                              (update :db-after transient))]
+    (if (empty? data)
+      (update report :db-after persistent!)
+      (let [updated-report (-> report
+                               (import-tx-data data)
+                               (update :tx-count inc))]
+        (recur other-reports updated-report)))))

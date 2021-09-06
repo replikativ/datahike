@@ -1,38 +1,8 @@
 (ns ^:no-doc datahike.migrate
   (:require [clojure.java.io :as io]
+            [clojure.string :as string]
+            [taoensso.timbre :as timbre]
             [clj-cbor.core :as cbor]))
-
-#_(defn export-db
-  "Export the database in a flat-file of datoms at path."
-  [db path]
-  (with-open [f (io/output-stream path)
-              w (io/writer f)]
-    (binding [*out* w]
-      (doseq [d (datahike.db/-datoms db :eavt [])]
-        (prn d)))))
-
-#_(defn update-max-tx-from-file
-  "Find bigest tx in file and update max-tx of db.
-  Note: the last tx might not be the biggest if the db
-  has been imported before."
-  [db file]
-  (let [max-tx (->> (line-seq (io/reader file))
-                    (map read-string)
-                    (reduce #(max %1 (nth %2 3)) 0))]
-    (assoc db :max-tx max-tx)))
-
-#_(defn import-db
-  "Import a flat-file of datoms at path into your database."
-  [conn path]
-  (println "Preparing import of" path "in batches of 1000")
-  (swap! conn update-max-tx-from-file path)
-  (print "Importing ")
-  (time
-   (doseq  [datoms (->> (line-seq (io/reader path))
-                        (map read-string)
-                        (partition 1000 1000 nil))]
-     (print ".")
-     (api/transact conn (vec datoms)))))
 
 (defn coerce-tx [tx]
   (update tx :data (fn [data] (mapv (comp vec seq) data))))
@@ -58,3 +28,41 @@
        (map coerce-tx)
        (cons meta-data)
        (cbor/spit-all path)))
+
+(defn compare-configs [{attribute-refs?-a    :attribute-refs?
+                        keep-history?-a      :keep-history?
+                        schema-flexibility-a :schema-flexibility
+                        :as                  config-a}
+                       {attribute-refs?-b    :attribute-refs?
+                        keep-history?-b      :keep-history?
+                        schema-flexibility-b :schema-flexibility
+                        :as                  config-b}]
+  (when (and (= :read schema-flexibility-a)
+             (= :write schema-flexibility-b))
+    (throw (ex-info "Import configuration mismatch. Databases with :read schema flexibility can not be imported into databases with :write schema flexibility." {:config-a config-a :config-b config-b})))
+  (when-not (= attribute-refs?-a attribute-refs?-b)
+    (timbre/warn "Attribute reference configuration mismatch. Adjusting mapping for import."))
+  (when-not (= keep-history?-a keep-history?-b)
+    (timbre/warn "History index configuration mismatch. Adjusting check for import.")))
+
+(defn check-meta-data [{imported-version :version}
+                       {running-version :version}]
+  (when-not (= imported-version running-version)
+    (let [[major-a minor-a fix-a :as version-a] (string/split imported-version #"\.")
+          [major-b minor-b fix-b :as version-b] (string/split running-version #"\.")]
+      (when-not (= major-a major-b)
+        (throw (ex-info "Version mismatch." {:imported-version version-a
+                                             :running-version  version-b}))))))
+
+(defn read-import-data [s]
+  (try (read-string s)
+       (catch Exception e
+         (throw (ex-info "Import meta data could not be read." (.getMessage e))))))
+
+(defn read-tx-log [db-config db-meta path]
+  (let [[raw-meta-data & raw-tx-reports] (line-seq (io/reader path))
+        {:keys [config meta]}            (read-import-data raw-meta-data)]
+    (compare-configs config db-config)
+    (check-meta-data meta db-meta)
+    (for [tx-report raw-tx-reports]
+      (read-import-data tx-report))))

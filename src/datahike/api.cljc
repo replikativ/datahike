@@ -1,5 +1,5 @@
 (ns datahike.api
-  (:refer-clojure :exclude [filter])
+  (:refer-clojure :exclude [filter import])
   (:require [datahike.connector :as dc]
             [datahike.core :as dcore]
             [datahike.constants :as const]
@@ -824,3 +824,11 @@
        true
        (catch Exception e
          (throw (ex-info "Could not write export." {:path path :opts opts})))))))
+
+(defn import [conn path]
+  (let [db @conn
+        tx-reports (dm/read-tx-log (:config db) (:meta db) path)
+        initial-report {:db-before db
+                        :db-after db}
+        report (db/import-tx-log initial-report tx-reports)]
+    (dc/update-and-flush conn report)))

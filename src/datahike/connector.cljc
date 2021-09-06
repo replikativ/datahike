@@ -15,10 +15,39 @@
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.core.async :refer [go <!]]
-            [clojure.core.cache :as cache])
-  (:import [java.net URI]))
+            [clojure.core.cache :as cache]
+            [clojure.set :refer [rename-keys]])
+  (:import [java.net URI]
+           [clojure.lang Atom]
+           [datahike.db DB]))
 
-(s/def ::connection #(instance? clojure.lang.Atom %))
+(s/def ::connection #(instance? Atom %))
+
+(def core-indices [:eavt :aevt :avet])
+(def temporal-indices [:temporal-eavt :temporal-aevt :temporal-avet])
+(def tx-log-index [:tx-log])
+
+(defn update-and-flush [conn {:keys [db-after] :as report}]
+  (let [{{:keys [keep-history? keep-log?]} :config
+         :keys [store]
+         :as db-map} (into {} db-after)
+        backend (kons/->KonserveBackend store)
+        indexes (concat core-indices
+                        (when keep-history? temporal-indices)
+                        (when keep-log? tx-log-index))
+        xf (map #(vector % (keyword (str (name %) "-key"))))
+        store-index-mapping (into {} xf indexes)
+        cleaned-db-map (reduce-kv (fn [m k v]
+                                    (if (some? v)
+                                      (assoc m k v)
+                                      m)) {} db-map)
+        flushed-db (reduce (fn [db i] (update db i di/-flush backend)) cleaned-db-map indexes) ;;TODO error handling
+        store-db (-> flushed-db
+                     (dissoc :store :transactor)
+                     (rename-keys store-index-mapping))]
+    (<?? S (k/assoc-in store [:db] store-db)) ;;TODO error handling, replace assoc-in with update-in
+    (reset! conn (db/map->DB flushed-db))
+    report))
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
