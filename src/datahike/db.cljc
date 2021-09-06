@@ -829,9 +829,6 @@
     (validate-schema-key a-ident :db/cardinality (:db/cardinality kv) #{:db.cardinality/one :db.cardinality/many})
     (validate-tuple-schema a-ident kv)))
 
-(def ^:const br 300)
-(def ^:const br-sqrt (long (Math/sqrt br)))
-
 (defn to-old-schema [new-schema]
   (if (or (vector? new-schema) (seq? new-schema))
     (reduce
@@ -899,9 +896,9 @@
   "Prefer create-database in api, schema only in index for attribute reference database."
   ([] (empty-db nil nil))
   ([schema] (empty-db schema nil))
-  ([schema config]
+  ([schema user-config]
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
-   (let [complete-config (merge (dc/storeless-config) config)
+   (let [complete-config (merge (dc/storeless-config) user-config)
          _ (dc/validate-config complete-config)
          {:keys [keep-history? index schema-flexibility attribute-refs?]} complete-config
          on-read? (= :read schema-flexibility)
@@ -920,16 +917,18 @@
          indexed (if attribute-refs?
                    (set (map ident-ref-map (:db/index rschema)))
                    (:db/index rschema))
+         index-config (merge (:index-config complete-config)
+                             {:indexed indexed})
          eavt (if attribute-refs?
-                (di/init-index index ref-datoms indexed :eavt 0)
-                (di/empty-index index :eavt))
+                (di/init-index index ref-datoms :eavt 0 index-config)
+                (di/empty-index index :eavt index-config))
          aevt (if attribute-refs?
-                (di/init-index index ref-datoms indexed :aevt 0)
-                (di/empty-index index :aevt))
+                (di/init-index index ref-datoms :aevt 0 index-config)
+                (di/empty-index index :aevt index-config))
          indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) ref-datoms)
          avet (if attribute-refs?
-                (di/init-index index indexed-datoms indexed :avet 0)
-                (di/empty-index index :avet))
+                (di/init-index index indexed-datoms :avet 0 index-config)
+                (di/empty-index index :avet index-config))
          max-eid (if attribute-refs? ue0 e0)
          max-tx (if attribute-refs? utx0 tx0)]
      (map->DB
@@ -948,9 +947,9 @@
         :ident-ref-map ident-ref-map
         :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
-         {:temporal-eavt (di/empty-index index :eavt)
-          :temporal-aevt (di/empty-index index :aevt)
-          :temporal-avet (di/empty-index index :avet)}))))))
+         {:temporal-eavt (di/empty-index index :eavt index-config)
+          :temporal-aevt (di/empty-index index :aevt index-config)
+          :temporal-avet (di/empty-index index :avet index-config)}))))))
 
 (defn advance-all-datoms [datoms offset]
   (map
@@ -964,9 +963,9 @@
 (defn ^DB init-db
   ([datoms] (init-db datoms nil nil))
   ([datoms schema] (init-db datoms schema nil))
-  ([datoms schema config]
+  ([datoms schema user-config]
    (validate-schema schema)
-   (let [{:keys [index schema-flexibility keep-history? attribute-refs?] :as complete-config}  (merge (dc/storeless-config) config)
+   (let [{:keys [index schema-flexibility keep-history? attribute-refs?] :as complete-config}  (merge (dc/storeless-config) user-config)
          _ (dc/validate-config complete-config)
          complete-schema (merge schema
                                 (if attribute-refs?
@@ -976,16 +975,18 @@
          ident-ref-map (if attribute-refs? (get-ident-ref-map schema) {})
          ref-ident-map (if attribute-refs? (clojure.set/map-invert ident-ref-map) {})
          system-entities (if attribute-refs? c/system-entities #{})
+
          indexed (if attribute-refs?
                    (set (map ident-ref-map (:db/index rschema)))
                    (:db/index rschema))
-
          new-datoms (if attribute-refs? (concat ref-datoms datoms) datoms)
          indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) new-datoms)
          op-count 0
-         avet (di/init-index index indexed-datoms indexed :avet op-count)
-         eavt (di/init-index index new-datoms indexed :eavt op-count)
-         aevt (di/init-index index new-datoms indexed :aevt op-count)
+         index-config (assoc (:index-config complete-config)
+                             :indexed indexed)
+         avet (di/init-index index indexed-datoms :avet op-count index-config)
+         eavt (di/init-index index new-datoms :eavt op-count index-config)
+         aevt (di/init-index index new-datoms :aevt op-count index-config)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
          op-count (count new-datoms)]
@@ -1003,9 +1004,9 @@
                       :ref-ident-map ref-ident-map
                       :ident-ref-map ident-ref-map}
                      (when keep-history?
-                       {:temporal-eavt (di/empty-index index :eavt)
-                        :temporal-aevt (di/empty-index index :aevt)
-                        :temporal-avet (di/empty-index index :avet)}))))))
+                       {:temporal-eavt (di/empty-index index :eavt index-config)
+                        :temporal-aevt (di/empty-index index :aevt index-config)
+                        :temporal-avet (di/empty-index index :avet index-config)}))))))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)
