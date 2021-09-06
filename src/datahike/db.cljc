@@ -966,12 +966,12 @@
                 (di/empty-index index :aevt index-config))
          indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) ref-datoms)
          avet (if attribute-refs?
-                (di/init-index index indexed-datoms indexed :avet 0 index-config)
+                (di/init-index index indexed-datoms :avet 0 index-config)
                 (di/empty-index index :avet index-config))
          tx-log (when keep-log?
                   (if attribute-refs?
-                    (tx-log/init-log tx0 (mapv (comp vec seq) ref-datoms) 0)
-                    (tx-log/empty-log)))
+                    (tx-log/init-log tx0 (mapv (comp vec seq) ref-datoms) 0 index-config)
+                    (tx-log/empty-log index-config)))
          max-eid (if attribute-refs? ue0 e0)
          max-tx (if attribute-refs? utx0 tx0)
          meta (create-meta)]
@@ -1038,7 +1038,7 @@
          max-tx (get-max-tx eavt)
          meta (create-meta)
          tx-log (when keep-log?
-                  (tx-log/init-log))
+                  (tx-log/init-log index-config))
          op-count (count new-datoms)]
      (map->DB (merge {:schema complete-schema
                       :rschema rschema
