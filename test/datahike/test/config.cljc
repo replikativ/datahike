@@ -91,4 +91,3 @@
                                     {:schema-flexibility :write})
                         (d/db-with  [{:name "Alice"}]))]
              (d/q '[:find ?n :where [_ :name ?n]] db))))))
-

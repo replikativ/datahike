@@ -2,7 +2,8 @@
   (:require [datahike.api :as d]
             [datahike.db :as db]))
 
-(def ref-config {:store {:backend :mem :id "attr-refs-test"}
+(def ref-config {:store {:backend :mem
+                         :id "attr-refs-test.util"}
                  :attribute-refs? true
                  :keep-history? false
                  :schema-flexibility :write})

@@ -332,7 +332,7 @@
                (d/q '[:find ?m ?t :where [?e :message ?m] [?e :tag ?te] [?te :db/ident ?t]] (d/db conn))))))))
 
 (deftest test-remove-schema
-  (let [cfg "datahike:mem://test-empty-db"
+  (let [cfg "datahike:mem://test-remove-schema"
         _ (d/delete-database cfg)
         _ (d/create-database cfg)
         conn (d/connect cfg)
@@ -344,7 +344,7 @@
       (is (d/transact conn [name-schema])))))
 
 (deftest test-update-schema
-  (let [cfg "datahike:mem://test-empty-db"
+  (let [cfg "datahike:mem://test-update-schema"
         _ (d/delete-database cfg)
         _ (d/create-database cfg :initial-schema [name-schema personal-id-schema])
         conn (d/connect cfg)

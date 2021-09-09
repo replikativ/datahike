@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
    [datahike.db :as db]
+   [datahike.constants :as c]
    [datahike.test.core :as tdc]))
 
 (deftest test-with
@@ -118,8 +119,9 @@
 (deftest test-retract-fns-not-found
   (let [db  (-> (d/empty-db {:name {:db/unique :db.unique/identity}})
                 (d/db-with  [[:db/add 1 :name "Ivan"]]))
-        all #(vec (d/datoms % :eavt))]
-    (are [op] (= [(d/datom 1 :name "Ivan")]
+        all #(vec (d/datoms % :eavt))
+        tx0 (inc c/tx0)]
+    (are [op] (= [(d/datom 1 :name "Ivan" tx0)]
                  (all (d/db-with db [op])))
       [:db/retract             2 :name "Petr"]
       [:db.fn/retractAttribute 2 :name]

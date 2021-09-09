@@ -9,14 +9,14 @@
   #?(:clj (:import [datahike.datom Datom])))
 
 (def no-ref-cfg
-  {:store {:backend :mem :id "attr-no-refs-test"}
+  {:store {:backend :mem :id "attr-no-refs-test.differences"}
    :keep-history? true
    :attribute-refs? false
    :schema-flexibility :write
    :name "attr-no-refs-test"})
 
 (def ref-cfg
-  {:store {:backend :mem :id "attr-refs-test"}
+  {:store {:backend :mem :id "attr-refs-test.differences"}
    :keep-history? true
    :attribute-refs? true
    :schema-flexibility :write
