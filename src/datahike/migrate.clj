@@ -61,8 +61,11 @@
 
 (defn read-tx-log [db-config db-meta path]
   (let [[raw-meta-data & raw-tx-reports] (line-seq (io/reader path))
-        {:keys [config meta]}            (read-import-data raw-meta-data)]
+        {:keys [config meta]}            (read-import-data raw-meta-data)
+        {:keys [attribute-refs?]} config]
     (compare-configs config db-config)
     (check-meta-data meta db-meta)
-    (for [tx-report raw-tx-reports]
+    (for [tx-report (if attribute-refs?
+                      (rest raw-tx-reports)
+                      raw-tx-reports)]
       (read-import-data tx-report))))

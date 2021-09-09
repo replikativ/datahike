@@ -779,6 +779,7 @@
               :db.unique/identity #{:name}
               :db/index #{:name}
               :db.cardinality/many #{}
+              :db/noHistory #{}
               :db/attrTuples #{}}
              (d/reverse-schema @conn)))))
   (test-write-schema "write-flex" {:schema-flexibility :write})

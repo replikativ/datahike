@@ -9,7 +9,7 @@
   (msg/insert tree current-tx tx-data op-count))
 
 (defn init-log [current-tx datoms op-count {:keys [index-b-factor index-data-node-size index-log-size]}]
-  (let [new-tree (dih/empty-tree index-b-factor index-data-node-size index-log-size) 
+  (let [new-tree (dih/empty-tree index-b-factor index-data-node-size index-log-size)
         result (insert-log new-tree current-tx datoms op-count)]
     (async/<?? result)))
 

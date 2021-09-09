@@ -301,10 +301,10 @@
                (map coerce-txs txs)))
 
   (-lookup-tx [db tx]
-              (let [tx (tx-log/-get (:tx-log db) tx)]
+              (let [tx-report (tx-log/-get tx-log tx)]
                 (if (:attribute-refs? (:config db))
-                  (mapv (fn [d] (update d :a (partial -ident-for db))) tx)
-                  tx)))
+                  (mapv (fn [d] (update d :a (partial -ident-for db))) tx-report)
+                  tx-report)))
 
   clojure.data/EqualityPartition
   (equality-partition [x] :datahike/db)
@@ -2234,7 +2234,7 @@
                                 op)]
           (recur (transact-report report new-datom) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))
 
-(defn import-datom [^DB db ^Datom datom]
+(defn import-datom [^DB {:keys [config] :as db} ^Datom datom]
   (let [a (:a datom)
         indexing?        (indexing? db a)
         {a-ident :ident} (attr-info db a)
@@ -2242,7 +2242,7 @@
         op-count         (:op-count db)
         added? (datom-added datom)
         multi-val? (multival? db a)
-        history? (not (no-history? db a))
+        history? (and (not (no-history? db a)) (:keep-history? config))
         updated-datom (if added?
                         datom
                         (first (-search db [(:e datom) a (:v datom)])))

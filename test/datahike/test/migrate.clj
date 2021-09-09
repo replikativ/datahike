@@ -49,16 +49,18 @@
   (d/create-database cfg)
   (d/connect cfg))
 
-(deftest closed-circuit-test
-  (testing "Exporting and importing a database without ID mapping or configuration change"
-    (let [base-cfg {:store {:backend :mem
-                            :id "closed-circuit-test"}
-                    :attribute-refs? false
-                    :schema-flexibility :write
-                    :keep-history? true}
-          source-cfg (assoc-in base-cfg [:store :id] "closed-circuit-source-test")
-          target-cfg (assoc-in base-cfg [:store :id] "closed-circuit-target-test")
-          source-txs [[{:db/ident       :name
+(defn closed-circuit-test [source-cfg {:keys [keep-history?] :as target-cfg}]
+  (letfn [(get-all-current-people [db]
+            (d/pull-many db '[:name :age {:parents [:name]}] [[:name "Alice"]
+                                                              [:name "Bob"]
+                                                              [:name "Charlie"]]))
+          (get-removed-people [db]
+            (d/q {:query '[:find ?n ?a
+                           :where
+                           [?e :name ?n _ false]
+                           [?e :age ?a]]
+                  :args [(d/history db)]}))]
+    (let [source-txs [[{:db/ident       :name
                         :db/cardinality :db.cardinality/one
                         :db/index       true
                         :db/unique      :db.unique/identity
@@ -91,12 +93,39 @@
       (d/import target-conn export-path)
       (let [source-db @source-conn
             target-db @target-conn]
-        (is (= (d/datoms source-db :eavt)
-               (d/datoms target-db :eavt)))
-        (is (= (d/datoms source-db :aevt)
-               (d/datoms target-db :aevt)))
-        (is (= (d/datoms source-db :avet)
-               (d/datoms target-db :avet)))
-        (is (= (d/tx-range source-db)
-               (d/tx-range target-db)))))))
+        (is (= (get-all-current-people source-db)
+               (get-all-current-people target-db)))
+        #_(when keep-history?
+            (is (= (get-removed-people source-db)
+                   (get-removed-people target-db))))))))
+
+(deftest closed-circuit-test-suite
+  (testing "Exporting and importing a database with"
+    (let [base-cfg {:store {:backend :mem
+                            :id "closed-circuit-test"}
+                    :attribute-refs? false
+                    :schema-flexibility :write
+                    :keep-history? true}]
+      (testing "same base and target configuration without attribute refs"
+        (closed-circuit-test
+         (assoc-in base-cfg [:store :id] "closed-circuit-source-core-test")
+         (assoc-in base-cfg [:store :id] "closed-circuit-target-core-test")))
+      (testing "same base and target configuration with attribute refs"
+        (closed-circuit-test
+         (-> base-cfg
+             (assoc-in  [:store :id] "closed-circuit-source-attr-ref-test")
+             (assoc :attribute-refs? true))
+         (-> base-cfg
+             (assoc-in [:store :id] "closed-circuit-target-attr-ref-test")
+             (assoc :attribute-refs? true))))
+      (testing "same base and target configuration without attribute refs and history"
+        (closed-circuit-test
+         (-> base-cfg
+             (assoc-in  [:store :id] "closed-circuit-source-no-attr-ref-no-hist-test")
+             (assoc :attribute-refs? false)
+             (assoc :keep-history? false))
+         (-> base-cfg
+             (assoc-in [:store :id] "closed-circuit-target-no-attr-ref-no-hist-test")
+             (assoc :attribute-refs? false)
+             (assoc :keep-history? false)))))))
 

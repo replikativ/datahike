@@ -219,6 +219,7 @@
                         [9 :db/valueType 22 const/tx0 true]
                         [9 :db/cardinality 11 const/tx0 true]
                         [9 :db/doc "A transaction's time-point" const/tx0 true]
+                        [9 :db/noHistory true const/tx0 true]
                         [9 :db/index true const/tx0 true]
                         [10 :db/ident :db.cardinality/many const/tx0 true]
                         [11 :db/ident :db.cardinality/one const/tx0 true]
