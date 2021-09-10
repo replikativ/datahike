@@ -296,7 +296,14 @@
              (let [txs (tx-log/-slice (:tx-log db) start end)
                    coerce-txs (fn [[tx tx-data]] {:tx (- tx tx0)
                                                   :data (if (:attribute-refs? (:config db))
-                                                          (mapv (fn [d] (update d :a (partial -ident-for db))) tx-data)
+                                                          (mapv (fn [[e a v t :as d]]
+                                                                  (let [ident-a (-ident-for db a)
+                                                                        new-d (assoc d :a ident-a)]
+                                                                    (if (and (ds/schema-attr? ident-a)
+                                                                             (not (contains? #{:db/ident :db/doc :db/noHistory :db/index} 
+                                                                                   ident-a)))
+                                                                      (assoc new-d :v (-ident-for db v))
+                                                                      new-d))) tx-data)
                                                           tx-data)})]
                (map coerce-txs txs)))
 
@@ -2235,60 +2242,68 @@
           (recur (transact-report report new-datom) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))
 
 (defn import-datom [^DB {:keys [config] :as db} ^Datom datom]
-  (let [a (:a datom)
+  (let [a                (:a datom)
         indexing?        (indexing? db a)
         {a-ident :ident} (attr-info db a)
         schema?          (ds/schema-attr? a-ident)
         op-count         (:op-count db)
-        added? (datom-added datom)
-        multi-val? (multival? db a)
-        history? (and (not (no-history? db a)) (:keep-history? config))
-        updated-datom (if added?
-                        datom
-                        (first (-search db [(:e datom) a (:v datom)])))
-        update-fn (if added?
-                    (if multi-val?
-                      di/-insert
-                      di/-upsert)
-                    di/-remove)]
+        added?           (datom-added datom)
+        multi-val?       (multival? db a)
+        meta-attr?       (ds/meta-attr? a)
+        history?         (and (not (no-history? db a)) (:keep-history? config))
+        updated-datom    (if added?
+                           datom
+                           (first (-search db [(:e datom) a (:v datom)])))
+        update-fn        (if added?
+                           (if multi-val?
+                             di/-insert
+                             di/-upsert)
+                           di/-remove)]
     (cond-> db
-
-      schema? (try
-                (-> db (remove-schema datom) update-rschema)
-                (catch clojure.lang.ExceptionInfo _
-                  db))
-
-      true (update-in [:eavt] #(update-fn % updated-datom :eavt op-count))
-      history? (update-in [:temporal-eavt] #(di/-temporal-insert % datom :eavt op-count))
-
-      true (update-in [:aevt] #(update-fn % updated-datom :aevt op-count))
-      history? (update-in [:temporal-aevt] #(di/-temporal-insert % datom :aevt op-count))
-
-      indexing? (update-in [:avet] #(update-fn % updated-datom :avet op-count))
+      schema?                  (try
+                                 (-> db
+                                     (remove-schema datom)
+                                     update-rschema)
+                                 (catch clojure.lang.ExceptionInfo _
+                                   db))
+      true                     (update-in [:eavt] #(update-fn % updated-datom :eavt op-count))
+      history?                 (update-in [:temporal-eavt] #(di/-temporal-insert % datom :eavt op-count))
+      true                     (update-in [:aevt] #(update-fn % updated-datom :aevt op-count))
+      history?                 (update-in [:temporal-aevt] #(di/-temporal-insert % datom :aevt op-count))
+      indexing?                (update-in [:avet] #(update-fn % updated-datom :avet op-count))
       (and history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % datom :avet op-count))
-
-      true    (update :op-count inc)
-      true    (advance-max-eid (.-e datom))
-      true    (update :hash + (hash datom))
-      schema? (-> (update-schema datom) update-rschema))))
+      true                     (update :op-count inc)
+      (not meta-attr?)         (advance-max-eid (.-e datom))
+      true                     (update :hash + (hash datom))
+      schema?                  (-> (update-schema datom) update-rschema))))
 
 (defn import-tx-data [{{:keys [config ident-ref-map max-tx]} :db-after :as initial-report} initial-tx-datoms]
-  (loop [{:keys [tx-data] :as report}          (-> initial-report
-                                                   (assoc :tx-data []))
+  (loop [{:keys [tx-data db-after id-mapping tx-mapping] :as report} (-> initial-report
+                                                                         (assoc :tx-data []))
          [[e a v t op]
           & more-datoms
-          :as tx-datoms] initial-tx-datoms]
+          :as tx-datoms]                                             initial-tx-datoms]
     (if (empty? tx-datoms)
       (-> report
           (update-in [:db-after :max-tx] inc)
           (update-in [:db-after] with-tx-report (inc max-tx) tx-data)
           (dissoc :tx-data))
-      (let [a          (if (:attribute-refs? config)
+      (let [meta-attr? (ds/meta-attr? a)
+            new-a      (if (:attribute-refs? config)
                          (ident-ref-map a)
                          a)
-            datom      (datom e a v t op)
+            new-e      (if meta-attr?
+                         (get tx-mapping e max-tx)
+                         (get id-mapping e (next-eid db-after)))
+            new-v      (if (ref? db-after a)
+                         (get id-mapping v v)
+                         v)
+            new-t      (get tx-mapping t max-tx)
+            datom      (datom new-e new-a new-v t op)
             new-report (-> report
                            (update-in [:db-after] import-datom datom)
+                           (assoc-in [:id-mapping e] new-e)
+                           (assoc-in [:tx-mapping t] new-t)
                            (update-in [:tx-data] conj datom))]
         (recur new-report more-datoms)))))
 
@@ -2296,6 +2311,7 @@
   (loop [[{:keys [data]} & other-reports] tx-reports
          report                           (-> initial-report
                                               (assoc :tx-count 0)
+                                              (assoc :id-mapping {})
                                               (update :db-after transient))]
     (if (empty? data)
       (update report :db-after persistent!)
