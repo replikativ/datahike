@@ -18,7 +18,6 @@
           true
           indices))
 
-
 (defn exists-old?
   "Returns true if 'new' already exists in 'old-keys'."
   [old-keys new]
