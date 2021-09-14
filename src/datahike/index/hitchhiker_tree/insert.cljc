@@ -18,39 +18,34 @@
           true
           indices))
 
-(defn old-key
-  "Returns the key with the same values as 'new' at the positions given by 'indices', if it exists."
-  [kvs new indices]
-  (when (seq kvs)
-    (let [mask (mask new indices)]
-      (when-let [candidate (->> (subseq kvs >= mask)
-                                (map first)
-                                first)]
-        (when (equals-at-indices? indices candidate new)
-          candidate)))))
 
-(defn remove-old
-  "Removes old key from the 'kvs' map using 'remove-fn' function if its content match 'new''s content
-  at positions given by 'indices'."
-  [kvs new remove-fn indices]
-  (when-let [old (old-key kvs new indices)]
-    (remove-fn old)))
+(defn exists-old?
+  "Returns true if 'new' already exists in 'old-keys'."
+  [old-keys new]
+  (when (seq old-keys)
+    (let [indices [0 1 2]
+          mask (mask new indices)]
+      (when-let [candidates (subseq old-keys >= mask)]
+        (->> candidates
+             (map first)
+             first
+             (equals-at-indices? indices new))))))
 
-;; The semantics of an insert is to insert unless there exists an old key with the same
-;; 'e a v' components, in which case the old key is replaced.
 (defrecord InsertOp [key op-count]
   op/IOperation
   (-insertion-ts [_] op-count)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
-    (-> (or (remove-old kvs key (partial dissoc kvs) [0 1 2]) kvs)
-        (assoc key nil)))
+    (if (exists-old? kvs key)
+      kvs
+      (assoc kvs key nil)))
   (-apply-op-to-tree [_ tree]
     (let [children (cond
                      (tree/data-node? tree) (:children tree)
                      :else (:children (peek (tree/lookup-path tree key))))]
-      (-> (or (remove-old children key (partial tree/delete tree) [0 1 2]) tree)
-          (tree/insert key nil)))))
+      (if (exists-old? children key)
+        tree
+        (tree/insert tree key nil)))))
 
 (defrecord temporal-InsertOp [key op-count]
   op/IOperation
