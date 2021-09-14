@@ -9,8 +9,7 @@
    (def Throwable js/Error))
 
 (defn duplicate-test [config]
-  (let [expected (datom/datom 502 :block/children 501 536870916)
-        _      (d/create-database config)
+  (let [_      (d/create-database config)
         conn   (d/connect config)
         schema [{:db/ident       :block/string
                  :db/valueType   :db.type/string
@@ -18,26 +17,28 @@
                 {:db/ident       :block/children
                  :db/valueType   :db.type/ref
                  :db/index       true
-                 :db/cardinality :db.cardinality/many}]]
-    (d/transact conn schema)
-    (d/transact conn [{:db/id 501 :block/string "one"}])
-    (d/transact conn [{:db/id 502 :block/children 501}])
-    (d/transact conn [{:db/id 502 :block/children 501}])
+                 :db/cardinality :db.cardinality/many}]
+        _     (d/transact conn schema)
+        _     (d/transact conn [{:db/id 501 :block/string "one"}])
+        _     (d/transact conn [{:db/id 502 :block/children 501}])
+        expected (d/datoms @conn :eavt 502 :block/children)
+        tx-1   (.-tx (first expected))
+        _ (d/transact conn [{:db/id 502 :block/children 501}])
+        tx-2   (.-tx (first (d/datoms @conn :eavt 502 :block/children)))
+        aevt (d/datoms @conn :aevt :block/children 502)
+        avet (d/datoms @conn :avet :block/children 501)]
 
-    (let [eavt (d/datoms @conn :eavt 502 :block/children)
-          aevt (d/datoms @conn :aevt :block/children 502)
-          avet (d/datoms @conn :avet :block/children 501)]
-      (is (= 1 (count eavt)))
-      (is (= expected (first eavt)))
+    (is (= tx-1 tx-2))
+    (is (= 1 (count expected)))
 
-      (is (= 1 (count aevt)))
-      (is (= expected (first aevt)))
+    (is (= 1 (count aevt)))
+    (is (datom/cmp-datoms-eavt expected (first aevt)))
 
-      (is (= 1 (count avet)))
-      (is (= expected (first avet)))
+    ;; (is (= 1 (count avet)))
+    ;; (is (= expected (first avet)))
 
-      (d/release conn)
-      (d/delete-database config))))
+    (d/release conn)
+    (d/delete-database config)))
 
 (deftest mem-set
   (let [config {:store {:backend :mem :id "performance-set"}
