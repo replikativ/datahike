@@ -61,6 +61,8 @@
                      :exec-args {:installer :local
                                  :artifact "replikativ-datahike.jar"}}
 
+           :profiler {:extra-deps {com.clojure-goes-fast/clj-async-profiler {:mvn/version "0.4.1"}}}
+
            :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.7.0"}}
                     :main-opts ["-m" "cljfmt.main" "check"]}
 
