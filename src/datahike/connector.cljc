@@ -12,6 +12,7 @@
             [konserve.core :as k]
             [konserve.cache :as kc]
             [superv.async :refer [<?? S]]
+            [bloom.core :as bf]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.core.async :refer [go <!]]
@@ -22,7 +23,7 @@
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx op-count hash]} db-after
+        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx op-count hash av-bloom-f]} db-after
         store (:store @connection)
         backend (kons/->KonserveBackend store)
         eavt-flushed (di/-flush eavt backend)
@@ -43,6 +44,7 @@
                          :hash hash
                          :max-tx max-tx
                          :op-count op-count
+                         :av-bloom-state (bf/to-state av-bloom-f)
                          :eavt-key eavt-flushed
                          :aevt-key aevt-flushed
                          :avet-key avet-flushed}
@@ -153,8 +155,8 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
-          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash]
-           :or {op-count 0}} stored-db
+          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash av-bloom-state]
+           :or {op-count 0 av-bloom-state (bf/->bf 100 0.5)}} stored-db
           empty (db/empty-db nil config)
           conn (d/conn-from-db (assoc empty
                                       :max-tx max-tx
@@ -166,6 +168,7 @@
                                       :eavt eavt-key
                                       :aevt aevt-key
                                       :avet avet-key
+                                      :av-bloom-f av-bloom-state
                                       :temporal-eavt temporal-eavt-key
                                       :temporal-aevt temporal-aevt-key
                                       :temporal-avet temporal-avet-key
@@ -186,7 +189,7 @@
           stored-db (<?? S (k/get-in store [:db]))
           _ (when stored-db
               (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
-          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash]}
+          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash av-bloom-f]}
           (db/empty-db nil config)
           backend (kons/->KonserveBackend store)]
       (<?? S (k/assoc-in store [:db]
@@ -199,6 +202,7 @@
                                  :ident-ref-map ident-ref-map
                                  :ref-ident-map ref-ident-map
                                  :config config
+                                 :av-bloom-f (bf/to-state av-bloom-f)
                                  :eavt-key (di/-flush eavt backend)
                                  :aevt-key (di/-flush aevt backend)
                                  :avet-key (di/-flush avet backend)}

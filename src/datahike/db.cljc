@@ -16,6 +16,7 @@
    [datahike.config :as dc]
    [environ.core :refer [env]]
    [clojure.spec.alpha :as s]
+   [bloom.core :as bf]
    [taoensso.timbre :refer [warn]])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable cond+]]
                             [datahike.datom :refer [combine-cmp datom]]
@@ -201,7 +202,7 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet av-bloom-f max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map]
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -941,6 +942,7 @@
          avet (if attribute-refs?
                 (di/init-index index indexed-datoms :avet 0 index-config)
                 (di/empty-index index :avet index-config))
+         av-bloom-f (bf/->bf 100 0.5)
          max-eid (if attribute-refs? ue0 e0)
          max-tx (if attribute-refs? utx0 tx0)]
      (map->DB
@@ -957,6 +959,7 @@
         :system-entities system-entities
         :ref-ident-map ref-ident-map
         :ident-ref-map ident-ref-map
+        :av-bloom-f av-bloom-f
         :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt (di/empty-index index :eavt index-config)
@@ -999,6 +1002,7 @@
          avet (di/init-index index indexed-datoms :avet op-count index-config)
          eavt (di/init-index index new-datoms :eavt op-count index-config)
          aevt (di/init-index index new-datoms :aevt op-count index-config)
+         av-bloom-f (bf/->bf 100 0.5)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
          op-count (count new-datoms)]
@@ -1008,6 +1012,7 @@
                       :eavt eavt
                       :aevt aevt
                       :avet avet
+                      :av-bloom-f av-bloom-f
                       :max-eid max-eid
                       :max-tx max-tx
                       :op-count op-count
