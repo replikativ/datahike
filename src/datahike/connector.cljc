@@ -179,7 +179,7 @@
                                                                (assoc m (name k) v))
                                                              {}
                                                              av-bloom-state))
-                                                  (bf/->bf 100 0.5))
+                                                  (bf/->bf 100000 0.5))
                                       :temporal-eavt temporal-eavt-key
                                       :temporal-aevt temporal-aevt-key
                                       :temporal-avet temporal-avet-key

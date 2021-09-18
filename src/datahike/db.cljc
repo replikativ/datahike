@@ -942,7 +942,7 @@
          avet (if attribute-refs?
                 (di/init-index index indexed-datoms :avet 0 index-config)
                 (di/empty-index index :avet index-config))
-         av-bloom (bf/->bf 100 0.5)
+         av-bloom (bf/->bf 100000 0.5)
          max-eid (if attribute-refs? ue0 e0)
          max-tx (if attribute-refs? utx0 tx0)]
      (map->DB
@@ -1002,7 +1002,7 @@
          avet (di/init-index index indexed-datoms :avet op-count index-config)
          eavt (di/init-index index new-datoms :eavt op-count index-config)
          aevt (di/init-index index new-datoms :aevt op-count index-config)
-         av-bloom (bf/->bf 100 0.5)
+         av-bloom (bf/->bf 100000 0.5)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
          op-count (count new-datoms)]
