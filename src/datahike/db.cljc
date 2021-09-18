@@ -1282,7 +1282,8 @@
 
 (defn validate-datom [db ^Datom datom]
   (when (and (datom-added datom)
-             (is-attr? db (.-a datom) :db/unique))
+          (is-attr? db (.-a datom) :db/unique)
+          (bf/has? (.av-bloom db) (str [(.-a datom) (.-v datom)])))
     (when-let [found (not-empty (-datoms db :avet [(.-a datom) (.-v datom)]))]
       (raise "Cannot add " datom " because of unique constraint: " found
              {:error :transact/unique
@@ -1531,7 +1532,8 @@
    queue
    tuples))
 (defn validate-datom-upsert [db ^Datom datom]
-  (when (is-attr? db (.-a datom) :db/unique)
+  (when (and (is-attr? db (.-a datom) :db/unique)
+          (bf/has? (.av-bloom db) (str [(.-a datom) (.-v datom)])))
     (when-let [old (first (-datoms db :avet [(.-a datom) (.-v datom)]))]
       (when-not (= (.-e datom) (.-e old))
         (raise "Cannot add " datom " because of unique constraint: " old
