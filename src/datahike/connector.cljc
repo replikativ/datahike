@@ -23,7 +23,7 @@
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx op-count hash av-bloom-f]} db-after
+        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx op-count hash av-bloom-state]} db-after
         store (:store @connection)
         backend (kons/->KonserveBackend store)
         eavt-flushed (di/-flush eavt backend)
@@ -33,6 +33,7 @@
         temporal-eavt-flushed (when keep-history? (di/-flush temporal-eavt backend))
         temporal-aevt-flushed (when keep-history? (di/-flush temporal-aevt backend))
         temporal-avet-flushed (when keep-history? (di/-flush temporal-avet backend))]
+    (prn "----------------- av-bloom-state in 'update-and-flush-db: " av-bloom-state)
     (<?? S (k/assoc-in store [:db]
                        (merge
                         {:schema schema
@@ -44,7 +45,8 @@
                          :hash hash
                          :max-tx max-tx
                          :op-count op-count
-                         :av-bloom-state (bf/to-state av-bloom-f)
+                         :av-bloom-state av-bloom-state
+                         ;;:av-bloom-state (bf/to-state av-bloom-f)
                          :eavt-key eavt-flushed
                          :aevt-key aevt-flushed
                          :avet-key avet-flushed}
@@ -156,8 +158,9 @@
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
           {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash av-bloom-state]
-           :or {op-count 0 av-bloom-state (bf/->bf 100 0.5)}} stored-db
+           :or {op-count 0}} stored-db
           empty (db/empty-db nil config)
+          _     (prn "----------------- av-bloom-state in 'connect': " av-bloom-state)
           conn (d/conn-from-db (assoc empty
                                       :max-tx max-tx
                                       :config config
@@ -168,7 +171,13 @@
                                       :eavt eavt-key
                                       :aevt aevt-key
                                       :avet avet-key
-                                      :av-bloom-f av-bloom-state
+                                      :av-bloom-f (if av-bloom-state
+                                                    (reduce-kv
+                                                      (fn [m k v]
+                                                        (assoc m (name k) v))
+                                                      {}
+                                                      av-bloom-state)
+                                                    (bf/->bf 100 0.5))
                                       :temporal-eavt temporal-eavt-key
                                       :temporal-aevt temporal-aevt-key
                                       :temporal-avet temporal-avet-key
@@ -192,6 +201,7 @@
           {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash av-bloom-f]}
           (db/empty-db nil config)
           backend (kons/->KonserveBackend store)]
+          (prn "----------------- av-bloom-f in 'create-database: " av-bloom-f)
       (<?? S (k/assoc-in store [:db]
                          (merge {:schema schema
                                  :max-tx max-tx
@@ -202,7 +212,7 @@
                                  :ident-ref-map ident-ref-map
                                  :ref-ident-map ref-ident-map
                                  :config config
-                                 :av-bloom-f (bf/to-state av-bloom-f)
+                                 :av-bloom-state (bf/to-state av-bloom-f)
                                  :eavt-key (di/-flush eavt backend)
                                  :aevt-key (di/-flush aevt backend)
                                  :avet-key (di/-flush avet backend)}
