@@ -161,7 +161,8 @@
           {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash av-bloom-state]
            :or {op-count 0}} stored-db
           empty (db/empty-db nil config)
-;;          _     (prn "----------------- av-bloom-state in 'connect': " av-bloom-state)
+          ;; TODO: why is bloom state returned from storage having a keyword and not a string as key sometime? E.g.: {:buckets- [0 0 0 0 0], :seed 8461509, :m 160, :k 2}
+          _     (prn "----------------- av-bloom-state in 'connect': " av-bloom-state)
           conn (d/conn-from-db (assoc empty
                                       :max-tx max-tx
                                       :config config
@@ -173,12 +174,12 @@
                                       :aevt aevt-key
                                       :avet avet-key
                                       :av-bloom (if av-bloom-state
-                                                    (reduce-kv
-                                                      (fn [m k v]
-                                                        (assoc m (name k) v))
-                                                      {}
-                                                      av-bloom-state)
-                                                    (bf/->bf 100 0.5))
+                                                  (bf/->bf (reduce-kv
+                                                             (fn [m k v]
+                                                               (assoc m (name k) v))
+                                                             {}
+                                                             av-bloom-state))
+                                                  (bf/->bf 100 0.5))
                                       :temporal-eavt temporal-eavt-key
                                       :temporal-aevt temporal-aevt-key
                                       :temporal-avet temporal-avet-key

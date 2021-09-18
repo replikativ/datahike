@@ -1466,6 +1466,10 @@
         true (update-in [:eavt] #(di/-insert % datom :eavt op-count))
         true (update-in [:aevt] #(di/-insert % datom :aevt op-count))
         indexing? (update-in [:avet] #(di/-insert % datom :avet op-count))
+
+        true (update-in [:av-bloom]  #(do
+                                        (bf/add! % (str [(.-a datom) (.-v datom)]))
+                                        %))
         true (advance-max-eid (.-e datom))
         true (update :hash + (hash datom))
         schema? (-> (update-schema datom)
@@ -1477,6 +1481,7 @@
           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
           indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
+          ;; TODO: as we can't remove from a bloom filter, can't it be a problem?
           true (update :hash - (hash removing))
           schema? (-> (remove-schema datom) update-rschema)
           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
@@ -1557,6 +1562,9 @@
 
       (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count))
       indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count))
+      true (update-in [:av-bloom]  #(do
+                                      (bf/add! % (str [(.-a datom) (.-v datom)]))
+                                      %))
 
       true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))
