@@ -135,12 +135,12 @@
                                                     :name (str (rand-int 1000))})))))
     nil)
 
-  (do
-    (time
-      (prof/profile
+  (prof/profile
+    (do
+      (time
         (d/transact conn (vec (shuffle (for [i (range 20000 30001)]
-                                         [:db/add i :name (str i)]))))))
-    nil)
+                                         [:db/add i :name (str i)])))))
+      nil))
 
   (do
     (time
