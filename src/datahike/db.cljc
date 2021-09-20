@@ -942,7 +942,7 @@
          avet (if attribute-refs?
                 (di/init-index index indexed-datoms :avet 0 index-config)
                 (di/empty-index index :avet index-config))
-         av-bloom (bf/->bf 100 0.5)
+         av-bloom (bf/->bf 30000 0.5)
          max-eid (if attribute-refs? ue0 e0)
          max-tx (if attribute-refs? utx0 tx0)]
      (map->DB
@@ -1002,7 +1002,7 @@
          avet (di/init-index index indexed-datoms :avet op-count index-config)
          eavt (di/init-index index new-datoms :eavt op-count index-config)
          aevt (di/init-index index new-datoms :aevt op-count index-config)
-         av-bloom (bf/->bf 100 0.5)
+         av-bloom (bf/->bf 30000 0.5)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
          op-count (count new-datoms)]
@@ -1281,6 +1281,7 @@
            {:error :transact/syntax, :attribute ident})))
 
 (defn validate-datom [db ^Datom datom]
+  (prn "====================== has: " (str [(.-a datom) (.-v datom)]) " === " (bf/has? (.av-bloom db) (str [(.-a datom) (.-v datom)])))
   (when (and (datom-added datom)
           (is-attr? db (.-a datom) :db/unique)
           (bf/has? (.av-bloom db) (str [(.-a datom) (.-v datom)])))
@@ -1288,12 +1289,12 @@
       (raise "Cannot add " datom " because of unique constraint: " found
              {:error :transact/unique
               :attribute (.-a datom)
-              :datom datom}))))
+              :datom datom})))
 
-(defn- validate-eid [eid at]
-  (when-not (number? eid)
-    (raise "Bad entity id " eid " at " at ", expected number"
-           {:error :transact/syntax, :entity-id eid, :context at})))
+  (defn- validate-eid [eid at]
+    (when-not (number? eid)
+      (raise "Bad entity id " eid " at " at ", expected number"
+        {:error :transact/syntax, :entity-id eid, :context at}))))
 
 (defn validate-attr-ident [a-ident at db]
   (when-not (or (keyword? a-ident) (string? a-ident))
@@ -1468,6 +1469,7 @@
         true (update-in [:aevt] #(di/-insert % datom :aevt op-count))
         indexing? (update-in [:avet] #(di/-insert % datom :avet op-count))
 
+        true (do (prn "======================Adding: " (str [(.-a datom) (.-v datom)])) db)
         true (update-in [:av-bloom]  #(do
                                         (bf/add! % (str [(.-a datom) (.-v datom)]))
                                         %))
@@ -1532,6 +1534,7 @@
    queue
    tuples))
 (defn validate-datom-upsert [db ^Datom datom]
+  (prn "====================== has: " (str [(.-a datom) (.-v datom)]) " ==== " (bf/has? (.av-bloom db) (str [(.-a datom) (.-v datom)])))
   (when (and (is-attr? db (.-a datom) :db/unique)
           (bf/has? (.av-bloom db) (str [(.-a datom) (.-v datom)])))
     (when-let [old (first (-datoms db :avet [(.-a datom) (.-v datom)]))]
@@ -1564,6 +1567,7 @@
 
       (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count))
       indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count))
+true (do (prn "======================Adding: " (str [(.-a datom) (.-v datom)])) db)
       true (update-in [:av-bloom]  #(do
                                       (bf/add! % (str [(.-a datom) (.-v datom)]))
                                       %))

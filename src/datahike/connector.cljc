@@ -179,7 +179,7 @@
                                                                (assoc m (name k) v))
                                                              {}
                                                              av-bloom-state))
-                                                  (bf/->bf 100 0.5))
+                                                  (bf/->bf 30000 0.5)) ;; TODO define constants for the bloom params
                                       :temporal-eavt temporal-eavt-key
                                       :temporal-aevt temporal-aevt-key
                                       :temporal-avet temporal-avet-key
