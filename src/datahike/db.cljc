@@ -1456,6 +1456,10 @@
 ;; do not check for nil (~10-15% performance gain in `transact`)
 
 
+(defn prn-bloom-state [db datom]
+  (prn "======================Adding: " (str [(.-a datom) (.-v datom)]))
+  db)
+
 (defn- with-datom [db ^Datom datom]
   (validate-datom db datom)
   (let [{a-ident :ident} (attr-info db (.-a datom))
@@ -1469,7 +1473,7 @@
         true (update-in [:aevt] #(di/-insert % datom :aevt op-count))
         indexing? (update-in [:avet] #(di/-insert % datom :avet op-count))
 
-        true (do (prn "======================Adding: " (str [(.-a datom) (.-v datom)])) db)
+true (prn-bloom-state datom)
         true (update-in [:av-bloom]  #(do
                                         (bf/add! % (str [(.-a datom) (.-v datom)]))
                                         %))
@@ -1567,7 +1571,8 @@
 
       (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count))
       indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count))
-true (do (prn "======================Adding: " (str [(.-a datom) (.-v datom)])) db)
+
+true (prn-bloom-state datom)
       true (update-in [:av-bloom]  #(do
                                       (bf/add! % (str [(.-a datom) (.-v datom)]))
                                       %))
