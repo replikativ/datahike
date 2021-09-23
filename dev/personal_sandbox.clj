@@ -2,6 +2,51 @@
   (:require [datahike.api :as d]
             [taoensso.timbre :as log]))
 
+
+(log/set-level! :warn)
+
+(def schema [{:db/ident       :name
+              :db/cardinality :db.cardinality/one
+              :db/index       true
+              :db/unique      :db.unique/identity
+              :db/valueType   :db.type/string}
+             {:db/ident       :sibling
+              :db/cardinality :db.cardinality/many
+              :db/valueType   :db.type/ref}
+             {:db/ident       :age
+              :db/cardinality :db.cardinality/one
+              :db/valueType   :db.type/long}
+             {:db/ident       :tag
+              :db/cardinality :db.cardinality/many
+              :db/valueType   :db.type/long}])
+
+(def cfg {:store {:backend :file
+                  :path "/tmp/datahike-sandbox"} #_{:backend :mem :id "sandbox"}
+          :keep-history? false
+          :schema-flexibility :read
+                                        ;:crypto-hash? false
+          :attribute-refs? false})
+
+(def conn (do
+            (d/delete-database cfg)
+            (d/create-database cfg)
+            (d/connect cfg)))
+
+(d/transact conn schema)
+
+(do
+  (time
+    (d/transact conn (vec (shuffle (for [i (range 20000 30001)]
+                                     [:db/add i :name (str i)])))))
+  nil)
+
+
+#_(do
+    (time
+     (d/transact conn (vec (repeatedly 5000 (fn [] {:age (long (rand-int 1000))
+                                                    :name (str (rand-int 1000))})))))
+    nil)
+
 (comment
   (require '[clj-async-profiler.core :as prof])
 

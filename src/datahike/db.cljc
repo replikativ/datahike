@@ -708,7 +708,11 @@
 (def db-caches (cw/lru-cache-factory {} :threshold (:datahike-max-db-caches env 5)))
 
 (defn av-bloom []
-  (bf/->bf 30000 0.5))
+  ;; Params are 'cardinality' and 'expected rate of false positive'
+  (bf/->bf 30000 0.05))
+
+(defn av-bloom-encode [datom]
+ (str (hash (.-a datom)) (hash (.-v datom))))
 
 (defn memoize-for [^DB db key f]
   (if (or (zero? (or (:cache-size (.-config db)) 0))
@@ -1284,10 +1288,10 @@
            {:error :transact/syntax, :attribute ident})))
 
 (defn validate-datom [db ^Datom datom]
-  (prn "====================== has: " (str [(.-a datom) (.-v datom)]) " === " (bf/has? (.av-bloom db) (str [(.-a datom) (.-v datom)])))
   (when (and (datom-added datom)
           (is-attr? db (.-a datom) :db/unique)
-          (bf/has? (.av-bloom db) (str [(.-a datom) (.-v datom)])))
+          (bf/has? (.av-bloom db) (av-bloom-encode datom)))
+    (prn "====================== has: " (av-bloom-encode datom) " === " (bf/has? (.av-bloom db) (av-bloom-encode datom)))
     (when-let [found (not-empty (-datoms db :avet [(.-a datom) (.-v datom)]))]
       (raise "Cannot add " datom " because of unique constraint: " found
              {:error :transact/unique
@@ -1460,7 +1464,7 @@
 
 
 (defn prn-bloom-state [db datom]
-  (prn "======================Adding: " (str [(.-a datom) (.-v datom)]))
+  (prn "======================Adding: " datom " ---: " (av-bloom-encode datom))
   db)
 
 (defn- with-datom [db ^Datom datom]
@@ -1476,9 +1480,9 @@
         true (update-in [:aevt] #(di/-insert % datom :aevt op-count))
         indexing? (update-in [:avet] #(di/-insert % datom :avet op-count))
 
-true (prn-bloom-state datom)
+;;true (prn-bloom-state datom)
         true (update-in [:av-bloom]  #(do
-                                        (bf/add! % (str [(.-a datom) (.-v datom)]))
+                                        (bf/add! % (str (hash (.-a datom)) (hash (.-v datom))))
                                         %))
         true (advance-max-eid (.-e datom))
         true (update :hash + (hash datom))
@@ -1541,15 +1545,16 @@ true (prn-bloom-state datom)
    queue
    tuples))
 (defn validate-datom-upsert [db ^Datom datom]
-  (prn "====================== has: " (str [(.-a datom) (.-v datom)]) " ==== " (bf/has? (.av-bloom db) (str [(.-a datom) (.-v datom)])))
   (when (and (is-attr? db (.-a datom) :db/unique)
-          (bf/has? (.av-bloom db) (str [(.-a datom) (.-v datom)])))
+          (bf/has? (.av-bloom db) (av-bloom-encode datom)))
+    ;; (prn "====================== upsert-has: " (str [(.-a datom) (.-v datom)]) " ==== " (bf/has? (.av-bloom db) (av-bloom-encode datom)))
+
     (when-let [old (first (-datoms db :avet [(.-a datom) (.-v datom)]))]
       (when-not (= (.-e datom) (.-e old))
         (raise "Cannot add " datom " because of unique constraint: " old
-               {:error     :transact/unique
-                :attribute (.-a datom)
-                :datom     datom})))))
+          {:error     :transact/unique
+           :attribute (.-a datom)
+           :datom     datom})))))
 
 (defn- with-datom-upsert [db ^Datom datom]
   (validate-datom-upsert db datom)
@@ -1575,10 +1580,10 @@ true (prn-bloom-state datom)
       (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count))
       indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count))
 
-true (prn-bloom-state datom)
-      true (update-in [:av-bloom]  #(do
-                                      (bf/add! % (str [(.-a datom) (.-v datom)]))
-                                      %))
+;;true (prn-bloom-state datom)
+true (update-in [:av-bloom]  #(do
+                                (bf/add! % (av-bloom-encode datom))
+                                %))
 
       true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))

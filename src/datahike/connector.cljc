@@ -47,7 +47,6 @@
                          :max-tx max-tx
                          :op-count op-count
                          :av-bloom-state av-bloom-state
-                         ;;:av-bloom-state (bf/to-state av-bloom)
                          :eavt-key eavt-flushed
                          :aevt-key aevt-flushed
                          :avet-key avet-flushed}
