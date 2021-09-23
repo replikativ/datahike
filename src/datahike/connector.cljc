@@ -47,7 +47,6 @@
                          :max-tx max-tx
                          :op-count op-count
                          :av-bloom-state av-bloom-state
-                         ;;:av-bloom-state (bf/to-state av-bloom)
                          :eavt-key eavt-flushed
                          :aevt-key aevt-flushed
                          :avet-key avet-flushed}
@@ -179,7 +178,7 @@
                                                                (assoc m (name k) v))
                                                              {}
                                                              av-bloom-state))
-                                                  (bf/->bf 100000 0.5))
+                                                  (db/av-bloom))
                                       :temporal-eavt temporal-eavt-key
                                       :temporal-aevt temporal-aevt-key
                                       :temporal-avet temporal-avet-key
