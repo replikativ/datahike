@@ -26,8 +26,7 @@
           mask (mask new indices)]
       (when-let [candidates (subseq old-keys >= mask)]
         (->> candidates
-             (map first)
-             first
+             ffirst
              (equals-at-indices? indices new))))))
 
 (defrecord InsertOp [key op-count]
