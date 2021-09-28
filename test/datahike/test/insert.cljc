@@ -8,9 +8,16 @@
 #?(:cljs
    (def Throwable js/Error))
 
-(defn duplicate-test [config]
-  (let [expected (datom/datom 502 :block/children 501 536870916)
-        _      (d/create-database config)
+
+
+
+;; Test that the second insertion of the same datom does not replace the initial one.
+;; That is similar to Datomic's behaviour.
+;; Note that the 'mem-set' backend does not have this semantics though.
+
+
+(defn duplicate-test [config test-tx-id?]
+  (let [_      (d/create-database config)
         conn   (d/connect config)
         schema [{:db/ident       :block/string
                  :db/valueType   :db.type/string
@@ -18,47 +25,51 @@
                 {:db/ident       :block/children
                  :db/valueType   :db.type/ref
                  :db/index       true
-                 :db/cardinality :db.cardinality/many}]]
-    (d/transact conn schema)
-    (d/transact conn [{:db/id 501 :block/string "one"}])
-    (d/transact conn [{:db/id 502 :block/children 501}])
-    (d/transact conn [{:db/id 502 :block/children 501}])
+                 :db/cardinality :db.cardinality/many}]
+        _     (d/transact conn schema)
+        _     (d/transact conn [{:db/id 501 :block/string "one"}])
+        _     (d/transact conn [{:db/id 502 :block/children 501}]) ;; First transacton
+        datom-1 (first (d/datoms @conn :eavt 502 :block/children))
+        _     (d/transact conn [{:db/id 502 :block/children 501}]) ;; Second transaction
+        datom-2 (first (d/datoms @conn :eavt 502 :block/children))
+        aevt  (d/datoms @conn :aevt :block/children 502)
+        avet  (d/datoms @conn :avet :block/children 501)]
+    (when test-tx-id?
+      (is (= (.-tx datom-1) (.-tx datom-2))))
+    (is (= datom-1 datom-2))
 
-    (let [eavt (d/datoms @conn :eavt 502 :block/children)
-          aevt (d/datoms @conn :aevt :block/children 502)
-          avet (d/datoms @conn :avet :block/children 501)]
-      (is (= 1 (count eavt)))
-      (is (= expected (first eavt)))
+    (is (= 1 (count aevt)))
+    (is (= datom-1 (first aevt)))
 
-      (is (= 1 (count aevt)))
-      (is (= expected (first aevt)))
+    (is (= 1 (count avet)))
+    (is (= datom-1 (first avet)))
 
-      (is (= 1 (count avet)))
-      (is (= expected (first avet)))
-
-      (d/release conn)
-      (d/delete-database config))))
+    (d/release conn)
+    (d/delete-database config)))
 
 (deftest mem-set
   (let [config {:store {:backend :mem :id "performance-set"}
                 :schema-flexibility :write
                 :keep-history? true
-                :index :datahike.index/persistent-set}]
-    (duplicate-test config)))
+                :index :datahike.index/persistent-set}
+        test-tx-id? false]
+    (duplicate-test config test-tx-id?)))
 
 (deftest mem-hht
   (let [config {:store {:backend :mem :id "performance-hht"}
                 :schema-flexibility :write
                 :keep-history? true
-                :index :datahike.index/hitchhiker-tree}]
-    (duplicate-test config)))
+                :index :datahike.index/hitchhiker-tree}
+        test-tx-id? true]
+    (duplicate-test config test-tx-id?)))
 
 (deftest file
   (let [config {:store {:backend :file :path "/tmp/performance-hht"}
                 :schema-flexibility :write
                 :keep-history? true
-                :index :datahike.index/hitchhiker-tree}]
-    (duplicate-test config)))
+                :index :datahike.index/hitchhiker-tree}
+        test-tx-id? true]
+    (duplicate-test config test-tx-id?)))
 
 (deftest insert-read-handlers
   (let [config {:store {:backend :file :path "/tmp/insert-read-handlers-9"}
