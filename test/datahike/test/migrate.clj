@@ -148,12 +148,12 @@
                (assoc :keep-history? false)))))
       (testing "different base and target configuration"
         (testing "source with attribute refs and history, target without refs with history"
-            (closed-circuit-test
-             (-> base-cfg
-                 (assoc-in  [:store :id] "closed-circuit-source-refs-history-test")
-                 (assoc :attribute-refs? true))
-             (-> base-cfg
-                 (assoc-in [:store :id] "closed-circuit-target-no-ref-hist-test"))))
+          (closed-circuit-test
+           (-> base-cfg
+               (assoc-in  [:store :id] "closed-circuit-source-refs-history-test")
+               (assoc :attribute-refs? true))
+           (-> base-cfg
+               (assoc-in [:store :id] "closed-circuit-target-no-ref-hist-test"))))
         (testing "source with attribute refs and history, target without refs or history"
           (closed-circuit-test
            (-> base-cfg

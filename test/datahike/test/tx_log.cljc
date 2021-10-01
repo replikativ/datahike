@@ -176,48 +176,48 @@
 
     (d/delete-database default-cfg)))
 
-(def attr-ref-result [{:tx 0
+(def attr-ref-result [{:tx 0,
                        :data
                        [[1 :db/ident :db/ident const/tx0 true]
-                        [1 :db/valueType 23 const/tx0 true]
-                        [1 :db/cardinality 11 const/tx0 true]
+                        [1 :db/valueType :db.type/keyword const/tx0 true]
+                        [1 :db/cardinality :db.cardinality/one const/tx0 true]
                         [1
                          :db/doc
                          "An attribute's or specification's identifier"
                          const/tx0
                          true]
-                        [1 :db/unique 33 const/tx0 true]
+                        [1 :db/unique :db.unique/value const/tx0 true]
                         [2 :db/ident :db/valueType const/tx0 true]
-                        [2 :db/valueType 30 const/tx0 true]
-                        [2 :db/cardinality 11 const/tx0 true]
+                        [2 :db/valueType :db.type/valueType const/tx0 true]
+                        [2 :db/cardinality :db.cardinality/one const/tx0 true]
                         [2 :db/doc "An attribute's value type" const/tx0 true]
                         [3 :db/ident :db/cardinality const/tx0 true]
-                        [3 :db/valueType 19 const/tx0 true]
-                        [3 :db/cardinality 11 const/tx0 true]
+                        [3 :db/valueType :db.type/cardinality const/tx0 true]
+                        [3 :db/cardinality :db.cardinality/one const/tx0 true]
                         [3 :db/doc "An attribute's cardinality" const/tx0 true]
                         [4 :db/ident :db/doc const/tx0 true]
-                        [4 :db/valueType 26 const/tx0 true]
-                        [4 :db/cardinality 11 const/tx0 true]
+                        [4 :db/valueType :db.type/string const/tx0 true]
+                        [4 :db/cardinality :db.cardinality/one const/tx0 true]
                         [4 :db/doc "An attribute's documentation" const/tx0 true]
                         [5 :db/ident :db/index const/tx0 true]
-                        [5 :db/valueType 17 const/tx0 true]
-                        [5 :db/cardinality 11 const/tx0 true]
+                        [5 :db/valueType :db.type/boolean const/tx0 true]
+                        [5 :db/cardinality :db.cardinality/one const/tx0 true]
                         [5 :db/doc "An attribute's index selection" const/tx0 true]
                         [6 :db/ident :db/unique const/tx0 true]
-                        [6 :db/valueType 28 const/tx0 true]
-                        [6 :db/cardinality 11 const/tx0 true]
+                        [6 :db/valueType :db.type/unique const/tx0 true]
+                        [6 :db/cardinality :db.cardinality/one const/tx0 true]
                         [6 :db/doc "An attribute's unique selection" const/tx0 true]
                         [7 :db/ident :db/noHistory const/tx0 true]
-                        [7 :db/valueType 17 const/tx0 true]
-                        [7 :db/cardinality 11 const/tx0 true]
+                        [7 :db/valueType :db.type/boolean const/tx0 true]
+                        [7 :db/cardinality :db.cardinality/one const/tx0 true]
                         [7 :db/doc "An attribute's history selection" const/tx0 true]
                         [8 :db/ident :db.install/attribute const/tx0 true]
-                        [8 :db/valueType 31 const/tx0 true]
-                        [8 :db/cardinality 11 const/tx0 true]
+                        [8 :db/valueType :db.type.install/attribute const/tx0 true]
+                        [8 :db/cardinality :db.cardinality/one const/tx0 true]
                         [8 :db/doc "Only for interoperability with Datomic" const/tx0 true]
                         [9 :db/ident :db/txInstant const/tx0 true]
-                        [9 :db/valueType 22 const/tx0 true]
-                        [9 :db/cardinality 11 const/tx0 true]
+                        [9 :db/valueType :db.type/instant const/tx0 true]
+                        [9 :db/cardinality :db.cardinality/one const/tx0 true]
                         [9 :db/doc "A transaction's time-point" const/tx0 true]
                         [9 :db/noHistory true const/tx0 true]
                         [9 :db/index true const/tx0 true]
@@ -252,36 +252,37 @@
                         [38 :db/ident :db.type/tuple const/tx0 true]]}
                       {:tx 1,
                        :data
-                       [[39 :db/ident :name tx1 true]
-                        [39 :db/cardinality 11 tx1 true]
-                        [39 :db/index true tx1 true]
-                        [39 :db/unique 32 tx1 true]
-                        [39 :db/valueType 26 tx1 true]
-                        [40 :db/ident :parents tx1 true]
-                        [40 :db/cardinality 10 tx1 true]
-                        [40 :db/valueType 25 tx1 true]
-                        [41 :db/ident :age tx1 true]
-                        [41 :db/cardinality 11 tx1 true]
-                        [41 :db/valueType 24 tx1 true]]}
+                       [[39 :db/ident :name (inc const/tx0) true]
+                        [39 :db/cardinality :db.cardinality/one (inc const/tx0) true]
+                        [39 :db/index true (inc const/tx0) true]
+                        [39 :db/unique :db.unique/identity (inc const/tx0) true]
+                        [39 :db/valueType :db.type/string (inc const/tx0) true]
+                        [40 :db/ident :parents (inc const/tx0) true]
+                        [40 :db/cardinality :db.cardinality/many (inc const/tx0) true]
+                        [40 :db/valueType :db.type/ref (inc const/tx0) true]
+                        [41 :db/ident :age (inc const/tx0) true]
+                        [41 :db/cardinality :db.cardinality/one (inc const/tx0) true]
+                        [41 :db/valueType :db.type/long (inc const/tx0) true]]}
                       {:tx 2,
                        :data
-                       [[42 :name "Alice" (+ tx1 1) true]
-                        [42 :age 25 (+ tx1 1) true]
-                        [43 :name "Bob" (+ tx1 1) true]
-                        [43 :age 30 (+ tx1 1) true]]}
+                       [[42 :name "Alice" (+ const/tx0 2) true]
+                        [42 :age 25 (+ const/tx0 2) true]
+                        [43 :name "Bob" (+ const/tx0 2) true]
+                        [43 :age 30 (+ const/tx0 2) true]]}
                       {:tx 3,
                        :data
-                       [[44 :name "Charlie" (+ tx1 2) true]
-                        [44 :age 5 (+ tx1 2) true]
-                        [44 :parents 42 (+ tx1 2) true]
-                        [44 :parents 43 (+ tx1 2) true]]}
-                      {:tx 4, :data [[42 :age 26 (+ tx1 3) true]]}
+                       [[44 :name "Charlie" (+ const/tx0 3) true]
+                        [44 :age 5 (+ const/tx0 3) true]
+                        [44 :parents 42 (+ const/tx0 3) true]
+                        [44 :parents 43 (+ const/tx0 3) true]]}
+                      {:tx 4,
+                       :data [[42 :age 26 (+ const/tx0 4) true]]}
                       {:tx 5,
                        :data
-                       [[44 :name "Charlie" (+ tx1 4) false]
-                        [44 :parents 42 (+ tx1 4) false]
-                        [44 :parents 43 (+ tx1 4) false]
-                        [44 :age 5 (+ tx1 4) false]]}])
+                       [[44 :name "Charlie" (+ const/tx0 5) false]
+                        [44 :parents 42 (+ const/tx0 5) false]
+                        [44 :parents 43 (+ const/tx0 5) false]
+                        [44 :age 5 (+ const/tx0 5) false]]}])
 
 (deftest test-tx-log-with-attr-refs
   (let [default-cfg (u/with-default-cfg {:store {:backend :mem

@@ -205,6 +205,15 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
+(defn resolve-idents-for-refs [db [_ a v _ :as d]]
+  (let [ident-a (-ident-for db a)
+        new-d (assoc d :a ident-a)]
+    (if (and (ds/schema-attr? ident-a)
+             (not (contains? #{:db/ident :db/doc :db/noHistory :db/index}
+                             ident-a)))
+      (assoc new-d :v (-ident-for db v))
+      new-d)))
+
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet tx-log max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map]
   #?@(:cljs
       [IHash (-hash [db] hash)
@@ -296,21 +305,14 @@
              (let [txs (tx-log/-slice (:tx-log db) start end)
                    coerce-txs (fn [[tx tx-data]] {:tx (- tx tx0)
                                                   :data (if (:attribute-refs? (:config db))
-                                                          (mapv (fn [[e a v t :as d]]
-                                                                  (let [ident-a (-ident-for db a)
-                                                                        new-d (assoc d :a ident-a)]
-                                                                    (if (and (ds/schema-attr? ident-a)
-                                                                             (not (contains? #{:db/ident :db/doc :db/noHistory :db/index} 
-                                                                                   ident-a)))
-                                                                      (assoc new-d :v (-ident-for db v))
-                                                                      new-d))) tx-data)
+                                                          (mapv (partial resolve-idents-for-refs db) tx-data)
                                                           tx-data)})]
                (map coerce-txs txs)))
 
   (-lookup-tx [db tx]
               (let [tx-report (tx-log/-get tx-log tx)]
                 (if (:attribute-refs? (:config db))
-                  (mapv (fn [d] (update d :a (partial -ident-for db))) tx-report)
+                  (mapv (partial resolve-idents-for-refs db) tx-report)
                   tx-report)))
 
   clojure.data/EqualityPartition
