@@ -44,12 +44,12 @@
                   (equals-on-indices? new (-> candidates first first) indices))
           (let [res (->> candidates
                          (map first)
-                         ;; Returns the key which has not been retracted.
-                         ;; There will at most be one such key.
-                         ;; Because of the ordering in keys, we know that
-                         ;; when two successive keys have a positive
-                         ;; :t value, then the second key is our answer,
-                         ;; the one that has not been retracted."
+                      ;; Returns the key which has not been retracted.
+                      ;; There will at most be one such key.
+                      ;; Because of the ordering in keys, we know that
+                      ;; when two successive keys have a positive
+                      ;; :t value, then the second key is our answer,
+                      ;; the one that has not been retracted."
                          (reduce (fn [prev-pos? k]
                                    (let [curr-pos? (pos? (nth k 3))]
                                      (if (and curr-pos?
@@ -80,6 +80,7 @@
       (-> (or (remove-old children key (partial tree/delete tree) indices) tree)
           (tree/insert key nil)))))
 
+;; TODO: change this to get extra argument old
 (defn old-retracted
   "Returns a new datom to be inserted in the tree to signal the retraction of
   its corresponding old datom."
@@ -95,20 +96,28 @@
   (-insertion-ts [_] op-count)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
-    (let [old-retracted  (old-retracted kvs key indices)]
-      (-> (if old-retracted
-            (assoc kvs old-retracted nil)
-            kvs)
-          (assoc key nil))))
+    ;; TODO: add a test that goes here
+    (prn "-------------------- yes")
+    (let [old (old-key kvs key indices)]
+      (if old
+        (if (equals-on-indices? key old [0 1 2])
+          kvs
+          (let [old-retracted (old-retracted kvs key indices)]
+            (-> (assoc kvs old-retracted nil)
+                (assoc key nil))))
+        (assoc kvs key nil))))
   (-apply-op-to-tree [_ tree]
-    (let [children  (cond
-                      (tree/data-node? tree) (:children tree)
-                      :else (:children (peek (tree/lookup-path tree key))))
-          old-retracted  (old-retracted children key indices)]
-      (-> (if old-retracted
-            (tree/insert tree old-retracted nil)
-            tree)
-          (tree/insert key nil)))))
+    (let [children (cond
+                     (tree/data-node? tree) (:children tree)
+                     :else (:children (peek (tree/lookup-path tree key))))
+          old (old-key children key indices)]
+      (if old
+        (if (equals-on-indices? key old [0 1 2])
+          tree
+          (let [old-retracted  (old-retracted children key indices)]
+            (-> (tree/insert tree old-retracted nil)
+                (tree/insert key nil))))
+        (tree/insert tree key nil)))))
 
 (defn new-UpsertOp [key op-count indices]
   (UpsertOp. key op-count indices))
