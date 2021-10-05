@@ -316,7 +316,7 @@
                        :age  25}
                       {:name    "Charlie"
                        :age     45
-                        :sibling [[:name "Alice"] [:name "Charlie"]]}])
+                       :sibling [[:name "Alice"] [:name "Charlie"]]}])
     (is (= 1 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :name "Alice"))))
     (is (= 1 (count (filter :added (d/datoms (d/history @conn) :eavt [:name "Alice"] :name "Alice")))))
 

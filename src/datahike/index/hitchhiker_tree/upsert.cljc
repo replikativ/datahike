@@ -80,16 +80,14 @@
       (-> (or (remove-old children key (partial tree/delete tree) indices) tree)
           (tree/insert key nil)))))
 
-;; TODO: change this to get extra argument old
 (defn old-retracted
   "Returns a new datom to be inserted in the tree to signal the retraction of
-  its corresponding old datom."
-  [kvs key indices]
-  (when-let [old (old-key kvs key indices)]
-    (let [[a b c _] old
-          [_ _ _ nt] key]
-      ;; '-' means it is retracted and 'nt' is the current transaction time.
-      [a b c (- nt)])))
+  its corresponding 'old' datom."
+  [kvs key old indices]
+  (let [[a b c _] old
+        [_ _ _ nt] key]
+    ;; '-' means it is retracted and 'nt' is the current transaction time.
+    [a b c (- nt)]))
 
 (defrecord temporal-UpsertOp [key op-count indices]
   op/IOperation
@@ -98,14 +96,13 @@
   (-apply-op-to-coll [_ kvs]
     ;; TODO: add a test that goes here
     (prn "-------------------- yes")
-    (let [old (old-key kvs key indices)]
-      (if old
-        (if (equals-on-indices? key old [0 1 2])
-          kvs
-          (let [old-retracted (old-retracted kvs key indices)]
-            (-> (assoc kvs old-retracted nil)
-                (assoc key nil))))
-        (assoc kvs key nil))))
+    (if-let [old (old-key kvs key indices)]
+      (if (equals-on-indices? key old [0 1 2])
+        kvs
+        (let [old-retracted (old-retracted kvs key old indices)]
+          (-> (assoc kvs old-retracted nil)
+              (assoc key nil))))
+      (assoc kvs key nil)))
   (-apply-op-to-tree [_ tree]
     (let [children (cond
                      (tree/data-node? tree) (:children tree)
@@ -114,7 +111,7 @@
       (if old
         (if (equals-on-indices? key old [0 1 2])
           tree
-          (let [old-retracted  (old-retracted children key indices)]
+          (let [old-retracted (old-retracted children key old indices)]
             (-> (tree/insert tree old-retracted nil)
                 (tree/insert key nil))))
         (tree/insert tree key nil)))))
