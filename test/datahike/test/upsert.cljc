@@ -191,6 +191,44 @@
                                       [:db/add -1 :name "Oleg"]
                                       [:db/add -1 :age 36]])))))
 
+
+(deftest temporal-history
+  (let [schema [{:db/ident       :name
+                 :db/cardinality :db.cardinality/one
+                 :db/index       true
+                 :db/unique      :db.unique/identity
+                 :db/valueType   :db.type/string}
+                {:db/ident       :age
+                 :db/cardinality :db.cardinality/one
+                 :db/valueType   :db.type/long}]
+        cfg {:store {:backend :mem
+                     :id "sandbox"}
+             :name "sandbox"
+             :keep-history? true
+             :schema-flexibility :write
+             :attribute-refs? false}
+        _ (api/delete-database cfg)
+        _ (api/create-database cfg)
+        conn (api/connect cfg)]
+    (testing "initial insert works"
+      (api/transact conn {:tx-data schema})
+      (api/transact conn {:tx-data [{:name "Alice"
+                                     :age  25}]})
+      (api/datoms @conn :eavt [:name "Alice"] :age)
+      (is (= 1 (count (d/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))
+
+    (testing "inserting the exact same datom does not change the history"
+      (api/transact conn {:tx-data [{:db/id [:name "Alice"]
+                                     :age 25}]})
+      (api/datoms @conn :eavt [:name "Alice"] :age)
+      (is (= 1 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))
+    (testing "inserting another value increases the history with 2 datoms: the retraction datom and the new value."
+      (api/transact conn {:tx-data [{:db/id [:name "Alice"]
+                                     :age 26}]})
+      (api/datoms @conn :eavt [:name "Alice"] :age)
+      (is (= 3 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))))
+
+
 (deftest test-upsert-after-large-coll
   (let [ascii-ish (map char (concat (range 48 58) (range 65 91) (range 97 123)))
         file-cfg {:store {:backend :file
