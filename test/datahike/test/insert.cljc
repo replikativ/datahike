@@ -71,6 +71,66 @@
         test-tx-id? true]
     (duplicate-test config test-tx-id?)))
 
+
+
+(defn insert-history-test [cfg]
+  (let [schema [{:db/ident       :name
+                 :db/cardinality :db.cardinality/one
+                 :db/index       true
+                 :db/unique      :db.unique/identity
+                 :db/valueType   :db.type/string}
+                {:db/ident       :email
+                 :db/cardinality :db.cardinality/many
+                 :db/valueType   :db.type/string}]
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (testing "inserting a new datom creates an entry in history"
+      (d/transact conn {:tx-data schema})
+      (d/transact conn {:tx-data [{:name "Alice"
+                                   :email  "al@al.com"}]})
+      (is (= 1 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :email)))))
+    (testing "inserting the exact same datom does not change history"
+      (d/transact conn {:tx-data [{:db/id [:name "Alice"]
+                                   :email "al@al.com"}]})
+      (is (= 1 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :email)))))
+    (testing "changing the datom value just add the new datom to history"
+      (d/transact conn {:tx-data [{:db/id [:name "Alice"]
+                                   :email "al@eco.com"}]})
+      (is (= 2 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :email)))))))
+
+(deftest insert-history-mem-hht
+  (let [config {:store {:backend :mem :id "temp-hist-hht"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/hitchhiker-tree}]
+    (insert-history-test config)))
+
+(deftest insert-history-file
+  (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/hitchhiker-tree}]
+    (insert-history-test config)))
+
+(deftest insert-history-file-with-attr-refs
+  (let [config {:store {:backend :file :path "/tmp/temp-hist-attr-refs"}
+                :schema-flexibility :write
+                :keep-history? true
+                :attribute-refs? true
+                :index :datahike.index/hitchhiker-tree}]
+    (insert-history-test config)))
+
+(deftest insert-history-mem-set
+  (let [config {:store {:backend :mem :id "temp-hist-set"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/persistent-set}]
+    (insert-history-test config)))
+
+
+
+
 (deftest insert-read-handlers
   (let [config {:store {:backend :file :path "/tmp/insert-read-handlers-9"}
                 :schema-flexibility :write
