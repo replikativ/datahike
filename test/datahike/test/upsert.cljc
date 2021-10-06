@@ -192,7 +192,7 @@
                                       [:db/add -1 :age 36]])))))
 
 
-(deftest temporal-history
+(defn temporal-history-test [cfg]
   (let [schema [{:db/ident       :name
                  :db/cardinality :db.cardinality/one
                  :db/index       true
@@ -201,16 +201,10 @@
                 {:db/ident       :age
                  :db/cardinality :db.cardinality/one
                  :db/valueType   :db.type/long}]
-        cfg {:store {:backend :mem
-                     :id "sandbox"}
-             :name "sandbox"
-             :keep-history? true
-             :schema-flexibility :write
-             :attribute-refs? false}
         _ (api/delete-database cfg)
         _ (api/create-database cfg)
         conn (api/connect cfg)]
-    (testing "initial insert works"
+    (testing "initial a new datom creates an entry in history"
       (api/transact conn {:tx-data schema})
       (api/transact conn {:tx-data [{:name "Alice"
                                      :age  25}]})
@@ -227,6 +221,37 @@
                                      :age 26}]})
       (api/datoms @conn :eavt [:name "Alice"] :age)
       (is (= 3 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))))
+
+
+
+(deftest temporal-history-mem-set
+  (let [config {:store {:backend :mem :id "temp-hist-set"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/persistent-set}]
+    (temporal-history-test config)))
+
+(deftest temporal-history-mem-hht
+  (let [config {:store {:backend :mem :id "temp-hist-hht"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/hitchhiker-tree}]
+    (temporal-history-test config)))
+
+(deftest temporal-history-file
+  (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/hitchhiker-tree}]
+    (temporal-history-test config )))
+
+(deftest temporal-history-file-with-attr-refs
+  (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
+                :schema-flexibility :write
+                :keep-history? true
+                :attribute-refs? true
+                :index :datahike.index/hitchhiker-tree}]
+    (temporal-history-test config )))
 
 
 (deftest test-upsert-after-large-coll
