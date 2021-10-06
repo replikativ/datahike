@@ -1,7 +1,7 @@
 (ns datahike.test.insert
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is deftest]]
-      :clj  [clojure.test :as t :refer        [is deftest]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
    [datahike.datom :as datom]))
 
