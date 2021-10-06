@@ -71,8 +71,6 @@
         test-tx-id? true]
     (duplicate-test config test-tx-id?)))
 
-
-
 (defn insert-history-test [cfg]
   (let [schema [{:db/ident       :name
                  :db/cardinality :db.cardinality/one
@@ -127,9 +125,6 @@
                 :keep-history? true
                 :index :datahike.index/persistent-set}]
     (insert-history-test config)))
-
-
-
 
 (deftest insert-read-handlers
   (let [config {:store {:backend :file :path "/tmp/insert-read-handlers-9"}
