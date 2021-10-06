@@ -50,9 +50,7 @@
   (-insertion-ts [_] op-count)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
-    (if (exists-old? kvs key)
-      kvs
-      (assoc kvs key nil)))
+    (assoc kvs key nil))
   (-apply-op-to-tree [_ tree]
     (tree/insert tree key nil)))
 
