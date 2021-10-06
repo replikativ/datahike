@@ -14,12 +14,21 @@
               :db/cardinality :db.cardinality/one
               :db/valueType   :db.type/long}])
 
-(def cfg {:store {:backend :mem
+#_(def cfg {:store {:backend :mem
                   :id "sandbox"}
           :name "sandbox"
           :keep-history? true
           :schema-flexibility :write
           :attribute-refs? true})
+
+(def cfg {:store {:backend :file :path "/tmp/upsert-history"
+                  :id "sandbox"}
+          :name "sandbox"
+          :keep-history? true
+          :schema-flexibility :write
+          :attribute-refs? true
+          :index :datahike.index/hitchhiker-tree})
+
 
 (d/delete-database cfg)
 (d/create-database cfg)
@@ -37,6 +46,13 @@
 
 (d/transact conn {:tx-data [{:db/id [:name "Alice"]
                              :age 25}]})
+
+(d/transact conn {:tx-data (vec (map (fn [_]
+                                       {:db/id [:name "Alice"]
+                                        :age 25})
+                                  (range 5000)))})
+
+
 
 (d/datoms @conn :eavt [:name "Alice"] :age)
 
