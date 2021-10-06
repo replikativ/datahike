@@ -191,7 +191,6 @@
                                       [:db/add -1 :name "Oleg"]
                                       [:db/add -1 :age 36]])))))
 
-
 (defn temporal-history-test [cfg]
   (let [schema [{:db/ident       :name
                  :db/cardinality :db.cardinality/one
@@ -204,7 +203,7 @@
         _ (api/delete-database cfg)
         _ (api/create-database cfg)
         conn (api/connect cfg)]
-    (testing "initial a new datom creates an entry in history"
+    (testing "inserting a new datom creates an entry in history"
       (api/transact conn {:tx-data schema})
       (api/transact conn {:tx-data [{:name "Alice"
                                      :age  25}]})
@@ -216,13 +215,11 @@
                                      :age 25}]})
       (api/datoms @conn :eavt [:name "Alice"] :age)
       (is (= 1 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))
-    (testing "inserting another value increases the history with 2 datoms: the retraction datom and the new value."
+    (testing "changing the datom value increases the history with 2 datoms: the retraction datom and the new value."
       (api/transact conn {:tx-data [{:db/id [:name "Alice"]
                                      :age 26}]})
       (api/datoms @conn :eavt [:name "Alice"] :age)
       (is (= 3 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))))
-
-
 
 (deftest temporal-history-mem-set
   (let [config {:store {:backend :mem :id "temp-hist-set"}
@@ -243,7 +240,7 @@
                 :schema-flexibility :write
                 :keep-history? true
                 :index :datahike.index/hitchhiker-tree}]
-    (temporal-history-test config )))
+    (temporal-history-test config)))
 
 (deftest temporal-history-file-with-attr-refs
   (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
@@ -251,8 +248,7 @@
                 :keep-history? true
                 :attribute-refs? true
                 :index :datahike.index/hitchhiker-tree}]
-    (temporal-history-test config )))
-
+    (temporal-history-test config)))
 
 (deftest test-upsert-after-large-coll
   (let [ascii-ish (map char (concat (range 48 58) (range 65 91) (range 97 123)))

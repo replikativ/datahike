@@ -94,8 +94,6 @@
   (-insertion-ts [_] op-count)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
-    ;; TODO: add a test that goes here
-    (prn "-------------------- yes")
     (if-let [old (old-key kvs key indices)]
       (if (equals-on-indices? key old [0 1 2])
         kvs

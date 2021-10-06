@@ -50,12 +50,10 @@
   (-insertion-ts [_] op-count)
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
-    (prn "------------------ CALLED")
     (if (exists-old? kvs key)
       kvs
       (assoc kvs key nil)))
   (-apply-op-to-tree [_ tree]
-    (prn "------------------ CALLED-----2")
     (tree/insert tree key nil)))
 
 (defn new-InsertOp [key op-count]
