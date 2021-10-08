@@ -12,6 +12,9 @@ body:
   - type: markdown
     attributes:
       value: Please verify if the issue exists with the current SNAPSHOT-version of Datahike.
+  - type: markdown
+    attributes:
+      value: Before posting please check the issue list if a bug report for the same problem has already been filed.
   - type: input
     attributes:
       label: What version of Datahike are you using?
@@ -32,7 +35,7 @@ body:
       required: true
   - type: textarea
     attributes:
-      label: What database configuration are you using?
+      label: What database EDN configuration are you using?
       description: 'For example: {:store {:backend :mem :id "a bug"} :keep-history? false}'
     validations:
       required: true
