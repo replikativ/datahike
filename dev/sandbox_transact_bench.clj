@@ -3,6 +3,7 @@
 
 
 (comment
+  (log/set-level! :warn)
 
     ;; if profiling
     ;;(require '[clj-async-profiler.core :as prof])

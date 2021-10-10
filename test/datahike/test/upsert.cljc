@@ -191,6 +191,67 @@
                                       [:db/add -1 :name "Oleg"]
                                       [:db/add -1 :age 36]])))))
 
+(defn temporal-history-test [cfg]
+  (let [schema [{:db/ident       :name
+                 :db/cardinality :db.cardinality/one
+                 :db/index       true
+                 :db/unique      :db.unique/identity
+                 :db/valueType   :db.type/string}
+                {:db/ident       :age
+                 :db/cardinality :db.cardinality/one
+                 :db/valueType   :db.type/long}]
+        _ (api/delete-database cfg)
+        _ (api/create-database cfg)
+        conn (api/connect cfg)]
+    (testing "inserting a new datom creates an entry in history"
+      (api/transact conn {:tx-data schema})
+      (api/transact conn {:tx-data [{:name "Alice"
+                                     :age  25}]})
+      (is (= 1 (count (d/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))
+
+    (testing "inserting the exact same datom"
+      (api/transact conn {:tx-data [{:db/id [:name "Alice"]
+                                     :age 25}]})
+      (testing " does not change the history for any index other than persistent-set"
+        (when (not= (:index cfg) :datahike.index/persistent-set)
+          (is (= 1 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age))))))
+      (testing " adds another version of the datom when index is persistent-set"
+        (when (= (:index cfg) :datahike.index/persistent-set)
+          (is (= 2 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))))
+    (testing "changing the datom value increases the history with 2 datoms: the retraction datom and the new value."
+      (api/transact conn {:tx-data [{:db/id [:name "Alice"]
+                                     :age 26}]})
+      (is (= 3 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))))
+
+(deftest temporal-history-mem-hht
+  (let [config {:store {:backend :mem :id "temp-hist-hht"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/hitchhiker-tree}]
+    (temporal-history-test config)))
+
+(deftest temporal-history-file
+  (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/hitchhiker-tree}]
+    (temporal-history-test config)))
+
+(deftest temporal-history-file-with-attr-refs
+  (let [config {:store {:backend :file :path "/tmp/temp-hist-attr-refs"}
+                :schema-flexibility :write
+                :keep-history? true
+                :attribute-refs? true
+                :index :datahike.index/hitchhiker-tree}]
+    (temporal-history-test config)))
+
+(deftest temporal-history-mem-set
+  (let [config {:store {:backend :mem :id "temp-hist-set"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/persistent-set}]
+    (temporal-history-test config)))
+
 (deftest test-upsert-after-large-coll
   (let [ascii-ish (map char (concat (range 48 58) (range 65 91) (range 97 123)))
         file-cfg {:store {:backend :file
