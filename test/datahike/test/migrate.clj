@@ -63,15 +63,28 @@
         (d/delete-database cfg)))))
 
 (deftest load-entities-test
-  (testing "Test migrate simple datoms"
-    (let [source-datoms (->> tx-data
-                             (mapv #(-> % rest vec))
-                             (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))]
-      (let [cfg {:store {:backend :mem
-                         :id "target"}}
-            _ (d/delete-database cfg)
-            _ (d/create-database cfg)
-            conn (d/connect cfg)]
+  (let [default-cfg {:store         {:backend :mem
+                                     :id      "load-entities-test-no-attr-refs"}
+                     :keep-history? true}]
+    (testing "Test migrate simple datoms without attribute refs"
+      (let [source-datoms (->> tx-data
+                               (mapv #(-> % rest vec))
+                               (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
+            cfg           (assoc default-cfg :attribute-refs false)
+            _             (d/delete-database cfg)
+            _             (d/create-database cfg)
+            conn          (d/connect cfg)]
+        @(d/load-entities conn source-datoms)
+        (is (= (into #{} source-datoms)
+               (d/q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))))
+    (testing "Test migrate simple datoms with attribute refs"
+      (let [source-datoms (->> tx-data
+                               (mapv #(-> % rest vec))
+                               (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
+            cfg           (assoc default-cfg :attribute-refs? true)
+            _             (d/delete-database cfg)
+            _             (d/create-database cfg)
+            conn          (d/connect cfg)]
         @(d/load-entities conn source-datoms)
         (is (= (into #{} source-datoms)
                (d/q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))))))
