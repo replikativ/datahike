@@ -1,0 +1,68 @@
+name: Bug Report
+description: File a bug report to help us improve Datahike
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to fill out this bug report! It helps us to improve Datahike. Please fill out the form as completely as possible.
+  - type: markdown
+    attributes:
+      value: If you leave out sections down below the report might be moved to the Help section in GitHub discussions.
+  - type: markdown
+    attributes:
+      value: Please verify if the issue exists with the current SNAPSHOT-version of Datahike.
+  - type: markdown
+    attributes:
+      value: Before posting please check the issue list if a bug report for the same problem has already been filed.
+  - type: input
+    attributes:
+      label: What version of Datahike are you using?
+      description: 'For example: 0.3.6'
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: What version of Java are you using?
+      description: 'For example: openjdk version "11.0.11" 2021-04-20'
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: What operating system are you using?
+      description: 'For example: MacOS, Ubuntu, Windows'
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What database EDN configuration are you using?
+      description: 'For example: {:store {:backend :mem :id "a bug"} :keep-history? false}'
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What is the expected behaviour?
+      description: A clear and concise description of what you expect to happen.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: How can the behaviour be reproduced?
+      description: Please provide the steps to reproduce the behaviour, either code snippts, git repositories or screenshots.
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: Before posting the report please go through each step and make sure each section is detailed and clear.
+  - type: markdown
+    attributes:
+      value: Contributors should be able to follow the steps and reproduce the behaviour.
+  - type: markdown
+    attributes:
+      value: The steps and code snippets are used to create integration tests to ensure that the issue does not appear again. Thanks for your help!
