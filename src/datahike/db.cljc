@@ -2126,7 +2126,14 @@
     (let [[entity & entities] es
           {:keys [config] :as db} (:db-after report)
           [e a v t op] entity
-          a-ident (if (:attribute-refs? config) (-ident-for db a) a)
+          a-ident (if (and (number? a) (:attribute-refs? config))
+                    (-ident-for db a)
+                    a)
+          a (if (:attribute-refs? config)
+              (-ref-for db a-ident)
+              (if (number? a)
+                (raise "Configuration mismatch: import data with attribute references can not be imported into a database with no attribute references." {:error :import/mismatch :data entity})
+                a-ident))
           max-eid (next-eid db)
           max-tid (inc (get-in report [:db-after :max-tx]))]
       (cond
@@ -2143,7 +2150,8 @@
 
         ;; meta entity
         (ds/meta-attr? a-ident)
-        (let [new-datom (dd/datom max-tid a v max-tid op)
+        (let [new-t (get-in migration-state [:tids t] max-tid)
+              new-datom (dd/datom new-t a v new-t op)
               new-e (.-e new-datom)]
           (recur (-> (transact-report report new-datom)
                      (assoc-in [:db-after :max-tx] max-tid))
@@ -2151,6 +2159,10 @@
                  (-> migration-state
                      (assoc-in [:tids e] new-e)
                      (assoc-in [:eids e] new-e))))
+
+        ;; tx not added yet
+        (nil? (get-in migration-state [:tids t]))
+        (recur (update-in report [:db-after :max-tx] inc) es (assoc-in migration-state [:tids t] max-tid))
 
         ;; ref not added yet
         (and (ref? db a) (nil? (get-in migration-state [:eids v])))
