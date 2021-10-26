@@ -2178,6 +2178,6 @@
                                   v)
                                 (get-in migration-state [:tids t])
                                 op)
-              upsert? (and (not (multival? db a-ident) )
+              upsert? (and (not (multival? db a-ident))
                            op)]
           (recur (transact-report report new-datom upsert?) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))

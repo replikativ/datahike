@@ -202,7 +202,7 @@
                                         :where
                                         [?e :name ?n ?t ?op]]
                                       (d/history @conn)))]
-        (is (= (current-q source-conn)
-               (current-q target-conn)))
-        (is (= (history-q source-conn)
-               (history-q target-conn))))))
+      (is (= (current-q source-conn)
+             (current-q target-conn)))
+      (is (= (history-q source-conn)
+             (history-q target-conn))))))
