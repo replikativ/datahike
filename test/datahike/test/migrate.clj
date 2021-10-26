@@ -156,3 +156,53 @@
                       :where
                       [?e ?attr ?v ?t ?op]
                       [?attr :db/ident ?a]] @conn)))))))
+
+(deftest load-entities-history-test
+  (testing "Migrate predefined set with historical data"
+    (let [schema      [{:db/ident       :name
+                        :db/cardinality :db.cardinality/one
+                        :db/index       true
+                        :db/unique      :db.unique/identity
+                        :db/valueType   :db.type/string}]
+          source-cfg  {:store              {:backend :mem
+                                            :id      "load-entities-history-test-source"}
+                       :name               "load-entities-history-test-source"
+                       :keep-history?      true
+                       :schema-flexibility :write
+                       :cache-size         0
+                       :attribute-refs?    false}
+          source-conn (do
+                        (d/delete-database source-cfg)
+                        (d/create-database source-cfg)
+                        (d/connect source-cfg))
+          txs         [schema
+                       [{:name "Alice"} {:name "Bob"}]
+                       [{:name "Charlie"} {:name "Daisy"}]
+                       [[:db/retractEntity [:name "Alice"]]]]
+          _           (doseq [tx-data txs]
+                        (d/transact source-conn {:tx-data tx-data}))
+          export-data (->> (d/datoms (d/history @source-conn) :eavt)
+                           (map (comp vec seq))
+                           (sort-by #(nth % 3))
+                           (into []))
+          target-cfg  (-> source-cfg
+                          (assoc-in [:store :id] "load-entities-history-test-target")
+                          (assoc-in [:name] "load-entities-history-test-target"))
+          target-conn (do
+                        (d/delete-database target-cfg)
+                        (d/create-database target-cfg)
+                        (d/connect target-cfg))
+          _           @(d/load-entities target-conn export-data)
+          current-q   (fn [conn] (d/q
+                                  '[:find ?n
+                                    :where
+                                    [?e :name ?n]]
+                                  @conn))
+          history-q   (fn [conn] (d/q '[:find ?n ?t ?op
+                                        :where
+                                        [?e :name ?n ?t ?op]]
+                                      (d/history @conn)))]
+        (is (= (current-q source-conn)
+               (current-q target-conn)))
+        (is (= (history-q source-conn)
+               (history-q target-conn))))))

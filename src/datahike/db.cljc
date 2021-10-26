@@ -2152,8 +2152,9 @@
         (ds/meta-attr? a-ident)
         (let [new-t (get-in migration-state [:tids t] max-tid)
               new-datom (dd/datom new-t a v new-t op)
-              new-e (.-e new-datom)]
-          (recur (-> (transact-report report new-datom)
+              new-e (.-e new-datom)
+              upsert? (not (multival? db a-ident))]
+          (recur (-> (transact-report report new-datom upsert?)
                      (assoc-in [:db-after :max-tx] max-tid))
                  entities
                  (-> migration-state
@@ -2176,5 +2177,7 @@
                                   (get-in migration-state [:eids v])
                                   v)
                                 (get-in migration-state [:tids t])
-                                op)]
-          (recur (transact-report report new-datom) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))
+                                op)
+              upsert? (and (not (multival? db a-ident) )
+                           op)]
+          (recur (transact-report report new-datom upsert?) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))
