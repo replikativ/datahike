@@ -95,10 +95,12 @@
               [c l n s] (loop [c c l l n n s s]
                           (if (> s datom-limit)
                             (let [k (first (peek lru))]
-                              (recur (dissoc c k)
-                                     (dissoc l k)
-                                     (dissoc n k)
-                                     (- s (get n k))))
+                              (if-let [x (get n k)]
+                                (recur (dissoc c k)
+                                       (dissoc l k)
+                                       (dissoc n k)
+                                       (- s x))
+                                [c l n s]))
                             [c l n s]))]
           (LRUDatomCache. (assoc c item result)
                           (assoc l item tick+)
