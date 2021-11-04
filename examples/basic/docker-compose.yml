@@ -6,7 +6,8 @@ services:
     environment:
       POSTGRES_USER: datahike
       POSTGRES_PASSWORD: clojure
+      POSTGRES_DB: "pg-example"
     ports:
-      - "5434:5432"
+      - "5437:5432"
     volumes:
       - /tmp/datahike_example/data:/var/lib/postgresql/data
