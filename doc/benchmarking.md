@@ -13,7 +13,7 @@ The command can either be `run` or `compare`.
 ## Running Benchmarks
 
 ```bash
-clj -A:benchmark run [OPTIONS] [OUTPUTFILEPATH]+
+clj -M:benchmark run [OPTIONS] [OUTPUTFILEPATH]+
 ```
 
 Options:
@@ -24,27 +24,45 @@ Options:
 | -n    | --db-name DBNAME          | Database name for datahike server for benchmark output.                |               |
 | -g    | --db-token TOKEN          | Token for datahike server for benchmark output.                        |               | 
 | -t    | --tag TAG                 | Add tag to measurements; multiple tags possible.                       | `#{}`         | 
-| -o    | --output-format FORMAT    | Short form of ooutput format to use.                                   | `edn`         | 
+| -o    | --output-format FORMAT    | Short form of output format to use.                                    | `edn`         | 
 | -c    | --config-name CONFIGNAME  | Name of database configuration to use.                                 | (all)         | 
 | -d    | --db-entity-counts VECTOR | Numbers of entities in database for which benchmarks should be run.    | `[0 1000]`    | 
 | -x    | --tx-entity-counts VECTOR | Numbers of entities in transaction for which benchmarks should be run. | `[0 1000]`    | 
-| -y    | --data-types TYPEVECTOR   | Vector of datatypes to test queries on.                                | `[:int :str]` | 
+| -y    | --data-types TYPEVECTOR   | Vector of data types to test queries on.                               | `[:int :str]` | 
 | -z    | --data-found-opts OPTS    | Run query for existent or nonexistent values in the database.          | `:all`        | 
 | -i    | --iterations ITERATIONS   | Number of iterations of each measurement.                              | `10`          | 
 | -f    | --function FUNCTIONNAME   | Name of function to test.                                              | (all)         |
 | -q    | --query QUERYNAME         | Name of query to test.                                                 | (all)         | 
 | -h    | --help                    | Show help screen for tool usage.                                       |               |
 
+### Examples
 
+1) Benchmark *connection* time for databases with  *1000 entities* (= 4000 datoms) and *file* backend with tag *feature* and output as *edn*
 
-### Run Configuration
+```bash
+TIMBRE_LEVEL=':warn' clj -M:benchmark run -f :connection -d '[1000]' -c file -t feature -o edn feature.edn
+```
+
+2) Benchmark *transaction* time for *integer* datoms and 10 entities (= 40 datoms) per transaction using *mem* backend and output as csv
+
+```bash
+TIMBRE_LEVEL=':warn' clj -M:benchmark run -f :transaction -y '[:int]' -x '[10]' -c mem-set -o csv feature.csv
+```
+
+3) Benchmark *query* time for a *simple query* for all backends, for every configuration run the query *10 times* and take the average time 
+
+```bash
+TIMBRE_LEVEL=':warn'  clj -M:benchmark run -f :query -q :simple-query -i 10
+```
+
+### Possible Options
 
 #### Database Configurations  (-c)
 
 Options for `-c`:
 - `mem-set` for in-memory database with persistent-set index
 - `mem-hht` for in-memory database with hitchhiker-tree index
-- `file` for database with file store backend and hitchhiker-treet index
+- `file` for database with file store backend and hitchhiker-tree index
 
 Implementations:
 
@@ -314,6 +332,19 @@ The comparison tool has proven valuable to our team for comparing different bran
 
 Workflow:
 
-1) Run the benchmarks on the branch you are forking from with the option `--output edn` giving it an expressive tag, e.g. the name of the branch.
-2) Run the benchmarks on your feature branch with the option `--output edn` giving it a tag, e.g. the name of your new feature.
-3) Run the comparison tool on any branch giving both of the previous output files as input.
+1) Run the benchmarks on the branch you are forking from with the option `--output edn` giving it an expressive tag, e.g. the name of the branch:
+```bash
+git checkout development
+clj -A:benchmark run -t development -o edn development.edn
+```
+
+2) Run the benchmarks on your feature branch with the option `--output edn` giving it a tag, e.g. the name of your new feature:
+```bash
+git checkout feature
+clj -A:benchmark run -t feature -o edn feature.edn
+```
+
+3) Run the comparison tool on any branch giving both of the previous output files as input:
+```bash
+clj -A:benchmark compare -p development.edn feature.edn
+```

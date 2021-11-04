@@ -1,9 +1,9 @@
 # Time Variance
 
 For the purpose of auditing and analytics modern business information systems
-need to be [time variant](https://en.wikipedia.org/wiki/Time_variance) which
-means they should have the ability to store, track and query data entities that
-change over time. As a [temporal database](https://en.wikipedia.org/wiki/Temporal_database)
+need to be time variant. This
+means, they should have the ability to store, track and query data entities that
+change over time. As a [temporal database](https://en.wikipedia.org/wiki/Temporal_database),
 Datahike tracks by default the transaction time for each entity by using the
 `:db/txInstant` attribute in the meta entity that is added to each
 transaction. This uni-temporal approach allows different perspectives of the

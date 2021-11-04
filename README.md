@@ -99,7 +99,7 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
   (d/history @conn))
 ;; => #{[20] [25]}
 
-;; you might need to release the connection for specific stores like leveldb
+;; you might need to release the connection for specific stores
 (d/release conn)
 
 ;; clean up the database if it is not need any more
@@ -112,20 +112,21 @@ be ported to core.async to coordinate IO in a platform-neutral manner.
 
 Refer to the docs for more information:
 
-- [configuration](./doc/config.md)
-- [schema flexibility](./doc/schema.md)
-- [entity spec](./doc/entity_spec.md)
-- [time variance](./doc/time_variance.md)
-- [differences from Datomic](./doc/datomic_differences.md)
 - [backend development](./doc/backend-development.md)
-- [logging and error handling](./doc/logging_and_error_handling.md)
 - [benchmarking](./doc/benchmarking.md)
 - [contributing to Datahike](./doc/contributing.md)
+- [configuration](./doc/config.md)
+- [differences to Datomic](./doc/datomic_differences.md)
+- [entity spec](./doc/entity_spec.md)
+- [logging and error handling](./doc/logging_and_error_handling.md)
+- [roadmap](./doc/roadmap.md)
+- [schema flexibility](./doc/schema.md)
+- [time variance](./doc/time_variance.md)
 
 
 For simple examples have a look at the projects in the `examples` folder.
 
-## Example projects
+## Example Projects
 
 - [Invoice creation](https://gitlab.com/replikativ/datahike-invoice)
   demonstrated at the [Dutch Clojure
@@ -153,6 +154,7 @@ Some differences are:
   access the index datastructures (hitchhiker-tree) and leverage their
   persistent nature for replication. These internals are not guaranteed to stay
   stable, but provide useful insight into what is going on and can be optimized.
+- Datahike supports [GDPR](https://gdpr.eu/) compliance by allowing to [completely remove database entries](./doc/time_variance.md#data-purging).
 - Datomic has a REST interface and a Java API
 - Datomic provides timeouts
 
@@ -165,13 +167,13 @@ Datahike's query engine and most of its codebase come from
 DataScript, Datahike would not have been possible. Differences to Datomic with
 respect to the query engine are documented there.
 
-## When should I pick what?
+## When to Choose Datahike vs. Datomic vs. DataScript
 
 ### Datahike
 
 Pick Datahike if your app has modest requirements towards a typical durable
 database, e.g. a single machine and a few millions of entities at maximum.
-Similarly if you want to have an open-source solution and be able to study and
+Similarly, if you want to have an open-source solution and be able to study and
 tinker with the codebase of your database, Datahike provides a comparatively
 small and well composed codebase to tweak it to your needs. You should also
 always be able to migrate to Datomic later easily.
@@ -187,11 +189,11 @@ but it might be easier to use Datomic directly when you first learn Datalog.
 
 Pick DataScript if you want the fastest possible query performance and do not
 have a huge amount of data. You can easily persist the write operations
-separately and use the fast in-memory index datastructure of DataScript then.
+separately and use the fast in-memory index data structure of DataScript then.
 Datahike also at the moment does not support ClojureScript anymore, although we
 plan to recover this functionality.
 
-## ClojureScript support
+## ClojureScript Support
 
 ClojureScript support is planned and work in progress. Please see [Roadmap](https://github.com/replikativ/datahike#roadmap).
 
@@ -227,35 +229,8 @@ project before exporting.
 
 Have a look at the [change log](./CHANGELOG.md) for recent updates.
 
-## Roadmap
 
-### 0.4.0
-
-- identity and access management
-- CRDT type schema support
-- fast redis backend support
-- query planner and optimizer
-- transaction monitoring
-
-### 0.5.0
-
-- optionally use core.async to handle storage IO
-- ClojureScript support both in the browser and on node
-
-### 0.6.0
-
-- support GC or eager deletion of fragments
-- use hitchhiker-tree synchronization for replication
-- run comprehensive query suite and compare to DataScript and Datomic
-- support anomaly errors (?)
-
-### 1.0.0
-
-- support optimistic write support through attributes with conflict resolution
-  (CRDT-like)
-- investigate https://github.com/usethesource/capsule for faster hh-tree durability
-
-## Commercial support
+## Commercial Support
 
 We are happy to provide commercial support with
 [lambdaforge](https://lambdaforge.io). If you are interested in a particular
