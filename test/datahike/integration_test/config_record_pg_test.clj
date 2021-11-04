@@ -1,9 +1,10 @@
 (ns datahike.integration-test.config-record-pg-test
   (:require [clojure.test :refer :all]
-            [datahike-postgres.core]
+            [datahike-jdbc.core]
             [datahike.integration-test :as it]))
 
-(def config {:store {:backend :pg
+(def config {:store {:backend :jdbc
+                     :dbtype "postgresql"
                      :host "localhost"
                      :port 5432
                      :user "alice"

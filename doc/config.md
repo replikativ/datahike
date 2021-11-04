@@ -79,7 +79,7 @@ At the moment we support two different backends from within Datahike: [in-memory
 - `host`: PostgreSQL instance host
 - `port`: PostgreSQL instance port
 - `dbname`: name of the PostgreSQL database, must be present in the instance
-- example: `{:store {:backend :pg :host "localhost" :port 5432 :username "alice" :password "foobar" :dbname "pg_example"}}`
+- example: `{:store {:backend :jdbc :dbtype "postgresql" :host "localhost" :port 5432 :username "alice" :password "foobar" :dbname "pg_example"}}`
 - uri example: (deprecated) `datahike:pg://alice:foobar@localhost:5432/pg_example`
 
 ## Name
