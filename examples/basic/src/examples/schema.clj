@@ -40,7 +40,9 @@
              {:db/ident :language/rust}])
 
 ;; define configuration
-(def cfg {:store {:backend :mem :id "schema-intro"} :initial-tx schema})
+(def cfg {:store {:backend :mem
+                  :id "schema-intro"}
+          :schema-flexibility :write})
 
 ;; cleanup previous database
 (d/delete-database cfg)
@@ -50,6 +52,10 @@
 
 ;; connect to it
 (def conn (d/connect cfg))
+
+;; add the schema
+
+(d/transact conn schema)
 
 ;; let's insert our first user
 (d/transact conn [{:contributor/name "alice" :contributor/email "alice@exam.ple"}])
@@ -70,13 +76,14 @@
 
 ;; try to add something completely not defined in the schema
 (d/transact conn [{:something "different"}])
-;; => error occurs
+;; => Exception shows missing schema definition
 
 ;; try to add wrong contributor values
 (d/transact conn [{:contributor/email :alice}])
+;; => Exception shows what value is expected
 
-;; add another contributor
-(d/transact conn [{:contributor/name "bob" :contributor/email "bob@ac.me"}])
+;; add another contributor by using a the alternative transaction schema that expects a hash map with tx-data attribute
+(d/transact conn {:tx-data [{:contributor/name "bob" :contributor/email "bob@ac.me"}]})
 
 (d/q find-name-email @conn)
 
@@ -92,6 +99,7 @@
 
 ;; bob is not related anymore as index
 (d/pull @conn '[*] [:contributor/name "bob"])
+;; will give an exception
 
 ;; create a repository, with refs from uniques, and an ident as enum
 (d/transact conn [{:repository/name "top secret"
@@ -121,7 +129,9 @@
 
 ;; let's create another database that can hold any arbitrary data
 
-(def cfg {:store {:backend :mem :id "schemaless"} :schema-flexibility :read})
+(def cfg {:store {:backend :mem
+                  :id "schemaless"}
+          :schema-flexibility :read})
 
 (d/create-database cfg)
 
