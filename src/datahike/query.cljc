@@ -31,7 +31,9 @@
 
 (def ^:const lru-cache-size 100)
 
-(declare -collect -resolve-clause resolve-clause direct-getter-fn)
+(declare -collect -resolve-clause resolve-clause direct-getter-fn q)
+
+(defmulti q (fn [query & args] (type query)))
 
 ;; Records
 
@@ -322,7 +324,10 @@
                 'str        str, 'pr-str pr-str, 'print-str print-str, 'println-str println-str, 'prn-str prn-str, 'subs subs
                 're-find    re-find, 're-matches re-matches, 're-seq re-seq
                 '-differ?   -differ?, 'get-else -get-else, 'get-some -get-some, 'missing? -missing?, 'ground identity, 'before? lesser?, 'after? greater?
-                'tuple vector, 'untuple identity})
+                'tuple vector, 'untuple identity
+                'q q
+                'datahike.query/q q
+                #'datahike.query/q q})
 
 (def built-in-aggregates
   (letfn [(sum [coll] (reduce + 0 coll))
@@ -1097,25 +1102,27 @@
   (->> (-collect context symbols)
        (map vec)))
 
-(defmulti q (fn [query & args] (type query)))
-
 (defmethod q clojure.lang.LazySeq [query & args]
   (q {:query query :args args}))
 
 (defmethod q clojure.lang.PersistentVector [query & args]
   (q {:query query :args args}))
 
+(defmethod q clojure.lang.PersistentList [query & args]
+  (q {:query query :args args}))
+
 (defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
-  (let [query (if (contains? query-map :query) (:query query-map) query-map)
-        query (if (string? query) (edn/read-string query) query)
-        args (if (contains? query-map :args) (:args query-map) inputs)
-        parsed-q (memoized-parse-query query)
-        find (:qfind parsed-q)
+  (let [query         (if (contains? query-map :query) (:query query-map) query-map)
+        query         (if (string? query) (edn/read-string query) query)
+        query         (if (= 'quote (first query)) (second query) query)
+        args          (if (contains? query-map :args) (:args query-map) inputs)
+        parsed-q      (memoized-parse-query query)
+        find          (:qfind parsed-q)
         find-elements (dpip/find-elements find)
-        find-vars (dpi/find-vars find)
-        result-arity (count find-elements)
-        with (:qwith parsed-q)
-        returnmaps (:qreturnmaps parsed-q)
+        find-vars     (dpi/find-vars find)
+        result-arity  (count find-elements)
+        with          (:qwith parsed-q)
+        returnmaps    (:qreturnmaps parsed-q)
         ;; TODO utilize parser
         all-vars      (concat find-vars (map :symbol with))
         query         (cond-> query
