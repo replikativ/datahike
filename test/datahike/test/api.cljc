@@ -745,3 +745,13 @@
         (test-schema (assoc base-cfg :attribute-refs? true)))
       (testing "Empty database with read flexibility and no attribute refs"
         (test-schema (assoc base-cfg :schema-flexibility :read))))))
+
+(deftest test-db-meta
+  (let [cfg {:store              {:backend :mem
+                                  :id      "api-db-schema-test"}
+             :keep-history?      false
+             :attribute-refs?    false
+             :schema-flexibility :write}
+        conn (utils/setup-db cfg)]
+    (is (= #{:datahike/version :datahike/id :datahike/created-at :konserve/version :hitchhiker.tree/version}
+           (-> @conn :meta keys set)))))

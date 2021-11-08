@@ -18,7 +18,7 @@
 
            :dev {:extra-paths ["dev" "benchmark/src"]
                  :extra-deps {org.clojure/tools.namespace {:mvn/version "0.2.11"}
-                              cider/cider-nrepl           {:mvn/version "0.26.0"}
+                              cider/cider-nrepl           {:mvn/version "0.27.2"}
                               nrepl/nrepl                 {:mvn/version "0.8.3"}
                               clj-http/clj-http           {:mvn/version "3.11.0"}
                               org.clojure/tools.cli       {:mvn/version "1.0.206"}
