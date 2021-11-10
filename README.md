@@ -1,4 +1,4 @@
-<p align="center>
+<p align="center">
   <a align="center" href="https://datahike.io" target="_blank">
     <img alt="Datahike" src="./doc/assets/datahike-logo.svg">
   </a>
