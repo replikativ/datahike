@@ -3,7 +3,6 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
-   [datahike.db :as db]
    [datahike.test.core :as tdc])
   (:import [java.util UUID Date])
   #?(:clj
@@ -44,6 +43,24 @@
              #{[1 :age 15]
                [2 :height 240]
                [3 :age 37]})))
+
+    (testing "q"
+      (is (= #{[1 "Ivan"]}
+             (d/q '[:find ?e ?n
+                    :where
+                    [(q '[:find (min ?age) :where [_ :age ?age]] $) [[?a]]]
+                    [?e :age ?a]
+                    [?e :name ?n]]
+                  db))))
+
+    (testing "q without quotes"
+      (is (= #{[1 "Ivan"]}
+             (d/q '[:find ?e ?n
+                    :where
+                    [(q [:find (min ?age) :where [_ :age ?age]] $) [[?a]]]
+                    [?e :age ?a]
+                    [?e :name ?n]]
+                  db))))
 
     (testing "missing?"
       (is (= (d/q '[:find ?e ?age
@@ -439,3 +456,4 @@
                             ['?e3 :married? '?a3]
                             ['(>= ?a1 ?a2 ?a3)]])
                      db)))))))
+
