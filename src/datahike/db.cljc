@@ -9,7 +9,7 @@
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    [datahike.constants :as c :refer [ue0 e0 tx0 utx0 emax txmax system-schema]]
-   [datahike.tools :refer [get-time case-tree raise]]
+   [datahike.tools :refer [get-time case-tree raise] :as tools]
    [datahike.schema :as ds]
    [datahike.lru :refer [lru-datom-cache-factory]]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
@@ -201,7 +201,7 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map meta]
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -957,6 +957,7 @@
         :system-entities system-entities
         :ref-ident-map ref-ident-map
         :ident-ref-map ident-ref-map
+        :meta (tools/meta-data)
         :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt (di/empty-index index :eavt index-config)
@@ -1013,6 +1014,7 @@
                       :op-count op-count
                       :hash (hash-datoms datoms)
                       :system-entities system-entities
+                      :meta (tools/meta-data)
                       :ref-ident-map ref-ident-map
                       :ident-ref-map ident-ref-map}
                      (when keep-history?
