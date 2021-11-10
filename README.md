@@ -1,6 +1,6 @@
 <p align="center">
   <a align="center" href="https://datahike.io" target="_blank">
-    <img alt="Datahike" src="./doc/assets/datahike-logo.svg">
+    <img alt="Datahike" src="./doc/assets/datahike-logo.svg" height="128em">
   </a>
 </p>
 <p align="center">
