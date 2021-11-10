@@ -1,6 +1,6 @@
-<h1 align="center">
-    Datahike
-</h1>
+<a align="center" href="https://datahike.io" target="_blank">
+  <img align="center" alt="Datahike" src="./doc/assets/datahike-logo.svg">
+</a>
 <p align="center">
 <a href="https://discord.com/invite/kEBzMvb"><img src="https://img.shields.io/discord/735146089241509909?label=discord&logo=Discord"/></a>
 <a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://badgen.net/badge/-/slack?icon=slack&label"/></a>
@@ -9,7 +9,7 @@
 <a href="https://github.com/replikativ/datahike/tree/development"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/development"/></a>
 </p>
 
-Datahike is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
+[Datahike](https://datahike.io) is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
 powered by an efficient Datalog query engine. This project started as a port of
 [DataScript](https://github.com/tonsky/DataScript) to the
 [hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
