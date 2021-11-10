@@ -1,6 +1,8 @@
-<a align="center" href="https://datahike.io" target="_blank">
-  <img align="center" alt="Datahike" src="./doc/assets/datahike-logo.svg">
-</a>
+<p align="center>
+  <a align="center" href="https://datahike.io" target="_blank">
+    <img alt="Datahike" src="./doc/assets/datahike-logo.svg">
+  </a>
+</p>
 <p align="center">
 <a href="https://discord.com/invite/kEBzMvb"><img src="https://img.shields.io/discord/735146089241509909?label=discord&logo=Discord"/></a>
 <a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://badgen.net/badge/-/slack?icon=slack&label"/></a>
