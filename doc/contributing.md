@@ -66,37 +66,6 @@ Clojars needs to be stored as an environment variable on CircleCI. There needs t
 variable `CLOJARS_USERNAME` set to your Clojars username and a variable `CLOJARS_PASSWORD` set
 to the token that permits to deploy on clojars.
 
-### Git tags
-It is nice to have git tags for releases, especially for non-snapshot releases. Therefore,
-you can use following small hook that must be copied into the folder `.git/hooks/` as
-`post-commit` and a duplicate as `post-merge`. It creates annotated tags when committing
-on or merging into master.
-
-Snapshots should not be tagged because it might be necessary to publish multiple
-snapshots and then you would have to force-push them.
-
-```bash
-#!/bin/bash
-
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-REMOTE=$(git config --get remote.origin.url)
-TAG=$(xmllint --xpath '/*[local-name()="project"]/*[local-name()="version"]/text()' pom.xml)
-
-# tag current release
-if [[ ${BRANCH} == master ]] \
-    && [[ ${REMOTE} =~ "replikativ/datahike.git" ]] \
-    && [[ ! ${TAG} =~ "-SNAPSHOT" ]]; then
-    echo "tagging release ${TAG}"
-    git tag -a -m "${TAG}" ${TAG}
-fi
-```
-
-For this to work you need to set following option at the [appropriate level](https://www.git-scm.com/book/en/v2/Customizing-Git-Git-Configuration#_git_config):
-```
-git config push.followTags true
-```
-Only then the tag will be pushed without a second push with the `--tags` option.
-
 ### The release process step by step
 - Make sure the versions of dependencies declared in deps.edn and pom.xml match.
 - Set the new version in pom.xml.
@@ -114,4 +83,4 @@ Only then the tag will be pushed without a second push with the `--tags` option.
 - Once approved, merge the PR to master.
   + This will deploy the new release to clojars.
 - Test the new jar (e.g. using in a real project).
-- Create a new release/tag on github https://github.com/replikativ/datahike/releases
+- Create a new release/tag on GitHub https://github.com/replikativ/datahike/releases

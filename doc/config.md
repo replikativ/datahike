@@ -83,7 +83,7 @@ DATAHIKE_STORE_CONFIG='{:path "/tmp/file-example"}'
 #### JDBC
 
 - `<backend>`: `jdbc`
-- `dbtype`: [JDBC supported database](https://docs.oracle.com/cd/E19226-01/820-7688/gawms/index.html)
+- `dbtype`: [JDBC supported database](https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.2.737/doc/getting-started)
 - `user`: PostgreSQL user
 - `password`: password for PostgreSQL user
 - `dbname`: name of the PostgreSQL database
