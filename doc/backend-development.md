@@ -17,7 +17,7 @@ We provide a basic template for a backend implementation [here](https://github.c
 Following are bracketed text pieces defining placeholder values, you should replace as follows:
 - **backendname** surprisingly should be the name of your backend.
 - **backendID** should be a `keyword` to identify your backend on request. At this moment, datahike ships with backends identified by `:mem` and `:file`, so do not use those.
-- **indexID** should be a `keyword` identifying an index to be used as default for your backend. So far, you can only use `:datahike.index/hitchhiker-tree` for your backend. In the [future](roadmap.md#040), we will support `:datahike.index/persistent-set` as well though.
+- **indexID** should be a `keyword` identifying an index to be used as default for your backend. So far, you can only use `:datahike.index/hitchhiker-tree` for your backend. In the future, we will support `:datahike.index/persistent-set` as well though.
 - **configSpec** optional `clojure.spec` definition for configuration validation
 
 You may add any configuration attributes to the store configuration. Only `:backend` is mandatory which refers to **backendID**.

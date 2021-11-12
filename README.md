@@ -119,7 +119,6 @@ Refer to the docs for more information:
 - [differences to Datomic](./doc/datomic_differences.md)
 - [entity spec](./doc/entity_spec.md)
 - [logging and error handling](./doc/logging_and_error_handling.md)
-- [roadmap](./doc/roadmap.md)
 - [schema flexibility](./doc/schema.md)
 - [time variance](./doc/time_variance.md)
 
@@ -131,7 +130,7 @@ For simple examples have a look at the projects in the `examples` folder.
 - [Invoice creation](https://gitlab.com/replikativ/datahike-invoice)
   demonstrated at the [Dutch Clojure
   Meetup](https://www.meetup.com/de-DE/The-Dutch-Clojure-Meetup/events/trmqnpyxjbrb/).
-  
+
 ## Relationship to Datomic and DataScript
 
 Datahike provides similar functionality to [Datomic](http://Datomic.com) and can
@@ -228,6 +227,16 @@ yet, then just evaluate the `datahike.migrate` namespace manually in your
 project before exporting.
 
 Have a look at the [change log](./CHANGELOG.md) for recent updates.
+
+## Roadmap and Participation
+
+Instead of providing a static roadmap, we have moved to working closely with the community to decide what will be worked on next in a dynamic and interactive way.
+
+How it works?
+
+Go to [Discussions](https://github.com/replikativ/datahike/discussions/categories/ideas) and upvote all the _ideas_ of features you would like to be added to Datahike. As soon as we have someone free to work on a new feature, we will address one with the most upvotes. 
+
+Of course, you can also propose ideas yourself - either by adding them to the Discussions or even by creating a pull request yourself. Please note thought that due to considerations about incompatibilities to earlier Datahike versions it might sometimes take a bit more time until your PR is integrated.
 
 
 ## Commercial Support
