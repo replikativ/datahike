@@ -705,7 +705,6 @@
                       (prod-rel production (empty-rel binding))
                       (reduce sum-rel rels)))
                   (prod-rel (assoc production :tuples []) (empty-rel binding)))
-
         idx->const (reduce-kv (fn [m k v]
                                 (if-let [c (k (:consts context))]
                                   (assoc m v c)     ;; different value at v for each tupple
@@ -736,17 +735,24 @@
 (defn expand-rule [clause context used-args]
   (let [[rule & call-args] clause
         seqid (swap! rule-seqid inc)
-        branches (get (:rules context) rule)]
-    (for [branch branches
-          :let [[[_ & rule-args] & clauses] branch
-                replacements (zipmap rule-args call-args)]]
-      (walk/postwalk
-       #(if (free-var? %)
-          (db/some-of
-           (replacements %)
-           (symbol (str (name %) "__auto__" seqid)))
-          %)
-       clauses))))
+        branches (get (:rules context) rule)
+        call-args-new (map #(if (free-var? %) % (symbol (str "?__auto__" %2)))
+                           call-args
+                           (range))
+        consts (->> (map vector call-args-new call-args)
+                    (filter (fn [[new old]] (not= new old)))
+                    (into {}))]
+    [(for [branch branches
+           :let [[[_ & rule-args] & clauses] branch
+                 replacements (zipmap rule-args call-args-new)]]
+       (walk/postwalk
+        #(if (free-var? %)
+           (db/some-of
+            (replacements %)
+            (symbol (str (name %) "__auto__" seqid)))
+           %)
+        clauses))
+     consts]))
 
 (defn remove-pairs [xs ys]
   (let [pairs (->> (map vector xs ys)
@@ -819,11 +825,11 @@
                     ;; need to expand rule to branches
                     (let [used-args (assoc (:used-args frame) rule
                                            (conj (get (:used-args frame) rule []) call-args))
-                          branches (expand-rule rule-clause context used-args)]
+                          [branches rule-consts] (expand-rule rule-clause context used-args)]
                       (recur (concat
                               (for [branch branches]
                                 {:prefix-clauses prefix-clauses
-                                 :prefix-context prefix-context
+                                 :prefix-context (update prefix-context :consts merge rule-consts)
                                  :clauses (concatv branch next-clauses)
                                  :used-args used-args
                                  :pending-guards pending-gs})
