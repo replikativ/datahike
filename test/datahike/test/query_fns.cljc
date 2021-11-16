@@ -87,7 +87,13 @@
                     :in    [?x ...]
                     :where [(count ?x) ?c]]
                   ["a" "abc"])
-             #{["a" 1] ["abc" 3]})))
+             #{["a" 1] ["abc" 3]}))
+
+      (is (= #{[:age] [:height] [:parent]}
+             (d/q '[:find ?a
+                    :where
+                    [?e ?a ?v]
+                    [(int? ?v)]] db))))
 
     (testing "Function binding filtered by input argument"
       (is (= (d/q '[:find  ?x
