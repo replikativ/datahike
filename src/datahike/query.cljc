@@ -327,7 +327,8 @@
                 'tuple vector, 'untuple identity
                 'q q
                 'datahike.query/q q
-                #'datahike.query/q q})
+                #'datahike.query/q q
+                'int? int?})
 
 (def built-in-aggregates
   (letfn [(sum [coll] (reduce + 0 coll))
