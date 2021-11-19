@@ -102,6 +102,7 @@
    :attribute-refs? false
    :index :datahike.index/hitchhiker-tree
    :cache-size 100000
+   :sync? true
    :index-config {:index-b-factor       c/default-index-b-factor
                   :index-log-size       c/default-index-log-size
                   :index-data-node-size c/default-index-data-node-size}})
@@ -135,6 +136,7 @@
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
+                 :sync? (bool-from-env :datahike-connection-sync true)
                  :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
                  :cache-size (:cache-size env 100000)
                  :index-config {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)

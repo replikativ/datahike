@@ -20,45 +20,87 @@
 
 (s/def ::connection #(instance? clojure.lang.Atom %))
 
+(defn sync-db [connection]
+  (let [db @connection
+        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx op-count hash meta]} db
+            store (:store @connection)
+            backend (kons/->KonserveBackend store)
+            eavt-flushed (di/-flush eavt backend)
+            aevt-flushed (di/-flush aevt backend)
+            avet-flushed (di/-flush avet backend)
+            keep-history? (:keep-history? config)
+            temporal-eavt-flushed (when keep-history? (di/-flush temporal-eavt backend))
+            temporal-aevt-flushed (when keep-history? (di/-flush temporal-aevt backend))
+            temporal-avet-flushed (when keep-history? (di/-flush temporal-avet backend))]
+        (<?? S (k/assoc-in store [:db]
+                           (merge
+                            {:schema schema
+                             :rschema rschema
+                             :system-entities system-entities
+                             :ident-ref-map ident-ref-map
+                             :ref-ident-map ref-ident-map
+                             :config config
+                             :meta meta
+                             :hash hash
+                             :max-tx max-tx
+                             :op-count op-count
+                             :eavt-key eavt-flushed
+                             :aevt-key aevt-flushed
+                             :avet-key avet-flushed}
+                            (when keep-history?
+                              {:temporal-eavt-key temporal-eavt-flushed
+                               :temporal-aevt-key temporal-aevt-flushed
+                               :temporal-avet-key temporal-avet-flushed}))))
+        (reset! connection (assoc db
+                                  :eavt eavt-flushed
+                                  :aevt aevt-flushed
+                                  :avet avet-flushed
+                                  :temporal-eavt temporal-eavt-flushed
+                                  :temporal-aevt temporal-aevt-flushed
+                                  :temporal-avet temporal-avet-flushed))
+        true))
+
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx max-eid op-count hash meta]} db-after
-        store (:store @connection)
-        backend (kons/->KonserveBackend store)
-        eavt-flushed (di/-flush eavt backend)
-        aevt-flushed (di/-flush aevt backend)
-        avet-flushed (di/-flush avet backend)
-        keep-history? (:keep-history? config)
-        temporal-eavt-flushed (when keep-history? (di/-flush temporal-eavt backend))
-        temporal-aevt-flushed (when keep-history? (di/-flush temporal-aevt backend))
-        temporal-avet-flushed (when keep-history? (di/-flush temporal-avet backend))]
-    (<?? S (k/assoc-in store [:db]
-                       (merge
-                        {:schema schema
-                         :rschema rschema
-                         :system-entities system-entities
-                         :ident-ref-map ident-ref-map
-                         :ref-ident-map ref-ident-map
-                         :config config
-                         :meta meta
-                         :hash hash
-                         :max-tx max-tx
-                         :max-eid max-eid
-                         :op-count op-count
-                         :eavt-key eavt-flushed
-                         :aevt-key aevt-flushed
-                         :avet-key avet-flushed}
-                        (when keep-history?
-                          {:temporal-eavt-key temporal-eavt-flushed
-                           :temporal-aevt-key temporal-aevt-flushed
-                           :temporal-avet-key temporal-avet-flushed}))))
-    (reset! connection (assoc db-after
-                              :eavt eavt-flushed
-                              :aevt aevt-flushed
-                              :avet avet-flushed
-                              :temporal-eavt temporal-eavt-flushed
-                              :temporal-aevt temporal-aevt-flushed
-                              :temporal-avet temporal-avet-flushed))
+        {:keys [sync?]} (meta connection)]
+    (when sync?
+      (let [{:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx max-eid op-count hash meta]} db-after
+            store (:store @connection)
+            backend (kons/->KonserveBackend store)
+            eavt-flushed (di/-flush eavt backend)
+            aevt-flushed (di/-flush aevt backend)
+            avet-flushed (di/-flush avet backend)
+            keep-history? (:keep-history? config)
+            temporal-eavt-flushed (when keep-history? (di/-flush temporal-eavt backend))
+            temporal-aevt-flushed (when keep-history? (di/-flush temporal-aevt backend))
+            temporal-avet-flushed (when keep-history? (di/-flush temporal-avet backend))]
+        (<?? S (k/assoc-in store [:db]
+                           (merge
+                            {:schema schema
+                             :rschema rschema
+                             :system-entities system-entities
+                             :ident-ref-map ident-ref-map
+                             :ref-ident-map ref-ident-map
+                             :config config
+                             :meta meta
+                             :hash hash
+                             :max-tx max-tx
+                             :max-eid max-eid
+                             :op-count op-count
+                             :eavt-key eavt-flushed
+                             :aevt-key aevt-flushed
+                             :avet-key avet-flushed}
+                            (when keep-history?
+                              {:temporal-eavt-key temporal-eavt-flushed
+                               :temporal-aevt-key temporal-aevt-flushed
+                               :temporal-avet-key temporal-avet-flushed}))))
+        (reset! connection (assoc db-after
+                                  :eavt eavt-flushed
+                                  :aevt aevt-flushed
+                                  :avet avet-flushed
+                                  :temporal-eavt temporal-eavt-flushed
+                                  :temporal-aevt temporal-aevt-flushed
+                                  :temporal-avet temporal-avet-flushed))))
     tx-report))
 
 (defn transact!
@@ -137,7 +179,7 @@
           false))))
 
   (-connect [config]
-    (let [config (dc/load-config config)
+    (let [{:keys [sync?] :as config} (dc/load-config config)
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))
           store-config (:store config)
           raw-store (ds/connect-store store-config)
@@ -176,7 +218,8 @@
                                       :system-entities system-entities
                                       :ident-ref-map ident-ref-map
                                       :ref-ident-map ref-ident-map
-                                      :store store))]
+                                      :store store)
+                               {:sync? sync?})]
       (swap! conn assoc :transactor (t/create-transactor (:transactor config) conn update-and-flush-db))
       conn))
 

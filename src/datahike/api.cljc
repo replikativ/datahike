@@ -793,3 +793,18 @@
          (assoc m k attrs))))
    {}
    (db/-rschema db)))
+
+(defn ^{:arglists '([conn])}
+  stop-sync
+  [conn]
+  (alter-meta! conn assoc-in [:sync?] false))
+
+(defn ^{:arglists '([conn])}
+  start-sync
+  [conn]
+  (alter-meta! conn assoc-in [:sync?] true))
+
+(defn ^{:arglists '([conn])}
+  sync!
+  [conn]
+  (dc/sync-db conn))

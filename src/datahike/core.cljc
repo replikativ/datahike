@@ -188,8 +188,11 @@
 
 (defn conn-from-db
   "Creates a mutable reference to a given immutable database. See [[create-conn]]."
-  [db]
-  (atom db :meta {:listeners (atom {})}))
+  ([db]
+   (conn-from-db nil))
+  ([db opts]
+   (atom db :meta (merge opts
+                         {:listeners (atom {})}))))
 
 (defn conn-from-datoms
   "Creates an empty DB and a mutable reference to it. See [[create-conn]]."
