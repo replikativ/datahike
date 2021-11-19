@@ -26,6 +26,10 @@
 
 (s/def ::store map?)
 
+(s/def :connection/sync? boolean?)
+
+(s/def ::connection (s/keys :opt-un [:connection/sync?]))
+
 (s/def :datahike/config (s/keys :req-un [:datahike/store]
                                 :opt-un [::index
                                          ::index-config
@@ -33,6 +37,7 @@
                                          ::schema-flexibility
                                          ::attribute-refs?
                                          ::initial-tx
+                                         ::connection 
                                          ::name]))
 
 (s/def :deprecated/schema-on-read boolean?)
