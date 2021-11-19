@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.replikativ</groupId>
+  <artifactId>datahike</artifactId>
+  <packaging>jar</packaging>
+  <name>datahike</name>
+  <description>A durable datalog implementation adaptable for distribution.</description>
+  <url>https://datahike.io</url>
+  <licenses>
+    <license>
+      <name>Eclipse</name>
+      <url>http://www.eclipse.org/legal/epl-v10.html</url>
+    </license>
+  </licenses>
+  <scm>
+    <connection>scm:git:git@github.com:replikativ/datahike.git</connection>
+    <developerConnection>scm:git:git@github.com/replikativ/datahike.git</developerConnection>
+    <url>https://github.com/replikativ/datahike</url>
+  </scm>
+</project>
