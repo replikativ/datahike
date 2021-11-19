@@ -2,23 +2,23 @@
 
 ## 0.4.0
 
+- Add attribute references (#211)
 - Fix avet upsert (#308)
 - Extent benchmarks
 - Add byte array support
 - Add search cache
 - Fix lookup search (#335)
 - Fix comparators (#328)
-- Add search cache
+- Add search cache (#294)
 - Allow schema attribute updates (thanks to @MrEbbinghaus)
 - Fix hitchhiker-tree handling (#358)
 - Improve pagination performance (#294)
-- Improve upsert performance
-- Add attribute references
+- Improve upsert performance 
 - Fix history duplicates (#363)
 - Fix cardinality many duplicates (#364)
 - Fix attribute translations
 - Add config for index creation
-- Remove uniqueness constraint for :txInstant
+- Remove uniqueness constraint for :db/txInstant
 - Fix scalar binding for function output
 - Fix equivalent datom input (#932)
 - Fix load-entities bugs (#398, #400)
@@ -26,6 +26,7 @@
 - Clean up code examples (#409)
 - Add q as built-in (#412)
 - Add meta data (#407)
+- Add int? as built-in (#435)
 
 ## 0.3.6
 

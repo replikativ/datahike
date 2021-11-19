@@ -147,7 +147,6 @@
 
 ;; ----------------------------------------------------------------------------
 
-
 (declare hash-datoms equiv-db empty-db resolve-datom validate-attr validate-attr-ident components->pattern indexing? no-history? multival? search-current-indices search-temporal-indices)
 #?(:cljs (declare pr-db))
 
@@ -1446,10 +1445,8 @@
           (throw #?(:clj (ex-info err-msg err-map)
                     :cljs (error err-msg err-map))))))))
 
-
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
-
 
 (defn- with-datom [db ^Datom datom]
   (validate-datom db datom)
@@ -1618,7 +1615,6 @@
       entity)
      (check-upsert-conflict entity)
      first)))                                         ;; getting eid from acc
-
 
 ;; multivals/reverse can be specified as coll or as a single value, trying to guess
 (defn- maybe-wrap-multival [db a-ident vs]

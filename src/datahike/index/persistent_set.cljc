@@ -37,9 +37,7 @@
 (defn -remove [set datom index-type]
   (set/disj set datom (index-type->cmp-quick index-type)))
 
-
 ;; Functions defined in multimethods in index.cljc
-
 
 (defn empty-set [index-type]
   (set/sorted-set-by (index-type->cmp index-type)))

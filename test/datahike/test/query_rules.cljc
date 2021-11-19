@@ -159,7 +159,6 @@
 
 ;; https://github.com/tonsky/datahike/issues/218
 
-
 (deftest test-false-arguments
   (let [db    (d/db-with (d/empty-db)
                          [[:db/add 1 :attr true]

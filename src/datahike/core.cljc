@@ -15,9 +15,7 @@
 
 (def ^:const ^:no-doc tx0 dc/tx0)
 
-
 ; Entities
-
 
 (def ^{:arglists '([db eid])}
 
@@ -48,9 +46,7 @@
              ```"}
   touch de/touch)
 
-
 ; Pull
-
 
 (def ^{:arglists '([db selector eid])}
   pull dp/pull)
@@ -58,16 +54,12 @@
 (def ^{:arglists '([db selector eids])}
   pull-many dp/pull-many)
 
-
 ; Query
-
 
 (def ^{:arglists '([query & inputs])}
   q dq/q)
 
-
 ; Creating DB
-
 
 (def ^{:arglists '([] [schema] [schema config])
        :doc      "Creates an empty database with an optional schema and configuration.
@@ -108,9 +100,7 @@
              Used internally in db (de)serialization. See also [[datom]]."}
   init-db db/init-db)
 
-
 ; Filtered db
-
 
 (defn is-filtered
   "Returns `true` if this database was filtered using [[filter]], `false` otherwise."
@@ -127,9 +117,7 @@
       (FilteredDB. orig-db #(and (orig-pred %) (pred orig-db %))))
     (FilteredDB. db #(pred db %))))
 
-
 ; Changing DB
-
 
 (defn with
   "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
@@ -160,9 +148,7 @@
   {:pre [(db/db? db)]}
   (:db-after (with db tx-data)))
 
-
 ; Index lookups
-
 
 (defn datoms
   ([db index] {:pre [(db/db? db)]} (db/-datoms db index []))
@@ -191,9 +177,7 @@
   {:pre [(db/db? db)]}
   (db/-index-range db attr start end))
 
-
 ;; Conn
-
 
 (defn conn?
   "Returns `true` if this is a connection to a DataScript db, `false` otherwise."
@@ -289,7 +273,6 @@
 
 ;; Datomic compatibility layer
 
-
 (def ^:private last-tempid (atom -1000000))
 
 (defn tempid
@@ -305,9 +288,7 @@
      :db/current-tx
      x)))
 
-
 ;; Data Readers
-
 
 (def ^{:doc "Data readers for EDN readers. In CLJS they’re registered automatically. In CLJ, if `data_readers.clj` do not work, you can always do
 

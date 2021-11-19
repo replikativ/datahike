@@ -264,9 +264,7 @@
 (defn array-rel [symbols coll]
   (->ArrayRelation (zipmap symbols (range)) coll))
 
-
 ;;; CollRelation
-
 
 (deftype CollRelation [offset-map coll]
   IRelation
@@ -312,7 +310,6 @@
    (defmethod print-method CollRelation [rel w]
      (pr-rel rel w)))
 
-
 ;;; ProdRelation
 
 ;; (deftype ProdRelation [rel1 rel2]  
@@ -353,9 +350,7 @@
 
 ;; (def prod-rel ->ProdRelation)
 
-
 ;;; SingletonRelation
-
 
 (deftype SingletonRelation []
   IRelation
@@ -405,9 +400,7 @@
 (defn product-all [rels]
   (reduce product rels)) ;; TODO check for empty rels
 
-
 ;; hash-join
-
 
 (defn- key-fn [rel syms]
   (let [arity (count syms)]
@@ -462,9 +455,7 @@
                            (fast-arr))]
     (array-rel full-syms (persistent! coll))))
 
-
 ;; Bindings
-
 
 (defn- bind! [tuples binding source indexes]
   (condp instance? binding
@@ -542,9 +533,7 @@
            {:error :query/binding, :binding (mapv dpi/get-source bindings)}))
   (reduce resolve-in context (zip bindings values)))
 
-
 ;;; Resolution
-
 
 (defprotocol IClause
   (-resolve-clause [clause context]))
@@ -558,9 +547,7 @@
         (raise "Source " symbol " is not defined"
                {:error :query/where, :symbol symbol}))))
 
-
 ;; Patterns
-
 
 (defn resolve-pattern-db [db clause]
   ;; TODO optimize with bound attrs min/max values here
@@ -903,9 +890,7 @@
                             (concat xfs))]
        (into acc (apply comp xfs) [specimen])))))
 
-
 ;; Query
-
 
 (def query-cache (volatile! (datahike.lru/lru lru-cache-size)))
 

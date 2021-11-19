@@ -25,9 +25,7 @@
                    [java.lang.reflect Method]
                    [java.util Date])))
 
-
 ;; ----------------------------------------------------------------------------
-
 
 (def ^:const lru-cache-size 100)
 
@@ -46,9 +44,7 @@
 ;; or [ (Datom. 2 "Oleg" 1 55) ... ]
 (defrecord Relation [attrs tuples])
 
-
 ;; Utilities
-
 
 (defn single [coll]
   (assert (nil? (next coll)) "Expected single element")
@@ -167,9 +163,7 @@
                   acc (:tuples rel2)))
         (transient []) (:tuples rel1)))))))
 
-
 ;; built-ins
-
 
 (defn- translate-for [db a]
   (if (and (-> db db/-config :attribute-refs?) (keyword? a))
