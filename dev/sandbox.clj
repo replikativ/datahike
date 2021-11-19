@@ -16,6 +16,7 @@
                 :db/valueType   :db.type/long}])
 
   (def cfg {:store {:backend :mem :id "sandbox"}
+            :connection {:sync? true}
             :keep-history? true
             :schema-flexibility :write
             :attribute-refs? false})
@@ -58,11 +59,5 @@
 
   (meta conn)
 
-
-  (require '[datahike.core :as dc])
-
-  (let [conn (dc/conn-from-db @conn {:sync? true})])
-
-
-
   )
+

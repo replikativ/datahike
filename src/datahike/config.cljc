@@ -1,12 +1,15 @@
 (ns ^:no-doc datahike.config
   (:require [clojure.edn :as edn]
             [clojure.spec.alpha :as s]
+            [clojure.walk :as walk]
             [zufall.core :as z]
             [environ.core :refer [env]]
             [datahike.tools :as tools]
             [datahike.store :as ds]
             [datahike.constants :as c])
-  (:import [java.net URI]))
+  (:import [java.lang Boolean Integer]
+           [java.net URI]
+           [java.util UUID]))
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
@@ -52,7 +55,7 @@
                         :path path
                         :host host
                         :port port
-                        :id (str (java.util.UUID/randomUUID))}
+                        :id (str (UUID/randomUUID))}
                    :level {:path path}
                    :file {:path path}))
    :index index
@@ -102,7 +105,7 @@
    :attribute-refs? false
    :index :datahike.index/hitchhiker-tree
    :cache-size 100000
-   :sync? true
+   :connection {:sync? true}
    :index-config {:index-b-factor       c/default-index-b-factor
                   :index-log-size       c/default-index-log-size
                   :index-data-node-size c/default-index-data-node-size}})
@@ -115,7 +118,7 @@
               (let [kvs (filter (comp not nil? second) x)]
                 (if (empty? kvs) nil (into {} kvs)))
               x))]
-    (clojure.walk/postwalk f m)))
+    (walk/postwalk f m)))
 
 (defn load-config
   "Load and validate configuration with defaults from the store."
@@ -136,7 +139,7 @@
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                 :sync? (bool-from-env :datahike-connection-sync true)
+                 :connection {:sync? (bool-from-env :datahike-connection-sync true)}
                  :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
                  :cache-size (:cache-size env 100000)
                  :index-config {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)
