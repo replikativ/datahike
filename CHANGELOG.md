@@ -4,7 +4,7 @@
 
 - Add attribute references (#211)
 - Fix avet upsert (#308)
-- Extent benchmarks
+- Extend benchmarks
 - Add byte array support
 - Add search cache
 - Fix lookup search (#335)
