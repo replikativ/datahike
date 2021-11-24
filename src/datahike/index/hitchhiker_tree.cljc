@@ -157,9 +157,7 @@
 
 (def -transient identity)
 
-
 ;; Functions used in multimethods defined in index.cljc
-
 
 (defn empty-tree
   "Create empty hitchhiker tree"

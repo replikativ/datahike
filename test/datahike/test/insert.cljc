@@ -8,13 +8,9 @@
 #?(:cljs
    (def Throwable js/Error))
 
-
-
-
 ;; Test that the second insertion of the same datom does not replace the initial one.
 ;; That is similar to Datomic's behaviour.
 ;; Note that the 'mem-set' backend does not have this semantics though.
-
 
 (defn duplicate-test [config test-tx-id?]
   (let [_      (d/create-database config)
