@@ -10,6 +10,7 @@
   (-seq [index])
   (-count [index])
   (-insert [index datom index-type op-count])
+  (-temporal-insert [index datom index-type op-count])
   (-upsert [index datom index-type op-count])
   (-temporal-upsert [index datom index-type op-count])
   (-remove [index datom index-type op-count])
@@ -28,6 +29,8 @@
     (dih/-count eavt-tree :eavt))
   (-insert [tree datom index-type op-count]
     (dih/-insert tree datom index-type op-count))
+  (-temporal-insert [tree datom index-type op-count]
+    (dih/-temporal-insert tree datom index-type op-count))
   (-upsert [tree datom index-type op-count]
     (dih/-upsert tree datom index-type op-count))
   (-temporal-upsert [tree datom index-type op-count]
@@ -53,6 +56,8 @@
     (dih/-count eavt-tree :eavt))
   (-insert [tree datom index-type op-count]
     (dih/-insert tree datom index-type op-count))
+  (-temporal-insert [index datom index-type op-count]
+    (dih/-temporal-insert index datom index-type op-count))
   (-upsert [tree datom index-type op-count]
     (dih/-upsert tree datom index-type op-count))
   (-temporal-upsert [tree datom index-type op-count]
@@ -78,6 +83,8 @@
     (dip/-count eavt-set))
   (-insert [set datom index-type op-count]
     (dip/-insert set datom index-type))
+  (-temporal-insert [set datom index-type op-count]
+    (dip/-temporal-insert set datom index-type))
   (-upsert [set datom index-type op-count]
     (dip/-upsert set datom index-type))
   (-temporal-upsert [set datom index-type op-count]
@@ -95,22 +102,24 @@
 
 (defmulti empty-index
   "Creates empty index"
-  {:arglists '([index index-type])}
-  (fn [index index-type & opts] index))
+  {:arglists '([index index-type index-config])}
+  (fn [index _ _] index))
 
-(defmethod empty-index ::hitchhiker-tree [_ _]
-  (dih/empty-tree))
+(defmethod empty-index ::hitchhiker-tree
+  [_ _ {:keys [index-b-factor index-data-node-size index-log-size]}]
+  (dih/empty-tree index-b-factor index-data-node-size index-log-size))
 
-(defmethod empty-index ::persistent-set [_ index-type]
+(defmethod empty-index ::persistent-set
+  [_ index-type _]
   (dip/empty-set index-type))
 
 (defmulti init-index
   "Initialize index with datoms"
-  {:arglists '([index datoms indexed index-type op-count])}
-  (fn [index datoms indexed index-type op-count] index))
+  {:arglists '([index datoms index-type op-count index-config])}
+  (fn [index _ _ _ _] index))
 
-(defmethod init-index ::hitchhiker-tree [_ datoms _ index-type op-count]
-  (dih/init-tree datoms index-type op-count))
+(defmethod init-index ::hitchhiker-tree [_ datoms index-type op-count {:keys [index-b-factor index-data-node-size index-log-size]}]
+  (dih/init-tree datoms index-type op-count index-b-factor index-data-node-size index-log-size))
 
-(defmethod init-index ::persistent-set [_ datoms indexed index-type _]
-  (dip/init-set datoms indexed index-type))
+(defmethod init-index ::persistent-set [_ datoms index-type _ {:keys [indexed]}]
+  (dip/init-set datoms index-type indexed))

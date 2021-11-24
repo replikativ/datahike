@@ -9,9 +9,9 @@ clj -M:repl
 - `./bin/run-unittests` or `./bin/run-unittests --watch`
 - `./bin/run-integrationtests` (Docker needed)
 
-## Starting the benchmark
+## Starting the benchmarks
 ```
-TIMBRE_LEVEL=':info' clj -M:benchmark
+TIMBRE_LEVEL=':info' clj -M:benchmark run
 ```
 
 ## Building a Datahike jar
@@ -51,51 +51,20 @@ to Clojars.
 ### Release
 To create a release of Datahike and upload it to Clojars the version in `pom.xml`
 needs to be incremented at the respective position. Then you can commit and push the
-current version to GitHub. CircleCI will then unittest, integrationtest and build
+current version to GitHub. CircleCI will then run unit and integration tests and build
 this version of Datahike. When this succeeds it releases the new version to Clojars
 only if the version string does *not* end on *-SNAPSHOT* and the current branch is
 *master*.
 
-The deploy to Clojars will fail if this version is already present on Clojars. It is
+The deployment to Clojars will fail if this version is already present on Clojars. It is
 not possible to overwrite a release, only snapshots can be overwritten.
 
 ### CircleCI
-On CircleCI there will be run unittests, integrationtests, Datahike will be compiled and
+On CircleCI unit and integration tests are run. Afterwards, Datahike is being compiled and
 released. The official CircleCI jdk-8 image is used and the secret key to release to
 Clojars needs to be stored as an environment variable on CircleCI. There needs to be a
 variable `CLOJARS_USERNAME` set to your Clojars username and a variable `CLOJARS_PASSWORD` set
 to the token that permits to deploy on clojars.
-
-### Git tags
-It is nice to have git tags for releases, especially for non-snapshot releases. Therefor
-you can use following small hook that must be copied into the folder `.git/hooks/` as
-`post-commit` and a duplicate as `post-merge`. It creates annotated tags when committing
-on or merging into master.
-
-Snapshots should not be tagged because it might be necessary to publish multiple
-snapshots and then you would have to force-push them.
-
-```bash
-#!/bin/bash
-
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-REMOTE=$(git config --get remote.origin.url)
-TAG=$(xmllint --xpath '/*[local-name()="project"]/*[local-name()="version"]/text()' pom.xml)
-
-# tag current release
-if [[ ${BRANCH} == master ]] \
-    && [[ ${REMOTE} =~ "replikativ/datahike.git" ]] \
-    && [[ ! ${TAG} =~ "-SNAPSHOT" ]]; then
-    echo "tagging release ${TAG}"
-    git tag -a -m "${TAG}" ${TAG}
-fi
-```
-
-For this to work you need to set following option at the [appropriate level](https://www.git-scm.com/book/en/v2/Customizing-Git-Git-Configuration#_git_config):
-```
-git config push.followTags true
-```
-Only then the tag will be pushed without a second push with the `--tags` option.
 
 ### The release process step by step
 - Make sure the versions of dependencies declared in deps.edn and pom.xml match.
@@ -114,4 +83,4 @@ Only then the tag will be pushed without a second push with the `--tags` option.
 - Once approved, merge the PR to master.
   + This will deploy the new release to clojars.
 - Test the new jar (e.g. using in a real project).
-- Create a new release/tag on github https://github.com/replikativ/datahike/releases
+- Create a new release/tag on GitHub https://github.com/replikativ/datahike/releases

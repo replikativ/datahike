@@ -1,6 +1,8 @@
-<h1 align="center">
-    Datahike
-</h1>
+<p align="center">
+  <a align="center" href="https://datahike.io" target="_blank">
+    <img alt="Datahike" src="./doc/assets/datahike-logo.svg" height="128em">
+  </a>
+</p>
 <p align="center">
 <a href="https://discord.com/invite/kEBzMvb"><img src="https://img.shields.io/discord/735146089241509909?label=discord&logo=Discord"/></a>
 <a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://badgen.net/badge/-/slack?icon=slack&label"/></a>
@@ -9,7 +11,7 @@
 <a href="https://github.com/replikativ/datahike/tree/development"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/development"/></a>
 </p>
 
-Datahike is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
+[Datahike](https://datahike.io) is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
 powered by an efficient Datalog query engine. This project started as a port of
 [DataScript](https://github.com/tonsky/DataScript) to the
 [hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
@@ -27,6 +29,7 @@ You can find [API documentation on cljdoc](https://cljdoc.org/d/io.replikativ/da
 
 We presented Datahike also at meetups,for example at:
 
+- [2021 Bay Area Clojure meetup](https://www.youtube.com/watch?v=GG-S-xrDS5M)
 - [2019 scicloj online meetup](https://www.youtube.com/watch?v=Hjo4TEV81sQ).
 - [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
 - [2018 Dutch clojure meetup](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
@@ -98,7 +101,7 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
   (d/history @conn))
 ;; => #{[20] [25]}
 
-;; you might need to release the connection for specific stores like leveldb
+;; you might need to release the connection for specific stores
 (d/release conn)
 
 ;; clean up the database if it is not need any more
@@ -111,69 +114,24 @@ be ported to core.async to coordinate IO in a platform-neutral manner.
 
 Refer to the docs for more information:
 
-- [configuration](./doc/config.md)
-- [schema flexibility](./doc/schema.md)
-- [entity spec](./doc/entity_spec.md)
-- [time variance](./doc/time_variance.md)
-- [differences from Datomic](./doc/datomic_differences.md)
 - [backend development](./doc/backend-development.md)
-- [logging and error handling](./doc/logging_and_error_handling.md)
+- [benchmarking](./doc/benchmarking.md)
 - [contributing to Datahike](./doc/contributing.md)
+- [configuration](./doc/config.md)
+- [differences to Datomic](./doc/datomic_differences.md)
+- [entity spec](./doc/entity_spec.md)
+- [logging and error handling](./doc/logging_and_error_handling.md)
+- [schema flexibility](./doc/schema.md)
+- [time variance](./doc/time_variance.md)
 
 
 For simple examples have a look at the projects in the `examples` folder.
 
-## Example projects
+## Example Projects
 
 - [Invoice creation](https://gitlab.com/replikativ/datahike-invoice)
   demonstrated at the [Dutch Clojure
   Meetup](https://www.meetup.com/de-DE/The-Dutch-Clojure-Meetup/events/trmqnpyxjbrb/).
-  
-## Performance Measurement
-
-There is a small command line utility integrated in this project to measure the performance of our *in-memory* and our *file* backend.
-
-To run the benchmarks, navigate to the project folder in your terminal and run 
-
-```bash
-clj -A:benchmark
-```
-
-You will receive a list containing information about what has been tested and the mean of measured times in milliseconds as follows:
-
-```clojure
-[ ;; ...
- {:context
-  {:db
-   {:store {:backend :mem, :id "performance-hht"},
-    :schema-flexibility :write,
-    :keep-history? true,
-    :index :datahike.index/hitchhiker-tree},
-   :function :transaction,
-   :db-size 1000,
-   :tx-size 10},
-  :mean-time 5.0185512 ;; ms
- }
-  ;; ...
-]
-```
-
-The functions tested are
-- `connect` with keyword `:connection`
-  - `:dbsize` describes the number of datoms in the database the connection is being established to
-- `transact` with keyword `:transaction`
-  - `:txsize` describes the number of datoms inserted into the database
-  - `:dbsize` describes the number of datoms in the database before the transaction
-- `q` with keywords `:query1` and `:query2`
-  - `:dbsize` describes the number of datoms in the database
-  - queries are defined as following examples:
-```clojure
- (def query1 '[:find ?e :where [?e :s1 "string"]])
-
- (def query2 '[:find ?a :where [?e :s1 ?a]
-                               [?e :i1 42]])
-```
-
 
 ## Relationship to Datomic and DataScript
 
@@ -197,6 +155,7 @@ Some differences are:
   access the index datastructures (hitchhiker-tree) and leverage their
   persistent nature for replication. These internals are not guaranteed to stay
   stable, but provide useful insight into what is going on and can be optimized.
+- Datahike supports [GDPR](https://gdpr.eu/) compliance by allowing to [completely remove database entries](./doc/time_variance.md#data-purging).
 - Datomic has a REST interface and a Java API
 - Datomic provides timeouts
 
@@ -209,13 +168,13 @@ Datahike's query engine and most of its codebase come from
 DataScript, Datahike would not have been possible. Differences to Datomic with
 respect to the query engine are documented there.
 
-## When should I pick what?
+## When to Choose Datahike vs. Datomic vs. DataScript
 
 ### Datahike
 
 Pick Datahike if your app has modest requirements towards a typical durable
 database, e.g. a single machine and a few millions of entities at maximum.
-Similarly if you want to have an open-source solution and be able to study and
+Similarly, if you want to have an open-source solution and be able to study and
 tinker with the codebase of your database, Datahike provides a comparatively
 small and well composed codebase to tweak it to your needs. You should also
 always be able to migrate to Datomic later easily.
@@ -231,11 +190,11 @@ but it might be easier to use Datomic directly when you first learn Datalog.
 
 Pick DataScript if you want the fastest possible query performance and do not
 have a huge amount of data. You can easily persist the write operations
-separately and use the fast in-memory index datastructure of DataScript then.
+separately and use the fast in-memory index data structure of DataScript then.
 Datahike also at the moment does not support ClojureScript anymore, although we
 plan to recover this functionality.
 
-## ClojureScript support
+## ClojureScript Support
 
 ClojureScript support is planned and work in progress. Please see [Roadmap](https://github.com/replikativ/datahike#roadmap).
 
@@ -271,35 +230,18 @@ project before exporting.
 
 Have a look at the [change log](./CHANGELOG.md) for recent updates.
 
-## Roadmap
+## Roadmap and Participation
 
-### 0.4.0
+Instead of providing a static roadmap, we have moved to working closely with the community to decide what will be worked on next in a dynamic and interactive way.
 
-- identity and access management
-- CRDT type schema support
-- fast redis backend support
-- query planner and optimizer
-- transaction monitoring
+How it works?
 
-### 0.5.0
+Go to [Discussions](https://github.com/replikativ/datahike/discussions/categories/ideas) and upvote all the _ideas_ of features you would like to be added to Datahike. As soon as we have someone free to work on a new feature, we will address one with the most upvotes. 
 
-- optionally use core.async to handle storage IO
-- ClojureScript support both in the browser and on node
+Of course, you can also propose ideas yourself - either by adding them to the Discussions or even by creating a pull request yourself. Please note thought that due to considerations about incompatibilities to earlier Datahike versions it might sometimes take a bit more time until your PR is integrated.
 
-### 0.6.0
 
-- support GC or eager deletion of fragments
-- use hitchhiker-tree synchronization for replication
-- run comprehensive query suite and compare to DataScript and Datomic
-- support anomaly errors (?)
-
-### 1.0.0
-
-- support optimistic write support through attributes with conflict resolution
-  (CRDT-like)
-- investigate https://github.com/usethesource/capsule for faster hh-tree durability
-
-## Commercial support
+## Commercial Support
 
 We are happy to provide commercial support with
 [lambdaforge](https://lambdaforge.io). If you are interested in a particular

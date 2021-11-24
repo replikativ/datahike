@@ -1,10 +1,8 @@
 (ns datahike.test.query-rules
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
-   [datahike.core :as d]
-   [datahike.db :as db]
-   [datahike.test.core :as tdc]))
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
+   [datahike.core :as d]))
 
 (deftest test-rules
   (let [db [[5 :follow 3]
@@ -160,7 +158,6 @@
            #{["Oleg"]}))))
 
 ;; https://github.com/tonsky/datahike/issues/218
-
 
 (deftest test-false-arguments
   (let [db    (d/db-with (d/empty-db)

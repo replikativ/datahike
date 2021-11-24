@@ -20,7 +20,7 @@ import org.junit.runner.notification.Failure;
 
 public class DatahikeTest {
 
-    private String uri = "datahike:mem://test-empty-db";
+    private String uri = "datahike:mem://test-empty-db-java";
     private Object conn;
 
     private Object schema = Clojure.read(" [{:db/ident :name\n" +
@@ -41,6 +41,7 @@ public class DatahikeTest {
 
     @org.junit.After
     public void tearDown() throws Exception {
+        Datahike.deleteDatabase(uri);
     }
 
     private void transactOnce() {

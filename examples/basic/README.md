@@ -16,10 +16,4 @@ Start it with:
 docker-compose up -d
 ```
 
-If the selected ports collide with other ports, you may adjust `./docker-compose.yml`.
-
-``` sh
-docker-compose up -d
-```
-
-If the selected ports collide with other ports, you may want to adjust `/docker-compose.yml.`.
+If the selected ports collide with other ports, you may want to adjust `/docker-compose.yml.` and restart the container.

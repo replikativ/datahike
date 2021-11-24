@@ -1,7 +1,7 @@
 (ns datahike.test.time-variance
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+      :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.constants :as const]
    [datahike.api :as d]
    [datahike.test.utils :refer [setup-db]])
@@ -49,12 +49,11 @@
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
       (d/transact conn [[:db/retractEntity [:name "Alice"]]])
-      (are [x y]
-           (= x y)
-        #{}
-        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
-        #{[30] [25]}
-        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
+      (is (thrown-msg?
+           "Nothing found for entity id [:name \"Alice\"]"
+           (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])))
+      (is (= #{[30] [25]}
+             (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"]))))
     (testing "find retracted values"
       (is (= #{["Alice" 25] ["Alice" 30]}
              (d/q '[:find ?n ?a :where [?r :age ?a _ false] [?r :name ?n _ false]] (d/history @conn)))))
@@ -159,8 +158,7 @@
                 (assoc-in [:store :id] "test-no-history")
                 (assoc :initial-tx initial-tx))
         conn (setup-db cfg)
-        query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-        first-date (now)]
+        query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]]
     (testing "all names and ages are present in history"
       (is (= #{["Alice" 25] ["Bob" 35]}
              (d/q query (d/history @conn)))))
@@ -183,6 +181,11 @@
                 :where
                 [?e :name "Alice"]
                 [?e :age ?a ?t ?op]]]
+    (testing "add history datoms without upsert operation happening"
+      (let [datoms (d/datoms (d/history @conn) {:index :aevt :components [:age [:name "Alice"]]})
+            xf (map (comp vec seq))]
+        (is (= [[(+ const/e0 3) :age 25 (+ const/tx0 1) true]]
+               (into [] xf datoms)))))
     (testing "upsert entity"
       (d/transact conn [[:db/add [:name "Alice"] :age 30]])
       (is (= #{[30 (+ const/tx0 2) true]}
@@ -225,4 +228,98 @@
                [35 (+ const/tx0 4) false]
                [25 (+ const/tx0 4) true]
                [25 (+ const/tx0 5) false]}
-             (d/q query (d/history @conn)))))))
+             (d/q query (d/history @conn)))))
+    (testing "historical eavt datoms"
+      (is (= #{[1 :db/cardinality :db.cardinality/one 536870913 true]
+               [1 :db/ident :name 536870913 true]
+               [1 :db/index true 536870913 true]
+               [1 :db/unique :db.unique/identity 536870913 true]
+               [1 :db/valueType :db.type/string 536870913 true]
+               [2 :db/cardinality :db.cardinality/one 536870913 true]
+               [2 :db/ident :age 536870913 true]
+               [2 :db/valueType :db.type/long 536870913 true]
+               [3 :age 25 536870913 true]
+               [3 :age 25 536870914 false]
+               [3 :age 25 536870916 true]
+               [3 :age 25 536870917 false]
+               [3 :age 30 536870914 true]
+               [3 :age 30 536870915 false]
+               [3 :age 35 536870915 true]
+               [3 :age 35 536870916 false]
+               [3 :name "Alice" 536870913 true]
+               [4 :age 35 536870913 true]
+               [4 :name "Bob" 536870913 true]}
+             (->> (d/datoms (d/history @conn) {:index :eavt :components nil})
+                  (map (comp vec seq))
+                  (remove (fn [[e _ _ _]]
+                            (< const/tx0 e)))
+                  set))))
+    (testing "historical aevt datoms"
+      (is (= #{[3 :age 25 536870913 true]
+               [3 :age 25 536870914 false]
+               [3 :age 25 536870916 true]
+               [3 :age 25 536870917 false]
+               [3 :age 30 536870914 true]
+               [3 :age 30 536870915 false]
+               [3 :age 35 536870915 true]
+               [3 :age 35 536870916 false]
+               [4 :age 35 536870913 true]
+               [3 :name "Alice" 536870913 true]
+               [4 :name "Bob" 536870913 true]
+               [1 :db/cardinality :db.cardinality/one 536870913 true]
+               [2 :db/cardinality :db.cardinality/one 536870913 true]
+               [1 :db/ident :name 536870913 true]
+               [2 :db/ident :age 536870913 true]
+               [1 :db/index true 536870913 true]
+               [1 :db/unique :db.unique/identity 536870913 true]
+               [1 :db/valueType :db.type/string 536870913 true]
+               [2 :db/valueType :db.type/long 536870913 true]}
+             (->> (d/datoms (d/history @conn) {:index :aevt :components nil})
+                  (map (comp vec seq))
+                  (remove (fn [[e _ _ _]]
+                            (< const/tx0 e)))
+                  set))))
+    (testing "historical avet datoms"
+      (is (= #{[3 :name "Alice" 536870913 true]
+               [4 :name "Bob" 536870913 true]
+               [2 :db/ident :age 536870913 true]
+               [1 :db/ident :name 536870913 true]}
+             (->> (d/datoms (d/history @conn) {:index :avet :components nil})
+                  (map (comp vec seq))
+                  (remove (fn [[e _ _ _]]
+                            (< const/tx0 e)))
+                  set))))))
+
+(deftest test-no-duplicates-on-history-search
+  (let [schema [{:db/ident       :name
+                 :db/cardinality :db.cardinality/one
+                 :db/index       true
+                 :db/unique      :db.unique/identity
+                 :db/valueType   :db.type/string}
+                {:db/ident       :sibling
+                 :db/cardinality :db.cardinality/many
+                 :db/valueType   :db.type/ref}
+                {:db/ident       :age
+                 :db/cardinality :db.cardinality/one
+                 :db/valueType   :db.type/long}]
+        cfg {:store {:backend :mem :id "sandbox"}
+             :keep-history? true
+             :schema-flexibility :write
+             :attribute-refs? false}
+        conn (do
+               (d/delete-database cfg)
+               (d/create-database cfg)
+               (d/connect cfg))]
+
+    (d/transact conn schema)
+    (d/transact conn [{:name "Alice"
+                       :age  25}
+                      {:name    "Charlie"
+                       :age     45
+                       :sibling [[:name "Alice"] [:name "Charlie"]]}])
+    (is (= 1 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :name "Alice"))))
+    (is (= 1 (count (filter :added (d/datoms (d/history @conn) :eavt [:name "Alice"] :name "Alice")))))
+
+    (d/release conn)
+    (d/delete-database cfg)))
+;; => #'datahike.test.time-variance/test-no-duplicates-with-cardinality-many

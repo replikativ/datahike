@@ -4,22 +4,31 @@
             [zufall.core :as z]
             [environ.core :refer [env]]
             [taoensso.timbre :as log]
-            [datahike.store :as ds])
+            [datahike.store :as ds]
+            [datahike.constants :as c])
   (:import [java.net URI]))
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
 (s/def ::schema-flexibility #{:read :write})
+(s/def ::attribute-refs? boolean?)
 (s/def ::entity (s/or :map associative? :vec vector?))
 (s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
 (s/def ::name string?)
+
+(s/def ::index-config map?)
+(s/def ::index-b-factor long)
+(s/def ::index-log-size long)
+(s/def ::index-data-node-size long)
 
 (s/def ::store map?)
 
 (s/def :datahike/config (s/keys :req-un [:datahike/store]
                                 :opt-un [::index
+                                         ::index-config
                                          ::keep-history?
                                          ::schema-flexibility
+                                         ::attribute-refs?
                                          ::initial-tx
                                          ::name]))
 
@@ -47,9 +56,14 @@
                    :level {:path path}
                    :file {:path path}))
    :index index
+   :index-config {:index-b-factor       c/default-index-b-factor
+                  :index-log-size       c/default-index-log-size
+                  :index-data-node-size c/default-index-data-node-size}
    :keep-history? temporal-index
+   :attribute-refs? false
    :initial-tx initial-tx
-   :schema-flexibility (if (true? schema-on-read) :read :write)})
+   :schema-flexibility (if (true? schema-on-read) :read :write)
+   :cache-size 100000})
 
 (defn int-from-env
   [key default]
@@ -83,16 +97,23 @@
                          ", value does not match configuration definition. Must be conform to: "
                          (s/describe attribute)) config))))
 
-(defn validate-config [config]
+(defn validate-config [{:keys [attribute-refs? schema-flexibility] :as config}]
   (when-not (s/valid? :datahike/config config)
-    (throw (ex-info "Invalid datahike configuration." config))))
+    (throw (ex-info "Invalid Datahike configuration." (s/explain-data :datahike/config config))))
+  (when (and attribute-refs? (= :read schema-flexibility))
+    (throw (ex-info "Attribute references cannot be used with schema-flexibility ':read'." config))))
 
 (defn storeless-config []
   {:store nil
    :keep-history? false
    :schema-flexibility :read
    :name (z/rand-german-mammal)
-   :index :datahike.index/hitchhiker-tree})
+   :attribute-refs? false
+   :index :datahike.index/hitchhiker-tree
+   :cache-size 100000
+   :index-config {:index-b-factor       c/default-index-b-factor
+                  :index-log-size       c/default-index-log-size
+                  :index-data-node-size c/default-index-data-node-size}})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -120,17 +141,24 @@
          config {:store store-config
                  :initial-tx (:datahike-intial-tx env)
                  :keep-history? (bool-from-env :datahike-keep-history true)
+                 :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))}
+                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
+                 :cache-size (:cache-size env 100000)
+                 :index-config {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)
+                                :index-log-size       (int-from-env :datahike-log-size c/default-index-log-size)
+                                :index-data-node-size (int-from-env :datahike-data-node-size c/default-index-data-node-size)}}
          merged-config ((comp remove-nils deep-merge) config config-as-arg)
-         {:keys [keep-history? name schema-flexibility index initial-tx store]} merged-config
+         {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config
          config-spec (ds/config-spec store)]
      (when config-spec
        (when-not (s/valid? config-spec store)
          (throw (ex-info "Invalid store configuration." (s/explain-data config-spec store)))))
      (when-not (s/valid? :datahike/config merged-config)
        (throw (ex-info "Invalid Datahike configuration." (s/explain-data :datahike/config merged-config))))
+     (when (and attribute-refs? (= :read schema-flexibility))
+       (throw (ex-info "Attribute references cannot be used with schema-flexibility ':read'." config)))
      (if (string? initial-tx)
        (update merged-config :initial-tx (fn [path] (-> path slurp read-string)))
        merged-config))))

@@ -1,11 +1,10 @@
 (ns datahike.test.query
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.core :as d]
-   [datahike.query :as dq]
-   [datahike.db :as db]
-   [datahike.test.core :as tdc])
+   [datahike.api :as da]
+   [datahike.query :as dq])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
@@ -209,28 +208,35 @@
                (d/db-with [{:db/id 1, :name  "Alice", :age   15}
                            {:db/id 2, :name  "Bob", :age   37}
                            {:db/id 3, :name  "Charlie", :age   37}]))]
-    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
-                        :args [db]}))
-           3))
-    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
-                        :args [db]
-                        :offset 1
-                        :limit 1}))
-           1))
-    (is (= (count (d/q {:query '[:find ?e :where [?e :name _]]
-                        :args [db]
-                        :limit 2}))
-           2))
-    (is (= (count  (d/q {:query '[:find ?e :where [?e :name _]]
-                         :args [db]
-                         :offset 1
-                         :limit 2}))
-           2))
-    (is (= (count  (d/q {:query '[:find ?e :where [?e :name _]]
-                         :args [db]
-                         :offset 2
-                         :limit 2}))
-           1))
+    (is (= 3 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :limit -1}))))
+    (is (= 3 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]}))))
+    (is (= 3 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :limit nil}))))
+    (is (= 3 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :offset -1}))))
+    (is (= 3 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :offset nil}))))
+    (is (= 1 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :offset 1
+                          :limit 1}))))
+    (is (= 2 (count (d/q {:query '[:find ?e :where [?e :name _]]
+                          :args [db]
+                          :limit 2}))))
+    (is (= 2 (count  (d/q {:query '[:find ?e :where [?e :name _]]
+                           :args [db]
+                           :offset 1
+                           :limit 2}))))
+    (is (= 1 (count  (d/q {:query '[:find ?e :where [?e :name _]]
+                           :args [db]
+                           :offset 2
+                           :limit 2}))))
     (is (not (= (d/q {:query '[:find ?e :where [?e :name _]]
                       :args [db]
                       :limit 2})
@@ -378,3 +384,25 @@
                                       :where [[(= ?age 37)]
                                               [?e :age ?age]]}
                              :args [db]}))))))
+
+(deftest test-zeros-in-pattern
+  (let [cfg {:store {:backend :mem
+                     :id "sandbox"}
+             :index :datahike.index/hitchhiker-tree
+             :keep-history? true
+             :schema-flexibility :write
+             :attribute-refs? false}
+        conn (do
+               (da/delete-database cfg)
+               (da/create-database cfg)
+               (da/connect cfg))]
+    (da/transact conn [{:db/ident :version/id
+                        :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one
+                        :db/unique :db.unique/identity}
+                       {:version/id 0}
+                       {:version/id 1}])
+    (is (= 1
+           (count (da/q '[:find ?t :in $ :where
+                          [?t :version/id 0]]
+                        @conn))))))

@@ -4,7 +4,6 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
-   [datahike.db :as db]
    [datahike.test.core :as tdc]))
 
 (t/use-fixtures :once tdc/no-namespace-maps)

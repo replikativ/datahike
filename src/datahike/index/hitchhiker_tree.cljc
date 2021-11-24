@@ -1,9 +1,11 @@
 (ns ^:no-doc datahike.index.hitchhiker-tree
   (:require [datahike.index.hitchhiker-tree.upsert :as ups]
+            [datahike.index.hitchhiker-tree.insert :as ins]
             [hitchhiker.tree.utils.async :as async]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
             [hitchhiker.tree :as tree]
+            [datahike.array :refer [compare-arrays]]
             [datahike.datom :as dd]
             [datahike.constants :refer [e0 tx0 emax txmax]]
             [hasch.core :as h])
@@ -35,8 +37,10 @@
     (if (nil? key2)
       0 -1)))
 
-(def ^:const br 300) ;; TODO name better, total node size; maybe(!) make configurable
-(def ^:const br-sqrt (long (Math/sqrt br))) ;; branching factor
+(extend-protocol kc/IKeyCompare
+  (Class/forName "[B")
+  (-compare [key1 key2]
+    (compare-arrays key1 key2)))
 
 (defn- index-type->datom-fn [index-type]
   (case index-type
@@ -44,21 +48,26 @@
     :avet (fn [a v e tx] (dd/datom e a v tx true))
     (fn [e a v tx] (dd/datom e a v tx true))))
 
-(defn- from-datom [^Datom datom index-type]
-  (let [datom-seq (case index-type
-                    :aevt (list  (.-a datom) (.-e datom) (.-v datom) (.-tx datom))
-                    :avet (list (.-a datom) (.-v datom)  (.-e datom) (.-tx datom))
-                    (list (.-e datom) (.-a datom) (.-v datom) (.-tx datom)))]
+(defn- from-datom [^Datom datom index-type start?]
+  (let [e (fn [datom] (when-not (or (and start? (= e0 (.-e datom)))
+                                    (and (not start?) (= emax (.-e datom))))
+                        (.-e datom)))
+        tx (fn [datom] (when-not (or (and start? (= tx0 (.-tx datom)))
+                                     (and (not start?) (= txmax (.-tx datom))))
+                         (.-tx datom)))
+        datom-seq (case index-type
+                    :aevt (list (.-a datom) (e datom) (.-v datom) (tx datom))
+                    :avet (list (.-a datom) (.-v datom) (e datom) (tx datom))
+                    (list (e datom) (.-a datom) (.-v datom) (tx datom)))]
     (->> datom-seq
-         (remove #{e0 tx0 emax txmax})
-         (remove nil?)
+         (take-while some?)
          vec)))
 
 (defn -slice
   [tree from to index-type]
   (let [create-datom (index-type->datom-fn index-type)
-        [a b c d] (from-datom from index-type)
-        [e f g h] (from-datom to index-type)
+        [a b c d] (from-datom from index-type true)
+        [e f g h] (from-datom to index-type false)
         xf (comp
             (take-while (fn [^AMapEntry kv]
                            ;; prefix scan
@@ -104,11 +113,6 @@
      (first %))
    (hmsg/lookup-fwd-iter tree [])))
 
-(defn empty-tree
-  "Create empty hichthiker tree"
-  []
-  (async/<?? (tree/b-tree (tree/->Config br-sqrt br (- br br-sqrt)))))
-
 (defn- datom->node [^Datom datom index-type]
   (case index-type
     :aevt [(.-a datom) (.-e datom) (.-v datom) (.-tx datom)]
@@ -116,28 +120,32 @@
     :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]
     (throw (IllegalArgumentException. (str "Unknown index-type: " index-type)))))
 
+(defn- index-type->indices [index-type]
+  (case index-type
+    :eavt [0 1]
+    :aevt [0 1]
+    :avet [0 2]
+    (throw (UnsupportedOperationException. "Unknown index type: " index-type))))
+
 (defn -insert [tree ^Datom datom index-type op-count]
-  (hmsg/insert tree (datom->node datom index-type) nil op-count))
+  (let [datom-as-vec (datom->node datom index-type)]
+    (async/<?? (hmsg/enqueue tree [(assoc (ins/new-InsertOp datom-as-vec op-count)
+                                          :tag (h/uuid))]))))
+
+(defn -temporal-insert [tree ^Datom datom index-type op-count]
+  (let [datom-as-vec (datom->node datom index-type)]
+    (async/<?? (hmsg/enqueue tree [(assoc (ins/new-temporal-InsertOp datom-as-vec op-count)
+                                          :tag (h/uuid))]))))
 
 (defn -upsert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec op-count)
+    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec op-count (index-type->indices index-type))
                                           :tag (h/uuid))]))))
 
 (defn -temporal-upsert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-temporal-UpsertOp datom-as-vec op-count)
+    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-temporal-UpsertOp datom-as-vec op-count (index-type->indices index-type))
                                           :tag (h/uuid))]))))
-
-(defn init-tree
-  "Create tree with datoms"
-  [datoms index-type op-count]
-  (async/<??
-   (async/reduce<
-    (fn [tree [idx datom]]
-      (-insert tree datom index-type (+ idx op-count)))
-    (empty-tree)
-    (map-indexed (fn [idx datom] [idx datom]) (seq datoms)))))
 
 (defn -remove [tree ^Datom datom index-type op-count]
   (async/<?? (hmsg/delete tree (datom->node datom index-type) op-count)))
@@ -148,3 +156,20 @@
 (def -persistent! identity)
 
 (def -transient identity)
+
+;; Functions used in multimethods defined in index.cljc
+
+(defn empty-tree
+  "Create empty hitchhiker tree"
+  [b-factor data-node-size log-size]
+  (async/<?? (tree/b-tree (tree/->Config b-factor data-node-size log-size))))
+
+(defn init-tree
+  "Create tree with datoms"
+  [datoms index-type op-count b-factor data-node-size log-size]
+  (async/<??
+   (async/reduce<
+    (fn [tree [idx datom]]
+      (-insert tree datom index-type (+ idx op-count)))
+    (empty-tree b-factor data-node-size log-size)
+    (map-indexed (fn [idx datom] [idx datom]) (seq datoms)))))

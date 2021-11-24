@@ -1,6 +1,6 @@
 # Differences to Datomic Client API
 
-Although datahike supports a part of [Datomic's
+Although Datahike supports a part of [Datomic's
 API](https://docs.datomic.com/client-api/datomic.client.api.html), some
 behavior is different using the different functions. Datahike supports part of the `datomic.client.api`:
 
@@ -12,7 +12,6 @@ Without differences in the signature you may use the following like in Datomic:
 - datoms
 - [db](#db)
 - history
-- [index-range](#index-range)
 - pull
 - q
 - since
@@ -25,18 +24,18 @@ The following functions from the `datahike.api` namespace are different from Dat
 
 - [connect](#connect)
 - [create-database](#create-database)
-- [database-exists?](#database)
-- [db-with](https://cljdoc.org/d/io.replikativ/datahike)
+- [database-exists?](#database-exists)
+- [db-with](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#db-with)
 - [delete-database](#delete-database)
-- [entity](https://cljdoc.org/d/io.replikativ/datahike)
-- [entity-db](https://cljdoc.org/d/io.replikativ/datahike)
-- [filter](https://cljdoc.org/d/io.replikativ/datahike)
-- [is-filtered](https://cljdoc.org/d/io.replikativ/datahike)
-- [load-entities](https://cljdoc.org/d/io.replikativ/datahike)
-- [pull-many](https://cljdoc.org/d/io.replikativ/datahike)
-- [release](https://cljdoc.org/d/io.replikativ/datahike)
-- [seek-datoms](https://cljdoc.org/d/io.replikativ/datahike)
-- [tempid](https://cljdoc.org/d/io.replikativ/datahike)
+- [entity](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#entity)
+- [entity-db](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#entity-db)
+- [filter](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#filter)
+- [is-filtered](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#is-filtered)
+- [load-entities](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#load-entities)
+- [pull-many](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#pull-many)
+- [release](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#release)
+- [seek-datoms](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#seek-datoms)
+- [tempid](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#tempid)
 - [with](#with)
 
 Additionally, datahike supports most functions from [datascript](https://github.com/tonsky/datascript)

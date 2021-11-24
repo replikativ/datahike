@@ -3,8 +3,10 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.core :as d]
+   [datahike.api :as api]
    [datahike.db :as db]
-   [datahike.test.core :as tdc]))
+   [datahike.test.core :as tdc])
+  (:import [java.util UUID]))
 
 #?(:cljs
    (def Throwable js/Error))
@@ -188,3 +190,158 @@
                                       [:db/add -1 :age 35]
                                       [:db/add -1 :name "Oleg"]
                                       [:db/add -1 :age 36]])))))
+
+(defn temporal-history-test [cfg]
+  (let [schema [{:db/ident       :name
+                 :db/cardinality :db.cardinality/one
+                 :db/index       true
+                 :db/unique      :db.unique/identity
+                 :db/valueType   :db.type/string}
+                {:db/ident       :age
+                 :db/cardinality :db.cardinality/one
+                 :db/valueType   :db.type/long}]
+        _ (api/delete-database cfg)
+        _ (api/create-database cfg)
+        conn (api/connect cfg)]
+    (testing "inserting a new datom creates an entry in history"
+      (api/transact conn {:tx-data schema})
+      (api/transact conn {:tx-data [{:name "Alice"
+                                     :age  25}]})
+      (is (= 1 (count (d/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))
+
+    (testing "inserting the exact same datom"
+      (api/transact conn {:tx-data [{:db/id [:name "Alice"]
+                                     :age 25}]})
+      (testing " does not change the history for any index other than persistent-set"
+        (when (not= (:index cfg) :datahike.index/persistent-set)
+          (is (= 1 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age))))))
+      (testing " adds another version of the datom when index is persistent-set"
+        (when (= (:index cfg) :datahike.index/persistent-set)
+          (is (= 2 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))))
+    (testing "changing the datom value increases the history with 2 datoms: the retraction datom and the new value."
+      (api/transact conn {:tx-data [{:db/id [:name "Alice"]
+                                     :age 26}]})
+      (is (= 3 (count (api/datoms (api/history @conn) :eavt [:name "Alice"] :age)))))))
+
+(deftest temporal-history-mem-hht
+  (let [config {:store {:backend :mem :id "temp-hist-hht"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/hitchhiker-tree}]
+    (temporal-history-test config)))
+
+(deftest temporal-history-file
+  (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/hitchhiker-tree}]
+    (temporal-history-test config)))
+
+(deftest temporal-history-file-with-attr-refs
+  (let [config {:store {:backend :file :path "/tmp/temp-hist-attr-refs"}
+                :schema-flexibility :write
+                :keep-history? true
+                :attribute-refs? true
+                :index :datahike.index/hitchhiker-tree}]
+    (temporal-history-test config)))
+
+(deftest temporal-history-mem-set
+  (let [config {:store {:backend :mem :id "temp-hist-set"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/persistent-set}]
+    (temporal-history-test config)))
+
+(deftest test-upsert-after-large-coll
+  (let [ascii-ish (map char (concat (range 48 58) (range 65 91) (range 97 123)))
+        file-cfg {:store {:backend :file
+                          :path "/tmp/upsert-large-test"}}
+        mem-cfg {:store {:backend :mem
+                         :id "upsert-large-test"}}
+        _ (if (api/database-exists? file-cfg)
+            (do
+              (api/delete-database file-cfg)
+              (api/create-database file-cfg))
+            (api/create-database file-cfg))
+        _ (if (api/database-exists? mem-cfg)
+            (do
+              (api/delete-database mem-cfg)
+              (api/create-database mem-cfg))
+            (api/create-database mem-cfg))
+        file-conn (api/connect file-cfg)
+        mem-conn (api/connect mem-cfg)
+        initial-active-count 8
+        inactive-count 5
+        space-taker-count 1000]
+    (letfn [(ident-eid [db ident]
+              (api/q '[:find ?e .
+                       :in $ ?ident
+                       :where [?e :db/ident ?ident]]
+                     db ident))
+            (random-uuid []
+              (UUID/randomUUID))
+            (random-char []
+              (rand-nth ascii-ish))
+            (random-string [length]
+              (apply str (repeatedly length random-char)))
+            (ent-ids [db]
+              (api/q '[:find [?e ...]
+                       :where
+                       [?e :ent/id]]
+                     db))
+            (active-count [db]
+              (api/q '[:find (count ?e) .
+                       :where
+                       [?e :ent/active? true]]
+                     db))
+            (init-data [conn]
+              (api/transact conn {:tx-data [{:db/ident       :ent/id
+                                             :db/valueType   :db.type/uuid
+                                             :db/cardinality :db.cardinality/one
+                                             :db/unique      :db.unique/identity
+                                             :db/doc         "The entity ID."}
+                                            {:db/ident       :ent/active?
+                                             :db/valueType   :db.type/boolean
+                                             :db/cardinality :db.cardinality/one
+                                             :db/doc         "Whether the entity is active."}
+                                            {:db/ident       :meta/space-taker
+                                             :db/valueType   :db.type/string
+                                             :db/cardinality :db.cardinality/one
+                                             :db/doc         "Takes up some space in the db"}]})
+
+              (api/transact conn {:tx-data (map (fn [_]
+                                                  {:ent/id (random-uuid)})
+                                                (range initial-active-count))})
+
+              (api/transact conn {:tx-data (map (fn [_]
+                                                  {:meta/space-taker (random-string 250)})
+                                                (range space-taker-count))})
+
+              (api/transact conn {:tx-data (map (fn [eid]
+                                                  {:db/id      eid
+                                                   :ent/active? true})
+                                                (ent-ids @conn))})
+
+              (api/transact conn {:tx-data (->> (ent-ids @conn)
+                                                sort
+                                                (take inactive-count)
+                                                (map (fn [eid]
+                                                       [:db/add eid :ent/active? false])))}))]
+      (testing "File upsert"
+        (init-data file-conn)
+        (let [cached-db @file-conn
+              fresh-db @(api/connect file-cfg)
+              actual-count (- initial-active-count inactive-count)
+              cached-count (active-count cached-db)
+              fresh-count (active-count fresh-db)]
+          (is (= actual-count cached-count))
+          (is (= cached-count fresh-count))))
+      (testing "Mem upsert"
+        (init-data mem-conn)
+        (let [cached-db @mem-conn
+              fresh-db @(api/connect mem-cfg)
+              actual-count (- initial-active-count inactive-count)
+              cached-count (active-count cached-db)
+              fresh-count (active-count fresh-db)]
+          (is (= actual-count cached-count))
+          (is (= cached-count fresh-count)))))))

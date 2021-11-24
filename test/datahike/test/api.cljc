@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
    [datahike.test.core]
+   [datahike.test.utils :as utils]
    [datahike.api :as d]))
 
 (deftest test-transact-docs
@@ -204,7 +205,7 @@
                           [3 :likes "pie"]
                           [4 :likes "pizza"]}]})))
 
-    (is (= #{["pizza"]}
+    (is (= #{["fries"]}
            (d/q {:query '[:find ?value :where [_ :likes ?value]]
                  :offset 2
                  :limit 1
@@ -222,7 +223,7 @@
                           [3 :likes "pie"]
                           [4 :likes "pizza"]}]})))
 
-    (is (= #{["candy"] ["pizza"]}
+    (is (= #{["candy"] ["fries"]}
            (d/q {:query '[:find ?value :where [_ :likes ?value]]
                  :offset 2
                  :timeout 50
@@ -239,11 +240,11 @@
                   [4 :likes "pizza"]})))
 
     (is (= #{["fries"] ["candy"] ["pie"] ["pizza"]}
-           (d/q '{:query {:find [?value] :where [[_ :likes ?value]]}
-                  :args [#{[1 :likes "fries"]
-                           [2 :likes "candy"]
-                           [3 :likes "pie"]
-                           [4 :likes "pizza"]}]})))
+           (d/q {:query '{:find [?value] :where [[_ :likes ?value]]}
+                 :args [#{[1 :likes "fries"]
+                          [2 :likes "candy"]
+                          [3 :likes "pie"]
+                          [4 :likes "pizza"]}]})))
 
     (is (= #{["fries"] ["candy"] ["pie"] ["pizza"]}
            (d/q {:query "[:find ?value :where [_ :likes ?value]]"
@@ -672,3 +673,85 @@
                   hash-2 (hash @conn)]
               (is (not= hash-1 hash-2))
               (is (not= hash-0 hash-2)))))))))
+
+(deftest test-database-schema
+  (letfn [(test-schema [cfg]
+            (let [conn                      (utils/setup-db cfg)
+                  name-schema               {:db/ident       :name
+                                             :db/valueType   :db.type/string
+                                             :db/cardinality :db.cardinality/one
+                                             :db/unique      :db.unique/identity}
+                  related-to-schema         {:db/ident       :related-to
+                                             :db/valueType   :db.type/ref
+                                             :db/cardinality :db.cardinality/many}
+                  age-schema                {:db/ident       :age
+                                             :db/valueType   :db.type/long
+                                             :db/cardinality :db.cardinality/one
+                                             :db/noHistory   true}
+                  coerced-schema            (fn [db]
+                                              (reduce-kv
+                                               (fn [m k v]
+                                                 (assoc m k (dissoc v :db/id)))
+                                               {}
+                                               (d/schema db)))
+                  name-reverse-schema       {:db/ident           #{:name}
+                                             :db/index           #{:name}
+                                             :db.unique/identity #{:name}
+                                             :db/unique          #{:name}}
+                  age-reverse-schema        (-> name-reverse-schema
+                                                (update :db/ident conj :age)
+                                                (assoc :db/noHistory #{:age}))
+                  related-to-reverse-schema (-> age-reverse-schema
+                                                (update :db/ident conj :related-to)
+                                                (update :db/index conj :related-to)
+                                                (assoc :db.cardinality/many #{:related-to})
+                                                (assoc :db.type/ref #{:related-to}))]
+              (d/transact conn {:tx-data [name-schema]})
+              (is (= {:name name-schema}
+                     (coerced-schema @conn)))
+              (is (= name-reverse-schema (d/reverse-schema @conn)))
+
+              (d/transact conn {:tx-data [age-schema]})
+              (is (= {:name name-schema
+                      :age  age-schema}
+                     (coerced-schema @conn)))
+              (is (= age-reverse-schema
+                     (d/reverse-schema @conn)))
+
+              (d/transact conn {:tx-data [related-to-schema]})
+              (is (= {:name       name-schema
+                      :age        age-schema
+                      :related-to related-to-schema}
+                     (coerced-schema @conn)))
+              (is (= related-to-reverse-schema
+                     (d/reverse-schema @conn)))))]
+    (let [base-cfg {:store              {:backend :mem
+                                         :id      "api-db-schema-test"}
+                    :keep-history?      false
+                    :attribute-refs?    false
+                    :schema-flexibility :write}]
+      (testing "Empty database without any schema"
+        (let [conn (do
+                     (d/delete-database base-cfg)
+                     (d/create-database base-cfg)
+                     (d/connect base-cfg))]
+          (is (= {}
+                 (d/schema @conn)))
+          (is (= {}
+                 (d/reverse-schema @conn)))))
+      (testing "Empty database with write flexibility and no attribute refs"
+        (test-schema base-cfg))
+      (testing "Empty database with write flexibility and attribute refs"
+        (test-schema (assoc base-cfg :attribute-refs? true)))
+      (testing "Empty database with read flexibility and no attribute refs"
+        (test-schema (assoc base-cfg :schema-flexibility :read))))))
+
+(deftest test-db-meta
+  (let [cfg {:store              {:backend :mem
+                                  :id      "api-db-schema-test"}
+             :keep-history?      false
+             :attribute-refs?    false
+             :schema-flexibility :write}
+        conn (utils/setup-db cfg)]
+    (is (= #{:datahike/version :datahike/id :datahike/created-at :konserve/version :hitchhiker.tree/version}
+           (-> @conn :meta keys set)))))

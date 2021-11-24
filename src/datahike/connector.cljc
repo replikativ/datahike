@@ -6,6 +6,7 @@
             [datahike.config :as dc]
             [datahike.tools :as dt :refer [throwable-promise]]
             [datahike.index.hitchhiker-tree.upsert :as ups]
+            [datahike.index.hitchhiker-tree.insert :as ins]
             [datahike.transactor :as t]
             [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
@@ -21,7 +22,7 @@
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx op-count hash]} db-after
+        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx op-count hash meta]} db-after
         store (:store @connection)
         backend (kons/->KonserveBackend store)
         eavt-flushed (di/-flush eavt backend)
@@ -33,9 +34,13 @@
         temporal-avet-flushed (when keep-history? (di/-flush temporal-avet backend))]
     (<?? S (k/assoc-in store [:db]
                        (merge
-                        {:schema   schema
-                         :rschema  rschema
-                         :config   config
+                        {:schema schema
+                         :rschema rschema
+                         :system-entities system-entities
+                         :ident-ref-map ident-ref-map
+                         :ref-ident-map ref-ident-map
+                         :config config
+                         :meta meta
                          :hash hash
                          :max-tx max-tx
                          :op-count op-count
@@ -118,10 +123,11 @@
           raw-store (ds/connect-store store-config)]
       (if (not (nil? raw-store))
         (let [store (ups/add-upsert-handler
-                     (kons/add-hitchhiker-tree-handlers
-                      (kc/ensure-cache
-                       raw-store
-                       (atom (cache/lru-cache-factory {} :threshold 1000)))))
+                     (ins/add-insert-handler
+                      (kons/add-hitchhiker-tree-handlers
+                       (kc/ensure-cache
+                        raw-store
+                        (atom (cache/lru-cache-factory {} :threshold 1000))))))
               stored-db (<?? S (k/get-in store [:db]))]
           (ds/release-store store-config store)
           (not (nil? stored-db)))
@@ -138,21 +144,23 @@
               (dt/raise "Backend does not exist." {:type :backend-does-not-exist
                                                    :config config}))
           store (ups/add-upsert-handler
-                 (kons/add-hitchhiker-tree-handlers
-                  (kc/ensure-cache
-                   raw-store
-                   (atom (cache/lru-cache-factory {} :threshold 1000)))))
+                 (ins/add-insert-handler
+                  (kons/add-hitchhiker-tree-handlers
+                   (kc/ensure-cache
+                    raw-store
+                    (atom (cache/lru-cache-factory {} :threshold 1000))))))
           stored-db (<?? S (k/get-in store [:db]))
           _ (when-not stored-db
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
-          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx op-count hash]
+          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash meta]
            :or {op-count 0}} stored-db
           empty (db/empty-db nil config)
           conn (d/conn-from-db (assoc empty
                                       :max-tx max-tx
                                       :config config
+                                      :meta meta
                                       :schema schema
                                       :hash hash
                                       :max-eid (db/init-max-eid eavt-key)
@@ -164,6 +172,9 @@
                                       :temporal-aevt temporal-aevt-key
                                       :temporal-avet temporal-avet-key
                                       :rschema rschema
+                                      :system-entities system-entities
+                                      :ident-ref-map ident-ref-map
+                                      :ref-ident-map ref-ident-map
                                       :store store))]
       (swap! conn assoc :transactor (t/create-transactor (:transactor config) conn update-and-flush-db))
       conn))
@@ -177,16 +188,20 @@
           stored-db (<?? S (k/get-in store [:db]))
           _ (when stored-db
               (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
-          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema config max-tx op-count hash]}
+          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ref-ident-map ident-ref-map config max-tx op-count hash meta]}
           (db/empty-db nil config)
           backend (kons/->KonserveBackend store)]
       (<?? S (k/assoc-in store [:db]
-                         (merge {:schema   schema
+                         (merge {:schema schema
                                  :max-tx max-tx
                                  :op-count op-count
                                  :hash hash
-                                 :rschema  rschema
-                                 :config   config
+                                 :rschema rschema
+                                 :system-entities system-entities
+                                 :ident-ref-map ident-ref-map
+                                 :ref-ident-map ref-ident-map
+                                 :config config
+                                 :meta meta
                                  :eavt-key (di/-flush eavt backend)
                                  :aevt-key (di/-flush aevt backend)
                                  :avet-key (di/-flush avet backend)}
