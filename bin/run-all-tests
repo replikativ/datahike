@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+set -o errexit
+set -o pipefail
+
+echo "Running unit tests"
+bin/run-unittests
+echo "Running integration tests"
+bin/run-integrationtests
+echo "Running backward compatibility tests"
+bin/run-backward-compatibility-tests

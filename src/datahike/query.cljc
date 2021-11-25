@@ -327,7 +327,7 @@
   #?(:clj
      (dissoc (ns-publics 'clojure.core)
              'eval)
-     {}))
+     :cljs {}))
 
 (def built-in-aggregates
   (letfn [(sum [coll] (reduce + 0 coll))
