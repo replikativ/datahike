@@ -1,25 +1,29 @@
 (ns build
-  (:require [clojure.tools.build.api :as b]
-            [deps-deploy.deps-deploy :as dd]
-            [borkdude.gh-release-artifact :as gh]))
+  (:require
+    [borkdude.gh-release-artifact :as gh]
+    [clojure.tools.build.api :as b]
+    [deps-deploy.deps-deploy :as dd]))
 
-(def lib 'timokramer/datahike)
+(def lib 'io.replikativ/datahike)
 (def version (format "0.4.%s" (b/git-count-revs nil)))
 (def current-commit (gh/current-commit))
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
 
-(defn clean [_]
+(defn clean
+  [_]
   (b/delete {:path "target"}))
 
-(defn compile [_]
+(defn compile
+  [_]
   (b/javac {:src-dirs ["java"]
             :class-dir class-dir
             :basis basis
             :javac-opts ["-source" "8" "-target" "8"]}))
 
-(defn jar [_]
+(defn jar
+  [_]
   (compile nil)
   (b/write-pom {:class-dir class-dir
                 :src-pom "./template/pom.xml"
@@ -32,12 +36,14 @@
   (b/jar {:class-dir class-dir
           :jar-file jar-file}))
 
-(defn deploy [_]
-  (println "Don't forget to set CLOJARS_USERNAME and CLOJARS_PASSWORD env vars.")
+(defn deploy
+  "Don't forget to set CLOJARS_USERNAME and CLOJARS_PASSWORD env vars."
+  [_]
   (dd/deploy {:installer :remote :artifact jar-file
               :pom-file (b/pom-path {:lib lib :class-dir class-dir})}))
 
-(defn release [_]
+(defn release
+  [_]
   (-> (gh/overwrite-asset {:org (namespace lib)
                            :repo (name lib)
                            :tag version
@@ -47,7 +53,8 @@
       :url
       println))
 
-(defn install [_]
+(defn install
+  [_]
   (clean nil)
   (jar nil)
   (b/install {:basis (b/create-basis {})
@@ -61,7 +68,6 @@
   (clean nil)
   (compile nil)
   (jar nil)
-  (tag nil)
   (deploy nil)
   (release nil)
   (install nil)

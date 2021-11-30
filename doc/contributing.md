@@ -16,8 +16,12 @@ TIMBRE_LEVEL=':info' clj -M:benchmark run
 
 ## Building a Datahike jar
 ```
-mvn compile
-clj -M:build
+clj -T:build jar
+```
+
+## Install Datahike to local maven repository
+```
+clj -T:build install
 ```
 
 ## Formatting
@@ -31,56 +35,42 @@ clj -M:ffix
 ```
 
 ## Releasing Datahike
-### Deploying Datahike to Clojars
-```
-clj -M:deploy
-```
+### Deploying Datahike to Clojars manually
+#### Manually
+**Should only be done in case of emergency**
+First you have to build the artifact with `clj -T:build jar`, then you need to
+set `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` as environment variables, then
+you can run `clj -T:build deploy` to deploy the artifact to Clojars.
 
-### SNAPSHOT
-To create a snapshot of Datahike and upload it to Clojars the version in
-`pom.xml` needs to end on *-SNAPSHOT*. Snapshots can and will be overwritten
-if a snapshot with the current version is already present. There is no easy way
-to recognize that there is a new snapshot available on Clojars.
-
-A snapshot in Datahike is created by committing/merging on and pushing to the
-*development* branch. Then the snapshot gets validated. This means the version
-string from `pom.xml` is extracted and it needs to end on *-SNAPSHOT* and
-the current branch needs to be *development*. Only then a snapshot gets released
-to Clojars.
-
-### Release
-To create a release of Datahike and upload it to Clojars the version in `pom.xml`
-needs to be incremented at the respective position. Then you can commit and push the
-current version to GitHub. CircleCI will then run unit and integration tests and build
-this version of Datahike. When this succeeds it releases the new version to Clojars
-only if the version string does *not* end on *-SNAPSHOT* and the current branch is
-*master*.
-
-The deployment to Clojars will fail if this version is already present on Clojars. It is
-not possible to overwrite a release, only snapshots can be overwritten.
+#### Pipeline
+[Datahike is released everytime there is a commit to the `main` branch](https://github.com/replikativ/datahike/blob/development/doc/adl/adr-004-github-flow.md).
+We are using semantic versioning and the patch-version is the number of commits on
+the main branch. That means it is always increasing, even if the major or minor
+version is increased.
 
 ### CircleCI
-On CircleCI unit and integration tests are run. Afterwards, Datahike is being compiled and
-released. The official CircleCI jdk-8 image is used and the secret key to release to
 Clojars needs to be stored as an environment variable on CircleCI. There needs to be a
 variable `CLOJARS_USERNAME` set to your Clojars username and a variable `CLOJARS_PASSWORD` set
 to the token that permits to deploy on clojars.
 
-### The release process step by step
-- Make sure the versions of dependencies declared in deps.edn and pom.xml match.
-- Set the new version in pom.xml.
-  + If you just want to create a snapshot version add '-SNAPSHOT' to the version, e.g <version>0.3.6-SNAPSHOT</version>.
-- Create the PR and ask for it to be merged to the development branch.
-- Once approved, merge the PR to dev.
-  + This will create a SNAPSHOT version on clojars, if the version in pom contains '-SNAPSHOT'.
-- Repeat the above process for the other PRs to be released.
-- Optional: ideally try to import the new jar into a project and test that it works.
+In order to create new releases on GitHub we need environment variables on CircleCI. The
+two variables `GITHUB_TOKEN` and `GITHUB_USER` need to be set in a context called
+`github-token` in the CircleCI UI for the organisation.
 
-- Create a new branch for the release called e.g. 'Release v0.3.6'
-  + Set the new version number in pom.xml, i.e., <version>0.3.6</version> (without '-SNAPSHOT' this time).
-  + Update the CHANGELOG.md file.
-- Create a PR with the new release branch with 'master' as target.
-- Once approved, merge the PR to master.
-  + This will deploy the new release to clojars.
-- Test the new jar (e.g. using in a real project).
-- Create a new release/tag on GitHub https://github.com/replikativ/datahike/releases
+### Git tags and GitHub releases
+Each merge to `main` creates a release entry in GitHub and a git tag to point to the merge commit
+made when merging a branch into `main`. The jar is appended to the Github-release.
+
+### The release process step by step
+- Update the `[CHANGELOG.md](https://github.com/replikativ/datahike/blob/main/CHANGELOG.md)`
+- Set a  new version in build.clj if you want to release a new minor or major version.
+  For the ordinary patch release you can let the CI automatically increment the patch
+  release version.
+- Squash and rebase if you see a need to.
+- Create the PR against the `main` branch.
+- Once approved, merge the PR into `main`.
+  + a new release on Clojars will be created.
+  + a new draft release will be created on GitHub.
+- Go to [GitHub](https://github.com/replikativ/datahike/releases) and
+  + fill in release notes
+  + release the draft Release.

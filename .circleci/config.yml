@@ -121,7 +121,7 @@ workflows:
             - github-token
           filters:
             branches:
-              only: switch-to-tools-build
+              only: main
           requires:
             - tools/format
             - tools/unittest
@@ -133,6 +133,6 @@ workflows:
             - github-token
           filters:
             branches:
-              only: switch-to-tools-build
+              only: main
           requires:
             - deploy
