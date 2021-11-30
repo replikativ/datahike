@@ -19,4 +19,4 @@ function teardown() {
 
 CONTAINER_NAME=$(setup)
 
-TIMBRE_LEVEL=':fatal' bin/kaocha --focus :integration
+TIMBRE_LEVEL=':fatal' bin/kaocha --focus :integration "$@"

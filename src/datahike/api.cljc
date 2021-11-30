@@ -565,7 +565,15 @@
            tx-meta (if (:tx-meta arg-map) (:tx-meta arg-map) nil)]
        (with db tx-data tx-meta)))
     ([db tx-data tx-meta]
-     (dcore/with db tx-data tx-meta))))
+     {:pre [(db/db? db)]}
+     (if (is-filtered db)
+       (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
+       (db/transact-tx-data (db/map->TxReport
+                             {:db-before db
+                              :db-after  db
+                              :tx-data   []
+                              :tempids   {}
+                              :tx-meta   tx-meta}) tx-data)))))
 
 (def ^{:arglists '([db tx-data])
        :doc "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."}
@@ -738,7 +746,7 @@
 
 (def ^{:arglists '([conn callback] [conn key callback])
        :doc "Listen for changes on the given connection. Whenever a transaction is applied to the database via
-             [[transact!]], the callback is called with the transaction report. `key` is any opaque unique value.
+             [[transact]], the callback is called with the transaction report. `key` is any opaque unique value.
 
              Idempotent. Calling [[listen]] with the same twice will override old callback with the new value.
 
@@ -750,6 +758,7 @@
        :doc "Removes registered listener from connection. See also [[listen]]."}
   unlisten
   dcore/unlisten!)
+
 (defn ^{:arglists '([db])
         :doc "Returns current schema definition."}
   schema

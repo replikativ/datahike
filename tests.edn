@@ -4,4 +4,5 @@
                        :type :kaocha.type/cljs
                        :ns-patterns ["datahike.test."]}
                     {:id :integration
-                     :test-paths ["test/datahike/integration_test"]}]}
+                     :test-paths ["test/datahike/integration_test"]}]
+            :reporter kaocha.report/documentation}
