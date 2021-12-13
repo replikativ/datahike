@@ -1,10 +1,16 @@
 version: 2.1
 
 orbs:
+  github-cli: circleci/github-cli@1.0
   tools: replikativ/clj-tools@0
+
 jobs:
   setup:
     executor: tools/clojurecli
+    parameters:
+      setup_cljs:
+        type: boolean
+        default: true
     steps:
       - restore_cache:
           keys:
@@ -20,32 +26,78 @@ jobs:
           keys:
             - deps-{{ checksum "deps.edn" }}
             - deps-
-      - run: clojure -e nil
+      - run:
+          name: resolve deps
+          command: clojure -P
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
-      - restore_cache:
-          keys:
-            - pom-{{ checksum "pom.xml" }}
-            - pom-
-      - run: sudo apt-get install maven --yes
-      - run: mvn compile
-      - save_cache:
-          key: pom-{{ checksum "pom.xml" }}
-          paths:
-            - /home/circleci/.m2
+      - when:
+          condition: <<parameters.setup_cljs>>
+          steps:
+            - restore_cache:
+                keys:
+                  - npm-{{ checksum "package-lock.json" }}
+                  - npm-
+            - run: npm ci
+            - save_cache:
+                key: npm-{{ checksum "package-lock.json" }}
+                paths:
+                  - /home/circleci/.npm
       - persist_to_workspace:
           root: /home/circleci/
           paths:
             - .m2
+            - .npm
             - replikativ
+  build:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: clean
+          command: clojure -Sthreads 1 -T:build clean
+      - run:
+          name: compile
+          command: clojure -Sthreads 1 -T:build compile
+      - run:
+          name: jar
+          command: clojure -Sthreads 1 -T:build jar
+      - persist_to_workspace:
+          root: /home/circleci/
+          paths:
+            - .m2
+            - .npm
+            - replikativ
+  deploy:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: deploy
+          command: clojure -Sthreads 1 -T:build deploy
+  release:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: deploy
+          command: clojure -Sthreads 1 -T:build release
 
 workflows:
   build-test-and-deploy:
     jobs:
       - setup:
           context: dockerhub-deploy
+          setup_cljs: false
+      - build:
+          context: dockerhub-deploy
+          requires:
+            - setup
       - tools/format:
           context: dockerhub-deploy
           requires:
@@ -53,47 +105,34 @@ workflows:
       - tools/unittest:
           context: dockerhub-deploy
           requires:
-            - setup
+            - build
       - tools/backward-compatibility-test:
           context: dockerhub-deploy
           requires:
-            - setup
+            - build
       - tools/integrationtest-postgresql:
           context: dockerhub-deploy
           requires:
-            - setup
-      - tools/build:
-          jarname: "datahike"
-          context: dockerhub-deploy
-          requires:
-            - setup
-      - tools/deploy-snapshot:
-          jarname: "datahike"
+            - build
+      - deploy:
           context:
-            - clojars-deploy
             - dockerhub-deploy
+            - clojars-deploy
+            - github-token
           filters:
             branches:
-              only: development
+              only: main
           requires:
-            - setup
             - tools/format
             - tools/unittest
             - tools/backward-compatibility-test
             - tools/integrationtest-postgresql
-            - tools/build
-      - tools/deploy-release:
-          jarname: "datahike"
+      - release:
           context:
-            - clojars-deploy
             - dockerhub-deploy
+            - github-token
           filters:
             branches:
-              only: master
+              only: main
           requires:
-            - setup
-            - tools/format
-            - tools/unittest
-            - tools/backward-compatibility-test
-            - tools/integrationtest-postgresql
-            - tools/build
+            - deploy
