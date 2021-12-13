@@ -26,10 +26,6 @@
 
 (s/def ::store map?)
 
-(s/def :connection/sync? boolean?)
-
-(s/def ::connection (s/keys :opt-un [:connection/sync?]))
-
 (s/def :datahike/config (s/keys :req-un [:datahike/store]
                                 :opt-un [::index
                                          ::index-config
@@ -37,7 +33,6 @@
                                          ::schema-flexibility
                                          ::attribute-refs?
                                          ::initial-tx
-                                         ::connection 
                                          ::name]))
 
 (s/def :deprecated/schema-on-read boolean?)
@@ -103,17 +98,16 @@
     (throw (ex-info "Attribute references cannot be used with schema-flexibility ':read'." config))))
 
 (defn storeless-config []
-  {:store nil
-   :keep-history? false
-   :schema-flexibility :read
-   :name (z/rand-german-mammal)
-   :attribute-refs? false
-   :index :datahike.index/hitchhiker-tree
-   :cache-size 100000
-   :connection {:sync? true}
-   :index-config {:index-b-factor       c/default-index-b-factor
-                  :index-log-size       c/default-index-log-size
-                  :index-data-node-size c/default-index-data-node-size}})
+  {:db/store nil
+   :db/keep-history? false
+   :db/schema-flexibility :read
+   :db/name (z/rand-german-mammal)
+   :db/attribute-refs? false
+   :db/index :datahike.index/hitchhiker-tree
+   :db/cache-size 100000
+   :db/index-config {:index-b-factor       c/default-index-b-factor
+                     :index-log-size       c/default-index-log-size
+                     :index-data-node-size c/default-index-data-node-size}})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -144,7 +138,6 @@
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                 :connection {:sync? (bool-from-env :datahike-connection-sync true)}
                  :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
                  :cache-size (:cache-size env 100000)
                  :index-config {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)

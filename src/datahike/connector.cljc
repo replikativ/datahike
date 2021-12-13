@@ -4,6 +4,7 @@
             [datahike.index :as di]
             [datahike.store :as ds]
             [datahike.config :as dc]
+            [datahike.spec]
             [datahike.tools :as dt :refer [throwable-promise]]
             [datahike.index.hitchhiker-tree.upsert :as ups]
             [datahike.index.hitchhiker-tree.insert :as ins]
@@ -16,9 +17,9 @@
             [clojure.spec.alpha :as s]
             [clojure.core.async :refer [go <!]]
             [clojure.core.cache :as cache])
-  (:import [java.net URI]))
+  (:import [clojure.lang Atom]))
 
-(s/def ::connection #(instance? clojure.lang.Atom %))
+(s/def ::connection #(instance? Atom %))
 
 (defn sync-db [connection]
   (let [db @connection
@@ -62,7 +63,7 @@
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
-        {:keys [sync?]} (meta connection)]
+        {:keys [:tx/sync?]} (meta connection)]
     (when sync?
       (let [{:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx max-eid op-count hash meta]} db-after
             store (:store @connection)
@@ -138,9 +139,8 @@
   (<?? S (t/shutdown (:transactor @connection)))
   (ds/release-store (get-in @connection [:config :store]) (:store @connection)))
 
-;; deprecation begin
 (defprotocol IConfiguration
-  (-connect [config])
+  (-connect [config] [config opts])
   (-create-database [config opts])
   (-delete-database [config])
   (-database-exists? [config]))
@@ -148,7 +148,10 @@
 (extend-protocol IConfiguration
   String
   (-connect [uri]
-    (-connect (dc/uri->config uri)))
+    (-connect uri {}))
+
+  (-connect [uri opts]
+    (-connect (dc/uri->config uri) opts))
 
   (-create-database [uri & opts]
     (apply -create-database (dc/uri->config uri) opts))
@@ -179,10 +182,13 @@
           false))))
 
   (-connect [config]
-    (let [{{:keys [sync?]} :connection :as config} (dc/load-config config)
+    (-connect config {}))
+
+  (-connect [config {:keys [:tx/sync?]
+                     :or {sync? true}}]
+    (let [{:keys [store] :as config} (dc/load-config config)
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))
-          store-config (:store config)
-          raw-store (ds/connect-store store-config)
+          raw-store (ds/connect-store store)
           _ (when-not raw-store
               (dt/raise "Backend does not exist." {:type :backend-does-not-exist
                                                    :config config}))
@@ -194,7 +200,7 @@
                     (atom (cache/lru-cache-factory {} :threshold 1000))))))
           stored-db (<?? S (k/get-in store [:db]))
           _ (when-not stored-db
-              (ds/release-store store-config store)
+              (ds/release-store store store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
           {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx max-eid op-count hash meta]
@@ -219,7 +225,7 @@
                                       :ident-ref-map ident-ref-map
                                       :ref-ident-map ref-ident-map
                                       :store store)
-                               {:sync? sync?})]
+                               {:tx/sync? sync?})]
       (swap! conn assoc :transactor (t/create-transactor (:transactor config) conn update-and-flush-db))
       conn))
 
@@ -268,8 +274,13 @@
   ([]
    (-connect {}))
   ([config]
-   (-connect config)))
-;;deprecation end
+   (-connect config {}))
+  ([config opts]
+   (if (s/valid? :connection/config opts)
+     (-connect config opts)
+     (dt/raise (str "Bad connection options " (s/explain-str :connection/config opts))
+               {:error/connection :connection/opts
+                :error/spec (s/explain-data :connection/config opts)}))))
 
 (defn create-database
   ([]

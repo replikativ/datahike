@@ -11,66 +11,65 @@
                                   :id      "sync?-setting-test"}
              :schema-flexibility :read
              :keep-history?      false
-             :attribute-refs?    false
-             :connection         {:sync? false}}]
+             :attribute-refs?    false}
+        conn-cfg {:tx/sync? false}]
     (testing "default sync? setting"
-      (let [conn (utils/setup-db (dissoc cfg :connection))]
-        (is (= true
-               (-> conn meta :sync?)))))
-    (testing "manual sync? setting via configuration"
       (let [conn (utils/setup-db cfg)]
+        (is (= true
+               (-> conn meta :tx/sync?)))))
+    (testing "manual sync? setting via configuration"
+      (let [conn (utils/setup-db cfg conn-cfg)]
         (is (= false
-               (-> conn meta :sync?)))))
+               (-> conn meta :tx/sync?)))))
     (testing "manual sync? setting via start-sync"
       (let [conn (utils/setup-db cfg)]
         (d/start-sync conn)
         (is (= true
-               (-> conn meta :sync?)))))
+               (-> conn meta :tx/sync?)))))
     (testing "manual sync? setting via stop-sync"
       (let [conn (utils/setup-db (assoc-in cfg [:connection :sync?] true))]
         (d/stop-sync conn)
         (is (= false
-               (-> conn meta :sync?)))))
+               (-> conn meta :tx/sync?)))))
     (testing "switch between settings via start-sync and stop-sync"
       (let [conn (utils/setup-db cfg)]
         (testing "starting sync"
           (d/start-sync conn)
           (is (= true
-                 (-> conn meta :sync?))))
+                 (-> conn meta :tx/sync?))))
         (testing "stopping sync"
           (d/stop-sync conn)
           (is (= false
-                 (-> conn meta :sync?))))
+                 (-> conn meta :tx/sync?))))
         (testing "starting sync after stop"
           (d/start-sync conn)
           (is (= true
-                 (-> conn meta :sync?))))))
+                 (-> conn meta :tx/sync?))))))
     (testing "wrong configuration data"
       (is (thrown-with-msg? ExceptionInfo
-                            #"Invalid Datahike configuration."
-                            (utils/setup-db (assoc-in cfg [:connection :sync?] 666)))))))
+                            #"Bad connection options 666 - failed: boolean\? in: \[:tx\/sync\?\] at: \[:tx\/sync\?\] spec: :tx\/sync\?"
+                            (utils/setup-db cfg {:tx/sync? 666}))))))
 
 (deftest sync-transactions
-  (let [cfg {:store              {:backend :mem
-                                  :id      "sync?-setting-test"}
-             :schema-flexibility :read
-             :keep-history?      false
-             :attribute-refs?    false
-             :connection         {:sync? false}}
-        query '[:find ?n
-                :where
-                [?e :name ?n]]
+  (let [cfg          {:store              {:backend :mem
+                                           :id      "sync?-setting-test"}
+                      :schema-flexibility :read
+                      :keep-history?      false
+                      :attribute-refs?    false}
+        query        '[:find ?n
+                       :where
+                       [?e :name ?n]]
         query-result #{["Otto"] ["Brunhilde"]}
-        init-data (fn [conn]
-                    (d/transact conn [{:name "Otto"}
-                                      {:name "Brunhilde"}]))]
+        init-data    (fn [conn]
+                       (d/transact conn [{:name "Otto"}
+                                         {:name "Brunhilde"}]))]
     (testing "transact behavior with explicit active sync? setting"
       (let [conn (utils/setup-db (assoc-in cfg [:connection :sync?] true))]
         (init-data conn)
         (is (= query-result
                (d/q query @conn)))))
     (testing "transact behavior with in-active sync? and no sync! before re-connect"
-      (let [conn (utils/setup-db cfg)]
+      (let [conn (utils/setup-db cfg {:tx/sync? false})]
         (init-data conn)
         (is (= query-result
                (d/q query @conn)))

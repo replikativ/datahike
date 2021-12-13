@@ -13,10 +13,13 @@
 (defn setup-db
   "Setting up a test-db in memory by default.  Deep-merges the passed config into the defaults."
   ([]
-   (setup-db {}))
-  ([cfg]
-   (let [cfg (-> (tools/deep-merge (cfg-template) cfg)
+   (setup-db {} {}))
+  ([db-cfg]
+   (setup-db db-cfg {}))
+  ([db-cfg conn-cfg]
+   (let [cfg (-> (tools/deep-merge (cfg-template) db-cfg)
                  (assoc-in [:store :id] (str (UUID/randomUUID))))]
      (d/delete-database cfg)
      (d/create-database cfg)
-     (d/connect cfg))))
+     (d/connect db-cfg conn-cfg))))
+

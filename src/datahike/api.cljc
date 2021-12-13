@@ -1,6 +1,8 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
   (:require [datahike.connector :as dc]
+            [clojure.spec.alpha :as s]
+            [datahike.spec]
             [datahike.core :as dcore]
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
@@ -12,8 +14,14 @@
               [datahike.impl.entity Entity]
               [java.util Date])))
 
+(s/fdef connect
+  :args (s/alt :store-only (s/cat :store-config map?)
+               :full (s/cat :store-config map?
+                            :conn-config :connection/config))
+  :ret :datahike/connection)
+
 (def
-  ^{:arglists '([] [config])
+  ^{:arglists '([] [store-config] [store-config conn-config])
     :doc "Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
 
           The configuration for a connection is a subset of the Datahike configuration with only the store necessary: `:store`.
@@ -797,12 +805,12 @@
 (defn ^{:arglists '([conn])}
   stop-sync
   [conn]
-  (alter-meta! conn assoc-in [:sync?] false))
+  (alter-meta! conn assoc-in [:tx/sync?] false))
 
 (defn ^{:arglists '([conn])}
   start-sync
   [conn]
-  (alter-meta! conn assoc-in [:sync?] true))
+  (alter-meta! conn assoc-in [:tx/sync?] true))
 
 (defn ^{:arglists '([conn])}
   sync!
