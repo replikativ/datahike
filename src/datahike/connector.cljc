@@ -262,7 +262,7 @@
                                    :temporal-avet-key (di/-flush temporal-avet backend)}))))
       (ds/release-store store-config store)
       (when initial-tx
-        (let [conn (-connect config)]
+        (let [conn (-connect config {})]
           (transact conn initial-tx)
           (release conn)))))
 
@@ -272,7 +272,7 @@
 
 (defn connect
   ([]
-   (-connect {}))
+   (-connect {} {}))
   ([config]
    (-connect config {}))
   ([config opts]

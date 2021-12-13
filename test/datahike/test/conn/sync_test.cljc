@@ -47,7 +47,7 @@
                  (-> conn meta :tx/sync?))))))
     (testing "wrong configuration data"
       (is (thrown-with-msg? ExceptionInfo
-                            #"Bad connection options 666 - failed: boolean\? in: \[:tx\/sync\?\] at: \[:tx\/sync\?\] spec: :tx\/sync\?"
+                            #".*Bad connection options.*$"
                             (utils/setup-db cfg {:tx/sync? 666}))))))
 
 (deftest sync-transactions

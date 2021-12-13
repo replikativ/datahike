@@ -15,7 +15,8 @@
               [java.util Date])))
 
 (s/fdef connect
-  :args (s/alt :store-only (s/cat :store-config map?)
+  :args (s/alt :url (s/cat :store-config string?)
+               :store-only (s/cat :store-config map?)
                :full (s/cat :store-config map?
                             :conn-config :connection/config))
   :ret :datahike/connection)

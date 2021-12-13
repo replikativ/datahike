@@ -52,7 +52,6 @@
     (let [config (c/load-config)]
       (is (= {:store {:backend :mem
                       :id "default"}
-              :connection {:sync? true}
               :attribute-refs? false
               :keep-history? true
               :schema-flexibility :write
