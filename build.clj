@@ -44,7 +44,7 @@
 
 (defn release
   [_]
-  (-> (gh/overwrite-asset {:org (namespace lib)
+  (-> (gh/overwrite-asset {:org "replikativ"
                            :repo (name lib)
                            :tag version
                            :commit current-commit
