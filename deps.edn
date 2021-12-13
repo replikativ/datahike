@@ -51,9 +51,6 @@
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}
                     :main-opts ["-m" "deps-deploy.deps-deploy" "deploy" "replikativ-datahike.jar"]}
 
-           :build {:extra-deps {seancorfield/depstar {:mvn/version "2.0.216"}}
-                   :main-opts ["-m" "hf.depstar.jar" "replikativ-datahike.jar"]}
-
            :install {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}
                      :exec-fn deps-deploy.deps-deploy/deploy
                      :exec-args {:installer :local
@@ -62,5 +59,14 @@
            :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
                     :main-opts ["-m" "cljfmt.main" "check"]}
 
-           :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
-                  :main-opts ["-m" "cljfmt.main" "fix"]}}}
+           :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.7.0"}}
+                  :main-opts ["-m" "cljfmt.main" "fix"]}
+
+           :build {:deps {io.github.clojure/tools.build {:git/tag "v0.6.6" :git/sha "4d41c26"}
+                          slipset/deps-deploy {:mvn/version "0.2.0"}
+                          borkdude/gh-release-artifact {:git/url "https://github.com/borkdude/gh-release-artifact"
+                                                        :sha "2f8898d84126a4e922c490f8614211a8b0cf67cd"}
+                          babashka/babashka.curl {:mvn/version "0.1.1"}
+                          babashka/fs {:mvn/version "0.1.2"}
+                          cheshire/cheshire {:mvn/version "5.10.1"}}
+                   :ns-default build}}}
