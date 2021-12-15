@@ -1,5 +1,17 @@
 # Changelog
 
+## next minor/major release
+
+- Refactor test-namespaces
+  - move tests to use datahike.api
+  - move namespaces to `-test` format
+  - use random db-ids during testing
+  - move config from string to hash-map
+  - move with-fn to api-ns
+  - call empty-db from db-ns
+- Switch to GitHub Flow and using main branch
+- Switch to tools.build for building and deploying
+
 ## 0.4.0
 
 - Add attribute references (#211)
