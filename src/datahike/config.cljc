@@ -3,7 +3,7 @@
             [clojure.spec.alpha :as s]
             [zufall.core :as z]
             [environ.core :refer [env]]
-            [taoensso.timbre :as log]
+            [datahike.tools :as tools]
             [datahike.store :as ds]
             [datahike.constants :as c])
   (:import [java.net URI]))
@@ -82,15 +82,6 @@
     (edn/read-string (get env key (str default)))
     (catch Exception _ default)))
 
-(defn deep-merge
-  "Recursively merges maps and records."
-  [& maps]
-  (letfn [(m [& xs]
-            (if (some #(map? %) xs)
-              (apply merge-with m xs)
-              (last xs)))]
-    (reduce m maps)))
-
 (defn validate-config-attribute [attribute value config]
   (when-not (s/valid? attribute value)
     (throw (ex-info (str "Bad value " value " at " (name attribute)
@@ -149,7 +140,7 @@
                  :index-config {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)
                                 :index-log-size       (int-from-env :datahike-log-size c/default-index-log-size)
                                 :index-data-node-size (int-from-env :datahike-data-node-size c/default-index-data-node-size)}}
-         merged-config ((comp remove-nils deep-merge) config config-as-arg)
+         merged-config ((comp remove-nils tools/deep-merge) config config-as-arg)
          {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config
          config-spec (ds/config-spec store)]
      (when config-spec

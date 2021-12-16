@@ -23,8 +23,8 @@ release.clj
 lsp/
 .calva/
 out/
-.clj-kondo
 .lsp
 /.cache
 /.settings
 .classpath
+/.clj-kondo
