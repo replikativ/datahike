@@ -6,7 +6,8 @@
 (defn cfg-template
   "Returning a config template with a random store-id"
   []
-  {:store {:backend :mem}
+  {:store {:backend :mem
+           :id (str (UUID/randomUUID))}
    :keep-history? true
    :schema-flexibility :read})
 
@@ -17,9 +18,7 @@
   ([db-cfg]
    (setup-db db-cfg {}))
   ([db-cfg conn-cfg]
-   (let [cfg (-> (tools/deep-merge (cfg-template) db-cfg)
-                 (assoc-in [:store :id] (str (UUID/randomUUID))))]
+   (let [cfg (tools/deep-merge (cfg-template) db-cfg)]
      (d/delete-database cfg)
      (d/create-database cfg)
-     (d/connect db-cfg conn-cfg))))
-
+     (d/connect cfg conn-cfg))))
