@@ -4,8 +4,8 @@ set -o errexit
 set -o pipefail
 
 echo "Running unit tests"
-bin/run-unittests
+bin/run-unittests --reporter kaocha.report/dots
 echo "Running integration tests"
-bin/run-integrationtests
+bin/run-integrationtests --reporter kaocha.report/dots
 echo "Running backward compatibility tests"
-bin/run-backward-compatibility-tests
+bin/run-backward-compatibility-tests --reporter kaocha.report/dots
