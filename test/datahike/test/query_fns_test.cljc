@@ -125,13 +125,28 @@
                     :in    [?x ...]
                     :where [(count ?x) ?c]]
                   ["a" "abc"])
-             #{["a" 1] ["abc" 3]}))
+             #{["a" 1] ["abc" 3]})))
 
-      (is (= #{[:age] [:height] [:parent]}
-             (d/q '[:find ?a
+    (testing "Clojure core built-ins"
+      (is (= #{[:age] [:parent] [:height]}
+             (d/q '[:find ?attr
                     :where
-                    [?e ?a ?v]
-                    [(int? ?v)]] db))))
+                    [_ ?attr ?a]
+                    [(int? ?a)]]
+                  db)))
+      (is (= #{[:Ivan] [:Petr] [:Slava]}
+             (d/q '[:find ?k
+                    :where
+                    [_ :name ?n]
+                    [(keyword ?n) ?k]]
+                  db)))
+
+      (is (= #{[16] [23] [38]}
+             (d/q '[:find ?na
+                    :where
+                    [_ :age ?a]
+                    [(inc ?a) ?na]]
+                  db))))
 
     (testing "Function binding filtered by input argument"
       (is (= (d/q '[:find  ?x

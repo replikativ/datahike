@@ -321,8 +321,13 @@
                 'tuple vector, 'untuple identity
                 'q q
                 'datahike.query/q q
-                #'datahike.query/q q
-                'int? int?})
+                #'datahike.query/q q})
+
+(def clj-core-built-ins
+  #?(:clj
+     (dissoc (ns-publics 'clojure.core)
+             'eval)
+     :cljs {}))
 
 (def built-in-aggregates
   (letfn [(sum [coll] (reduce + 0 coll))
@@ -426,8 +431,6 @@
 
 (defn resolve-ins [context bindings values]
   (reduce resolve-in context (zipmap bindings values)))
-
-;;
 
 (def ^{:dynamic true
        :doc "List of symbols in current pattern that might potentially be resolved to refs"}
@@ -670,6 +673,7 @@
 (defn filter-by-pred [context clause]
   (let [[[f & args]] clause
         pred (or (get built-ins f)
+                 (get clj-core-built-ins f)
                  (context-resolve-val context f)
                  (resolve-sym f)
                  (resolve-method f)
@@ -687,6 +691,7 @@
   (let [[[f & args] out] clause
         binding (dpi/parse-binding out)
         fun (or (get built-ins f)
+                (get clj-core-built-ins f)
                 (context-resolve-val context f)
                 (resolve-sym f)
                 (resolve-method f)
