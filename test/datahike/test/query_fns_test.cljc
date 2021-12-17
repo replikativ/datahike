@@ -18,7 +18,8 @@
   (let [db (-> (db/empty-db {:parent {:db/valueType :db.type/ref}})
                (d/db-with [{:db/id 1, :name  "Ivan",  :age   15}
                            {:db/id 2, :name  "Petr",  :age   22, :height 240, :parent 1}
-                           {:db/id 3, :name  "Slava", :age   37, :parent 2}]))]
+                           {:db/id 3, :name  "Slava", :age   37, :parent 2}
+                           {:db/id 4, :name  "Ivan",  :age   22}]))]
 
     (testing "ground"
       (is (= (d/q '[:find ?vowel
@@ -26,10 +27,10 @@
              #{[:a] [:e] [:i] [:o] [:u]})))
 
     (testing "get-else"
-      (is (= (d/q '[:find ?e ?age ?height
+      (is (= #{[1 15 300] [2 22 240] [3 37 300] [4 22 300]}
+             (d/q '[:find ?e ?age ?height
                     :where [?e :age ?age]
-                    [(get-else $ ?e :height 300) ?height]] db)
-             #{[1 15 300] [2 22 240] [3 37 300]}))
+                    [(get-else $ ?e :height 300) ?height]] db)))
 
       (is (thrown-with-msg? ExceptionInfo #"get-else: nil default value is not supported"
                             (d/q '[:find ?e ?height
@@ -37,12 +38,13 @@
                                    [(get-else $ ?e :height nil) ?height]] db))))
 
     (testing "get-some"
-      (is (= (d/q '[:find ?e ?a ?v
-                    :where [?e :name _]
-                    [(get-some $ ?e :height :age) [?a ?v]]] db)
-             #{[1 :age 15]
+      (is (= #{[1 :age 15]
                [2 :height 240]
-               [3 :age 37]})))
+               [3 :age 37]
+               [4 :age 22]}
+             (d/q '[:find ?e ?a ?v
+                    :where [?e :name _]
+                    [(get-some $ ?e :height :age) [?a ?v]]] db))))
 
     (testing "q"
       (is (= #{[1 "Ivan"]}
@@ -52,6 +54,42 @@
                     [?e :age ?a]
                     [?e :name ?n]]
                   db))))
+
+    (testing "q with rules"
+      (is (thrown-with-msg? ExceptionInfo #"Missing rules var '%' in :in"
+                            (d/q '[:find ?n ?a
+                                   :in $ %
+                                   :where
+                                   [(q [:find ?name (min ?age)
+                                        :where (has-age ?name ?age)])
+                                    [[?n ?a]]]
+                                   (has-age ?n ?a)]
+                                 db
+                                 '[[(has-age ?n ?a) [?e :age ?a] [?e :name ?n]]])))
+      (is (= #{}
+             (d/q '[:find ?n ?a
+                    :in $ %
+                    :where
+                    [(q [:find ?name (min ?age)
+                         :in $ %
+                         :where (has-age ?name ?age)])
+                     [[?n ?a]]]
+                    (has-age ?n ?a)]
+                  db
+                  '[[(has-age ?n ?a) [?e :age ?a] [?e :name ?n]]])))
+      (is (= #{["Petr" 22] ["Ivan" 15] ["Slava" 37]}
+             (d/q '[:find ?n ?a
+                    :in $ %
+                    :where
+                    [(q [:find ?name (min ?age)
+                         :in $ %
+                         :where (has-age ?name ?age)]
+                        $
+                        [[(has-age ?n ?a) [?e :age ?a] [?e :name ?n]]])
+                     [[?n ?a]]]
+                    (has-age ?n ?a)]
+                  db
+                  '[[(has-age ?n ?a) [?e :age ?a] [?e :name ?n]]]))))
 
     (testing "q without quotes"
       (is (= #{[1 "Ivan"]}
@@ -63,25 +101,25 @@
                   db))))
 
     (testing "missing?"
-      (is (= (d/q '[:find ?e ?age
+      (is (= #{[1 15] [3 37] [4 22]}
+             (d/q '[:find ?e ?age
                     :in $
                     :where [?e :age ?age]
-                    [(missing? $ ?e :height)]] db)
-             #{[1 15] [3 37]})))
+                    [(missing? $ ?e :height)]] db))))
 
     (testing "missing? back-ref"
-      (is (= (d/q '[:find ?e
+      (is (= #{[3] [4]}
+             (d/q '[:find ?e
                     :in $
                     :where [?e :age ?age]
-                    [(missing? $ ?e :_parent)]] db)
-             #{[3]})))
+                    [(missing? $ ?e :_parent)]] db))))
 
     (testing "Built-ins"
-      (is (= (d/q '[:find  ?e1 ?e2
+      (is (= #{[1 2] [1 3] [1 4]}
+             (d/q '[:find  ?e1 ?e2
                     :where [?e1 :age ?a1]
                     [?e2 :age ?a2]
-                    [(< ?a1 18 ?a2)]] db)
-             #{[1 2] [1 3]}))
+                    [(< ?a1 18 ?a2)]] db)))
 
       (is (= (d/q '[:find  ?x ?c
                     :in    [?x ...]
@@ -116,23 +154,23 @@
              [{:db/id -1 :age 92 :name "Aaron"}])))
 
     (testing "Passing predicate as source"
-      (is (= (d/q '[:find  ?e
+      (is (= #{[2] [3] [4]}
+             (d/q '[:find  ?e
                     :in    $ ?adult
                     :where [?e :age ?a]
                     [(?adult ?a)]]
                   db
-                  #(> % 18))
-             #{[2] [3]})))
+                  #(> % 18)))))
 
     (testing "Calling a function"
-      (is (= (d/q '[:find  ?e1 ?e2 ?e3
+      (is (= #{[1 2 3] [2 1 3] [1 4 3] [4 1 3]}
+             (d/q '[:find  ?e1 ?e2 ?e3
                     :where [?e1 :age ?a1]
                     [?e2 :age ?a2]
                     [?e3 :age ?a3]
                     [(+ ?a1 ?a2) ?a12]
                     [(= ?a12 ?a3)]]
-                  db)
-             #{[1 2 3] [2 1 3]})))
+                  db))))
 
     (testing "Two conflicting function values for one binding."
       (is (= (d/q '[:find  ?n
