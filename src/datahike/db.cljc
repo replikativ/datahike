@@ -162,9 +162,43 @@
       (update :aevt -persistent!)
       (update :avet -persistent!)))
 
+(defn validate-pattern
+  "Checks if database pattern is valid"
+  [pattern]
+  (let [[e a v tx added?] pattern]
+
+    (when-not (or (number? e)
+                  (nil? e)
+                  (and (vector? e) (= 2 (count e))))
+      (raise "Bad format for entity-id in pattern, must be a number, nil or vector of two elements."
+             {:error :search/pattern :e e :pattern pattern}))
+
+    (when-not (or (number? a)
+                  (keyword? a)
+                  (nil? a))
+      (raise "Bad format for attribute in pattern, must be a number, nil or a keyword."
+             {:error :search/pattern :a a :pattern pattern}))
+
+    (when-not (or (not (vector? v))
+                  (nil? v)
+                  (and (vector? v) (= 2 (count v))))
+      (raise "Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
+             {:error :search/pattern :v v :pattern pattern}))
+
+    (when-not (or (nil? tx)
+                  (number? tx))
+      (raise "Bad format for transaction ID in pattern, must be a number or nil."
+             {:error :search/pattern :tx tx :pattern pattern}))
+
+    (when-not (or (nil? added?)
+                  (boolean? added?))
+      (raise "Bad format for added? in pattern, must be a boolean value or nil."
+             {:error :search/pattern :added? added? :pattern pattern}))))
+
 (defn- search-indices
   "Assumes correct pattern form, i.e. refs for ref-database"
   [eavt aevt avet pattern indexed? temporal-db?]
+  (validate-pattern pattern)
   (let [[e a v tx added?] pattern]
     (if (and (not temporal-db?) (false? added?))
       '()
