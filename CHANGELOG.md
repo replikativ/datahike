@@ -11,6 +11,7 @@
   - call empty-db from db-ns
 - Switch to GitHub Flow and using main branch
 - Switch to tools.build for building and deploying
+- Persist max-eid
 
 ## 0.4.0
 
