@@ -23,16 +23,24 @@
 
 (def
   ^{:arglists '([] [store-config] [store-config conn-config])
-    :doc "Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
+    :doc "Connects to a datahike database via store configuration map and an optional connection configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
 
-          The configuration for a connection is a subset of the Datahike configuration with only the store necessary: `:store`.
+          The store configuration for a connection is a subset of the Datahike configuration with only the store necessary: `:store`.
 
           `:store` defines the backend configuration as hash-map with mandatory key: `:backend` and store dependent keys.
 
           Per default Datahike ships with `:mem` and `:file` backend.
 
-          The default configuration:
+          The default store configuration:
            `{:store {:backend :mem :id \"default\"}}`
+
+          Optionally a connection configuration hash-map with following keys can be added:
+          - `:tx/sync?`: boolean that whether transactions are flushed automatically on `transact`, if false the user needs to manually flush the database via `sync!`
+
+          Data might be lost on manual data synchronization if `sync!` is not used before reconnection. Also be aware that all transactions are held in memory when not flushed.
+
+          The default connection configuration:
+          `{:tx/sync? true}`
 
           Usage:
 
@@ -803,17 +811,20 @@
    {}
    (db/-rschema db)))
 
-(defn ^{:arglists '([conn])}
+(defn ^{:arglists '([conn])
+        :doc "Stops automatic synchronisation I/O of the database to the backend on transact. Use `start-sync` to start synchronizing again or use `sync!` to manually synchronize the database."}
   stop-sync
   [conn]
   (alter-meta! conn assoc-in [:tx/sync?] false))
 
-(defn ^{:arglists '([conn])}
+(defn ^{:arglists '([conn])
+        :doc "Starts automatic synchronisation I/O of the database to the backend on transact. Use `stop-sync` to stop automatic synchronization."}
   start-sync
   [conn]
   (alter-meta! conn assoc-in [:tx/sync?] true))
 
-(defn ^{:arglists '([conn])}
+(defn ^{:arglists '([conn])
+        :doc "Synchronizes the current database in the connection to the backend."}
   sync!
   [conn]
   (dc/sync-db conn))
