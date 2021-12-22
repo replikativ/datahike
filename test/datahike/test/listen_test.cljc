@@ -25,16 +25,16 @@
     (d/unlisten conn :test)
     (d/transact conn {:tx-data [[:db/add -1 :name "Georgy"]]})
 
-    (is (= (rest (:tx-data (first @reports)))
-           [(dd/datom 3 :name "Dima"   (+ const/tx0 2) true)
+    (is (= [(dd/datom (+ const/tx0 2) :some-metadata 1 (+ const/tx0 2) true)
+            (dd/datom 3 :name "Dima"   (+ const/tx0 2) true)
             (dd/datom 3 :age 19        (+ const/tx0 2) true)
-            (dd/datom 4 :name "Evgeny" (+ const/tx0 2) true)]))
-    ; TODO Reenable when https://github.com/replikativ/datahike/issues/433 is fixed
-    #_(is (= (rest (:tx-meta (first @reports)))
-             {:some-metadata 1}))
-    (is (= (rest (:tx-data (second @reports)))
-           [(dd/datom 5 :name "Fedor"  (+ const/tx0 3) true)
+            (dd/datom 4 :name "Evgeny" (+ const/tx0 2) true)]
+           (rest (:tx-data (first @reports)))))
+    (is (= {:some-metadata 1}
+           (:tx-meta (first @reports))))
+    (is (= [(dd/datom 5 :name "Fedor"  (+ const/tx0 3) true)
             (dd/datom 1 :name "Alex2"  (+ const/tx0 3) true)
-            (dd/datom 4 :name "Evgeny" (+ const/tx0 3) false)]))
+            (dd/datom 4 :name "Evgeny" (+ const/tx0 3) false)]
+           (rest (:tx-data (second @reports)))))
     (is (= (:tx-meta (second @reports))
            nil))))

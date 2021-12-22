@@ -346,15 +346,13 @@
           (is (= (into {} (d/entity @conn tx-id))
                  {:prop4 "prop4"})))))))
 
-; TODO Fix with https://github.com/replikativ/datahike/issues/433
-; and improve the test
-#_(deftest test-tx-meta
-    (let [conn (du/setup-db)
-          tx   (d/transact conn {:tx-data [{:name "Sergey"
-                                            :age  5}]
-                                 :tx-meta {:foo "bar"}})]
-      (is (= (:tx-meta tx)
-             {:foo "bar"}))))
+(deftest test-tx-meta
+  (let [conn (du/setup-db)
+        tx   (d/transact conn {:tx-data [{:name "Sergey"
+                                          :age  5}]
+                               :tx-meta {:foo "bar"}})]
+    (is (= (:tx-meta tx)
+           {:foo "bar"}))))
 
 (comment
   (def conn (du/setup-db))
