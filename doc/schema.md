@@ -37,7 +37,7 @@ database creation you may opt out by setting the `:schema-flexibility` parameter
 (def conn (d/connect cfg))
 
 ;; now you can add any arbitrary data
-(d/transact! conn [{:any "Data"}])
+(d/transact conn [{:any "Data"}])
 ```
 
 ## Schema-on-write
@@ -61,10 +61,10 @@ like any other datom.
 (def schema [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])
 
 ;; transact it
-(d/transact! conn schema)
+(d/transact conn schema)
 
 ;; now we can transact data based on the provided schema
-(d/transact! conn [{:name "Alice"}])
+(d/transact conn [{:name "Alice"}])
 ```
 
 The schema definition is for the most part compliant with Datomic's
