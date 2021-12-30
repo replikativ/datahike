@@ -51,7 +51,7 @@ system. Use `db` for this view. The following example shows a simple interaction
 (def conn (d/connect cfg))
 
 ;; add first data
-(d/transact conn [{:name "Alice" :age 25}])
+(d/transact conn {:tx-data [{:name "Alice" :age 25}]})
 
 ;; define simple query for name and age
 (def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
@@ -60,7 +60,7 @@ system. Use `db` for this view. The following example shows a simple interaction
 ;; => #{["Alice" 25]}
 
 ;; update the entity
-(d/transact conn [{:db/id [:name "Alice"] :age 30}])
+(d/transact conn {:tx-data [{:db/id [:name "Alice"] :age 30}]})
 
 ;; `db` reflects the latest state of the database
 (d/q query @conn)
@@ -93,7 +93,7 @@ You can query the database at a specific point in time using `as-of`:
 
 
 ;; add first data
-(d/transact conn [{:name "Alice" :age 25}])
+(d/transact conn {:tx-data [{:name "Alice" :age 25}]})
 
 (def first-date (java.util.Date.))
 
@@ -104,7 +104,7 @@ You can query the database at a specific point in time using `as-of`:
 ;; => #{["Alice" 25]}
 
 ;; update the entity
-(d/transact conn [{:db/id [:name "Alice"] :age 30}])
+(d/transact conn {:tx-data [{:db/id [:name "Alice"] :age 30}]})
 
 ;; let's compare the current and the as-of value:
 (d/q query  @conn)
@@ -140,7 +140,7 @@ current and all historical data:
 (def conn (d/connect cfg))
 
 ;; add first data
-(d/transact conn [{:name "Alice" :age 25}])
+(d/transact conn {:tx-data [{:name "Alice" :age 25}]})
 
 ;; define simple query for name and age
 (def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
@@ -150,7 +150,7 @@ current and all historical data:
 ;; => #{["Alice" 25]}
 
 ;; update the entity
-(d/transact conn [{:db/id [:name "Alice"] :age 30}])
+(d/transact conn {:tx-data [{:db/id [:name "Alice"] :age 30}]})
 
 ;; both entries are present
 (d/q query (d/history @conn))
@@ -184,7 +184,7 @@ database:
 
 
 ;; add first data
-(d/transact conn [{:name "Alice" :age 25}])
+(d/transact conn {:tx-data [{:name "Alice" :age 25}]})
 
 (def first-date (java.util.Date.))
 
@@ -195,7 +195,7 @@ database:
 ;; => #{["Alice" 25]}
 
 ;; update the entity
-(d/transact conn [{:db/id [:name "Alice"] :age 30}])
+(d/transact conn {:tx-data [{:db/id [:name "Alice"] :age 30}]})
 
 ;; let's compare the current and the as-of value:
 (d/q query @conn)
@@ -244,7 +244,7 @@ your purposes.
 (def conn (d/connect cfg))
 
 ;; add first data
-(d/transact conn [{:name "Alice" :age 25}])
+(d/transact conn {:tx-data [{:name "Alice" :age 25}]})
 
 ;; let's find all transaction dates, should be two: one for the schema and one
 ;; for the first data
@@ -290,7 +290,7 @@ available in transactions:
 
 
 ;; add data
-(d/transact conn [{:name "Alice" :age 25}])
+(d/transact conn {:tx-data [{:name "Alice" :age 25}]})
 
 ;; define simple query for name and age
 (def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
@@ -298,14 +298,14 @@ available in transactions:
 (d/q query  @conn)
 ;; => #{["Alice" 25]}
 
-(d/transact [[:db.purge/entity [:name "Alice"]]])
+(d/transact conn {:tx-data [[:db.purge/entity [:name "Alice"]]]})
 
 ;; data was removed from current database view
 (d/q query  @conn)
 ;; => #{}
 
 ;; data was also removed from history
-(d/q query (history @conn))
+(d/q query (d/history @conn))
 ;; => #{}
 ```
 
