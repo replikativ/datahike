@@ -14,6 +14,7 @@
 - Persist max-eid
 - Allow attribute access to historical db records
 - Allow keyword keys for queries
+- Fix tx-meta on transact through api-ns
 
 ## 0.4.0
 

@@ -1806,7 +1806,7 @@
   [{:keys [tx-meta db-before] :as report}]
   (let [tx-meta (merge {:db/txInstant (get-time)} tx-meta)
         tid (current-tx report)
-        {:keys [attribute-refs? ]} (-config db-before)]
+        {:keys [attribute-refs?]} (-config db-before)]
     (reduce-kv
      (fn [entities attribute value]
        (let [straight-a (if attribute-refs? (-ref-for db-before attribute) attribute)]
