@@ -53,37 +53,37 @@ Let's fire up a REPL:
     false))
 
 ;; add the person spec
-(d/transact conn [{:db/ident :person/guard
-                   :db.entity/attrs [:account/email :account/holder]
-                   :db.entity/preds ['user/is-email?]}])
+(d/transact conn {:tx-data [{:db/ident :person/guard
+                             :db.entity/attrs [:account/email :account/holder]
+                             :db.entity/preds ['user/is-email?]}]})
 
 (def valid-account {:account/email "emma@datahike.io"
                     :account/holder "Emma"})
 
 ;; add a valid person
-(d/transact conn [(assoc valid-account :db/ensure :person/guard)])
+(d/transact conn {:tx-data [(assoc valid-account :db/ensure :person/guard)]})
 
-;; add with missing holder
-(d/transact conn [{:account/email "benedikt@datahike.io"
-                   :db/ensure :person/guard}])
+;; add with missing holder, observe exception
+(d/transact conn {:tx-data [{:account/email "benedikt@datahike.io"
+                             :db/ensure :person/guard}]})
 
-;; add with invalid email
-(d/transact conn [{:account/email "thekla@datahike"
-                   :account/holder "Thekla"
-                   :db/ensure :person/guard}])
+;; add with invalid email, observe exception
+(d/transact conn {:tx-data [{:account/email "thekla@datahike"
+                             :account/holder "Thekla"
+                             :db/ensure :person/guard}]})
 
 ;; add the balance spec
-(d/transact conn [{:db/ident :balance/guard
-                   :db.entity/attrs [:account/balance]
-                   :db.entity/preds ['user/positive-balance?]}])
+(d/transact conn {:tx-data [{:db/ident :balance/guard
+                             :db.entity/attrs [:account/balance]
+                             :db.entity/preds ['user/positive-balance?]}]})
 
 ;; add valid balance
-(d/transact conn [{:db/id [:account/email (:account/email valid-account)]
-                   :account/balance 1000
-                   :db/ensure :balance/guard}])
+(d/transact conn {:tx-data [{:db/id [:account/email (:account/email valid-account)]
+                             :account/balance 1000
+                             :db/ensure :balance/guard}]})
 
-;; add invalid negative balance
-(d/transact conn [{:db/id [:account/email (:account/email valid-account)]
-                   :account/balance -100
-                   :db/ensure :balance/guard}])
+;; add invalid negative balance, observe exception
+(d/transact conn {:tx-data [{:db/id [:account/email (:account/email valid-account)]
+                             :account/balance -100
+                             :db/ensure :balance/guard}]})
 ```
