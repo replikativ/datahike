@@ -7,7 +7,9 @@
    [datahike.datom :as dd]
    [datahike.constants :as const]
    [datahike.test.utils :as du]
-   [datahike.test.core-test]))
+   [datahike.test.core-test]
+   [clojure.spec.alpha :as s]
+   [clojure.spec.gen.alpha :as gen]))
 
 (deftest test-with
   (let [db  (-> (db/empty-db {:aka {:db/cardinality :db.cardinality/many}})
@@ -347,12 +349,26 @@
                  {:prop4 "prop4"})))))))
 
 (deftest test-tx-meta
-  (let [conn (du/setup-db)
-        tx   (d/transact conn {:tx-data [{:name "Sergey"
-                                          :age  5}]
-                               :tx-meta {:foo "bar"}})]
-    (is (= (:tx-meta tx)
-           {:foo "bar"}))))
+  (testing "simple test"
+    (let [conn (du/setup-db)
+          tx   (d/transact conn {:tx-data [{:name "Sergey"
+                                            :age  5}]
+                                 :tx-meta {:foo "bar"}})]
+      (is (= (:tx-meta tx)
+             {:foo "bar"}))))
+  (testing "generative test"
+    (let [conn (du/setup-db)
+          Metadata (s/map-of keyword? (s/or :int int?
+                                            :str string?
+                                            :inst inst?
+                                            :kw keyword?
+                                            :sym symbol?))
+          generated (gen/generate (s/gen Metadata))
+          tx-report (d/transact conn {:tx-data [{:name "Sergey"
+                                                 :age  5}]
+                                      :tx-meta generated})]
+      (is (= (:tx-meta tx-report)
+             generated)))))
 
 (comment
   (def conn (du/setup-db))
