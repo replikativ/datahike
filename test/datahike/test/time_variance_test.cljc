@@ -324,7 +324,6 @@
     (d/delete-database cfg)))
 ;; => #'datahike.test.time-variance/test-no-duplicates-with-cardinality-many
 
-
 ;; https://github.com/replikativ/datahike/issues/470
 (deftest test-history-record-attribute-access
   (let [cfg {:store {:backend :mem
