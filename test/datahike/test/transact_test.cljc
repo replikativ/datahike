@@ -6,8 +6,10 @@
    [datahike.db :as db]
    [datahike.datom :as dd]
    [datahike.constants :as const]
+   [datahike.tools :as tools]
    [datahike.test.utils :as du]
    [datahike.test.core-test]
+   [datahike.test.cljs-utils]
    [clojure.spec.alpha :as s]
    [clojure.spec.gen.alpha :as gen]))
 
@@ -368,14 +370,86 @@
                                                  :age  5}]
                                       :tx-meta generated})]
       (is (= (:tx-meta tx-report)
-             generated)))))
+             generated))))
+  (testing "manual txInstant is the same as auto-generated"
+    (let [conn (du/setup-db)
+          date (tools/get-time)
+          tx   (d/transact conn {:tx-data [{:name "Sergey"
+                                            :age  5}]
+                                 :tx-meta {:db/txInstant date}})]
+      (is (= [[1 :age 5 536870913 true]
+              [1 :name "Sergey" 536870913 true]
+              [536870913
+               :db/txInstant
+               date
+               536870913
+               true]]
+             (mapv (comp #(into [] %) seq)
+                   (d/datoms @conn :eavt))))))
+  (testing "missing schema definition"
+    (let [schema [{:db/ident       :name
+                   :db/cardinality :db.cardinality/one
+                   :db/index       true
+                   :db/unique      :db.unique/identity
+                   :db/valueType   :db.type/string}
+                  {:db/ident       :age
+                   :db/cardinality :db.cardinality/one
+                   :db/valueType   :db.type/long}]
+          conn (du/setup-db {:initial-tx schema
+                             :schema-flexibility :write})]
+      (is (thrown-msg? "Bad entity attribute :foo at [:db/add 536870914 :foo :bar 536870914], not defined in current schema"
+                       (d/transact conn {:tx-data [{:name "Sergey"
+                                                    :age  5}]
+                                         :tx-meta {:foo :bar}})))))
+  (testing "meta-data is available on the indices"
+    (let [conn (du/setup-db)
+          tx   (d/transact conn {:tx-data [{:name "Sergey"
+                                            :age  5}]
+                                 :tx-meta {:foo :bar}})]
+      (is (= #{[536870913 :bar]}
+             (d/q '[:find ?e ?v
+                    :where [?e :foo ?v]]
+                  @conn)))))
+  (testing "retracting metadata"
+    (let [conn (du/setup-db)
+          _    (d/transact conn {:tx-data [{:name "Sergey"
+                                            :age  5}]
+                                 :tx-meta {:foo :bar}})
+          _    (d/transact conn {:tx-data [[:db/retract 536870913 :foo :bar]]})]
+      (is (= #{}
+             (d/q '[:find ?e ?v
+                    :where [?e :foo ?v]]
+                  @conn)))))
+  (testing "overwrite metadata"
+    (let [conn (du/setup-db)
+          _    (d/transact conn {:tx-data [{:name "Sergey"
+                                            :age  5}]
+                                 :tx-meta {:foo :bar}})
+          _    (d/transact conn {:tx-data [{:db/id 536870913 :foo :baz}]})]
+      (is (= #{[536870913 :baz]}
+             (d/q '[:find ?e ?v
+                    :where [?e :foo ?v]]
+                  @conn)))))
+  (testing "metadata has txInstant"
+    (let [conn (du/setup-db)
+          {:keys [tempids]} (d/transact conn {:tx-data [{:name "Sergey"
+                                                         :age  5}]
+                                              :tx-meta {:foo :bar}})]
+      (is (-> (d/pull @conn
+                      '[:db/txInstant]
+                      (:db/current-tx tempids))
+              :db/txInstant
+              inst?)))))
 
 (comment
   (def conn (du/setup-db))
   (def tx (d/transact conn {:tx-data [{:name "Sergey"
                                        :age  5}]
                             :tx-meta {:foo "bar"}}))
-  (:tx-meta tx)
+  (def tempids (:tempids tx))
+  (def ctx (:db/current-tx (:tempids tx)))
+  (d/pull @conn '[:db/txInstant] ctx)
+  (d/datoms @conn :eavt)
   (def conn (du/setup-db {:keep-history? false}))
   (d/transact conn {:tx-data [{:db/ident :created-at :db/valueType :db.type/ref}
                               {:name "X", :created-at :db/current-tx}
@@ -383,13 +457,4 @@
                               [:db/add :db/current-tx :prop2 "prop2"]
                               [:db/add -1 :name "Y"]
                               [:db/add -1 :created-at :db/current-tx]]})
-  (d/q '[:find ?e ?a ?v :where [?e ?a ?v]] @conn)
-
-  (require '[datahike.core :as datahike.core])
-  (def conn-alt (datahike.core/create-conn {:created-at {:db/valueType :db.type/ref}}))
-  (def tx1  (datahike.core/transact! conn-alt [{:name "X", :created-at :db/current-tx}
-                                               {:db/id :db/current-tx, :prop1 "prop1"}
-                                               [:db/add :db/current-tx :prop2 "prop2"]
-                                               [:db/add -1 :name "Y"]
-                                               [:db/add -1 :created-at :db/current-tx]]))
-  (d/q '[:find ?e ?a ?v :where [?e ?a ?v]] @conn-alt))
+  (d/q '[:find ?e ?a ?v :where [?e ?a ?v]] @conn))
