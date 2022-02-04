@@ -54,6 +54,10 @@
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}
                     :main-opts ["-m" "deps-deploy.deps-deploy" "deploy" "replikativ-datahike.jar"]}
 
+           :deps-consistency {:extra-paths ["tools"]
+                              :extra-deps {org.clojure/tools.cli {:mvn/version "1.0.206"}}
+                              :main-opts ["-m" "dependencies-consistency-check" "-a" "dev" "-a" "test"]}
+
            :install {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}
                      :exec-fn deps-deploy.deps-deploy/deploy
                      :exec-args {:installer :local
