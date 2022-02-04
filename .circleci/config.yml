@@ -110,7 +110,7 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
-      - tools/integrationtest-postgresql:
+      - tools/integrationtest:
           context: dockerhub-deploy
           requires:
             - build
@@ -126,7 +126,7 @@ workflows:
             - tools/format
             - tools/unittest
             - tools/backward-compatibility-test
-            - tools/integrationtest-postgresql
+            - tools/integrationtest
       - release:
           context:
             - dockerhub-deploy
