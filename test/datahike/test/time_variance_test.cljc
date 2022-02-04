@@ -326,15 +326,14 @@
 
 ;; https://github.com/replikativ/datahike/issues/470
 (deftest test-history-record-attribute-access
-  (let [cfg {:store {:backend :mem
-                     :id "test-history-record-attribute-access"}
-             :keep-history? true
-             :schema-flexiibility :read
-             :attribute-refs? false}
-        conn (setup-db cfg)
+  (let [cfg                                {:store              {:backend :mem}
+                                            :keep-history?      true
+                                            :schema-flexibility :read
+                                            :attribute-refs?    false}
+        conn                               (setup-db cfg)
         {{:keys [db/current-tx]} :tempids} (d/transact conn [{:name "Anne"}])
-        _ (d/transact conn [{:name "Bernard"}])
-        db @conn]
+        _                                  (d/transact conn [{:name "Bernard"}])
+        db                                 @conn]
     (testing "history db attributes"
       (is (= db (:origin-db (d/history db))))
       (is (= (:eavt db) (-> db d/history :origin-db :eavt))))
