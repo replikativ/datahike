@@ -323,3 +323,25 @@
     (d/release conn)
     (d/delete-database cfg)))
 ;; => #'datahike.test.time-variance/test-no-duplicates-with-cardinality-many
+
+;; https://github.com/replikativ/datahike/issues/470
+(deftest test-history-record-attribute-access
+  (let [cfg                                {:store              {:backend :mem}
+                                            :keep-history?      true
+                                            :schema-flexibility :read
+                                            :attribute-refs?    false}
+        conn                               (setup-db cfg)
+        {{:keys [db/current-tx]} :tempids} (d/transact conn [{:name "Anne"}])
+        _                                  (d/transact conn [{:name "Bernard"}])
+        db                                 @conn]
+    (testing "history db attributes"
+      (is (= db (:origin-db (d/history db))))
+      (is (= (:eavt db) (-> db d/history :origin-db :eavt))))
+    (testing "as-of db attributes"
+      (is (= db (:origin-db (d/as-of db current-tx))))
+      (is (= current-tx (:time-point (d/as-of db current-tx))))
+      (is (= (:eavt db) (-> db (d/as-of current-tx) :origin-db :eavt))))
+    (testing "since db attributes"
+      (is (= db (:origin-db (d/since db current-tx))))
+      (is (= current-tx (:time-point (d/since db current-tx))))
+      (is (= (:eavt db) (-> db (d/since current-tx) :origin-db :eavt))))))

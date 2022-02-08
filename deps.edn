@@ -18,7 +18,7 @@
 
            :dev {:extra-paths ["dev" "benchmark/src"]
                  :extra-deps {org.clojure/tools.namespace {:mvn/version "1.2.0"}
-                              cider/cider-nrepl           {:mvn/version "0.28.0"}
+                              cider/cider-nrepl           {:mvn/version "0.28.1"}
                               nrepl/nrepl                 {:mvn/version "0.9.0"}
                               clj-http/clj-http           {:mvn/version "3.12.3"}
                               org.clojure/tools.cli       {:mvn/version "1.0.206"}
@@ -30,7 +30,7 @@
                                lambdaisland/kaocha-cljs  {:mvn/version "1.0.107"}
                                io.replikativ/datahike-jdbc {:mvn/version "0.1.2-SNAPSHOT"}}}
 
-           :repl {:extra-deps {cider/cider-nrepl           {:mvn/version "0.28.0"}
+           :repl {:extra-deps {cider/cider-nrepl           {:mvn/version "0.28.1"}
                                nrepl/nrepl                 {:mvn/version "0.9.0"}
                                org.clojure/tools.namespace {:mvn/version "1.2.0"}}
                   :main-opts ["-m" "nrepl.cmdline" "--middleware" "[cider.nrepl/cider-middleware]"]}
@@ -68,5 +68,5 @@
                                                         :sha "a83ee8da47d56a80b6380cbb6b4b9274048067bd"}
                           babashka/babashka.curl {:mvn/version "0.1.1"}
                           babashka/fs {:mvn/version "0.1.2"}
-                          cheshire/cheshire {:mvn/version "5.10.1"}}
+                          cheshire/cheshire {:mvn/version "5.10.2"}}
                    :ns-default build}}}

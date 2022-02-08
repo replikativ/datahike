@@ -475,16 +475,10 @@
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on HistoricalDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on HistoricalDB")))
 
-       clojure.lang.Seqable (seq [db] (-datoms db :eavt []))
-
-       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on HistoricalDB")))
-       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on HistoricalDB")))
-       clojure.lang.IKeywordLookup (getLookupThunk [db k]
-                                                   (throw (UnsupportedOperationException. "getLookupThunk is not supported on HistoricalDB")))
+       clojure.lang.Seqable
+       (seq [db] (-datoms db :eavt []))
 
        clojure.lang.Associative
-       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on HistoricalDB")))
-       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on HistoricalDB")))
        (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on HistoricalDB")))])
 
   IDB
@@ -582,16 +576,10 @@
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on AsOfDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on AsOfDB")))
 
-       clojure.lang.Seqable (seq [db] (-datoms db :eavt []))
-
-       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on AsOfDB")))
-       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on AsOfDB")))
-       clojure.lang.IKeywordLookup (getLookupThunk [db k]
-                                                   (throw (UnsupportedOperationException. "getLookupThunk is not supported on AsOfDB")))
+       clojure.lang.Seqable
+       (seq [db] (-datoms db :eavt []))
 
        clojure.lang.Associative
-       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on AsOfDB")))
-       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on AsOfDB")))
        (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on AsOfDB")))])
 
   IDB
@@ -679,16 +667,10 @@
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on SinceDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on SinceDB")))
 
-       clojure.lang.Seqable (seq [db] (-datoms db :eavt []))
-
-       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on SinceDB")))
-       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on SinceDB")))
-       clojure.lang.IKeywordLookup (getLookupThunk [db k]
-                                                   (throw (UnsupportedOperationException. "getLookupThunk is not supported on SinceDB")))
+       clojure.lang.Seqable
+       (seq [db] (-datoms db :eavt []))
 
        clojure.lang.Associative
-       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on SinceDB")))
-       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on SinceDB")))
        (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on SinceDB")))])
 
   IDB

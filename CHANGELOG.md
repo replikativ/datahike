@@ -12,6 +12,7 @@
 - Switch to GitHub Flow and using main branch
 - Switch to tools.build for building and deploying
 - Persist max-eid
+- Allow attribute access to historical db records
 
 ## 0.4.0
 
