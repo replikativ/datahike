@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.test.utils :as utils]
    [datahike.query :as dq])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
@@ -406,3 +407,52 @@
            (count (d/q '[:find ?t :in $ :where
                          [?t :version/id 0]]
                        @conn))))))
+
+;; https://github.com/replikativ/datahike/issues/471
+(deftest keyword-keys-test
+  (let [schema [{:db/ident       :name
+                 :db/cardinality :db.cardinality/one
+                 :db/index       true
+                 :db/unique      :db.unique/identity
+                 :db/valueType   :db.type/string}
+                {:db/ident       :parents
+                 :db/cardinality :db.cardinality/many
+                 :db/valueType   :db.type/ref}
+                {:db/ident       :age
+                 :db/cardinality :db.cardinality/one
+                 :db/valueType   :db.type/long}]
+        cfg    {:store              {:backend :mem
+                                     :id      "DEV"}
+                :keep-history?      true
+                :schema-flexibility :write
+                :attribute-refs?    true}
+        conn   (utils/setup-db cfg)]
+    (d/transact conn schema)
+    (d/transact conn [{:name "Alice"
+                       :age  25}
+                      {:name "Bob"
+                       :age  35}])
+    (d/transact conn [{:name    "Charlie"
+                       :age     5
+                       :parents [[:name "Alice"] [:name "Bob"]]}])
+    (let [db             @conn
+          keyword-result (into #{} (d/q '[:find ?n ?a
+                                          :keys :name :age
+                                          :where
+                                          [?e :name ?n]
+                                          [?e :age ?a]]
+                                        db))
+          symbol-result  (into #{} (d/q '[:find ?n ?a
+                                          :keys name age
+                                          :where
+                                          [?e :name ?n]
+                                          [?e :age ?a]]
+                                        db))]
+      (testing "keyword result keys"
+        (is (= #{{:name "Alice" :age 25}
+                 {:name "Charlie" :age 5}
+                 {:name "Bob" :age 35}}
+               keyword-result)))
+      (testing "keyword equals symbol keys"
+        (is (= symbol-result
+               keyword-result))))))
