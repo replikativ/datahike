@@ -13,6 +13,7 @@
 - Switch to tools.build for building and deploying
 - Persist max-eid
 - Allow attribute access to historical db records
+- Allow keyword keys for queries
 
 ## 0.4.0
 
