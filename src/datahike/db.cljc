@@ -234,6 +234,16 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
+(defn init-max-eid [eavt]
+  ;; solved with reserse slice first in datascript
+  (if-let [datoms (-slice
+                    eavt
+                    (datom e0 nil nil tx0)
+                    (datom (dec tx0) nil nil txmax)
+                    :eavt)]
+    (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
+    e0))
+
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map meta]
   #?@(:cljs
       [IHash (-hash [db] hash)
@@ -269,7 +279,7 @@
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-> db -config :keep-history?))
   (-max-tx [db] (.-max-tx db))
-  (-max-eid [db] (.-max-eid db))
+  (-max-eid [db] (or (.-max-eid db) (init-max-eid eavt)))
   (-config [db] (.-config db))
   (-ref-for [db a-ident]
             (if (:attribute-refs? (.-config db))
@@ -876,16 +886,6 @@
        (map first)
        (apply max)))
 
-(defn init-max-eid [eavt]
-  ;; solved with reserse slice first in datascript
-  (if-let [datoms (-slice
-                   eavt
-                   (datom e0 nil nil tx0)
-                   (datom (dec tx0) nil nil txmax)
-                   :eavt)]
-    (-> datoms vec rseq first :e)                           ;; :e of last datom in slice
-    e0))
-
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
 
@@ -1358,7 +1358,7 @@
   (inc (get-in report [:db-before :max-tx])))
 
 (defn next-eid [db]
-  (inc (:max-eid db)))
+  (inc (-max-eid db)))
 
 (defn- #?@(:clj [^Boolean tx-id?]
            :cljs [^boolean tx-id?])
@@ -1375,7 +1375,7 @@
 
 (defn advance-max-eid [db eid]
   (cond-> db
-    (and (> eid (:max-eid db))
+    (and (> eid (-max-eid db))
          (< eid tx0))                                 ;; do not trigger advance if transaction id was referenced
     (assoc :max-eid eid)))
 
