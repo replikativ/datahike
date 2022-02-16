@@ -9,6 +9,7 @@
    [datahike.impl.entity :as de])
   #?(:clj
      (:import
+      [clojure.lang IDeref IBlockingDeref IPending]
       [datahike.db FilteredDB]
       [datahike.impl.entity Entity]
       [java.util UUID])))
@@ -133,13 +134,13 @@
                             :tempids   {}
                             :tx-meta   tx-meta}) tx-data))))
 
-(defn load-entities-with [db entities]
+(defn load-entities-with [db entities tx-meta]
   (db/transact-entities-directly
    (db/map->TxReport {:db-before db
                       :db-after  db
                       :tx-data   []
                       :tempids   {}
-                      :tx-meta []})
+                      :tx-meta   tx-meta})
    entities))
 
 (defn db-with
@@ -214,10 +215,10 @@
                     (:db-after r))))
     @report))
 
-(defn -load-entities! [conn entities]
+(defn -load-entities! [conn entities tx-meta]
   (let [report (atom nil)]
     (swap! conn (fn [db]
-                  (let [r (load-entities-with db entities)]
+                  (let [r (load-entities-with db entities tx-meta)]
                     (reset! report r)
                     (:db-after r))))
     @report))
@@ -335,23 +336,26 @@
           (-realized? [_] true))
         :clj
         (reify
-          clojure.lang.IDeref
+          IDeref
           (deref [_] res)
-          clojure.lang.IBlockingDeref
+          IBlockingDeref
           (deref [_ _ _] res)
-          clojure.lang.IPending
+          IPending
           (isRealized [_] true))))))
 
-(defn load-entities [conn entities]
-  {:pre [(conn? conn)]}
-  (let [res (-load-entities! conn entities)]
-    (reify
-      clojure.lang.IDeref
-      (deref [_] res)
-      clojure.lang.IBlockingDeref
-      (deref [_ _ _] res)
-      clojure.lang.IPending
-      (isRealized [_] true))))
+(defn load-entities
+  ([conn entities]
+   (load-entities conn entities nil))
+  ([conn entities tx-meta]
+   {:pre [(conn? conn)]}
+   (let [res (-load-entities! conn entities tx-meta)]
+     (reify
+       IDeref
+       (deref [_] res)
+       IBlockingDeref
+       (deref [_ _ _] res)
+       IPending
+       (isRealized [_] true)))))
 
 ;; ersatz future without proper blocking
 #?(:cljs

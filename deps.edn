@@ -26,9 +26,10 @@
                               incanter/incanter-charts    {:mvn/version "1.9.3"}}}
 
            :test {:extra-paths ["test"]
-                  :extra-deps {lambdaisland/kaocha       {:mvn/version "1.60.977"}
-                               lambdaisland/kaocha-cljs  {:mvn/version "1.0.107"}
-                               io.replikativ/datahike-jdbc {:mvn/version "0.1.2-SNAPSHOT"}}}
+                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.60.945"}
+                               lambdaisland/kaocha-cljs    {:mvn/version "1.0.107"}
+                               io.replikativ/datahike-jdbc {:mvn/version "0.1.2-SNAPSHOT"}
+                               org.clojure/test.check      {:mvn/version "0.9.0"}}}
 
            :repl {:extra-deps {cider/cider-nrepl           {:mvn/version "0.28.1"}
                                nrepl/nrepl                 {:mvn/version "0.9.0"}
