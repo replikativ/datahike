@@ -12,6 +12,7 @@
 - Switch to GitHub Flow and using main branch
 - Switch to tools.build for building and deploying
 - Persist max-eid
+- Init max-eid from index for older db versions https://github.com/replikativ/datahike/issues/465 https://github.com/replikativ/datahike/pull/481
 - Allow attribute access to historical db records
 - Allow keyword keys for queries
 
