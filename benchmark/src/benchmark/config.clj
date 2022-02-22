@@ -143,7 +143,7 @@
 
 (defn vector-arg-query [db attr vals]
   {:query (conj '[:find ?e
-                  :in $ ?v
+                  :in $ [?v ...]
                   :where]
                 (conj '[?e] attr '?v))
    :args [db vals]})
