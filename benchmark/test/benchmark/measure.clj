@@ -63,6 +63,6 @@
 (deftest transaction-test
   (is (= 12 (count (b/get-measurements (assoc config :function :transaction))))))
 
+;; (+ (* 3 (* 2 8)) (* 3 (+ (* 2 8) (* 4 6) (* 4 2) 6))) = (+ 48 162) = 210
 (deftest query-test
-  (is (= 198 (count (b/get-measurements (assoc config :function :query))))))
-
+  (is (= 210 (count (b/get-measurements (assoc config :function :query))))))
