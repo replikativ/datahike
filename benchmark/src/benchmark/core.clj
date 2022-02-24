@@ -8,7 +8,7 @@
             [clojure.pprint :refer [pprint]]))
 
 (def output-formats #{"remote-db" "edn" "csv"})
-(def config-names #{"mem-set" "mem-hht" "file"})
+(def config-names (set (map :config-name c/db-configs)))
 (def implemented-queries #{:simple-query
                            :e-join-query :e-join-query-first-fixed :e-join-query-second-fixed
                            :a-join-query
