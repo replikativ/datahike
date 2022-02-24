@@ -39,9 +39,7 @@
 
            :bench-dev {:extra-paths ["benchmark/src"]
                        :extra-deps {clj-http/clj-http     {:mvn/version "3.12.3"}
-                                    org.clojure/tools.cli {:mvn/version "1.0.206"}
-                                    io.lambdaforge/wanderung {:mvn/version "0.1.1-SNAPSHOT"}
-                                    scicloj/tablecloth {:mvn/version "6.031"}}}
+                                    org.clojure/tools.cli {:mvn/version "1.0.206"}}}
 
            :benchmark {:main-opts ["-m" "benchmark.core"]
                        :extra-paths ["benchmark/src"]
