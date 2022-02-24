@@ -1705,8 +1705,11 @@
         upsert? (not (multival? db a))]
     (transact-report report new-datom upsert?)))
 
-(defn- transact-retract-datom [report ^Datom d]
-  (transact-report report (datom (.-e d) (.-a d) (.-v d) (current-tx report) false)))
+(defn- transact-retract-datom
+  ([report ^Datom d] (transact-retract-datom report d false))
+  ([report ^Datom d keep-tx-id]
+   (let [txid (or (and keep-tx-id (datom-tx d)) (current-tx report))]
+     (transact-report report (datom (.-e d) (.-a d) (.-v d) txid false)))))
 
 (defn- transact-purge-datom [report ^Datom d]
   (let [tx (current-tx report)]
@@ -2147,7 +2150,7 @@
           (let [[e a v tx added] entity]
             (if added
               (recur (transact-add report [:db/add e a v tx]) entities)
-              (recur report (cons [:db/retract e a v] entities))))
+              (recur (transact-retract-datom report entity true) entities)))
 
           :else
           (raise "Bad entity type at " entity ", expected map or vector"
