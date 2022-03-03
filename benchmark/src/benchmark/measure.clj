@@ -135,7 +135,8 @@
         vec
         (group-by :context)
         (map (fn [[context group]]
-               {:context context :time (time-statistics (map :time group))})))))
+               {:context context :time (time-statistics (map :time group))}))
+        (sort-by (fn [m] [(-> (:context m) :dh-config :name) (-> (:context m) :db-entities)])))))
 
 (comment
   (require '[datahike.api :as d])
