@@ -159,6 +159,18 @@
                :tag #{test}
                :db-entity-counts [0 1000 10000 100000 1000000]})
 
+  (def test-config {:config-name :all
+                    :output-format "edn"
+                    :iterations 10,
+                    :tag #{test}
+                    :db-entity-counts [0 10 100]})
+  (def test-wanderung-figures
+    (get-measurements test-config {:spec-fn-name "export-db-wanderung"
+                                   :make-fn-invocation ret-wanderung-export-db-fn}))
+  (def test-wanderung-figs-filtered (filter-export-figures test-wanderung-figures))
+  test-wanderung-figures
+  test-wanderung-figs-filtered
+
   (defn ret-wanderung-export-db-fn [conn]
     (ret-export-db datahike.migrate/export-db-wanderung conn "/tmp/dh.wanderung.dump"))
   (def wanderung-figures
