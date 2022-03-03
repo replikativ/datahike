@@ -131,7 +131,4 @@
         vec
         (group-by :context)
         (map (fn [[context group]]
-               {:context context :time (time-statistics (map :time group))}))
-        ; TODO verify (again) the following can now be removed
-        (remove nil?))))
-
+               {:context context :time (time-statistics (map :time group))})))))
