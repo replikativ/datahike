@@ -7,8 +7,10 @@
         com.taoensso/timbre                         {:mvn/version "5.1.2"}
         io.replikativ/superv.async                  {:mvn/version "0.3.43"}
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.10"}
+        io.lambdaforge/wanderung                    {:mvn/version "0.2.54"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
-        junit/junit                                 {:mvn/version "4.13.2"}}
+        junit/junit                                 {:mvn/version "4.13.2"}
+        scicloj/tablecloth                          {:mvn/version "6.031"}}
 
  :paths ["src" "target/classes"]
 
