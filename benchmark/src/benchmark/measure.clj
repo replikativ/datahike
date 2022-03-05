@@ -167,6 +167,18 @@
   (def wanderung-figs-filtered (filter-export-figures wanderung-figures))
   wanderung-figs-filtered
 
+  (def test-opts {:output-format "edn"
+                  :iterations 10,
+                  :tag #{test}
+                  :db-entity-counts [0 10 100]})
+
+  (def test-wanderung-figures
+    (get-measurements test-opts configs {:spec-fn-name "export-db-wanderung"
+                                         :make-fn-invocation ret-wanderung-export-db-fn}))
+  (def test-wanderung-figs-filtered (filter-export-figures test-wanderung-figures))
+  test-wanderung-figures
+  test-wanderung-figs-filtered
+
   (defn ret-tc-export-db-fn [conn]
     (ret-export-db migrate/export-db-tc conn "/tmp/dh.tc.dump"))
   (def tc-figures
@@ -175,6 +187,12 @@
   (def tc-figs-filtered (filter-export-figures tc-figures))
   tc-figs-filtered
 
+  (def test-tc-figures
+    (get-measurements test-opts configs {:spec-fn-name "export-db-tc"
+                                         :make-fn-invocation ret-tc-export-db-fn}))
+  (def test-tc-figs-filtered (filter-export-figures test-tc-figures))
+  test-tc-figs-filtered
+
   (defn ret-clj-export-db-fn [conn]
     (ret-export-db migrate/export-db-clj conn "/tmp/dh.clj.dump"))
   (def clj-figures
@@ -182,6 +200,12 @@
                               :make-fn-invocation ret-clj-export-db-fn}))
   (def clj-figs-filtered (filter-export-figures clj-figures))
   clj-figs-filtered
+
+  (def test-clj-figures
+    (get-measurements test-opts configs {:spec-fn-name "export-db-clj"
+                                         :make-fn-invocation ret-clj-export-db-fn}))
+  (def test-clj-figs-filtered (filter-export-figures test-clj-figures))
+  test-clj-figs-filtered
 
   (alter-var-root #'datahike.api/connect
                   (fn [f] (fn [& args] (println "instrumented") (apply f args))))
