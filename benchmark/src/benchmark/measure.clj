@@ -80,7 +80,7 @@
 
 (defn measure-performance-full
   ([entity-count options cfg] (measure-performance-full entity-count options cfg {}))
-  ([entity-count {iterations :iterations function :function :as options} {:keys [config-name config]}
+  ([entity-count {:keys [iterations function] :as options} {:keys [config-name config]}
     {:keys [spec-fn-name make-fn-invocation] :as specified-fn}]
    (let [unique-cfg (assoc config :name (str (UUID/randomUUID)))
          simple-cfg (-> config
