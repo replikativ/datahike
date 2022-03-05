@@ -148,10 +148,10 @@
     `(~approach-fn @~conn ~path))
 
   (defn filter-export-figures [figs]
-    (map (fn [f] (conj {:name (-> f :context :dh-config :name)
-                        :db-entities (:db-entities (:context f))}
-                       (select-keys (:time f) [:mean :median :std])))
-         figs))
+    (vec (map (fn [f] (conj {:name (-> f :context :dh-config :name)
+                             :db-entities (:db-entities (:context f))}
+                            (select-keys (:time f) [:mean :median :std])))
+              figs)))
 
   (def configs (map #(assoc-in % [:config :keep-history?] true) c/db-configs))
   (def opts {:output-format "edn"
@@ -165,7 +165,8 @@
     (get-measurements opts configs {:spec-fn-name "export-db-wanderung"
                                     :make-fn-invocation ret-wanderung-export-db-fn}))
   (def wanderung-figs-filtered (filter-export-figures wanderung-figures))
-  wanderung-figs-filtered
+  (spit "wanderung-figures" wanderung-figures)
+  (spit "wanderung-figs-filtered" wanderung-figs-filtered)
 
   (def test-opts {:output-format "edn"
                   :iterations 10,
@@ -185,7 +186,8 @@
     (get-measurements opts {:spec-fn-name "export-db-tc"
                             :make-fn-invocation ret-tc-export-db-fn}))
   (def tc-figs-filtered (filter-export-figures tc-figures))
-  tc-figs-filtered
+  (spit "tc-figures.edn" tc-figures)
+  (spit "tc-figs-filtered.edn" tc-figs-filtered)
 
   (def test-tc-figures
     (get-measurements test-opts configs {:spec-fn-name "export-db-tc"
@@ -199,7 +201,8 @@
     (get-measurements opts {:spec-fn-name "export-db-clj"
                               :make-fn-invocation ret-clj-export-db-fn}))
   (def clj-figs-filtered (filter-export-figures clj-figures))
-  clj-figs-filtered
+  (spit "clj-figures.edn" clj-figures)
+  (spit "clj-figs-filtered.edn" clj-figs-filtered)
 
   (def test-clj-figures
     (get-measurements test-opts configs {:spec-fn-name "export-db-clj"
