@@ -19,15 +19,15 @@
            (get-in (first measurements) [:time :count])))
     (is (= '({:dh-config {:schema-flexibility :write
                           :keep-history? false
-                          :index :datahike.index/persistent-set
-                          :name "mem-set", :backend :mem}
+                          :index :datahike.index/hitchhiker-tree
+                          :name "file", :backend :file}
               :function :connection
               :db-entities 0
               :db-datoms 0}
              {:dh-config {:schema-flexibility :write
                           :keep-history? false
-                          :index :datahike.index/persistent-set
-                          :name "mem-set", :backend :mem}
+                          :index :datahike.index/hitchhiker-tree
+                          :name "file", :backend :file}
               :function :connection
               :db-entities 10
               :db-datoms 40}
@@ -45,15 +45,15 @@
               :function :connection, :db-entities 10, :db-datoms 40}
              {:dh-config {:schema-flexibility :write
                           :keep-history? false
-                          :index :datahike.index/hitchhiker-tree
-                          :name "file", :backend :file}
+                          :index :datahike.index/persistent-set
+                          :name "mem-set", :backend :mem}
               :function :connection
               :db-entities 0
               :db-datoms 0}
              {:dh-config {:schema-flexibility :write
                           :keep-history? false
-                          :index :datahike.index/hitchhiker-tree
-                          :name "file", :backend :file}
+                          :index :datahike.index/persistent-set
+                          :name "mem-set", :backend :mem}
               :function :connection
               :db-entities 10
               :db-datoms 40})
