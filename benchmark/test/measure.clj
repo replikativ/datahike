@@ -11,7 +11,14 @@
              :query :all 
              :db-entity-counts [0 10]})
 
-(deftest connection-test 
+(deftest transaction-test
+  (is (= 12 (count (b/get-measurements (assoc config :function :transaction))))))
+
+;; (+ (* 3 (* 2 8)) (* 3 (+ (* 2 8) (* 4 6) (* 4 2) 6))) = (+ 48 162) = 210
+(deftest query-test
+  (is (= 210 (count (b/get-measurements (assoc config :function :query))))))
+
+(deftest connection-test
   (let [measurements (b/get-measurements (assoc config :function :connection))]
     (is (= #{:mean :median :std :count :observations}
            (set (keys (:time (first measurements))))))
@@ -58,10 +65,3 @@
               :db-entities 10
               :db-datoms 40})
            (map :context measurements)))))
-
-(deftest transaction-test
-  (is (= 12 (count (b/get-measurements (assoc config :function :transaction))))))
-
-;; (+ (* 3 (* 2 8)) (* 3 (+ (* 2 8) (* 4 6) (* 4 2) 6))) = (+ 48 162) = 210
-(deftest query-test
-  (is (= 210 (count (b/get-measurements (assoc config :function :query))))))
