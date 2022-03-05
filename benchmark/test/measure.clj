@@ -2,8 +2,7 @@
   (:require [clojure.test :as t :refer [is deftest]]
             [benchmark.measure :as b]))
 
-(def config {:config-name :all
-             :output-format "edn"
+(def config {:output-format "edn"
              :data-types [:int :str]
              :iterations 1, 
              :data-found-opts :all
