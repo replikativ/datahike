@@ -138,7 +138,8 @@
         (sort-by (fn [m] [(-> (:context m) :dh-config :name) (-> (:context m) :db-entities)])))))
 
 (comment
-  (require '[datahike.api :as d])
+  (require '[datahike.api :as d]
+           '[datahike.migrate :as migrate])
 
   (d/create-database)
   (def conn (d/connect))
@@ -159,7 +160,7 @@
              :db-entity-counts [0 1000 10000 100000 1000000]})
 
   (defn ret-wanderung-export-db-fn [conn]
-    (ret-export-db datahike.migrate/export-db-wanderung conn "/tmp/dh.wanderung.dump"))
+    (ret-export-db migrate/export-db-wanderung conn "/tmp/dh.wanderung.dump"))
   (def wanderung-figures
     (get-measurements opts configs {:spec-fn-name "export-db-wanderung"
                                     :make-fn-invocation ret-wanderung-export-db-fn}))
@@ -167,7 +168,7 @@
   wanderung-figs-filtered
 
   (defn ret-tc-export-db-fn [conn]
-    (ret-export-db datahike.migrate/export-db-tc conn "/tmp/dh.tc.dump"))
+    (ret-export-db migrate/export-db-tc conn "/tmp/dh.tc.dump"))
   (def tc-figures
     (get-measurements opts {:spec-fn-name "export-db-tc"
                             :make-fn-invocation ret-tc-export-db-fn}))
@@ -175,7 +176,7 @@
   tc-figs-filtered
 
   (defn ret-clj-export-db-fn [conn]
-    (ret-export-db datahike.migrate/export-db-clj conn "/tmp/dh.clj.dump"))
+    (ret-export-db migrate/export-db-clj conn "/tmp/dh.clj.dump"))
   (def clj-figures
     (get-measurements opts {:spec-fn-name "export-db-clj"
                               :make-fn-invocation ret-clj-export-db-fn}))
