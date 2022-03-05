@@ -123,11 +123,10 @@
      :observations (vec times)}))
 
 (defn get-measurements
-  ([options] (get-measurements options {}))
-  ([{:keys [config-name db-entity-counts make-custom-expr] :as options} specified-fn]
-   (->> (for [cfg (if (= config-name :all)
-                    c/db-configs
-                    (filter #(= (:config-name %) config-name) c/db-configs))
+  ([options] (get-measurements options c/db-configs {}))
+  ([options configs] (get-measurements options configs {}))
+  ([{:keys [db-entity-counts] :as options} configs specified-fn]
+   (->> (for [cfg configs
               entity-count db-entity-counts]
               (measure-performance-full entity-count options cfg specified-fn))
         doall
@@ -153,44 +152,32 @@
                        (select-keys (:time f) [:mean :median :std])))
          figs))
 
-  (def config {:config-name :all
-               :output-format "edn"
-               :iterations 10,
-               :tag #{test}
-               :db-entity-counts [0 1000 10000 100000 1000000]})
-
-  (def test-config {:config-name :all
-                    :output-format "edn"
-                    :iterations 10,
-                    :tag #{test}
-                    :db-entity-counts [0 10 100]})
-  (def test-wanderung-figures
-    (get-measurements test-config {:spec-fn-name "export-db-wanderung"
-                                   :make-fn-invocation ret-wanderung-export-db-fn}))
-  (def test-wanderung-figs-filtered (filter-export-figures test-wanderung-figures))
-  test-wanderung-figures
-  test-wanderung-figs-filtered
+  (def configs (map #(assoc-in % [:config :keep-history?] true) c/db-configs))
+  (def opts {:output-format "edn"
+             :iterations 10,
+             :tag #{test}
+             :db-entity-counts [0 1000 10000 100000 1000000]})
 
   (defn ret-wanderung-export-db-fn [conn]
     (ret-export-db datahike.migrate/export-db-wanderung conn "/tmp/dh.wanderung.dump"))
   (def wanderung-figures
-    (get-measurements config {:spec-fn-name "export-db-wanderung"
-                              :make-fn-invocation ret-wanderung-export-db-fn}))
+    (get-measurements opts configs {:spec-fn-name "export-db-wanderung"
+                                    :make-fn-invocation ret-wanderung-export-db-fn}))
   (def wanderung-figs-filtered (filter-export-figures wanderung-figures))
   wanderung-figs-filtered
 
   (defn ret-tc-export-db-fn [conn]
     (ret-export-db datahike.migrate/export-db-tc conn "/tmp/dh.tc.dump"))
   (def tc-figures
-    (get-measurements config {:spec-fn-name "export-db-tc"
-                              :make-fn-invocation ret-tc-export-db-fn}))
+    (get-measurements opts {:spec-fn-name "export-db-tc"
+                            :make-fn-invocation ret-tc-export-db-fn}))
   (def tc-figs-filtered (filter-export-figures tc-figures))
   tc-figs-filtered
 
   (defn ret-clj-export-db-fn [conn]
     (ret-export-db datahike.migrate/export-db-clj conn "/tmp/dh.clj.dump"))
   (def clj-figures
-    (get-measurements config {:spec-fn-name "export-db-clj"
+    (get-measurements opts {:spec-fn-name "export-db-clj"
                               :make-fn-invocation ret-clj-export-db-fn}))
   (def clj-figs-filtered (filter-export-figures clj-figures))
   clj-figs-filtered

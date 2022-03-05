@@ -40,7 +40,7 @@
     :validate [output-formats  #(str "Format " % " has not been implemented. "
                                      "Available formats are " output-formats)]]
    ["-c" "--config-name CONFIGNAME"
-    (str "Name of database configuration to use. Available are " config-names)
+    (str "Name of preset database configuration to use. Available are " config-names)
     :default :all
     :validate [config-names  #(str "A configuration named " % " has not been implemented. "
                                    "Available configurations are " config-names)]]
@@ -134,7 +134,7 @@
         [cmd & paths] (:arguments parsed-opts)
         server-info-keys [:db-server-url :db-token :db-name]
         server-description (map options server-info-keys)
-        {:keys [tag output-format]} options]
+        {:keys [config-name tag output-format]} options]
     (cond
       (some? errors)
       (do (println "Errors:" errors)
@@ -153,7 +153,10 @@
       :else
       (case cmd
         "compare" (compare-benchmarks paths (:plots options))
-        "run" (let [measurements (get-measurements options)
+        "run" (let [configs (if (= config-name :all)
+                              c/db-configs
+                              (filter #(= (:config-name %) config-name) c/db-configs))
+                    measurements (get-measurements options configs)
                     tagged (if (empty? tag)
                              (vec measurements)
                              (mapv (fn [entity] (assoc entity :tag (join " " tag))) measurements))]
