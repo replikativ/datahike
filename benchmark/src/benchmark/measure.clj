@@ -37,10 +37,10 @@
 (defn measure-connection-time [iterations unique-cfg simple-cfg entity-count datom-count]
   (log/info (str "Measuring connection time on database with config named '" (:name simple-cfg) ", "
                  (count c/schema) " attributes in entity, and " entity-count " entities in database"))
-  (vec (for [_ (range iterations)]
-         (let [timed-conn (timed (d/connect unique-cfg))]
-           (d/release (:res timed-conn))
-           (time-context-map (:t timed-conn) simple-cfg :connection entity-count datom-count)))))
+  (for [_ (range iterations)]
+    (let [timed-conn (timed (d/connect unique-cfg))]
+      (d/release (:res timed-conn))
+      (time-context-map (:t timed-conn) simple-cfg :connection entity-count datom-count))))
 
 (defn measure-query-times
   [{:keys [iterations data-found-opts query data-types]} initial-tx conn config entity-count datom-count]
@@ -56,27 +56,27 @@
         filtered-queries (if (= query :all)
                            queries
                            (filter #(= query (:function %)) queries))]
-    (vec (flatten
-          (for [{:keys [function query details]} filtered-queries]
-            (do
-              (log/debug (str " Querying with " function " using " details "..."))
-              (for [_ (range iterations)]
-                (time-context-map (:t (timed (d/q query @conn)))
-                                  config function entity-count datom-count details))))))))
+    (flatten
+     (for [{:keys [function query details]} filtered-queries]
+       (do
+         (log/debug (str " Querying with " function " using " details "..."))
+         (for [_ (range iterations)]
+           (time-context-map (:t (timed (d/q query @conn)))
+                             config function entity-count datom-count details)))))))
 
 (defn measure-transaction-times
   [{:keys [iterations tx-entity-counts]} conn config entity-count datom-count]
   (log/info (str "Measuring transaction times on database with config named '" (:name config) ", "
                  (count c/schema) " attributes in entity, and " entity-count " entities in database"))
-  (vec (for [_ (range iterations)    ;; sampling for given entity-count
-             tx-entities tx-entity-counts
-             _ (range iterations)]   ;; sampling for each tx-entities
-         (let [tx (vec (repeatedly tx-entities (partial c/rand-entity Integer/MAX_VALUE)))
-               timed-transact (timed (d/transact conn tx))]
-           (d/transact conn (mapv (fn [dat] [:db.fn/retractEntity (.-e dat)])
-                                  (remove #(= (.-e %) (datom/datom-tx %)) (:tx-data (:res timed-transact)))))
-           (time-context-map (:t timed-transact) config :transaction entity-count datom-count
-                             {:tx-entities tx-entities :tx-datoms (* (count c/schema) tx-entities)})))))
+  (for [_ (range iterations)    ;; sampling for given entity-count
+        tx-entities tx-entity-counts
+        _ (range iterations)]   ;; sampling for each tx-entities
+    (let [tx (vec (repeatedly tx-entities (partial c/rand-entity Integer/MAX_VALUE)))
+          timed-transact (timed (d/transact conn tx))]
+      (d/transact conn (mapv (fn [dat] [:db.fn/retractEntity (.-e dat)])
+                             (remove #(= (.-e %) (datom/datom-tx %)) (:tx-data (:res timed-transact)))))
+      (time-context-map (:t timed-transact) config :transaction entity-count datom-count
+                        {:tx-entities tx-entities :tx-datoms (* (count c/schema) tx-entities)}))))
 
 (defn measure-performance-full
   ([entity-count options cfg] (measure-performance-full entity-count options cfg {}))
@@ -90,24 +90,24 @@
          datom-count (* entity-count (count c/schema))
          conn (init-db unique-cfg)
          initial-tx (init-tx entity-count conn)]
-     (if (some? make-fn-invocation)
-       (do (log/info (str "Measuring function '" spec-fn-name " on database with config named '" config-name ", "
-                          (count c/schema) " attributes in entity, and " entity-count " entities in database"))
-           (vec (for [_ (range iterations)]
+     (vec (if (some? make-fn-invocation)
+            (do (log/info (str "Measuring function '" spec-fn-name " on database with config named '" config-name ", "
+                               (count c/schema) " attributes in entity, and " entity-count " entities in database"))
+                (for [_ (range iterations)]
                   (time-context-map (:t (timed (make-fn-invocation conn))) simple-cfg (keyword spec-fn-name)
-                                    entity-count datom-count))))
-       (let [query-times
-             (when (#{:all :query} function)
-               (measure-query-times options initial-tx conn simple-cfg entity-count datom-count))
-             transaction-times
-             (when (contains? #{:all :transaction} function)
-               (measure-transaction-times options conn simple-cfg entity-count datom-count))
-             connection-times
-             (when (#{:all :connection} function)
-               (d/release conn)
-               (measure-connection-time iterations unique-cfg simple-cfg entity-count datom-count))]
-         (d/delete-database unique-cfg)
-         (concat connection-times query-times transaction-times))))))
+                                    entity-count datom-count)))
+            (let [query-times
+                  (when (#{:all :query} function)
+                    (measure-query-times options initial-tx conn simple-cfg entity-count datom-count))
+                  transaction-times
+                  (when (contains? #{:all :transaction} function)
+                    (measure-transaction-times options conn simple-cfg entity-count datom-count))
+                  connection-times
+                  (when (#{:all :connection} function)
+                    (d/release conn)
+                    (measure-connection-time iterations unique-cfg simple-cfg entity-count datom-count))]
+              (d/delete-database unique-cfg)
+              (concat connection-times query-times transaction-times)))))))
 
 (defn time-statistics [times]
   (let [n (count times)
