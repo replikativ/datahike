@@ -93,9 +93,9 @@
      (if (some? make-fn-invocation)
        (do (log/info (str "Measuring function '" spec-fn-name " on database with config named '" config-name ", "
                           (count c/schema) " attributes in entity, and " entity-count " entities in database"))
-           (for [_ (range iterations)]
-             (time-context-map (:t (timed (make-fn-invocation conn))) simple-cfg (keyword spec-fn-name)
-                               entity-count datom-count)))
+           (vec (for [_ (range iterations)]
+                  (time-context-map (:t (timed (make-fn-invocation conn))) simple-cfg (keyword spec-fn-name)
+                                    entity-count datom-count))))
        (let [query-times
              (when (#{:all :query} function)
                (measure-query-times options initial-tx conn simple-cfg entity-count datom-count))
