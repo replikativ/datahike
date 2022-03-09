@@ -89,25 +89,27 @@
                         (dissoc :store))
          datom-count (* entity-count (count c/schema))
          conn (init-db unique-cfg)
-         initial-tx (init-tx entity-count conn)]
-     (vec (if (some? make-fn-invocation)
-            (do (log/info (str "Measuring function '" spec-fn-name " on database with config named '" config-name ", "
-                               (count c/schema) " attributes in entity, and " entity-count " entities in database"))
-                (for [_ (range iterations)]
-                  (time-context-map (:t (timed (make-fn-invocation conn))) simple-cfg (keyword spec-fn-name)
-                                    entity-count datom-count)))
-            (let [query-times
-                  (when (#{:all :query} function)
-                    (measure-query-times options initial-tx conn simple-cfg entity-count datom-count))
-                  transaction-times
-                  (when (contains? #{:all :transaction} function)
-                    (measure-transaction-times options conn simple-cfg entity-count datom-count))
-                  connection-times
-                  (when (#{:all :connection} function)
-                    (d/release conn)
-                    (measure-connection-time iterations unique-cfg simple-cfg entity-count datom-count))]
-              (d/delete-database unique-cfg)
-              (concat connection-times query-times transaction-times)))))))
+         initial-tx (init-tx entity-count conn)
+         measurements (if (some? make-fn-invocation)
+                        (do
+                          (log/info (str "Measuring function '" spec-fn-name " on database with config named '" config-name ", "
+                                         (count c/schema) " attributes in entity, and " entity-count " entities in database"))
+                            (for [_ (range iterations)]
+                              (time-context-map (:t (timed (make-fn-invocation conn))) simple-cfg (keyword spec-fn-name)
+                                                entity-count datom-count)))
+                        (let [query-times
+                              (when (#{:all :query} function)
+                                (measure-query-times options initial-tx conn simple-cfg entity-count datom-count))
+                              transaction-times
+                              (when (contains? #{:all :transaction} function)
+                                (measure-transaction-times options conn simple-cfg entity-count datom-count))
+                              connection-times
+                              (when (#{:all :connection} function)
+                                (d/release conn)
+                                (measure-connection-time iterations unique-cfg simple-cfg entity-count datom-count))]
+                          (concat connection-times query-times transaction-times)))]
+     (d/delete-database unique-cfg)
+     (vec measurements))))
 
 (defn time-statistics [times]
   (let [n (count times)
