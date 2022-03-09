@@ -20,7 +20,9 @@
 (defn init-tx [entity-count conn]
   (d/transact conn c/schema)
   (if (pos? entity-count)
-    (d/transact conn (vec (repeatedly entity-count (partial c/rand-entity entity-count))))
+    (doseq [entities (->> (repeatedly entity-count (partial c/rand-entity entity-count))
+                          (partition 100000))]
+      (d/transact conn (vec entities)))
     []))
 
 (defn time-context-map
