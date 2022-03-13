@@ -142,11 +142,12 @@
         (sort-by (fn [m] [(-> (:context m) :dh-config :name) (-> (:context m) :db-entities)])))))
 
 (comment
-  (require '[datahike.api :as d]
+  (require '[benchmark.config :as c]
+           '[benchmark.measure :as m]   ;; for copy-and-paste convenience
+           '[clojure.edn :as edn]
+           '[clojure.java.io :as io]
+           '[datahike.api :as d]
            '[datahike.migrate :as migrate])
-
-  (d/create-database)
-  (def conn (d/connect))
 
   (defmacro ret-export-db [approach-fn conn path]
     `(~approach-fn @~conn ~path))
@@ -163,58 +164,55 @@
              :tag #{test}
              :db-entity-counts [0 1000 10000 100000 1000000]})
 
+  (defn ret-export-db-fn [conn]
+    (ret-export-db migrate/export-db conn "/tmp/dh.dump"))
+  (def export-figures
+    (m/get-measurements opts configs {:spec-fn-name "export-db"
+                                      :make-fn-invocation ret-export-db-fn}))
+  (def export-figs-filtered (filter-export-figures export-figures))
+  (spit "export-figs-filtered.edn" export-figs-filtered)
+
+  ;; For the record (for now) only: export-db-wanderung and export-db-tc no longer in codebase
   (defn ret-wanderung-export-db-fn [conn]
     (ret-export-db migrate/export-db-wanderung conn "/tmp/dh.wanderung.dump"))
   (def wanderung-figures
-    (get-measurements opts configs {:spec-fn-name "export-db-wanderung"
-                                    :make-fn-invocation ret-wanderung-export-db-fn}))
+    (m/get-measurements opts configs {:spec-fn-name "export-db-wanderung"
+                                      :make-fn-invocation ret-wanderung-export-db-fn}))
   (def wanderung-figs-filtered (filter-export-figures wanderung-figures))
-  (spit "wanderung-figures" wanderung-figures)
-  (spit "wanderung-figs-filtered" wanderung-figs-filtered)
-
-  (def test-opts {:output-format "edn"
-                  :iterations 10,
-                  :tag #{test}
-                  :db-entity-counts [0 10 100]})
-
-  (def test-wanderung-figures
-    (get-measurements test-opts configs {:spec-fn-name "export-db-wanderung"
-                                         :make-fn-invocation ret-wanderung-export-db-fn}))
-  (def test-wanderung-figs-filtered (filter-export-figures test-wanderung-figures))
-  test-wanderung-figures
-  test-wanderung-figs-filtered
+  (spit "wanderung-figs-filtered.edn" wanderung-figs-filtered)
 
   (defn ret-tc-export-db-fn [conn]
     (ret-export-db migrate/export-db-tc conn "/tmp/dh.tc.dump"))
   (def tc-figures
-    (get-measurements opts {:spec-fn-name "export-db-tc"
-                            :make-fn-invocation ret-tc-export-db-fn}))
+    (m/get-measurements opts configs {:spec-fn-name "export-db-tc"
+                                      :make-fn-invocation ret-tc-export-db-fn}))
   (def tc-figs-filtered (filter-export-figures tc-figures))
-  (spit "tc-figures.edn" tc-figures)
   (spit "tc-figs-filtered.edn" tc-figs-filtered)
 
-  (def test-tc-figures
-    (get-measurements test-opts configs {:spec-fn-name "export-db-tc"
-                                         :make-fn-invocation ret-tc-export-db-fn}))
-  (def test-tc-figs-filtered (filter-export-figures test-tc-figures))
-  test-tc-figs-filtered
+  (defn xform-vals [xf xf-arg m]
+    (into {} (map (fn [[k v]] [k (if (some? xf-arg) (xf xf-arg v) (xf v))]) m)))
 
-  (defn ret-clj-export-db-fn [conn]
-    (ret-export-db migrate/export-db-clj conn "/tmp/dh.clj.dump"))
-  (def clj-figures
-    (get-measurements opts {:spec-fn-name "export-db-clj"
-                              :make-fn-invocation ret-clj-export-db-fn}))
-  (def clj-figs-filtered (filter-export-figures clj-figures))
-  (spit "clj-figures.edn" clj-figures)
-  (spit "clj-figs-filtered.edn" clj-figs-filtered)
+  (def measurements
+    (concat
+     (map #(assoc % :approach "wanderung") test-wanderung-figs-filtered)
+     (map #(assoc % :approach "tablecloth") test-tc-figs-filtered)
+     (map #(assoc % :approach "clojure") test-clj-figs-filtered)))
 
-  (def test-clj-figures
-    (get-measurements test-opts configs {:spec-fn-name "export-db-clj"
-                                         :make-fn-invocation ret-clj-export-db-fn}))
-  (def test-clj-figs-filtered (filter-export-figures test-clj-figures))
-  test-clj-figs-filtered
+  (defn distinct-vals [k m] (distinct (map k m)))
 
-  (alter-var-root #'datahike.api/connect
-                  (fn [f] (fn [& args] (println "instrumented") (apply f args))))
-
-  )
+  (with-open [f (io/output-stream "../export-approach-figures.txt")
+              w (io/writer f)]
+    (binding [*out* w]
+      (pprint
+       (loop [settings (for [entity-count (distinct-vals :db-entities measurements)
+                             storage (distinct-vals :name measurements)
+                             approach (distinct-vals :approach measurements)]
+                         [entity-count storage approach])
+              results (->> (group-by :db-entities measurements)
+                           (xform-vals group-by :name)
+                           (map (fn [[k v]] [k (xform-vals group-by :approach v)]))
+                           (into {}))]
+         (if (not (empty? settings))
+           (recur (rest settings)
+                  (update-in results (first settings) #(select-keys (first %) [:mean :median :std])))
+           results))))))
