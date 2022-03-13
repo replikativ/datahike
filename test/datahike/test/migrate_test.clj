@@ -89,9 +89,7 @@
                  "/tmp/export-db1")
           cfg {:store {:backend :file
                        :path path}}
-          _ (d/delete-database cfg)
-          _ (d/create-database cfg)
-          conn (d/connect cfg)
+          conn (utils/setup-db cfg)
           export-path (case os
                         "Windows 10" (str (System/getProperty "java.io.tmpdir") "eavt-dump")
                         "/tmp/eavt-dump")
@@ -121,10 +119,7 @@
                           "/tmp/reimport")
             import-cfg {:store {:backend :file
                                 :path import-path}}
-            _ (d/delete-database import-cfg)
-            _ (d/create-database import-cfg)
-            new-conn (d/connect import-cfg)]
-
+            new-conn (utils/setup-db import-cfg)]
         (m/import-db new-conn export-path)
         (is (= (d/datoms (d/history @conn) :eavt)
                (filter #(< (datom/datom-tx %) (:max-tx @new-conn))
@@ -137,9 +132,7 @@
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
           cfg           (assoc cfg :attribute-refs false)
-          _             (d/delete-database cfg)
-          _             (d/create-database cfg)
-          conn          (d/connect cfg)]
+          conn (utils/setup-db cfg)]
       @(d/load-entities conn source-datoms)
       (is (= (into #{} source-datoms)
              (d/q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))))
@@ -147,10 +140,10 @@
     (let [source-datoms (->> tx-data
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
-          cfg           (assoc cfg :attribute-refs? true)
-          _             (d/delete-database cfg)
-          _             (d/create-database cfg)
-          conn          (d/connect cfg)]
+          cfg           (assoc cfg
+                               :attribute-refs? true
+                               :schema-flexibility :write)
+          conn (utils/setup-db cfg)]
       @(d/load-entities conn source-datoms)
       (is (= (into #{} (->> source-datoms
                             (mapv (comp vec rest))
@@ -178,10 +171,7 @@
                         :db/index       true
                         :db/unique      :db.unique/identity
                         :db/valueType   :db.type/string}]
-          source-conn (do
-                        (d/delete-database source-cfg)
-                        (d/create-database source-cfg)
-                        (d/connect source-cfg))
+          source-conn (utils/setup-db source-cfg)
           txs         [schema
                        [{:name "Alice"} {:name "Bob"}]
                        [{:name "Charlie"} {:name "Daisy"}]
@@ -195,10 +185,7 @@
           target-cfg  (-> source-cfg
                           (assoc-in [:store :id] "load-entities-history-test-target")
                           (assoc-in [:name] "load-entities-history-test-target"))
-          target-conn (do
-                        (d/delete-database target-cfg)
-                        (d/create-database target-cfg)
-                        (d/connect target-cfg))
+          target-conn (utils/setup-db target-cfg)
           _           @(d/load-entities target-conn export-data)
           current-q   (fn [conn] (d/q
                                   '[:find ?n
