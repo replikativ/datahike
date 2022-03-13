@@ -34,14 +34,13 @@
        (print ".")
        (api/transact conn (vec datoms))))))
 
-
 (comment
   ;; For the record, for now
   (require '[datahike.api :as api]
            '[clj-cbor.core :as cbor]
            ;; note: the following no longer required in deps.edn
-            [wanderung.datahike :as wd]
-            [tablecloth.api :as tc])
+           '[wanderung.datahike :as wd]
+           '[tablecloth.api :as tc])
 
   (defn export-db-wanderung
     "Export the database in a flat-file of datoms at path."
@@ -63,5 +62,4 @@
           datoms-table (tc/dataset (map seq datoms)
                                    {:layout :as-rows
                                     :column-names [:eid :attr :val :txid :assert]})]
-      (cbor/spit-all path (tc/rows (tc/order-by datoms-table [:txid :eid]) :as-seq))))
-  )
+      (cbor/spit-all path (tc/rows (tc/order-by datoms-table [:txid :eid]) :as-seq)))))
