@@ -899,12 +899,10 @@
           (fn [{:keys [db/id] :as i}]
             (reduce-kv
              (fn [coll k v]
-               (let [k-ref (idents k)]
-                 (if (= k :db/ident)
-                   (conj coll (dd/datom id k-ref v tx0))
-                   (if-let [v-ref (idents v)]
-                     (conj coll (dd/datom id k-ref v-ref tx0))
-                     (conj coll (dd/datom id k-ref v tx0))))))
+               (let [v-ref (idents v)
+                     ;; datom val can be system schema eid (v-ref), or ident or regular (v)
+                     d-val (if (and (not= k :db/ident) v-ref) v-ref v)]
+                 (conj coll (dd/datom id (idents k) d-val tx0))))
              []
              (dissoc i :db/id))))
          vec)))
