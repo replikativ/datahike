@@ -83,47 +83,48 @@
 
 (deftest export-import-test
   (testing "Test a roundtrip for exporting and importing."
-    (let [os (System/getProperty "os.name")
-          path (case os
-                 "Windows 10" (str (System/getProperty "java.io.tmpdir") "export-db1")
-                 "/tmp/export-db1")
-          cfg {:store {:backend :file
-                       :path path}}
-          conn (utils/setup-db cfg)
-          export-path (case os
-                        "Windows 10" (str (System/getProperty "java.io.tmpdir") "eavt-dump")
-                        "/tmp/eavt-dump")
-          schema [{:db/ident       :name
-                   :db/cardinality :db.cardinality/one
-                   :db/index       true
-                   :db/unique      :db.unique/identity
-                   :db/valueType   :db.type/string}
-                  {:db/ident       :parents
-                   :db/cardinality :db.cardinality/many
-                   :db/valueType   :db.type/ref}
-                  {:db/ident       :age
-                   :db/cardinality :db.cardinality/one
-                   :db/valueType   :db.type/long}]]
-      (d/transact conn schema)
-      (d/transact conn {:tx-data [{:name "Alice" :age  25}
-                                  {:name "Bob" :age  35}
-                                  {:name    "Charlie"
-                                   :age     5
-                                   :parents [[:name "Alice"] [:name "Bob"]]}
-                                  {:name "Daisy" :age 20}
-                                  {:name "Erhard" :age 20}]})
-      (d/transact conn {:tx-data [[:db/retractEntity [:name "Erhard"]]]})
-      (m/export-db @conn export-path)
-      (let [import-path (case os
-                          "Windows 10" (str (System/getProperty "java.io.tmpdir") "reimport")
-                          "/tmp/reimport")
-            import-cfg {:store {:backend :file
-                                :path import-path}}
+    (doseq [hist [true false]
+            attr-ref [true false]]
+      (let [os (System/getProperty "os.name")
+            path (case os
+                   "Windows 10" (str (System/getProperty "java.io.tmpdir") "export-db1")
+                   "/tmp/export-db1")
+            cfg {:store {:backend :file
+                         :path path}
+                 :schema-flexibility :write
+                 :keep-history? hist
+                 :attribute-refs? attr-ref}
+            schema [{:db/ident       :name
+                     :db/cardinality :db.cardinality/one
+                     :db/index       true
+                     :db/unique      :db.unique/identity
+                     :db/valueType   :db.type/string}
+                    {:db/ident       :parents
+                     :db/cardinality :db.cardinality/many
+                     :db/valueType   :db.type/ref}
+                    {:db/ident       :age
+                     :db/cardinality :db.cardinality/one
+                     :db/valueType   :db.type/long}]
+            os-prefix (case os "Windows 10" (System/getProperty "java.io.tmpdir") "/tmp/")
+            export-path (str os-prefix "eavt-dump")
+            import-path (str os-prefix "reimport")
+            import-cfg (assoc-in cfg [:store :path] import-path)
+            conn (utils/setup-db cfg)
             new-conn (utils/setup-db import-cfg)]
+        (d/transact conn schema)
+        (d/transact conn {:tx-data [{:name "Alice" :age  25}
+                                    {:name "Bob" :age  35}
+                                    {:name    "Charlie"
+                                     :age     5
+                                     :parents [[:name "Alice"] [:name "Bob"]]}
+                                    {:name "Daisy" :age 20}
+                                    {:name "Erhard" :age 20}]})
+        (d/transact conn {:tx-data [[:db/retractEntity [:name "Erhard"]]]})
+        (m/export-db @conn export-path)
         (m/import-db new-conn export-path)
-        (is (= (d/datoms (d/history @conn) :eavt)
-               (filter #(< (datom/datom-tx %) (:max-tx @new-conn))
-                       (d/datoms (d/history @new-conn) :eavt))))
+        (is (= (d/datoms (if (:keep-history? cfg) (d/history @conn) @conn) :eavt)
+               (filter #(< (:e %) (:max-tx @new-conn))
+                       (d/datoms (if (:keep-history? cfg) (d/history @new-conn) @new-conn) :eavt))))
         (d/delete-database cfg)))))
 
 (defn load-entities-test [cfg]
