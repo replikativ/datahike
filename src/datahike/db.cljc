@@ -6,7 +6,6 @@
    [clojure.data]
    #?(:clj [clojure.pprint :as pp])
    [datahike.array :refer [a=]]
-   #_[datahike.index.interface :as di]
    [datahike.index :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    [datahike.constants :as c :refer [ue0 e0 tx0 utx0 emax txmax system-schema]]
