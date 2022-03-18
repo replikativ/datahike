@@ -62,7 +62,8 @@ TIMBRE_LEVEL=':warn'  clj -M:benchmark run -f :query -q :simple-query -i 10
 Options for `-c`:
 - `mem-set` for in-memory database with persistent-set index
 - `mem-hht` for in-memory database with hitchhiker-tree index
-- `file` for database with file store backend and hitchhiker-tree index
+- `file-set` for database with file store backend and persistent-set index
+- `file-hht` for database with file store backend and hitchhiker-tree index
 
 Implementations:
 
@@ -78,7 +79,12 @@ Implementations:
              :schema-flexibility :write
              :keep-history? false
              :index :datahike.index/hitchhiker-tree}}
-   {:config-name "file"
+   {:config-name "file-set"
+    :config {:store {:backend :file :path "/tmp/performance-hht"}
+             :schema-flexibility :write
+             :keep-history? false
+             :index :datahike.index/hitchhiker-tree}}
+   {:config-name "file-hht"
     :config {:store {:backend :file :path "/tmp/performance-hht"}
              :schema-flexibility :write
              :keep-history? false

@@ -34,6 +34,7 @@
                 :schema-flexibility :read
                 :keep-history? false
                 :index :datahike.index/persistent-set}]
+
     (d/delete-database config)
     (d/create-database config)
     (let [conn (d/connect config)]

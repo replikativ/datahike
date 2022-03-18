@@ -4,7 +4,9 @@
         io.replikativ/hitchhiker-tree               {:mvn/version "0.1.11"}
         io.replikativ/incognito                     {:mvn/version "0.3.66"}
         io.replikativ/konserve                      {:mvn/version "0.6.0-alpha3"}
-        persistent-sorted-set/persistent-sorted-set {:mvn/version "0.1.4"}
+        #_io.github.replikativ/persistent-sorted-set  #_{:git/url "https://github.com/replikativ/persistent-sorted-set.git"
+                                                     :sha "8667415e0149a002ffa78e4cb1814288d1d41b13"}
+        persistent-sorted-set/persistent-sorted-set {:local/root "persistent-sorted-set-0.1.4.jar"}
         environ/environ                             {:mvn/version "1.2.0"}
         com.taoensso/timbre                         {:mvn/version "5.2.1"}
         io.replikativ/superv.async                  {:mvn/version "0.3.43"}

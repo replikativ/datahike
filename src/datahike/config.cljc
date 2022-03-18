@@ -135,7 +135,7 @@
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
+                 :index (keyword "datahike.index" (:datahike-index env "persistent-set"))
                  :cache-size (:cache-size env 100000)
                  :index-config {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)
                                 :index-log-size       (int-from-env :datahike-log-size c/default-index-log-size)

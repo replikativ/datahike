@@ -3,7 +3,7 @@
 /classes
 /checkouts
 pom.xml.asc
-*.jar
+replikativ-datahike.jar
 *.class
 /.lein-*
 /.nrepl-port

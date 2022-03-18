@@ -1,6 +1,5 @@
 (ns datahike.index.utils
-  (:require [datahike.constants :refer [e0 tx0 emax txmax]]
-            [datahike.datom :as dd])
+  (:require [datahike.constants :refer [e0 tx0 emax txmax]])
   #?(:clj (:import [datahike.datom Datom])))
 
 (defn datom-to-vec [^Datom datom index-type start?]

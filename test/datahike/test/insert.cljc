@@ -2,8 +2,7 @@
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
-   [datahike.api :as d]
-   [datahike.datom :as datom]))
+   [datahike.api :as d]))
 
 #?(:cljs
    (def Throwable js/Error))
@@ -12,6 +11,8 @@
 ;; That is similar to Datomic's behaviour.
 
 (defn duplicate-test [config]
+  (when (d/database-exists? config)
+    (d/delete-database config))
   (let [_      (d/create-database config)
         conn   (d/connect config)
         schema [{:db/ident       :block/string
@@ -42,21 +43,28 @@
     (d/delete-database config)))
 
 (deftest mem-set
-  (let [config {:store {:backend :mem :id "performance-set"}
+  (let [config {:store {:backend :mem :id "duplicate-set"}
                 :schema-flexibility :write
                 :keep-history? true
                 :index :datahike.index/persistent-set}]
     (duplicate-test config)))
 
 (deftest mem-hht
-  (let [config {:store {:backend :mem :id "performance-hht"}
+  (let [config {:store {:backend :mem :id "duplicate-hht"}
                 :schema-flexibility :write
                 :keep-history? true
                 :index :datahike.index/hitchhiker-tree}]
     (duplicate-test config)))
 
-(deftest file
-  (let [config {:store {:backend :file :path "/tmp/performance-hht"}
+(deftest file-set
+  (let [config {:store {:backend :file :path "/tmp/duplicate-set"}
+                :schema-flexibility :write
+                :keep-history? true
+                :index :datahike.index/persistent-set}]
+    (duplicate-test config)))
+
+(deftest file-hht
+  (let [config {:store {:backend :file :path "/tmp/duplicate-hht"}
                 :schema-flexibility :write
                 :keep-history? true
                 :index :datahike.index/hitchhiker-tree}]

@@ -1,11 +1,18 @@
 (ns ^:no-doc datahike.store
-  (:require [hitchhiker.tree.bootstrap.konserve :as kons]
-            [clojure.spec.alpha :as s]
+  (:require [clojure.spec.alpha :as s]
             [konserve.filestore :as fs]
             [konserve.memory :as mem]
             [superv.async :refer [<?? S]]
             [environ.core :refer [env]]
-            [datahike.index.hitchhiker-tree.upsert :as ups]))
+            [datahike.index :as di]
+            [konserve.cache :as kc]
+            [clojure.core.cache :as cache]))
+
+(defn add-cache-and-handlers [raw-store index]
+  (di/add-konserve-handlers index
+                            (kc/ensure-cache
+                             raw-store
+                             (atom (cache/lru-cache-factory {} :threshold 1000)))))
 
 (defmulti empty-store
   "Creates an empty store"
@@ -34,16 +41,11 @@
 (defmulti release-store
   "Releases the connection to an existing store (optional)."
   {:arglists '([config store])}
-  (fn [{:keys [backend]} store]
+  (fn [{:keys [backend]} _store]
     backend))
 
 (defmethod release-store :default [_ _]
   nil)
-
-(defmulti scheme->index
-  "Returns the index type to use for this store"
-  {:arglists '([config])}
-  :backend)
 
 (defmulti default-config
   "Defines default configuration"
@@ -79,10 +81,7 @@
 (defmethod connect-store :mem [{:keys [id]}]
   (@memory id))
 
-(defmethod scheme->index :mem [_]
-  :datahike.index/hitchhiker-tree)
-
-(defmethod default-config :mem [{:keys [id] :as config}]
+(defmethod default-config :mem [config]
   (merge
    {:id (:datahike-store-id env "default")}
    config))
@@ -92,14 +91,12 @@
 (s/def ::mem (s/keys :req-un [:datahike.store.mem/backend
                               :datahike.store.mem/id]))
 
-(defmethod config-spec :mem [config] ::mem)
+(defmethod config-spec :mem [_config] ::mem)
 
 ;; file
 
-(defmethod empty-store :file [{:keys [path]}]
-  (ups/add-upsert-handler
-   (kons/add-hitchhiker-tree-handlers
-    (<?? S (fs/new-fs-store path)))))
+(defmethod empty-store :file [{:keys [path] :as _config}]
+  (<?? S (fs/new-fs-store path)))
 
 (defmethod delete-store :file [{:keys [path]}]
   (fs/delete-store path))
@@ -107,10 +104,7 @@
 (defmethod connect-store :file [{:keys [path]}]
   (<?? S (fs/new-fs-store path)))
 
-(defmethod scheme->index :file [_]
-  :datahike.index/hitchhiker-tree)
-
-(defmethod default-config :file [{:keys [id] :as config}]
+(defmethod default-config :file [config]
   (merge
    {:path (:datahike-store-path env "datahike-db")}
    config))
