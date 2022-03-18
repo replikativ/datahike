@@ -6,7 +6,6 @@
             [datahike.config :as dc]
             [datahike.tools :as dt :refer [throwable-promise]]
             [datahike.transactor :as t]
-            [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
             [konserve.cache :as kc]
             [superv.async :refer [<?? S]]
@@ -176,10 +175,10 @@
       conn))
 
   (-create-database [config & deprecated-config]
-    (let [{:keys [keep-history? initial-tx index] :as config} (dc/load-config config deprecated-config)
+    (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)
           store-config (:store config)
           store (kc/ensure-cache
-                 (ds/empty-store index store-config)
+                 (ds/empty-store store-config)
                  (atom (cache/lru-cache-factory {} :threshold 1000)))
           stored-db (<?? S (k/get-in store [:db]))
           _ (when stored-db

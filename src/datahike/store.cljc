@@ -8,11 +8,10 @@
 
 (defmulti empty-store
   "Creates an empty store"
-  {:arglists '([index-name config])}
-  (fn [_index-name {:keys [backend]}]
-    backend))
+  {:arglists '([config])}
+  :backend)
 
-(defmethod empty-store :default [_index-name {:keys [backend]}]
+(defmethod empty-store :default [{:keys [backend]}]
   (throw (IllegalArgumentException. (str "Can't create a store with scheme: " backend))))
 
 (defmulti delete-store
@@ -66,7 +65,7 @@
 
 (def memory (atom {}))
 
-(defmethod empty-store :mem [_index-name {:keys [id]}]
+(defmethod empty-store :mem [{:keys [id]}]
   (if-let [store (get @memory id)]
     store
     (let [store (<?? S (mem/new-mem-store))]
@@ -82,7 +81,7 @@
 (defmethod scheme->index :mem [_]
   :datahike.index/hitchhiker-tree)
 
-(defmethod default-config :mem [{:keys [id] :as config}]
+(defmethod default-config :mem [config]
   (merge
    {:id (:datahike-store-id env "default")}
    config))
@@ -96,8 +95,8 @@
 
 ;; file
 
-(defmethod empty-store :file [index-name {:keys [path]}]
-  (di/add-konserve-handlers index-name
+(defmethod empty-store :file [{:keys [path] :as config}]
+  (di/add-konserve-handlers (scheme->index config)
                             (<?? S (fs/new-fs-store path))))
 
 (defmethod delete-store :file [{:keys [path]}]
@@ -106,7 +105,7 @@
 (defmethod connect-store :file [{:keys [path]}]
   (<?? S (fs/new-fs-store path)))                           ;; doesn't this also need handlers?
 
-(defmethod scheme->index :file [_]
+(defmethod scheme->index :file [_]                          ;; should this be fixed in the future or freely choose-able?
   :datahike.index/hitchhiker-tree)
 
 (defmethod default-config :file [config]
@@ -114,7 +113,6 @@
    {:path (:datahike-store-path env)}
    config))
 
-(s/def :datahike.store.file/index-name keyword?)
 (s/def :datahike.store.file/path string?)
 (s/def :datahike.store.file/backend #{:file})
 (s/def ::file (s/keys :req-un {:datahike.store.file/backend
