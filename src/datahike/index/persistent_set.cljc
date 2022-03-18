@@ -2,22 +2,10 @@
   (:require [me.tonsky.persistent-sorted-set :as set]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
             [datahike.datom :as dd]
-            [datahike.constants :refer [e0 tx0 emax txmax]])
-  #?(:clj (:import [datahike.datom Datom])))
-
-(def -slice set/slice)
-
-(def -seq seq)
-
-(def -count count)
-
-(def -all identity)
-
-(def -flush identity)
-
-(def -transient transient)
-
-(def -persistent! persistent!)
+            [datahike.constants :refer [e0 tx0 emax txmax]]
+            [datahike.index.interface :as i :refer [IIndex]])
+  #?(:clj (:import [datahike.datom Datom]
+                   [me.tonsky.persistent_sorted_set PersistentSortedSet])))
 
 (defn index-type->cmp [index-type]
   (case index-type
@@ -31,18 +19,54 @@
     :avet dd/cmp-datoms-avet-quick
     dd/cmp-datoms-eavt-quick))
 
-(defn -insert [set datom index-type]
-  (set/conj set datom (index-type->cmp-quick index-type)))
+(extend-type PersistentSortedSet
+  IIndex
+  (-all [eavt-set]
+    (identity eavt-set))
+  (-seq [eavt-set]
+    (seq eavt-set))
+  (-count [eavt-set]
+    (count eavt-set))
+  (-insert [set datom index-type _op-count]
+    #_(set/conj set datom (index-type->cmp-quick index-type)) ;; old version? in last version this was overwritten by function below
+    (-> (or (when-let [old (first (set/slice set
+                                             (dd/datom (.-e datom) (.-a datom) (.-v datom) tx0)
+                                             (dd/datom (.-e datom) (.-a datom) (.-v datom) txmax)))]
+              (set/disj set old (index-type->cmp-quick index-type)))
+            set)
+        (set/conj datom (index-type->cmp-quick index-type))))
+  (-temporal-insert [set datom index-type _op-count]
+    (set/conj set datom (index-type->cmp-quick index-type)))
+  (-upsert [set datom index-type _op-count]
+    (-> (or (when-let [old (first (set/slice set
+                                             (dd/datom (.-e datom) (.-a datom) nil tx0)
+                                             (dd/datom (.-e datom) (.-a datom) nil txmax)))]
+              (set/disj set old (index-type->cmp-quick index-type)))
+            set)
+        (set/conj datom (index-type->cmp-quick index-type))))
+  (-temporal-upsert [set datom index-type _op-count]
+    (-> (or (when-let [old (first (set/slice set
+                                             (dd/datom (.-e datom) (.-a datom) nil tx0)
+                                             (dd/datom (.-e datom) (.-a datom) nil txmax)))]
+              (set/conj set (dd/datom (.-e old) (.-a old) (.-v old) (.-tx old) false)
+                        (index-type->cmp-quick index-type)))
+            set)
+        (set/conj datom (index-type->cmp-quick index-type))))
+  (-remove [set datom index-type _op-count]
+    (set/disj set datom (index-type->cmp-quick index-type)))
+  (-slice [set from to _]
+    (set/slice set from to))
+  (-flush [set _]
+    (identity set))
+  (-transient [set]
+    (transient set))
+  (-persistent! [set]
+    (persistent! set)))
 
-(defn -remove [set datom index-type]
-  (set/disj set datom (index-type->cmp-quick index-type)))
-
-;; Functions defined in multimethods in index.cljc
-
-(defn empty-set [index-type]
+(defmethod i/empty-index :datahike.index/persistent-set [_ index-type _]
   (set/sorted-set-by (index-type->cmp index-type)))
 
-(defn init-set [datoms index-type indexed]
+(defmethod i/init-index :datahike.index/persistent-set [_ datoms index-type _ {:keys [indexed]}]
   (let [arr (if (= index-type :avet)
               (let [avet-datoms (filter (fn [^Datom d] (contains? indexed (.-a d))) datoms)]
                 (to-array avet-datoms))
@@ -51,34 +75,3 @@
                 (arrays/into-array)))
         _ (arrays/asort arr (index-type->cmp-quick index-type))]
     (set/from-sorted-array (index-type->cmp index-type) arr)))
-
-(defn -remove [set datom index-type]
-  (set/disj set datom (index-type->cmp-quick index-type)))
-
-(defn -insert [set datom index-type]
-  (-> (or (when-let [old (first (-slice set
-                                        (dd/datom (.-e datom) (.-a datom) (.-v datom) tx0)
-                                        (dd/datom (.-e datom) (.-a datom) (.-v datom) txmax)))]
-            (-remove set old index-type))
-          set)
-      (set/conj datom (index-type->cmp-quick index-type))))
-
-(defn -temporal-insert [set datom index-type]
-  (set/conj set datom (index-type->cmp-quick index-type)))
-
-(defn -upsert [set datom index-type]
-  (-> (or (when-let [old (first (-slice set
-                                        (dd/datom (.-e datom) (.-a datom) nil tx0)
-                                        (dd/datom (.-e datom) (.-a datom) nil txmax)))]
-            (-remove set old index-type))
-          set)
-      (set/conj datom (index-type->cmp-quick index-type))))
-
-(defn -temporal-upsert [set datom index-type]
-  (-> (or (when-let [old (first (-slice set
-                                        (dd/datom (.-e datom) (.-a datom) nil tx0)
-                                        (dd/datom (.-e datom) (.-a datom) nil txmax)))]
-            (set/conj set (dd/datom (.-e old) (.-a old) (.-v old) (.-tx old) false)
-                      (index-type->cmp-quick index-type)))
-          set)
-      (set/conj datom (index-type->cmp-quick index-type))))

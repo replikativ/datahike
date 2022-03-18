@@ -6,7 +6,8 @@
    [clojure.data]
    #?(:clj [clojure.pprint :as pp])
    [datahike.array :refer [a=]]
-   [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
+   #_[datahike.index.interface :as di]
+   [datahike.index :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
    [datahike.constants :as c :refer [ue0 e0 tx0 utx0 emax txmax system-schema]]
    [datahike.tools :refer [get-time case-tree raise] :as tools]
@@ -21,7 +22,7 @@
                             [datahike.datom :refer [combine-cmp datom]]
                             [datahike.tools :refer [case-tree raise]]))
   (:refer-clojure :exclude [seqable?])
-  #?(:clj (:import [clojure.lang AMapEntry]
+  #?(:clj (:import [clojure.lang AMapEntry ITransientCollection IEditableCollection IPersistentCollection Seqable]
                    [java.util Date]
                    [datahike.datom Datom])))
 
@@ -42,7 +43,7 @@
        #?(:cljs (or (cljs.core/seqable? x)
                     (arrays/array? x))
           :clj (or (seq? x)
-                   (instance? clojure.lang.Seqable x)
+                   (instance? Seqable x)
                    (nil? x)
                    (instance? Iterable x)
                    (arrays/array? x)
@@ -152,15 +153,15 @@
 
 (defn db-transient [db]
   (-> db
-      (update :eavt -transient)
-      (update :aevt -transient)
-      (update :avet -transient)))
+      (update :eavt di/-transient)
+      (update :aevt di/-transient)
+      (update :avet di/-transient)))
 
 (defn db-persistent! [db]
   (-> db
-      (update :eavt -persistent!)
-      (update :aevt -persistent!)
-      (update :avet -persistent!)))
+      (update :eavt di/-persistent!)
+      (update :aevt di/-persistent!)
+      (update :avet di/-persistent!)))
 
 (defn validate-pattern
   "Checks if database pattern is valid"
@@ -203,36 +204,36 @@
     (if (and (not temporal-db?) (false? added?))
       '()
       (case-tree [e a (some? v) tx]
-                 [(-slice eavt (datom e a v tx) (datom e a v tx) :eavt) ;; e a v tx
-                  (-slice eavt (datom e a v tx0) (datom e a v txmax) :eavt) ;; e a v _
-                  (->> (-slice eavt (datom e a nil tx0) (datom e a nil txmax) :eavt) ;; e a _ tx
+                 [(di/-slice eavt (datom e a v tx) (datom e a v tx) :eavt) ;; e a v tx
+                  (di/-slice eavt (datom e a v tx0) (datom e a v txmax) :eavt) ;; e a v _
+                  (->> (di/-slice eavt (datom e a nil tx0) (datom e a nil txmax) :eavt) ;; e a _ tx
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                  (-slice eavt (datom e a nil tx0) (datom e a nil txmax) :eavt) ;; e a _ _
-                  (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ v tx
+                  (di/-slice eavt (datom e a nil tx0) (datom e a nil txmax) :eavt) ;; e a _ _
+                  (->> (di/-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ v tx
                        (filter (fn [^Datom d] (and (a= v (.-v d))
                                                    (= tx (datom-tx d))))))
-                  (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ v _
+                  (->> (di/-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ v _
                        (filter (fn [^Datom d] (a= v (.-v d)))))
-                  (->> (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ tx
+                  (->> (di/-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ tx
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                  (-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ _
+                  (di/-slice eavt (datom e nil nil tx0) (datom e nil nil txmax) :eavt) ;; e _ _ _
                   (if indexed?                              ;; _ a v tx
-                    (->> (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
+                    (->> (di/-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
                          (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                    (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
+                    (->> (di/-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
                          (filter (fn [^Datom d] (and (a= v (.-v d))
                                                      (= tx (datom-tx d)))))))
                   (if indexed?                              ;; _ a v _
-                    (-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
-                    (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
+                    (di/-slice avet (datom e0 a v tx0) (datom emax a v txmax) :avet)
+                    (->> (di/-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt)
                          (filter (fn [^Datom d] (a= v (.-v d))))))
-                  (->> (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ tx
+                  (->> (di/-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ tx
                        (filter (fn [^Datom d] (= tx (datom-tx d)))))
-                  (-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ _
-                  (filter (fn [^Datom d] (and (a= v (.-v d)) (= tx (datom-tx d)))) (-all eavt)) ;; _ _ v tx
-                  (filter (fn [^Datom d] (a= v (.-v d))) (-all eavt)) ;; _ _ v _
-                  (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
-                  (-all eavt)]))))
+                  (di/-slice aevt (datom e0 a nil tx0) (datom emax a nil txmax) :aevt) ;; _ a _ _
+                  (filter (fn [^Datom d] (and (a= v (.-v d)) (= tx (datom-tx d)))) (di/-all eavt)) ;; _ _ v tx
+                  (filter (fn [^Datom d] (a= v (.-v d))) (di/-all eavt)) ;; _ _ v _
+                  (filter (fn [^Datom d] (= tx (datom-tx d))) (di/-all eavt)) ;; _ _ _ tx
+                  (di/-all eavt)]))))
 
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map meta]
   #?@(:cljs
@@ -250,14 +251,14 @@
       :clj
       [Object (hashCode [db] hash)
        clojure.lang.IHashEq (hasheq [db] hash)
-       clojure.lang.Seqable (seq [db] (-seq eavt))
-       clojure.lang.IPersistentCollection
-       (count [db] (-count eavt))
+       Seqable (seq [db] (di/-seq eavt))
+       IPersistentCollection
+       (count [db] (di/-count eavt))
        (equiv [db other] (equiv-db db other))
        (empty [db] (empty-db (ds/get-user-schema db)))
-       clojure.lang.IEditableCollection
+       IEditableCollection
        (asTransient [db] (db-transient db))
-       clojure.lang.ITransientCollection
+       ITransientCollection
        (conj [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
        (persistent [db] (db-persistent! db))])
 
@@ -292,22 +293,22 @@
 
   IIndexAccess
   (-datoms [db index-type cs]
-           (-slice (get db index-type)
-                   (components->pattern db index-type cs e0 tx0)
-                   (components->pattern db index-type cs emax txmax)
-                   index-type))
+           (di/-slice (get db index-type)
+                      (components->pattern db index-type cs e0 tx0)
+                      (components->pattern db index-type cs emax txmax)
+                      index-type))
 
   (-seek-datoms [db index-type cs]
-                (-slice (get db index-type)
-                        (components->pattern db index-type cs e0 tx0)
-                        (datom emax nil nil txmax)
-                        index-type))
+                (di/-slice (get db index-type)
+                           (components->pattern db index-type cs e0 tx0)
+                           (datom emax nil nil txmax)
+                           index-type))
 
   (-rseek-datoms [db index-type cs]
-                 (-> (-slice (get db index-type)
-                             (components->pattern db index-type cs e0 tx0)
-                             (datom emax nil nil txmax)
-                             index-type)
+                 (-> (di/-slice (get db index-type)
+                                (components->pattern db index-type cs e0 tx0)
+                                (datom emax nil nil txmax)
+                                index-type)
                      vec
                      rseq))
 
@@ -315,18 +316,18 @@
                 (when-not (indexing? db attr)
                   (raise "Attribute" attr "should be marked as :db/index true" {}))
                 (validate-attr attr (list '-index-range 'db attr start end) db)
-                (-slice avet
-                        (resolve-datom db nil attr start nil e0 tx0)
-                        (resolve-datom db nil attr end nil emax txmax)
-                        :avet))
+                (di/-slice avet
+                           (resolve-datom db nil attr start nil e0 tx0)
+                           (resolve-datom db nil attr end nil emax txmax)
+                           :avet))
 
   clojure.data/EqualityPartition
   (equality-partition [x] :datahike/db)
 
   clojure.data/Diff
   (diff-similar [a b]
-                (let [datoms-a (-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
-                      datoms-b (-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
+                (let [datoms-a (di/-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
+                      datoms-b (di/-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
                   (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
 
 (defn db? [x]
@@ -352,13 +353,13 @@
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on FilteredDB")))]
 
       :clj
-      [clojure.lang.IPersistentCollection
+      [IPersistentCollection
        (count [db] (count (-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on FilteredDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on FilteredDB")))
 
-       clojure.lang.Seqable (seq [db] (-datoms db :eavt []))
+       Seqable (seq [db] (-datoms db :eavt []))
 
        clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on FilteredDB")))
        (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on FilteredDB")))
@@ -419,8 +420,8 @@
         from (components->pattern db index-type cs e0 tx0)
         to (components->pattern db index-type cs emax txmax)]
     (distinct-datoms db
-                     (-slice index from to index-type)
-                     (-slice temporal-index from to index-type))))
+                     (di/-slice index from to index-type)
+                     (di/-slice temporal-index from to index-type))))
 
 (defn temporal-seek-datoms [^DB db index-type cs]
   (let [index (get db index-type)
@@ -428,8 +429,8 @@
         from (components->pattern db index-type cs e0 tx0)
         to (datom emax nil nil txmax)]
     (distinct-datoms db
-                     (-slice index from to index-type)
-                     (-slice temporal-index from to index-type))))
+                     (di/-slice index from to index-type)
+                     (di/-slice temporal-index from to index-type))))
 
 (defn temporal-rseek-datoms [^DB db index-type cs]
   (let [index (get db index-type)
@@ -438,8 +439,8 @@
         to (datom emax nil nil txmax)]
     (concat
      (-> (distinct-datoms db
-                          (-slice index from to index-type)
-                          (-slice temporal-index from to index-type))
+                          (di/-slice index from to index-type)
+                          (di/-slice temporal-index from to index-type))
          vec
          rseq))))
 
@@ -450,8 +451,8 @@
   (let [from (resolve-datom current-db nil attr start nil e0 tx0)
         to (resolve-datom current-db nil attr end nil emax txmax)]
     (distinct-datoms db
-                     (-slice (get db :avet) from to :avet)
-                     (-slice (get db :temporal-avet) from to :avet))))
+                     (di/-slice (get db :avet) from to :avet)
+                     (di/-slice (get db :temporal-avet) from to :avet))))
 
 (defrecord-updatable HistoricalDB [origin-db]
   #?@(:cljs
@@ -469,13 +470,13 @@
        IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on HistoricalDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on HistoricalDB")))]
       :clj
-      [clojure.lang.IPersistentCollection
+      [IPersistentCollection
        (count [db] (count (-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on HistoricalDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on HistoricalDB")))
 
-       clojure.lang.Seqable
+       Seqable
        (seq [db] (-datoms db :eavt []))
 
        clojure.lang.Associative
@@ -570,13 +571,13 @@
        IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on AsOfDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on AsOfDB")))]
       :clj
-      [clojure.lang.IPersistentCollection
+      [IPersistentCollection
        (count [db] (count (-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on AsOfDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on AsOfDB")))
 
-       clojure.lang.Seqable
+       Seqable
        (seq [db] (-datoms db :eavt []))
 
        clojure.lang.Associative
@@ -661,13 +662,13 @@
        IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on SinceDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on SinceDB")))]
       :clj
-      [clojure.lang.IPersistentCollection
+      [IPersistentCollection
        (count [db] (count (-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on SinceDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on SinceDB")))
 
-       clojure.lang.Seqable
+       Seqable
        (seq [db] (-datoms db :eavt []))
 
        clojure.lang.Associative
@@ -878,7 +879,7 @@
 
 (defn init-max-eid [eavt]
   ;; solved with reserse slice first in datascript
-  (if-let [datoms (-slice
+  (if-let [datoms (di/-slice
                    eavt
                    (datom e0 nil nil tx0)
                    (datom (dec tx0) nil nil txmax)
@@ -887,7 +888,7 @@
     e0))
 
 (defn get-max-tx [eavt]
-  (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
+  (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (di/-all eavt)))
 
 (def ref-datoms                                             ;; maps enums as well
   (let [idents (reduce (fn [m {:keys [db/ident db/id]}]
@@ -986,7 +987,7 @@
    datoms))
 
 (defn get-max-tx [eavt]
-  (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (-all eavt)))
+  (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (di/-all eavt)))
 
 (defn ^DB init-db
   ([datoms] (init-db datoms nil nil))
