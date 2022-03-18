@@ -3,7 +3,7 @@
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
             [datahike.datom :as dd]
             [datahike.constants :refer [e0 tx0 emax txmax]]
-            [datahike.index.interface :as i :refer [IIndex]])
+            [datahike.index.interface :as di :refer [IIndex]])
   #?(:clj (:import [datahike.datom Datom]
                    [me.tonsky.persistent_sorted_set PersistentSortedSet])))
 
@@ -63,10 +63,10 @@
   (-persistent! [set]
     (persistent! set)))
 
-(defmethod i/empty-index :datahike.index/persistent-set [_ index-type _]
+(defmethod di/empty-index :datahike.index/persistent-set [_index-name index-type _]
   (set/sorted-set-by (index-type->cmp index-type)))
 
-(defmethod i/init-index :datahike.index/persistent-set [_ datoms index-type _ {:keys [indexed]}]
+(defmethod di/init-index :datahike.index/persistent-set [_index-name datoms index-type _ {:keys [indexed]}]
   (let [arr (if (= index-type :avet)
               (let [avet-datoms (filter (fn [^Datom d] (contains? indexed (.-a d))) datoms)]
                 (to-array avet-datoms))
@@ -75,3 +75,9 @@
                 (arrays/into-array)))
         _ (arrays/asort arr (index-type->cmp-quick index-type))]
     (set/from-sorted-array (index-type->cmp index-type) arr)))
+
+(defmethod di/add-konserve-handlers :datahike.index/persistent-set [_index-name store]
+  store)
+
+(defmethod di/konserve-backend :datahike.index/persistent-set [_index-name store]
+  store)

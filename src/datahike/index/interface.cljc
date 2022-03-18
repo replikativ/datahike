@@ -11,16 +11,24 @@
   (-temporal-upsert [index datom index-type op-count] "Inserts or updates a datom in a history index")
   (-remove [index datom index-type op-count] "Removes a datom from the index")
   (-slice [index from to index-type] "Returns a slice of the index")
-  (-flush [index backend] "Saves the changes to the index to the given backend")
+  (-flush [index backend] "Saves the changes to the index to the given konserve backend")
   (-transient [index] "Returns a transient version of the index")
   (-persistent! [index] "Returns a persistent version of the index"))
 
 (defmulti empty-index
   "Creates an empty index"
-  (fn [index _index-type _index-config]
-    index))
+  (fn [index-name _index-type _index-config]
+    index-name))
 
 (defmulti init-index
   "Creates an index with datoms"
-  (fn [index _datoms _index-type _op-count _index-config]
-    index))
+  (fn [index-name _datoms _index-type _op-count _index-config]
+    index-name))
+
+(defmulti add-konserve-handlers
+  "Adds read and write handlers for the index data types."
+  (fn [index-name _store] index-name))
+
+(defmulti konserve-backend
+  "Returns a konserve store capable of handling the index. Used for flushing."
+  (fn [index-name _store] index-name))

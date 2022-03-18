@@ -5,8 +5,6 @@
             [datahike.store :as ds]
             [datahike.config :as dc]
             [datahike.tools :as dt :refer [throwable-promise]]
-            [datahike.index.hitchhiker-tree.upsert :as ups]
-            [datahike.index.hitchhiker-tree.insert :as ins]
             [datahike.transactor :as t]
             [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
@@ -25,7 +23,7 @@
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data tx-meta)
         {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx max-eid op-count hash meta]} db-after
         store (:store @connection)
-        backend (kons/->KonserveBackend store)
+        backend (di/konserve-backend (:index config) store)
         eavt-flushed (di/-flush eavt backend)
         aevt-flushed (di/-flush aevt backend)
         avet-flushed (di/-flush avet backend)
@@ -124,12 +122,10 @@
           store-config (:store config)
           raw-store (ds/connect-store store-config)]
       (if (not (nil? raw-store))
-        (let [store (ups/add-upsert-handler
-                     (ins/add-insert-handler
-                      (kons/add-hitchhiker-tree-handlers
-                       (kc/ensure-cache
-                        raw-store
-                        (atom (cache/lru-cache-factory {} :threshold 1000))))))
+        (let [store (di/add-konserve-handlers (:index config)
+                                              (kc/ensure-cache
+                                               raw-store
+                                               (atom (cache/lru-cache-factory {} :threshold 1000))))
               stored-db (<?? S (k/get-in store [:db]))]
           (ds/release-store store-config store)
           (not (nil? stored-db)))
@@ -145,12 +141,10 @@
           _ (when-not raw-store
               (dt/raise "Backend does not exist." {:type :backend-does-not-exist
                                                    :config config}))
-          store (ups/add-upsert-handler
-                 (ins/add-insert-handler
-                  (kons/add-hitchhiker-tree-handlers
-                   (kc/ensure-cache
-                    raw-store
-                    (atom (cache/lru-cache-factory {} :threshold 1000))))))
+          store (di/add-konserve-handlers (:index config)
+                                          (kc/ensure-cache
+                                           raw-store
+                                           (atom (cache/lru-cache-factory {} :threshold 1000))))
           stored-db (<?? S (k/get-in store [:db]))
           _ (when-not stored-db
               (ds/release-store store-config store)
@@ -182,17 +176,17 @@
       conn))
 
   (-create-database [config & deprecated-config]
-    (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)
+    (let [{:keys [keep-history? initial-tx index] :as config} (dc/load-config config deprecated-config)
           store-config (:store config)
           store (kc/ensure-cache
-                 (ds/empty-store store-config)
+                 (ds/empty-store index store-config)
                  (atom (cache/lru-cache-factory {} :threshold 1000)))
           stored-db (<?? S (k/get-in store [:db]))
           _ (when stored-db
               (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
           {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ref-ident-map ident-ref-map config max-tx max-eid op-count hash meta]}
           (db/empty-db nil config)
-          backend (kons/->KonserveBackend store)]
+          backend (di/konserve-backend (:index config) store)]
       (<?? S (k/assoc-in store [:db]
                          (merge {:schema schema
                                  :max-tx max-tx

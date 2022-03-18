@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.index.hitchhiker-tree
   (:require [datahike.index.hitchhiker-tree.upsert :as ups]
             [datahike.index.hitchhiker-tree.insert :as ins]
+            [hitchhiker.tree.bootstrap.konserve :as hk]
             [hitchhiker.tree.utils.async :as async]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
@@ -224,3 +225,12 @@
       (insert tree datom index-type (+ idx op-count)))
     (empty-tree index-b-factor index-data-node-size index-log-size)
     (map-indexed (fn [idx datom] [idx datom]) (seq datoms)))))
+
+(defmethod di/add-konserve-handlers :datahike.index/hitchhiker-tree [_ store]
+  (ups/add-upsert-handler
+   (ins/add-insert-handler
+    (hk/add-hitchhiker-tree-handlers
+     store))))
+
+(defmethod di/konserve-backend :datahike.index/hitchhiker-tree  [_index-name store]
+  (hk/->KonserveBackend store))

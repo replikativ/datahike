@@ -22,6 +22,8 @@
 
 (def empty-index di/empty-index)
 (def init-index di/init-index)
+(def add-konserve-handlers di/add-konserve-handlers)
+(def konserve-backend di/konserve-backend)
 
 ;; Other functions
 
