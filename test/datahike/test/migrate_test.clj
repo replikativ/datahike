@@ -125,52 +125,53 @@
                #{[3] [4]}))
         (d/delete-database cfg)))))
 
-(deftest load-entities-test
-  (let [default-cfg {:store         {:backend :mem
-                                     :id      "load-entities-test-no-attr-refs"}
-                     :keep-history? true}]
-    (testing "Test migrate simple datoms without attribute refs"
-      (let [source-datoms (->> tx-data
-                               (mapv #(-> % rest vec))
-                               (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
-            cfg           (assoc default-cfg :attribute-refs false)
-            _             (d/delete-database cfg)
-            _             (d/create-database cfg)
-            conn          (d/connect cfg)]
-        @(d/load-entities conn source-datoms)
-        (is (= (into #{} source-datoms)
-               (d/q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))))
-    (testing "Test migrate simple datoms with attribute refs"
-      (let [source-datoms (->> tx-data
-                               (mapv #(-> % rest vec))
-                               (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
-            cfg           (assoc default-cfg :attribute-refs? true)
-            _             (d/delete-database cfg)
-            _             (d/create-database cfg)
-            conn          (d/connect cfg)]
-        @(d/load-entities conn source-datoms)
-        (is (= (into #{} (->> source-datoms
-                              (mapv (comp vec rest))
-                              (concat tx-meta)))
-               (d/q '[:find ?a ?v ?t ?op
-                      :where
-                      [?e ?attr ?v ?t ?op]
-                      [?attr :db/ident ?a]] @conn)))))))
+(defn load-entities-test [cfg]
+  (testing "Test migrate simple datoms without attribute refs"
+    (let [source-datoms (->> tx-data
+                             (mapv #(-> % rest vec))
+                             (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
+          cfg           (assoc cfg :attribute-refs false)
+          _             (d/delete-database cfg)
+          _             (d/create-database cfg)
+          conn          (d/connect cfg)]
+      @(d/load-entities conn source-datoms)
+      (is (= (into #{} source-datoms)
+             (d/q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))))
+  (testing "Test migrate simple datoms with attribute refs"
+    (let [source-datoms (->> tx-data
+                             (mapv #(-> % rest vec))
+                             (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
+          cfg           (assoc cfg :attribute-refs? true)
+          _             (d/delete-database cfg)
+          _             (d/create-database cfg)
+          conn          (d/connect cfg)]
+      @(d/load-entities conn source-datoms)
+      (is (= (into #{} (->> source-datoms
+                            (mapv (comp vec rest))
+                            (concat tx-meta)))
+             (d/q '[:find ?a ?v ?t ?op
+                    :where
+                    [?e ?attr ?v ?t ?op]
+                    [?attr :db/ident ?a]] @conn))))))
 
-(deftest load-entities-history-test
+(deftest load-entities-test-hht
+  (load-entities-test {:store         {:backend :mem
+                                       :id      "load-entities-test-no-attr-refs"}
+                       :keep-history? true}))
+
+(deftest load-entities-test-ps
+  (load-entities-test {:store         {:backend :mem
+                                       :id      "load-entities-test-no-attr-refs"}
+                       :index :datahike.index/persistent-set
+                       :keep-history? true}))
+
+(defn load-entities-history-test [source-cfg]
   (testing "Migrate predefined set with historical data"
     (let [schema      [{:db/ident       :name
                         :db/cardinality :db.cardinality/one
                         :db/index       true
                         :db/unique      :db.unique/identity
                         :db/valueType   :db.type/string}]
-          source-cfg  {:store              {:backend :mem
-                                            :id      "load-entities-history-test-source"}
-                       :name               "load-entities-history-test-source"
-                       :keep-history?      true
-                       :schema-flexibility :write
-                       :cache-size         0
-                       :attribute-refs?    false}
           source-conn (do
                         (d/delete-database source-cfg)
                         (d/create-database source-cfg)
@@ -206,3 +207,22 @@
              (current-q target-conn)))
       (is (= (history-q source-conn)
              (history-q target-conn))))))
+
+(deftest load-entities-history-test-hht
+  (load-entities-history-test {:store              {:backend :mem
+                                                    :id      "load-entities-history-test-source"}
+                               :name               "load-entities-history-test-source"
+                               :keep-history?      true
+                               :schema-flexibility :write
+                               :cache-size         0
+                               :attribute-refs?    false}))
+
+(deftest load-entities-history-test-ps
+  (load-entities-history-test {:store              {:backend :mem
+                                                    :id      "load-entities-history-test-source"}
+                               :name               "load-entities-history-test-source"
+                               :keep-history?      true
+                               :schema-flexibility :write
+                               :cache-size         0
+                               :index :datahike.index/persistent-set
+                               :attribute-refs?    false}))
