@@ -2154,7 +2154,7 @@
                  {:error :transact/syntax, :tx-data entity}))))))
 
 (defn transact-entities-directly [initial-report initial-es]
-  (loop [report (update initial-report :db-after persistent!)
+  (loop [report (update initial-report :db-after transient)
          es initial-es
          migration-state (or (get-in initial-report [:db-before :migration]) {})]
     (let [[entity & entities] es
