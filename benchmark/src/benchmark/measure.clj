@@ -70,9 +70,8 @@
   [{:keys [iterations tx-entity-counts]} conn config entity-count datom-count]
   (log/info (str "Measuring transaction times on database with config named '" (:name config) ", "
                  (count c/schema) " attributes in entity, and " entity-count " entities in database"))
-  (for [_ (range iterations)    ;; sampling for given entity-count
-        tx-entities tx-entity-counts
-        _ (range iterations)]   ;; sampling for each tx-entities
+  (for [tx-entities tx-entity-counts
+        _ (range iterations)]
     (let [tx (vec (repeatedly tx-entities (partial c/rand-entity Integer/MAX_VALUE)))
           timed-transact (timed (d/transact conn tx))]
       (d/transact conn (mapv (fn [dat] [:db.fn/retractEntity (.-e dat)])
