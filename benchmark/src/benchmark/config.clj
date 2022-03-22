@@ -17,22 +17,25 @@
    {:title "Time Count"                :path [:time :count]}
    {:title "Tags"                      :path [:tag]}])
 
-(def db-configs
+(def db-configs-minus-history
   [{:config-name "mem-set"
     :config {:store {:backend :mem :id "performance-set"}
              :schema-flexibility :write
-             :keep-history? false
              :index :datahike.index/persistent-set}}
    {:config-name "mem-hht"
     :config {:store {:backend :mem :id "performance-hht"}
              :schema-flexibility :write
-             :keep-history? false
              :index :datahike.index/hitchhiker-tree}}
    {:config-name "file"
     :config {:store {:backend :file :path "/tmp/performance-hht"}
              :schema-flexibility :write
-             :keep-history? false
              :index :datahike.index/hitchhiker-tree}}])
+
+(def db-configs
+  (concat (map #(assoc-in % [:config :keep-history?] false) db-configs-minus-history)
+          (map (fn [cfg] (-> cfg
+                             (assoc-in [:config :keep-history?] true)
+                             (update :config-name #(str % "-with-history")))) db-configs-minus-history)))
 
 (def schema
   [{:db/ident       :s1

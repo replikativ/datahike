@@ -160,7 +160,7 @@
                             (select-keys (:time f) [:mean :median :std])))
               figs)))
 
-  (def configs (map #(assoc-in % [:config :keep-history?] true) c/db-configs))
+  (def configs (filter #(get-in % [:config :keep-history?]) c/db-configs))
   (def opts {:output-format "edn"
              :iterations 10,
              :tag #{test}
