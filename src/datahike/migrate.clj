@@ -29,10 +29,7 @@
                     (map #(-> (apply d/datom %) (update :v instance-to-date))))]
     (swap! conn update-max-tx datoms)
     (print "Importing ")
-    (time
-     (doseq [partitions (partition 1000 1000 nil datoms)]
-       (print ".")
-       (api/transact conn (vec datoms))))))
+    (api/transact conn (vec datoms))))
 
 (comment
   ;; For the record, for now
