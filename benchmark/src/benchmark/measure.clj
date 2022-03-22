@@ -74,8 +74,10 @@
         _ (range iterations)]
     (let [tx (vec (repeatedly tx-entities (partial c/rand-entity Integer/MAX_VALUE)))
           timed-transact (timed (d/transact conn tx))]
-      (d/transact conn (mapv (fn [dat] [:db.fn/retractEntity (.-e dat)])
-                             (remove #(= (.-e %) (datom/datom-tx %)) (:tx-data (:res timed-transact)))))
+      (d/transact conn (mapv
+                        (fn [dat]
+                          [(if (:keep-history? (:config @conn)) :db.purge/entity :db/retractEntity) (.-e dat)])
+                        (:tx-data (:res timed-transact))))
       (time-context-map (:t timed-transact) config :transaction entity-count datom-count
                         {:tx-entities tx-entities :tx-datoms (* (count c/schema) tx-entities)}))))
 
