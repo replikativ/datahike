@@ -5,7 +5,7 @@
         org.clojure/tools.reader                    {:mvn/version "1.3.6"}
         environ/environ                             {:mvn/version "1.2.0"}
         com.taoensso/timbre                         {:mvn/version "5.1.2"}
-        io.replikativ/superv.async                  {:mvn/version "0.2.11"}
+        io.replikativ/superv.async                  {:mvn/version "0.3.43"}
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.10"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
         junit/junit                                 {:mvn/version "4.13.2"}}
@@ -26,9 +26,10 @@
                               incanter/incanter-charts    {:mvn/version "1.9.3"}}}
 
            :test {:extra-paths ["test"]
-                  :extra-deps {lambdaisland/kaocha       {:mvn/version "1.60.977"}
-                               lambdaisland/kaocha-cljs  {:mvn/version "1.0.107"}
-                               io.replikativ/datahike-jdbc {:mvn/version "0.1.2-SNAPSHOT"}}}
+                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.60.945"}
+                               lambdaisland/kaocha-cljs    {:mvn/version "1.0.107"}
+                               io.replikativ/datahike-jdbc {:mvn/version "0.1.2-SNAPSHOT"}
+                               org.clojure/test.check      {:mvn/version "0.9.0"}}}
 
            :repl {:extra-deps {cider/cider-nrepl           {:mvn/version "0.28.1"}
                                nrepl/nrepl                 {:mvn/version "0.9.0"}

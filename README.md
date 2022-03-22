@@ -8,7 +8,7 @@
 <a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://badgen.net/badge/-/slack?icon=slack&label"/></a>
 <a href="https://clojars.org/io.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/io.replikativ/datahike.svg" /></a>
 <a href="https://circleci.com/gh/replikativ/datahike"><img src="https://circleci.com/gh/replikativ/datahike.svg?style=shield"/></a>
-<a href="https://github.com/replikativ/datahike/tree/development"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/development"/></a>
+<a href="https://github.com/replikativ/datahike/tree/main"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/main"/></a>
 </p>
 
 [Datahike](https://datahike.io) is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
@@ -249,6 +249,6 @@ feature, please let us know.
 
 ## License
 
-Copyright © 2014–2021 Konrad Kühne, Christian Weilbach, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov, Ryan Sundberg
+Copyright © 2014–2022 Konrad Kühne, Christian Weilbach, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov, Ryan Sundberg
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).

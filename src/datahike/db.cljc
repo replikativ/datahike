@@ -1801,21 +1801,41 @@
      []
      (::queued-tuples report))))
 
-(defn transact-tx-data [initial-report initial-es]
+(defn flush-tx-meta
+  "Generates add-operations for transaction meta data."
+  [{:keys [tx-meta db-before] :as report}]
+  (let [tx-meta (merge {:db/txInstant (get-time)} tx-meta)
+        tid (current-tx report)
+        {:keys [attribute-refs?]} (-config db-before)]
+    (reduce-kv
+     (fn [entities attribute value]
+       (let [straight-a (if attribute-refs? (-ref-for db-before attribute) attribute)]
+         (if (some? straight-a)
+           (conj entities
+                 [:db/add
+                  tid
+                  straight-a
+                  value
+                  tid])
+           (raise "Bad transaction meta attribute " attribute " at " tx-meta ", not defined in system or current schema"
+                  {:error :transact/schema :attribute attribute :context tx-meta}))))
+     []
+     tx-meta)))
+
+(defn transact-tx-data [{:keys [db-before] :as initial-report} initial-es]
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
     (raise "Bad transaction data " initial-es ", expected sequential collection"
            {:error :transact/syntax, :tx-data initial-es}))
-  (let [db-before (:db-before initial-report)
-        {:keys [attribute-refs? schema-flexibility]} (-config db-before)
-        tx-instant (if attribute-refs? (-ref-for db-before :db/txInstant) :db/txInstant)
+  (let [{:keys [schema-flexibility]} (-config db-before)
         has-tuples? (seq (-attrs-by (:db-after initial-report) :db.type/tuple))
         initial-es' (if has-tuples?
                       (interleave initial-es (repeat ::flush-tuples))
-                      initial-es)]
+                      initial-es)
+        meta-entities (flush-tx-meta initial-report)]
     (loop [report (update initial-report :db-after transient)
-           es (if (-keep-history? (:db-before initial-report))
-                (concat [[:db/add (current-tx report) tx-instant (get-time) (current-tx report)]]
+           es (if (-keep-history? db-before)
+                (concat meta-entities
                         initial-es')
                 initial-es')]
       (let [[entity & entities] es
@@ -2134,7 +2154,7 @@
                  {:error :transact/syntax, :tx-data entity}))))))
 
 (defn transact-entities-directly [initial-report initial-es]
-  (loop [report (update initial-report :db-after persistent!)
+  (loop [report (update initial-report :db-after transient)
          es initial-es
          migration-state (or (get-in initial-report [:db-before :migration]) {})]
     (let [[entity & entities] es

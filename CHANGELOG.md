@@ -15,6 +15,8 @@
 - Init max-eid from index for older db versions https://github.com/replikativ/datahike/issues/465 https://github.com/replikativ/datahike/pull/481
 - Allow attribute access to historical db records
 - Allow keyword keys for queries
+- Fix tx-meta on transact through api-ns
+- Improve code samples using transact with arg-map @podgorniy
 
 ## 0.4.0
 
