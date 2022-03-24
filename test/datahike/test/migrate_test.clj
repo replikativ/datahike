@@ -120,7 +120,7 @@
                                     {:name "Daisy" :age 20}
                                     {:name "Erhard" :age 20}]})
         (d/transact conn {:tx-data [[:db/retractEntity [:name "Erhard"]]]})
-        (m/export-db @conn export-path)
+        (m/export-db conn export-path)
         (m/import-db new-conn export-path)
         (is (= (d/datoms (if (:keep-history? cfg) (d/history @conn) @conn) :eavt)
                (filter #(< (:e %) (:max-tx @new-conn))
@@ -233,7 +233,7 @@
           import-conn (utils/setup-db)]
       (d/transact conn [{:db/id 1, :name "Jiayi", :payload (byte-array [0 2 3])}
                         {:db/id 2, :name "Peter", :payload (byte-array [1 2 3])}])
-      (m/export-db @conn export-path)
+      (m/export-db conn export-path)
       (m/import-db import-conn export-path)
       (is (utils/all-true? (map #(or (= %1 %2) (utils/all-eq? (nth %1 2) (nth %2 2)))
                                 (d/datoms @conn :eavt)

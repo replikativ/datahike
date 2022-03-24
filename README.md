@@ -204,7 +204,7 @@ The database can be exported to a flat file with:
 
 ```clojure
 (require '[datahike.migrate :refer [export-db import-db]])
-(export-db @conn "/tmp/eavt-dump")
+(export-db conn "/tmp/eavt-dump")
 ```
 
 You must do so before upgrading to a Datahike version that has changed the

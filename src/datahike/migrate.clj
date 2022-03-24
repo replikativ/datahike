@@ -7,8 +7,9 @@
 
 (defn export-db
   "Export the database in a flat-file of datoms at path."
-  [db path]
-  (let [cfg (:config db)]
+  [conn path]
+  (let [db @conn
+        cfg (:config db)]
     (cbor/spit-all path (cond->> (sort-by
                                   (juxt d/datom-tx :e)
                                   (api/datoms (if (:keep-history? cfg) (api/history db) db) :eavt))
