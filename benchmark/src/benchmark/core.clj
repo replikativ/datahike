@@ -71,8 +71,13 @@
     :parse-fn read-string
     :validate [#{true false :all} "Must be a boolean value or keyword :all."]]
    ["-i" "--iterations ITERATIONS"
-    (str "Number of iterations of each measurement.")
+    (str "Number of measurements for each setting, taken on the same database.")
     :default 10
+    :parse-fn read-string
+    :validate [nat-int? "Must be a non-negative integer."]]
+   ["-s" "--db-samples DB-SAMPLES"
+    (str "Number of measurements for each setting, taken on separate database instances.")
+    :default 1
     :parse-fn read-string
     :validate [nat-int? "Must be a non-negative integer."]]
    ["-q" "--query QUERYNAME"

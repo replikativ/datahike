@@ -131,9 +131,10 @@
 (defn get-measurements
   ([options] (get-measurements options c/db-configs {}))
   ([options configs] (get-measurements options configs {}))
-  ([{:keys [db-entity-counts] :as options} configs specified-fn]
+  ([{:keys [db-entity-counts db-samples] :or {db-samples 1} :as options} configs specified-fn]
    (->> (for [cfg configs
-              entity-count db-entity-counts]
+              entity-count db-entity-counts
+              _ (range db-samples)]
               (measure-performance-full entity-count options cfg specified-fn))
         doall
         (apply concat)
