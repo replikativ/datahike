@@ -32,6 +32,7 @@
                   :path "/deprecated/test"}
         default-new-cfg {:attribute-refs? false
                          :keep-history? true
+                         :keep-log? false
                          :initial-tx nil
                          :index :datahike.index/hitchhiker-tree
                          :index-config {:index-b-factor       const/default-index-b-factor
