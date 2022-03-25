@@ -30,33 +30,3 @@
     (swap! conn update-max-tx datoms)
     (print "Importing ")
     (api/transact conn (vec datoms))))
-
-(comment
-  ;; For the record, for now
-  (require '[datahike.api :as api]
-           '[clj-cbor.core :as cbor]
-           ;; note: the following no longer required in deps.edn
-           '[wanderung.datahike :as wd]
-           '[tablecloth.api :as tc])
-
-  (defn export-db-wanderung
-    "Export the database in a flat-file of datoms at path."
-    [db path]
-    (let [txs (sort-by first (api/q wd/find-tx-datoms db (java.util.Date. 70)))
-          query {:query wd/find-datoms-in-tx
-                 :args [(if (db/-keep-history? db) (api/history db) db)]}]
-      (cbor/spit-all path (mapcat (fn [[tid tinst]]
-                                    (->> (api/q (update-in query [:args] conj tid))
-                                         (sort-by first)
-                                         (into [[tid :db/txInstant tinst tid true]])))
-                                  txs))))
-
-  ;; Dealbreaker: Cannot work with byte arrays
-  (defn export-db-tc
-    "Export the database in a flat-file of datoms at path."
-    [db path]
-    (let [datoms (api/datoms (if (db/-keep-history? db) (api/history db) db) :eavt)
-          datoms-table (tc/dataset (map seq datoms)
-                                   {:layout :as-rows
-                                    :column-names [:eid :attr :val :txid :assert]})]
-      (cbor/spit-all path (tc/rows (tc/order-by datoms-table [:txid :eid]) :as-seq)))))
