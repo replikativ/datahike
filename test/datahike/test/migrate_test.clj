@@ -220,10 +220,6 @@
                                :index :datahike.index/persistent-set
                                :attribute-refs?    false}))
 
-(defn- all-true? [c] (every? true? c))
-
-(defn- all-eq? [c1 c2] (all-true? (map = c1 c2)))
-
 (deftest test-binary-support
   (doseq [index [:datahike.index/persistent-set :datahike.index/hitchhiker-tree]]
     (let [config {:store {:backend :mem
@@ -238,7 +234,7 @@
                         {:db/id 2, :name "Peter", :payload (byte-array [1 2 3])}])
       (m/export-db @conn export-path)
       (m/import-db import-conn export-path)
-      (is (all-true? (map #(or (= %1 %2) (all-eq? (nth %1 2) (nth %2 2)))
+      (is (utils/all-true? (map #(or (= %1 %2) (utils/all-eq? (nth %1 2) (nth %2 2)))
                           (d/datoms @conn :eavt)
                           (filter #(< (datom/datom-tx %) (:max-tx @import-conn))
                                   (d/datoms @import-conn :eavt))))))))
