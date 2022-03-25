@@ -10,6 +10,7 @@
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
+(s/def ::keep-log? boolean?)
 (s/def ::schema-flexibility #{:read :write})
 (s/def ::attribute-refs? boolean?)
 (s/def ::entity (s/or :map associative? :vec vector?))
@@ -30,6 +31,7 @@
                                          ::schema-flexibility
                                          ::attribute-refs?
                                          ::initial-tx
+                                         ::kepp-log?
                                          ::name]))
 
 (s/def :deprecated/schema-on-read boolean?)
@@ -40,30 +42,31 @@
 (defn from-deprecated
   [{:keys [backend username password path host port] :as backend-cfg}
    & {:keys [schema-on-read temporal-index index initial-tx]
-      :as index-cfg
-      :or {schema-on-read false
-           index :datahike.index/hitchhiker-tree
-           temporal-index true}}]
-  {:store (merge {:backend backend}
-                 (case backend
-                   :mem {:id (or host path)}
-                   :pg {:username username
-                        :password password
-                        :path path
-                        :host host
-                        :port port
-                        :id (str (java.util.UUID/randomUUID))}
-                   :level {:path path}
-                   :file {:path path}))
-   :index index
-   :index-config {:index-b-factor       c/default-index-b-factor
-                  :index-log-size       c/default-index-log-size
-                  :index-data-node-size c/default-index-data-node-size}
-   :keep-history? temporal-index
-   :attribute-refs? false
-   :initial-tx initial-tx
+      :as   index-cfg
+      :or   {schema-on-read false
+             index          :datahike.index/hitchhiker-tree
+             temporal-index true}}]
+  {:store              (merge {:backend backend}
+                              (case backend
+                                :mem   {:id (or host path)}
+                                :pg    {:username username
+                                        :password password
+                                        :path     path
+                                        :host     host
+                                        :port     port
+                                        :id       (str (java.util.UUID/randomUUID))}
+                                :level {:path path}
+                                :file  {:path path}))
+   :index              index
+   :index-config       {:index-b-factor       c/default-index-b-factor
+                        :index-log-size       c/default-index-log-size
+                        :index-data-node-size c/default-index-data-node-size}
+   :keep-history?      temporal-index
+   :keep-log?          false
+   :attribute-refs?    false
+   :initial-tx         initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)
-   :cache-size 100000})
+   :cache-size         100000})
 
 (defn int-from-env
   [key default]
@@ -97,6 +100,7 @@
 (defn storeless-config []
   {:store nil
    :keep-history? false
+   :keep-log? false
    :schema-flexibility :read
    :name (z/rand-german-mammal)
    :attribute-refs? false

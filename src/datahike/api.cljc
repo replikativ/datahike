@@ -5,6 +5,7 @@
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
             [datahike.schema :as ds]
+            [datahike.constants :as const]
             [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
             [datahike.impl.entity :as de])
   #?(:clj
@@ -793,3 +794,24 @@
          (assoc m k attrs))))
    {}
    (db/-rschema db)))
+
+(defn ^{:arglists '([db] [db {:keys [offset limit] :as opts}])
+        :doc "Returns transaction log given database and options with :offset and :limit"}
+  tx-range
+  ([db]
+   (tx-range db {:offset 0
+                 :limit nil}))
+  ([db {:keys [offset limit] :as opts}]
+   (if (datahike.db/-keep-log? db)
+     (if (neg? offset)
+       (throw (ex-info "Only positive offsets allowed." {:opts opts}))
+       (let [start (+ const/tx0 offset)
+             end (when (some? limit) (+ start (dec limit)))]
+         (db/-tx-range db start end)))
+     (throw (ex-info "tx-range is only allowed for databases with transaction log. Consider setting :keep-log? to true in your configuration." (db/-config db))))))
+
+(defn ^{:arglists '([db tx])
+        :doc "Returns transaction log given database and transaction ID"}
+  get-tx
+  [db tx]
+  (db/-lookup-tx db tx))

@@ -14,6 +14,7 @@
    [datahike.lru :refer [lru-datom-cache-factory]]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
    [datahike.config :as dc]
+   [datahike.tx-log :as tx-log]
    [environ.core :refer [env]]
    [clojure.spec.alpha :as s]
    [taoensso.timbre :refer [warn]])
@@ -126,7 +127,9 @@
   (-datoms [db index components])
   (-seek-datoms [db index components])
   (-rseek-datoms [db index components])
-  (-index-range [db attr start end]))
+  (-index-range [db attr start end])
+  (-tx-range [db start end])
+  (-lookup-tx [db tx]))
 
 (defprotocol IDB
   (-schema [db])
@@ -137,6 +140,7 @@
   (-max-eid [db])
   (-temporal-index? [db])                                   ;;deprecated
   (-keep-history? [db])
+  (-keep-log? [db])
   (-config [db])
   (-ref-for [db a-ident])
   (-ident-for [db a-ref]))
@@ -234,7 +238,7 @@
                   (filter (fn [^Datom d] (= tx (datom-tx d))) (-all eavt)) ;; _ _ _ tx
                   (-all eavt)]))))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map meta]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map meta tx-log]
   #?@(:cljs
       [IHash (-hash [db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -268,6 +272,7 @@
   (-attrs-by [db property] ((.-rschema db) property))
   (-temporal-index? [db] (-keep-history? db))
   (-keep-history? [db] (-> db -config :keep-history?))
+  (-keep-log? [db] (-> db -config :keep-log?))
   (-max-tx [db] (.-max-tx db))
   (-max-eid [db] (.-max-eid db))
   (-config [db] (.-config db))
@@ -319,6 +324,20 @@
                         (resolve-datom db nil attr start nil e0 tx0)
                         (resolve-datom db nil attr end nil emax txmax)
                         :avet))
+
+  (-tx-range [db start end]
+             (let [txs (tx-log/-slice (:tx-log db) start end)
+                   coerce-txs (fn [[tx tx-data]] {:tx (- tx tx0)
+                                                  :data (if (:attribute-refs? (:config db))
+                                                          (mapv (fn [d] (update d :a (partial -ident-for db))) tx-data)
+                                                          tx-data)})]
+               (map coerce-txs txs)))
+
+  (-lookup-tx [db tx-id]
+              (let [tx (tx-log/-get (:tx-log db) tx-id)]
+                (if (:attribute-refs? (:config db))
+                  (mapv (fn [d] (update d :a (partial -ident-for db))) tx)
+                  tx)))
 
   clojure.data/EqualityPartition
   (equality-partition [x] :datahike/db)
@@ -927,7 +946,7 @@
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
    (let [complete-config (merge (dc/storeless-config) user-config)
          _ (dc/validate-config complete-config)
-         {:keys [keep-history? index schema-flexibility attribute-refs?]} complete-config
+         {:keys [keep-history? index schema-flexibility attribute-refs? keep-log?]} complete-config
          on-read? (= :read schema-flexibility)
          schema (to-old-schema schema)
          _ (if on-read?
@@ -956,6 +975,10 @@
          avet (if attribute-refs?
                 (di/init-index index indexed-datoms :avet 0 index-config)
                 (di/empty-index index :avet index-config))
+         tx-log (when keep-log?
+                  (if attribute-refs?
+                    (tx-log/init-log tx0 (mapv (comp vec seq) ref-datoms) index-config 0)
+                    (tx-log/empty-log index-config)))
          max-eid (if attribute-refs? ue0 e0)
          max-tx (if attribute-refs? utx0 tx0)]
      (map->DB
@@ -977,7 +1000,9 @@
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt (di/empty-index index :eavt index-config)
           :temporal-aevt (di/empty-index index :aevt index-config)
-          :temporal-avet (di/empty-index index :avet index-config)}))))))
+          :temporal-avet (di/empty-index index :avet index-config)})
+       (when keep-log?
+         {:tx-log tx-log}))))))
 
 (defn advance-all-datoms [datoms offset]
   (map
@@ -993,7 +1018,7 @@
   ([datoms schema] (init-db datoms schema nil))
   ([datoms schema user-config]
    (validate-schema schema)
-   (let [{:keys [index schema-flexibility keep-history? attribute-refs?] :as complete-config}  (merge (dc/storeless-config) user-config)
+   (let [{:keys [index keep-history? attribute-refs? keep-log?] :as complete-config}  (merge (dc/storeless-config) user-config)
          _ (dc/validate-config complete-config)
          complete-schema (merge schema
                                 (if attribute-refs?
@@ -1015,6 +1040,8 @@
          avet (di/init-index index indexed-datoms :avet op-count index-config)
          eavt (di/init-index index new-datoms :eavt op-count index-config)
          aevt (di/init-index index new-datoms :aevt op-count index-config)
+         tx-log (when keep-log?
+                  (tx-log/init-log tx0 new-datoms index-config 0))
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
          op-count (count new-datoms)]
@@ -1035,7 +1062,9 @@
                      (when keep-history?
                        {:temporal-eavt (di/empty-index index :eavt index-config)
                         :temporal-aevt (di/empty-index index :aevt index-config)
-                        :temporal-avet (di/empty-index index :avet index-config)}))))))
+                        :temporal-avet (di/empty-index index :avet index-config)})
+                     (when keep-log?
+                       {:tx-log tx-log}))))))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)
@@ -1632,6 +1661,14 @@
      (check-upsert-conflict entity)
      first)))                                         ;; getting eid from acc
 
+(defn with-tx-report [db current-tx tx-data]
+  (let [keep-log? (-keep-log? db)]
+    (cond-> db
+      keep-log? (update-in [:tx-log] tx-log/insert-log current-tx (mapv (comp vec seq) tx-data) (:op-count db)))))
+
+(defn transact-tx-log [{{:keys [:db/current-tx]} :tempids :keys [tx-data] :as report}]
+  (update-in report [:db-after] with-tx-report current-tx tx-data))
+
 ;; multivals/reverse can be specified as coll or as a single value, trying to guess
 (defn- maybe-wrap-multival [db a-ident vs]
   (cond
@@ -1843,10 +1880,11 @@
             db db-after]
         (cond
           (empty? es)
-          (-> report
-              (assoc-in [:tempids :db/current-tx] (current-tx report))
-              (update-in [:db-after :max-tx] inc)
-              (update :db-after persistent!))
+          (let [final-report (-> report
+                                 (assoc-in [:tempids :db/current-tx] (current-tx report))
+                                 (update-in [:db-after :max-tx] inc)
+                                 transact-tx-log)]
+            (update final-report :db-after persistent!))
 
           (nil? entity)
           (recur report entities)
@@ -2073,7 +2111,9 @@
                   (if-some [e (entid history e)]
                     (let [v (if (ref? history a) (entid-strict history v) v)
                           old-datoms (-search history [e a v])]
-                      (recur (reduce transact-purge-datom report old-datoms) entities))
+                      (recur (cond-> (reduce transact-purge-datom report old-datoms)
+                               (-keep-log? db) (update-in [:db-after :tx-log] tx-log/-purge old-datoms (:op-count db)))
+                             entities))
                     (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
                 (raise "Purge is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
 
@@ -2082,7 +2122,8 @@
                 (let [history (HistoricalDB. db)]
                   (if-let [e (entid history e)]
                     (let [datoms (vec (-search history [e a]))]
-                      (recur (reduce transact-purge-datom report datoms)
+                      (recur (cond-> (reduce transact-purge-datom report datoms)
+                               (-keep-log? db) (update-in [:db-after :tx-log] tx-log/-purge datoms (:op-count db)))
                              (concat (purge-components history datoms) entities)))
                     (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
                 (raise "Purge attribute is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
@@ -2096,7 +2137,8 @@
                                                 (-attrs-by history :db.type/ref)))
                           retracted-comps (purge-components history e-datoms)]
 
-                      (recur (reduce transact-purge-datom report (concat e-datoms v-datoms))
+                      (recur (cond-> (reduce transact-purge-datom report (concat e-datoms v-datoms))
+                               (-keep-log? db) (update-in [:db-after :tx-log] tx-log/-purge (vec (concat e-datoms v-datoms)) (:op-count db)))
                              (concat retracted-comps entities)))
                     (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
                 (raise "Purge entity is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
@@ -2111,7 +2153,8 @@
                                    (filter-before e db)
                                    vec)
                       retracted-comps (purge-components history e-datoms)]
-                  (recur (reduce transact-purge-datom report e-datoms)
+                  (recur (cond-> (reduce transact-purge-datom report e-datoms)
+                           (-keep-log? db) (update-in [:db-after :tx-log] tx-log/-purge e-datoms (:op-count db)))
                          (concat retracted-comps entities)))
                 (raise "Purge entity is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
 
