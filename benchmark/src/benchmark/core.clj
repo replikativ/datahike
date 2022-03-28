@@ -8,7 +8,7 @@
             [clojure.pprint :refer [pprint]]))
 
 (def output-formats #{"remote-db" "edn" "csv"})
-(def config-names #{"mem-set" "mem-hht" "file"})
+(def config-names (set (map :config-name c/db-configs)))
 (def implemented-queries #{:simple-query
                            :e-join-query :e-join-query-first-fixed :e-join-query-second-fixed
                            :a-join-query
@@ -40,7 +40,7 @@
     :validate [output-formats  #(str "Format " % " has not been implemented. "
                                      "Available formats are " output-formats)]]
    ["-c" "--config-name CONFIGNAME"
-    (str "Name of database configuration to use. Available are " config-names)
+    (str "Name of preset database configuration to use. Available are " config-names)
     :default :all
     :validate [config-names  #(str "A configuration named " % " has not been implemented. "
                                    "Available configurations are " config-names)]]
@@ -71,8 +71,13 @@
     :parse-fn read-string
     :validate [#{true false :all} "Must be a boolean value or keyword :all."]]
    ["-i" "--iterations ITERATIONS"
-    (str "Number of iterations of each measurement.")
+    (str "Number of measurements for each setting, taken on the same database.")
     :default 10
+    :parse-fn read-string
+    :validate [nat-int? "Must be a non-negative integer."]]
+   ["-s" "--db-samples DB-SAMPLES"
+    (str "Number of measurements for each setting, taken on separate database instances.")
+    :default 1
     :parse-fn read-string
     :validate [nat-int? "Must be a non-negative integer."]]
    ["-q" "--query QUERYNAME"
@@ -134,7 +139,7 @@
         [cmd & paths] (:arguments parsed-opts)
         server-info-keys [:db-server-url :db-token :db-name]
         server-description (map options server-info-keys)
-        {:keys [tag output-format]} options]
+        {:keys [config-name tag output-format]} options]
     (cond
       (some? errors)
       (do (println "Errors:" errors)
@@ -153,7 +158,10 @@
       :else
       (case cmd
         "compare" (compare-benchmarks paths (:plots options))
-        "run" (let [measurements (get-measurements options)
+        "run" (let [configs (if (= config-name :all)
+                              c/db-configs
+                              (filter #(= (:config-name %) config-name) c/db-configs))
+                    measurements (get-measurements options configs)
                     tagged (if (empty? tag)
                              (vec measurements)
                              (mapv (fn [entity] (assoc entity :tag (join " " tag))) measurements))]

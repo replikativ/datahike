@@ -20,3 +20,7 @@
      (d/delete-database cfg)
      (d/create-database cfg)
      (d/connect cfg))))
+
+(defn all-true? [c] (every? true? c))
+
+(defn all-eq? [c1 c2] (all-true? (map = c1 c2)))

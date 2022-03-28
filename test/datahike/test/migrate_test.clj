@@ -1,7 +1,9 @@
 (ns datahike.test.migrate-test
   (:require [clojure.test :refer :all]
+            [datahike.api :as d]
+            [datahike.datom :as datom]
             [datahike.migrate :as m]
-            [datahike.api :as d]))
+            [datahike.test.utils :as utils]))
 
 (def tx-data [[:db/add 1 :db/cardinality :db.cardinality/one 536870913 true]
               [:db/add 1 :db/ident :name 536870913 true]
@@ -87,42 +89,41 @@
                  "/tmp/export-db1")
           cfg {:store {:backend :file
                        :path path}}
-          _ (d/delete-database cfg)
-          _ (d/create-database cfg)
-          conn (d/connect cfg)
+          conn (utils/setup-db cfg)
           export-path (case os
                         "Windows 10" (str (System/getProperty "java.io.tmpdir") "eavt-dump")
                         "/tmp/eavt-dump")
-          result     (-> (d/transact conn tx-data)
-                         :tx-data)
-          tx-instant (-> (filter #(= :db/txInstant (second %)) result)
-                         first
-                         (nth 2))
-          tx-string  (with-out-str (pr tx-instant))]
-
+          schema [{:db/ident       :name
+                   :db/cardinality :db.cardinality/one
+                   :db/index       true
+                   :db/unique      :db.unique/identity
+                   :db/valueType   :db.type/string}
+                  {:db/ident       :parents
+                   :db/cardinality :db.cardinality/many
+                   :db/valueType   :db.type/ref}
+                  {:db/ident       :age
+                   :db/cardinality :db.cardinality/one
+                   :db/valueType   :db.type/long}]]
+      (d/transact conn schema)
+      (d/transact conn {:tx-data [{:name "Alice" :age  25}
+                                  {:name "Bob" :age  35}
+                                  {:name    "Charlie"
+                                   :age     5
+                                   :parents [[:name "Alice"] [:name "Bob"]]}
+                                  {:name "Daisy" :age 20}
+                                  {:name "Erhard" :age 20}]})
+      (d/transact conn {:tx-data [[:db/retractEntity [:name "Erhard"]]]})
       (m/export-db @conn export-path)
-
-      (is (= (slurp export-path)
-             (case os
-               "Windows 10"
-               "#datahike/Datom [1 :db/cardinality :db.cardinality/one 536870913 true]\r\n#datahike/Datom [1 :db/ident :name 536870913 true]\r\n#datahike/Datom [1 :db/index true 536870913 true]\r\n#datahike/Datom [1 :db/unique :db.unique/identity 536870913 true]\r\n#datahike/Datom [1 :db/valueType :db.type/string 536870913 true]\r\n#datahike/Datom [2 :db/cardinality :db.cardinality/one 536870913 true]\r\n#datahike/Datom [2 :db/ident :age 536870913 true]\r\n#datahike/Datom [2 :db/valueType :db.type/long 536870913 true]\r\n#datahike/Datom [3 :age 25 536870913 true]\r\n#datahike/Datom [3 :name \"Alice\" 536870913 true]\r\n#datahike/Datom [4 :age 35 536870913 true]\r\n#datahike/Datom [4 :name \"Bob\" 536870913 true]\r\n#datahike/Datom [536870913 :db/txInstant " tx-string " 536870913 true]\r\n"
-               (str "#datahike/Datom [1 :db/cardinality :db.cardinality/one 536870913 true]\n#datahike/Datom [1 :db/ident :name 536870913 true]\n#datahike/Datom [1 :db/index true 536870913 true]\n#datahike/Datom [1 :db/unique :db.unique/identity 536870913 true]\n#datahike/Datom [1 :db/valueType :db.type/string 536870913 true]\n#datahike/Datom [2 :db/cardinality :db.cardinality/one 536870913 true]\n#datahike/Datom [2 :db/ident :age 536870913 true]\n#datahike/Datom [2 :db/valueType :db.type/long 536870913 true]\n#datahike/Datom [3 :age 25 536870913 true]\n#datahike/Datom [3 :name \"Alice\" 536870913 true]\n#datahike/Datom [4 :age 35 536870913 true]\n#datahike/Datom [4 :name \"Bob\" 536870913 true]\n#datahike/Datom [536870913 :db/txInstant " tx-string " 536870913 true]\n"))))
-
       (let [import-path (case os
                           "Windows 10" (str (System/getProperty "java.io.tmpdir") "reimport")
                           "/tmp/reimport")
             import-cfg {:store {:backend :file
                                 :path import-path}}
-            _ (d/delete-database import-cfg)
-            _ (d/create-database import-cfg)
-            new-conn (d/connect import-cfg)]
-
+            new-conn (utils/setup-db import-cfg)]
         (m/import-db new-conn export-path)
-
-        (is (= (d/q '[:find ?e
-                      :where [?e :name]]
-                    @new-conn)
-               #{[3] [4]}))
+        (is (= (d/datoms (d/history @conn) :eavt)
+               (filter #(< (datom/datom-tx %) (:max-tx @new-conn))
+                       (d/datoms (d/history @new-conn) :eavt))))
         (d/delete-database cfg)))))
 
 (defn load-entities-test [cfg]
@@ -131,9 +132,7 @@
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
           cfg           (assoc cfg :attribute-refs false)
-          _             (d/delete-database cfg)
-          _             (d/create-database cfg)
-          conn          (d/connect cfg)]
+          conn (utils/setup-db cfg)]
       @(d/load-entities conn source-datoms)
       (is (= (into #{} source-datoms)
              (d/q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))))
@@ -141,10 +140,10 @@
     (let [source-datoms (->> tx-data
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
-          cfg           (assoc cfg :attribute-refs? true)
-          _             (d/delete-database cfg)
-          _             (d/create-database cfg)
-          conn          (d/connect cfg)]
+          cfg           (assoc cfg
+                               :attribute-refs? true
+                               :schema-flexibility :write)
+          conn (utils/setup-db cfg)]
       @(d/load-entities conn source-datoms)
       (is (= (into #{} (->> source-datoms
                             (mapv (comp vec rest))
@@ -172,10 +171,7 @@
                         :db/index       true
                         :db/unique      :db.unique/identity
                         :db/valueType   :db.type/string}]
-          source-conn (do
-                        (d/delete-database source-cfg)
-                        (d/create-database source-cfg)
-                        (d/connect source-cfg))
+          source-conn (utils/setup-db source-cfg)
           txs         [schema
                        [{:name "Alice"} {:name "Bob"}]
                        [{:name "Charlie"} {:name "Daisy"}]
@@ -189,10 +185,7 @@
           target-cfg  (-> source-cfg
                           (assoc-in [:store :id] "load-entities-history-test-target")
                           (assoc-in [:name] "load-entities-history-test-target"))
-          target-conn (do
-                        (d/delete-database target-cfg)
-                        (d/create-database target-cfg)
-                        (d/connect target-cfg))
+          target-conn (utils/setup-db target-cfg)
           _           @(d/load-entities target-conn export-data)
           current-q   (fn [conn] (d/q
                                   '[:find ?n
@@ -226,3 +219,22 @@
                                :cache-size         0
                                :index :datahike.index/persistent-set
                                :attribute-refs?    false}))
+
+(deftest test-binary-support
+  (doseq [index [:datahike.index/persistent-set :datahike.index/hitchhiker-tree]]
+    (let [config {:store {:backend :mem
+                          :id "test-export-binary-support"}
+                  :schema-flexibility :read
+                  :keep-history? false
+                  :index index}
+          export-path "/tmp/test-export-binary-support"
+          conn (utils/setup-db config)
+          import-conn (utils/setup-db)]
+      (d/transact conn [{:db/id 1, :name "Jiayi", :payload (byte-array [0 2 3])}
+                        {:db/id 2, :name "Peter", :payload (byte-array [1 2 3])}])
+      (m/export-db @conn export-path)
+      (m/import-db import-conn export-path)
+      (is (utils/all-true? (map #(or (= %1 %2) (utils/all-eq? (nth %1 2) (nth %2 2)))
+                          (d/datoms @conn :eavt)
+                          (filter #(< (datom/datom-tx %) (:max-tx @import-conn))
+                                  (d/datoms @import-conn :eavt))))))))
