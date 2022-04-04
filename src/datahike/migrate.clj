@@ -5,6 +5,8 @@
             [datahike.db :as db]
             [clj-cbor.core :as cbor]))
 
+;; Note: the code here is intended to be a temporary solution, pending developments in Wanderung
+
 (defn export-db
   "Export the database in a flat-file of datoms at path."
   [conn path]
