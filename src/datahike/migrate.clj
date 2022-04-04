@@ -1,15 +1,20 @@
 (ns ^:no-doc datahike.migrate
   (:require [datahike.api :as api]
+            [datahike.constants :as c]
             [datahike.datom :as d]
             [datahike.db :as db]
             [clj-cbor.core :as cbor]))
 
 (defn export-db
   "Export the database in a flat-file of datoms at path."
-  [db path]
-  (cbor/spit-all path (map seq (sort-by
-                                (juxt d/datom-tx :e)
-                                (api/datoms (if (db/-keep-history? db) (api/history db) db) :eavt)))))
+  [conn path]
+  (let [db @conn
+        cfg (:config db)]
+    (cbor/spit-all path (cond->> (sort-by
+                                  (juxt d/datom-tx :e)
+                                  (api/datoms (if (:keep-history? cfg) (api/history db) db) :eavt))
+                          (:attribute-refs? cfg) (remove #(= (d/datom-tx %) c/tx0))
+                          true (map seq)))))
 
 (defn update-max-tx
   "Find bigest tx in datoms and update max-tx of db.

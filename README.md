@@ -204,7 +204,7 @@ The database can be exported to a flat file with:
 
 ```clojure
 (require '[datahike.migrate :refer [export-db import-db]])
-(export-db @conn "/tmp/eavt-dump")
+(export-db conn "/tmp/eavt-dump")
 ```
 
 You must do so before upgrading to a Datahike version that has changed the
@@ -220,9 +220,7 @@ Datahike version you can use
 
 to reimport your data into the new format.
 
-The datoms are stored as strings in a line-based format, so you can easily check
-whether your dump is containing reasonable data. You can also use it to do some
-string based editing of the DB. You can also use the export as a backup.
+The datoms are stored in the CBOR format, enabling migration of binary data, such as the byte array data type now supported by Datahike. You can also use the export as a backup.
 
 If you are upgrading from pre `0.1.2` where we have not had the migration code
 yet, then just evaluate the `datahike.migrate` namespace manually in your
