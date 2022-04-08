@@ -169,7 +169,7 @@
   {:query (conj '[:find ?e :where]
                 (conj '[?e] attr '?v)
                 (conj '[]
-                      (sequence (conj '[= ?v] comp-val))))
+                      (sequence (conj '[< ?v] comp-val))))
    :args [db]})
 
 (defn equals-query-1-fixed [db attr comp-val]
