@@ -1,4 +1,4 @@
-(ns datahike.integration-test
+(ns ^:no-doc datahike.integration-test
   "This namespace is the minimum test a Datahike backend needs to pass for compatibility assessment."
   (:require [datahike.api :as d]
             #?(:clj [clojure.test :refer :all]

@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    #?(:clj [clojure.java.shell :as sh])
    datahike.test.core-test
+   datahike.test.cache-test
    datahike.test.components-test
    datahike.test.config-test
    datahike.test.db-test
