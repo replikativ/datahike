@@ -18,7 +18,8 @@ That means passing a config as argument overwrites java system properties and us
                       :id        "default"} ;string
  :name               (generated)            ;string
  :schema-flexibility :write                 ;keyword
- :keep-history?      true}                  ;boolean
+ :keep-history?      true
+ :attribute-refs?    false}                  ;boolean
 ```
 
 If you are using a backend different from the builtins `:mem` or `:file`, please have a look at the README in the corresponding Github repository. The configuration is outsourced to the backends so you will find the configuration documentation there. An example for `:mem`, `:file`, and `:jdbc`-backend you can see below. Please refer to the documentation of the [environ library](https://github.com/weavejester/environ) on how to use it. If you want to pass the config as environment variables or Java system properties you need to name them like following:
@@ -29,6 +30,7 @@ datahike.store.backend      | DATAHIKE_STORE_BACKEND
 datahike.store.username     | DATAHIKE_STORE_USERNAME
 datahike.schema.flexibility | DATAHIKE_SCHEMA_FLEXIBILITY
 datahike.keep.history       | DATAHIKE_KEEP_HISTORY
+datahike.attribute.refs     | DATAHIKE_ATTRIBUTE_REFS
 datahike.name               | DATAHIKE_NAME
 etc.
 
