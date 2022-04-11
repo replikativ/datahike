@@ -143,6 +143,16 @@ Be aware: when deactivating the temporal index you may not use any temporal data
 
 Refer to the [time variance documentation](./time_variance.md) for more information.
 
+## Attribute References
+
+Originally being a fork of the [DataScript](https://github.com/tonsky/datascript) project, attributes in Datahike used to be stored always as simple keywords. This would cause trouble for users switching from [Datomic](https://www.datomic.com/) as some queries were incompatible with _Datahike_ due to the difference between the attribute storing systems. In _Datomic_, attributes are not stored directly as keywords, but attributes themselves are entities that can be refered to by their entity ID. While this makes some translations between attributes and their IDs necessary, the big advantage of this approach is the increased speed due to fast integer comparisons as opposed to slower keyword comparisons necessary if the attributes are stored directly. 
+
+You can enable this feature now as follows:
+
+```clojure
+(require '[datahike.api :as d])
+(d/create-database {:attribute-refs? true})
+```
 
 ## Deprecation Notice
 Starting from version `0.3.0` it is encouraged to use the new hashmap configuration since it is more flexible than the previously used URI scheme. Datahike still supports the old configuration so you don't need to migrate yourself. The differences for the configuration are as following:
