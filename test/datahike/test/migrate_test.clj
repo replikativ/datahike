@@ -82,50 +82,131 @@
               [:db/ident :db.type/keyword 536870912 true]])
 
 (deftest export-import-test
-  (testing "Test a roundtrip for exporting and importing."
-    (doseq [hist [true false]
-            attr-ref [true false]]
-      (let [os (System/getProperty "os.name")
-            path (case os
-                   "Windows 10" (str (System/getProperty "java.io.tmpdir") "export-db1")
-                   "/tmp/export-db1")
-            cfg {:store {:backend :file
-                         :path path}
-                 :schema-flexibility :write
-                 :keep-history? hist
-                 :attribute-refs? attr-ref}
-            schema [{:db/ident       :name
-                     :db/cardinality :db.cardinality/one
-                     :db/index       true
-                     :db/unique      :db.unique/identity
-                     :db/valueType   :db.type/string}
-                    {:db/ident       :parents
-                     :db/cardinality :db.cardinality/many
-                     :db/valueType   :db.type/ref}
-                    {:db/ident       :age
-                     :db/cardinality :db.cardinality/one
-                     :db/valueType   :db.type/long}]
-            os-prefix (case os "Windows 10" (System/getProperty "java.io.tmpdir") "/tmp/")
-            export-path (str os-prefix "eavt-dump")
-            import-path (str os-prefix "reimport")
-            import-cfg (assoc-in cfg [:store :path] import-path)
-            conn (utils/setup-db cfg)
-            new-conn (utils/setup-db import-cfg)]
-        (d/transact conn schema)
-        (d/transact conn {:tx-data [{:name "Alice" :age  25}
-                                    {:name "Bob" :age  35}
-                                    {:name    "Charlie"
-                                     :age     5
-                                     :parents [[:name "Alice"] [:name "Bob"]]}
-                                    {:name "Daisy" :age 20}
-                                    {:name "Erhard" :age 20}]})
-        (d/transact conn {:tx-data [[:db/retractEntity [:name "Erhard"]]]})
-        (m/export-db conn export-path)
-        (m/import-db new-conn export-path)
-        (is (= (d/datoms (if (:keep-history? cfg) (d/history @conn) @conn) :eavt)
-               (filter #(< (:e %) (:max-tx @new-conn))
-                       (d/datoms (if (:keep-history? cfg) (d/history @new-conn) @new-conn) :eavt))))
-        (d/delete-database cfg)))))
+  (let [os-prefix (case (System/getProperty "os.name")
+                    "Windows 10" (System/getProperty "java.io.tmpdir")
+                    "/tmp/")
+        old-path (str os-prefix "old-db")
+        new-path (str os-prefix "new-db")
+        export-path (str os-prefix "eavt-dump")
+        base-config {:store {:backend :file}
+                     :schema-flexibility :write
+                     :keep-history? false
+                     :attribute-refs? false}
+        schema [{:db/ident       :name
+                 :db/cardinality :db.cardinality/one
+                 :db/index       true
+                 :db/unique      :db.unique/identity
+                 :db/valueType   :db.type/string}
+                {:db/ident       :parents
+                 :db/cardinality :db.cardinality/many
+                 :db/valueType   :db.type/ref}
+                {:db/ident       :age
+                 :db/cardinality :db.cardinality/one
+                 :db/valueType   :db.type/long}]
+        tx-data {:tx-data [{:name "Alice" :age  25}
+                           {:name "Bob" :age  35}
+                           {:name    "Charlie"
+                            :age     5
+                            :parents [[:name "Alice"] [:name "Bob"]]}
+                           {:name "Daisy" :age 20}
+                           {:name "Erhard" :age 20}]}]
+
+    (testing "Same configuration roundtrip for exporting and importing."
+      (doseq [hist [true false]
+              attr-ref [true false]]
+        (let [cfg (merge base-config
+                         {:keep-history? hist
+                          :attribute-refs? attr-ref})
+              old-cfg (assoc-in cfg [:store :path] old-path)
+              old-conn (utils/setup-db old-cfg)
+              new-cfg (assoc-in cfg [:store :path] new-path)
+              new-conn (utils/setup-db new-cfg)]
+          (d/transact old-conn schema)
+          (d/transact old-conn tx-data)
+          (d/transact old-conn {:tx-data [[:db/retractEntity [:name "Erhard"]]]})
+          (m/export-db old-conn export-path)
+          (m/import-db new-conn export-path)
+          (is (= (d/datoms (if (:keep-history? cfg) (d/history @old-conn) @old-conn) :eavt)
+                 (filter #(< (:e %) (:max-tx @new-conn))
+                         (d/datoms (if (:keep-history? cfg) (d/history @new-conn) @new-conn) :eavt))))
+          (d/delete-database old-cfg)
+          (d/delete-database new-cfg))))
+
+    #_(testing "Export keyword database, import reference database"
+        (let [old-cfg (-> base-config
+                          (assoc-in [:store :path] old-path)
+                          (assoc :attribute-refs? false))
+              old-conn (utils/setup-db old-cfg)
+              new-cfg (-> base-config
+                          (assoc-in [:store :path] new-path)
+                          (assoc :attribute-refs? true))
+              new-conn (utils/setup-db new-cfg)]
+          (d/transact old-conn schema)
+          (d/transact old-conn tx-data)
+          (m/export-db old-conn export-path)
+          (m/import-db new-conn export-path)
+          (is (= (d/datoms @old-conn :eavt)
+                 (filter #(< (:e %) (:max-tx @new-conn))
+                         (d/datoms @new-conn :eavt))))
+          (d/delete-database old-cfg)
+          (d/delete-database new-cfg)))
+
+    #_(testing "Export reference database, import keyword database"
+        (let [old-cfg (-> base-config
+                          (assoc-in [:store :path] old-path)
+                          (assoc :attribute-refs? true))
+              old-conn (utils/setup-db old-cfg)
+              new-cfg (-> base-config
+                          (assoc-in [:store :path] new-path)
+                          (assoc :attribute-refs? false))
+              new-conn (utils/setup-db new-cfg)]
+          (d/transact old-conn schema)
+          (d/transact old-conn tx-data)
+          (m/export-db old-conn export-path)
+          (m/import-db new-conn export-path)
+          (is (= (d/datoms @old-conn :eavt)
+                 (filter #(< (:e %) (:max-tx @new-conn))
+                         (d/datoms @new-conn :eavt))))
+          (d/delete-database old-cfg)
+          (d/delete-database new-cfg)))
+
+    #_(testing "Export history database, import non-history database"
+        (let [old-cfg (-> base-config
+                          (assoc-in [:store :path] old-path)
+                          (assoc :keep-history? true))
+              old-conn (utils/setup-db old-cfg)
+              new-cfg (-> base-config
+                          (assoc-in [:store :path] new-path)
+                          (assoc :keep-history? false))
+              new-conn (utils/setup-db new-cfg)]
+          (d/transact old-conn schema)
+          (d/transact old-conn tx-data)
+          (m/export-db old-conn export-path)
+          (m/import-db new-conn export-path)
+          (is (= (d/datoms @old-conn :eavt)
+                 (filter #(< (:e %) (:max-tx @new-conn))
+                         (d/datoms @new-conn :eavt))))
+          (d/delete-database old-cfg)
+          (d/delete-database new-cfg)))
+
+    #_(testing "Export non-history database, import history database"
+        (let [old-cfg (-> base-config
+                          (assoc-in [:store :path] old-path)
+                          (assoc :keep-history? true))
+              old-conn (utils/setup-db old-cfg)
+              new-cfg (-> base-config
+                          (assoc-in [:store :path] new-path)
+                          (assoc :keep-history? false))
+              new-conn (utils/setup-db new-cfg)]
+          (d/transact old-conn schema)
+          (d/transact old-conn tx-data)
+          (m/export-db old-conn export-path)
+          (m/import-db new-conn export-path)
+          (is (= (d/datoms @old-conn :eavt)
+                 (filter #(< (:e %) (:max-tx @new-conn))
+                         (d/datoms @new-conn :eavt))))
+          (d/delete-database old-cfg)
+          (d/delete-database new-cfg)))))
 
 (defn load-entities-test [cfg]
   (testing "Test migrate simple datoms without attribute refs"
