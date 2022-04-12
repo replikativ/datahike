@@ -146,19 +146,18 @@
         (m/export-db old-conn export-path)
         (m/import-db new-conn export-path)
         (is (= (d/datoms @old-conn :eavt)
-               (filter #(< (:e %) (:max-tx @new-conn))
-                       (d/datoms @new-conn :eavt))))
+               (d/datoms @new-conn :eavt)))
         (d/delete-database old-cfg)
         (d/delete-database new-cfg)))
 
     (testing "Export non-history database, import history database"
       (let [old-cfg (-> base-config
                         (assoc-in [:store :path] old-path)
-                        (assoc :keep-history? true))
+                        (assoc :keep-history? false))
             old-conn (utils/setup-db old-cfg)
             new-cfg (-> base-config
                         (assoc-in [:store :path] new-path)
-                        (assoc :keep-history? false))
+                        (assoc :keep-history? true))
             new-conn (utils/setup-db new-cfg)]
         (d/transact old-conn schema)
         (d/transact old-conn tx-data)
