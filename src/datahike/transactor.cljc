@@ -1,4 +1,4 @@
-(ns datahike.transactor
+(ns ^:no-doc datahike.transactor
   (:require [superv.async :refer [<??- S thread-try]]
             [taoensso.timbre :as log]
             [clojure.core.async :refer [>!! chan close! promise-chan put!]])

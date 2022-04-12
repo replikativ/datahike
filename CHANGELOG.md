@@ -2,6 +2,8 @@
 
 ## next minor/major release
 
+- Improve docs
+- Add prep-step to deps
 - Refactor test-namespaces
   - move tests to use datahike.api
   - move namespaces to `-test` format

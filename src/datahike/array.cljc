@@ -1,4 +1,4 @@
-(ns datahike.array
+(ns ^:no-doc datahike.array
   (:require [hitchhiker.tree.node :as n])
   (:import [java.util Arrays]))
 

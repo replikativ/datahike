@@ -1,20 +1,25 @@
 # Contributing to Datahike
-## Starting a REPL
+## Compile Java classes
+```
+clj -T:build compile
+```
+
+## Start a REPL
 
 ```
 clj -M:repl
 ```
 
-## Running the tests
+## Run the tests
 - `./bin/run-unittests` or `./bin/run-unittests --watch`
 - `./bin/run-integrationtests` (Docker needed)
 
-## Starting the benchmarks
+## Start the benchmarks
 ```
 TIMBRE_LEVEL=':info' clj -M:benchmark run
 ```
 
-## Building a Datahike jar
+## Build a Datahike jar
 ```
 clj -T:build jar
 ```
@@ -24,7 +29,7 @@ clj -T:build jar
 clj -T:build install
 ```
 
-## Formatting
+## Format
 Check the formatting:
 ```
 clj -M:format
@@ -34,7 +39,7 @@ or fix the formatting:
 clj -M:ffix
 ```
 
-## Releasing Datahike
+## Release Datahike
 ### Deploying Datahike to Clojars manually
 #### Manually
 **Should only be done in case of emergency**
@@ -58,7 +63,7 @@ two variables `GITHUB_TOKEN` and `GITHUB_USER` need to be set in a context calle
 `github-token` in the CircleCI UI for the organisation.
 
 ### Git tags and GitHub releases
-Each merge to `main` creates a release entry in GitHub and a git tag to point to the merge commit
+Each merge to `main` creates a draft release on GitHub and a git tag to point to the merge commit
 made when merging a branch into `main`. The jar is appended to the Github-release.
 
 ### The release process step by step

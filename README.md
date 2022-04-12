@@ -4,7 +4,6 @@
   </a>
 </p>
 <p align="center">
-<a href="https://discord.com/invite/kEBzMvb"><img src="https://img.shields.io/discord/735146089241509909?label=discord&logo=Discord"/></a>
 <a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://badgen.net/badge/-/slack?icon=slack&label"/></a>
 <a href="https://clojars.org/io.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/io.replikativ/datahike.svg" /></a>
 <a href="https://circleci.com/gh/replikativ/datahike"><img src="https://circleci.com/gh/replikativ/datahike.svg?style=shield"/></a>

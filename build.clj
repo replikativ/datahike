@@ -44,6 +44,7 @@
 
 (defn release
   [_]
+  (Thread/sleep 1000)
   (-> (gh/overwrite-asset {:org "replikativ"
                            :repo (name lib)
                            :tag version
