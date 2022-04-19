@@ -6,7 +6,8 @@
             [clj-cbor.core :as cbor]))
 
 (defn export-db
-  "Export the database in a flat-file of datoms at path."
+  "Export the database in a flat-file of datoms at path.
+  Intended as a temporary solution, pending developments in Wanderung."
   [conn path]
   (let [db @conn
         cfg (:config db)]
@@ -27,7 +28,8 @@
   (if (instance? java.time.Instant v) (java.util.Date/from v) v))
 
 (defn import-db
-  "Import a flat-file of datoms at path into your database."
+  "Import a flat-file of datoms at path into your database.
+  Intended as a temporary solution, pending developments in Wanderung."
   [conn path]
   (println "Preparing import of" path "in batches of 1000")
   (let [datoms (->> (cbor/slurp-all path)
