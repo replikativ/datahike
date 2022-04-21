@@ -5,7 +5,7 @@
     [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'io.replikativ/datahike)
-(def version (format "0.4.%s" (b/git-count-revs nil)))
+(def version (format "0.5.%s" (b/git-count-revs nil)))
 (def current-commit (gh/current-commit))
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))

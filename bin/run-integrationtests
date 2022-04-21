@@ -3,20 +3,4 @@
 set -o errexit
 set -o pipefail
 
-trap teardown EXIT
-
-function setup() {
-    if [ -z ${CIRCLECI} ]; then
-        echo $(docker run --detach --publish 5432:5432 --env POSTGRES_DB=config-test --env POSTGRES_USER=alice --env POSTGRES_PASSWORD=foo postgres:alpine)
-    fi
-}
-
-function teardown() {
-    if [ -z ${CIRCLECI} ]; then
-        docker rm -f ${CONTAINER_NAME}
-    fi
-}
-
-CONTAINER_NAME=$(setup)
-
 TIMBRE_LEVEL=':fatal' bin/kaocha --focus :integration "$@"
