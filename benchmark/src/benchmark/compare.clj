@@ -3,7 +3,6 @@
             [clojure.string :refer [join]]
             [incanter.core :as ic]
             [incanter.charts :as charts]
-            [incanter.stats :refer [quantile]]
             [benchmark.config :as c]
             [taoensso.timbre :as log]
             [clojure.java.io :as io])
@@ -110,7 +109,7 @@
                                                 :x-label (str "Entities in database (1 entity = " (count c/schema) " datoms)")
                                                 :legend true
                                                 :series-label "")]
-                (charts/set-stroke-color plot (java.awt.Color. 0 0 0 0) :dataset 0)
+                (charts/set-stroke-color plot (Color. 0 0 0 0) :dataset 0)
                 (charts/set-y-range plot ymin ymax)
                 (doall (map-indexed (fn [idx [tag group]]
                         (let [sorted (sort-by :x group)
