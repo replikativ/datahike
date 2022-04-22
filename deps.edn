@@ -41,7 +41,7 @@
                                org.clojure/tools.namespace {:mvn/version "1.2.0"}}
                   :main-opts ["-m" "nrepl.cmdline" "--middleware" "[cider.nrepl/cider-middleware]"]}
 
-           :bench-dev {:extra-paths ["benchmark/src"]
+           :bench-dev {:extra-paths ["benchmark/src" "benchmark/test"]
                        :extra-deps {clj-http/clj-http     {:mvn/version "3.12.3"}
                                     org.clojure/tools.cli {:mvn/version "1.0.206"}}}
 

@@ -38,6 +38,22 @@
               :function :connection
               :db-entities 10
               :db-datoms 40}
+             {:db-datoms   0
+              :db-entities 0
+              :dh-config   {:backend            :file
+                            :index              :datahike.index/hitchhiker-tree
+                            :keep-history?      true
+                            :name               "file-with-history"
+                            :schema-flexibility :write}
+              :function    :connection}
+             {:db-datoms   40
+              :db-entities 10
+              :dh-config   {:backend            :file
+                            :index              :datahike.index/hitchhiker-tree
+                            :keep-history?      true
+                            :name               "file-with-history"
+                            :schema-flexibility :write}
+              :function    :connection}
              {:dh-config {:schema-flexibility :write
                           :keep-history? false, :index
                           :datahike.index/hitchhiker-tree
