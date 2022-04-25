@@ -31,12 +31,6 @@
     :avet dd/cmp-datoms-avet-quick
     dd/cmp-datoms-eavt-quick))
 
-(defn -insert [set datom index-type]
-  (set/conj set datom (index-type->cmp-quick index-type)))
-
-(defn -remove [set datom index-type]
-  (set/disj set datom (index-type->cmp-quick index-type)))
-
 ;; Functions defined in multimethods in index.cljc
 
 (defn empty-set [index-type]
