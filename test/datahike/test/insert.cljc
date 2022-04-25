@@ -10,9 +10,8 @@
 
 ;; Test that the second insertion of the same datom does not replace the initial one.
 ;; That is similar to Datomic's behaviour.
-;; Note that the 'mem-set' backend does not have this semantics though.
 
-(defn duplicate-test [config test-tx-id?]
+(defn duplicate-test [config]
   (let [_      (d/create-database config)
         conn   (d/connect config)
         schema [{:db/ident       :block/string
@@ -30,8 +29,7 @@
         datom-2 (first (d/datoms @conn :eavt 502 :block/children))
         aevt  (d/datoms @conn :aevt :block/children 502)
         avet  (d/datoms @conn :avet :block/children 501)]
-    (when test-tx-id?
-      (is (= (.-tx datom-1) (.-tx datom-2))))
+    (is (= (.-tx datom-1) (.-tx datom-2)))
     (is (= datom-1 datom-2))
 
     (is (= 1 (count aevt)))
@@ -47,25 +45,22 @@
   (let [config {:store {:backend :mem :id "performance-set"}
                 :schema-flexibility :write
                 :keep-history? true
-                :index :datahike.index/persistent-set}
-        test-tx-id? false]
-    (duplicate-test config test-tx-id?)))
+                :index :datahike.index/persistent-set}]
+    (duplicate-test config)))
 
 (deftest mem-hht
   (let [config {:store {:backend :mem :id "performance-hht"}
                 :schema-flexibility :write
                 :keep-history? true
-                :index :datahike.index/hitchhiker-tree}
-        test-tx-id? true]
-    (duplicate-test config test-tx-id?)))
+                :index :datahike.index/hitchhiker-tree}]
+    (duplicate-test config)))
 
 (deftest file
   (let [config {:store {:backend :file :path "/tmp/performance-hht"}
                 :schema-flexibility :write
                 :keep-history? true
-                :index :datahike.index/hitchhiker-tree}
-        test-tx-id? true]
-    (duplicate-test config test-tx-id?)))
+                :index :datahike.index/hitchhiker-tree}]
+    (duplicate-test config)))
 
 (defn insert-history-test [cfg]
   (let [schema [{:db/ident       :name
