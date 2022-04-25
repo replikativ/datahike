@@ -18,6 +18,7 @@
 - Allow keyword keys for queries
 - Fix tx-meta on transact through api-ns
 - Improve code samples using transact with arg-map @podgorniy
+- Insert into persistent sorted set does not replace existing datom with identical EAV
 
 ## 0.4.0
 
