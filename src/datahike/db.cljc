@@ -2043,8 +2043,9 @@
                                 [e a]
                                 (let [v (if (ref? db a) (entid-strict db v) v)]
                                   (validate-val v entity db)
-                                  [e a v]))]
-                  (recur (reduce transact-retract-datom report (-search db pattern)) entities))
+                                  [e a v]))
+                      datoms (vec (-search db pattern))]
+                  (recur (reduce transact-retract-datom report datoms) entities))
                 (recur report entities))
 
               (= op :db.fn/retractAttribute)
