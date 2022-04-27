@@ -68,30 +68,20 @@
   (let [create-datom (index-type->datom-fn index-type)
         [a b c d] (from-datom from index-type true)
         [e f g h] (from-datom to index-type false)
+        datom-vec-compare (fn [v1 v2] (-> (filter #(not (= % 0)) (map kc/-compare v1 v2))
+                                          first
+                                          (or 0)))
         xf (comp
             (take-while (fn [^AMapEntry kv]
                            ;; prefix scan
                           (let [key (.key kv)
                                 [i j k l] key
-                                new (not (cond (and e f g h)
-                                               (or (> (kc/-compare i e) 0)
-                                                   (> (kc/-compare j f) 0)
-                                                   (> (kc/-compare k g) 0)
-                                                   (> (kc/-compare l h) 0))
-
-                                               (and e f g)
-                                               (or (> (kc/-compare i e) 0)
-                                                   (> (kc/-compare j f) 0)
-                                                   (> (kc/-compare k g) 0))
-
-                                               (and e f)
-                                               (or (> (kc/-compare i e) 0)
-                                                   (> (kc/-compare j f) 0))
-
-                                               e
-                                               (> (kc/-compare i e) 0)
-
-                                               :else false))]
+                                new (< (cond (and e f g h)  (datom-vec-compare [i j k l] [e f g h])
+                                             (and e f g)    (datom-vec-compare [i j k] [e f g])
+                                             (and e f)      (datom-vec-compare [i j] [e f])
+                                             e              (kc/-compare i e)
+                                             :else          0)
+                                       1)]
                             new)))
             (map (fn [kv]
                    (let [[a b c d] (.key ^AMapEntry kv)]
