@@ -2,7 +2,8 @@
   (:require
     [borkdude.gh-release-artifact :as gh]
     [clojure.tools.build.api :as b]
-    [deps-deploy.deps-deploy :as dd]))
+    [deps-deploy.deps-deploy :as dd])
+  (:import (clojure.lang ExceptionInfo)))
 
 (def lib 'io.replikativ/datahike)
 (def version (format "0.5.%s" (b/git-count-revs nil)))
@@ -45,30 +46,30 @@
 (defn fib [a b]
   (lazy-seq (cons a (fib b (+ a b)))))
 
-(defn fib-backoff [exec-fn test-fn]
-  (loop [retries (take 10 (fib 1 2))]
+(defn retry-with-fib-backoff [retries exec-fn test-fn]
+  (loop [idle-times (take retries (fib 1 2))]
     (let [result (exec-fn)]
       (if (test-fn result)
         result
-        (when-let [sleep-ms (first retries)]
-          (println "Retrying with remaining retries: " retries)
-          (println "Request returned: " result)
+        (when-let [sleep-ms (first idle-times)]
+          (println "Returned: " result)
+          (println "Retrying with remaining back-off times (in s): " idle-times)
           (Thread/sleep (* 1000 sleep-ms))
-          (recur (rest retries)))))))
+          (recur (rest idle-times)))))))
 
 (defn try-release []
   (try (gh/overwrite-asset {:org "replikativ"
-                                  :repo (name lib)
-                                  :tag version
-                                  :commit current-commit
-                                  :file jar-file
-                                  :content-type "application/java-archive"})
-    (catch clojure.lang.ExceptionInfo e
-      (:status (ex-data e)))))
+                            :repo (name lib)
+                            :tag version
+                            :commit current-commit
+                            :file jar-file
+                            :content-type "application/java-archive"})
+       (catch ExceptionInfo e
+         (assoc (ex-data e) :failure? true))))
 
 (defn release
   [_]
-  (-> (fib-backoff try-release #(>= 400 %))
+  (-> (retry-with-fib-backoff 10 try-release :failure?)
       :url
       println))
 
