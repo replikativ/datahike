@@ -218,26 +218,47 @@
      :clj
      (.compareTo ^Comparable a1 a2)))
 
-(defn cmp-datoms-eavt-quick [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+(defn cmp-datoms-eavt-quick
+  ([^Datom d1, ^Datom d2] (cmp-datoms-eavt-quick d1 d2 true))
+  ([^Datom d1, ^Datom d2, abs-txid?]
+   (combine-cmp
+    (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+    (cmp-attr-quick (.-a d1) (.-a d2))
+    (compare (.-v d1) (.-v d2))
+    (if abs-txid?
+      (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
+      (#?(:clj Long/compare :cljs -) (.-tx d1) (.-tx d2))))))
 
-(defn cmp-datoms-aevt-quick [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (cmp-attr-quick (.-a d1) (.-a d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (compare (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+(defn cmp-datoms-aevt-quick
+  ([^Datom d1, ^Datom d2] (cmp-datoms-aevt-quick d1 d2 true))
+  ([^Datom d1, ^Datom d2, abs-txid?]
+   (combine-cmp
+    (cmp-attr-quick (.-a d1) (.-a d2))
+    (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+    (compare (.-v d1) (.-v d2))
+    (if abs-txid?
+      (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
+      (#?(:clj Long/compare :cljs -) (.-tx d1) (.-tx d2))))))
 
-(defn cmp-datoms-avet-quick [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+(defn cmp-datoms-avet-quick
+  ([^Datom d1, ^Datom d2] (cmp-datoms-avet-quick d1 d2 true))
+  ([^Datom d1, ^Datom d2, abs-txid?]
+   (combine-cmp
+    (cmp-attr-quick (.-a d1) (.-a d2))
+    (compare (.-v d1) (.-v d2))
+    (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+    (if abs-txid?
+      (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
+      (#?(:clj Long/compare :cljs -) (.-tx d1) (.-tx d2))))))
+
+(defn cmp-datoms-eavt-quick-raw-txid [^Datom d1, ^Datom d2]
+  (cmp-datoms-eavt-quick d1 d2 false))
+
+(defn cmp-datoms-aevt-quick-raw-txid [^Datom d1, ^Datom d2]
+  (cmp-datoms-aevt-quick d1 d2 false))
+
+(defn cmp-datoms-avet-quick-raw-txid [^Datom d1, ^Datom d2]
+  (cmp-datoms-avet-quick d1 d2 false))
 
 (defn diff-sorted [a b cmp]
   (loop [only-a []

@@ -91,8 +91,8 @@
     (dip/-temporal-upsert set datom index-type))
   (-remove [set datom index-type op-count]
     (dip/-remove set datom index-type))
-  (-slice [set from to _]
-    (dip/-slice set from to))
+  (-slice [set from to index-type]
+    (dip/-slice set from to index-type))
   (-flush [set _]
     (dip/-flush set))
   (-transient [set]
