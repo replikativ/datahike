@@ -130,7 +130,7 @@
           (fn [{:keys [key value op-count ts indices]}]
             (map->UpsertOp {:key key :value value :op-count (or op-count ts) :indices (or indices [0 1])}))
 
-          'datahike.index.hitchhiker_tree.upsert.temporal-UpsertOp
+          'datahike.index.hitchhiker_tree.upsert.temporal_UpsertOp
           (fn [{:keys [key value op-count ts indices]}]
             (map->temporal-UpsertOp {:key key :value value :op-count (or op-count ts) :indices (or indices [0 1])}))})
   store)
