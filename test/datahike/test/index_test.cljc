@@ -3,7 +3,10 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
-   [datahike.db :as db]))
+   [datahike.constants :refer [e0 tx0 emax txmax]]
+   [datahike.datom :as dd]
+   [datahike.db :as db]
+   [datahike.index :as di]))
 
 (deftest test-datoms
   (let [dvec #(vector (:e %) (:a %) (:v %))
@@ -149,6 +152,88 @@
             [5 :age 20]
             [4 :age 45]]))
     (is (= (map dvec (d/index-range db {:attrid :age :start 0 :end 100}))
+           [[3 :age 7]
+            [1 :age 15]
+            [2 :age 20]
+            [5 :age 20]
+            [4 :age 45]]))))
+
+(deftest test-slice
+  (let [dvec #(vector (:e %) (:a %) (:v %))
+        db (d/db-with
+            (db/empty-db {:name {:db/index true}
+                          :age  {:db/index true}})
+            [{:db/id 1 :name "Ivan"   :age 15}
+             {:db/id 2 :name "Oleg"   :age 20}
+             {:db/id 3 :name "Sergey" :age 7}
+             {:db/id 4 :name "Pavel"  :age 45}
+             {:db/id 5 :name "Petr"   :age 20}])
+        eavt (:eavt db)
+        aevt (:aevt db)
+        avet (:avet db)]
+
+    (is (= (di/-slice eavt (dd/datom e0 nil nil tx0) (dd/datom emax nil nil txmax) :eavt)
+           (d/datoms db :eavt)))
+    (is (= (map dvec (di/-slice eavt (dd/datom e0 nil nil tx0) (dd/datom 2 nil nil tx0) :eavt))
+           [[1 :age 15]
+            [1 :name "Ivan"]
+            [2 :age 20]
+            [2 :name "Oleg"]]))
+    (is (= (map dvec (di/-slice eavt (dd/datom e0 nil nil tx0) (dd/datom 3 :age 7 txmax) :eavt))
+           [[1 :age 15]
+            [1 :name "Ivan"]
+            [2 :age 20]
+            [2 :name "Oleg"]
+            [3 :age 7]]))
+    (is (= (map dvec (di/-slice eavt (dd/datom e0 :age nil tx0) (dd/datom 3 :name "Timofey" txmax) :eavt))
+           [[1 :age 15]
+            [1 :name "Ivan"]
+            [2 :age 20]
+            [2 :name "Oleg"]
+            [3 :age 7]
+            [3 :name "Sergey"]]))
+    (is (= (map dvec (di/-slice eavt (dd/datom e0 :age nil tx0) (dd/datom 3 :name "Timofey" tx0) :eavt))
+           [[1 :age 15]
+            [1 :name "Ivan"]
+            [2 :age 20]
+            [2 :name "Oleg"]
+            [3 :age 7]
+            [3 :name "Sergey"]]))
+    (is (= (map dvec (di/-slice eavt (dd/datom e0 :age nil tx0) (dd/datom 5 :age nil txmax) :eavt))
+           [[1 :age 15]
+            [1 :name "Ivan"]
+            [2 :age 20]
+            [2 :name "Oleg"]
+            [3 :age 7]
+            [3 :name "Sergey"]
+            [4 :age 45]
+            [4 :name "Pavel"]
+            [5 :age 20]]))
+
+    (is (= (map dvec (di/-slice aevt (dd/datom e0 nil nil tx0) (dd/datom 3 :name "Pavel" txmax) :aevt))
+           [[1 :age 15]
+            [2 :age 20]
+            [3 :age 7]
+            [4 :age 45]
+            [5 :age 20]
+            [1 :name "Ivan"]
+            [2 :name "Oleg"]]))
+    (is (= (map dvec (di/-slice aevt (dd/datom e0 nil nil tx0) (dd/datom 5 :age 18 txmax) :aevt))
+           [[1 :age 15]
+            [2 :age 20]
+            [3 :age 7]
+            [4 :age 45]]))
+    (is (= (map dvec (di/-slice aevt (dd/datom e0 nil nil tx0) (dd/datom 3 :name nil txmax) :aevt))
+           [[1 :age 15]
+            [2 :age 20]
+            [3 :age 7]
+            [4 :age 45]
+            [5 :age 20]
+            [1 :name "Ivan"]
+            [2 :name "Oleg"]
+            [3 :name "Sergey"]]))
+
+    (is (= (map dvec (di/-slice avet (dd/datom e0 nil nil tx0) (dd/datom 3 :age 50 txmax) :avet))
            [[3 :age 7]
             [1 :age 15]
             [2 :age 20]
