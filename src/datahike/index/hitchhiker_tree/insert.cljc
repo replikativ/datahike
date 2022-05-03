@@ -70,7 +70,7 @@
           (fn [{:keys [key op-count ts]}]
             (map->InsertOp {:key key :op-count (or op-count ts)}))
 
-          'datahike.index.hitchhiker_tree.insert.temporal-InsertOp
+          'datahike.index.hitchhiker_tree.insert.temporal_InsertOp
           (fn [{:keys [key op-count ts]}]
             (map->temporal-InsertOp {:key key :op-count (or op-count ts)}))})
   store)
