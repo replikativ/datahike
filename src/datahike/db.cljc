@@ -803,5 +803,114 @@
                         :temporal-aevt (di/empty-index index :aevt index-config)
                         :temporal-avet (di/empty-index index :avet index-config)}))))))
 
+(defn metrics [db]
+  {:pre [(instance? DB db)]}
+  (let [eavt-datoms (-seq (.-eavt db))
+        update-count (fn [m ks f] (f m ks #(if % (inc %) 1)))
+        counts-map (reduce (fn [m d]
+                             (-> (update-count m
+                                               [:per-attr-counts (.-ident-for db (.-a d))]
+                                               update-in)
+                                 (update-count [:per-entity-counts (.-e d)] update-in)))
+                           {:per-attr-counts    {}
+                            :per-entity-counts  {}}
+                           eavt-datoms)
+        temp-per-attr-counts (when (-keep-history? db)
+                               (reduce (fn [m d] (update-count m (.-ident-for db (.-a d)) update))
+                                       {}
+                                       (-seq (.-temporal-eavt db))))
+        sum-attr-counts (fn [attr-counts] (->> (filter (fn [[a v]]
+                                                         (-> (:db/index (.-rschema db))
+                                                             (contains? a)))
+                                                       attr-counts)
+                                               (map second)
+                                               (reduce + 0)))]
+    (cond-> (merge counts-map
+                   {:count (-count (.-eavt db))
+                    :avet-count (sum-attr-counts (:per-attr-counts counts-map))})
+      (-keep-history? db)
+      (merge {:temporal-count (-count (.-temporal-eavt db))
+              :temporal-avet-count (sum-attr-counts temp-per-attr-counts)}))))
+
+(defn- equiv-db-index [x y]
+  (loop [xs (seq x)
+         ys (seq y)]
+    (cond
+      (nil? xs) (nil? ys)
+      (= (first xs) (first ys)) (recur (next xs) (next ys))
+      :else false)))
+
+(defn- hash-datoms
+  [datoms]
+  (reduce #(+ %1 (hash %2)) 0 datoms))
+
+(defn- equiv-db [db other]
+  (and (or (instance? DB other) (instance? FilteredDB other))
+       (= (-schema db) (-schema other))
+       (equiv-db-index (-datoms db :eavt []) (-datoms other :eavt []))))
+
+#?(:cljs
+   (defn pr-db [db w opts]
+     (-write w "#datahike/DB {")
+     (-write w (str ":max-tx " (-max-tx db) " "))
+     (-write w (str ":max-eid " (-max-eid db) " "))
+     (-write w "}")))
+
+#?(:clj
+   (do
+     (defn pr-db [db, ^java.io.Writer w]
+       (.write w (str "#datahike/DB {"))
+       (.write w (str ":max-tx " (-max-tx db) " "))
+       (.write w (str ":max-eid " (-max-eid db)))
+       (.write w "}"))
+
+     (defn pr-hist-db [db ^java.io.Writer w flavor time-point?]
+       (.write w (str "#datahike/" flavor " {"))
+       (.write w ":origin ")
+       (binding [*out* w]
+         (pr (-origin db)))
+       (when time-point?
+         (.write w " :time-point ")
+         (binding [*out* w]
+           (pr (-time-point db))))
+       (.write w "}"))
+
+     (defmethod print-method DB [db w] (pr-db db w))
+     (defmethod print-method FilteredDB [db w] (pr-db db w))
+     (defmethod print-method HistoricalDB [db w] (pr-hist-db db w "HistoricalDB" false))
+     (defmethod print-method AsOfDB [db w] (pr-hist-db db w "AsOfDB" true))
+     (defmethod print-method SinceDB [db w] (pr-hist-db db w "SinceDB" true))
+
+     (defmethod pp/simple-dispatch Datom [^Datom d]
+       (pp/pprint-logical-block :prefix "#datahike/Datom [" :suffix "]"
+                                (pp/write-out (.-e d))
+                                (.write ^java.io.Writer *out* " ")
+                                (pp/pprint-newline :linear)
+                                (pp/write-out (.-a d))
+                                (.write ^java.io.Writer *out* " ")
+                                (pp/pprint-newline :linear)
+                                (pp/write-out (.-v d))
+                                (.write ^java.io.Writer *out* " ")
+                                (pp/pprint-newline :linear)
+                                (pp/write-out (datom-tx d))))
+
+     (defn- pp-db [db ^java.io.Writer w]
+       (pp/pprint-logical-block :prefix "#datahike/DB {" :suffix "}"
+                                (pp/pprint-logical-block
+                                 (pp/write-out :max-tx)
+                                 (.write ^java.io.Writer *out* " ")
+                                 (pp/pprint-newline :linear)
+                                 (pp/write-out (-max-tx db))
+                                 (.write ^java.io.Writer *out* " ")
+                                 (pp/pprint-newline :linear)
+                                 (pp/write-out :max-eid)
+                                 (.write ^java.io.Writer *out* " ")
+                                 (pp/pprint-newline :linear)
+                                 (pp/write-out (-max-eid db)))
+                                (pp/pprint-newline :linear)))
+
+     (defmethod pp/simple-dispatch DB [db] (pp-db db *out*))
+     (defmethod pp/simple-dispatch FilteredDB [db] (pp-db db *out*))))
+
 (defn db-from-reader [{:keys [schema datoms]}]
   (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema))

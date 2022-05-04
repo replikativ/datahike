@@ -11,7 +11,7 @@
             [datahike.db.utils :as dbu]
             [datahike.impl.entity :as de])
   #?(:clj
-     (:import [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
+     (:import [datahike.db DB HistoricalDB AsOfDB SinceDB FilteredDB]
               [datahike.impl.entity Entity]
               [java.util Date])))
 
@@ -794,3 +794,10 @@
          (assoc m k attrs))))
    {}
    (dbi/-rschema db)))
+
+(defn ^{:arglists '([db])
+        :doc "Returns database metrics"}
+  metrics
+  [db]
+  {:pre [(instance? DB db)]}
+  (db/metrics db))
