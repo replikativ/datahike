@@ -1,5 +1,6 @@
 (ns ^:no-doc datahike.index.hitchhiker-tree.upsert
-  (:require [hitchhiker.tree :as tree]
+  (:require [datahike.index.utils :as diu]
+            [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 
 (defn- increase-by-one?
@@ -21,17 +22,6 @@
           [nil nil nil nil]
           indices))
 
-(defn equals-on-indices?
-  "Returns true if 'k1' and 'k2' have the same
-   value at positions indicated by 'indices'"
-  [k1, k2, indices]
-  (reduce (fn [_ i]
-            (if (= (nth k1 i) (nth k2 i))
-              true
-              (reduced false)))
-          true
-          indices))
-
 (defn old-key
   "Returns the old version of the given 'new' key if it exists in 'old-keys'.
   'indices' is a vector of integer indicating which positions in keys are significant,
@@ -41,7 +31,7 @@
     (let [mask (mask new indices)]
       (when-let [candidates (subseq old-keys >= mask)]
         (when (or (not (prefix? indices))
-                  (equals-on-indices? new (-> candidates first first) indices))
+                  (diu/equals-on-indices? new (-> candidates first first) indices))
           (let [res (->> candidates
                          (map first)
                       ;; Returns the key which has not been retracted.
@@ -54,7 +44,7 @@
                                    (let [curr-pos? (pos? (nth k 3))]
                                      (if (and curr-pos?
                                               prev-pos?
-                                              (equals-on-indices? new k indices))
+                                              (diu/equals-on-indices? new k indices))
                                        (reduced k)
                                        curr-pos?)))
                                  true))]
@@ -95,7 +85,7 @@
   (-affects-key [_] key)
   (-apply-op-to-coll [_ kvs]
     (if-let [old (old-key kvs key indices)]
-      (if (equals-on-indices? key old [0 1 2])
+      (if (diu/equals-on-indices? key old [0 1 2])
         kvs
         (let [old-retracted (old-retracted kvs key old indices)]
           (-> (assoc kvs old-retracted nil)
@@ -107,7 +97,7 @@
                      :else (:children (peek (tree/lookup-path tree key))))
           old (old-key children key indices)]
       (if old
-        (if (equals-on-indices? key old [0 1 2])
+        (if (diu/equals-on-indices? key old [0 1 2])
           tree
           (let [old-retracted (old-retracted children key old indices)]
             (-> (tree/insert tree old-retracted nil)

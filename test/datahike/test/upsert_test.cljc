@@ -209,16 +209,11 @@
       (d/transact conn {:tx-data [{:name "Alice"
                                    :age  25}]})
       (is (= 1 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :age)))))
-
     (testing "inserting the exact same datom"
       (d/transact conn {:tx-data [{:db/id [:name "Alice"]
                                    :age 25}]})
-      (testing " does not change the history for any index other than persistent-set"
-        (when (not= (:index cfg) :datahike.index/persistent-set)
-          (is (= 1 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :age))))))
-      (testing " adds another version of the datom when index is persistent-set"
-        (when (= (:index cfg) :datahike.index/persistent-set)
-          (is (= 2 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :age)))))))
+      (testing " does not change history"
+        (is (= 1 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :age))))))
     (testing "changing the datom value increases the history with 2 datoms: the retraction datom and the new value."
       (d/transact conn {:tx-data [{:db/id [:name "Alice"]
                                    :age 26}]})

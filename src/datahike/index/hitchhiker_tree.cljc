@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.index.hitchhiker-tree
   (:require [datahike.index.hitchhiker-tree.upsert :as ups]
             [datahike.index.hitchhiker-tree.insert :as ins]
+            [datahike.index.utils :as diu]
             [hitchhiker.tree.utils.async :as async]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
@@ -48,47 +49,16 @@
     :avet (fn [a v e tx] (dd/datom e a v tx true))
     (fn [e a v tx] (dd/datom e a v tx true))))
 
-(defn- from-datom [^Datom datom index-type start?]
-  (let [e (fn [datom] (when-not (or (and start? (= e0 (.-e datom)))
-                                    (and (not start?) (= emax (.-e datom))))
-                        (.-e datom)))
-        tx (fn [datom] (when-not (or (and start? (= tx0 (.-tx datom)))
-                                     (and (not start?) (= txmax (.-tx datom))))
-                         (.-tx datom)))
-        datom-seq (case index-type
-                    :aevt (list (.-a datom) (e datom) (.-v datom) (tx datom))
-                    :avet (list (.-a datom) (.-v datom) (e datom) (tx datom))
-                    (list (e datom) (.-a datom) (.-v datom) (tx datom)))]
-    (->> datom-seq
-         (take-while some?)
-         vec)))
-
-(defn -slice
-  [tree from to index-type]
-  (let [create-datom (index-type->datom-fn index-type)
-        [a b c d] (from-datom from index-type true)
-        [e f g h] (from-datom to index-type false)
-        datom-vec-compare (fn [v1 v2] (-> (filter #(not (= % 0)) (map kc/-compare v1 v2))
-                                          first
-                                          (or 0)))
+(defn -slice [tree from to index-type]
+  (let [[a b c d] (diu/datom-to-vec from index-type true)
+        cmp (diu/prefix-scan kc/-compare (diu/datom-to-vec to index-type false))
         xf (comp
-            (take-while (fn [^AMapEntry kv]
-                           ;; prefix scan
-                          (let [key (.key kv)
-                                [i j k l] key
-                                new (< (cond (and e f g h)  (datom-vec-compare [i j k l] [e f g h])
-                                             (and e f g)    (datom-vec-compare [i j k] [e f g])
-                                             (and e f)      (datom-vec-compare [i j] [e f])
-                                             e              (kc/-compare i e)
-                                             :else          0)
-                                       1)]
-                            new)))
+            (take-while (fn [^AMapEntry kv] (cmp (.key kv))))
             (map (fn [kv]
                    (let [[a b c d] (.key ^AMapEntry kv)]
-                     (create-datom a b c d)))))
-        new (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
-                 seq)]
-    new))
+                     ((index-type->datom-fn index-type) a b c d)))))]
+    (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
+         seq)))
 
 (defn -seq [tree index-type]
   (-slice tree (dd/datom e0 nil nil tx0) (dd/datom emax nil nil txmax) index-type))
