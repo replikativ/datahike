@@ -112,7 +112,7 @@
 
 (defmethod default-config :file [{:keys [id] :as config}]
   (merge
-   {:path (:datahike-store-path env)}
+   {:path (:datahike-store-path env "datahike-db")}
    config))
 
 (s/def :datahike.store.file/path string?)
