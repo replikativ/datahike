@@ -37,15 +37,15 @@
          (take-while (fn [^Datom d] (cmp (diu/datom-to-vec d index-type false))))
          seq)))
 
-(defn remove-datom [set datom index-type]
-  (set/disj set datom (index-type->cmp-quick index-type)))
+(defn remove-datom [pset datom index-type]
+  (set/disj pset datom (index-type->cmp-quick index-type)))
 
 (defn insert [pset datom index-type]
   (if (slice pset
              (dd/datom (.-e datom) (.-a datom) (.-v datom) tx0)
              (dd/datom (.-e datom) (.-a datom) (.-v datom) txmax)
              index-type)
-    set
+    pset
     (set/conj pset datom (index-type->cmp-quick index-type))))
 
 (defn temporal-insert [pset datom index-type]
