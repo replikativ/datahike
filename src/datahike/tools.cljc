@@ -1,5 +1,6 @@
 (ns ^:no-doc datahike.tools
   (:require
+   [next.jdbc :as jdbc]
    [superv.async :refer [throw-if-exception-]]
    #?(:clj [clojure.java.io :as io])
    [taoensso.timbre :as log])
@@ -91,12 +92,17 @@
      :cljs
      "JavaScript"))
 
-(defn meta-data []
-  {:datahike/version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT")
-   :konserve/version (get-version 'io.replikativ/konserve)
-   :hitchhiker.tree/version (get-version 'io.replikativ/hitchhiker-tree)
-   :datahike/id (UUID/randomUUID)
-   :datahike/created-at (Date.)})
+(defn meta-data
+  ([] (meta-data nil))
+  ([store-config]
+   (cond-> {:datahike/version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT")
+            :konserve/version (get-version 'io.replikativ/konserve)
+            :hitchhiker.tree/version (get-version 'io.replikativ/hitchhiker-tree)
+            :datahike/id (UUID/randomUUID)
+            :datahike/created-at (Date.)}
+     (= (:backend store-config) :jdbc)
+     (assoc :backend/version (with-open [conn (jdbc/get-connection store-config)]
+                               (.getDatabaseProductVersion (.getMetaData conn)))))))
 
 (defn deep-merge
   "Recursively merges maps together. If all the maps supplied have nested maps

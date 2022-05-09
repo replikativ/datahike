@@ -970,7 +970,7 @@
         :system-entities system-entities
         :ref-ident-map ref-ident-map
         :ident-ref-map ident-ref-map
-        :meta (tools/meta-data)
+        :meta (tools/meta-data (:store complete-config))
         :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt (di/empty-index index :eavt index-config)
