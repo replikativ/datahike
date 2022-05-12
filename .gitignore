@@ -5,8 +5,7 @@
 pom.xml.asc
 *.jar
 *.class
-/.lein-*
-/.nrepl-port
+.nrepl-port
 /.repl*
 web/out
 web/*.js
@@ -24,7 +23,8 @@ lsp/
 .calva/
 out/
 .lsp
-/.cache
-/.settings
+.cache
+.settings
 .classpath
-/.clj-kondo
+.clj-kondo
+.project
