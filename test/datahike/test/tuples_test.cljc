@@ -323,6 +323,7 @@
 
 (deftest test-unique
   (let [conn (connect)]
+
     (d/transact conn [{:db/ident :a
                        :db/valueType :db.type/string
                        :db/cardinality :db.cardinality/one}

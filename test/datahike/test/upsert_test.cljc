@@ -219,33 +219,23 @@
                                    :age 26}]})
       (is (= 3 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :age)))))))
 
-(deftest temporal-history-mem-hht
+(deftest temporal-history-mem
   (let [config {:store {:backend :mem :id "temp-hist-hht"}
                 :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/hitchhiker-tree}]
+                :keep-history? true}]
     (temporal-history-test config)))
 
 (deftest temporal-history-file
   (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
                 :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/hitchhiker-tree}]
+                :keep-history? true}]
     (temporal-history-test config)))
 
 (deftest temporal-history-file-with-attr-refs
   (let [config {:store {:backend :file :path "/tmp/temp-hist-attr-refs"}
                 :schema-flexibility :write
                 :keep-history? true
-                :attribute-refs? true
-                :index :datahike.index/hitchhiker-tree}]
-    (temporal-history-test config)))
-
-(deftest temporal-history-mem-set
-  (let [config {:store {:backend :mem :id "temp-hist-set"}
-                :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/persistent-set}]
+                :attribute-refs? true}]
     (temporal-history-test config)))
 
 (deftest test-upsert-after-large-coll

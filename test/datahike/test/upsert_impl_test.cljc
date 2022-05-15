@@ -89,8 +89,7 @@
       (is (= [[1 :age 44 1] nil] (first (msg/lookup-fwd-iter tree [1 :age 44 1])))))))
 
 (defn connect []
-  (let [cfg  {:keep-history?      true
-              :schema-flexibility :read
+  (let [cfg  {:schema-flexibility :read
               :initial-tx         []}
         _    (d/delete-database cfg)
         _    (d/create-database cfg)]
@@ -141,7 +140,6 @@
                           :age  35})
         cfg {:store {:backend :mem
                      :id "test-upsert-history"}
-             :keep-history? true
              :schema-flexibility :read
              :initial-tx initial-tx}
         conn (setup-db cfg)
@@ -180,8 +178,7 @@
 (deftest upsert-read-handlers
   (let [config {:store {:backend :file :path "/tmp/upsert-read-handlers"}
                 :schema-flexibility :write
-                :keep-history? false
-                :index :datahike.index/hitchhiker-tree}
+                :keep-history? false}
         schema [{:db/ident       :block/string
                  :db/valueType   :db.type/string
                  :db/cardinality :db.cardinality/one}

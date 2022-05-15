@@ -169,12 +169,15 @@
         (d/delete-database old-cfg)
         (d/delete-database new-cfg)))))
 
-(defn load-entities-test [cfg]
+(deftest load-entities-test
   (testing "Test migrate simple datoms without attribute refs"
     (let [source-datoms (->> tx-data
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
-          cfg           (assoc cfg :attribute-refs false)
+          cfg           {:store         {:backend :mem
+                                         :id      "load-entities-test-no-attr-refs"}
+                         :keep-history? true
+                         :attribute-refs false}
           conn (utils/setup-db cfg)]
       @(d/load-entities conn source-datoms)
       (is (= (into #{} source-datoms)
@@ -183,9 +186,11 @@
     (let [source-datoms (->> tx-data
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
-          cfg           (assoc cfg
-                               :attribute-refs? true
-                               :schema-flexibility :write)
+          cfg           {:store         {:backend :mem
+                                         :id      "load-entities-test-no-attr-refs"}
+                         :keep-history? true
+                         :attribute-refs? true
+                         :schema-flexibility :write}
           conn (utils/setup-db cfg)]
       @(d/load-entities conn source-datoms)
       (is (= (into #{} (->> source-datoms
@@ -196,20 +201,16 @@
                     [?e ?attr ?v ?t ?op]
                     [?attr :db/ident ?a]] @conn))))))
 
-(deftest load-entities-test-hht
-  (load-entities-test {:store         {:backend :mem
-                                       :id      "load-entities-test-no-attr-refs"}
-                       :keep-history? true}))
-
-(deftest load-entities-test-ps
-  (load-entities-test {:store         {:backend :mem
-                                       :id      "load-entities-test-no-attr-refs"}
-                       :index :datahike.index/persistent-set
-                       :keep-history? true}))
-
-(defn load-entities-history-test [source-cfg]
+(deftest load-entities-history-test
   (testing "Migrate predefined set with historical data"
-    (let [schema      [{:db/ident       :name
+    (let [source-cfg {:store              {:backend :mem
+                                           :id      "load-entities-history-test-source"}
+                      :name               "load-entities-history-test-source"
+                      :keep-history?      true
+                      :schema-flexibility :write
+                      :cache-size         0
+                      :attribute-refs?    false}
+          schema      [{:db/ident       :name
                         :db/cardinality :db.cardinality/one
                         :db/index       true
                         :db/unique      :db.unique/identity
@@ -244,40 +245,19 @@
       (is (= (history-q source-conn)
              (history-q target-conn))))))
 
-(deftest load-entities-history-test-hht
-  (load-entities-history-test {:store              {:backend :mem
-                                                    :id      "load-entities-history-test-source"}
-                               :name               "load-entities-history-test-source"
-                               :keep-history?      true
-                               :schema-flexibility :write
-                               :cache-size         0
-                               :attribute-refs?    false}))
-
-(deftest load-entities-history-test-ps
-  (load-entities-history-test {:store              {:backend :mem
-                                                    :id      "load-entities-history-test-source"}
-                               :name               "load-entities-history-test-source"
-                               :keep-history?      true
-                               :schema-flexibility :write
-                               :cache-size         0
-                               :index :datahike.index/persistent-set
-                               :attribute-refs?    false}))
-
 (deftest test-binary-support
-  (doseq [index [:datahike.index/persistent-set :datahike.index/hitchhiker-tree]]
-    (let [config {:store {:backend :mem
-                          :id "test-export-binary-support"}
-                  :schema-flexibility :read
-                  :keep-history? false
-                  :index index}
-          export-path "/tmp/test-export-binary-support"
-          conn (utils/setup-db config)
-          import-conn (utils/setup-db)]
-      (d/transact conn [{:db/id 1, :name "Jiayi", :payload (byte-array [0 2 3])}
-                        {:db/id 2, :name "Peter", :payload (byte-array [1 2 3])}])
-      (m/export-db conn export-path)
-      (m/import-db import-conn export-path)
-      (is (utils/all-true? (map #(or (= %1 %2) (utils/all-eq? (nth %1 2) (nth %2 2)))
-                                (d/datoms @conn :eavt)
-                                (filter #(< (datom/datom-tx %) (:max-tx @import-conn))
-                                        (d/datoms @import-conn :eavt))))))))
+  (let [config {:store {:backend :mem
+                        :id "test-export-binary-support"}
+                :schema-flexibility :read
+                :keep-history? false}
+        export-path "/tmp/test-export-binary-support"
+        conn (utils/setup-db config)
+        import-conn (utils/setup-db)]
+    (d/transact conn [{:db/id 1, :name "Jiayi", :payload (byte-array [0 2 3])}
+                      {:db/id 2, :name "Peter", :payload (byte-array [1 2 3])}])
+    (m/export-db conn export-path)
+    (m/import-db import-conn export-path)
+    (is (utils/all-true? (map #(or (= %1 %2) (utils/all-eq? (nth %1 2) (nth %2 2)))
+                              (d/datoms @conn :eavt)
+                              (filter #(< (datom/datom-tx %) (:max-tx @import-conn))
+                                      (d/datoms @import-conn :eavt)))))))

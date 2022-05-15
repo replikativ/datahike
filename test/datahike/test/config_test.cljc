@@ -55,7 +55,7 @@
               :attribute-refs? false
               :keep-history? true
               :schema-flexibility :write
-              :index :datahike.index/hitchhiker-tree
+              :index c/default-index
               :index-config       {:index-b-factor       const/default-index-b-factor
                                    :index-log-size       const/default-index-log-size
                                    :index-data-node-size const/default-index-data-node-size}

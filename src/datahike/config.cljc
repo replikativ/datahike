@@ -8,6 +8,9 @@
             [datahike.constants :as c])
   (:import [java.net URI]))
 
+(def ^:dynamic default-index :datahike.index/persistent-set) ;; TODO: the same for keep-history?
+;(def ^:dynamic default-index :datahike.index/hitchhiker-tree) ;; TODO: the same for keep-history?
+
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
 (s/def ::schema-flexibility #{:read :write})
@@ -38,9 +41,9 @@
                                   :opt-un [:deprecated/temporal-index :deprecated/schema-on-read]))
 
 (defn from-deprecated
-  [{:keys [backend username password path host port] :as backend-cfg}
+  [{:keys [backend username password path host port] :as _backend-cfg}
    & {:keys [schema-on-read temporal-index index initial-tx]
-      :as index-cfg
+      :as _index-cfg
       :or {schema-on-read false
            index :datahike.index/hitchhiker-tree
            temporal-index true}}]
@@ -100,9 +103,9 @@
    :schema-flexibility :read
    :name (z/rand-german-mammal)
    :attribute-refs? false
-   :index :datahike.index/hitchhiker-tree
+   :index default-index
    :cache-size 100000
-   :index-config {:index-b-factor       c/default-index-b-factor
+   :index-config {:index-b-factor       c/default-index-b-factor ;; TODO: move to index namespace
                   :index-log-size       c/default-index-log-size
                   :index-data-node-size c/default-index-data-node-size}})
 
@@ -135,9 +138,11 @@
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                 :index (keyword "datahike.index" (:datahike-index env "persistent-set"))
+                 :index (if (:datahike-index env)
+                          (keyword "datahike.index" (:datahike-index env))
+                          default-index)
                  :cache-size (:cache-size env 100000)
-                 :index-config {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)
+                 :index-config {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor) ;; TODO: move to index namespace
                                 :index-log-size       (int-from-env :datahike-log-size c/default-index-log-size)
                                 :index-data-node-size (int-from-env :datahike-data-node-size c/default-index-data-node-size)}}
          merged-config ((comp remove-nils tools/deep-merge) config config-as-arg)

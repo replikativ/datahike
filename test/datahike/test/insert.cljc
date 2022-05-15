@@ -42,32 +42,14 @@
     (d/release conn)
     (d/delete-database config)))
 
-(deftest mem-set
-  (let [config {:store {:backend :mem :id "duplicate-set"}
-                :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/persistent-set}]
+(deftest duplicate-mem
+  (let [config {:store {:backend :mem :id "duplicate"}
+                :schema-flexibility :write}]
     (duplicate-test config)))
 
-(deftest mem-hht
-  (let [config {:store {:backend :mem :id "duplicate-hht"}
-                :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/hitchhiker-tree}]
-    (duplicate-test config)))
-
-(deftest file-set
-  (let [config {:store {:backend :file :path "/tmp/duplicate-set"}
-                :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/persistent-set}]
-    (duplicate-test config)))
-
-(deftest file-hht
-  (let [config {:store {:backend :file :path "/tmp/duplicate-hht"}
-                :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/hitchhiker-tree}]
+(deftest duplicate-file
+  (let [config {:store {:backend :file :path "/tmp/duplicate"}
+                :schema-flexibility :write}]
     (duplicate-test config)))
 
 (defn insert-history-test [cfg]
@@ -97,39 +79,28 @@
       (is (= 2 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :email)))))))
 
 (deftest insert-history-mem-hht
-  (let [config {:store {:backend :mem :id "temp-hist-hht"}
+  (let [config {:store {:backend :mem :id "temp-hist"}
                 :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/hitchhiker-tree}]
+                :keep-history? true}]
     (insert-history-test config)))
 
 (deftest insert-history-file
   (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
                 :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/hitchhiker-tree}]
+                :keep-history? true}]
     (insert-history-test config)))
 
 (deftest insert-history-file-with-attr-refs
   (let [config {:store {:backend :file :path "/tmp/temp-hist-attr-refs"}
                 :schema-flexibility :write
                 :keep-history? true
-                :attribute-refs? true
-                :index :datahike.index/hitchhiker-tree}]
-    (insert-history-test config)))
-
-(deftest insert-history-mem-set
-  (let [config {:store {:backend :mem :id "temp-hist-set"}
-                :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/persistent-set}]
+                :attribute-refs? true}]
     (insert-history-test config)))
 
 (deftest insert-read-handlers
   (let [config {:store {:backend :file :path "/tmp/insert-read-handlers-9"}
                 :schema-flexibility :write
-                :keep-history? false
-                :index :datahike.index/hitchhiker-tree}
+                :keep-history? false}
         schema [{:db/ident       :block/string
                  :db/valueType   :db.type/string
                  :db/cardinality :db.cardinality/one}

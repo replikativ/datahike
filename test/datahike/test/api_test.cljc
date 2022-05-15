@@ -752,5 +752,5 @@
              :attribute-refs?    false
              :schema-flexibility :write}
         conn (utils/setup-db cfg)]
-    (is (= #{:datahike/version :datahike/id :datahike/created-at :konserve/version :hitchhiker.tree/version}
+    (is (= #{:datahike/version :datahike/id :datahike/created-at :konserve/version :hitchhiker.tree/version :persistent.set/version}
            (-> @conn :meta keys set)))))

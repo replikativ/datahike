@@ -3,7 +3,7 @@
   #?(:clj (:import [datahike.datom Datom])))
 
 (defn datom-to-vec [^Datom datom index-type start?]
-  (let [e (fn [datom] (when-not (or (and start? (= e0 (.-e datom)))
+  (let [e (fn [datom] (when-not (or (and start? (= e0 (.-e datom))) ;; those transformations can be avoided by adjusting search-indices
                                     (and (not start?) (= emax (.-e datom))))
                         (.-e datom)))
         tx (fn [datom] (when-not (or (and start? (= tx0 (.-tx datom)))
@@ -25,11 +25,13 @@
 (defn prefix-scan [cmp [e f g h]]
   (let [datom-vec-compare (slice-datom-compare cmp)]
     (fn [[i j k l]]
-      (< (cond (and e f g h)  (datom-vec-compare [i j k l] [e f g h])
-               (and e f g)    (datom-vec-compare [i j k] [e f g])
-               (and e f)      (datom-vec-compare [i j] [e f])
-               e              (cmp i e)
-               :else          0)
+      (< (cond  ;; can be more efficient with nested if-statements
+           ;; 'some?' neccessary for v at 3rd pos for :eavt and :aevt index and at 2nd pos for :avet index
+           (and e (some? f) (some? g) h)  (datom-vec-compare [i j k l] [e f g h])
+           (and e (some? f) (some? g))    (datom-vec-compare [i j k] [e f g])
+           (and e (some? f))              (datom-vec-compare [i j] [e f])
+           e                              (cmp i e)
+           :else                          0)
          1))))
 
 (defn equals-on-indices?
