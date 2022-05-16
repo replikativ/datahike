@@ -1,82 +1,82 @@
-{:deps          {org.clojure/clojure                         {:mvn/version "1.11.1"}
-                 org.clojure/clojurescript                   {:mvn/version "1.11.4"}
-                 io.replikativ/hasch                         {:mvn/version "0.3.7"}
-                 io.replikativ/hitchhiker-tree               {:mvn/version "0.1.11"}
-                 io.replikativ/incognito                     {:mvn/version "0.3.66"}
-                 io.replikativ/konserve                      {:mvn/version "0.6.0-alpha3"}
-                 persistent-sorted-set/persistent-sorted-set {:local/root "persistent-sorted-set-0.1.4.jar"} ;; TODO: eventually clojars object
-                 environ/environ                             {:mvn/version "1.2.0"}
-                 com.taoensso/timbre                         {:mvn/version "5.2.1"}
-                 io.replikativ/superv.async                  {:mvn/version "0.3.43"}
-                 io.lambdaforge/datalog-parser               {:mvn/version "0.1.11"}
-                 io.replikativ/zufall                        {:mvn/version "0.1.0"}
-                 junit/junit                                 {:mvn/version "4.13.2"}
-                 mvxcvi/clj-cbor                             {:mvn/version "1.1.0"}}
+{:deps {org.clojure/clojure                         {:mvn/version "1.11.1"}
+        org.clojure/clojurescript                   {:mvn/version "1.11.4"}
+        io.replikativ/hasch                         {:mvn/version "0.3.7"}
+        io.replikativ/hitchhiker-tree               {:mvn/version "0.1.11"}
+        io.replikativ/incognito                     {:mvn/version "0.3.66"}
+        io.replikativ/konserve                      {:mvn/version "0.6.0-alpha3"}
+        persistent-sorted-set/persistent-sorted-set {:local/root "persistent-sorted-set-0.1.4.jar"} ;; TODO: eventually clojars object
+        environ/environ                             {:mvn/version "1.2.0"}
+        com.taoensso/timbre                         {:mvn/version "5.2.1"}
+        io.replikativ/superv.async                  {:mvn/version "0.3.43"}
+        io.lambdaforge/datalog-parser               {:mvn/version "0.1.11"}
+        io.replikativ/zufall                        {:mvn/version "0.1.0"}
+        junit/junit                                 {:mvn/version "4.13.2"}
+        mvxcvi/clj-cbor                             {:mvn/version "1.1.0"}}
 
- :paths         ["src" "target/classes"]
+ :paths ["src" "target/classes"]
 
  :deps/prep-lib {:ensure "target/classes"
-                 :alias  :build
-                 :fn     compile}
+                 :alias :build
+                 :fn compile}
 
- :aliases       {:1.9              {:override-deps {org.clojure/clojure {:mvn/version "1.9.0"}}}
+ :aliases {:1.9 {:override-deps {org.clojure/clojure {:mvn/version "1.9.0"}}}
 
-                 :1.10             {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
+           :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
 
-                 :dev              {:extra-paths ["dev" "benchmark/src"]
-                                    :extra-deps  {org.clojure/tools.namespace {:mvn/version "1.2.0"}
-                                                  clj-http/clj-http           {:mvn/version "3.12.3"}
-                                                  org.clojure/tools.cli       {:mvn/version "1.0.206"}
-                                                  incanter/incanter-core      {:mvn/version "1.9.3"}
-                                                  incanter/incanter-charts    {:mvn/version "1.9.3"}}}
+           :dev {:extra-paths ["dev" "benchmark/src"]
+                 :extra-deps {org.clojure/tools.namespace {:mvn/version "1.2.0"}
+                              clj-http/clj-http           {:mvn/version "3.12.3"}
+                              org.clojure/tools.cli       {:mvn/version "1.0.206"}
+                              incanter/incanter-core      {:mvn/version "1.9.3"}
+                              incanter/incanter-charts    {:mvn/version "1.9.3"}}}
 
-                 :test             {:extra-paths ["test"]
-                                    :extra-deps  {lambdaisland/kaocha         {:mvn/version "1.65.1029"}
-                                                  lambdaisland/kaocha-cljs    {:mvn/version "1.0.107"}
-                                                  io.replikativ/datahike-jdbc {:mvn/version "0.1.2-SNAPSHOT"}
-                                                  org.clojure/test.check      {:mvn/version "1.1.1"}}}
+           :test {:extra-paths ["test"]
+                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.64.1010"}
+                               lambdaisland/kaocha-cljs    {:mvn/version "1.0.107"}
+                               io.replikativ/datahike-jdbc {:mvn/version "0.1.2-SNAPSHOT"}
+                               org.clojure/test.check      {:mvn/version "1.1.1"}}}
 
-                 :repl             {:extra-deps {cider/cider-nrepl           {:mvn/version "0.28.3"}
-                                                 nrepl/nrepl                 {:mvn/version "0.9.0"}
-                                                 org.clojure/tools.namespace {:mvn/version "1.2.0"}}
-                                    :main-opts  ["-m" "nrepl.cmdline" "--middleware" "[cider.nrepl/cider-middleware]"]}
+           :repl {:extra-deps {cider/cider-nrepl           {:mvn/version "0.28.3"}
+                               nrepl/nrepl                 {:mvn/version "0.9.0"}
+                               org.clojure/tools.namespace {:mvn/version "1.2.0"}}
+                  :main-opts ["-m" "nrepl.cmdline" "--middleware" "[cider.nrepl/cider-middleware]"]}
 
-                 :bench-dev        {:extra-paths ["benchmark/src" "benchmark/test"]
-                                    :extra-deps  {clj-http/clj-http     {:mvn/version "3.12.3"}
-                                                  org.clojure/tools.cli {:mvn/version "1.0.206"}}}
+           :bench-dev {:extra-paths ["benchmark/src" "benchmark/test"]
+                       :extra-deps {clj-http/clj-http     {:mvn/version "3.12.3"}
+                                    org.clojure/tools.cli {:mvn/version "1.0.206"}}}
 
-                 :benchmark        {:main-opts   ["-m" "benchmark.core"]
-                                    :extra-paths ["benchmark/src"]
-                                    :extra-deps  {clj-http/clj-http        {:mvn/version "3.12.3"}
-                                                  org.clojure/tools.cli    {:mvn/version "1.0.206"}
-                                                  incanter/incanter-core   {:mvn/version "1.9.3"}
-                                                  incanter/incanter-charts {:mvn/version "1.9.3"}}}
+           :benchmark {:main-opts ["-m" "benchmark.core"]
+                       :extra-paths ["benchmark/src"]
+                       :extra-deps {clj-http/clj-http     {:mvn/version "3.12.3"}
+                                    org.clojure/tools.cli {:mvn/version "1.0.206"}
+                                    incanter/incanter-core {:mvn/version "1.9.3"}
+                                    incanter/incanter-charts {:mvn/version "1.9.3"}}}
 
-                 :datomic          {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
+           :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
 
-                 :deploy           {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}
-                                    :main-opts  ["-m" "deps-deploy.deps-deploy" "deploy" "replikativ-datahike.jar"]}
+           :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}
+                    :main-opts ["-m" "deps-deploy.deps-deploy" "deploy" "replikativ-datahike.jar"]}
 
-                 :deps-consistency {:extra-paths ["tools"]
-                                    :extra-deps  {org.clojure/tools.cli {:mvn/version "1.0.206"}}
-                                    :main-opts   ["-m" "dependencies-consistency-check" "-a" "dev" "-a" "test"]}
+           :deps-consistency {:extra-paths ["tools"]
+                              :extra-deps {org.clojure/tools.cli {:mvn/version "1.0.206"}}
+                              :main-opts ["-m" "dependencies-consistency-check" "-a" "dev" "-a" "test"]}
 
-                 :install          {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}
-                                    :exec-fn    deps-deploy.deps-deploy/deploy
-                                    :exec-args  {:installer :local
-                                                 :artifact  "replikativ-datahike.jar"}}
+           :install {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}
+                     :exec-fn deps-deploy.deps-deploy/deploy
+                     :exec-args {:installer :local
+                                 :artifact "replikativ-datahike.jar"}}
 
-                 :format           {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
-                                    :main-opts  ["-m" "cljfmt.main" "check"]}
+           :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
+                    :main-opts ["-m" "cljfmt.main" "check"]}
 
-                 :ffix             {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
-                                    :main-opts  ["-m" "cljfmt.main" "fix"]}
+           :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
+                  :main-opts ["-m" "cljfmt.main" "fix"]}
 
-                 :build            {:deps       {io.github.clojure/tools.build {:git/tag "v0.8.1" :git/sha "7d40500"}
-                                                 slipset/deps-deploy           {:mvn/version "0.2.0"}
-                                                 borkdude/gh-release-artifact  {:git/url "https://github.com/borkdude/gh-release-artifact"
-                                                                                :sha     "a83ee8da47d56a80b6380cbb6b4b9274048067bd"}
-                                                 babashka/babashka.curl        {:mvn/version "0.1.2"}
-                                                 babashka/fs                   {:mvn/version "0.1.4"}
-                                                 cheshire/cheshire             {:mvn/version "5.10.2"}}
-                                    :ns-default build}}}
+           :build {:deps {io.github.clojure/tools.build {:git/tag "v0.8.1" :git/sha "7d40500"}
+                          slipset/deps-deploy {:mvn/version "0.2.0"}
+                          borkdude/gh-release-artifact {:git/url "https://github.com/borkdude/gh-release-artifact"
+                                                        :sha "a83ee8da47d56a80b6380cbb6b4b9274048067bd"}
+                          babashka/babashka.curl {:mvn/version "0.1.2"}
+                          babashka/fs {:mvn/version "0.1.4"}
+                          cheshire/cheshire {:mvn/version "5.10.2"}}
+                   :ns-default build}}}
