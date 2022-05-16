@@ -20,13 +20,16 @@
         {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx max-eid op-count hash meta]} db-after
         store (:store @connection)
         backend (di/konserve-backend (:index config) store)
-        eavt-flushed (di/-flush eavt backend)
-        aevt-flushed (di/-flush aevt backend)
-        avet-flushed (di/-flush avet backend)
+        ;; flush for in-memory backends would only make sense if multiple processes access the db
+        ;; TODO: update can also be skipped for external stores when single process writes unless memory should be freed up
+        ;;       -> add options to config
+        eavt-flushed (cond-> eavt (not= :mem (-> config :store :backend)) (di/-flush backend))
+        aevt-flushed (cond-> aevt (not= :mem (-> config :store :backend)) (di/-flush backend))
+        avet-flushed (cond-> avet (not= :mem (-> config :store :backend)) (di/-flush backend))
         keep-history? (:keep-history? config)
-        temporal-eavt-flushed (when keep-history? (di/-flush temporal-eavt backend))
-        temporal-aevt-flushed (when keep-history? (di/-flush temporal-aevt backend))
-        temporal-avet-flushed (when keep-history? (di/-flush temporal-avet backend))]
+        temporal-eavt-flushed (when keep-history? (cond-> temporal-eavt (not= :mem (-> config :store :backend)) (di/-flush backend)))
+        temporal-aevt-flushed (when keep-history? (cond-> temporal-aevt (not= :mem (-> config :store :backend)) (di/-flush backend)))
+        temporal-avet-flushed (when keep-history? (cond-> temporal-avet (not= :mem (-> config :store :backend)) (di/-flush backend)))]
     (<?? S (k/assoc-in store [:db]
                        (merge
                         {:schema schema

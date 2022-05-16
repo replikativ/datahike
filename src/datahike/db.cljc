@@ -2043,14 +2043,14 @@
                                 (let [v (if (ref? db a) (entid-strict db v) v)]
                                   (validate-val v entity db)
                                   [e a v]))
-                      datoms (vec (-search db pattern))]
+                      datoms (vec (-search db pattern))] ;; tovarisch
                   (recur (reduce transact-retract-datom report datoms) entities))
                 (recur report entities))
 
               (= op :db.fn/retractAttribute)
               (if-let [e (entid db e)]
                 (let [_ (validate-attr a entity db)
-                      datoms (vec (-search db [e a]))]
+                      datoms (vec (-search db [e a]))]  ;; tovarisch
                   (recur (reduce transact-retract-datom report datoms)
                          (concat (retract-components db datoms) entities)))
                 (recur report entities))

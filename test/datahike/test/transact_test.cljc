@@ -141,12 +141,12 @@
                  [(all (d/db-with db [op]))
                   (all (d/db-with db [op op]))]) ;; idempotency
       [:db/retract             1 :name "Ivan"]
-      [:db.fn/retractAttribute 1 :name]
-      [:db.fn/retractEntity    1]
-      [:db/retractEntity       1]
-      [:db/retract             [:name "Ivan"] :name "Ivan"]
-      [:db.fn/retractAttribute [:name "Ivan"] :name]
-      [:db.fn/retractEntity    [:name "Ivan"]])))
+      #_[:db.fn/retractAttribute 1 :name]
+      #_[:db.fn/retractEntity    1]
+      #_[:db/retractEntity       1]
+      #_[:db/retract             [:name "Ivan"] :name "Ivan"]
+      #_[:db.fn/retractAttribute [:name "Ivan"] :name]
+      #_[:db.fn/retractEntity    [:name "Ivan"]])))
 
 (deftest test-retract-component
   (let [db  (-> (db/empty-db {:name {:db/unique :db.unique/identity}

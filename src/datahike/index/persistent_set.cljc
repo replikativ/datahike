@@ -138,26 +138,42 @@
     pset)
   (-transient [pset]
     ;(transient pset)
-    pset)
+     pset
+    )
   (-persistent! [pset]
     ;(persistent! pset)
-    pset))
+    pset
+
+    ))
+
+(def c (atom 0))
 
 (defn get-loader [konserve-store]
   (proxy [Loader] []
     (load [address]
       (let [children-as-maps (async/<!! (k/get konserve-store address))] ;; TODO: use synchronous calls as soon as available
+        #_(println "load children: " )
+        #_(when (nil? (first children-as-maps))
+          (println "empty"))
+        ;(println "first" (first children-as-maps))
+        ;   (println "last" (last children-as-maps))
         (->> children-as-maps
-             (map (fn [m] (set/map->node this (update m :keys (fn [keys] (mapv #(when-let [datom-seq (seq %)]
-                                                                                  (dd/datom-from-reader datom-seq))
-                                                                               keys))))))
+             (map (fn [m] (set/map->node this m)
+                    #_(set/map->node this (update m :keys (fn [keys] (mapv #(when-let [datom-seq (seq %)]
+                                                                              (dd/datom-from-reader datom-seq))
+                                                                           keys))))))
              (into-array Leaf))))
     (store [children]
-      (let [children-as-maps (mapv (fn [node] (-> node
-                                                  set/-to-map
-                                                  (update :keys (fn [keys] (mapv (comp vec seq) keys)))))
-                                   children)
+      (println "s")
+      (let [children-as-maps (mapv set/-to-map children)
             address (uuid)]
+          #_(println "store children: " (swap! c inc))
+          #_(when (nil? (first children-as-maps))
+            (println "empty"))
+          #_(println "first" (first children-as-maps))
+          #_(println "last" (last children-as-maps))
+          ;    (clojure.pprint/pprint children-as-maps)
+        ; (println "at address: " address)
         (async/<!! (k/assoc konserve-store address children-as-maps))
         address))))
 
@@ -184,6 +200,7 @@
                                                      (read [_ reader _tag _component-count]
                                                        (let [{:keys [meta root count]} (.readObject reader)
                                                              loader (get-loader store)
+                                                             ;        _ (println "read index type" (:index-type meta))
                                                              cmp (index-type->cmp-quick (:index-type meta) false)]
                                                           ;; The following fields are reset as they cannot be accessed from outside:
                                                           ;; - 'edit' is set to false, i.e. the set is assumed to be persistent, not transient
