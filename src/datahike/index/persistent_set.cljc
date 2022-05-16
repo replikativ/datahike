@@ -262,3 +262,6 @@
 
 (defmethod di/konserve-backend :datahike.index/persistent-set [_index-name store]
   store)
+
+(defmethod di/default-index-config :datahike.index/persistent-set [_index-name]
+  {})

@@ -10,11 +10,16 @@
             [datahike.array :refer [compare-arrays]]
             [datahike.datom :as dd]
             [datahike.constants :refer [e0 tx0 emax txmax]]
+            [clojure.spec.alpha :as s]
             [hasch.core :as h]
             [datahike.index.interface :as di :refer [IIndex]])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [hitchhiker.tree DataNode IndexNode]
                    [datahike.datom Datom])))
+
+(def ^:const default-index-b-factor 17)
+(def ^:const default-index-data-node-size 300)
+(def ^:const default-index-log-size (- 300 17))
 
 (extend-protocol kc/IKeyCompare
   clojure.lang.PersistentVector
@@ -192,5 +197,15 @@
     (hk/add-hitchhiker-tree-handlers
      store))))
 
-(defmethod di/konserve-backend :datahike.index/hitchhiker-tree  [_index-name store]
+(defmethod di/konserve-backend :datahike.index/hitchhiker-tree [_index-name store]
   (hk/->KonserveBackend store))
+
+
+(s/def ::index-b-factor long)
+(s/def ::index-log-size long)
+(s/def ::index-data-node-size long)
+
+(defmethod di/default-index-config :datahike.index/hitchhiker-tree [_index-name]
+  {:index-b-factor       default-index-b-factor
+   :index-log-size       default-index-log-size
+   :index-data-node-size default-index-data-node-size})

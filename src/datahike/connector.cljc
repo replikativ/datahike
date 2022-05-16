@@ -121,7 +121,7 @@
           store-config (:store config)
           raw-store (ds/connect-store store-config)]
       (if (not (nil? raw-store))
-        (let [store (ds/add-cache-and-handlers raw-store (:index config))
+        (let [store (ds/add-cache-and-handlers raw-store config)
               stored-db (<?? S (k/get-in store [:db]))]
           (ds/release-store store-config store)
           (not (nil? stored-db)))
@@ -137,7 +137,7 @@
           _ (when-not raw-store
               (dt/raise "Backend does not exist." {:type :backend-does-not-exist
                                                    :config config}))
-          store (ds/add-cache-and-handlers raw-store (:index config))
+          store (ds/add-cache-and-handlers raw-store config)
           stored-db (<?? S (k/get-in store [:db]))
           _ (when-not stored-db
               (ds/release-store store-config store)
@@ -169,9 +169,9 @@
       conn))
 
   (-create-database [config & deprecated-config]
-    (let [{:keys [keep-history? initial-tx index] :as config} (dc/load-config config deprecated-config)
+    (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)
           store-config (:store config)
-          store (ds/add-cache-and-handlers (ds/empty-store store-config) index)
+          store (ds/add-cache-and-handlers (ds/empty-store store-config) config)
           stored-db (<?? S (k/get-in store [:db]))
           _ (when stored-db
               (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))

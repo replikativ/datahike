@@ -5,7 +5,8 @@
             [environ.core :refer [env]]
             [datahike.tools :as tools]
             [datahike.store :as ds]
-            [datahike.constants :as c])
+            [datahike.constants :as c]
+            [datahike.index :as di])
   (:import [java.net URI]))
 
 (def ^:dynamic default-index :datahike.index/persistent-set) ;; TODO: the same for keep-history?
@@ -20,9 +21,6 @@
 (s/def ::name string?)
 
 (s/def ::index-config map?)
-(s/def ::index-b-factor long)
-(s/def ::index-log-size long)
-(s/def ::index-data-node-size long)
 
 (s/def ::store map?)
 
@@ -59,9 +57,7 @@
                    :level {:path path}
                    :file {:path path}))
    :index index
-   :index-config {:index-b-factor       c/default-index-b-factor
-                  :index-log-size       c/default-index-log-size
-                  :index-data-node-size c/default-index-data-node-size}
+   :index-config (di/default-index-config index)
    :keep-history? temporal-index
    :attribute-refs? false
    :initial-tx initial-tx
@@ -105,9 +101,7 @@
    :attribute-refs? false
    :index default-index
    :cache-size 100000
-   :index-config {:index-b-factor       c/default-index-b-factor ;; TODO: move to index namespace
-                  :index-log-size       c/default-index-log-size
-                  :index-data-node-size c/default-index-data-node-size}})
+   :index-config (di/default-index-config default-index)})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -132,19 +126,18 @@
          store-config (ds/default-config (merge
                                           {:backend (keyword (:datahike-store-backend env :mem))}
                                           (:store config-as-arg)))
+         index (if (:datahike-index env)
+                 (keyword "datahike.index" (:datahike-index env))
+                 default-index)
          config {:store store-config
                  :initial-tx (:datahike-intial-tx env)
                  :keep-history? (bool-from-env :datahike-keep-history true)
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                 :index (if (:datahike-index env)
-                          (keyword "datahike.index" (:datahike-index env))
-                          default-index)
-                 :cache-size (:cache-size env 100000)
-                 :index-config {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor) ;; TODO: move to index namespace
-                                :index-log-size       (int-from-env :datahike-log-size c/default-index-log-size)
-                                :index-data-node-size (int-from-env :datahike-data-node-size c/default-index-data-node-size)}}
+                 :index index
+                 :cache-size (int-from-env :datahike-cache-size 100000)
+                 :index-config (map-from-env :datahike-hht-config (di/default-index-config index))}
          merged-config ((comp remove-nils tools/deep-merge) config config-as-arg)
          {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config
          config-spec (ds/config-spec store)]

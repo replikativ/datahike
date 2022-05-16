@@ -24,6 +24,7 @@
 (def init-index di/init-index)
 (def add-konserve-handlers di/add-konserve-handlers)
 (def konserve-backend di/konserve-backend)
+(def default-index-config di/default-index-config)
 
 ;; Other functions
 

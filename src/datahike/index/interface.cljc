@@ -32,3 +32,7 @@
 (defmulti konserve-backend
   "Returns a konserve store capable of handling the index. Used for flushing."
   (fn [index-name _store] index-name))
+
+(defmulti default-index-config
+   "Returns the default index configuration."
+          (fn [index-name] index-name) )
