@@ -5,12 +5,10 @@
             [environ.core :refer [env]]
             [datahike.tools :as tools]
             [datahike.store :as ds]
-            [datahike.constants :as c]
             [datahike.index :as di])
   (:import [java.net URI]))
 
-(def ^:dynamic default-index :datahike.index/persistent-set) ;; TODO: the same for keep-history?
-;(def ^:dynamic default-index :datahike.index/hitchhiker-tree) ;; TODO: the same for keep-history?
+(def ^:dynamic default-index :datahike.index/hitchhiker-tree) ;; TODO: the same for keep-history?
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
@@ -137,7 +135,9 @@
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
                  :index index
                  :cache-size (int-from-env :datahike-cache-size 100000)
-                 :index-config (map-from-env :datahike-hht-config (di/default-index-config index))}
+                 :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
+                                 index-config
+                                 (di/default-index-config index))}
          merged-config ((comp remove-nils tools/deep-merge) config config-as-arg)
          {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config
          config-spec (ds/config-spec store)]

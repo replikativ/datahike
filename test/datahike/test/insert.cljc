@@ -78,7 +78,7 @@
                                    :email "al@eco.com"}]})
       (is (= 2 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :email)))))))
 
-(deftest insert-history-mem-hht
+(deftest insert-history-mem
   (let [config {:store {:backend :mem :id "temp-hist"}
                 :schema-flexibility :write
                 :keep-history? true}]

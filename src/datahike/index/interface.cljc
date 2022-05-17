@@ -34,5 +34,5 @@
   (fn [index-name _store] index-name))
 
 (defmulti default-index-config
-   "Returns the default index configuration."
-          (fn [index-name] index-name) )
+  "Returns the default index configuration."
+  (fn [index-name] index-name))

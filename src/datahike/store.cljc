@@ -10,9 +10,9 @@
 
 (defn add-cache-and-handlers [raw-store {:keys [index store] :as _config}]
   (cond->> (kc/ensure-cache
-             raw-store
-             (atom (cache/lru-cache-factory {} :threshold 1000)))
-           (not= :mem (:backend store)) (di/add-konserve-handlers index)))
+            raw-store
+            (atom (cache/lru-cache-factory {} :threshold 1000)))
+    (not= :mem (:backend store)) (di/add-konserve-handlers index)))
 
 (defmulti empty-store
   "Creates an empty store"

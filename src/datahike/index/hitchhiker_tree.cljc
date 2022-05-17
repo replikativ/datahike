@@ -200,7 +200,6 @@
 (defmethod di/konserve-backend :datahike.index/hitchhiker-tree [_index-name store]
   (hk/->KonserveBackend store))
 
-
 (s/def ::index-b-factor long)
 (s/def ::index-log-size long)
 (s/def ::index-data-node-size long)
