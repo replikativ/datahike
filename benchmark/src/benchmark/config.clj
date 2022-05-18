@@ -1,41 +1,48 @@
 (ns benchmark.config)
 
-(def context-cell-order [:function :dh-config :db-datoms :tx-datoms :data-type :data-in-db?])
+(def comparison-context-cell-order [:fn :backend :index :schema :history :db-datoms :tx-datoms :data-type :data-in-db?])
 
 (def csv-cols
-  [{:title "Function"                  :path [:context :function]}
-   {:title "DB"                        :path [:context :dh-config :name]}
-   {:title "DB Datoms"                 :path [:context :db-datoms]}
-   {:title "DB Entities"               :path [:context :db-entities]}
-   {:title "TX Datoms"                 :path [:context :execution :tx-datoms]}
-   {:title "TX Entities"               :path [:context :execution :tx-entities]}
-   {:title "Data Type"                 :path [:context :execution :data-type]}
-   {:title "Queried Data in Database?" :path [:context :execution :data-in-db?]}
-   {:title "Mean Time"                 :path [:time :mean]}
-   {:title "Median Time"               :path [:time :median]}
-   {:title "Time Std"                  :path [:time :std]}
-   {:title "Time Count"                :path [:time :count]}
-   {:title "Tags"                      :path [:tag]}])
+  [{:name :fn           :title "Function"      :path [:context :function]}
+   {:name :index        :title "Index"         :path [:context :dh-config :index]}
+   {:name :backend      :title "Backend"       :path [:context :dh-config :backend]}
+   {:name :schema       :title "Schema"        :path [:context :dh-config :schema-flexibility]}
+   {:name :history      :title "History"       :path [:context :dh-config :keep-history?]}
+   {:name :db-datoms    :title "DB Datoms"     :path [:context :db-datoms]}
+   {:name :db-entities  :title "DB Entities"   :path [:context :db-entities]}
+   {:name :tx-datoms    :title "TX Datoms"     :path [:context :execution :tx-datoms]}
+   {:name :tx-entities  :title "TX Entities"   :path [:context :execution :tx-entities]}
+   {:name :data-type    :title "Data Type"     :path [:context :execution :data-type]}
+   {:name :data-in-db?  :title "Q Data in DB?" :path [:context :execution :data-in-db?]}
+   {:name :mean         :title "Mean Time"     :path [:time :mean]}
+   {:name :std          :title "Time Std"      :path [:time :std]}
+   {:name :median       :title "Median Time"   :path [:time :median]}
+   {:name :min          :title "Minimum Time"  :path [:time :min]}
+   {:name :max          :title "Maximum Time"  :path [:time :max]}
+   {:name :count        :title "Time Count"    :path [:time :count]}
+   {:name :tags         :title "Tags"          :path [:tag]}])
 
-(def db-configs-minus-history
-  [{:config-name "mem-set"
-    :config {:store {:backend :mem :id "performance-set"}
-             :schema-flexibility :write
-             :index :datahike.index/persistent-set}}
-   {:config-name "mem-hht"
-    :config {:store {:backend :mem :id "performance-hht"}
-             :schema-flexibility :write
-             :index :datahike.index/hitchhiker-tree}}
-   {:config-name "file"
-    :config {:store {:backend :file :path "/tmp/performance-hht"}
-             :schema-flexibility :write
-             :index :datahike.index/hitchhiker-tree}}])
-
-(def db-configs
-  (concat (map #(assoc-in % [:config :keep-history?] false) db-configs-minus-history)
-          (map (fn [cfg] (-> cfg
-                             (assoc-in [:config :keep-history?] true)
-                             (update :config-name #(str % "-with-history")))) db-configs-minus-history)))
+(def named-db-configs
+  {"mem-set" {:store {:backend :mem :id "performance-set"}
+              :index :datahike.index/persistent-set
+              :keep-history? false
+              :cache-size 0
+              :schema-flexibility :write}
+   "mem-hht" {:store {:backend :mem :id "performance-hht"}
+              :index :datahike.index/hitchhiker-tree
+              :keep-history? false
+              :cache-size 0
+              :schema-flexibility :write}
+   "file-set" {:store {:backend :file :path "/tmp/performance-set"}
+               :index :datahike.index/persistent-set
+               :keep-history? false
+               :cache-size 0
+               :schema-flexibility :write}
+   "file-hht" {:store {:backend :file :path "/tmp/performance-hht"}
+               :index :datahike.index/hitchhiker-tree
+               :keep-history? false
+               :cache-size 0
+               :schema-flexibility :write}})
 
 (def schema
   [{:db/ident       :s1

@@ -8,36 +8,56 @@
             [clojure.java.io :as io])
   (:import [java.awt Color]))
 
-(defn comparison-table [group filenames]
-  (let [grouped (group-by :context group)
-        unique-contexts (sort-by (apply juxt c/context-cell-order) (keys grouped))
-        unique-context-key-spaces (map (fn [k] (max (count (name k))
-                                                    (apply max (map #(count (str (get % k)))
-                                                                    unique-contexts))))
-                                       c/context-cell-order)
+(defn comparison-table [group filenames time-stats]
+  (let [col-mapping (zipmap (map :name c/csv-cols)
+                            c/csv-cols)
+        grouped (group-by :context group)
+        context-sort-fn (fn [context]
+                          (mapv #(get-in context (vec (rest (:path (% col-mapping))))) ;; rest since already in :context
+                                c/comparison-context-cell-order))
+        sorted-contexts (sort-by context-sort-fn (keys grouped))
+        unique-context-key-spaces (map (fn [k]
+                                         (let [{:keys [title path]} (k col-mapping)]
+                                           (->> sorted-contexts
+                                                (map (fn [context]
+                                                       (let [x (get-in context (vec (rest path)))]
+                                                         (count (str (if (keyword? x)
+                                                                       (name x)
+                                                                       x))))))
+                                                (cons (count title))
+                                                (apply max))))
+                                       c/comparison-context-cell-order)
         num-space 8
-        col-width (+ 6 (* 3 num-space))
-        titles (concat (map name c/context-cell-order) filenames)
+        col-width (+ (* 3 (- (count time-stats) 1))
+                     (* (count time-stats) num-space))
+        titles (concat (map #(get-in col-mapping [% :title])
+                            c/comparison-context-cell-order)
+                       filenames)
         title-spaces (concat unique-context-key-spaces (repeat (count filenames) col-width))
-        subtitles (concat (repeat (count c/context-cell-order) "")
-                          (apply concat (repeat (count filenames)
-                                                ["median" "mean" "std"])))
+        subtitles (concat (repeat (count c/comparison-context-cell-order) "")
+                          (apply concat (repeat (count filenames) time-stats)))
         subtitle-spaces (concat unique-context-key-spaces
-                                (repeat (* 3 (count filenames)) num-space))
+                                (repeat (* (count time-stats) (count filenames))
+                                        num-space))
         dbl-fmt (str "%" num-space ".2f")
         str-fmt (fn [cw] (str "%-" cw "s"))]
     (str "  | " (join " | " (map #(format (str-fmt %2) %1)    titles title-spaces))    " |\n"
          "  |-" (join "-+-" (map (fn [s] (apply str (repeat s "-"))) title-spaces))    "-|\n"
          "  | " (join " | " (map #(format (str-fmt %2) %1) subtitles subtitle-spaces)) " |\n"
          "  |-" (join "-+-" (map (fn [s] (apply str (repeat s "-"))) subtitle-spaces)) "-|\n"
-         (join "\n" (for [[context results] (sort-by #((apply juxt c/context-cell-order) (key %))
-                                                     grouped)]
+         (join "\n" (for [[context results] (sort-by #(context-sort-fn (key %)) grouped)]
                       (let [times (map (fn [filename] (->> results (filter #(= (:source %) filename)) first :time))
                                        filenames)
-                            context-cells (map #(format (str-fmt %2) (get context %1 ""))
-                                               c/context-cell-order unique-context-key-spaces)
+                            context-cells (map (fn [context-key col-width]
+                                                 (let [context-val (get-in context (vec (rest (:path (context-key col-mapping)))) "")]
+                                                   (format (str-fmt col-width)
+                                                           (if (keyword? context-val)
+                                                             (name context-val)
+                                                             context-val))))
+                                               c/comparison-context-cell-order
+                                               unique-context-key-spaces)
                             measurement-cells (map (fn [measurements] (join " | " (map (fn [stat] (format dbl-fmt (stat measurements)))
-                                                                                       [:median :mean :std])))
+                                                                                       time-stats)))
                                                    times)]
                         (str "  | " (join " | " (concat context-cells measurement-cells)) " |"))))
          "\n")))
@@ -47,26 +67,21 @@
   (when-not (.endsWith filename ".edn")
     (throw (Exception. (str "File " filename "has an unsupported file type. Supported are only edn files.")))))
 
-(defn report [benchmarks filenames]
-  (let [grouped-benchmarks (->> benchmarks
-                                (map #(assoc % :context
-                                             (merge (dissoc (:context %) :execution)
-                                                    {:dh-config (get-in % [:context :dh-config :name])}
-                                                    (get (:context %) :execution))))
-                                (group-by #(get-in % [:context :function])))
+(defn report [benchmarks filenames time-stats]
+  (let [grouped-benchmarks (group-by #(get-in % [:context :function]) benchmarks)
         output (str (when-let [conn-benchmarks (:connection grouped-benchmarks)]
                       (str "Connection Measurements (in s):\n"
-                           (comparison-table conn-benchmarks filenames)
+                           (comparison-table conn-benchmarks filenames time-stats)
                            "\n"))
                     (when-let [tx-benchmarks (:transaction grouped-benchmarks)]
                       (str "Transaction Measurements (in s):\n"
-                           (comparison-table tx-benchmarks filenames)
+                           (comparison-table tx-benchmarks filenames time-stats)
                            "\n"))
                     (when-let [query-benchmarks (->> (dissoc grouped-benchmarks :connection :transaction)
                                                      vals
                                                      (apply concat))]
                       (str "Query Measurements (in s):\n"
-                           (comparison-table query-benchmarks filenames))))]
+                           (comparison-table query-benchmarks filenames time-stats))))]
     (println output)))
 
 (defn create-plots [data] ;; 1 plot per function and context
@@ -75,12 +90,12 @@
         directory (str "plots-" tags)]
     
   (doall (for [function (distinct (map #(get-in % [:context :function]) data))
-               config (distinct (map #(get-in % [:context :dh-config :name]) data))
+               config (distinct (map #(get-in % [:context :dh-config]) data))
                execution-details (distinct (map #(get-in % [:context :execution]) data))]
            (let [_ (log/debug (str "Processing " function " " config " " execution-details))
                  {:keys [tx-entities data-type data-in-db?]} execution-details
                  filename (str (name function)
-                               "_config-" (name config)
+                               "_config-" config
                                (when tx-entities
                                 (str "_tx-ents-" tx-entities))
                                (when data-type
@@ -92,7 +107,7 @@
 
                  plot-data (->> data
                                 (filter #(and (= (get-in % [:context :function]) function)
-                                              (= (get-in % [:context :dh-config :name]) config)
+                                              (= (get-in % [:context :dh-config]) config)
                                               (= (get-in % [:context :execution]) execution-details)))
                                 (map #(assoc % :x (get-in % [:context :db-entities]))))]
               (when (seq plot-data)
@@ -129,7 +144,7 @@
                            :width 800
                            :height 600))))))))
 
-(defn compare-benchmarks [filenames plots?]
+(defn compare-benchmarks [filenames plots? time-stats]
   (run! check-file-format filenames)
 
   (let [benchmarks (->> filenames
@@ -139,4 +154,4 @@
                         (apply concat))]
     (if plots?
       (create-plots benchmarks)
-      (report benchmarks filenames))))
+      (report benchmarks filenames time-stats))))
