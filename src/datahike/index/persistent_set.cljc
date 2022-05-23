@@ -87,7 +87,7 @@
                               index-type))]
     (if (diu/equals-on-indices? datom old [0 1 2])
       set
-      (-> (set/conj set (dd/datom (.-e old) (.-a old) (.-v old) (.-tx old) false)
+      (-> (set/conj set (dd/datom (.-e old) (.-a old) (.-v old) (.-tx datom) false)
                     (index-type->cmp-quick index-type false))
           (set/conj datom (index-type->cmp-quick index-type))))
     (set/conj set datom (index-type->cmp-quick index-type))))
