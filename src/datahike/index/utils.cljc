@@ -11,7 +11,7 @@
                          (.-e datom)))
          tx (fn [datom] (when-not (or (and start? (= tx0 (.-tx datom)))
                                       (and (not start?) (= txmax (.-tx datom))))
-                          (dd/datom-tx datom)))
+                          (if incl-added? (dd/datom-tx datom) (.-tx datom))))
          datom-seq (cond-> (case index-type
                              :aevt (list (.-a datom) (e datom) (.-v datom) (tx datom))
                              :avet (list (.-a datom) (.-v datom) (e datom) (tx datom))
