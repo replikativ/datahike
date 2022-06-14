@@ -527,16 +527,16 @@
 
 (defn get-current-values [rschema datoms]
   (->> datoms
-       (filter datom-added)
        (group-by (fn [^Datom datom] [(.-e datom) (.-a datom)]))
        (mapcat
         (fn [[[_ a] entities]]
           (if (contains? (get-in rschema [:db.cardinality/many]) a)
-            entities
-            [(reduce (fn [^Datom datom-0 ^Datom datom-1]
-                       (if (> (datom-tx datom-0) (datom-tx datom-1))
-                         datom-0
-                         datom-1)) entities)])))))
+            (->> entities
+                 (group-by #(.v %))
+                 vals
+                 (map #(apply max-key datom-tx %)))
+            [(apply max-key datom-tx entities)])))
+       (filter datom-added)))
 
 (defn- date? [d]
   #?(:cljs (instance? js/Date d)

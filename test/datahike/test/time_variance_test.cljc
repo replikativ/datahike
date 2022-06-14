@@ -121,7 +121,16 @@
                as-of-str))
         (is (= "#datahike/DB {:max-tx 536870913 :max-eid 4}"
                origin-str))
-        (is (not= as-of-str origin-str))))))
+        (is (not= as-of-str origin-str))))
+    (testing "retraction"
+      (let [find-alices-age '[:find ?a :in $ ?n :where [?e :name ?n] [?e :age ?a]]]
+        (testing "before"
+          (is (= #{[25]}
+                 (d/q find-alices-age (d/as-of @conn tx-id) "Alice"))))
+        (d/transact conn [[:db/retractEntity [:name "Alice"]]])
+        (testing "after"
+          (is (= #{}
+                 (d/q find-alices-age (d/as-of @conn tx-id) "Alice"))))))))
 
 (deftest test-since-db
   (let [cfg (assoc-in cfg-template [:store :id] "test-since-db")
