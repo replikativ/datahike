@@ -1,5 +1,6 @@
 (ns ^:no-doc datahike.schema
-  (:require [clojure.spec.alpha :as s])
+  (:require [clojure.spec.alpha :as s]
+            [datahike.datom])
   (:import [datahike.datom Datom]))
 
 (s/def :db.type/id #(or (= (class %) java.lang.Long) string?))
