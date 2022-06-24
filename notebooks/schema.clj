@@ -1,4 +1,4 @@
-(ns examples.schema
+(ns datahike.notebooks.schema
   (:require [datahike.api :as d]))
 
 ;; The first example assumes you know your data model in advanve,
@@ -45,7 +45,8 @@
           :schema-flexibility :write})
 
 ;; cleanup previous database
-(d/delete-database cfg)
+(when (d/database-exists? cfg)
+  (d/delete-database cfg))
 
 ;; create the in-memory database
 (d/create-database cfg)
@@ -76,11 +77,9 @@
 
 ;; try to add something completely not defined in the schema
 (d/transact conn [{:something "different"}])
-;; => Exception shows missing schema definition
 
 ;; try to add wrong contributor values
 (d/transact conn [{:contributor/email :alice}])
-;; => Exception shows what value is expected
 
 ;; add another contributor by using a the alternative transaction schema that expects a hash map with tx-data attribute
 (d/transact conn {:tx-data [{:contributor/name "bob" :contributor/email "bob@ac.me"}]})
@@ -129,13 +128,16 @@
 
 ;; let's create another database that can hold any arbitrary data
 
-(def cfg {:store {:backend :mem
-                  :id "schemaless"}
-          :schema-flexibility :read})
+(def schemaless-cfg {:store {:backend :mem
+                             :id "schemaless"}
+                     :schema-flexibility :read})
 
-(d/create-database cfg)
+(when (d/database-exists? schemaless-cfg)
+  (d/delete-database schemaless-cfg))
 
-(def conn (d/connect cfg))
+(d/create-database schemaless-cfg)
+
+(def conn (d/connect schemaless-cfg))
 
 ;; now we can go wild and transact anything
 (d/transact conn [{:any "thing"}])

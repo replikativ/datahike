@@ -28,3 +28,4 @@ out/
 /.settings
 .classpath
 /.clj-kondo
+/.clerk
