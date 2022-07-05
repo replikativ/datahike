@@ -1533,6 +1533,7 @@
      (queue-tuple queue tuple idx db e v))
    queue
    tuples))
+
 (defn validate-datom-upsert [db ^Datom datom]
   (when (is-attr? db (.-a datom) :db/unique)
     (when-let [old (first (-datoms db :avet [(.-a datom) (.-v datom)]))]
@@ -1710,13 +1711,7 @@
      (transact-report report (datom (.-e d) (.-a d) (.-v d) txid false)))))
 
 (defn- transact-purge-datom [report ^Datom d]
-  (let [tx (current-tx report)]
-    (update-in report [:db-after] with-temporal-datom d)))
-
-#_(defn- transact-purge-datom [report ^Datom d]
-    (update-in report [:db-after] with-temporal-datom
-             ;d
-               (datom (.-e d) (.-a d) (.-v d) (datom-tx d) false)))
+  (update-in report [:db-after] with-temporal-datom d))
 
 (defn- retract-components [db datoms]
   (into #{} (comp
@@ -1823,13 +1818,67 @@
      []
      tx-meta)))
 
+(defn check-schema-update [db entity new-eid]
+  (when (ds/schema-entity? entity)
+    (when (and (contains? entity :db/ident)
+               (ds/is-system-keyword? (:db/ident entity)))
+      (raise "Using namespace 'db' for attribute identifiers is not allowed"
+             {:error :transact/schema :entity entity}))
+    (if-let [attr-name (get-in db [:schema new-eid])]
+      (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
+        (when-not (empty? invalid-updates)
+          (raise "Update not supported for these schema attributes"
+                 {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
+      (when (= :write (get-in db [:config :schema-flexibility]))
+        (when (or (:db/cardinality entity) (:db/valueType entity))
+          (when-not (ds/schema? entity)
+            (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                   {:error :transact/schema :entity entity})))))))
+
+(defn map->op-vec [db report entity initial-report initial-es]
+  (let [old-eid (:db/id entity)
+        {:keys [tempids]} report]
+    (cond
+      ;; :db/current-tx / "datomic.tx" => tx
+      (tx-id? old-eid)
+      (let [id (current-tx report)]
+        (vector (allocate-eid report old-eid id)
+                [(assoc entity :db/id id)]))
+
+      ;; lookup-ref => resolved | error
+      (sequential? old-eid)
+      (let [id (entid-strict db old-eid)]
+        (vector report
+                [(assoc entity :db/id id)]))
+
+      :else
+      (let [upserted-eid (upsert-eid db entity)]
+        (if (and (some? upserted-eid)
+                 (tempid? old-eid)
+                 (contains? tempids old-eid)                  ;; remove?
+                 (not= upserted-eid (get tempids old-eid)))
+          (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
+          (let [new-eid (cond
+                          (some? upserted-eid) upserted-eid
+                          (nil? old-eid) (next-eid db)
+                          (or (number? old-eid)
+                              (string? old-eid)) (if (tempid? old-eid)
+                                                   (or (get tempids old-eid)
+                                                       (next-eid db))
+                                                   old-eid)
+                          :else (raise "Expected number, string or lookup ref for :db/id, got " old-eid
+                                       {:error :entity-id/syntax, :entity entity}))
+                new-entity (assoc entity :db/id new-eid)]
+            (check-schema-update db entity new-eid)
+            (vector (allocate-eid report old-eid new-eid)
+                    (explode db new-entity))))))))
+
 (defn transact-tx-data [{:keys [db-before] :as initial-report} initial-es]
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
     (raise "Bad transaction data " initial-es ", expected sequential collection"
            {:error :transact/syntax, :tx-data initial-es}))
-  (let [{:keys [schema-flexibility]} (-config db-before)
-        has-tuples? (seq (-attrs-by (:db-after initial-report) :db.type/tuple))
+  (let [has-tuples? (seq (-attrs-by (:db-after initial-report) :db.type/tuple))
         initial-es' (if has-tuples?
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)
@@ -1860,80 +1909,8 @@
             (recur report entities))
 
           (map? entity)
-          (let [old-eid (:db/id entity)]
-            (cond+
-              ;; :db/current-tx / "datomic.tx" => tx
-             (tx-id? old-eid)
-             (let [id (current-tx report)]
-               (recur (allocate-eid report old-eid id)
-                      (cons (assoc entity :db/id id) entities)))
-
-             ;; lookup-ref => resolved | error
-             (sequential? old-eid)
-             (let [id (entid-strict db old-eid)]
-               (recur report
-                      (cons (assoc entity :db/id id) entities)))
-
-             ;; upserted => explode | error
-             :let [upserted-eid (upsert-eid db entity)]
-
-             (some? upserted-eid)
-             (if (and (tempid? old-eid)
-                      (contains? tempids old-eid)
-                      (not= upserted-eid (get tempids old-eid)))
-               (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
-               (do
-                 ;; schema update tx
-                 (when (ds/schema-entity? entity)
-                   (when (and (contains? entity :db/ident)
-                              (ds/is-system-keyword? (:db/ident entity)))
-                     (raise "Using namespace 'db' for attribute identifiers is not allowed"
-                            {:error :transact/schema :entity entity}))
-                   (if-let [attr-name (get-in db [:schema upserted-eid])]
-                     (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
-                       (when-not (empty? invalid-updates)
-                         (raise "Update not supported for these schema attributes"
-                                {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
-                     (when (= :write schema-flexibility)
-                       (when (or (:db/cardinality entity) (:db/valueType entity))
-                         (when-not (ds/schema? entity)
-                           (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                                  {:error :transact/schema :entity entity}))))))
-                 (recur (allocate-eid report old-eid upserted-eid)
-                        (concat (explode db (assoc entity :db/id upserted-eid)) entities))))
-
-             ;; resolved | allocated-tempid | tempid | nil => explode
-             (or (number? old-eid)
-                 (nil? old-eid)
-                 (string? old-eid))
-             (let [new-eid (cond
-                             (nil? old-eid) (next-eid db)
-                             (tempid? old-eid) (or (get tempids old-eid)
-                                                   (next-eid db))
-                             :else old-eid)
-                   new-entity (assoc entity :db/id new-eid)]
-               (when (ds/schema-entity? entity)
-                 (when (and (contains? entity :db/ident)
-                            (ds/is-system-keyword? (:db/ident entity)))
-                   (raise "Using namespace 'db' for attribute identifiers is not allowed"
-                          {:error :transact/schema :entity entity}))
-                 (if-let [attr-name (get-in db [:schema new-eid])]
-                   (when-let [invalid-updates (ds/find-invalid-schema-updates entity (get-in db [:schema attr-name]))]
-                     (when-not (empty? invalid-updates)
-                       (raise "Update not supported for these schema attributes"
-                              {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
-                   (when (= :write schema-flexibility)
-                     (when (or (:db/cardinality entity) (:db/valueType entity))
-                       (when-not (ds/schema? entity)
-                         (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                                {:error :transact/schema :entity entity}))))))
-               (recur (allocate-eid report old-eid new-eid)
-                      (concat (explode db new-entity) entities)))
-
-             ;; trash => error
-             :else
-             (raise "Expected number, string or lookup ref for :db/id, got " old-eid
-                    {:error :entity-id/syntax, :entity entity})))
+          (let [[new-report new-entities] (map->op-vec db report entity initial-report initial-es)]
+            (recur new-report (concat new-entities entities)))
 
           (sequential? entity)
           (let [[op e a v] entity]
