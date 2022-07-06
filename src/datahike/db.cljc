@@ -4,6 +4,7 @@
    [clojure.walk]
    [clojure.core.cache.wrapped :as cw]
    [clojure.data]
+   [clojure.string :as str]
    #?(:clj [clojure.pprint :as pp])
    [datahike.array :refer [a=]]
    [datahike.index :refer [-slice -seq -count -all -persistent! -transient] :as di]
@@ -1760,7 +1761,7 @@
        (conj coll pred)))
    #{} preds))
 
-(def builtin-fn?
+(def builtin-op?
   #{:db.fn/call
     :db.fn/cas
     :db/cas
@@ -1835,7 +1836,7 @@
             (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
                    {:error :transact/schema :entity entity})))))))
 
-(defn map->op-vec [db report entity initial-report initial-es]
+(defn entity-map->op-vec [db report entity]
   (let [old-eid (:db/id entity)
         {:keys [tempids]} report]
     (cond
@@ -1855,9 +1856,9 @@
       (let [upserted-eid (upsert-eid db entity)]
         (if (and (some? upserted-eid)
                  (tempid? old-eid)
-                 (contains? tempids old-eid)                  ;; remove?
+                 (contains? tempids old-eid)
                  (not= upserted-eid (get tempids old-eid)))
-          (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
+          [nil nil true old-eid upserted-eid]
           (let [new-eid (cond
                           (some? upserted-eid) upserted-eid
                           (nil? old-eid) (next-eid db)
@@ -1872,6 +1873,184 @@
             (check-schema-update db entity new-eid)
             (vector (allocate-eid report old-eid new-eid)
                     (explode db new-entity))))))))
+
+(defn compare-and-swap [db report op-vec]
+  (let [[_ e a ov nv] op-vec
+        e (entid-strict db e)
+        _ (validate-attr a op-vec db)
+        nv (if (ref? db a) (entid-strict db nv) nv)
+        datoms (-search db [e a])]
+    (if (nil? ov)
+      (if (empty? datoms)
+        [(transact-add report [:db/add e a nv]) []]
+        (raise ":db.fn/cas failed on datom [" e " " a " " (if (multival? db a) (map :v datoms) (:v (first datoms))) "], expected nil"
+               {:error :transact/cas, :old (if (multival? db a) datoms (first datoms)), :expected ov, :new nv}))
+      (let [ov (if (ref? db a) (entid-strict db ov) ov)]
+        (validate-val nv op-vec db)
+        (if (multival? db a)
+          (if (some (fn [^Datom d] (= (.-v d) ov)) datoms)
+            [(transact-add report [:db/add e a nv]) []]
+            (raise ":db.fn/cas failed on datom [" e " " a " " (map :v datoms) "], expected " ov
+                   {:error :transact/cas, :old datoms, :expected ov, :new nv}))
+          (let [v (:v (first datoms))]
+            (if (= v ov)
+              [(transact-add report [:db/add e a nv]) []]
+              (raise ":db.fn/cas failed on datom [" e " " a " " v "], expected " ov
+                     {:error :transact/cas, :old (first datoms), :expected ov, :new nv}))))))))
+
+(defn retract-entity [db report op-vec]
+  (let [[_ e] op-vec]
+    (if-let [e (entid db e)]
+      (let [e-datoms (vec (-search db [e]))
+            v-datoms (->> (-attrs-by db :db.type/ref)
+                          (map (partial -ident-for db))
+                          (mapcat (fn [a] (-search db [nil a e])))
+                          vec)]
+        [(reduce transact-retract-datom report (concat e-datoms v-datoms))
+         (retract-components db e-datoms)])
+      [report []])))
+
+(defn check-tuple [db op-vec]
+  (let [[_ _ a v] op-vec
+        attr-schema (-> db -schema a)]
+    (cond (:db/tupleType attr-schema)
+          (cond (> (count v) 8)
+                (raise "Cannot store more than 8 values for homogeneous tuple: " op-vec
+                       {:error :transact/syntax, :tx-data op-vec})
+
+                (not (apply = (map type v)))
+                (raise "Cannot store homogeneous tuple with values of different type: " op-vec
+                       {:error :transact/syntax, :tx-data op-vec})
+
+                (not (s/valid? (-> db -schema a :db/tupleType) (first v)))
+                (raise "Cannot store homogeneous tuple. Values are of wrong type: " op-vec
+                       {:error :transact/syntax, :tx-data op-vec}))
+          (:db/tupleTypes attr-schema)
+          (cond (not (= (count v) (count (:db/tupleTypes attr-schema))))
+                (raise (str "Cannot store heterogeneous tuple: expecting " (count (:db/tupleTypes attr-schema)) " values, got " (count v))
+                       {:error :transact/syntax, :tx-data op-vec})
+
+                (not (apply = (map s/valid? (:db/tupleTypes attr-schema) v)))
+                (raise (str "Cannot store heterogeneous tuple: there is a mismatch between values " v " and their types " (:db/tupleTypes attr-schema))
+                       {:error :transact/syntax, :tx-data op-vec}))
+          (and (:db/tupleAttrs attr-schema)
+               (not (::internal (meta op-vec))))
+          (raise "Can’t modify tuple attrs directly: " op-vec
+                 {:error :transact/syntax, :tx-data op-vec}))))
+
+(defn apply-db-op [db report op-vec]
+  (let [[op e a v] op-vec]
+    (case op
+
+      :db/add [(transact-add report op-vec) []]
+
+      :db/retract (if-some [e (entid db e)]
+                    (let [_ (validate-attr a op-vec db)
+                          pattern (if (nil? v)
+                                    [e a]
+                                    (let [v (if (ref? db a) (entid-strict db v) v)]
+                                      (validate-val v op-vec db)
+                                      [e a v]))
+                          datoms (vec (-search db pattern))]
+                      [(reduce transact-retract-datom report datoms) []])
+                    [report []])
+
+      :db.fn/retractAttribute (if-let [e (entid db e)]
+                                (let [_ (validate-attr a op-vec db)
+                                      datoms (vec (-search db [e a]))]
+                                  [(reduce transact-retract-datom report datoms)
+                                   (retract-components db datoms)])
+                                [report []])
+
+      :db.fn/retractEntity (retract-entity db report op-vec)
+      :db/retractEntity (retract-entity db report op-vec)
+
+      :db/purge (if (-keep-history? db)
+                  (let [history (HistoricalDB. db)]
+                    (if-some [e (entid history e)]
+                      (let [v (if (ref? history a) (entid-strict history v) v)
+                            old-datoms (-search history [e a v])]
+                        [(reduce transact-purge-datom report old-datoms) []])
+                      (raise "Can't find entity with ID " e " to be purged"
+                             {:error :transact/purge, :operation op, :tx-data op-vec})))
+                  (raise "Purge is only available in temporal databases."
+                         {:error :transact/purge :operation op :tx-data op-vec}))
+
+      :db.purge/attribute (if (-keep-history? db)
+                            (let [history (HistoricalDB. db)]
+                              (if-let [e (entid history e)]
+                                (let [datoms (vec (-search history [e a]))]
+                                  [(reduce transact-purge-datom report datoms)
+                                   (purge-components history datoms)])
+                                (raise "Can't find entity with ID " e " to be purged"
+                                       {:error :transact/purge, :operation op, :tx-data op-vec})))
+                            (raise "Purge attribute is only available in temporal databases."
+                                   {:error :transact/purge :operation op :tx-data op-vec}))
+
+      :db.purge/entity (if (-keep-history? db)
+                         (let [history (HistoricalDB. db)]
+                           (if-let [e (entid history e)]
+                             (let [e-datoms (vec (-search history [e]))
+                                   v-datoms (vec (mapcat (fn [a] (-search history [nil a e]))
+                                                         (-attrs-by history :db.type/ref)))]
+                               [(reduce transact-purge-datom report (concat e-datoms v-datoms))
+                                (purge-components history e-datoms)])
+                             (raise "Can't find entity with ID " e " to be purged"
+                                    {:error :transact/purge, :operation op, :tx-data op-vec})))
+                         (raise "Purge entity is only available in temporal databases."
+                                {:error :transact/purge :operation op :tx-data op-vec}))
+
+      :db.history.purge/before (if (-keep-history? db)
+                                 (let [history (HistoricalDB. db)
+                                       into-sorted-set #(apply sorted-set-by dd/cmp-datoms-eavt-quick %)
+                                       e-datoms (-> (clojure.set/difference
+                                                     (into-sorted-set (search-temporal-indices db nil))
+                                                     (into-sorted-set (search-current-indices db nil)))
+                                                    (filter-before e db)
+                                                    vec)]
+                                   [(reduce transact-purge-datom report e-datoms)
+                                    (purge-components history e-datoms)])
+                                 (raise "Purge entity is only available in temporal databases."
+                                        {:error :transact/purge :operation op :tx-data op-vec}))
+
+      :db.ensure/attrs (let [{:keys [tx-data]} report
+                             asserting-datoms (filter (fn [^Datom d] (= e (.-e d))) tx-data)
+                             asserting-attributes (map (fn [^Datom d] (.-a d)) asserting-datoms)
+                             diff (clojure.set/difference (set v) (set asserting-attributes))]
+                         (if (empty? diff)
+                           [report []]
+                           (raise "Entity " e " missing attributes " diff " of spec " a
+                                  {:error :transact/ensure :operation op :tx-data op-vec
+                                   :asserting-datoms asserting-datoms})))
+
+      :db.ensure/preds (let [{:keys [db-after]} report
+                             preds (assert-preds db-after op-vec)]
+                         (if-not (empty? preds)
+                           (raise "Entity " e " failed predicates " preds " of spec " a
+                                  {:error :transact/ensure :operation op :tx-data op-vec})
+                           [report []]))
+
+      :db.fn/cas (compare-and-swap db report op-vec)
+      :db/cas (compare-and-swap db report op-vec)
+
+      :db.fn/call (let [[_ f & args] op-vec]
+                    [report (apply f db args)])
+
+      (if (and (keyword? op)
+               (not (builtin-op? op)))
+        (if-some [ident (entid db op)]
+          (let [fun (-> (-search db [ident :db/fn]) first :v)
+                args (next op-vec)]
+            (if (fn? fun)
+              [report (apply fun db args)]
+              (raise "Entity " op " expected to have :db/fn attribute with fn? value"
+                     {:error :transact/syntax, :operation :db.fn/call, :tx-data op-vec})))
+          (raise "Can’t find entity for transaction fn " op
+                 {:error :transact/syntax, :operation :db.fn/call, :tx-data op-vec}))
+        (raise (str "Unknown operation at " op-vec ", expected " (str/join "," builtin-op?)
+                    " or an ident corresponding to an installed transaction function"
+                    " (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)")
+               {:error :transact/syntax, :operation op, :tx-data op-vec})))))
 
 (defn transact-tx-data [{:keys [db-before] :as initial-report} initial-es]
   (when-not (or (nil? initial-es)
@@ -1909,56 +2088,16 @@
             (recur report entities))
 
           (map? entity)
-          (let [[new-report new-entities] (map->op-vec db report entity initial-report initial-es)]
-            (recur new-report (concat new-entities entities)))
+          (let [[new-report new-entities retry? old-eid upserted-eid] (entity-map->op-vec db report entity)]
+            (if retry?
+              (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
+              (recur new-report (concat new-entities entities))))
 
           (sequential? entity)
           (let [[op e a v] entity]
+            (when (tuple? db a)
+              (check-tuple db entity))
             (cond
-              (= op :db.fn/call)
-              (let [[_ f & args] entity]
-                (recur report (concat (apply f db args) entities)))
-
-              (and (keyword? op)
-                   (not (builtin-fn? op)))
-              (if-some [ident (entid db op)]
-                (let [fun (-> (-search db [ident :db/fn]) first :v)
-                      args (next entity)]
-                  (if (fn? fun)
-                    (recur report (concat (apply fun db args) entities))
-                    (raise "Entity " op " expected to have :db/fn attribute with fn? value"
-                           {:error :transact/syntax, :operation :db.fn/call, :tx-data entity})))
-                (raise "Can’t find entity for transaction fn " op
-                       {:error :transact/syntax, :operation :db.fn/call, :tx-data entity}))
-
-              (and (tempid? e) (not= op :db/add))
-              (raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
-                     {:error :transact/syntax, :op entity})
-
-              (or (= op :db.fn/cas)
-                  (= op :db/cas))
-              (let [[_ e a ov nv] entity
-                    e (entid-strict db e)
-                    _ (validate-attr a entity db)
-                    nv (if (ref? db a) (entid-strict db nv) nv)
-                    datoms (-search db [e a])]
-                (if (nil? ov)
-                  (if (empty? datoms)
-                    (recur (transact-add report [:db/add e a nv]) entities)
-                    (raise ":db.fn/cas failed on datom [" e " " a " " (if (multival? db a) (map :v datoms) (:v (first datoms))) "], expected nil"
-                           {:error :transact/cas, :old (if (multival? db a) datoms (first datoms)), :expected ov, :new nv}))
-                  (let [ov (if (ref? db a) (entid-strict db ov) ov)
-                        _ (validate-val nv entity db)]
-                    (if (multival? db a)
-                      (if (some (fn [^Datom d] (= (.-v d) ov)) datoms)
-                        (recur (transact-add report [:db/add e a nv]) entities)
-                        (raise ":db.fn/cas failed on datom [" e " " a " " (map :v datoms) "], expected " ov
-                               {:error :transact/cas, :old datoms, :expected ov, :new nv}))
-                      (let [v (:v (first datoms))]
-                        (if (= v ov)
-                          (recur (transact-add report [:db/add e a nv]) entities)
-                          (raise ":db.fn/cas failed on datom [" e " " a " " v "], expected " ov
-                                 {:error :transact/cas, :old (first datoms), :expected ov, :new nv})))))))
 
               (tx-id? e)
               (recur (allocate-eid report e (current-tx report)) (cons [op (current-tx report) a v] entities))
@@ -1967,160 +2106,25 @@
               (recur (allocate-eid report v (current-tx report)) (cons [op e a (current-tx report)] entities))
 
               (tempid? e)
-              (let [upserted-eid (when (is-attr? db a :db.unique/identity)
-                                   (:e (first (-datoms db :avet [a v]))))
-                    allocated-eid (get tempids e)]
-                (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
-                  (retry-with-tempid initial-report report initial-es e upserted-eid)
-                  (let [eid (or upserted-eid allocated-eid (next-eid db))]
-                    (recur (allocate-eid report e eid) (cons [op eid a v] entities)))))
+              (if (not= op :db/add)
+                (raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
+                       {:error :transact/syntax, :op entity})
+                (let [upserted-eid (when (is-attr? db a :db.unique/identity)
+                                     (:e (first (-datoms db :avet [a v]))))
+                      allocated-eid (get tempids e)]
+                  (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
+                    (retry-with-tempid initial-report report initial-es e upserted-eid)
+                    (let [eid (or upserted-eid allocated-eid (next-eid db))]
+                      (recur (allocate-eid report e eid) (cons [op eid a v] entities))))))
 
               (and (ref? db a) (tempid? v))
               (if-let [vid (get tempids v)]
                 (recur report (cons [op e a vid] entities))
                 (recur (allocate-eid report v (next-eid db)) es))
 
-              (and (homogeneous-tuple-attr? db a)
-                   (> (count v) 8))
-              (raise "Cannot store more than 8 values for homogeneous tuple: " entity
-                     {:error :transact/syntax, :tx-data entity})
-
-              (and (homogeneous-tuple-attr? db a)
-                   (not (apply = (map type v))))
-              (raise "Cannot store homogeneous tuple with values of different type: " entity
-                     {:error :transact/syntax, :tx-data entity})
-
-              (and (homogeneous-tuple-attr? db a)
-                   (not (s/valid? (-> db -schema a :db/tupleType) (first v))))
-              (raise "Cannot store homogeneous tuple. Values are of wrong type: " entity
-                     {:error :transact/syntax, :tx-data entity})
-
-              (and (heterogeneous-tuple-attr? db a)
-                   (not (= (count v) (count (-> db -schema a :db/tupleTypes)))))
-              (raise (str "Cannot store heterogeneous tuple: expecting " (count (-> db -schema a :db/tupleTypes)) " values, got " (count v))
-                     {:error :transact/syntax, :tx-data entity})
-
-              (and (heterogeneous-tuple-attr? db a)
-                   (not (apply = (map s/valid? (-> db -schema a :db/tupleTypes) v))))
-              (raise (str "Cannot store heterogeneous tuple: there is a mismatch between values " v " and their types " (-> db -schema a :db/tupleTypes))
-                     {:error :transact/syntax, :tx-data entity})
-
-              (and (not (::internal (meta entity)))
-                   (composite-tuple-attr? db a))
-              (raise "Can’t modify tuple attrs directly: " entity
-                     {:error :transact/syntax, :tx-data entity})
-
-              (= op :db/add)
-              (recur (transact-add report entity) entities)
-
-              (= op :db/retract)
-              (if-some [e (entid db e)]
-                (let [_ (validate-attr a entity db)
-                      pattern (if (nil? v)
-                                [e a]
-                                (let [v (if (ref? db a) (entid-strict db v) v)]
-                                  (validate-val v entity db)
-                                  [e a v]))
-                      datoms (vec (-search db pattern))]
-                  (recur (reduce transact-retract-datom report datoms) entities))
-                (recur report entities))
-
-              (= op :db.fn/retractAttribute)
-              (if-let [e (entid db e)]
-                (let [_ (validate-attr a entity db)
-                      datoms (vec (-search db [e a]))]
-                  (recur (reduce transact-retract-datom report datoms)
-                         (concat (retract-components db datoms) entities)))
-                (recur report entities))
-
-              (or (= op :db.fn/retractEntity)
-                  (= op :db/retractEntity))
-              (if-let [e (entid db e)]
-                (let [e-datoms (vec (-search db [e]))
-                      v-datoms (->> (map (partial -ident-for db)
-                                         (-attrs-by db :db.type/ref))
-                                    (mapcat (fn [a] (-search db [nil a e])))
-                                    vec)
-                      retracted-comps (retract-components db e-datoms)]
-                  (recur (reduce transact-retract-datom report (concat e-datoms v-datoms))
-                         (concat retracted-comps entities)))
-                (recur report entities))
-
-              (= op :db/purge)
-              (if (-keep-history? db)
-                (let [history (HistoricalDB. db)]
-                  (if-some [e (entid history e)]
-                    (let [v (if (ref? history a) (entid-strict history v) v)
-                          old-datoms (-search history [e a v])]
-                      (recur (reduce transact-purge-datom report old-datoms) entities))
-                    (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
-                (raise "Purge is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
-
-              (= op :db.purge/attribute)
-              (if (-keep-history? db)
-                (let [history (HistoricalDB. db)]
-                  (if-let [e (entid history e)]
-                    (let [datoms (vec (-search history [e a]))]
-                      (recur (reduce transact-purge-datom report datoms)
-                             (concat (purge-components history datoms) entities)))
-                    (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
-                (raise "Purge attribute is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
-
-              (= op :db.purge/entity)
-              (if (-keep-history? db)
-                (let [history (HistoricalDB. db)]
-                  (if-let [e (entid history e)]
-                    (let [e-datoms (vec (-search history [e]))
-                          v-datoms (vec (mapcat (fn [a] (-search history [nil a e]))
-                                                (-attrs-by history :db.type/ref)))
-                          retracted-comps (purge-components history e-datoms)]
-
-                      (recur (reduce transact-purge-datom report (concat e-datoms v-datoms))
-                             (concat retracted-comps entities)))
-                    (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
-                (raise "Purge entity is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
-
-              (= op :db.history.purge/before)
-              (if (-keep-history? db)
-                (let [history (HistoricalDB. db)
-                      into-sorted-set #(apply sorted-set-by dd/cmp-datoms-eavt-quick %)
-                      e-datoms (-> (clojure.set/difference
-                                    (into-sorted-set (search-temporal-indices db nil))
-                                    (into-sorted-set (search-current-indices db nil)))
-                                   (filter-before e db)
-                                   vec)
-                      retracted-comps (purge-components history e-datoms)]
-                  (recur (reduce transact-purge-datom report e-datoms)
-                         (concat retracted-comps entities)))
-                (raise "Purge entity is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
-
-              ;; assert required attributes
-              (= op :db.ensure/attrs)
-              (let [{:keys [tx-data]} report
-                    asserting-datoms (filter (fn [^Datom d] (= e (.-e d))) tx-data)
-                    asserting-attributes (map (fn [^Datom d] (.-a d)) asserting-datoms)
-                    diff (clojure.set/difference (set v) (set asserting-attributes))]
-                (if (empty? diff)
-                  (recur report entities)
-                  (raise "Entity " e " missing attributes " diff " of spec " a
-                         {:error :transact/ensure
-                          :operation op
-                          :tx-data entity
-                          :asserting-datoms asserting-datoms})))
-
-              ;; assert entity predicates
-              (= op :db.ensure/preds)
-              (let [{:keys [db-after]} report
-                    preds (assert-preds db-after entity)]
-                (if-not (empty? preds)
-                  (raise "Entity " e " failed predicates " preds " of spec " a
-                         {:error :transact/ensure
-                          :operation op
-                          :tx-data entity})
-                  (recur report entities)))
-
               :else
-              (raise "Unknown operation at " entity ", expected :db/add, :db/retract, :db.fn/call, :db.fn/retractAttribute, :db.fn/retractEntity or an ident corresponding to an installed transaction function (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)" {:error :transact/syntax, :operation op, :tx-data entity})))
+              (let [[new-report new-entities] (apply-db-op db report entity)]
+                (recur new-report (concat new-entities entities)))))
 
           (datom? entity)
           (let [[e a v tx added] entity]
@@ -2145,7 +2149,8 @@
           a (if (:attribute-refs? config)
               (-ref-for db a-ident)
               (if (number? a)
-                (raise "Configuration mismatch: import data with attribute references can not be imported into a database with no attribute references." {:error :import/mismatch :data entity})
+                (raise "Configuration mismatch: import data with attribute references can not be imported into a database with no attribute references."
+                       {:error :import/mismatch :data entity})
                 a-ident))
           max-eid (next-eid db)
           max-tid (inc (get-in report [:db-after :max-tx]))]
