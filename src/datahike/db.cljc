@@ -317,7 +317,7 @@
   (-ident-for [db a-ref] (dbi/-ident-for origin-db a-ref))
 
   dbi/IHistory
-  (-time-point [db] (.-time-point db))   ;; TODO: check if error
+  (-time-point [db] nil)
   (-origin [db] origin-db)
 
   dbi/ISearch
