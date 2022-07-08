@@ -20,19 +20,19 @@
                            {:db/id 3
                             :name  "Nikolai"
                             :aka   ["II"]
-                            :password "<UNKWOWN>"}]))
+                            :password "<UNKNOWN>"}]))
         remove-pass (fn [_ datom] (not= :password (:a datom)))
         remove-ivan (fn [_ datom] (not= 2 (:e datom)))
         long-akas   (fn [udb datom] (or (not= :aka (:a datom))
                                         ;; has just 1 aka
                                         (<= (count (:aka (d/entity udb (:e datom)))) 1)
-                                        ;; or aka longer that 4 chars
+                                        ;; or aka longer than 4 chars
                                         (>= (count (:v datom)) 4)))]
 
     (are [_db _res] (= (d/q '[:find ?v :where [_ :password ?v]] _db) _res)
-      db                        #{["<SECRET>"] ["<PROTECTED>"] ["<UNKWOWN>"]}
+      db                        #{["<SECRET>"] ["<PROTECTED>"] ["<UNKNOWN>"]}
       (d/filter db remove-pass) #{}
-      (d/filter db remove-ivan) #{["<SECRET>"] ["<UNKWOWN>"]}
+      (d/filter db remove-ivan) #{["<SECRET>"] ["<UNKNOWN>"]}
       (-> db (d/filter remove-ivan) (d/filter remove-pass)) #{})
 
     (are [_db _res] (= (d/q '[:find ?v :where [_ :aka ?v]] _db) _res)
@@ -51,7 +51,7 @@
 
     (testing "Index access"
       (is (= (map :v (d/datoms db :aevt :password))
-             ["<SECRET>" "<PROTECTED>" "<UNKWOWN>"]))
+             ["<SECRET>" "<PROTECTED>" "<UNKNOWN>"]))
       (is (= (map :v (d/datoms (d/filter db remove-pass) :aevt :password))
              [])))
 

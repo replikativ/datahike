@@ -4,26 +4,28 @@
    [clojure.set :as set]
    [clojure.string :as str]
    [clojure.walk :as walk]
-   [datahike.db :as db]
-   [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
-   [me.tonsky.persistent-sorted-set.arrays :as da]
-   [datahike.lru]
+   [datahike.db.interface :as dbi]
+   [datahike.db.utils :as dbu]
    [datahike.impl.entity :as de]
-   #?@(:cljs [datalog.parser.type :refer [BindColl BindIgnore BindScalar BindTuple Constant
-                                          FindColl FindRel FindScalar FindTuple PlainSymbol
-                                          RulesVar SrcVar Variable]])
+   [datahike.lru]
+   [datahike.pull-api :as dpa]
+   [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
+   [datalog.parser :refer [parse]]
    [datalog.parser.impl :as dpi]
    [datalog.parser.impl.proto :as dpip]
-   [datahike.pull-api :as dpa]
-   [datalog.parser :refer [parse]]
-   [datalog.parser.pull :as dpp])
-  #?(:clj (:import [clojure.lang Reflector]
-                   [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple
-                    Constant FindColl FindRel FindScalar FindTuple PlainSymbol Pull
-                    RulesVar SrcVar Variable]
+   [datalog.parser.pull :as dpp]
+   [me.tonsky.persistent-sorted-set.arrays :as da])
+  (:refer-clojure :exclude [seqable?])
+  #?(:cljs [datalog.parser.type :refer [Aggregate BindColl BindIgnore BindScalar BindTuple Constant
+                                        FindColl FindRel FindScalar FindTuple PlainSymbol Pull
+                                        RulesVar SrcVar Variable]])
+  #?(:clj (:import [clojure.lang Reflector Seqable]
+                   [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
+                                        FindColl FindRel FindScalar FindTuple PlainSymbol Pull
+                                        RulesVar SrcVar Variable]
                    [datahike.datom Datom]
                    [java.lang.reflect Method]
-                   [java.util Date])))
+                   [java.util Date Map])))
 
 ;; ----------------------------------------------------------------------------
 
@@ -31,7 +33,7 @@
 
 (declare -collect -resolve-clause resolve-clause direct-getter-fn q)
 
-(defmulti q (fn [query & args] (type query)))
+(defmulti q (fn [query & _args] (type query)))
 
 ;; Records
 
@@ -45,6 +47,19 @@
 (defrecord Relation [attrs tuples])
 
 ;; Utilities
+
+(defn #?@(:clj [^Boolean seqable?]
+          :cljs [^boolean seqable?])
+  [x]
+  (and (not (string? x))
+       #?(:cljs (or (cljs.core/seqable? x)
+                    (da/array? x))
+          :clj (or (seq? x)
+                   (instance? Seqable x)
+                   (nil? x)
+                   (instance? Iterable x)
+                   (da/array? x)
+                   (instance? Map x)))))
 
 (defn single [coll]
   (assert (nil? (next coll)) "Expected single element")
@@ -166,8 +181,8 @@
 ;; built-ins
 
 (defn- translate-for [db a]
-  (if (and (-> db db/-config :attribute-refs?) (keyword? a))
-    (db/-ref-for db a)
+  (if (and (-> db dbi/-config :attribute-refs?) (keyword? a))
+    (dbi/-ref-for db a)
     a))
 
 (defn- -differ? [& xs]
@@ -178,7 +193,7 @@
   [db e a else-val]
   (when (nil? else-val)
     (raise "get-else: nil default value is not supported" {:error :query/where}))
-  (if-some [datom (first (db/-search db [e (translate-for db a)]))]
+  (if-some [datom (first (dbi/-search db [e (translate-for db a)]))]
     (:v datom)
     else-val))
 
@@ -186,10 +201,10 @@
   [db e & as]
   (reduce
    (fn [_ a]
-     (when-some [datom (first (db/-search db [e (translate-for db a)]))]
+     (when-some [datom (first (dbi/-search db [e (translate-for db a)]))]
        (let [a-ident (if (keyword? (:a datom))
                        (:a datom)
-                       (.-ident-for db (:a datom)))]
+                       (dbi/-ident-for db (:a datom)))]
          (reduced [a-ident (:v datom)]))))
    nil
    as))
@@ -199,11 +214,11 @@
   (nil? (get (de/entity db e) a)))
 
 (defn- and-fn [& args]
-  (reduce (fn [a b]
+  (reduce (fn [_a b]
             (if b b (reduced b))) true args))
 
 (defn- or-fn [& args]
-  (reduce (fn [a b]
+  (reduce (fn [_a b]
             (if b (reduced b) b)) nil args))
 
 (defprotocol CollectionOrder
@@ -391,7 +406,7 @@
   BindColl
   (in->rel [binding coll]
     (cond
-      (not (db/seqable? coll))
+      (not (seqable? coll))
       (raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
              {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (empty? coll)
@@ -404,7 +419,7 @@
   BindTuple
   (in->rel [binding coll]
     (cond
-      (not (db/seqable? coll))
+      (not (seqable? coll))
       (raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
              {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (< (count coll) (count (:bindings binding)))
@@ -447,8 +462,8 @@
         (let [eid (#?(:cljs da/aget :clj get) tuple idx)]
           (cond
             (number? eid) eid                               ;; quick path to avoid fn call
-            (sequential? eid) (db/entid *implicit-source* eid)
-            (da/array? eid) (db/entid *implicit-source* eid)
+            (sequential? eid) (dbu/entid *implicit-source* eid)
+            (da/array? eid) (dbu/entid *implicit-source* eid)
             :else eid)))
       (fn [tuple]
         (#?(:cljs da/aget :clj get) tuple idx)))))
@@ -535,13 +550,13 @@
         attr->idx (var-mapping orig-pattern (range))
         search-pattern (mapv #(if (symbol? %) nil %) pattern)
         datoms  (if (first search-pattern)
-                  (if-let [eid (db/entid db (first search-pattern))]
-                    (db/-search db (assoc search-pattern 0 eid))
+                  (if-let [eid (dbu/entid db (first search-pattern))]
+                    (dbi/-search db (assoc search-pattern 0 eid))
                     [])
-                  (db/-search db search-pattern))
+                  (dbi/-search db search-pattern))
         idx->const (reduce-kv (fn [m k v]
                                 (if-let [c (k (:consts context))]
-                                  (if (= c (get (first datoms) v)) ;; All datoms have same format and same value at position v
+                                  (if (= c (get (first datoms) v)) ;; All datoms have the same format and the same value at position v
                                     m                              ;; -> avoid unnecessary translations
                                     (assoc m v c))
                                   m))
@@ -578,7 +593,7 @@
 
 (defn lookup-pattern [context source pattern orig-pattern]
   (cond
-    (db/db? source)
+    (dbu/db? source)
     (lookup-pattern-db context source pattern orig-pattern)
     :else
     (lookup-pattern-coll source pattern orig-pattern)))
@@ -712,7 +727,7 @@
                   (prod-rel (assoc production :tuples []) (empty-rel binding)))
         idx->const (reduce-kv (fn [m k v]
                                 (if-let [c (k (:consts context))]
-                                  (assoc m v c)     ;; different value at v for each tupple
+                                  (assoc m v c)     ;; different value at v for each tuple
                                   m))
                               {}
                               (:attrs new-rel))]
@@ -737,7 +752,14 @@
 
 (def rule-seqid (atom 0))
 
-(defn expand-rule [clause context used-args]
+#?(:clj
+   (defmacro some-of
+     ([] nil)
+     ([x] x)
+     ([x & more]
+      `(let [x# ~x] (if (nil? x#) (some-of ~@more) x#)))))
+
+(defn expand-rule [clause context _used-args]
   (let [[rule & call-args] clause
         seqid (swap! rule-seqid inc)
         branches (get (:rules context) rule)
@@ -752,7 +774,7 @@
                  replacements (zipmap rule-args call-args-new)]]
        (walk/postwalk
         #(if (free-var? %)
-           (db/some-of
+           (some-of
             (replacements %)
             (symbol (str (name %) "__auto__" seqid)))
            %)
@@ -845,20 +867,20 @@
 (defn resolve-pattern-lookup-refs
   "Translate pattern entries before using pattern for database search"
   [source pattern]
-  (if (db/db? source)
+  (if (dbu/db? source)
     (let [[e a v tx added] pattern]
       (->
        [(if (or (lookup-ref? e) (attr? e))
-          (db/entid-strict source e)
+          (dbu/entid-strict source e)
           e)
-        (if (and (:attribute-refs? (db/-config source)) (keyword? a))
-          (db/-ref-for source a)
+        (if (and (:attribute-refs? (dbi/-config source)) (keyword? a))
+          (dbi/-ref-for source a)
           a)
-        (if (and v (attr? a) (db/ref? source a) (or (lookup-ref? v) (attr? v)))
-          (db/entid-strict source v)
+        (if (and v (attr? a) (dbu/ref? source a) (or (lookup-ref? v) (attr? v)))
+          (dbu/entid-strict source v)
           v)
         (if (lookup-ref? tx)
-          (db/entid-strict source tx)
+          (dbu/entid-strict source tx)
           tx)
         added]
        (subvec 0 (count pattern))))
@@ -872,7 +894,7 @@
       (and
        (free-var? v)
        (not (free-var? a))
-       (db/ref? source a)) (conj v))))
+       (dbu/ref? source a)) (conj v))))
 
 (defn limit-rel [rel vars]
   (when-some [attrs' (not-empty (select-keys (:attrs rel) vars))]
@@ -969,7 +991,7 @@
                         (replace (:consts context))
                         (resolve-pattern-lookup-refs source))
            relation (lookup-pattern context source pattern clause)]
-       (binding [*lookup-attrs* (if (satisfies? db/IDB source)
+       (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
                                   (dynamic-lookup-attrs source pattern)
                                   *lookup-attrs*)]
          (update context :rels collapse-rels relation))))))

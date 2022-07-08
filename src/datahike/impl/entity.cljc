@@ -1,7 +1,9 @@
 (ns ^:no-doc datahike.impl.entity
   (:refer-clojure :exclude [keys get])
-  (:require [#?(:cljs cljs.core :clj clojure.core) :as c]
-            [datahike.db :as db])
+  (:require [#?(:cljs cljs.core :clj clojure.core)]
+            [datahike.db :as db]
+            [datahike.db.interface :as dbi]
+            [datahike.db.utils :as dbu])
   (:import [datahike.java IEntity]))
 
 (declare entity ->Entity equiv-entity lookup-entity touch)
@@ -10,28 +12,28 @@
   (when (or (number? eid)
             (sequential? eid)
             (keyword? eid))
-    (db/entid db eid)))
+    (dbu/entid db eid)))
 
 (defn entity [db eid]
-  {:pre [(db/db? db)]}
+  {:pre [(dbu/db? db)]}
   (when-let [e (entid db eid)]
     (->Entity db e (volatile! false) (volatile! {}))))
 
 (defn- entity-attr [db a-ident datoms]
-  (if (db/multival? db a-ident)
-    (if (db/ref? db a-ident)
+  (if (dbu/multival? db a-ident)
+    (if (dbu/ref? db a-ident)
       (reduce #(conj %1 (entity db (:v %2))) #{} datoms)
       (reduce #(conj %1 (:v %2)) #{} datoms))
-    (if (db/ref? db a-ident)
+    (if (dbu/ref? db a-ident)
       (entity db (:v (first datoms)))
       (:v (first datoms)))))
 
 (defn- -lookup-backwards
   "Translate reverse attribute recording to database and find datoms"
   [db eid a-ident not-found]
-  (let [a-db (if (:attribute-refs? (db/-config db)) (db/-ref-for db a-ident) a-ident)]
-    (if-let [datoms (not-empty (db/-search db [nil a-db eid]))]
-      (if (db/component? db a-ident)
+  (let [a-db (if (:attribute-refs? (dbi/-config db)) (dbi/-ref-for db a-ident) a-ident)]
+    (if-let [datoms (not-empty (dbi/-search db [nil a-db eid]))]
+      (if (dbu/component? db a-ident)
         (entity db (:e (first datoms)))
         (reduce #(conj %1 (entity db (:e %2))) #{} datoms))
       not-found)))
@@ -68,11 +70,11 @@
        (get [this a-ident]
             (if (= a-ident ":db/id")
               eid
-              (if (db/reverse-ref? a-ident)
-                (-> (-lookup-backwards db eid (db/reverse-ref a-ident) nil)
+              (if (dbu/reverse-ref? a-ident)
+                (-> (-lookup-backwards db eid (dbu/reverse-ref a-ident) nil)
                     multival->js)
                 (cond-> (lookup-entity this a-ident)
-                  (db/multival? db a-ident) multival->js))))
+                  (dbu/multival? db a-ident) multival->js))))
        (forEach [this f]
                 (doseq [[a v] (js-seq this)]
                   (f v a this)))
@@ -165,16 +167,16 @@
   ([^Entity this a-ident not-found]
    (if (= a-ident :db/id)
      (.-eid this)
-     (if (db/reverse-ref? a-ident)
-       (-lookup-backwards (.-db this) (.-eid this) (db/reverse-ref a-ident) not-found)
+     (if (dbu/reverse-ref? a-ident)
+       (-lookup-backwards (.-db this) (.-eid this) (dbu/reverse-ref a-ident) not-found)
        (if-some [v (@(.-cache this) a-ident)]
          v
          (if @(.-touched this)
            not-found
-           (if-let [a-db (if (:attribute-refs? (db/-config (.-db this)))
-                           (db/-ref-for (.-db this) a-ident)
+           (if-let [a-db (if (:attribute-refs? (dbi/-config (.-db this)))
+                           (dbi/-ref-for (.-db this) a-ident)
                            a-ident)]
-             (if-some [datoms (not-empty (db/-search (.-db this) [(.-eid this) a-db]))]
+             (if-some [datoms (not-empty (dbi/-search (.-db this) [(.-eid this) a-db]))]
                (let [value (entity-attr (.-db this) a-ident datoms)]
                  (vreset! (.-cache this) (assoc @(.-cache this) a-ident value))
                  value)
@@ -184,8 +186,8 @@
 (defn touch-components [db a->v]
   (reduce-kv (fn [acc a-ident v]
                (assoc acc a-ident
-                      (if (db/component? db a-ident)
-                        (if (db/multival? db a-ident)
+                      (if (dbu/component? db a-ident)
+                        (if (dbu/multival? db a-ident)
                           (set (map touch v))
                           (touch v))
                         v)))
@@ -194,8 +196,8 @@
 (defn- datoms->cache [db datoms]
   (reduce (fn [acc partition]
             (let [a-db (:a (first partition))
-                  a-ident (if (:attribute-refs? (db/-config db))
-                            (db/-ident-for db a-db)
+                  a-ident (if (:attribute-refs? (dbi/-config db))
+                            (dbi/-ident-for db a-db)
                             a-db)]
               (assoc acc a-ident (entity-attr db a-ident partition))))
           {} (partition-by :a datoms)))
@@ -203,7 +205,7 @@
 (defn touch [^Entity e]
   {:pre [(entity? e)]}
   (when-not @(.-touched e)
-    (when-let [datoms (not-empty (db/-search (.-db e) [(.-eid e)]))]
+    (when-let [datoms (not-empty (dbi/-search (.-db e) [(.-eid e)]))]
       (vreset! (.-cache e) (->> datoms
                                 (datoms->cache (.-db e))
                                 (touch-components (.-db e))))

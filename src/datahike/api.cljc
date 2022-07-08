@@ -5,7 +5,10 @@
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
             [datahike.schema :as ds]
-            [datahike.db :as db #?@(:cljs [:refer [CurrentDB]])]
+            [datahike.db :as db #?@(:cljs [:refer [HistoricalDB AsOfDB SinceDB FilteredDB]])]
+            [datahike.db.interface :as dbi]
+            [datahike.db.transaction :as dbt]
+            [datahike.db.utils :as dbu]
             [datahike.impl.entity :as de])
   #?(:clj
      (:import [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
@@ -383,23 +386,23 @@
                           - `:eavt` and `:aevt` contain all datoms.
                           - `:avet` only contains datoms for references, `:db/unique` and `:db/index` attributes."}
   (fn
-    ([db arg-map]
+    ([_db arg-map]
      (type arg-map))
-    ([db index & components]
+    ([_db index & _components]
      (type index))))
 
 (defmethod datoms clojure.lang.PersistentArrayMap
   [db {:keys [index components]}]
-  {:pre [(db/db? db)]}
-  (db/-datoms db index components))
+  {:pre [(dbu/db? db)]}
+  (dbi/-datoms db index components))
 
 (defmethod datoms clojure.lang.Keyword
   [db index & components]
-  {:pre [(db/db? db)
+  {:pre [(dbu/db? db)
          (keyword? index)]}
   (if (nil? components)
-    (db/-datoms db index [])
-    (db/-datoms db index components)))
+    (dbi/-datoms db index [])
+    (dbi/-datoms db index components)))
 
 (defmulti seek-datoms {:arglists '([db arg-map] [db index & components])
                        :doc "Similar to [[datoms]], but will return datoms starting from specified components and including rest of the database until the end of the index.
@@ -434,23 +437,23 @@
                                                    :components [2 :likes \"fish\"]}) ; => (#datahike/Datom [2 :likes \"pie\"]
                                                                                      ;     #datahike/Datom [2 :likes \"pizza\"])"}
   (fn
-    ([db arg-map]
+    ([_db arg-map]
      (type arg-map))
-    ([db index & components]
+    ([_db index & _components]
      (type index))))
 
 (defmethod seek-datoms clojure.lang.PersistentArrayMap
   [db {:keys [index components]}]
-  {:pre [(db/db? db)]}
-  (db/-seek-datoms db index components))
+  {:pre [(dbu/db? db)]}
+  (dbi/-seek-datoms db index components))
 
 (defmethod seek-datoms clojure.lang.Keyword
   [db index & components]
-  {:pre [(db/db? db)
+  {:pre [(dbu/db? db)
          (keyword? index)]}
   (if (nil? components)
-    (db/-seek-datoms db index [])
-    (db/-seek-datoms db index components)))
+    (dbi/-seek-datoms db index [])
+    (dbi/-seek-datoms db index components)))
 
 (def ^:private last-tempid (atom -1000000))
 
@@ -507,7 +510,7 @@
                   - Entities retain reference to the whole database.
                   - You can’t change database through entities, only read.
                   - Creating an entity by id is very cheap, almost no-op (attributes are looked up on demand).
-                  - Comparing entities just compares their ids. Be careful when comparing entities taken from differenct dbs or from different versions of the same db.
+                  - Comparing entities just compares their ids. Be careful when comparing entities taken from different dbs or from different versions of the same db.
                   - Accessed entity attributes are cached on entity itself (except backward references).
                   - When printing, only cached attributes (the ones you have accessed before) are printed. See [[touch]]."}
   entity de/entity)
@@ -565,10 +568,10 @@
            tx-meta (if (:tx-meta arg-map) (:tx-meta arg-map) nil)]
        (with db tx-data tx-meta)))
     ([db tx-data tx-meta]
-     {:pre [(db/db? db)]}
+     {:pre [(dbu/db? db)]}
      (if (is-filtered db)
        (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
-       (db/transact-tx-data (db/map->TxReport
+       (dbt/transact-tx-data (db/map->TxReport
                              {:db-before db
                               :db-after  db
                               :tx-data   []
@@ -579,7 +582,7 @@
        :doc "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."}
   db-with
   (fn [db tx-data]
-    {:pre [(db/db? db)]}
+    {:pre [(dbu/db? db)]}
     (:db-after (with db tx-data))))
 
 (defn db
@@ -626,9 +629,9 @@
   since
   (fn [db time-point]
     {:pre [(or (int? time-point) (date? time-point))]}
-    (if (db/-temporal-index? db)
+    (if (dbi/-temporal-index? db)
       (SinceDB. db time-point)
-      (throw (ex-info "since is only allowed on temporal indexed databases." {:config (db/-config db)})))))
+      (throw (ex-info "since is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
 
 (def ^{:arglists '([db time-point])
        :doc "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long).
@@ -657,9 +660,9 @@
   as-of
   (fn [db time-point]
     {:pre [(or (int? time-point) (date? time-point))]}
-    (if (db/-temporal-index? db)
+    (if (dbi/-temporal-index? db)
       (AsOfDB. db time-point)
-      (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (db/-config db)})))))
+      (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
 
 (def ^{:arglists '([db])
        :doc "Returns the full historical state of the database you may interact with.
@@ -688,9 +691,9 @@
                        :args [(history @conn)]}) ; => #{[\"Alice\" 25] [\"Bob\" 30]}"}
   history
   (fn [db]
-    (if (db/-temporal-index? db)
+    (if (dbi/-temporal-index? db)
       (HistoricalDB. db)
-      (throw (ex-info "history is only allowed on temporal indexed databases." {:config (db/-config db)})))))
+      (throw (ex-info "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
 
 (def ^{:arglists '([db arg-map])
        :doc "Returns part of `:avet` index between `[_ attr start]` and `[_ attr end]` in AVET sort order.
@@ -741,8 +744,8 @@
                  (->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))"}
   index-range
   (fn [db {:keys [attrid start end]}]
-    {:pre [(db/db? db)]}
-    (db/-index-range db attrid start end)))
+    {:pre [(dbu/db? db)]}
+    (dbi/-index-range db attrid start end)))
 
 (def ^{:arglists '([conn callback] [conn key callback])
        :doc "Listen for changes on the given connection. Whenever a transaction is applied to the database via
@@ -763,7 +766,7 @@
         :doc "Returns current schema definition."}
   schema
   [db]
-  {:pre [(db/db? db)]}
+  {:pre [(dbu/db? db)]}
   (reduce-kv
    (fn [m k v]
      (cond
@@ -774,13 +777,13 @@
        (number? k) (update m v #(merge % {:db/id k}))
        :else m))
    {}
-   (db/-schema db)))
+   (dbi/-schema db)))
 
 (defn ^{:arglists '([db])
         :doc "Returns current reverse schema definition."}
   reverse-schema
   [db]
-  {:pre [(db/db? db)]}
+  {:pre [(dbu/db? db)]}
   (reduce-kv
    (fn [m k v]
      (let [attrs (->> v
@@ -792,4 +795,4 @@
          m
          (assoc m k attrs))))
    {}
-   (db/-rschema db)))
+   (dbi/-rschema db)))
