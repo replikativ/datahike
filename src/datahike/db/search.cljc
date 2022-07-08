@@ -1,14 +1,14 @@
 (ns datahike.db.search
   (:require
-    [clojure.core.cache.wrapped :as cw]
-    [datahike.array :refer [a=]]
-    [datahike.constants :refer [e0 tx0 emax txmax]]
-    [datahike.datom :refer [datom datom-tx datom-added]]
-    [datahike.db.utils :as dbu]
-    [datahike.index :as di]
-    [datahike.lru :refer [lru-datom-cache-factory]]
-    [datahike.tools :refer [case-tree raise]]
-    [environ.core :refer [env]])
+   [clojure.core.cache.wrapped :as cw]
+   [datahike.array :refer [a=]]
+   [datahike.constants :refer [e0 tx0 emax txmax]]
+   [datahike.datom :refer [datom datom-tx datom-added]]
+   [datahike.db.utils :as dbu]
+   [datahike.index :as di]
+   [datahike.lru :refer [lru-datom-cache-factory]]
+   [datahike.tools :refer [case-tree raise]]
+   [environ.core :refer [env]])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]
                             [datahike.tools :refer [case-tree raise]]))
   #?(:clj (:import [datahike.datom Datom])))
@@ -122,8 +122,8 @@
 
 (defn temporal-search [db pattern]
   (dbu/distinct-datoms db
-                   (search-current-indices db pattern)
-                   (search-temporal-indices db pattern)))
+                       (search-current-indices db pattern)
+                       (search-temporal-indices db pattern)))
 
 (defn temporal-seek-datoms [db index-type cs]
   (let [index (get db index-type)
@@ -131,8 +131,8 @@
         from (dbu/components->pattern db index-type cs e0 tx0)
         to (datom emax nil nil txmax)]
     (dbu/distinct-datoms db
-                     (di/-slice index from to index-type)
-                     (di/-slice temporal-index from to index-type))))
+                         (di/-slice index from to index-type)
+                         (di/-slice temporal-index from to index-type))))
 
 (defn temporal-rseek-datoms [db index-type cs]
   (let [index (get db index-type)
@@ -140,11 +140,11 @@
         from (dbu/components->pattern db index-type cs e0 tx0)
         to (datom emax nil nil txmax)]
     (concat
-      (-> (dbu/distinct-datoms db
-                           (di/-slice index from to index-type)
-                           (di/-slice temporal-index from to index-type))
-          vec
-          rseq))))
+     (-> (dbu/distinct-datoms db
+                              (di/-slice index from to index-type)
+                              (di/-slice temporal-index from to index-type))
+         vec
+         rseq))))
 
 (defn temporal-index-range [db current-db attr start end]
   (when-not (dbu/indexing? db attr)
@@ -153,5 +153,5 @@
   (let [from (dbu/resolve-datom current-db nil attr start nil e0 tx0)
         to (dbu/resolve-datom current-db nil attr end nil emax txmax)]
     (dbu/distinct-datoms db
-                     (di/-slice (:avet db) from to :avet)
-                     (di/-slice (:temporal-avet db) from to :avet))))
+                         (di/-slice (:avet db) from to :avet)
+                         (di/-slice (:temporal-avet db) from to :avet))))

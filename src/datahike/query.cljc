@@ -21,8 +21,8 @@
                                         RulesVar SrcVar Variable]])
   #?(:clj (:import [clojure.lang Reflector Seqable]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
-                                        FindColl FindRel FindScalar FindTuple PlainSymbol Pull
-                                        RulesVar SrcVar Variable]
+                    FindColl FindRel FindScalar FindTuple PlainSymbol Pull
+                    RulesVar SrcVar Variable]
                    [datahike.datom Datom]
                    [java.lang.reflect Method]
                    [java.util Date Map])))

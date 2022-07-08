@@ -1,13 +1,13 @@
 (ns datahike.db.utils
   (:require
-    [clojure.data]
-    [clojure.walk]
-    [datahike.constants :refer [e0 tx0 emax txmax]]
-    [datahike.datom :refer [datom datom-tx]]
-    [datahike.db.interface :as dbi]
-    [datahike.index :as di]
-    [datahike.schema :as ds]
-    [datahike.tools :refer [raise]])
+   [clojure.data]
+   [clojure.walk]
+   [datahike.constants :refer [e0 tx0 emax txmax]]
+   [datahike.datom :refer [datom datom-tx]]
+   [datahike.db.interface :as dbi]
+   [datahike.index :as di]
+   [datahike.schema :as ds]
+   [datahike.tools :refer [raise]])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]
                             [datahike.tools :refer [raise]]))
   #?(:clj (:import [datahike.datom Datom])))
@@ -163,12 +163,12 @@
   (let [{a-ident :ident a-db :ref} (attr-info db a)]
     (when a-ident (validate-attr-ident a-ident (list 'resolve-datom 'db e a v t) db))
     (datom
-      (or (entid-some db e) default-e)                       ;; e
-      a-db                                                   ;; a
-      (if (and (some? v) (ref? db a-ident))                  ;; v
-        (entid-strict db v)
-        v)
-      (or (entid-some db t) default-tx))))                   ;; t
+     (or (entid-some db e) default-e)                       ;; e
+     a-db                                                   ;; a
+     (if (and (some? v) (ref? db a-ident))                  ;; v
+       (entid-strict db v)
+       v)
+     (or (entid-some db t) default-tx))))                   ;; t
 
 (defn components->pattern [db index [c0 c1 c2 c3] default-e default-tx]
   (case index
@@ -199,12 +199,12 @@
                     :db/txInstant)]
     (into #{}
           (comp
-            (map datom-tx)
-            (distinct)
-            (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
-            (keep (fn [^Datom d]
-                    (when (and (= txInstant (.-a d)) (pred d))
-                      (.-e d)))))
+           (map datom-tx)
+           (distinct)
+           (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
+           (keep (fn [^Datom d]
+                   (when (and (= txInstant (.-a d)) (pred d))
+                     (.-e d)))))
           datoms)))
 
 (defn validate-attr [attr at db]
@@ -238,14 +238,14 @@
   "Same as reduce, but `f` takes [acc el idx]"
   [f init xs]
   (first
-    (reduce
-      (fn [[acc idx] x]
-        (let [res (f acc x idx)]
-          (if (reduced? res)
-            (reduced [res idx])
-            [res (inc idx)])))
-      [init 0]
-      xs)))
+   (reduce
+    (fn [[acc idx] x]
+      (let [res (f acc x idx)]
+        (if (reduced? res)
+          (reduced [res idx])
+          [res (inc idx)])))
+    [init 0]
+    xs)))
 
 (defn- attrTuples
   "For each attribute involved in a composite tuple, returns a map made of the tuple attribute it is involved in, plus its position in the tuple.
@@ -254,26 +254,26 @@
         ... }"
   [schema rschema]
   (reduce
-    (fn [m tuple-attr]
-      (reduce-indexed
-        (fn [m attr idx]
-          (update m attr assoc tuple-attr idx))
-        m
-        (-> schema tuple-attr :db/tupleAttrs)))
-    {}
-    (:db.type/tuple rschema)))
+   (fn [m tuple-attr]
+     (reduce-indexed
+      (fn [m attr idx]
+        (update m attr assoc tuple-attr idx))
+      m
+      (-> schema tuple-attr :db/tupleAttrs)))
+   {}
+   (:db.type/tuple rschema)))
 
 (defn rschema [schema]
   (let [rschema (reduce-kv
-                  (fn [m attr keys->values]
-                    (if (keyword? keys->values)
-                      m
-                      (reduce-kv
-                        (fn [m key value]
-                          (reduce
-                            (fn [m prop]
-                              (assoc m prop (conj (get m prop #{}) attr)))
-                            m (attr->properties key value)))
-                        (update m :db/ident (fn [coll] (if coll (conj coll attr) #{attr}))) keys->values)))
-                  {} schema)]
+                 (fn [m attr keys->values]
+                   (if (keyword? keys->values)
+                     m
+                     (reduce-kv
+                      (fn [m key value]
+                        (reduce
+                         (fn [m prop]
+                           (assoc m prop (conj (get m prop #{}) attr)))
+                         m (attr->properties key value)))
+                      (update m :db/ident (fn [coll] (if coll (conj coll attr) #{attr}))) keys->values)))
+                 {} schema)]
     (assoc rschema :db/attrTuples (attrTuples schema rschema))))

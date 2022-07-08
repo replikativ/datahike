@@ -572,11 +572,11 @@
      (if (is-filtered db)
        (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
        (dbt/transact-tx-data (db/map->TxReport
-                             {:db-before db
-                              :db-after  db
-                              :tx-data   []
-                              :tempids   {}
-                              :tx-meta   tx-meta}) tx-data)))))
+                              {:db-before db
+                               :db-after  db
+                               :tx-data   []
+                               :tempids   {}
+                               :tx-meta   tx-meta}) tx-data)))))
 
 (def ^{:arglists '([db tx-data])
        :doc "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."}

@@ -1,17 +1,17 @@
 (ns datahike.db.transaction
   (:require
-    [clojure.spec.alpha :as s]
-    [clojure.string :as str]
-    [datahike.index :as di]
-    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-    #?(:cljs [datahike.db :refer [HistoricalDB]])
-    [datahike.db.interface :as dbi]
-    [datahike.db.search :as dbs]
-    [datahike.db.utils :as dbu]
-    [datahike.constants :refer [tx0]]
-    [datahike.tools :refer [get-time raise]]
-    [datahike.schema :as ds]
-    [me.tonsky.persistent-sorted-set.arrays :as arrays])
+   [clojure.spec.alpha :as s]
+   [clojure.string :as str]
+   [datahike.index :as di]
+   [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
+   #?(:cljs [datahike.db :refer [HistoricalDB]])
+   [datahike.db.interface :as dbi]
+   [datahike.db.search :as dbs]
+   [datahike.db.utils :as dbu]
+   [datahike.constants :refer [tx0]]
+   [datahike.tools :refer [get-time raise]]
+   [datahike.schema :as ds]
+   [me.tonsky.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]
                             [datahike.tools :refer [raise]]))
   #?(:clj (:import [java.util Date]
@@ -67,21 +67,21 @@
 
 (defn advance-max-eid [db eid]
   (cond-> db
-          (and (> eid (:max-eid db))
-               (< eid tx0))                                 ;; do not trigger advance if transaction id was referenced
-          (assoc :max-eid eid)))
+    (and (> eid (:max-eid db))
+         (< eid tx0))                                 ;; do not trigger advance if transaction id was referenced
+    (assoc :max-eid eid)))
 
 (defn- allocate-eid
   ([report eid]
    (update-in report [:db-after] advance-max-eid eid))
   ([report e eid]
    (cond-> report
-           (tx-id? e)
-           (assoc-in [:tempids e] eid)
-           (tempid? e)
-           (assoc-in [:tempids e] eid)
-           true
-           (update-in [:db-after] advance-max-eid eid))))
+     (tx-id? e)
+     (assoc-in [:tempids e] eid)
+     (tempid? e)
+     (assoc-in [:tempids e] eid)
+     true
+     (update-in [:db-after] advance-max-eid eid))))
 
 (defn update-schema [db ^Datom datom]
   (let [schema (dbi/-schema db)
@@ -162,30 +162,30 @@
         op-count (:op-count db)]
     (if (datom-added datom)
       (cond-> db
-              true (update-in [:eavt] #(di/-insert % datom :eavt op-count))
-              true (update-in [:aevt] #(di/-insert % datom :aevt op-count))
-              indexing? (update-in [:avet] #(di/-insert % datom :avet op-count))
-              true (advance-max-eid (.-e datom))
-              true (update :hash + (hash datom))
-              schema? (-> (update-schema datom)
-                          update-rschema)
-              true (update :op-count inc))
+        true (update-in [:eavt] #(di/-insert % datom :eavt op-count))
+        true (update-in [:aevt] #(di/-insert % datom :aevt op-count))
+        indexing? (update-in [:avet] #(di/-insert % datom :avet op-count))
+        true (advance-max-eid (.-e datom))
+        true (update :hash + (hash datom))
+        schema? (-> (update-schema datom)
+                    update-rschema)
+        true (update :op-count inc))
 
       (if-some [removing ^Datom (first (dbi/-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (cond-> db
-                true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
-                true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
-                indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
-                true (update :hash - (hash removing))
-                schema? (-> (remove-schema datom) update-rschema)
-                keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
-                keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % datom :eavt (inc op-count)))
-                keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % removing :aevt op-count))
-                keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % datom :aevt (inc op-count)))
-                keep-history? (update :hash + (hash datom))
-                (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % removing :avet op-count))
-                (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % datom :avet (inc op-count)))
-                true (update :op-count + (if (or keep-history? indexing?) 2 1)))
+          true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
+          true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
+          indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
+          true (update :hash - (hash removing))
+          schema? (-> (remove-schema datom) update-rschema)
+          keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
+          keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % datom :eavt (inc op-count)))
+          keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % removing :aevt op-count))
+          keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % datom :aevt (inc op-count)))
+          keep-history? (update :hash + (hash datom))
+          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % removing :avet op-count))
+          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % datom :avet (inc op-count)))
+          true (update :op-count + (if (or keep-history? indexing?) 2 1)))
         db))))
 
 (defn- with-temporal-datom [db ^Datom datom]
@@ -198,15 +198,15 @@
         history? (not (nil? history-datom))
         op-count (:op-count db)]
     (cond-> db
-            current? (update-in [:eavt] #(di/-remove % current-datom :eavt op-count))
-            current? (update-in [:aevt] #(di/-remove % current-datom :aevt op-count))
-            (and current? indexing?) (update-in [:avet] #(di/-remove % current-datom :avet op-count))
-            current? (update :hash - (hash current-datom))
-            (and current? schema?) (-> (remove-schema datom) update-rschema)
-            history? (update-in [:temporal-eavt] #(di/-remove % history-datom :eavt op-count))
-            history? (update-in [:temporal-aevt] #(di/-remove % history-datom :aevt op-count))
-            (and history? indexing?) (update-in [:temporal-avet] #(di/-remove % history-datom :avet op-count))
-            (or current? history?) (update :op-count inc))))
+      current? (update-in [:eavt] #(di/-remove % current-datom :eavt op-count))
+      current? (update-in [:aevt] #(di/-remove % current-datom :aevt op-count))
+      (and current? indexing?) (update-in [:avet] #(di/-remove % current-datom :avet op-count))
+      current? (update :hash - (hash current-datom))
+      (and current? schema?) (-> (remove-schema datom) update-rschema)
+      history? (update-in [:temporal-eavt] #(di/-remove % history-datom :eavt op-count))
+      history? (update-in [:temporal-aevt] #(di/-remove % history-datom :aevt op-count))
+      (and history? indexing?) (update-in [:temporal-avet] #(di/-remove % history-datom :avet op-count))
+      (or current? history?) (update :op-count inc))))
 
 (defn- queue-tuple [queue tuple idx db e v]
   (let [tuple-value  (or (get queue tuple)
@@ -220,10 +220,10 @@
    returns {:a+b+c [a nil nil], :a+d [a, nil]}"
   [queue tuples db e v]
   (reduce-kv
-    (fn [queue tuple idx]
-      (queue-tuple queue tuple idx db e v))
-    queue
-    tuples))
+   (fn [queue tuple idx]
+     (queue-tuple queue tuple idx db e v))
+   queue
+   tuples))
 
 (defn validate-datom-upsert [db ^Datom datom]
   (when (dbu/is-attr? db (.-a datom) :db/unique)
@@ -244,24 +244,24 @@
         op-count      (:op-count db)]
     (cond-> db
             ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
-            schema? (try
-                      (-> db (remove-schema datom) update-rschema)
-                      (catch clojure.lang.ExceptionInfo _e
-                        db))
+      schema? (try
+                (-> db (remove-schema datom) update-rschema)
+                (catch clojure.lang.ExceptionInfo _e
+                  db))
 
-            keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt op-count))
-            true          (update-in [:eavt] #(di/-upsert % datom :eavt op-count))
+      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt op-count))
+      true          (update-in [:eavt] #(di/-upsert % datom :eavt op-count))
 
-            keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt op-count))
-            true          (update-in [:aevt] #(di/-upsert % datom :aevt op-count))
+      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt op-count))
+      true          (update-in [:aevt] #(di/-upsert % datom :aevt op-count))
 
-            (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count))
-            indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count))
+      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count))
+      indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count))
 
-            true    (update :op-count inc)
-            true    (advance-max-eid (.-e datom))
-            true    (update :hash + (hash datom))
-            schema? (-> (update-schema datom) update-rschema))))
+      true    (update :op-count inc)
+      true    (advance-max-eid (.-e datom))
+      true    (update :hash + (hash datom))
+      schema? (-> (update-schema datom) update-rschema))))
 
 (defn- transact-report
   ([report datom] (transact-report report datom false))
@@ -298,29 +298,29 @@
 (defn- upsert-eid [db entity]
   (when-let [unique-idents (not-empty (dbi/-attrs-by db :db.unique/identity))]
     (->>
-      (reduce-kv
-        (fn [acc a-ident v]                                 ;; acc = [e a v]
-          (if (contains? unique-idents a-ident)
-            (let [a (if (:attribute-refs? (dbi/-config db)) (dbi/-ref-for db a-ident) a-ident)]
-              (validate-val v [nil nil a v nil] db)
-              (if-some [e (:e (first (dbi/-datoms db :avet [a v])))]
-                (cond
-                  (nil? acc) [e a v]                    ;; first upsert
-                  (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
-                  :else
-                  (let [[_e _a _v] acc]
-                    (raise "Conflicting upserts: " [_a _v] " resolves to " _e
-                           ", but " [a v] " resolves to " e
-                           {:error :transact/upsert
-                            :entity entity
-                            :assertion [e a v]
-                            :conflict [_e _a _v]})))
-                acc))                                   ;; upsert attr, but resolves to nothing
-            acc))                                       ;; non-upsert attr
-        nil
-        entity)
-      (check-upsert-conflict entity)
-      first)))                                         ;; getting eid from acc
+     (reduce-kv
+      (fn [acc a-ident v]                                 ;; acc = [e a v]
+        (if (contains? unique-idents a-ident)
+          (let [a (if (:attribute-refs? (dbi/-config db)) (dbi/-ref-for db a-ident) a-ident)]
+            (validate-val v [nil nil a v nil] db)
+            (if-some [e (:e (first (dbi/-datoms db :avet [a v])))]
+              (cond
+                (nil? acc) [e a v]                    ;; first upsert
+                (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
+                :else
+                (let [[_e _a _v] acc]
+                  (raise "Conflicting upserts: " [_a _v] " resolves to " _e
+                         ", but " [a v] " resolves to " e
+                         {:error :transact/upsert
+                          :entity entity
+                          :assertion [e a v]
+                          :conflict [_e _a _v]})))
+              acc))                                   ;; upsert attr, but resolves to nothing
+          acc))                                       ;; non-upsert attr
+      nil
+      entity)
+     (check-upsert-conflict entity)
+     first)))                                         ;; getting eid from acc
 
 ;; multivals/reverse can be specified as coll or as a single value, trying to guess
 (defn- maybe-wrap-multival [db a-ident vs]
@@ -406,15 +406,14 @@
 
 (defn- retract-components [db datoms]
   (into #{} (comp
-              (filter (fn [^Datom d] (dbu/component? db (.-a d))))
-              (map (fn [^Datom d] [:db.fn/retractEntity (.-v d)]))) datoms))
+             (filter (fn [^Datom d] (dbu/component? db (.-a d))))
+             (map (fn [^Datom d] [:db.fn/retractEntity (.-v d)]))) datoms))
 
 (defn- purge-components [db datoms]
   (let [xf (comp
-             (filter (fn [^Datom d] (dbu/component? db (.-a d))))
-             (map (fn [^Datom d] [:db.purge/entity (.-v d)])))]
+            (filter (fn [^Datom d] (dbu/component? db (.-a d))))
+            (map (fn [^Datom d] [:db.purge/entity (.-v d)])))]
     (into #{} xf datoms)))
-
 
 (declare transact-tx-data)
 
@@ -432,11 +431,11 @@
 
 (defn assert-preds [db [_ e _ preds]]
   (reduce
-    (fn [coll pred]
-      (if ((resolve pred) db e)
-        coll
-        (conj coll pred)))
-    #{} preds))
+   (fn [coll pred]
+     (if ((resolve pred) db e)
+       coll
+       (conj coll pred)))
+   #{} preds))
 
 (def builtin-op?
   #{:db.fn/call
@@ -460,20 +459,20 @@
   [report]
   (let [db (:db-after report)]
     (reduce-kv
-      (fn [entities eid tuples+values]
-        (reduce-kv
-          (fn [entities tuple value]
-            (let [value   (if (every? nil? value) nil value)
-                  current (:v (first (dbi/-datoms db :eavt [eid tuple])))]
-              (cond
-                (= value current) entities
+     (fn [entities eid tuples+values]
+       (reduce-kv
+        (fn [entities tuple value]
+          (let [value   (if (every? nil? value) nil value)
+                current (:v (first (dbi/-datoms db :eavt [eid tuple])))]
+            (cond
+              (= value current) entities
                 ;; adds ::internal to meta-data to mean that these datoms were generated internally.
-                (nil? value)      (conj entities ^::internal [:db/retract eid tuple current])
-                :else             (conj entities ^::internal [:db/add eid tuple value]))))
-          entities
-          tuples+values))
-      []
-      (::queued-tuples report))))
+              (nil? value)      (conj entities ^::internal [:db/retract eid tuple current])
+              :else             (conj entities ^::internal [:db/add eid tuple value]))))
+        entities
+        tuples+values))
+     []
+     (::queued-tuples report))))
 
 (defn flush-tx-meta
   "Generates add-operations for transaction meta data."
@@ -482,19 +481,19 @@
         tid (current-tx report)
         {:keys [attribute-refs?]} (dbi/-config db-before)]
     (reduce-kv
-      (fn [entities attribute value]
-        (let [straight-a (if attribute-refs? (dbi/-ref-for db-before attribute) attribute)]
-          (if (some? straight-a)
-            (conj entities
-                  [:db/add
-                   tid
-                   straight-a
-                   value
-                   tid])
-            (raise "Bad transaction meta attribute " attribute " at " tx-meta ", not defined in system or current schema"
-                   {:error :transact/schema :attribute attribute :context tx-meta}))))
-      []
-      tx-meta)))
+     (fn [entities attribute value]
+       (let [straight-a (if attribute-refs? (dbi/-ref-for db-before attribute) attribute)]
+         (if (some? straight-a)
+           (conj entities
+                 [:db/add
+                  tid
+                  straight-a
+                  value
+                  tid])
+           (raise "Bad transaction meta attribute " attribute " at " tx-meta ", not defined in system or current schema"
+                  {:error :transact/schema :attribute attribute :context tx-meta}))))
+     []
+     tx-meta)))
 
 (defn check-schema-update [db entity new-eid]
   (when (ds/schema-entity? entity)
@@ -620,9 +619,9 @@
                       (.before ^Date (.-v d) before-date))
         filtered-tx-ids (dbu/filter-txInstant datoms before-pred db)]
     (filter
-      (fn [^Datom d]
-        (contains? filtered-tx-ids (datom-tx d)))
-      datoms)))
+     (fn [^Datom d]
+       (contains? filtered-tx-ids (datom-tx d)))
+     datoms)))
 
 (defn apply-db-op [db report op-vec]
   (let [[op e a v] op-vec]
@@ -690,8 +689,8 @@
                                  (let [history (HistoricalDB. db)
                                        into-sorted-set #(apply sorted-set-by dd/cmp-datoms-eavt-quick %)
                                        e-datoms (-> (clojure.set/difference
-                                                      (into-sorted-set (dbs/search-temporal-indices db nil))
-                                                      (into-sorted-set (dbs/search-current-indices db nil)))
+                                                     (into-sorted-set (dbs/search-temporal-indices db nil))
+                                                     (into-sorted-set (dbs/search-current-indices db nil)))
                                                     (filter-before e db)
                                                     vec)]
                                    [(reduce transact-purge-datom report e-datoms)
@@ -769,8 +768,8 @@
           (= ::flush-tuples entity)
           (if (contains? report ::queued-tuples)
             (recur
-              (dissoc report ::queued-tuples)
-              (concat (flush-tuples report) entities))
+             (dissoc report ::queued-tuples)
+             (concat (flush-tuples report) entities))
             (recur report entities))
 
           (map? entity)
@@ -875,13 +874,13 @@
 
         :else
         (let [new-datom ^Datom (dd/datom
-                                 (or (get-in migration-state [:eids e]) max-eid)
-                                 a
-                                 (if (dbu/ref? db a)
-                                   (get-in migration-state [:eids v])
-                                   v)
-                                 (get-in migration-state [:tids t])
-                                 op)
+                                (or (get-in migration-state [:eids e]) max-eid)
+                                a
+                                (if (dbu/ref? db a)
+                                  (get-in migration-state [:eids v])
+                                  v)
+                                (get-in migration-state [:tids t])
+                                op)
               upsert? (and (not (dbu/multival? db a-ident))
                            op)]
           (recur (transact-report report new-datom upsert?) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))

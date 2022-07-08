@@ -1,21 +1,21 @@
 (ns ^:no-doc datahike.core
   (:refer-clojure :exclude [filter])
   (:require
-    [datahike.constants :as dc]
-    [datahike.datom :as dd]
-    [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
-    [datahike.db.interface :as dbi]
-    [datahike.db.transaction :as dbt]
-    [datahike.db.utils :as dbu]
-    [datahike.impl.entity :as de]
-    [datahike.pull-api :as dp]
-    [datahike.query :as dq])
+   [datahike.constants :as dc]
+   [datahike.datom :as dd]
+   [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
+   [datahike.db.interface :as dbi]
+   [datahike.db.transaction :as dbt]
+   [datahike.db.utils :as dbu]
+   [datahike.impl.entity :as de]
+   [datahike.pull-api :as dp]
+   [datahike.query :as dq])
   #?(:clj
      (:import
-       [datahike.db FilteredDB]
-       [datahike.impl.entity Entity]
-       [java.util UUID]
-       (clojure.lang IDeref IBlockingDeref IAtom IPending))))
+      [datahike.db FilteredDB]
+      [datahike.impl.entity Entity]
+      [java.util UUID]
+      (clojure.lang IDeref IBlockingDeref IAtom IPending))))
 
 (def ^:const ^:no-doc tx0 dc/tx0)
 
@@ -131,11 +131,11 @@
    (if (is-filtered db)
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
      (dbt/transact-tx-data (db/map->TxReport
-                           {:db-before db
-                            :db-after  db
-                            :tx-data   []
-                            :tempids   {}
-                            :tx-meta   tx-meta}) tx-data))))
+                            {:db-before db
+                             :db-after  db
+                             :tx-data   []
+                             :tempids   {}
+                             :tx-meta   tx-meta}) tx-data))))
 
 (defn load-entities-with [db entities tx-meta]
   (dbt/transact-entities-directly
