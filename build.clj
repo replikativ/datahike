@@ -46,16 +46,16 @@
 (defn fib [a b]
   (lazy-seq (cons a (fib b (+ a b)))))
 
-(defn retry-with-fib-backoff [retries exec-fn test-fn]
+(defn retry-with-fib-backoff [retries exec-fn failed?-fn]
   (loop [idle-times (take retries (fib 1 2))]
     (let [result (exec-fn)]
-      (if (test-fn result)
-        result
+      (if (failed?-fn result)
         (when-let [sleep-ms (first idle-times)]
           (println "Returned: " result)
           (println "Retrying with remaining back-off times (in s): " idle-times)
           (Thread/sleep (* 1000 sleep-ms))
-          (recur (rest idle-times)))))))
+          (recur (rest idle-times)))
+        result))))
 
 (defn try-release []
   (try (gh/overwrite-asset {:org "replikativ"
@@ -65,13 +65,16 @@
                             :file jar-file
                             :content-type "application/java-archive"})
        (catch ExceptionInfo e
-         (assoc (ex-data e) :failure? true))))
+         (assoc (ex-data e) :failed? true))))
 
 (defn release
   [_]
-  (-> (retry-with-fib-backoff 10 try-release :failure?)
+  (-> (retry-with-fib-backoff 10 try-release :failed?)
       :url
       println))
+
+(comment
+  (release :foo))
 
 (defn install
   [_]
