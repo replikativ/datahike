@@ -73,9 +73,6 @@
       :url
       println))
 
-(comment
-  (release :foo))
-
 (defn install
   [_]
   (clean nil)
