@@ -50,12 +50,12 @@
   (loop [idle-times (take retries (fib 1 2))]
     (let [result (exec-fn)]
       (if (test-fn result)
-        result
         (when-let [sleep-ms (first idle-times)]
           (println "Returned: " result)
           (println "Retrying with remaining back-off times (in s): " idle-times)
           (Thread/sleep (* 1000 sleep-ms))
-          (recur (rest idle-times)))))))
+          (recur (rest idle-times)))
+        result))))
 
 (defn try-release []
   (try (gh/overwrite-asset {:org "replikativ"
