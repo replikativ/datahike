@@ -520,7 +520,7 @@
                            :else                 old-eid)
         updated-entity (assoc entity :db/id resolved-eid)
         updated-report (cond-> report
-                               tx? (allocate-eid old-eid resolved-eid))
+                         tx? (allocate-eid old-eid resolved-eid))
         upserted-eid (upsert-eid db updated-entity)]
     (if (and (some? upserted-eid)
              (tempid? resolved-eid)
@@ -532,9 +532,9 @@
                       (nil? resolved-eid) (next-eid db)
                       (or (number? resolved-eid)
                           (string? resolved-eid)) (if (tempid? resolved-eid)
-                                               (or (get-in updated-report [:tempids resolved-eid])
-                                                   (next-eid db))
-                                               resolved-eid)
+                                                    (or (get-in updated-report [:tempids resolved-eid])
+                                                        (next-eid db))
+                                                    resolved-eid)
                       :else (raise "Expected number, string or lookup ref for :db/id, got " old-eid
                                    {:error :entity-id/syntax, :entity updated-entity}))
             new-entity (assoc updated-entity :db/id new-eid)]
