@@ -514,41 +514,33 @@
 
 (defn entity-map->op-vec [db report entity]
   (let [old-eid (:db/id entity)
-        {:keys [tempids]} report]
-    (cond
-      ;; :db/current-tx / "datomic.tx" => tx
-      (tx-id? old-eid)
-      (let [id (current-tx report)]
-        (vector (allocate-eid report old-eid id)
-                [(assoc entity :db/id id)]))
-
-      ;; lookup-ref => resolved | error
-      (sequential? old-eid)
-      (let [id (dbu/entid-strict db old-eid)]
-        (vector report
-                [(assoc entity :db/id id)]))
-
-      :else
-      (let [upserted-eid (upsert-eid db entity)]
-        (if (and (some? upserted-eid)
-                 (tempid? old-eid)
-                 (contains? tempids old-eid)
-                 (not= upserted-eid (get tempids old-eid)))
-          [nil nil true old-eid upserted-eid]
-          (let [new-eid (cond
-                          (some? upserted-eid) upserted-eid
-                          (nil? old-eid) (next-eid db)
-                          (or (number? old-eid)
-                              (string? old-eid)) (if (tempid? old-eid)
-                                                   (or (get tempids old-eid)
-                                                       (next-eid db))
-                                                   old-eid)
-                          :else (raise "Expected number, string or lookup ref for :db/id, got " old-eid
-                                       {:error :entity-id/syntax, :entity entity}))
-                new-entity (assoc entity :db/id new-eid)]
-            (check-schema-update db entity new-eid)
-            (vector (allocate-eid report old-eid new-eid)
-                    (explode db new-entity))))))))
+        tx? (tx-id? old-eid) ;; :db/current-tx / "datomic.tx"
+        resolved-eid (cond tx?                   (current-tx report)
+                           (sequential? old-eid) (dbu/entid-strict db old-eid)
+                           :else                 old-eid)
+        updated-entity (assoc entity :db/id resolved-eid)
+        updated-report (cond-> report
+                               tx? (allocate-eid old-eid resolved-eid))
+        upserted-eid (upsert-eid db updated-entity)]
+    (if (and (some? upserted-eid)
+             (tempid? resolved-eid)
+             (contains? (:tempids updated-report) resolved-eid)
+             (not= upserted-eid (get-in updated-report [:tempids resolved-eid])))
+      {:retry? true :old-eid resolved-eid :upserted-eid upserted-eid}
+      (let [new-eid (cond
+                      (some? upserted-eid) upserted-eid
+                      (nil? resolved-eid) (next-eid db)
+                      (or (number? resolved-eid)
+                          (string? resolved-eid)) (if (tempid? resolved-eid)
+                                               (or (get-in updated-report [:tempids resolved-eid])
+                                                   (next-eid db))
+                                               resolved-eid)
+                      :else (raise "Expected number, string or lookup ref for :db/id, got " old-eid
+                                   {:error :entity-id/syntax, :entity updated-entity}))
+            new-entity (assoc updated-entity :db/id new-eid)]
+        (check-schema-update db updated-entity new-eid)
+        {:new-report (allocate-eid updated-report resolved-eid new-eid)
+         :new-entities (explode db new-entity)}))))
 
 (defn compare-and-swap [db report op-vec]
   (let [[_ e a ov nv] op-vec
@@ -648,6 +640,7 @@
                                 [report []])
 
       :db.fn/retractEntity (retract-entity db report op-vec)
+
       :db/retractEntity (retract-entity db report op-vec)
 
       :db/purge (if (dbi/-keep-history? db)
@@ -716,6 +709,7 @@
                            [report []]))
 
       :db.fn/cas (compare-and-swap db report op-vec)
+
       :db/cas (compare-and-swap db report op-vec)
 
       :db.fn/call (let [[_ f & args] op-vec]
@@ -773,7 +767,7 @@
             (recur report entities))
 
           (map? entity)
-          (let [[new-report new-entities retry? old-eid upserted-eid] (entity-map->op-vec db report entity)]
+          (let [{:keys [new-report new-entities retry? old-eid upserted-eid]} (entity-map->op-vec db report entity)]
             (if retry?
               (retry-with-tempid initial-report report initial-es old-eid upserted-eid)
               (recur new-report (concat new-entities entities))))

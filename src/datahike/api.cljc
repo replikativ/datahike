@@ -455,8 +455,6 @@
     (dbi/-seek-datoms db index [])
     (dbi/-seek-datoms db index components)))
 
-(def ^:private last-tempid (atom -1000000))
-
 (def ^{:arglists '([part] [part x])
        :doc "Allocates and returns a unique temporary id (a negative integer). Ignores `part`. Returns `x` if it is specified.
 
