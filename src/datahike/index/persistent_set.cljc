@@ -2,6 +2,8 @@
   (:require [me.tonsky.persistent-sorted-set :as set]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
             [clojure.core.async :as async]
+            [clojure.core.cache.wrapped :as wrapped]
+            [clojure.data :as data]
             [datahike.datom :as dd]
             [datahike.constants :refer [tx0 txmax]]
             [datahike.index.interface :as di :refer [IIndex]]
@@ -10,7 +12,7 @@
             [hasch.core :refer [uuid]])
   #?(:clj (:import [datahike.datom Datom]
                    [org.fressian.handlers WriteHandler ReadHandler]
-                   [me.tonsky.persistent_sorted_set PersistentSortedSet Loader Leaf Node Edit]
+                   [me.tonsky.persistent_sorted_set PersistentSortedSet StorageBackend Leaf Node Edit]
                    [java.util UUID])))
 
 (defn index-type->cmp
@@ -145,26 +147,49 @@
 
 (def c (atom 0))
 
-(defn get-loader [konserve-store]
-  (proxy [Loader] []
-    (load [address]
-      (let [children-as-maps (async/<!! (k/get konserve-store address))] ;; TODO: use synchronous calls as soon as available
-        (->> children-as-maps
-             (map (fn [m] (set/map->node this (update m :keys (fn [keys] (mapv #(when-let [datom-seq (seq %)]
+(defn get-storage [konserve-store]
+  ;; TODO use konserve cache? ideally this cache should be shared per database
+  (let [cache (wrapped/lru-cache-factory {} :threshold 1000)]
+    (add-watch cache :free-memory
+               (fn [_ _ old new]
+                 (let [[delta _ _] (data/diff (set (keys old)) (set (keys new)))]
+                   (doseq [node delta]
+                     #_(println "freeing" (.-_address node))
+                     (locking node
+                       (set! (.-_isLoaded node) false)
+                       (set! (.-_children node) nil))))))
+    (proxy [StorageBackend] []
+      (hitCache [node]
+        #_(println "hitting" (.-_address node))
+        (wrapped/hit cache node)
+        nil)
+      (load [node]
+        (let [address (.-_address node)]
+          (wrapped/lookup-or-miss cache node
+                                  (fn [_]
+                                    ;; TODO: use synchronous calls as soon as available
+                                    #_(println "loading" (.-_address node))
+                                    (->> (async/<!! (k/get konserve-store address))
+                                       (map (fn [m]
+                                              (set/map->node
+                                               this
+                                               (update m :keys (fn [keys] (mapv #(when-let [datom-seq (seq %)]
                                                                                   (dd/datom-from-reader datom-seq))
-                                                                               keys))))))
-             (into-array Leaf))))
-    (store [children]
-      (let [children-as-maps (mapv (fn [node] (-> node
-                                                  set/-to-map
-                                                  (update :keys (fn [keys] (mapv (comp vec seq) keys)))))
-                                   children)
-            address (uuid)]
-        (async/<!! (k/assoc konserve-store address children-as-maps))
-        address))))
+                                                                                keys))))))
+                                       (into-array Leaf))))))
+      (store [node children]
+        (let [children-as-maps (mapv (fn [node] (-> node
+                                                   set/-to-map
+                                                   (update :keys (fn [keys] (mapv (comp vec seq) keys)))))
+                                     children)
+              address (uuid)]
+          #_(println "storing" address)
+          (wrapped/miss cache node children)
+          (async/<!! (k/assoc konserve-store address children-as-maps))
+          address)))))
 
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
-  (with-meta (set/sorted-set-by (index-type->cmp-quick index-type false) (get-loader store))
+  (with-meta (set/sorted-set-by (index-type->cmp-quick index-type false) (get-storage store))
     {:index-type index-type}))
 
 (defmethod di/init-index :datahike.index/persistent-set [_index-name store datoms index-type _ {:keys [indexed]}]
@@ -176,7 +201,7 @@
                 (not (arrays/array? datoms))
                 (arrays/into-array)))]
     (arrays/asort arr (index-type->cmp-quick index-type false))
-    (with-meta (set/from-sorted-array (index-type->cmp-quick index-type false) arr (get-loader store))
+    (with-meta (set/from-sorted-array (index-type->cmp-quick index-type false) arr (get-storage store))
       {:index-type index-type})))
 
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [_index-name store]
@@ -185,19 +210,19 @@
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
                                                        (let [{:keys [meta root count]} (.readObject reader)
-                                                             loader (get-loader store)
+                                                             storage (get-storage store)
                                                              ;        _ (println "read index type" (:index-type meta))
                                                              cmp (index-type->cmp-quick (:index-type meta) false)]
                                                           ;; The following fields are reset as they cannot be accessed from outside:
                                                           ;; - 'edit' is set to false, i.e. the set is assumed to be persistent, not transient
                                                           ;; - 'version' is set back to 0
-                                                         (PersistentSortedSet. meta cmp root count (Edit. false) 0 loader))))
+                                                         (PersistentSortedSet. meta cmp root count (Edit. false) 0 storage))))
                                                    "datahike.index.PersistentSortedSet.Leaf"
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
                                                        (let [{:keys [keys len dirty?]} (.readObject reader)
-                                                             loader (get-loader store)
-                                                             leaf (Leaf. loader (into-array Object keys) len (Edit. false))]
+                                                             storage (get-storage store)
+                                                             leaf (Leaf. storage (into-array Object keys) len (Edit. false))]
                                                          (set! (._isDirty leaf)
                                                                dirty?)
                                                          leaf)))
@@ -205,10 +230,10 @@
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
                                                        (let [{:keys [keys len loaded? address children]} (.readObject reader)
-                                                             loader (get-loader store)]
+                                                             storage (get-storage store)]
                                                          (if loaded?
-                                                           (Node. ^Loader loader (into-array Object keys) (into-array Leaf children) ^int len ^Edit (Edit. false))
-                                                           (Node. ^Loader loader (into-array Object keys) ^int len ^Edit (Edit. false) ^UUID (UUID/fromString address))))))
+                                                           (Node. ^StorageBackend storage (into-array Object keys) (into-array Leaf children) ^int len ^Edit (Edit. false))
+                                                           (Node. ^StorageBackend storage (into-array Object keys) ^int len ^Edit (Edit. false) ^UUID (UUID/fromString address))))))
                                                    "datahike.datom.Datom"
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
