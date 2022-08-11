@@ -170,17 +170,17 @@
                                     ;; TODO: use synchronous calls as soon as available
                                     #_(println "loading" (.-_address node))
                                     (->> (async/<!! (k/get konserve-store address))
-                                       (map (fn [m]
-                                              (set/map->node
-                                               this
-                                               (update m :keys (fn [keys] (mapv #(when-let [datom-seq (seq %)]
-                                                                                  (dd/datom-from-reader datom-seq))
-                                                                                keys))))))
-                                       (into-array Leaf))))))
+                                         (map (fn [m]
+                                                (set/map->node
+                                                 this
+                                                 (update m :keys (fn [keys] (mapv #(when-let [datom-seq (seq %)]
+                                                                                     (dd/datom-from-reader datom-seq))
+                                                                                  keys))))))
+                                         (into-array Leaf))))))
       (store [node children]
         (let [children-as-maps (mapv (fn [node] (-> node
-                                                   set/-to-map
-                                                   (update :keys (fn [keys] (mapv (comp vec seq) keys)))))
+                                                    set/-to-map
+                                                    (update :keys (fn [keys] (mapv (comp vec seq) keys)))))
                                      children)
               address (uuid)]
           #_(println "storing" address)
