@@ -86,18 +86,19 @@
         pset)
       (set/conj datom (index-type->cmp-quick index-type))))
 
-(defn temporal-upsert [pset datom index-type]
+(defn temporal-upsert [pset datom index-type old-val]
   (let [{:keys [e a v tx added]} datom
-        old-datoms (cond->> (slice pset
-                                   (dd/datom (.-e datom) (.-a datom) nil tx0)
-                                   (dd/datom (.-e datom) (.-a datom) nil txmax)
-                                   index-type)
-                     (= :avet index-type)
-                     (filter #(= (.-e datom) (.-e %))))
-        {added-datoms true
-         retracted-datoms false} (group-by :added old-datoms)
-        old-val (first (clojure.set/difference (set (map :v added-datoms))
-                                               (map :v retracted-datoms)))]
+        ;; old-datoms (cond->> (slice pset
+        ;;                            (dd/datom (.-e datom) (.-a datom) nil tx0)
+        ;;                            (dd/datom (.-e datom) (.-a datom) nil txmax)
+        ;;                            index-type)
+        ;;              (= :avet index-type)
+        ;;              (filter #(= (.-e datom) (.-e %))))
+        ;; {added-datoms true
+        ;;  retracted-datoms false} (group-by :added old-datoms)
+        ;; old-val (first (clojure.set/difference (set (map :v added-datoms))
+        ;;                                        (map :v retracted-datoms)))
+        ]
     (if added
       (if old-val
         (if (= v old-val)
@@ -130,8 +131,8 @@
     (set/conj pset datom (index-type->cmp-quick index-type)))
   (-upsert [pset datom index-type _op-count]
     (upsert pset datom index-type))
-  (-temporal-upsert [pset datom index-type _op-count]
-    (temporal-upsert pset datom index-type))
+  (-temporal-upsert [pset datom index-type _op-count old-val]
+    (temporal-upsert pset datom index-type old-val))
   (-remove [pset datom index-type _op-count]
     (remove-datom pset datom index-type))
   (-flush [pset _]

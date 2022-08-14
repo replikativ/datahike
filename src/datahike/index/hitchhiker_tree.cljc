@@ -110,7 +110,7 @@
     (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec op-count (index-type->indices index-type))
                                           :tag (h/uuid))]))))
 
-(defn temporal-upsert [tree ^Datom datom index-type op-count]
+(defn temporal-upsert [tree ^Datom datom index-type op-count old-val]
   (let [datom-as-vec (datom->node datom index-type)]
     (async/<?? (hmsg/enqueue tree [(assoc (ups/new-temporal-UpsertOp datom-as-vec op-count (index-type->indices index-type))
                                           :tag (h/uuid))]))))
@@ -135,8 +135,8 @@
     (temporal-insert tree datom index-type op-count))
   (-upsert [tree datom index-type op-count]
     (upsert tree datom index-type op-count))
-  (-temporal-upsert [tree datom index-type op-count]
-    (temporal-upsert tree datom index-type op-count))
+  (-temporal-upsert [tree datom index-type op-count old-val]
+    (temporal-upsert tree datom index-type op-count old-val))
   (-remove [tree datom index-type op-count]
     (remove-datom tree datom index-type op-count))
   (-slice [tree from to index-type]
@@ -162,8 +162,8 @@
     (temporal-insert index datom index-type op-count))
   (-upsert [tree datom index-type op-count]
     (upsert tree datom index-type op-count))
-  (-temporal-upsert [tree datom index-type op-count]
-    (temporal-upsert tree datom index-type op-count))
+  (-temporal-upsert [tree datom index-type op-count old-val]
+    (temporal-upsert tree datom index-type op-count old-val))
   (-remove [tree datom index-type op-count]
     (remove-datom tree datom index-type op-count))
   (-slice [tree from to index-type]
