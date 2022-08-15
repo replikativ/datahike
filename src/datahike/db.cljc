@@ -1553,10 +1553,11 @@
         keep-history? (and (-keep-history? db) (not (no-history? db a-ident))
                            (not= :db/txInstant a-ident))
         op-count      (.op-count db)
-        old-val (:v (first (di/-slice (:eavt db)
-                                      (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                      (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                      :eavt)))]
+        old-val (when keep-history?
+                  (:v (first (di/-slice (:eavt db)
+                                        (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                        (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                        :eavt))))]
     (cond-> db
       ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
       schema? (try

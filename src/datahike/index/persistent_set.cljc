@@ -87,18 +87,7 @@
       (set/conj datom (index-type->cmp-quick index-type))))
 
 (defn temporal-upsert [pset datom index-type old-val]
-  (let [{:keys [e a v tx added]} datom
-        ;; old-datoms (cond->> (slice pset
-        ;;                            (dd/datom (.-e datom) (.-a datom) nil tx0)
-        ;;                            (dd/datom (.-e datom) (.-a datom) nil txmax)
-        ;;                            index-type)
-        ;;              (= :avet index-type)
-        ;;              (filter #(= (.-e datom) (.-e %))))
-        ;; {added-datoms true
-        ;;  retracted-datoms false} (group-by :added old-datoms)
-        ;; old-val (first (clojure.set/difference (set (map :v added-datoms))
-        ;;                                        (map :v retracted-datoms)))
-        ]
+  (let [{:keys [e a v tx added]} datom]
     (if added
       (if old-val
         (if (= v old-val)
@@ -183,7 +172,7 @@
                                                     set/-to-map
                                                     (update :keys (fn [keys] (mapv (comp vec seq) keys)))))
                                      children)
-              address (uuid)]
+              address (uuid children-as-maps)]
           #_(println "storing" address)
           (wrapped/miss cache node children)
           (async/<!! (k/assoc konserve-store address children-as-maps))
