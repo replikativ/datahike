@@ -1,5 +1,5 @@
 (ns sandbox-benchmarks
-  (:require [benchmark.core :as b]
+  (:require [benchmark.cli :as b]
             [benchmark.store :as s]))
 
 ;(b/-main)                                                   ;; TIMBRE_LEVEL=':fatal' clj -M:benchmark

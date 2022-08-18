@@ -1,6 +1,11 @@
 (ns benchmark.store
   (:require [clojure.edn :as edn]
-            [clj-http.client :as client]))
+            [clj-http.client :as client]
+            [clojure.string :refer [join]]
+            [clojure.pprint :refer [pprint]]
+            [benchmark.config :as c]))
+
+;; Remote server output
 
 (defrecord RemoteDB [baseurl token dbname])
 
@@ -72,7 +77,7 @@
     :db/cardinality :db.cardinality/many}])
 
 
-(defn parse-body [{:keys [body] :as response}]
+(defn parse-body [{:keys [body] :as _response}]
   (if-not (empty? body)
     (edn/read-string body)
     ""))
@@ -93,15 +98,8 @@
 (defn transact-data [db tx-data]
   (db-request db :post "transact" {:tx-data tx-data}))
 
-(defn list-databases [db]
-  (db-request db :get "databases"))
-
 (defn get-datoms [db]
   (db-request db :post "datoms" {:index :eavt}))
-
-(defn request-data [db q]
-  (let [query (if (map? q) q {:query q})]
-    (db-request db :post "q" query)))
 
 (defn get-schema [db]
   (db-request db :get "schema"))
@@ -117,3 +115,76 @@
                                 schema)]
     (when (not-empty missing-schema)
       (transact-data db missing-schema))))
+
+(defn add-ns-to-keys [current-ns hmap]
+  (reduce-kv (fn [m k v]
+               (let [next-key (if (= current-ns "") k (keyword (str current-ns "/" (name k))))
+                     next-ns (name k)
+                     next-val (cond
+                                (map? v)
+                                (add-ns-to-keys next-ns v)
+
+                                (and (vector? v) (map? (first v)))
+                                (mapv (partial add-ns-to-keys next-ns) v)
+
+                                :else v)]
+                 (assoc m next-key next-val)))
+             {}
+             hmap))
+
+(defn server-description [options]
+  (select-keys options [:db-server-url :db-token :db-name]))
+
+;; file output
+
+(defn save-measurements-to-file [paths measurements]
+  (let [filename (first paths)]
+    (try
+      (if (pos? (count paths))
+        (do (spit filename measurements)
+            (println "Measurements successfully saved to" filename))
+        (println measurements))
+      (catch Exception e
+        (println measurements)
+        (println (str "Something went wrong while trying to save measurements to file " filename ":"))
+        (.printStackTrace e)))))
+
+;; multi method implementations
+
+(defmulti save
+          (fn [options _paths _measurements] (:output-format options)))
+
+(defmethod save :default  [_options _paths measurements]
+  (println "No output format given!")
+  (println "Using standard output channel...")
+  (pprint measurements))
+
+(defmethod save "edn"  [_options paths measurements]
+  (save-measurements-to-file paths measurements))
+
+(defmethod save "csv"  [_options paths measurements]
+  (let [col-paths (map :path c/csv-cols)
+        titles (map :title c/csv-cols)
+        csv (str (join "\t" titles) "\n"
+                 (join "\n" (for [result (sort-by (apply juxt (map (fn [path] (fn [measurement] (get-in measurement path)))
+                                                                   col-paths))
+                                                  measurements)]
+                              (join "\t" (map (fn [path] (get-in result path ""))
+                                              col-paths)))))]
+    (save-measurements-to-file paths csv)))
+
+(defmethod save "remote-db"  [options _paths measurements]
+  (let [rdb (apply ->RemoteDB (server-description options))
+        db-entry (mapv #(->> (dissoc % :context)
+                             (merge (:context %))
+                             (add-ns-to-keys ""))
+                       measurements)]
+    (println "Database used:" rdb)
+    (try
+      (transact-missing-schema rdb)
+      (transact-results rdb db-entry)
+      (println "Successfully saved measurements to remote database.")
+      (catch Exception e
+        (println measurements)
+        (println (str "Something went wrong while trying to save measurements to remote database:"))
+        (.printStackTrace e)))))
