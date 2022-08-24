@@ -249,11 +249,11 @@
 
 (defn cmp-val [val]
   (case val
-    :e (fn [d1 d2] (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2)))
-    :a (fn [d1 d2] (cmp-nil (.-a d1) (.-a d2)))
-    :v (fn [d1 d2] (cmp-nil (.-v d1) (.-v d2)))
-    :tx (fn [d1 d2] (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2)))
-    :added (fn [d1 d2] (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2)))))
+    :e (fn [^Datom d1 ^Datom d2] (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2)))
+    :a (fn [^Datom d1 ^Datom d2] (cmp-nil (.-a d1) (.-a d2)))
+    :v (fn [^Datom d1 ^Datom d2] (cmp-nil (.-v d1) (.-v d2)))
+    :tx (fn [^Datom d1 ^Datom d2] (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2)))
+    :added (fn [^Datom d1 ^Datom d2] (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2)))))
 
 (defn cmp-datoms-eavt-quick [^Datom d1, ^Datom d2]
   (combine-cmp
