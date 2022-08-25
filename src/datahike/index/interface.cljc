@@ -27,7 +27,7 @@
 
 (defmulti add-konserve-handlers
   "Adds read and write handlers for the index data types."
-  (fn [index-name _store] index-name))
+  (fn [config _store] (:index config)))
 
 (defmulti konserve-backend
   "Returns a konserve store capable of handling the index. Used for flushing."

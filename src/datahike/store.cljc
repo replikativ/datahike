@@ -8,11 +8,12 @@
             [konserve.cache :as kc]
             [clojure.core.cache :as cache]))
 
-(defn add-cache-and-handlers [raw-store {:keys [index store] :as _config}]
+(defn add-cache-and-handlers [raw-store config]
   (cond->> (kc/ensure-cache
             raw-store
-            (atom (cache/lru-cache-factory {} :threshold 1000)))
-    (not= :mem (:backend store)) (di/add-konserve-handlers index)))
+            (atom (cache/lru-cache-factory {} :threshold (:cache-size config))))
+    (not= :mem (get-in config [:backend :store]))
+    (di/add-konserve-handlers config)))
 
 (defmulti empty-store
   "Creates an empty store"

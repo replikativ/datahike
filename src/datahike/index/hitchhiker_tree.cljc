@@ -191,7 +191,7 @@
     (empty-tree index-b-factor index-data-node-size index-log-size)
     (map-indexed (fn [idx datom] [idx datom]) (seq datoms)))))
 
-(defmethod di/add-konserve-handlers :datahike.index/hitchhiker-tree [_index-name store]
+(defmethod di/add-konserve-handlers :datahike.index/hitchhiker-tree [config store]
   (ups/add-upsert-handler
    (ins/add-insert-handler
     (hk/add-hitchhiker-tree-handlers

@@ -4,7 +4,6 @@
             [clojure.core.async :as async]
             [clojure.core.cache :as cache]
             [clojure.core.cache.wrapped :as wrapped]
-            [clojure.data :as data]
             [datahike.datom :as dd]
             [datahike.constants :refer [tx0 txmax]]
             [datahike.index.interface :as di :refer [IIndex]]
@@ -205,10 +204,10 @@
    (clojure.core.cache/seed (LRUCache. {} (clojure.data.priority-map/priority-map) 0 threshold
                                        on-evict) base)))
 
-(defn get-storage [konserve-store]
+(defn create-storage [store config]
   ;; TODO use konserve cache? ideally this cache should be shared per database
   (let [cache (lru-cache-factory {}
-                                 :threshold 1000
+                                 :threshold (:cache-size config)
                                  :on-evict
                                  (fn [node]
                                    (debug "evicting: " (.-_address node))
@@ -227,11 +226,11 @@
       (load [node]
         (let [address (.-_address node)
               _ (debug "loading " address)
-              new-children (async/<!! (k/get konserve-store address))]
+              new-children (async/<!! (k/get store address))]
           (when (zero? (count new-children))
-            (warn "Loaded empty children vector for " address))
+            (warn "loaded empty children vector for " address))
           (set! (.-_children node)
-                (->> (async/<!! (k/get konserve-store address))
+                (->> (async/<!! (k/get store address))
                      (map (fn [m]
                             (set/map->node this
                                            (update m :keys (fn [keys] (mapv #(when-let [datom-seq (seq %)]
@@ -246,15 +245,15 @@
                                                     (update :keys (fn [keys] (mapv (comp vec seq) keys)))))
                                      children)
               _ (when (empty? children-as-maps)
-                  (warn "saving empty children." node))
+                  (warn "saving empty children" node))
               address (uuid children-as-maps)]
           (debug "storing" address)
-          (async/<!! (k/assoc konserve-store address children-as-maps))
+          (async/<!! (k/assoc store address children-as-maps))
           (wrapped/miss cache node children)
           address)))))
 
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
-  (with-meta (set/sorted-set-by (index-type->cmp-quick index-type false) (get-storage store))
+  (with-meta (set/sorted-set-by (index-type->cmp-quick index-type false) (:storage store))
     {:index-type index-type}))
 
 (defmethod di/init-index :datahike.index/persistent-set [_index-name store datoms index-type _ {:keys [indexed]}]
@@ -266,70 +265,74 @@
                 (not (arrays/array? datoms))
                 (arrays/into-array)))]
     (arrays/asort arr (index-type->cmp-quick index-type false))
-    (with-meta (set/from-sorted-array (index-type->cmp-quick index-type false) arr (get-storage store))
+    (with-meta (set/from-sorted-array (index-type->cmp-quick index-type false) arr (:storage store))
       {:index-type index-type})))
 
-(defmethod di/add-konserve-handlers :datahike.index/persistent-set [_index-name store]
-  (let [storage (get-storage store)]
-    (assoc store :serializers {:FressianSerializer (fressian-serializer
-                                                    {"datahike.index.PersistentSortedSet"
-                                                     (reify ReadHandler
-                                                       (read [_ reader _tag _component-count]
-                                                         (let [{:keys [meta root count]} (.readObject reader)
+(defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
+  (let [storage (or (:storage store)
+                    (create-storage store config))]
+    (assoc store
+           :storage storage
+           :serializers {:FressianSerializer (fressian-serializer
+                                              {"datahike.index.PersistentSortedSet"
+                                               (reify ReadHandler
+                                                 (read [_ reader _tag _component-count]
+                                                   (let [{:keys [meta root count]} (.readObject reader)
                                         ;        _ (println "read index type" (:index-type meta))
-                                                               cmp                       (index-type->cmp-quick (:index-type meta) false)]
-                                                           ;; The following fields are reset as they cannot be accessed from outside:
-                                                           ;; - 'edit' is set to false, i.e. the set is assumed to be persistent, not transient
-                                                           ;; - 'version' is set back to 0
-                                                           (PersistentSortedSet. meta cmp root count (Edit. false) 0 storage))))
-                                                     "datahike.index.PersistentSortedSet.Leaf"
-                                                     (reify ReadHandler
-                                                       (read [_ reader _tag _component-count]
-                                                         (let [{:keys [keys len]} (.readObject reader)
-                                                               leaf               (Leaf. storage (into-array Object keys) len (Edit. false))]
-                                                           leaf)))
-                                                     "datahike.index.PersistentSortedSet.Node"
-                                                     (reify ReadHandler
-                                                       (read [_ reader _tag _component-count]
-                                                         (let [{:keys [keys len address]} (.readObject reader)]
-                                                           (Node. ^StorageBackend storage (into-array Object keys) ^int len ^Edit (Edit. false) ^UUID (UUID/fromString address)))))
-                                                     "datahike.datom.Datom"
-                                                     (reify ReadHandler
-                                                       (read [_ reader _tag _component-count]
-                                                         (dd/datom-from-reader (.readObject reader))))}
-                                                    {me.tonsky.persistent_sorted_set.PersistentSortedSet
-                                                     {"datahike.index.PersistentSortedSet"
-                                                      (reify WriteHandler
-                                                        (write [_ writer pset]
-                                                          (.writeTag writer "datahike.index.PersistentSortedSet" 1)
-                                                          (.writeObject writer {:meta  (meta pset)
-                                                                                :root  (._root pset)
-                                                                                :count (count pset)})))}
-                                                     me.tonsky.persistent_sorted_set.Leaf
-                                                     {"datahike.index.PersistentSortedSet.Leaf"
-                                                      (reify WriteHandler
-                                                        (write [_ writer leaf]
-                                                          (.writeTag writer "datahike.index.PersistentSortedSet.Leaf" 1)
-                                                          (.writeObject writer {:keys (vec (.-_keys leaf))
-                                                                                :len  (._len leaf)})))}
-                                                     me.tonsky.persistent_sorted_set.Node
-                                                     {"datahike.index.PersistentSortedSet.Node"
-                                                      (reify WriteHandler
-                                                        (write [_ writer node]
-                                                          (.writeTag writer "datahike.index.PersistentSortedSet.Node" 1)
-                                                          (.writeObject writer {:keys     (vec (.-_keys node))
-                                                                                :len      (._len node)
-                                                                                :children (vec (._children node))
-                                                                                :address  (.toString (._address node))})))}
-                                                     datahike.datom.Datom
-                                                     {"datahike.datom.Datom"
-                                                      (reify WriteHandler
-                                                        (write [_ writer datom]
-                                                          (.writeTag writer "datahike.datom.Datom" 1)
-                                                          (.writeObject writer (vec (seq datom)))))}})})))
+                                                         cmp                       (index-type->cmp-quick (:index-type meta) false)]
+                                                     ;; The following fields are reset as they cannot be accessed from outside:
+                                                     ;; - 'edit' is set to false, i.e. the set is assumed to be persistent, not transient
+                                                     ;; - 'version' is set back to 0
+                                                     (PersistentSortedSet. meta cmp root count (Edit. false) 0 storage))))
+                                               "datahike.index.PersistentSortedSet.Leaf"
+                                               (reify ReadHandler
+                                                 (read [_ reader _tag _component-count]
+                                                   (let [{:keys [keys len]} (.readObject reader)
+                                                         leaf               (Leaf. storage (into-array Object keys) len (Edit. false))]
+                                                     leaf)))
+                                               "datahike.index.PersistentSortedSet.Node"
+                                               (reify ReadHandler
+                                                 (read [_ reader _tag _component-count]
+                                                   (let [{:keys [keys len address]} (.readObject reader)]
+                                                     (Node. ^StorageBackend storage (into-array Object keys) ^int len ^Edit (Edit. false) ^UUID (UUID/fromString address)))))
+                                               "datahike.datom.Datom"
+                                               (reify ReadHandler
+                                                 (read [_ reader _tag _component-count]
+                                                   (dd/datom-from-reader (.readObject reader))))}
+                                              {me.tonsky.persistent_sorted_set.PersistentSortedSet
+                                               {"datahike.index.PersistentSortedSet"
+                                                (reify WriteHandler
+                                                  (write [_ writer pset]
+                                                    (.writeTag writer "datahike.index.PersistentSortedSet" 1)
+                                                    (.writeObject writer {:meta  (meta pset)
+                                                                          :root  (._root pset)
+                                                                          :count (count pset)})))}
+                                               me.tonsky.persistent_sorted_set.Leaf
+                                               {"datahike.index.PersistentSortedSet.Leaf"
+                                                (reify WriteHandler
+                                                  (write [_ writer leaf]
+                                                    (.writeTag writer "datahike.index.PersistentSortedSet.Leaf" 1)
+                                                    (.writeObject writer {:keys (vec (.-_keys leaf))
+                                                                          :len  (._len leaf)})))}
+                                               me.tonsky.persistent_sorted_set.Node
+                                               {"datahike.index.PersistentSortedSet.Node"
+                                                (reify WriteHandler
+                                                  (write [_ writer node]
+                                                    (.writeTag writer "datahike.index.PersistentSortedSet.Node" 1)
+                                                    (.writeObject writer {:keys     (vec (.-_keys node))
+                                                                          :len      (._len node)
+                                                                          :children (vec (._children node))
+                                                                          :address  (.toString (._address node))})))}
+                                               datahike.datom.Datom
+                                               {"datahike.datom.Datom"
+                                                (reify WriteHandler
+                                                  (write [_ writer datom]
+                                                    (.writeTag writer "datahike.datom.Datom" 1)
+                                                    (.writeObject writer (vec (seq datom)))))}})})))
 
 (defmethod di/konserve-backend :datahike.index/persistent-set [_index-name store]
   store)
 
 (defmethod di/default-index-config :datahike.index/persistent-set [_index-name]
   {})
+

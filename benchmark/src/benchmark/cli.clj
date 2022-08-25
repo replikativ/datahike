@@ -76,7 +76,7 @@
                                                "Available backends are: " backend-names)]]
    ["-k" "--cache SIZES"
     (str "Cache sizes for which measurements should be done")
-    :default [0]
+    :default [1]
     :parse-fn read-string
     :validate [vector? "Must be a vector of non-negative integers."
                #(every? nat-int? %) "Vector must consist of non-negative integers."]]
