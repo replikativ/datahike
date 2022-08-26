@@ -1,9 +1,9 @@
 {:deps {org.clojure/clojure {:mvn/version "1.11.1"}
-        io.replikativ/datahike {:local/root ".."}
+        io.replikativ/datahike  {:local/root ".."}
+        io.lambdaforge/wanderung {:mvn/version "0.2.67" :exclusions [io.replikativ/konserve]}
         com.taoensso/timbre {:mvn/version "5.2.1"}}
  :aliases
  {:write-db
   {:exec-fn datahike.compat/write-db}
   :read-db
-  {:exec-fn datahike.compat/read-db}
-}}
+  {:exec-fn datahike.compat/read-db}}}

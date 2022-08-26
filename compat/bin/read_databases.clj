@@ -5,34 +5,43 @@
 
 (def minimal-minor-version 4)
 
-(defn read-with-latest [version]
+(defn read-with-latest [version compat-folder]
   (println (format "Reading version %s with latest release..." version))
-  (-> (process ["clj" "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \"..\"}}}") "-X:read-db" ":target-folder" "\"/home/konrad/data/datahike/compat\"" ":version" (format "\"%s\"" version)] {:out :string})
+  (-> (process ["clj" "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \"..\"}}}") "-X:read-db" ":target-folder" (format "\"%s\"\"" compat-folder) ":version" (format "\"%s\"" version)] {:out :string})
       check
       :out
       println))
 
-(defn read-with-lib-version [version lib-version]
+(defn read-with-lib-version [version lib-version compat-folder]
   (println (format "Reading version %s with release %s..." version lib-version))
-  (-> (process ["clj" "-Sdeps" (format "{:deps {io.replikativ/datahike {:mvn/version \"%s\"}}}" lib-version) "-X:read-db" ":target-folder" "\"/home/konrad/data/datahike/compat\"" ":version" (format "\"%s\"" version)] {:out :string})
+  (-> (process ["clj" "-Sdeps" (format "{:deps {io.replikativ/datahike {:mvn/version \"%s\"}}}" lib-version) "-X:read-db" ":target-folder" (format "\"%s\"\"" compat-folder) ":version" (format "\"%s\"" version)] {:out :string})
       check
       :out
       println))
 
 (defn read-versions [compat-folder target-version]
-  (let [releases (->> (fs/match compat-folder  "regex:.*\\.export")
-                      (map #(.getName (fs/file %)))
-                      (map #(last (str/split % #"_")))
-                      (map #(str/join "." (butlast (str/split % #"\."))))
-                      sort)
-        ignored-versions #{"1497"}]
+  (let [lib "io.replikativ/datahike"
+        lines (-> (process ["clj" "-X:deps" "find-versions" ":lib" lib] {:out :string})
+                  check
+                  :out
+                  str/split-lines)
+        releases (map (comp :mvn/version read-string) lines)
+        ignored-versions #{"1495"
+                           "1496"
+                           "1497"
+                           "1498"
+                           "1499"
+                           "1500"
+                           "1501"
+                           "1502"
+                           "1503"}]
     (doall
      (doseq [release releases]
        (let [[_ _ patch] (str/split release #"\.")]
          (if-not (contains? ignored-versions patch)
            (if (= "latest" target-version)
-             (read-with-latest release)
-             (read-with-lib-version release target-version))
+             (read-with-latest compat-folder release)
+             (read-with-lib-version release target-version compat-folder))
            (println "Ignored version:" release)))))))
 
 (let [[compat-folder target-version] *command-line-args*]

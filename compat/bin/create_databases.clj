@@ -19,7 +19,15 @@
                   :out
                   str/split-lines)
         releases (map (comp :mvn/version read-string) lines)
-        ignored-versions #{"1497"}]
+        ignored-versions #{"1495"
+                           "1496"
+                           "1497"
+                           "1498"
+                           "1499"
+                           "1500"
+                           "1501"
+                           "1502"
+                           "1503"}]
     (doall
      (doseq [release releases]
        (let [[_ minor patch] (str/split release #"\.")]

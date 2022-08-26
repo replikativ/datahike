@@ -2,6 +2,7 @@
   (:require [datahike.api :as d]
             [datahike.tools :as dt]
             [datahike.migrate :as dm]
+            [wanderung.core :as w]
             [taoensso.timbre :as t]
             [clojure.string :as s])
   (:import [java.util Date]))
@@ -23,7 +24,6 @@
                       :db/cardinality :db.cardinality/many}])
 
 (def default-size 1000)
-
 
 (defn default-cfg [target-folder version]
   {:store  {:backend :file
@@ -59,7 +59,7 @@
            tx-count (-> (/ size tx-size)
                         Math/ceil
                         long)
-           export-file (format "%s/datahike_%s.export" target-folder version)]
+           export-file (format "%s/datahike_%s.nippy" target-folder version)]
        (t/info "Transaction data of size" size)
        (t/info (:meta @conn))
        (time (doseq [i (range tx-count)]
@@ -73,7 +73,11 @@
                                    (range from (if (< size to) size to)))]
                  (d/transact conn {:tx-data tx-data}))))
        (t/info "Exporting database to" export-file)
-       (let [export-input (cond
+       (w/migrate (merge config
+                         {:wanderung/type :datahike})
+                  {:wanderung/type :nippy
+                   :filename export-file})
+       #_(let [export-input (cond
                             (= version "development") conn
                             (->> (s/split version #"\.")
                                  last
@@ -178,7 +182,7 @@
         target-folder (or target-folder (System/getProperty "java.io.tmpdir"))
         config (default-conn-cfg target-folder version)
         date (Date.)
-        results-file (format "%s/%s" target-folder (format "%tY%tm%td%tH%tM%tS_compat_%s.edn" date date date date date date version))]
+        results-file (format "%s/%s" target-folder (format "%tY%tm%td%tH%tM%tS_%s_%s.edn" date date date date date date lib-version version))]
     (swap! conn-results assoc :datahike.lib/version lib-version)
     (swap! conn-results assoc :datahike.db/version version)
     (swap! conn-results assoc ::date date)
@@ -188,13 +192,18 @@
       (catch Exception _
         (t/error "Connection failed.")))
     (try
-      (let [import-cfg (update-in config [:store :path] str "_imported")
-            import-file (format "%s/datahike_%s.export" target-folder version)
+      (let [import-cfg (-> config
+                           (update-in [:store :path] str (str "_imported_" lib-version))
+                           (dissoc :initial-tx))
             _ (d/delete-database import-cfg)
-            _ (d/create-database import-cfg)
-            conn (d/connect import-cfg)
-            _ (t/info "Importing data from " import-file)
-            _ (dm/import-db conn import-file)]
+            import-file (format "%s/datahike_%s.nippy" target-folder version)
+            _ (t/info (format "Importing data from %s to %s" import-file import-cfg))
+            _ (w/migrate {:wanderung/type :nippy
+                          :filename import-file}
+                         (merge import-cfg
+                                {:wanderung/type :datahike}))
+           ;; _ (dm/import-db conn import-file)
+            conn (d/connect import-cfg)]
         (swap! conn-results assoc ::import? true)
         (test-db conn "datahike.import"))
       (catch Exception _
@@ -202,37 +211,42 @@
     (t/info "Results: " results-file)
     (spit results-file @conn-results)))
 
-
 (comment
 
   (write-db)
+  (def target-folder (System/getProperty "java.io.tmpdir"))
+  (def version (or (dt/get-version 'io.replikativ/datahike) "development"))
+  (def config (default-cfg target-folder version))
 
-  (def conn (d/connect (default-cfg (System/getProperty "java.io.tmpdir") "development")))
+  (def conn (d/connect config))
 
-  (:config @conn)
+  (read-db {:version "0.4.0"
+            :target-folder "/home/konrad/data/datahike/compat"} )
 
-  (:meta @conn)
 
-  (read-db {:target-folder "/home/konrad/data/datahike/compat"
-            :version "0.4.0"})
+  (w/migrate {:wanderung/type :nippy
+              :filename "/home/konrad/data/datahike/compat/datahike_0.4.0.nippy"}
+             {:wanderung/type :datahike
+              :store {:backend :file
+                      :path "/tmp/0.4.0_to_latest"}
+              :name "0.4.0-latest"
+              :schema-flexibility :write
+              :keep-history? true})
 
-  (def results (-> "/tmp/20220513142001_compat_development.edn"
-                   slurp
-                   read-string))
+  (def config {:wanderung/type :datahike
+               :store {:backend :file
+                       :path "/tmp/0.4.0_to_latest"}
+               :name "0.4.0-latest"
+               :schema-flexibility :write
+               :keep-history? true})
 
-  (def new-cfg {:store  {:backend :file
-                         :path "/tmp/datahike_foo"}
-                :keep-history? true
-                :schema-flexibility :write
-                :initial-tx default-schema})
+  (def conn (d/connect config))
 
-  (d/delete-database new-cfg)
-  (d/create-database new-cfg)
+  @conn
 
-  (def conn (d/connect new-cfg))
+  (test-db conn "datahike.import")
 
-  (dm/import-db conn "/home/konrad/data/datahike/compat/datahike_0.4.0.export")
-
-  results
+  (dm/import-db conn "/home/konrad/data/datahike/compat/datahike_0.4.0.nippy")
 
   )
+
