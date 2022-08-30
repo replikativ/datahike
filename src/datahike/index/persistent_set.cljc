@@ -1,5 +1,5 @@
 (ns ^:no-doc datahike.index.persistent-set
-  (:require [me.tonsky.persistent-sorted-set :as set]
+  (:require [me.tonsky.persistent-sorted-set :as psset]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
             [clojure.core.async :as async]
             [clojure.core.cache :as cache]
@@ -40,99 +40,102 @@
                              :avet dd/cmp-temporal-datoms-avet-quick
                              dd/cmp-temporal-datoms-eavt-quick))))
 
-(defn index-type->slice-cmp
-  [index-type from to]
-  (let [cmps (->> (case index-type
-                    :eavt [:e :a :v :tx :added]
-                    :aevt [:a :e :v :tx :added]
-                    :avet [:a :v :e :tx :added])
+(defn multi-cmp [cmps d1 d2]
+  (reduce (fn [old cmp] (let [res (cmp d1 d2)]
+                          (if (nil? res)
+                            (reduced old)
+                            (if (not= 0 res)
+                              (reduced res)
+                              old))))
+          0
+          cmps))
+
+(def index-type->kwseq
+  {:eavt [:e :a :v :tx :added]
+   :aevt [:a :e :v :tx :added]
+   :avet [:a :v :e :tx :added]})
+
+(defn index-type->slice-cmp [index-type from to]
+  (let [cmps (->> (index-type index-type->kwseq)
                   (take-while #(not (and (nil? (% from))
                                          (nil? (% to)))))
                   (mapv dd/cmp-val))]
-    (fn [d1 d2]
-      (reduce (fn [old cmp] (let [res (cmp d1 d2)]
-                              (if (nil? res)
-                                (reduced old)
-                                (if (not= 0 res)
-                                  (reduced res)
-                                  old))))
-              0
-              cmps))))
+    (partial multi-cmp cmps)))
 
 (defn slice [pset from to index-type]
-  (set/slice pset from to (index-type->slice-cmp index-type from to)))
+  (psset/slice pset from to (index-type->slice-cmp index-type from to)))
 
-(defn remove-datom [pset datom index-type]
-  (set/disj pset datom (index-type->cmp-quick index-type false)))
+(defn remove-datom [pset ^Datom datom index-type]
+  (psset/disj pset datom (index-type->cmp-quick index-type false)))
 
-(defn insert [pset datom index-type]
-  (if (first (set/slice pset
+(defn insert [pset ^Datom datom index-type]
+  (if (first (psset/slice pset
                         (dd/datom (.-e datom) (.-a datom) (.-v datom) tx0)
                         (dd/datom (.-e datom) (.-a datom) (.-v datom) txmax)
                         (index-type->cmp-quick index-type)))
     pset
-    (set/conj pset datom (index-type->cmp-quick index-type))))
+    (psset/conj pset datom (index-type->cmp-quick index-type))))
 
-(defn temporal-insert [pset datom index-type]
-  (set/conj pset datom (index-type->cmp-quick index-type false)))
+(defn temporal-insert [pset ^Datom datom index-type]
+  (psset/conj pset datom (index-type->cmp-quick index-type false)))
 
-(defn upsert [pset datom index-type]
+(defn upsert [pset ^Datom datom index-type]
   (-> (if-let [old (first (cond->> (slice pset
                                           (dd/datom (.-e datom) (.-a datom) nil tx0)
                                           (dd/datom (.-e datom) (.-a datom) nil txmax)
                                           index-type)
                             (= :avet index-type)
-                            (filter #(= (.-e datom) (.-e %)))))]
+                            (filter (fn compare-e [d] (.equals ^Long (.-e datom) ^Long (.-e ^Datom d))))))]
         (remove-datom pset old index-type)
         pset)
-      (set/conj datom (index-type->cmp-quick index-type))))
+      (psset/conj datom (index-type->cmp-quick index-type))))
 
-(defn temporal-upsert [pset datom index-type old-val]
+(defn temporal-upsert [pset ^Datom datom index-type old-val]
   (let [{:keys [e a v tx added]} datom]
     (if added
       (if old-val
         (if (= v old-val)
           pset
           (-> pset
-              (set/conj (dd/datom e a old-val tx false)
+              (psset/conj (dd/datom e a old-val tx false)
                         (index-type->cmp-quick index-type false))
-              (set/conj datom
+              (psset/conj datom
                         (index-type->cmp-quick index-type false))))
-        (set/conj pset datom (index-type->cmp-quick index-type false)))
+        (psset/conj pset datom (index-type->cmp-quick index-type false)))
       (if old-val
-        (set/conj pset
+        (psset/conj pset
                   (dd/datom e a old-val tx false)
                   (index-type->cmp-quick index-type false))
         pset))))
 
 (extend-type PersistentSortedSet
   IIndex
-  (-slice [pset from to index-type]
+  (-slice [^PersistentSortedSet pset from to index-type]
     (slice pset from to index-type))
   (-all [pset]
     (identity pset))
-  (-seq [pset]
+  (-seq [^PersistentSortedSet pset]
     (seq pset))
-  (-count [pset]
+  (-count [^PersistentSortedSet pset]
     (count pset))
-  (-insert [pset datom index-type _op-count]
+  (-insert [^PersistentSortedSet pset datom index-type _op-count]
     (insert pset datom index-type))
-  (-temporal-insert [pset datom index-type _op-count]
-    (set/conj pset datom (index-type->cmp-quick index-type)))
-  (-upsert [pset datom index-type _op-count]
+  (-temporal-insert [^PersistentSortedSet pset datom index-type _op-count]
+    (psset/conj pset datom (index-type->cmp-quick index-type)))
+  (-upsert [^PersistentSortedSet pset datom index-type _op-count]
     (upsert pset datom index-type))
-  (-temporal-upsert [pset datom index-type _op-count old-val]
+  (-temporal-upsert [^PersistentSortedSet pset datom index-type _op-count old-val]
     (temporal-upsert pset datom index-type old-val))
-  (-remove [pset datom index-type _op-count]
+  (-remove [^PersistentSortedSet pset datom index-type _op-count]
     (remove-datom pset datom index-type))
-  (-flush [pset _]
+  (-flush [^PersistentSortedSet pset _]
     (set! (.-_root pset)
-          (set/-flush (.-_root pset)))
+          (psset/-flush (.-_root pset)))
     pset)
-  (-transient [pset]
+  (-transient [^PersistentSortedSet pset]
     ;(transient pset)
     pset)
-  (-persistent! [pset]
+  (-persistent! [^PersistentSortedSet pset]
     ;(persistent! pset)
     pset))
 
@@ -209,7 +212,7 @@
   (let [cache (lru-cache-factory {}
                                  :threshold (:cache-size config)
                                  :on-evict
-                                 (fn [node]
+                                 (fn [^Node node]
                                    (debug "evicting: " (.-_address node))
                                    (if (.get (.-_isDirty node))
                                      (warn "Cannot free memory because data is not flushed yet.")
@@ -223,7 +226,7 @@
         #_(println "hitting" (.-_address node))
         (wrapped/hit cache node)
         nil)
-      (load [node]
+      (load [^Node node]
         (let [address (.-_address node)
               _ (debug "loading " address)
               new-children (async/<!! (k/get store address))]
@@ -232,7 +235,7 @@
           (set! (.-_children node)
                 (->> (async/<!! (k/get store address))
                      (map (fn [m]
-                            (set/map->node this
+                            (psset/map->node this
                                            (update m :keys (fn [keys] (mapv #(when-let [datom-seq (seq %)]
                                                                                (dd/datom-from-reader datom-seq))
                                                                             keys))))))
@@ -241,7 +244,7 @@
           nil))
       (store [node children]
         (let [children-as-maps (mapv (fn [node] (-> node
-                                                    set/-to-map
+                                                    psset/-to-map
                                                     (update :keys (fn [keys] (mapv (comp vec seq) keys)))))
                                      children)
               _ (when (empty? children-as-maps)
@@ -253,7 +256,7 @@
           address)))))
 
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
-  (with-meta (set/sorted-set-by (index-type->cmp-quick index-type false) (:storage store))
+  (with-meta (psset/sorted-set-by (index-type->cmp-quick index-type false) (:storage store))
     {:index-type index-type}))
 
 (defmethod di/init-index :datahike.index/persistent-set [_index-name store datoms index-type _ {:keys [indexed]}]
@@ -265,7 +268,7 @@
                 (not (arrays/array? datoms))
                 (arrays/into-array)))]
     (arrays/asort arr (index-type->cmp-quick index-type false))
-    (with-meta (set/from-sorted-array (index-type->cmp-quick index-type false) arr (:storage store))
+    (with-meta (psset/from-sorted-array (index-type->cmp-quick index-type false) arr (:storage store))
       {:index-type index-type})))
 
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
@@ -294,7 +297,7 @@
                                                (reify ReadHandler
                                                  (read [_ reader _tag _component-count]
                                                    (let [{:keys [keys len address]} (.readObject reader)]
-                                                     (Node. ^StorageBackend storage (into-array Object keys) ^int len ^Edit (Edit. false) ^UUID (UUID/fromString address)))))
+                                                     (Node. ^StorageBackend storage ^"[Ljava.lang.Object;" (into-array Object keys) ^int len ^Edit (Edit. false) ^UUID (UUID/fromString address)))))
                                                "datahike.datom.Datom"
                                                (reify ReadHandler
                                                  (read [_ reader _tag _component-count]
@@ -305,30 +308,30 @@
                                                   (write [_ writer pset]
                                                     (.writeTag writer "datahike.index.PersistentSortedSet" 1)
                                                     (.writeObject writer {:meta  (meta pset)
-                                                                          :root  (._root pset)
+                                                                          :root  (._root ^PersistentSortedSet pset)
                                                                           :count (count pset)})))}
                                                me.tonsky.persistent_sorted_set.Leaf
                                                {"datahike.index.PersistentSortedSet.Leaf"
                                                 (reify WriteHandler
                                                   (write [_ writer leaf]
                                                     (.writeTag writer "datahike.index.PersistentSortedSet.Leaf" 1)
-                                                    (.writeObject writer {:keys (vec (.-_keys leaf))
-                                                                          :len  (._len leaf)})))}
+                                                    (.writeObject writer {:keys (vec (.-_keys ^Leaf leaf))
+                                                                          :len  (._len ^Leaf leaf)})))}
                                                me.tonsky.persistent_sorted_set.Node
                                                {"datahike.index.PersistentSortedSet.Node"
                                                 (reify WriteHandler
                                                   (write [_ writer node]
                                                     (.writeTag writer "datahike.index.PersistentSortedSet.Node" 1)
-                                                    (.writeObject writer {:keys     (vec (.-_keys node))
-                                                                          :len      (._len node)
-                                                                          :children (vec (._children node))
-                                                                          :address  (.toString (._address node))})))}
+                                                    (.writeObject writer {:keys     (vec (.-_keys ^Node node))
+                                                                          :len      (._len ^Node node)
+                                                                          :children (vec (._children ^Node node))
+                                                                          :address  (.toString (._address ^Node node))})))}
                                                datahike.datom.Datom
                                                {"datahike.datom.Datom"
                                                 (reify WriteHandler
                                                   (write [_ writer datom]
                                                     (.writeTag writer "datahike.datom.Datom" 1)
-                                                    (.writeObject writer (vec (seq datom)))))}})})))
+                                                    (.writeObject writer (vec (seq ^Datom datom)))))}})})))
 
 (defmethod di/konserve-backend :datahike.index/persistent-set [_index-name store]
   store)
