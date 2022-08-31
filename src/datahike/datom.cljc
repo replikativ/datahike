@@ -233,7 +233,7 @@
 
 ;; fast versions without nil checks
 
-(defn- cmp-attr-quick [a1 a2]
+(defn cmp-attr-quick [a1 a2]
   ;; either both are keywords or both are strings
   #?(:cljs
      (if (keyword? a1)

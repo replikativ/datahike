@@ -80,15 +80,21 @@
   (psset/conj pset datom (index-type->cmp-quick index-type false)))
 
 (defn upsert [pset ^Datom datom index-type]
-  (-> (if-let [old (first (cond->> (slice pset
-                                          (dd/datom (.-e datom) (.-a datom) nil tx0)
-                                          (dd/datom (.-e datom) (.-a datom) nil txmax)
-                                          index-type)
+  (let [from (dd/datom (.-e datom) (.-a datom) nil tx0)
+        cmp (case index-type
+              :eavt (fn [d] (dd/combine-cmp
+                              (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))
+                              (dd/cmp-attr-quick (.-a datom) (.-a d))))
+              :aevt (fn [d] (dd/combine-cmp
+                              (dd/cmp-attr-quick (.-a datom) (.-a d))
+                              (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))))
+              :avet (fn [d] (dd/cmp-attr-quick (.-a datom) (.-a d))))
+        old-datom (first (cond->> (take-while cmp (psset/slice pset from nil))
                             (= :avet index-type)
-                            (filter (fn compare-e [d] (.equals ^Long (.-e datom) ^Long (.-e ^Datom d))))))]
-        (remove-datom pset old index-type)
-        pset)
-      (psset/conj datom (index-type->cmp-quick index-type))))
+                            (filter (fn compare-e [d] (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))))))]
+    (cond-> pset
+            old-datom (remove-datom old-datom index-type)
+            true (psset/conj datom (index-type->cmp-quick index-type)))))
 
 (defn temporal-upsert [pset ^Datom datom index-type old-val]
   (let [{:keys [e a v tx added]} datom]
