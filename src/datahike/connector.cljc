@@ -23,13 +23,14 @@
         ;; flush for in-memory backends would only make sense if multiple processes access the db
         ;; TODO: update can also be skipped for external stores when single process writes unless memory should be freed up
         ;;       -> add options to config
-        eavt-flushed (cond-> eavt (not= :mem (-> config :store :backend)) (di/-flush backend))
-        aevt-flushed (cond-> aevt (not= :mem (-> config :store :backend)) (di/-flush backend))
-        avet-flushed (cond-> avet (not= :mem (-> config :store :backend)) (di/-flush backend))
+        backend? (not= :mem (-> config :store :backend))
+        eavt-flushed (cond-> eavt backend? (di/-flush backend))
+        aevt-flushed (cond-> aevt backend? (di/-flush backend))
+        avet-flushed (cond-> avet backend? (di/-flush backend))
         keep-history? (:keep-history? config)
-        temporal-eavt-flushed (when keep-history? (cond-> temporal-eavt (not= :mem (-> config :store :backend)) (di/-flush backend)))
-        temporal-aevt-flushed (when keep-history? (cond-> temporal-aevt (not= :mem (-> config :store :backend)) (di/-flush backend)))
-        temporal-avet-flushed (when keep-history? (cond-> temporal-avet (not= :mem (-> config :store :backend)) (di/-flush backend)))]
+        temporal-eavt-flushed (when keep-history? (cond-> temporal-eavt backend? (di/-flush backend)))
+        temporal-aevt-flushed (when keep-history? (cond-> temporal-aevt backend? (di/-flush backend)))
+        temporal-avet-flushed (when keep-history? (cond-> temporal-avet backend? (di/-flush backend)))]
     (<?? S (k/assoc-in store [:db]
                        (merge
                         {:schema schema
@@ -50,13 +51,14 @@
                           {:temporal-eavt-key temporal-eavt-flushed
                            :temporal-aevt-key temporal-aevt-flushed
                            :temporal-avet-key temporal-avet-flushed}))))
+    (when backend?
     (reset! connection (assoc db-after
                               :eavt eavt-flushed
                               :aevt aevt-flushed
                               :avet avet-flushed
                               :temporal-eavt temporal-eavt-flushed
                               :temporal-aevt temporal-aevt-flushed
-                              :temporal-avet temporal-avet-flushed))
+                              :temporal-avet temporal-avet-flushed)))
     tx-report))
 
 (defn transact!
