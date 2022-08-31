@@ -4,19 +4,19 @@
   #?(:clj (:import [datahike.datom Datom])))
 
 #_(defn datom-to-vec [^Datom datom index-type start?]
-  (let [e (fn [datom] (when-not (or (and start? (= e0 (.-e datom))) ;; those transformations can be avoided by adjusting search-indices
-                                    (and (not start?) (= emax (.-e datom))))
-                        (.-e datom)))
-        tx (fn [datom] (when-not (or (and start? (= tx0 (.-tx datom)))
-                                     (and (not start?) (= txmax (.-tx datom))))
-                         (.-tx datom)))
-        datom-seq (case index-type
-                    :aevt (list (.-a datom) (e datom) (.-v datom) (tx datom))
-                    :avet (list (.-a datom) (.-v datom) (e datom) (tx datom))
-                    (list (e datom) (.-a datom) (.-v datom) (tx datom)))]
-    (->> datom-seq
-         (take-while some?)
-         vec)))
+    (let [e (fn [datom] (when-not (or (and start? (= e0 (.-e datom))) ;; those transformations can be avoided by adjusting search-indices
+                                      (and (not start?) (= emax (.-e datom))))
+                          (.-e datom)))
+          tx (fn [datom] (when-not (or (and start? (= tx0 (.-tx datom)))
+                                       (and (not start?) (= txmax (.-tx datom))))
+                           (.-tx datom)))
+          datom-seq (case index-type
+                      :aevt (list (.-a datom) (e datom) (.-v datom) (tx datom))
+                      :avet (list (.-a datom) (.-v datom) (e datom) (tx datom))
+                      (list (e datom) (.-a datom) (.-v datom) (tx datom)))]
+      (->> datom-seq
+           (take-while some?)
+           vec)))
 
 (defn datom-to-vec
   ([^Datom datom index-type start?] (datom-to-vec datom index-type start? false))
@@ -31,7 +31,7 @@
                              :aevt (list (.-a datom) (e datom) (.-v datom) (tx datom))
                              :avet (list (.-a datom) (.-v datom) (e datom) (tx datom))
                              (list (e datom) (.-a datom) (.-v datom) (tx datom)))
-                           incl-added? (concat (list (dd/datom-added datom))))]
+                     incl-added? (concat (list (dd/datom-added datom))))]
      (->> datom-seq
           (take-while some?)
           vec))))

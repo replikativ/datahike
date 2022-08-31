@@ -52,13 +52,13 @@
                            :temporal-aevt-key temporal-aevt-flushed
                            :temporal-avet-key temporal-avet-flushed}))))
     (when backend?
-    (reset! connection (assoc db-after
-                              :eavt eavt-flushed
-                              :aevt aevt-flushed
-                              :avet avet-flushed
-                              :temporal-eavt temporal-eavt-flushed
-                              :temporal-aevt temporal-aevt-flushed
-                              :temporal-avet temporal-avet-flushed)))
+      (reset! connection (assoc db-after
+                                :eavt eavt-flushed
+                                :aevt aevt-flushed
+                                :avet avet-flushed
+                                :temporal-eavt temporal-eavt-flushed
+                                :temporal-aevt temporal-aevt-flushed
+                                :temporal-avet temporal-avet-flushed)))
     tx-report))
 
 (defn transact!

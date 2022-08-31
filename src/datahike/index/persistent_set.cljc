@@ -70,9 +70,9 @@
 
 (defn insert [pset ^Datom datom index-type]
   (if (first (psset/slice pset
-                        (dd/datom (.-e datom) (.-a datom) (.-v datom) tx0)
-                        (dd/datom (.-e datom) (.-a datom) (.-v datom) txmax)
-                        (index-type->cmp-quick index-type)))
+                          (dd/datom (.-e datom) (.-a datom) (.-v datom) tx0)
+                          (dd/datom (.-e datom) (.-a datom) (.-v datom) txmax)
+                          (index-type->cmp-quick index-type)))
     pset
     (psset/conj pset datom (index-type->cmp-quick index-type))))
 
@@ -83,18 +83,18 @@
   (let [from (dd/datom (.-e datom) (.-a datom) nil tx0)
         cmp (case index-type
               :eavt (fn [d] (dd/combine-cmp
-                              (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))
-                              (dd/cmp-attr-quick (.-a datom) (.-a d))))
+                             (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))
+                             (dd/cmp-attr-quick (.-a datom) (.-a d))))
               :aevt (fn [d] (dd/combine-cmp
-                              (dd/cmp-attr-quick (.-a datom) (.-a d))
-                              (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))))
+                             (dd/cmp-attr-quick (.-a datom) (.-a d))
+                             (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))))
               :avet (fn [d] (dd/cmp-attr-quick (.-a datom) (.-a d))))
         old-datom (first (cond->> (take-while cmp (psset/slice pset from nil))
-                            (= :avet index-type)
-                            (filter (fn compare-e [d] (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))))))]
+                           (= :avet index-type)
+                           (filter (fn compare-e [d] (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))))))]
     (cond-> pset
-            old-datom (remove-datom old-datom index-type)
-            true (psset/conj datom (index-type->cmp-quick index-type)))))
+      old-datom (remove-datom old-datom index-type)
+      true (psset/conj datom (index-type->cmp-quick index-type)))))
 
 (defn temporal-upsert [pset ^Datom datom index-type old-val]
   (let [{:keys [e a v tx added]} datom]
@@ -104,14 +104,14 @@
           pset
           (-> pset
               (psset/conj (dd/datom e a old-val tx false)
-                        (index-type->cmp-quick index-type false))
+                          (index-type->cmp-quick index-type false))
               (psset/conj datom
-                        (index-type->cmp-quick index-type false))))
+                          (index-type->cmp-quick index-type false))))
         (psset/conj pset datom (index-type->cmp-quick index-type false)))
       (if old-val
         (psset/conj pset
-                  (dd/datom e a old-val tx false)
-                  (index-type->cmp-quick index-type false))
+                    (dd/datom e a old-val tx false)
+                    (index-type->cmp-quick index-type false))
         pset))))
 
 (extend-type PersistentSortedSet
@@ -242,9 +242,9 @@
                 (->> (async/<!! (k/get store address))
                      (map (fn [m]
                             (psset/map->node this
-                                           (update m :keys (fn [keys] (mapv #(when-let [datom-seq (seq %)]
-                                                                               (dd/datom-from-reader datom-seq))
-                                                                            keys))))))
+                                             (update m :keys (fn [keys] (mapv #(when-let [datom-seq (seq %)]
+                                                                                 (dd/datom-from-reader datom-seq))
+                                                                              keys))))))
                      (into-array Leaf)))
           (wrapped/miss cache node nil)
           nil))
