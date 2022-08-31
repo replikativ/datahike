@@ -216,7 +216,7 @@
 (defn create-storage [store config]
   ;; TODO use konserve cache? ideally this cache should be shared per database
   (let [cache (lru-cache-factory {}
-                                 :threshold (:cache-size config)
+                                 :threshold (:store-cache-size config)
                                  :on-evict
                                  (fn [^Node node]
                                    (debug "evicting: " (.-_address node))

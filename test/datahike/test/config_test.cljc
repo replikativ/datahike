@@ -39,7 +39,8 @@
                                         :index-log-size       dih/default-index-log-size
                                         :index-data-node-size dih/default-index-data-node-size}
                          :schema-flexibility :write
-                         :cache-size 100000}]
+                         :search-cache-size c/default-search-cache-size
+                         :store-cache-size c/default-store-cache-size}]
     (is (= (merge default-new-cfg
                   {:store {:backend :mem :id "deprecated-test"}})
            (c/from-deprecated mem-cfg)))
@@ -57,7 +58,8 @@
                      :keep-history? true
                      :schema-flexibility :write
                      :index c/default-index
-                     :cache-size 100000}
+                     :search-cache-size c/default-search-cache-size
+                     :store-cache-size c/default-store-cache-size}
                     (when (seq (di/default-index-config c/default-index))
                       {:index-config (di/default-index-config c/default-index)}))
              (-> config (dissoc :name)))))))

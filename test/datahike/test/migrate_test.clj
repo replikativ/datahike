@@ -208,7 +208,8 @@
                       :name               "load-entities-history-test-source"
                       :keep-history?      true
                       :schema-flexibility :write
-                      :cache-size         1
+                      :search-cache-size  0
+                      :store-cache-size   1
                       :attribute-refs?    false}
           schema      [{:db/ident       :name
                         :db/cardinality :db.cardinality/one

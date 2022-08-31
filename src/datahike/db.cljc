@@ -722,12 +722,12 @@
 (def db-caches (cw/lru-cache-factory {} :threshold (:datahike-max-db-caches env 5)))
 
 (defn memoize-for [^DB db key f]
-  (if (or (zero? (or (:cache-size (.-config db)) 0))
+  (if (or (zero? (or (:search-cache-size (.-config db)) 0))
           (zero? (.-hash db))) ;; empty db
     (f)
     (let [db-cache (cw/lookup-or-miss db-caches
                                       (.-hash db)
-                                      (fn [_] (lru-datom-cache-factory {} :threshold (:cache-size (.-config db)))))]
+                                      (fn [_] (lru-datom-cache-factory {} :threshold (:search-cache-size (.-config db)))))]
       (cw/lookup-or-miss db-cache key (fn [_] (f))))))
 
 (defn- search-current-indices [^DB db pattern]

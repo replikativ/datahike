@@ -11,7 +11,7 @@
 (defn add-cache-and-handlers [raw-store config]
   (cond->> (kc/ensure-cache
             raw-store
-            (atom (cache/lru-cache-factory {} :threshold (:cache-size config))))
+            (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config))))
     (not= :mem (get-in config [:backend :store]))
     (di/add-konserve-handlers config)))
 

@@ -26,22 +26,26 @@
   {"mem-set" {:store {:backend :mem :id "performance-set"}
               :index :datahike.index/persistent-set
               :keep-history? false
-              :cache-size 1
+              :search-cache-size 0
+              :store-cache-size 1
               :schema-flexibility :write}
    "mem-hht" {:store {:backend :mem :id "performance-hht"}
               :index :datahike.index/hitchhiker-tree
               :keep-history? false
-              :cache-size 1
+              :search-cache-size 0
+              :store-cache-size 1
               :schema-flexibility :write}
    "file-set" {:store {:backend :file :path "/tmp/performance-set"}
                :index :datahike.index/persistent-set
                :keep-history? false
-               :cache-size 1
+               :search-cache-size 0
+               :store-cache-size 1
                :schema-flexibility :write}
    "file-hht" {:store {:backend :file :path "/tmp/performance-hht"}
                :index :datahike.index/hitchhiker-tree
                :keep-history? false
-               :cache-size 1
+               :search-cache-size 0
+               :store-cache-size 1
                :schema-flexibility :write}})
 
 (def schema

@@ -8,12 +8,16 @@
             [datahike.index :as di])
   (:import [java.net URI]))
 
-(def ^:dynamic default-index :datahike.index/hitchhiker-tree) ;; TODO: the same for keep-history?
+(def ^:dynamic default-index :datahike.index/hitchhiker-tree)
+(def ^:dynamic default-search-cache-size 10000)
+(def ^:dynamic default-store-cache-size 1000)
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
 (s/def ::schema-flexibility #{:read :write})
 (s/def ::attribute-refs? boolean?)
+(s/def ::search-cache-size nat-int?)
+(s/def ::store-cache-size pos-int?)
 (s/def ::entity (s/or :map associative? :vec vector?))
 (s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
 (s/def ::name string?)
@@ -28,6 +32,8 @@
                                          ::keep-history?
                                          ::schema-flexibility
                                          ::attribute-refs?
+                                         ::search-cache-size
+                                         ::store-cache-size
                                          ::initial-tx
                                          ::name]))
 
@@ -60,7 +66,8 @@
    :attribute-refs? false
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)
-   :cache-size 100000})
+   :search-cache-size default-search-cache-size
+   :store-cache-size default-store-cache-size})
 
 (defn int-from-env
   [key default]
@@ -98,7 +105,8 @@
    :name (z/rand-german-mammal)
    :attribute-refs? false
    :index default-index
-   :cache-size 100000
+   :search-cache-size default-search-cache-size
+   :store-cache-size default-store-cache-size
    :index-config (di/default-index-config default-index)})
 
 (defn remove-nils
@@ -134,7 +142,8 @@
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
                  :index index
-                 :cache-size (int-from-env :datahike-cache-size 100000)
+                 :search-cache-size (int-from-env :datahike-search-cache-size default-search-cache-size)
+                 :store-cache-size (int-from-env :datahike-store-cache-size default-store-cache-size)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
                                  index-config
                                  (di/default-index-config index))}
