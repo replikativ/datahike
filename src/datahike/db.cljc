@@ -1553,11 +1553,10 @@
         keep-history? (and (-keep-history? db) (not (no-history? db a-ident))
                            (not= :db/txInstant a-ident))
         op-count      (.op-count db)
-        old-val (when keep-history?
-                  (:v (first (di/-slice (:eavt db)
-                                        (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                        (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                        :eavt))))]
+        old-datom (first (di/-slice (:eavt db)
+                                    (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                    (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                    :eavt))]
     (cond-> db
       ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
       schema? (try
@@ -1565,14 +1564,14 @@
                 (catch clojure.lang.ExceptionInfo e
                   db))
 
-      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt op-count old-val))
-      true          (update-in [:eavt] #(di/-upsert % datom :eavt op-count))
+      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt op-count (:v old-datom)))
+      true          (update-in [:eavt] #(di/-upsert % datom :eavt op-count old-datom))
 
-      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt op-count old-val))
-      true          (update-in [:aevt] #(di/-upsert % datom :aevt op-count))
+      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt op-count (:v old-datom)))
+      true          (update-in [:aevt] #(di/-upsert % datom :aevt op-count old-datom))
 
-      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count old-val))
-      indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count))
+      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count (:v old-datom)))
+      indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count old-datom))
 
       true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))

@@ -7,7 +7,7 @@
   (-count [index] "Returns the number of datoms in the index")
   (-insert [index datom index-type op-count] "Inserts a datom into the index")
   (-temporal-insert [index datom index-type op-count] "Inserts a datom in a history index")
-  (-upsert [index datom index-type op-count] "Inserts or updates a datom into the index")
+  (-upsert [index datom index-type op-count old-datom] "Inserts or updates a datom into the index")
   (-temporal-upsert [index datom index-type op-count old-val] "Inserts or updates a datom in a history index")
   (-remove [index datom index-type op-count] "Removes a datom from the index")
   (-slice [index from to index-type] "Returns a slice of the index")

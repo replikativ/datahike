@@ -79,22 +79,11 @@
 (defn temporal-insert [pset ^Datom datom index-type]
   (psset/conj pset datom (index-type->cmp-quick index-type false)))
 
-(defn upsert [pset ^Datom datom index-type]
-  (let [from (dd/datom (.-e datom) (.-a datom) nil tx0)
-        cmp (case index-type
-              :eavt (fn [d] (dd/combine-cmp
-                             (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))
-                             (dd/cmp-attr-quick (.-a datom) (.-a d))))
-              :aevt (fn [d] (dd/combine-cmp
-                             (dd/cmp-attr-quick (.-a datom) (.-a d))
-                             (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))))
-              :avet (fn [d] (dd/cmp-attr-quick (.-a datom) (.-a d))))
-        old-datom (first (cond->> (take-while cmp (psset/slice pset from nil))
-                           (= :avet index-type)
-                           (filter (fn compare-e [d] (#?(:clj Long/compare :cljs -) (.-e datom) (.-e d))))))]
-    (cond-> pset
-      old-datom (remove-datom old-datom index-type)
-      true (psset/conj datom (index-type->cmp-quick index-type)))))
+(defn upsert [pset ^Datom datom index-type old-datom]
+  (psset/conj (if old-datom
+                (remove-datom pset old-datom index-type)
+                pset)
+              datom (index-type->cmp-quick index-type)))
 
 (defn temporal-upsert [pset ^Datom datom index-type old-val]
   (let [{:keys [e a v tx added]} datom]
@@ -128,8 +117,8 @@
     (insert pset datom index-type))
   (-temporal-insert [^PersistentSortedSet pset datom index-type _op-count]
     (psset/conj pset datom (index-type->cmp-quick index-type)))
-  (-upsert [^PersistentSortedSet pset datom index-type _op-count]
-    (upsert pset datom index-type))
+  (-upsert [^PersistentSortedSet pset datom index-type _op-count old-datom]
+    (upsert pset datom index-type old-datom))
   (-temporal-upsert [^PersistentSortedSet pset datom index-type _op-count old-val]
     (temporal-upsert pset datom index-type old-val))
   (-remove [^PersistentSortedSet pset datom index-type _op-count]

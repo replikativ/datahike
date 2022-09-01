@@ -133,7 +133,7 @@
     (insert tree datom index-type op-count))
   (-temporal-insert [tree datom index-type op-count]
     (temporal-insert tree datom index-type op-count))
-  (-upsert [tree datom index-type op-count]
+  (-upsert [tree datom index-type op-count old-datom]
     (upsert tree datom index-type op-count))
   (-temporal-upsert [tree datom index-type op-count old-val]
     (temporal-upsert tree datom index-type op-count old-val))
@@ -160,7 +160,7 @@
     (insert tree datom index-type op-count))
   (-temporal-insert [index datom index-type op-count]
     (temporal-insert index datom index-type op-count))
-  (-upsert [tree datom index-type op-count]
+  (-upsert [tree datom index-type op-count old-datom]
     (upsert tree datom index-type op-count))
   (-temporal-upsert [tree datom index-type op-count old-val]
     (temporal-upsert tree datom index-type op-count old-val))
