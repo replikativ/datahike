@@ -1,8 +1,9 @@
 (ns ^:no-doc datahike.pull-api
   (:require
-   [datahike.db :as db]
-   #?@(:cljs [datalog.parser.pull :refer [PullSpec]])
+   [datahike.db.utils :as dbu]
+   [datahike.db.interface :as dbi]
    [datalog.parser.pull :as dpp])
+  #?@(:cljs [datalog.parser.pull :refer [PullSpec]])
   #?(:clj
      (:import
       [datahike.datom Datom]
@@ -134,9 +135,9 @@
                (cond->> datoms
                  limit (into [] (take limit))))]
     (if found
-      (let [ref?       (db/ref? db attr)
-            component? (and ref? (db/component? db attr))
-            multi?     (if forward? (db/multival? db attr)
+      (let [ref?       (dbu/ref? db attr)
+            component? (and ref? (dbu/component? db attr))
+            multi?     (if forward? (dbu/multival? db attr)
                            (not component?))
             datom-val  (if forward? (fn [d] (.-v ^Datom d))
                            (fn [d] (.-e ^Datom d)))]
@@ -176,21 +177,21 @@
   [db spec eid frames]
   (let [[attr-key opts] spec]
     (if (= :db/id attr-key)
-      (if (not-empty (db/-datoms db :eavt [eid]))
+      (if (not-empty (dbi/-datoms db :eavt [eid]))
         (conj (rest frames)
               (update (first frames) :kvps assoc! :db/id eid))
         frames)
       (let [attr     (:attr opts)
             forward? (= attr-key attr)
-            a (if (and (:attribute-refs? (db/-config db))
+            a (if (and (:attribute-refs? (dbi/-config db))
                        (not (number? attr)))
-                (db/-ref-for db attr)
+                (dbi/-ref-for db attr)
                 attr)
             results  (if (nil? a)
                        []
                        (if forward?
-                         (db/-datoms db :eavt [eid a])
-                         (db/-datoms db :avet [a eid])))]
+                         (dbi/-datoms db :eavt [eid a])
+                         (dbi/-datoms db :avet [a eid])))]
         (pull-attr-datoms db attr-key attr eid forward?
                           results opts frames)))))
 
@@ -243,10 +244,10 @@
 
 (defn pull-wildcard-expand
   [db frame frames eid pattern]
-  (let [datoms (group-by (fn [d] (if (:attribute-refs? (db/-config db))
-                                   (db/-ident-for db (.-a ^Datom d))
+  (let [datoms (group-by (fn [d] (if (:attribute-refs? (dbi/-config db))
+                                   (dbi/-ident-for db (.-a ^Datom d))
                                    (.-a ^Datom d)))
-                         (db/-datoms db :eavt [eid]))
+                         (dbi/-datoms db :eavt [eid]))
         {:keys [attr recursion]} frame
         rec (cond-> recursion
               (some? attr) (push-recursion attr eid))]
@@ -301,16 +302,16 @@
 
 (defn pull-spec
   [db pattern eids multi?]
-  (let [eids (into [] (map #(db/entid-strict db %)) eids)]
+  (let [eids (into [] (map #(dbu/entid-strict db %)) eids)]
     (pull-pattern db (list (initial-frame pattern eids multi?)))))
 
 (defn pull
   ([db {:keys [selector eid]}]
    (pull db selector eid))
   ([db selector eid]
-   {:pre [(db/db? db)]}
+   {:pre [(dbu/db? db)]}
    (pull-spec db (dpp/parse-pull selector) [eid] false)))
 
 (defn pull-many [db selector eids]
-  {:pre [(db/db? db)]}
+  {:pre [(dbu/db? db)]}
   (pull-spec db (dpp/parse-pull selector) eids true))

@@ -2,8 +2,9 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing]])
-   [datahike.constants :as const]
    [datahike.api :as d]
+   [datahike.constants :as const]
+   [datahike.db.interface :as dbi]
    [datahike.test.utils :refer [setup-db]])
   (:import [java.util Date]))
 
@@ -116,7 +117,7 @@
              (d/q query (d/as-of @conn tx-id) [:name "Alice"]))))
     (testing "print DB"
       (let [as-of-str (pr-str (d/as-of @conn tx-id))
-            origin-str (pr-str (datahike.db/-origin (d/as-of @conn tx-id)))]
+            origin-str (pr-str (dbi/-origin (d/as-of @conn tx-id)))]
         (is (= "#datahike/AsOfDB {:origin #datahike/DB {:max-tx 536870913 :max-eid 4} :time-point 536870914}"
                as-of-str))
         (is (= "#datahike/DB {:max-tx 536870913 :max-eid 4}"

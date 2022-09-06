@@ -33,7 +33,6 @@
            :test {:extra-paths ["test"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.64.1010"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.0.107"}
-                               io.replikativ/datahike-jdbc {:mvn/version "0.1.2-SNAPSHOT"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}}}
 
            :repl {:extra-deps {cider/cider-nrepl           {:mvn/version "0.28.3"}

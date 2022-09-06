@@ -1,18 +1,21 @@
 (ns ^:no-doc datahike.core
   (:refer-clojure :exclude [filter])
   (:require
-   [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
-   [datahike.datom :as dd]
-   [datahike.pull-api :as dp]
-   [datahike.query :as dq]
    [datahike.constants :as dc]
-   [datahike.impl.entity :as de])
+   [datahike.datom :as dd]
+   [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
+   [datahike.db.interface :as dbi]
+   [datahike.db.transaction :as dbt]
+   [datahike.db.utils :as dbu]
+   [datahike.impl.entity :as de]
+   [datahike.pull-api :as dp]
+   [datahike.query :as dq])
   #?(:clj
      (:import
-      [clojure.lang IDeref IBlockingDeref IPending]
       [datahike.db FilteredDB]
       [datahike.impl.entity Entity]
-      [java.util UUID])))
+      [java.util UUID]
+      (clojure.lang IDeref IBlockingDeref IAtom IPending))))
 
 (def ^:const ^:no-doc tx0 dc/tx0)
 
@@ -23,12 +26,12 @@
   entity de/entity)
 
 (def ^{:arglists '([db eid])
-       :doc      "Given lookup ref `[unique-attr value]`, returns numberic entity id.
+       :doc      "Given lookup ref `[unique-attr value]`, returns numeric entity id.
 
              If entity does not exist, returns `nil`.
 
              For numeric `eid` returns `eid` itself (does not check for entity existence in that case)."}
-  entid db/entid)
+  entid dbu/entid)
 
 (defn entity-db
   "Returns a db that entity was created from."
@@ -79,7 +82,7 @@
 
 (def ^{:arglists '([x])
        :doc      "Returns `true` if the given value is an immutable database, `false` otherwise."}
-  db? db/db?)
+  db? dbu/db?)
 
 (def ^{:arglists '([e a v] [e a v tx] [e a v tx added])
        :doc      "Low-level fn to create raw datoms.
@@ -110,7 +113,7 @@
 
 (defn filter
   [db pred]
-  {:pre [(db/db? db)]}
+  {:pre [(dbu/db? db)]}
   (if (is-filtered db)
     (let [^FilteredDB fdb db
           orig-pred (.-pred fdb)
@@ -124,18 +127,18 @@
   "Same as [[transact!]], but applies to an immutable database value. Returns transaction report (see [[transact!]])."
   ([db tx-data] (with db tx-data nil))
   ([db tx-data tx-meta]
-   {:pre [(db/db? db)]}
+   {:pre [(dbu/db? db)]}
    (if (is-filtered db)
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
-     (db/transact-tx-data (db/map->TxReport
-                           {:db-before db
-                            :db-after  db
-                            :tx-data   []
-                            :tempids   {}
-                            :tx-meta   tx-meta}) tx-data))))
+     (dbt/transact-tx-data (db/map->TxReport
+                            {:db-before db
+                             :db-after  db
+                             :tx-data   []
+                             :tempids   {}
+                             :tx-meta   tx-meta}) tx-data))))
 
 (defn load-entities-with [db entities tx-meta]
-  (db/transact-entities-directly
+  (dbt/transact-entities-directly
    (db/map->TxReport {:db-before db
                       :db-after  db
                       :tx-data   []
@@ -146,46 +149,46 @@
 (defn db-with
   "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
   [db tx-data]
-  {:pre [(db/db? db)]}
+  {:pre [(dbu/db? db)]}
   (:db-after (with db tx-data)))
 
 ; Index lookups
 
 (defn datoms
-  ([db index] {:pre [(db/db? db)]} (db/-datoms db index []))
-  ([db index c1] {:pre [(db/db? db)]} (db/-datoms db index [c1]))
-  ([db index c1 c2] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2]))
-  ([db index c1 c2 c3] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3]))
-  ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-datoms db index [c1 c2 c3 c4])))
+  ([db index] {:pre [(dbu/db? db)]} (dbi/-datoms db index []))
+  ([db index c1] {:pre [(dbu/db? db)]} (dbi/-datoms db index [c1]))
+  ([db index c1 c2] {:pre [(dbu/db? db)]} (dbi/-datoms db index [c1 c2]))
+  ([db index c1 c2 c3] {:pre [(dbu/db? db)]} (dbi/-datoms db index [c1 c2 c3]))
+  ([db index c1 c2 c3 c4] {:pre [(dbu/db? db)]} (dbi/-datoms db index [c1 c2 c3 c4])))
 
 (defn seek-datoms
-  ([db index] {:pre [(db/db? db)]} (db/-seek-datoms db index []))
-  ([db index c1] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1]))
-  ([db index c1 c2] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2]))
-  ([db index c1 c2 c3] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2 c3]))
-  ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-seek-datoms db index [c1 c2 c3 c4])))
+  ([db index] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index []))
+  ([db index c1] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index [c1]))
+  ([db index c1 c2] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index [c1 c2]))
+  ([db index c1 c2 c3] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index [c1 c2 c3]))
+  ([db index c1 c2 c3 c4] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index [c1 c2 c3 c4])))
 
 (defn rseek-datoms
   "Same as [[seek-datoms]], but goes backwards until the beginning of the index."
-  ([db index] {:pre [(db/db? db)]} (db/-rseek-datoms db index []))
-  ([db index c1] {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1]))
-  ([db index c1 c2] {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1 c2]))
-  ([db index c1 c2 c3] {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1 c2 c3]))
-  ([db index c1 c2 c3 c4] {:pre [(db/db? db)]} (db/-rseek-datoms db index [c1 c2 c3 c4])))
+  ([db index] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index []))
+  ([db index c1] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index [c1]))
+  ([db index c1 c2] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index [c1 c2]))
+  ([db index c1 c2 c3] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index [c1 c2 c3]))
+  ([db index c1 c2 c3 c4] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index [c1 c2 c3 c4])))
 
 (defn index-range
   [db attr start end]
-  {:pre [(db/db? db)]}
-  (db/-index-range db attr start end))
+  {:pre [(dbu/db? db)]}
+  (dbi/-index-range db attr start end))
 
 ;; Conn
 
 (defn conn?
   "Returns `true` if this is a connection to a DataScript db, `false` otherwise."
   [conn]
-  (and #?(:clj  (instance? clojure.lang.IDeref conn)
+  (and #?(:clj  (instance? IDeref conn)
           :cljs (satisfies? cljs.core/IDeref conn))
-       (db/db? @conn)))
+       (dbu/db? @conn)))
 
 (defn conn-from-db
   "Creates a mutable reference to a given immutable database. See [[create-conn]]."
@@ -250,7 +253,7 @@
 
 (defn- atom? [a]
   #?(:cljs (instance? Atom a)
-     :clj  (instance? clojure.lang.IAtom a)))
+     :clj  (instance? IAtom a)))
 
 (defn listen!
   "Listen for changes on the given connection. Whenever a transaction is applied to the database via [[transact!]], the callback is called
@@ -277,7 +280,7 @@
 (def ^:private last-tempid (atom -1000000))
 
 (defn tempid
-  "Allocates and returns an unique temporary id (a negative integer). Ignores `part`. Returns `x` if it is specified.
+  "Allocates and returns a unique temporary id (a negative integer). Ignores `part`. Returns `x` if it is specified.
 
    Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
   ([part]
