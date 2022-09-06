@@ -1482,7 +1482,7 @@
                     update-rschema)
         true (update :op-count inc))
 
-      (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))] ;; tovarisch
+      (if-some [removing ^Datom (first (-search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (cond-> db
           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
@@ -1967,7 +1967,7 @@
                     e (entid-strict db e)
                     _ (validate-attr a entity db)
                     nv (if (ref? db a) (entid-strict db nv) nv)
-                    datoms (vec (-search db [e a]))]        ;; tovarisch
+                    datoms (vec (-search db [e a]))]
                 (if (nil? ov)
                   (if (empty? datoms)
                     (recur (transact-add report [:db/add e a nv]) entities)
@@ -2047,14 +2047,14 @@
                                 (let [v (if (ref? db a) (entid-strict db v) v)]
                                   (validate-val v entity db)
                                   [e a v]))
-                      datoms (vec (-search db pattern))] ;; tovarisch
+                      datoms (vec (-search db pattern))]
                   (recur (reduce transact-retract-datom report datoms) entities))
                 (recur report entities))
 
               (= op :db.fn/retractAttribute)
               (if-let [e (entid db e)]
                 (let [_ (validate-attr a entity db)
-                      datoms (vec (-search db [e a]))]  ;; tovarisch
+                      datoms (vec (-search db [e a]))]
                   (recur (reduce transact-retract-datom report datoms)
                          (concat (retract-components db datoms) entities)))
                 (recur report entities))
@@ -2062,13 +2062,13 @@
               (or (= op :db.fn/retractEntity)
                   (= op :db/retractEntity))
               (if-let [e (entid db e)]
-                (let [e-datoms (vec (-search db [e]))       ;; tovarisch
+                (let [e-datoms (vec (-search db [e]))
                       v-datoms (->> (map (partial -ident-for db)
                                          (-attrs-by db :db.type/ref))
                                     (mapcat (fn [a] (-search db [nil a e])))
                                     vec)
                       retracted-comps (retract-components db e-datoms)]
-                  (recur (reduce transact-retract-datom report (concat e-datoms v-datoms)) ;; tovarisch
+                  (recur (reduce transact-retract-datom report (concat e-datoms v-datoms))
                          (concat retracted-comps entities)))
                 (recur report entities))
 
@@ -2077,7 +2077,7 @@
                 (let [history (HistoricalDB. db)]
                   (if-some [e (entid history e)]
                     (let [v (if (ref? history a) (entid-strict history v) v)
-                          old-datoms (vec (-search history [e a v]))]
+                          old-datoms (-search history [e a v])]
                       (recur (reduce transact-purge-datom report old-datoms) entities))
                     (raise "Can't find entity with ID " e " to be purged" {:error :transact/purge, :operation op, :tx-data entity})))
                 (raise "Purge is only available in temporal databases." {:error :transact/purge :operation op :tx-data entity}))
