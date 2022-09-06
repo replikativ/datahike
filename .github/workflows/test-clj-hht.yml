@@ -1,0 +1,31 @@
+
+name: Test CLJ
+
+on:
+  push
+  
+jobs:
+  
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with: 
+          submodules: recursive
+
+      - name: Prepare java
+        uses: actions/setup-java@v2
+        with:
+          distribution: 'zulu'
+          java-version: '11'
+
+      - name: Install clojure tools
+        uses: DeLaGuardo/setup-clojure@3.5
+        with:
+          cli: 1.10.3.998
+
+      - name: Run clojure hitchhiker-tree tests
+        run: clojure -M:test -m kaocha.runner --focus :clj-hht
+        shell: bash
