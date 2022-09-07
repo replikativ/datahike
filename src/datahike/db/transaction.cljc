@@ -295,15 +295,23 @@
               :entity entity
               :assertion acc}))))
 
-(defn- upsert-eid [db entity]
+(defn- upsert-eid [db entity tempids] ;; TODO: adjust to datascript?
   (when-let [unique-idents (not-empty (dbi/-attrs-by db :db.unique/identity))]
     (->>
      (reduce-kv
-      (fn [acc a-ident v]                                 ;; acc = [e a v]
-        (if (contains? unique-idents a-ident)
-          (let [a (if (:attribute-refs? (dbi/-config db)) (dbi/-ref-for db a-ident) a-ident)]
-            (validate-val v [nil nil a v nil] db)
-            (if-some [e (:e (first (dbi/-datoms db :avet [a v])))]
+      (fn [acc a-ident v-original]                                 ;; acc = [e a v]
+        (if-not (contains? unique-idents a-ident)
+          acc
+          (let [a (if (:attribute-refs? (dbi/-config db))
+                    (dbi/-ref-for db a-ident)
+                    a-ident)
+                tempid-val (and (dbu/ref? db a-ident) (tempid? v-original))
+                v (if tempid-val
+                    (tempids v-original)
+                    v-original)]
+            (if-some [e (when v
+                          (validate-val v [nil nil a v nil] db)
+                          (:e (first (dbi/-datoms db :avet [a v]))))]
               (cond
                 (nil? acc) [e a v]                    ;; first upsert
                 (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
@@ -315,8 +323,7 @@
                           :entity entity
                           :assertion [e a v]
                           :conflict [_e _a _v]})))
-              acc))                                   ;; upsert attr, but resolves to nothing
-          acc))                                       ;; non-upsert attr
+              acc))))                                   ;; upsert attr, but resolves to nothing                                      ;; non-upsert attr
       nil
       entity)
      (check-upsert-conflict entity)
@@ -512,7 +519,7 @@
             (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
                    {:error :transact/schema :entity entity})))))))
 
-(defn entity-map->op-vec [db report entity]
+(defn entity-map->op-vec [db {:keys [tempids] :as report} entity]
   (let [old-eid (:db/id entity)
         tx? (tx-id? old-eid) ;; :db/current-tx / "datomic.tx"
         resolved-eid (cond tx?                   (current-tx report)
@@ -521,20 +528,17 @@
         updated-entity (assoc entity :db/id resolved-eid)
         updated-report (cond-> report
                          tx? (allocate-eid old-eid resolved-eid))
-        upserted-eid (upsert-eid db updated-entity)]
+        resolved-tempid (tempids resolved-eid)
+        upserted-eid (upsert-eid db updated-entity tempids)]
     (if (and (some? upserted-eid)
-             (tempid? resolved-eid)
-             (contains? (:tempids updated-report) resolved-eid)
-             (not= upserted-eid (get-in updated-report [:tempids resolved-eid])))
+             resolved-tempid
+             (not= upserted-eid resolved-tempid))
       {:retry? true :old-eid resolved-eid :upserted-eid upserted-eid}
       (let [new-eid (cond
-                      (some? upserted-eid) upserted-eid
-                      (nil? resolved-eid) (next-eid db)
-                      (or (number? resolved-eid)
-                          (string? resolved-eid)) (if (tempid? resolved-eid)
-                                                    (or (get-in updated-report [:tempids resolved-eid])
-                                                        (next-eid db))
-                                                    resolved-eid)
+                      (some? upserted-eid)   upserted-eid
+                      (nil? resolved-eid)    (next-eid db)
+                      (tempid? resolved-eid) (or resolved-tempid (next-eid db))
+                      (number? resolved-eid) resolved-eid
                       :else (raise "Expected number, string or lookup ref for :db/id, got " old-eid
                                    {:error :entity-id/syntax, :entity updated-entity}))
             new-entity (assoc updated-entity :db/id new-eid)]
