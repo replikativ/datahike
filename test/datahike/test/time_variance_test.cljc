@@ -357,19 +357,20 @@
       (is (= (:eavt db) (-> db (d/since current-tx) :origin-db :eavt))))))
 
 (deftest test-filter-current-values-of-same-transaction
-  (let [cfg                                {:store              {:backend :mem}
-                                            :keep-history?      true
-                                            :schema-flexibility :write
-                                            :attribute-refs?    false}]
-    (testing "cardinality one"
-      (let [schema [{:db/ident       :name
+  (let [keyword-cfg                                {:store              {:backend :mem}
+                                                    :keep-history?      true
+                                                    :schema-flexibility :write
+                                                    :attribute-refs?    false}
+        name-schema {:db/ident       :name
                      :db/cardinality :db.cardinality/one
                      :db/unique      :db.unique/identity
-                     :db/valueType   :db.type/string}
+                     :db/valueType   :db.type/string}]
+    (testing "cardinality one"
+      (let [schema [name-schema
                     {:db/ident       :aka
                      :db/cardinality :db.cardinality/one
                      :db/valueType   :db.type/string}]
-            conn (setup-db cfg)
+            conn (setup-db keyword-cfg)
             _ (d/transact conn schema)
             {:keys [tx-data] :as tx-report} (d/transact conn [{:name "Michal" :aka "Tupen"}])
             _ (println tx-report)
@@ -385,23 +386,35 @@
         (is (= nil
                (d/pull @conn [:aka] michal)))))
     (testing "cardinality many"
-      (let [schema [{:db/ident       :name
-                     :db/cardinality :db.cardinality/one
-                     :db/unique      :db.unique/identity
-                     :db/valueType   :db.type/string}
-                    {:db/ident       :aka
-                     :db/cardinality :db.cardinality/many
-                     :db/valueType   :db.type/string}]
-            conn (setup-db cfg)
-            _ (d/transact conn schema)
-            {:keys [tx-data]} (d/transact conn [{:name "Michal" :aka "Tupen"}])
-            michal (:e (first (filter #(= "Michal" (:v %)) tx-data)))
-            {{:keys [db/current-tx]} :tempids} (d/transact conn [[:db/retract michal :aka "Tupen"]
-                                                                 [:db/add michal :aka "Devil"]
-                                                                 [:db/retract michal :aka "Tupen"]])
-            _                                  (d/transact conn [[:db/retract michal :aka "Devil"]])
-            as-of-db (d/as-of @conn current-tx)]
-        (is (= {:aka ["Devil"]}
-               (d/pull as-of-db [:aka] michal)))
-        (is (= nil
-               (d/pull @conn [:aka] michal)))))))
+      (testing "keyword attributes"
+        (let [schema [name-schema
+                      {:db/ident       :aka
+                       :db/cardinality :db.cardinality/many
+                       :db/valueType   :db.type/string}]
+              conn (setup-db keyword-cfg)
+              _ (d/transact conn schema)
+              {:keys [tx-data]} (d/transact conn [{:name "Michal" :aka "Tupen"}])
+              michal (:e (first (filter #(= "Michal" (:v %)) tx-data)))
+              {{:keys [db/current-tx]} :tempids} (d/transact conn [[:db/retract michal :aka "Tupen"]
+                                                                   [:db/add michal :aka "Devil"]
+                                                                   [:db/retract michal :aka "Tupen"]])
+              _                                  (d/transact conn [[:db/retract michal :aka "Devil"]])
+              as-of-db (d/as-of @conn current-tx)]
+          (is (= {:aka ["Devil"]}
+                 (d/pull as-of-db [:aka] michal)))
+          (is (= nil
+                 (d/pull @conn [:aka] michal)))))
+
+      (testing "reference attributes show all options"
+        (let [schema [name-schema
+                      {:db/ident       :aka
+                       :db/cardinality :db.cardinality/many
+                       :db/valueType   :db.type/string}]
+              conn (setup-db (assoc keyword-cfg :attribute-refs? true))
+              _ (d/transact conn schema)
+              {tx-data                 :tx-data
+               {:keys [db/current-tx]} :tempids} (d/transact conn [{:name "Michal" :aka ["Tupen" "Devil"]}])
+              michal (:e (first (filter #(= "Michal" (:v %)) tx-data)))
+              as-of-db (d/as-of @conn current-tx)]
+          (is (= {:aka ["Devil" "Tupen"]}
+                 (d/pull as-of-db [:aka] michal))))))))

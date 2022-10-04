@@ -340,12 +340,12 @@
   #?(:cljs (instance? js/Date d)
      :clj (instance? Date d)))
 
-(defn get-current-values [rschema history-datoms]
+(defn get-current-values [db history-datoms]
   (->> history-datoms
        (group-by (fn [^Datom datom] [(.-e datom) (.-a datom)]))
        (mapcat
         (fn [[[_ a] datoms]]
-          (if (contains? (get-in rschema [:db.cardinality/many]) a)
+          (if (dbu/multival? db a)
             (->> datoms
                  (sort-by datom-tx)
                  (reduce (fn [current-datoms ^Datom datom]
@@ -370,7 +370,7 @@
         filtered-tx-ids (dbu/filter-txInstant datoms as-of-pred db)
         filtered-datoms (->> datoms
                              (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
-                             (get-current-values (dbi/-rschema db)))]
+                             (get-current-values db))]
     filtered-datoms))
 
 (defrecord-updatable AsOfDB [origin-db time-point]
