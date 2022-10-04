@@ -1,10 +1,11 @@
 (ns datahike.test.api-test
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+      :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.test.utils :as utils]
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.db.interface :as dbi]
    [datahike.constants :refer [tx0]]))
 
 (deftest test-transact-docs
@@ -815,7 +816,7 @@
                                                  3 3}
                            :avet-count          0}
                     schema-on-write?  update-for-schema-on-write
-                    (db/-keep-history? @conn) (update-for-history schema-on-write?)
+                    (dbi/-keep-history? @conn) (update-for-history schema-on-write?)
                     (:attribute-refs? (.-config @conn)) update-for-attr-refs))))
 
 (deftest test-metrics-hht
