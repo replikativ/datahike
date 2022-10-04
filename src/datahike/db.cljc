@@ -11,8 +11,9 @@
    [datahike.db.utils :as dbu]
    [datahike.index :as di]
    [datahike.schema :as ds]
-   [taoensso.timbre :refer [warn]]
-   [datahike.tools :as tools :refer [raise]])
+   [datahike.tools :as tools :refer [raise]]
+   [medley.core :as m]
+   [taoensso.timbre :refer [warn]])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable]]
                             [datahike.datom :refer [combine-cmp datom]]
                             [datahike.tools :refer [case-tree raise]]))
@@ -674,7 +675,7 @@
             (reduce-kv
              (fn [coll k v]
                (let [v-ref (idents v)
-                     ;; datom val can be system schema eid (v-ref), or ident or regular (v)
+                       ;; datom val can be system schema eid (v-ref), or ident or regular (v)
                      d-val (if (and (not= k :db/ident) v-ref) v-ref v)]
                  (conj coll (dd/datom id (idents k) d-val tx0))))
              []
@@ -805,3 +806,27 @@
 
 (defn db-from-reader [{:keys [schema datoms]}]
   (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema))
+
+(defn metrics [^DB db]
+  (let [update-count-in (fn [m ks] (update-in m ks #(if % (inc %) 1)))
+        counts-map (->> (di/-seq (.-eavt db))
+                        (reduce (fn [m datom]
+                                  (-> m
+                                      (update-count-in [:per-attr-counts (dbi/-ident-for db (.-a datom))])
+                                      (update-count-in [:per-entity-counts (.-e datom)])))
+                                {:per-attr-counts    {}
+                                 :per-entity-counts  {}}))
+        sum-indexed-attr-counts (fn [attr-counts] (->> attr-counts
+                                                       (m/filter-keys #(contains? (:db/index (.-rschema db)) %))
+                                                       vals
+                                                       (reduce + 0)))]
+    (cond-> (merge counts-map
+                   {:count (di/-count (.-eavt db))
+                    :avet-count (->> (:per-attr-counts counts-map)
+                                     sum-indexed-attr-counts)})
+      (dbi/-keep-history? db)
+      (merge {:temporal-count (di/-count (.-temporal-eavt db))
+              :temporal-avet-count (->> (di/-seq (.-temporal-eavt db))
+                                        (reduce (fn [m datom] (update-count-in m [(dbi/-ident-for db (.-a datom))]))
+                                                {})
+                                        sum-indexed-attr-counts)}))))

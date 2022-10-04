@@ -11,6 +11,7 @@
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.11"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
         junit/junit                                 {:mvn/version "4.13.2"}
+        medley/medley                               {:mvn/version "1.4.0"}
         mvxcvi/clj-cbor                             {:mvn/version "1.1.0"}}
 
  :paths ["src" "target/classes"]
@@ -31,7 +32,7 @@
                               incanter/incanter-charts    {:mvn/version "1.9.3"}}}
 
            :test {:extra-paths ["test"]
-                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.64.1010"}
+                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.70.1086"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.0.107"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}}}
 
@@ -68,7 +69,7 @@
            :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
                     :main-opts ["-m" "cljfmt.main" "check"]}
 
-           :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
+           :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.0"}}
                   :main-opts ["-m" "cljfmt.main" "fix"]}
 
            :build {:deps {io.github.clojure/tools.build {:git/tag "v0.8.1" :git/sha "7d40500"}
