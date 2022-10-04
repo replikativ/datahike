@@ -8,13 +8,13 @@
 
 (def test-db
   (delay
-    (d/db-with (db/empty-db)
-               [{:db/id 1 :name "Ivan" :age 10}
-                {:db/id 2 :name "Ivan" :age 20}
-                {:db/id 3 :name "Oleg" :age 10}
-                {:db/id 4 :name "Oleg" :age 20}
-                {:db/id 5 :name "Ivan" :age 10}
-                {:db/id 6 :name "Ivan" :age 20}])))
+   (d/db-with (db/empty-db)
+              [{:db/id 1 :name "Ivan" :age 10}
+               {:db/id 2 :name "Ivan" :age 20}
+               {:db/id 3 :name "Oleg" :age 10}
+               {:db/id 4 :name "Oleg" :age 20}
+               {:db/id 5 :name "Ivan" :age 10}
+               {:db/id 6 :name "Ivan" :age 20}])))
 
 (deftest test-or
   (are [q res] (= (d/q (concat '[:find ?e :where] (quote q)) @test-db)
