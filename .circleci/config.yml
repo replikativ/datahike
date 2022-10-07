@@ -79,14 +79,6 @@ jobs:
       - run:
           name: deploy
           command: clojure -Sthreads 1 -T:build deploy
-  release:
-    executor: tools/clojurecli
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: deploy
-          command: clojure -Sthreads 1 -T:build release
 
 workflows:
   build-test-and-deploy:
@@ -127,7 +119,7 @@ workflows:
             - tools/unittest
             - tools/backward-compatibility-test
             - tools/integrationtest
-      - release:
+      - tools/release:
           context:
             - dockerhub-deploy
             - github-token
