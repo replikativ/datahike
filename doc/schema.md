@@ -88,6 +88,11 @@ Additionally, the following optional attributes are supported:
   the value for this attribute with upsert enabled)
 - `db/index`: indicates whether an index for the attribute's value should be
   created as a boolean
+- `db/isComponent`: indicates that an attribute of type `:db.type/ref` references a subcomponent of the entity that has the attribute (for cascading retractions)
+- if `:db/valueType` is `:db.type/tuple`, one of:
+  - `db/tupleAttrs`: a collection of attributes that make up the tuple (for [composite tuples](https://docs.datomic.com/on-prem/schema/schema.html#composite-tuples))
+  - `db/tupleTypes`: a collection of 2-8 types that make up the tuple (for [heterogeneous fixed length tuples](https://docs.datomic.com/on-prem/schema/schema.html#heterogeneous-tuples))
+  - `db/tupleType`: the type of the tuple elements (for [homogeneous variable length tuples](https://docs.datomic.com/on-prem/schema/schema.html#homogeneous-tuples))
 
 ### Supported value types
 
@@ -107,6 +112,7 @@ The following types are currently support in datahike:
 | `db.type/string`  | String               |
 | `db.type/symbol`  | clojure.lang.Symbol  |
 | `db.type/uuid`    | java.util.UUID       |
+| `db.type/tuple`   | clojure.lang.Vector  |
 
 The schema is validated using [clojure.spec](https://clojure.org/guides/spec).
 See `src/datahike/schema.cljc` for the implementation details.
