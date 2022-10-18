@@ -28,10 +28,10 @@
                  :extra-deps  {org.clojure/tools.namespace {:mvn/version "1.2.0"}
                                clj-http/clj-http           {:mvn/version "3.12.3"}
                                criterium/criterium         {:mvn/version "0.4.6"}
-                               org.clojure/tools.cli    {:mvn/version "1.0.206"}
-                               io.github.nextjournal/clerk {:mvn/version "0.8.451"}
-                               incanter/incanter-core   {:mvn/version "1.9.3"}
-                               incanter/incanter-charts {:mvn/version "1.9.3"}}}
+                               org.clojure/tools.cli       {:mvn/version "1.0.206"}
+                               io.github.nextjournal/clerk {:mvn/version "0.11.603"}
+                               incanter/incanter-core      {:mvn/version "1.9.3"}
+                               incanter/incanter-charts    {:mvn/version "1.9.3"}}}
 
            :test {:extra-paths ["test"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.70.1086"}

@@ -63,8 +63,6 @@
 
   (:schema @conn)
 
-  
-
   (d/transact conn (vec (repeatedly 5000 (fn [] {:age (long (rand-int 1000))
                                                  :name (str (rand-int 1000))}))))
 
@@ -93,11 +91,11 @@
 
   (clerk/clear-cache!)
 
-  (clerk/show! "notebooks/minimal_start.clj")
+  (clerk/show! "notebooks/crash_course.clj")
   (clerk/show! "notebooks/schema.clj")
   (clerk/show! "notebooks/store.clj")
   ;; there are race conditions somehwere when creating and deleting many dbs
   (clerk/show! "notebooks/time_travel.clj")
-  (clerk/show! "notebooks/time_variance.clj")
+  (clerk/show! "notebooks/time_variance.clj"))
 
-  )
+  
