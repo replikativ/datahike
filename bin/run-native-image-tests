@@ -1,0 +1,16 @@
+#!/bin/bash
+
+TMPSTORE=/tmp/dh-test-store
+
+datahike benchmark db:testconfig.edn 0 100000 10000
+datahike transact db:testconfig.edn '[[:db/add -1 :name "Judea"]]'
+QUERY_OUT=`datahike query '[:find (count ?e) . :where [?e :name _]]' db:testconfig.edn`
+
+if [ $QUERY_OUT -eq 100001 ]
+then
+  echo "Test successful."
+else
+  echo "Query did not return correct value."
+fi
+
+rm -rf $TMPSTORE

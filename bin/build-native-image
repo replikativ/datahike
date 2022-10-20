@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+function on_path {
+    builtin type -P "$1" &> /dev/null
+}
+
+GRAAL_NOT_ON_PATH="PATH does not contain native-image. Make sure to add your GraalVM to it."
+on_path native-image && clojure -M:native-image --no-fallback  --report-unsupported-elements-at-runtime || echo $GRAAL_NOT_ON_PATH

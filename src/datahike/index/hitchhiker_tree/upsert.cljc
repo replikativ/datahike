@@ -8,7 +8,7 @@
   This is equivalent to check whether the elements increase by one and contains 0.
   E.g., [0 1 2] => true, [0 2 3] => false, [1 2] => false."
   [indices]
-  (if (.contains indices 0)
+  (if (.contains ^clojure.lang.PersistentVector indices 0)
     (let [m (apply max indices)
           s (apply + indices)]
       (= s (/ (* m (+ 1 m)) 2)))
@@ -56,7 +56,7 @@
   (when-let [old (old-key kvs new indices)]
     (remove-fn old)))
 
-(defrecord UpsertOp [key op-count indices]
+(defrecord UpsertOp [key op-count indices version]
   op/IOperation
   (-insertion-ts [_] op-count)
   (-affects-key [_] key)
@@ -79,7 +79,7 @@
     ;; '-' means it is retracted and 'nt' is the current transaction time.
     [a b c (- nt)]))
 
-(defrecord temporal-UpsertOp [key op-count indices]
+(defrecord temporal-UpsertOp [key op-count indices version]
   op/IOperation
   (-insertion-ts [_] op-count)
   (-affects-key [_] key)
@@ -105,10 +105,10 @@
         (tree/insert tree key nil)))))
 
 (defn new-UpsertOp [key op-count indices]
-  (UpsertOp. key op-count indices))
+  (UpsertOp. key op-count indices 0))
 
 (defn new-temporal-UpsertOp [key op-count indices]
-  (temporal-UpsertOp. key op-count indices))
+  (temporal-UpsertOp. key op-count indices 0))
 
 (defn add-upsert-handler
   "Tells the store how to deserialize upsert related operations"
@@ -118,9 +118,11 @@
          {'datahike.index.hitchhiker_tree.upsert.UpsertOp
           ;; TODO Remove ts when Wanderung is available.
           (fn [{:keys [key value op-count ts indices]}]
-            (map->UpsertOp {:key key :value value :op-count (or op-count ts) :indices (or indices [0 1])}))
+            (map->UpsertOp {:key key :value value :op-count (or op-count ts) :indices (or indices [0 1])
+                            :version 0}))
 
           'datahike.index.hitchhiker_tree.upsert.temporal_UpsertOp
           (fn [{:keys [key value op-count ts indices]}]
-            (map->temporal-UpsertOp {:key key :value value :op-count (or op-count ts) :indices (or indices [0 1])}))})
+            (map->temporal-UpsertOp {:key key :value value :op-count (or op-count ts) :indices (or indices [0 1])
+                                     :version 0}))})
   store)
