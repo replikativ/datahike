@@ -129,6 +129,12 @@ public class DatahikeTest {
     public void asOfAndSince() {
         transactOnce();
 
+        // Make sure transaction has older timestamp than firstDate
+        try {
+            Thread.sleep(10);
+        } catch (InterruptedException e) {
+        }
+
         firstDate = new Date();
         Datahike.transact(conn, vec(map(
                 k(":db/id"), vec(k(":name"), "Alice"),
