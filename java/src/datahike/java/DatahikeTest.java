@@ -129,8 +129,6 @@ public class DatahikeTest {
     public void asOfAndSince() {
         transactOnce();
 
-        Thread.sleep(10);
-
         firstDate = new Date();
         Datahike.transact(conn, vec(map(
                 k(":db/id"), vec(k(":name"), "Alice"),
