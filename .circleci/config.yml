@@ -91,6 +91,8 @@ jobs:
           name: native-image
           command: |
             cd /home/circleci/replikativ
+            export PATH=/home/circleci/graalvm-ce-java17-22.2.0/bin:$PATH
+            export JAVA_HOME=/home/circleci/graalvm-ce-java17-22.2.0/
             ./bin/build-native-image
   deploy:
     executor: tools/clojurecli
