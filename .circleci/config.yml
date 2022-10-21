@@ -79,6 +79,15 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
+          name: install graalvm
+          command: |
+            echo FOOO
+            wget https://github.com/graalvm/graalvm-ce-builds/releases/download/vm-22.2.0/graalvm-ce-java17-linux-amd64-22.2.0.tar.gz
+            tar -xzf graalvm-ce-java17-linux-amd64-22.2.0.tar.gz
+            export PATH=/home/circleci/graalvm-ce-java17-22.2.0/bin:$PATH
+            export JAVA_HOME=/home/circleci/graalvm-ce-java17-22.2.0/
+            gu install native-image
+      - run:
           name: native-image
           command: /bin/build-native-image
   deploy:
