@@ -20,6 +20,8 @@
 (s/def ::index-b-factor long)
 (s/def ::index-log-size long)
 (s/def ::index-data-node-size long)
+(s/def :datahike.middleware/query fn?)
+(s/def ::middleware (s/keys :opt-un [:datahike.middleware/query]))
 
 (s/def ::store map?)
 
@@ -30,7 +32,8 @@
                                          ::schema-flexibility
                                          ::attribute-refs?
                                          ::initial-tx
-                                         ::name]))
+                                         ::name
+                                         ::middleware]))
 
 (s/def :deprecated/schema-on-read boolean?)
 (s/def :deprecated/temporal-index boolean?)

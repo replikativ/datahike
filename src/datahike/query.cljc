@@ -8,6 +8,7 @@
    [datahike.db.utils :as dbu]
    [datahike.impl.entity :as de]
    [datahike.lru]
+   [datahike.middleware.query]
    [datahike.pull-api :as dpa]
    [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
    [datalog.parser :refer [parse]]
@@ -1139,7 +1140,7 @@
 (defmethod q clojure.lang.PersistentList [query & args]
   (q {:query query :args args}))
 
-(defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
+(defn raw-q [query-map & inputs]
   (let [query         (if (contains? query-map :query) (:query query-map) query-map)
         query         (if (string? query) (edn/read-string query) query)
         query         (if (= 'quote (first query)) (second query) query)
@@ -1154,7 +1155,7 @@
         ;; TODO utilize parser
         all-vars      (concat find-vars (map :symbol with))
         query         (cond-> query
-                        (sequential? query) dpi/query->map)
+                              (sequential? query) dpi/query->map)
         wheres        (:where query)
         context       (-> (Context. [] {} {} {})
                           (resolve-ins (:qin parsed-q) args))
@@ -1162,11 +1163,18 @@
                           (-q wheres)
                           (collect all-vars))]
     (cond->> resultset
-      (or (:offset query-map) (:limit query-map))   (paginate (:offset query-map)
-                                                              (:limit query-map))
-      true                                          set
-      (:with query)                                 (mapv #(subvec % 0 result-arity))
-      (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
-      (some #(instance? Pull %) find-elements)      (pull find-elements context)
-      true                                          (-post-process find)
-      returnmaps                                    (convert-to-return-maps returnmaps))))
+             (or (:offset query-map) (:limit query-map))   (paginate (:offset query-map)
+                                                                     (:limit query-map))
+             true                                          set
+             (:with query)                                 (mapv #(subvec % 0 result-arity))
+             (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
+             (some #(instance? Pull %) find-elements)      (pull find-elements context)
+             true                                          (-post-process find)
+             returnmaps                                    (convert-to-return-maps returnmaps))))
+
+(defmethod q clojure.lang.PersistentArrayMap [{:keys [args] :as query-map} & inputs]
+  (if-let [middleware (get-in (first args) [:config :middleware :query])]
+    (if (fn? middleware)
+      ((middleware raw-q) query-map inputs)
+      (throw (ex-info "Invalid middleware." {:middleware middleware})))
+    (apply raw-q query-map inputs)))
