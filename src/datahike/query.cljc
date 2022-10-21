@@ -1155,7 +1155,7 @@
         ;; TODO utilize parser
         all-vars      (concat find-vars (map :symbol with))
         query         (cond-> query
-                              (sequential? query) dpi/query->map)
+                        (sequential? query) dpi/query->map)
         wheres        (:where query)
         context       (-> (Context. [] {} {} {})
                           (resolve-ins (:qin parsed-q) args))
@@ -1163,14 +1163,14 @@
                           (-q wheres)
                           (collect all-vars))]
     (cond->> resultset
-             (or (:offset query-map) (:limit query-map))   (paginate (:offset query-map)
-                                                                     (:limit query-map))
-             true                                          set
-             (:with query)                                 (mapv #(subvec % 0 result-arity))
-             (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
-             (some #(instance? Pull %) find-elements)      (pull find-elements context)
-             true                                          (-post-process find)
-             returnmaps                                    (convert-to-return-maps returnmaps))))
+      (or (:offset query-map) (:limit query-map))   (paginate (:offset query-map)
+                                                              (:limit query-map))
+      true                                          set
+      (:with query)                                 (mapv #(subvec % 0 result-arity))
+      (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
+      (some #(instance? Pull %) find-elements)      (pull find-elements context)
+      true                                          (-post-process find)
+      returnmaps                                    (convert-to-return-maps returnmaps))))
 
 (defmethod q clojure.lang.PersistentArrayMap [{:keys [args] :as query-map} & inputs]
   (if-let [middleware (get-in (first args) [:config :middleware :query])]

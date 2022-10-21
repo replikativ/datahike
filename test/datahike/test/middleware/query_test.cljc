@@ -14,25 +14,25 @@
         conn (utils/setup-db cfg)
         log-state (atom [])]
     (timbre/with-level :debug
-    (timbre/merge-config! {:appenders {:my-appender {:enabled? true
-                                                     :fn (fn [data] (swap! log-state conj data))}}})
-    (d/transact conn {:tx-data [{:name "Anna"}
-                                {:name "Boris"}]})
-    (d/q '[:find ?e :where [?e :name "Anna"]] @conn)
-    (let [[text data] (-> @log-state second :vargs)]
-      (is (= "Query time:"
-             text))
-      (is (number? (:t data)))
-      (is (= {:inputs [nil]
-              :q      {:query '[:find
-                               ?e
-                               :where
-                               [?e
-                                :name
-                                "Anna"]]}}
-             (-> data
-                 (dissoc :t)
-                 (update-in [:q] dissoc :args))))))))
+      (timbre/merge-config! {:appenders {:my-appender {:enabled? true
+                                                       :fn (fn [data] (swap! log-state conj data))}}})
+      (d/transact conn {:tx-data [{:name "Anna"}
+                                  {:name "Boris"}]})
+      (d/q '[:find ?e :where [?e :name "Anna"]] @conn)
+      (let [[text data] (-> @log-state second :vargs)]
+        (is (= "Query time:"
+               text))
+        (is (number? (:t data)))
+        (is (= {:inputs [nil]
+                :q      {:query '[:find
+                                  ?e
+                                  :where
+                                  [?e
+                                   :name
+                                   "Anna"]]}}
+               (-> data
+                   (dissoc :t)
+                   (update-in [:q] dissoc :args))))))))
 
 (deftest invalid-middleware-should-be-caught-on-connection
   (let [cfg {:store {:backend :mem
