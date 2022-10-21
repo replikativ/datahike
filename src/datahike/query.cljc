@@ -11,6 +11,7 @@
    [datahike.middleware.query]
    [datahike.pull-api :as dpa]
    [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
+   [datahike.middleware.utils :as middleware-utils]
    [datalog.parser :refer [parse]]
    [datalog.parser.impl :as dpi]
    [datalog.parser.impl.proto :as dpip]
@@ -1172,9 +1173,9 @@
       true                                          (-post-process find)
       returnmaps                                    (convert-to-return-maps returnmaps))))
 
+
 (defmethod q clojure.lang.PersistentArrayMap [{:keys [args] :as query-map} & inputs]
   (if-let [middleware (get-in (first args) [:config :middleware :query])]
-    (if (fn? middleware)
-      ((middleware raw-q) query-map inputs)
-      (throw (ex-info "Invalid middleware." {:middleware middleware})))
+    (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
+      (q-with-middleware query-map inputs))
     (apply raw-q query-map inputs)))

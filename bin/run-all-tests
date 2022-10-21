@@ -2,10 +2,14 @@
 
 set -o errexit
 set -o pipefail
-
+echo "Recompiling Java"
+clj -T:build clean
+clj -T:build compile
 echo "Running unit tests"
 bin/run-unittests --reporter kaocha.report/dots
 echo "Running integration tests"
 bin/run-integrationtests --reporter kaocha.report/dots
+echo "Running middleware tests"
+bin/kaocha middleware --reporter kaocha.report/dots
 echo "Running backward compatibility tests"
 bin/run-backward-compatibility-tests --reporter kaocha.report/dots
