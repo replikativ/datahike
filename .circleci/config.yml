@@ -89,7 +89,9 @@ jobs:
             gu install native-image
       - run:
           name: native-image
-          command: /bin/build-native-image
+          command: |
+            cd /home/circleci/replikativ
+            /bin/build-native-image
   deploy:
     executor: tools/clojurecli
     steps:
