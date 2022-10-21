@@ -28,3 +28,5 @@ out/
 /.settings
 .classpath
 /.clj-kondo
+datahike
+datahike.build_artifacts.txt

@@ -58,19 +58,29 @@ jobs:
           at: /home/circleci
       - run:
           name: clean
-          command: clojure -Sthreads 1 -T:build clean
+          command: clojure -T:build clean
       - run:
           name: compile
-          command: clojure -Sthreads 1 -T:build compile
+          command: clojure -T:build compile
       - run:
           name: jar
-          command: clojure -Sthreads 1 -T:build jar
+          command: clojure -T:build jar
       - persist_to_workspace:
           root: /home/circleci/
           paths:
             - .m2
             - .npm
             - replikativ
+  native-image:
+    machine:
+      image: ubuntu-2004:202010-01
+      resource_class: large
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: native-image
+          command: /bin/build-native-image
   deploy:
     executor: tools/clojurecli
     steps:
@@ -78,7 +88,7 @@ jobs:
           at: /home/circleci
       - run:
           name: deploy
-          command: clojure -Sthreads 1 -T:build deploy
+          command: clojure -T:build deploy
 
 workflows:
   build-test-and-deploy:
@@ -87,6 +97,10 @@ workflows:
           context: dockerhub-deploy
           setup_cljs: false
       - build:
+          context: dockerhub-deploy
+          requires:
+            - setup
+      - native-image:
           context: dockerhub-deploy
           requires:
             - setup
