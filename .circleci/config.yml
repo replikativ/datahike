@@ -91,7 +91,7 @@ jobs:
           name: native-image
           command: |
             cd /home/circleci/replikativ
-            /bin/build-native-image
+            ./bin/build-native-image
   deploy:
     executor: tools/clojurecli
     steps:
