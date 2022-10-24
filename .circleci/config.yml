@@ -88,10 +88,17 @@ jobs:
             export JAVA_HOME=/home/circleci/graalvm-ce-java17-22.2.0/
             gu install native-image
       - run:
+          name: install clojure
+          command: |
+            cd /home/circleci
+            curl -O https://download.clojure.org/install/linux-install-1.11.1.1165.sh
+            chmod +x linux-install-1.11.1.1165.sh
+            ./linux-install-1.11.1.1165.sh --prefix /home/circleci/clojure
+      - run:
           name: native-image
           command: |
             cd /home/circleci/replikativ
-            export PATH=/home/circleci/graalvm-ce-java17-22.2.0/bin:$PATH
+            export PATH=/home/circleci/graalvm-ce-java17-22.2.0/bin:/home/circleci/clojure:$PATH
             export JAVA_HOME=/home/circleci/graalvm-ce-java17-22.2.0/
             ./bin/build-native-image
   deploy:
