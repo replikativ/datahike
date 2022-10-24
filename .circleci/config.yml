@@ -138,14 +138,17 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
+            - native-image
       - tools/backward-compatibility-test:
           context: dockerhub-deploy
           requires:
             - build
+            - native-image
       - tools/integrationtest:
           context: dockerhub-deploy
           requires:
             - build
+            - native-image
       - deploy:
           context:
             - dockerhub-deploy
