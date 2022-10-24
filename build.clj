@@ -62,7 +62,7 @@
                             :repo (name lib)
                             :tag version
                             :commit current-commit
-                            :file "datahike"
+                            :file jar-file
                             :content-type "application/java-archive"})
        (catch ExceptionInfo e
          (assoc (ex-data e) :failure? true))))
