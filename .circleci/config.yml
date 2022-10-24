@@ -81,15 +81,30 @@ jobs:
       - run:
           name: install graalvm
           command: |
-            echo FOOO
+            cd /home/circleci
             wget https://github.com/graalvm/graalvm-ce-builds/releases/download/vm-22.2.0/graalvm-ce-java17-linux-amd64-22.2.0.tar.gz
             tar -xzf graalvm-ce-java17-linux-amd64-22.2.0.tar.gz
             export PATH=/home/circleci/graalvm-ce-java17-22.2.0/bin:$PATH
             export JAVA_HOME=/home/circleci/graalvm-ce-java17-22.2.0/
             gu install native-image
       - run:
-          name: native-image
-          command: /bin/build-native-image
+          name: install clojure
+          command: |
+            cd /home/circleci
+            curl -O https://download.clojure.org/install/linux-install-1.11.1.1165.sh
+            chmod +x linux-install-1.11.1.1165.sh
+            ./linux-install-1.11.1.1165.sh --prefix /home/circleci/clojure
+      - run:
+          name: build native-image
+          command: |
+            cd /home/circleci/replikativ
+            export PATH=/home/circleci/graalvm-ce-java17-22.2.0/bin:/home/circleci/clojure/bin:$PATH
+            export JAVA_HOME=/home/circleci/graalvm-ce-java17-22.2.0/
+            ./bin/build-native-image
+      - persist_to_workspace:
+          root: /home/circleci/
+          paths:
+            - replikativ/datahike
   deploy:
     executor: tools/clojurecli
     steps:
@@ -121,14 +136,17 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
+            - native-image
       - tools/backward-compatibility-test:
           context: dockerhub-deploy
           requires:
             - build
+            - native-image
       - tools/integrationtest:
           context: dockerhub-deploy
           requires:
             - build
+            - native-image
       - deploy:
           context:
             - dockerhub-deploy
