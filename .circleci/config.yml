@@ -101,6 +101,12 @@ jobs:
             export PATH=/home/circleci/graalvm-ce-java17-22.2.0/bin:/home/circleci/clojure/bin:$PATH
             export JAVA_HOME=/home/circleci/graalvm-ce-java17-22.2.0/
             ./bin/build-native-image
+      - persist_to_workspace:
+          root: /home/circleci/
+          paths:
+            - .m2
+            - .npm
+            - replikativ
   deploy:
     executor: tools/clojurecli
     steps:
