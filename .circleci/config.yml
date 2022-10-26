@@ -28,7 +28,7 @@ jobs:
             - deps-
       - run:
           name: resolve deps
-          command: clojure -P
+          command: clojure -A:dev:test:build -P
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
