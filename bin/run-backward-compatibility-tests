@@ -5,7 +5,6 @@ set -o pipefail
 
 # Write to db using the latest released version of datahike
 echo "WRITING TEST DATA TO TEST-DB"
-mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
 git clone --depth 1 git@github.com:replikativ/datahike.git bct && cd bct
 clojure -T:build compile
 clojure -Sdeps '{:deps {io.replikativ/datahike {:local/root "."}} :paths ["test/datahike/backward_compatibility_test/src"]}' -X backward-test/write
