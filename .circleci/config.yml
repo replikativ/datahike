@@ -175,7 +175,7 @@ workflows:
           requires:
             - tools/format
             - tools/unittest
-            - tools/backward-compatibility-test
+            - backward-compatibility-test
             - tools/integrationtest
       - tools/release:
           context:
