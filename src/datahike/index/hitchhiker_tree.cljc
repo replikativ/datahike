@@ -49,21 +49,6 @@
     :avet (fn [a v e tx] (dd/datom e a v tx true))
     (fn [e a v tx] (dd/datom e a v tx true))))
 
-(defn- from-datom [^Datom datom index-type start?]
-  (let [e         (fn [^Datom datom] (when-not (or (and start? (= e0 (.-e datom)))
-                                                   (and (not start?) (= emax (.-e datom))))
-                                       (.-e datom)))
-        tx        (fn [^Datom datom] (when-not (or (and start? (= tx0 (.-tx datom)))
-                                                   (and (not start?) (= txmax (.-tx datom))))
-                                       (.-tx datom)))
-        datom-seq (case index-type
-                    :aevt (list (.-a datom) (e datom) (.-v datom) (tx datom))
-                    :avet (list (.-a datom) (.-v datom) (e datom) (tx datom))
-                    (list (e datom) (.-a datom) (.-v datom) (tx datom)))]
-    (->> datom-seq
-         (take-while some?)
-         vec)))
-
 (defn -slice [tree from to index-type]
   (let [[a b c d] (diu/datom-to-vec from index-type true)
         cmp (diu/prefix-scan kc/-compare (diu/datom-to-vec to index-type false))
