@@ -97,13 +97,13 @@
 ;; file
 
 (defmethod empty-store :file [{:keys [path] :as _config}]
-  (<?? S (fs/new-fs-store path)))
+  (<?? S (fs/connect-fs-store path)))
 
 (defmethod delete-store :file [{:keys [path]}]
   (fs/delete-store path))
 
 (defmethod connect-store :file [{:keys [path]}]
-  (<?? S (fs/new-fs-store path)))
+  (<?? S (fs/connect-fs-store path)))
 
 (defmethod default-config :file [config]
   (merge
