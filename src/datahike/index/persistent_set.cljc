@@ -129,23 +129,23 @@
     (psset/store pset)
     pset)
   (-transient [^PersistentSortedSet pset]
-    ;(transient pset)
-    pset)
+    (transient pset))
   (-persistent! [^PersistentSortedSet pset]
-    ;(persistent! pset)
-    pset))
+    (persistent! pset)))
 
-(defn- gen-address [^ANode node]
-  (if (instance? Branch node)
-    (uuid (vec (.addresses ^Branch node)))
-    (uuid (mapv (comp vec seq) (.keys node)))))
+(defn- gen-address [^ANode node crypto-hash?]
+  (if crypto-hash?
+    (if (instance? Branch node)
+      (uuid (vec (.addresses ^Branch node)))
+      (uuid (mapv (comp vec seq) (.keys node))))
+    (uuid)))
 
 (defrecord CachedStorage [store config cache stats]
   IStorage
   (store [_ node]
     (swap! stats update :writes inc)
-    (let [address (gen-address node)
-          _ (debug "writing storage: " address)]
+    (let [address (gen-address node (:crypto-hash? config))
+          _ (debug "writing storage: " address " crypto: " (:crypto-hash? config))]
       (k/assoc store address node {:sync? true})
       (wrapped/miss cache address node)
       address))
@@ -171,15 +171,17 @@
                   (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config)))
                   (atom init-stats)))
 
+(def ^:const BRANCHING_FACTOR 512)
+
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
-  (psset/set-branching-factor! 512)
+  (psset/set-branching-factor! BRANCHING_FACTOR)
   (let [pset (psset/sorted-set-by (index-type->cmp-quick index-type false))]
     (set! (.-_storage pset) (:storage store))
     (with-meta pset
       {:index-type index-type})))
 
 (defmethod di/init-index :datahike.index/persistent-set [_index-name store datoms index-type _ {:keys [indexed]}]
-  (psset/set-branching-factor! 512)
+  (psset/set-branching-factor! BRANCHING_FACTOR)
   (let [arr (if (= index-type :avet)
               (->> datoms
                    (filter #(contains? indexed (.-a ^Datom %)))
@@ -251,7 +253,6 @@
                                                    {"datahike.datom.Datom"
                                                     (reify WriteHandler
                                                       (write [_ writer datom]
-                                                        (prn "datom handler" datom)
                                                         (.writeTag writer "datahike.datom.Datom" 1)
                                                         (.writeObject writer (vec (seq ^Datom datom)))))}})})]
     (reset! storage (or (:storage store)
