@@ -141,7 +141,7 @@
      :count n
      :observations (vec times)}))
 
-(defn requested-configs [{:keys [config-name history backend search-cache store-cache schema index] :as _options}]
+(defn requested-configs [{:keys [config-name history backend search-caches store-caches schema index] :as _options}]
   (if config-name
     [(get c/named-db-configs config-name)]
     (vec (for [index-type (if (= :all index)
@@ -155,7 +155,9 @@
                               [history])
                schema-flexibility (if (= :all schema)
                                     [:read :write]
-                                    [schema])]
+                                    [schema])
+               search-cache search-caches
+               store-cache store-caches]
            {:index index-type
             :store {:backend backend-type}
             :keep-history? keep-history

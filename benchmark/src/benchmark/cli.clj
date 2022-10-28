@@ -6,6 +6,7 @@
             [benchmark.store :refer [save]]
             [clojure.string :refer [join]]
             [datahike.store :as ds]
+            [datahike.config :as dc]
             [datahike.index :as di]))
 
 (def output-formats (set (keys (methods save))))
@@ -74,15 +75,15 @@
     :parse-fn read-string
     :validate [(conj backend-names :all) #(str "A backend named " % " has not been implemented. "
                                                "Available backends are: " backend-names)]]
-   ["-k" "--search-cache SIZES"
+   ["-k" "--search-caches SIZES"
     (str "Search cache sizes for which measurements should be done")
-    :default [1]
+    :default [dc/default-search-cache-size]
     :parse-fn read-string
     :validate [vector? "Must be a vector of non-negative integers."
                #(every? nat-int? %) "Vector must consist of non-negative integers."]]
-   ["-m" "--store-cache SIZES"
+   ["-m" "--store-caches SIZES"
     (str "Store cache sizes for which measurements should be done")
-    :default [1]
+    :default [dc/default-store-cache-size]
     :parse-fn read-string
     :validate [vector? "Must be a vector of positive integers."
                #(every? pos-int? %) "Vector must consist of non-negative integers."]]
