@@ -235,7 +235,7 @@
        Seqable (seq [db] (dbi/-datoms db :eavt []))
 
        clojure.lang.ILookup (valAt [db k]
-                                   (get unfiltered-db k))
+                                   (throw (UnsupportedOperationException. "valAt/2 is not supported on FilteredDB")))
        (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on FilteredDB")))
        clojure.lang.IKeywordLookup (getLookupThunk [db k]
                                                    (throw (UnsupportedOperationException. "getLookupThunk is not supported on FilteredDB")))

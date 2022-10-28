@@ -1173,9 +1173,9 @@
       true                                          (-post-process find)
       returnmaps                                    (convert-to-return-maps returnmaps))))
 
-
 (defmethod q clojure.lang.PersistentArrayMap [{:keys [args] :as query-map} & inputs]
-  (if-let [middleware (get-in (first args) [:config :middleware :query])]
+  (if-let [middleware (when (dbu/db? (first args))
+                        (get-in (dbi/-config (first args)) [:middleware :query]))]
     (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
       (q-with-middleware query-map inputs))
     (apply raw-q query-map inputs)))

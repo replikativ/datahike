@@ -2,15 +2,15 @@
   (:require [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
             [datahike.test.utils :as utils]
-            [datahike.middleware.query :refer [timed]]
+            [datahike.middleware.query]
             [taoensso.timbre :as timbre]))
 
-(deftest ^:focused timed-should-log-time-for-query-to-run
+(deftest ^:focused timed-query-should-log-time-for-query-to-run
   (let [cfg {:store {:backend :mem
                      :id "query-middleware"}
              :keep-history? false
              :schema-flexibility :read
-             :middleware {:query ['datahike.middleware.query/timed]}}
+             :middleware {:query ['datahike.middleware.query/timed-query]}}
         conn (utils/setup-db cfg)
         log-state (atom [])]
     (timbre/merge-config! {:appenders {:my-appender {:enabled? true

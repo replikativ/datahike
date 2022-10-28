@@ -1,7 +1,7 @@
 (ns datahike.middleware.query
   (:require [taoensso.timbre :as log]))
 
-(defn timed [query-handler]
+(defn timed-query [query-handler]
   (fn [query & inputs]
     (let [start (. System (nanoTime))
           result (apply query-handler query inputs)
