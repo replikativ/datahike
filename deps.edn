@@ -1,11 +1,7 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.11.1"}
         org.clojure/clojurescript                   {:mvn/version "1.11.4"}
         io.replikativ/hasch                         {:mvn/version "0.3.7"}
-        io.replikativ/hitchhiker-tree               {;; :mvn/version "0.1.11"
-                                                     :git/url "https://github.com/replikativ/hitchhiker-tree.git"
-                                                     :sha     "35c8a8040d37dd98845023cff427f2e961ab745c"}
-        io.replikativ/konserve                      {:git/url "https://github.com/replikativ/konserve.git"
-                                                     :sha     "5e8416fc12fe8fc05384ff17fb641538645671db"}
+        io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.1.4"}
         environ/environ                             {:mvn/version "1.2.0"}
         com.taoensso/timbre                         {:mvn/version "5.2.1"}
