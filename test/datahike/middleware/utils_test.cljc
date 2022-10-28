@@ -8,7 +8,7 @@
 (deftest apply-middlewares-should-combine-symbols-to-new-function
   (let [combined (utils/apply-middlewares ['datahike.middleware.utils-test/test-handler-inc-first
                                            'datahike.middleware.utils-test/test-handler-inc-second]
-                                            (fn [a b] (+ a b)))]
+                                          (fn [a b] (+ a b)))]
     (is (= 15
            (combined 0 0)))))
 
