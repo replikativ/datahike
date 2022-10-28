@@ -104,6 +104,7 @@ jobs:
       - run:
           name: test native-image
           command: |
+            cd /home/circleci/replikativ
             ./bin/run-native-image-tests
       - persist_to_workspace:
           root: /home/circleci/
