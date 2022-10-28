@@ -105,6 +105,17 @@ jobs:
           root: /home/circleci/
           paths:
             - replikativ/datahike
+  native-image-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run native-image test
+          command: |
+            cd /home/circleci/replikativ
+            ./bin/run-native-image-tests
+          no_output_timeout: 5m
   backward-compatibility-test:
     executor: tools/clojurecli
     steps:
@@ -154,6 +165,11 @@ workflows:
           requires:
             - build
             - native-image
+      - native-image-test:
+          context: dockerhub-deploy
+          requires:
+            - build
+            - native-image
       - backward-compatibility-test:
           context: dockerhub-deploy
           requires:
@@ -176,6 +192,7 @@ workflows:
             - tools/format
             - tools/unittest
             - backward-compatibility-test
+            - native-image-test
             - tools/integrationtest
       - tools/release:
           context:

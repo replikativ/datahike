@@ -2,6 +2,8 @@
 
 TMPSTORE=/tmp/dh-test-store
 
+trap "rm -rf $TMPSTORE" EXIT
+
 ./datahike benchmark db:bin/testconfig.edn 0 100000 10000
 ./datahike transact db:bin/testconfig.edn '[[:db/add -1 :name "Judea"]]'
 QUERY_OUT=`./datahike query '[:find (count ?e) . :where [?e :name _]]' db:bin/testconfig.edn`
@@ -12,5 +14,3 @@ then
 else
   echo "Query did not return correct value."
 fi
-
-rm -rf $TMPSTORE
