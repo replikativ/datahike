@@ -113,7 +113,7 @@ jobs:
       - run:
           name: Run native-image test
           command: |
-            cd /home/.circleci/replikativ
+            cd /home/circleci/replikativ
             ./bin/run-native-image-tests
           no_output_timeout: 5m
   backward-compatibility-test:
