@@ -1,3 +1,4 @@
+
 version: 2.1
 
 orbs:
@@ -71,6 +72,23 @@ jobs:
             - .m2
             - .npm
             - replikativ
+  backward-compatibility-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Retrieve ssh-fingerprints
+          command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+          no_output_timeout: 1m
+      - run:
+          name: Run Unittests
+          command: ./bin/run-backward-compatibility-tests
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
   deploy:
     executor: tools/clojurecli
     steps:
@@ -98,7 +116,7 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
-      - tools/backward-compatibility-test:
+      - backward-compatibility-test:
           context: dockerhub-deploy
           requires:
             - build
@@ -117,7 +135,7 @@ workflows:
           requires:
             - tools/format
             - tools/unittest
-            - tools/backward-compatibility-test
+            - backward-compatibility-test
             - tools/integrationtest
       - tools/release:
           context:
