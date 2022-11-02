@@ -17,7 +17,6 @@
                    [me.tonsky.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode]
                    [java.util UUID])))
 
-
 (defn index-type->cmp
   ([index-type] (index-type->cmp index-type true))
   ([index-type current?] (if current?
