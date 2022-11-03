@@ -1,6 +1,8 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.11.1"}
         org.clojure/clojurescript                   {:mvn/version "1.11.4"}
         io.replikativ/hasch                         {:mvn/version "0.3.7"}
+        io.replikativ/konserve                      {:git/url "https://github.com/replikativ/konserve"
+                                                     :sha     "819d4af3c8f5ad694c58e91def721666661577da"}
         io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.1.4"}
         environ/environ                             {:mvn/version "1.2.0"}
