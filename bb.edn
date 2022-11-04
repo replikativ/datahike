@@ -1,0 +1,62 @@
+{:min-bb-version "0.8.0"
+ :pods {;since babashka 0.8.0, can only be declared in bb.edn
+        org.babashka/tools-deps-native {:version "0.0.5"}   ;; for babashka build
+        clj-kondo/clj-kondo            {:version "2022.10.05"}}
+ :deps  {datahike/bb {:local/root "bb"}}
+ :tasks {; tools
+
+         fmt {:doc "Format source files"
+              :task tasks.format/fix}
+
+         docs {:doc "Get a preview on the clojure docs"
+               :task tasks.cljdoc/preview}
+
+         ; checks
+
+         fmt? {:doc "Test formatting"
+               :task tasks.format/check}
+
+         lint {:doc "Run linter"
+               :task tasks.lint/-main}
+
+         test {:doc "Run all tests or restrict to 'unit', 'integration' or 'back-compat'"
+               :task tasks.test/-main}
+
+         kaocha {:doc "Run kaocha with arbitrary arguments"
+                 :task tasks.test/kaocha}
+
+         deps {:doc "Check consistency of dependencies"
+               :task tasks.deps/check}
+
+         check {:doc "Run all checks"
+                :depends [test fmt? lint deps]}
+
+         ; build and release
+
+         settings {:doc "Show content of settings file"
+                   :task tasks.settings/show}
+
+         version {:doc "Set or increment the project version [major|minor] <version>"
+                  :task tasks.version/-main}
+
+         tag {:doc "Return current version as a tag"
+              :task tasks.version/as-tag}
+
+         clean {:doc "Remove build files" :task tasks.build/clean}
+
+         compile {:doc "Compile classes" :task tasks.build/compile}
+
+         pom {:doc "Create pom file" :task tasks.build/pom}
+
+         jar {:doc "Build jar" :task tasks.build/jar}
+
+         build {:doc "Process files and build jar" :task tasks.build/package}
+
+         install {:doc "Install jar locally"
+                  :task tasks.deploy/local}
+
+         clojars {:doc "Install jar to clojars; environment variables have to be set"
+                  :task tasks.deploy/remote}
+
+         release {:doc "Build and release jar to Github"
+                  :task tasks.release/-main}}}
