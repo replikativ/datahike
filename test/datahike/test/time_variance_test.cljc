@@ -418,3 +418,10 @@
               as-of-db (d/as-of @conn current-tx)]
           (is (= {:aka ["Devil" "Tupen"]}
                  (d/pull as-of-db [:aka] michal))))))))
+
+;; https://github.com/replikativ/datahike/issues/572
+(deftest as-of-should-fail-on-invalid-time-points
+  (let [cfg (assoc-in cfg-template [:store :id] "as-of-invalid-time-points")
+        conn (setup-db cfg)]
+    (is (thrown-msg? "Invalid transaction ID. Must be bigger than 536870912."
+                     (d/as-of @conn 42)))))
