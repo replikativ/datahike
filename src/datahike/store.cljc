@@ -3,7 +3,6 @@
             [clojure.spec.alpha :as s]
             [konserve.filestore :as fs]
             [konserve.memory :as mem]
-            [superv.async :refer [<?? S]]
             [environ.core :refer [env]]
             [datahike.index.hitchhiker-tree.upsert :as ups]))
 
@@ -69,7 +68,7 @@
 (defmethod empty-store :mem [{:keys [id]}]
   (if-let [store (get @memory id)]
     store
-    (let [store (<?? S (mem/new-mem-store))]
+    (let [store (mem/new-mem-store (atom {}) {:sync? true})]
       (swap! memory assoc id store)
       store)))
 
@@ -99,13 +98,13 @@
 (defmethod empty-store :file [{:keys [path]}]
   (ups/add-upsert-handler
    (kons/add-hitchhiker-tree-handlers
-    (<?? S (fs/new-fs-store path)))))
+    (fs/connect-fs-store path :opts {:sync? true}))))
 
 (defmethod delete-store :file [{:keys [path]}]
   (fs/delete-store path))
 
 (defmethod connect-store :file [{:keys [path]}]
-  (<?? S (fs/new-fs-store path)))
+  (fs/connect-fs-store path :opts {:sync? true}))
 
 (defmethod scheme->index :file [_]
   :datahike.index/hitchhiker-tree)

@@ -89,23 +89,19 @@
 
 (defn -insert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (ins/new-InsertOp datom-as-vec op-count)
-                                          :tag (h/uuid))]))))
+    (async/<?? (hmsg/enqueue tree [(ins/new-InsertOp datom-as-vec op-count)]))))
 
 (defn -temporal-insert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (ins/new-temporal-InsertOp datom-as-vec op-count)
-                                          :tag (h/uuid))]))))
+    (async/<?? (hmsg/enqueue tree [(ins/new-temporal-InsertOp datom-as-vec op-count)]))))
 
 (defn -upsert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-UpsertOp datom-as-vec op-count (index-type->indices index-type))
-                                          :tag (h/uuid))]))))
+    (async/<?? (hmsg/enqueue tree [(ups/new-UpsertOp datom-as-vec op-count (index-type->indices index-type))]))))
 
 (defn -temporal-upsert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
-    (async/<?? (hmsg/enqueue tree [(assoc (ups/new-temporal-UpsertOp datom-as-vec op-count (index-type->indices index-type))
-                                          :tag (h/uuid))]))))
+    (async/<?? (hmsg/enqueue tree [(ups/new-temporal-UpsertOp datom-as-vec op-count (index-type->indices index-type))]))))
 
 (defn -remove [tree ^Datom datom index-type op-count]
   (async/<?? (hmsg/delete tree (datom->node datom index-type) op-count)))
