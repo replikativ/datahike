@@ -13,7 +13,6 @@ web/*.js
 release-js/datahike*.js
 release-js/npm-*
 web/target-cljs
-release.clj
 .idea
 *.iml
 .vscode
