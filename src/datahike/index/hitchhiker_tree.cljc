@@ -107,7 +107,7 @@
   (let [datom-as-vec (datom->node datom index-type)]
     (async/<?? (hmsg/enqueue tree [(ups/new-UpsertOp datom-as-vec op-count (index-type->indices index-type))]))))
 
-(defn temporal-upsert [tree ^Datom datom index-type op-count old-val]
+(defn temporal-upsert [tree ^Datom datom index-type op-count]
   (let [datom-as-vec (datom->node datom index-type)]
     (async/<?? (hmsg/enqueue tree [(ups/new-temporal-UpsertOp datom-as-vec op-count (index-type->indices index-type))]))))
 
@@ -129,10 +129,10 @@
     (insert tree datom index-type op-count))
   (-temporal-insert [tree datom index-type op-count]
     (temporal-insert tree datom index-type op-count))
-  (-upsert [tree datom index-type op-count old-datom]
+  (-upsert [tree datom index-type op-count _old-datom]
     (upsert tree datom index-type op-count))
-  (-temporal-upsert [tree datom index-type op-count old-val]
-    (temporal-upsert tree datom index-type op-count old-val))
+  (-temporal-upsert [tree datom index-type op-count _old-datom]
+    (temporal-upsert tree datom index-type op-count))
   (-remove [tree datom index-type op-count]
     (remove-datom tree datom index-type op-count))
   (-slice [tree from to index-type]
@@ -156,10 +156,10 @@
     (insert tree datom index-type op-count))
   (-temporal-insert [index datom index-type op-count]
     (temporal-insert index datom index-type op-count))
-  (-upsert [tree datom index-type op-count old-datom]
+  (-upsert [tree datom index-type op-count _old-datom]
     (upsert tree datom index-type op-count))
-  (-temporal-upsert [tree datom index-type op-count old-val]
-    (temporal-upsert tree datom index-type op-count old-val))
+  (-temporal-upsert [tree datom index-type op-count _old-datom]
+    (temporal-upsert tree datom index-type op-count))
   (-remove [tree datom index-type op-count]
     (remove-datom tree datom index-type op-count))
   (-slice [tree from to index-type]
@@ -187,14 +187,14 @@
     (empty-tree index-b-factor index-data-node-size index-log-size)
     (map-indexed (fn [idx datom] [idx datom]) (seq datoms)))))
 
-(defmethod di/add-konserve-handlers :datahike.index/hitchhiker-tree [config store]
+(defmethod di/add-konserve-handlers :datahike.index/hitchhiker-tree [_config store]
   (ups/add-upsert-handler
    (ins/add-insert-handler
     (hk/add-hitchhiker-tree-handlers
      store))))
 
 (defmethod di/konserve-backend :datahike.index/hitchhiker-tree [_index-name store]
-  (hk/->KonserveBackend store))
+  (hk/->KonserveBackend store true))
 
 (s/def ::index-b-factor long)
 (s/def ::index-log-size long)

@@ -86,7 +86,7 @@
                 pset)
               datom (index-type->cmp-quick index-type)))
 
-(defn temporal-upsert [pset ^Datom datom index-type old-val]
+(defn temporal-upsert [pset ^Datom datom index-type {old-val :v}]
   (let [{:keys [e a v tx added]} datom]
     (if added
       (if old-val

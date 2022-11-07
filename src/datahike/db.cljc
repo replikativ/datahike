@@ -1,18 +1,18 @@
 (ns ^:no-doc datahike.db
   (:require
-   [datahike.array :refer [a=]]
    [clojure.data :as data]
    [clojure.walk :refer [postwalk]]
    #?(:clj [clojure.pprint :as pp])
    [datahike.config :as dc]
    [datahike.constants :as c :refer [ue0 e0 tx0 utx0 emax txmax system-schema]]
-   [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
+   [datahike.datom :as dd :refer [datom datom-tx datom-added]]
    [datahike.db.interface :as dbi]
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
    [datahike.index :as di]
    [datahike.schema :as ds]
    [datahike.tools :as tools :refer [raise]]
+   [me.tonsky.persistent-sorted-set.arrays :as arrays]
    [medley.core :as m]
    [taoensso.timbre :refer [warn]])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable]]
@@ -24,6 +24,17 @@
                    [datahike.datom Datom]
                    [java.io Writer]
                    [java.util Date])))
+
+(declare equiv-db empty-db)
+#?(:cljs (declare pr-db))
+
+;; ----------------------------------------------------------------------------
+;; macros and funcs to support writing defrecords and updating
+;; (replacing) builtins, i.e., Object/hashCode, IHashEq hasheq, etc.
+;; code taken from prismatic:
+;;  https://github.com/Prismatic/schema/commit/e31c419c56555c83ef9ee834801e13ef3c112597
+;;
+
 ;; ----------------------------------------------------------------------------
 
 #?(:cljs
@@ -46,15 +57,6 @@
                    (instance? Iterable x)
                    (arrays/array? x)
                    (instance? java.util.Map x)))))
-
-
-
-;; ----------------------------------------------------------------------------
-;; macros and funcs to support writing defrecords and updating
-;; (replacing) builtins, i.e., Object/hashCode, IHashEq hasheq, etc.
-;; code taken from prismatic:
-;;  https://github.com/Prismatic/schema/commit/e31c419c56555c83ef9ee834801e13ef3c112597
-;;
 
 (defn- cljs-env?
   "Take the &env from a macro, and tell whether we are expanding into cljs."
