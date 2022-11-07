@@ -1,7 +1,7 @@
 (ns ^:no-doc datahike.transactor
   (:require [superv.async :refer [<??- S thread-try]]
             [taoensso.timbre :as log]
-            [clojure.core.async :refer [>!! chan close! promise-chan put!]])
+            [clojure.core.async :refer [chan close! promise-chan put!]])
   (:import [clojure.lang ExceptionInfo]))
 
 (defprotocol PTransactor
@@ -14,7 +14,7 @@
   PTransactor
   (send-transaction! [_ tx-data tx-meta tx-fn]
     (let [p (promise-chan)]
-      (>!! rx-queue {:tx-data tx-data :tx-meta tx-meta :callback p :tx-fn tx-fn})
+      (put! rx-queue {:tx-data tx-data :tx-meta tx-meta :callback p :tx-fn tx-fn})
       p))
 
   (shutdown [_]

@@ -1,9 +1,9 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.11.1"}
         org.clojure/clojurescript                   {:mvn/version "1.11.4"}
         io.replikativ/hasch                         {:mvn/version "0.3.7"}
-        io.replikativ/hitchhiker-tree               {:mvn/version "0.1.11"}
+        io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"}
         io.replikativ/incognito                     {:mvn/version "0.3.66"}
-        io.replikativ/konserve                      {:mvn/version "0.7.274"}
+        io.replikativ/konserve                      {:mvn/version "0.7.275"}
         persistent-sorted-set/persistent-sorted-set {:local/root "persistent-sorted-set-0.1.4.jar"} ;; TODO: eventually clojars object
         environ/environ                             {:mvn/version "1.2.0"}
         com.taoensso/timbre                         {:mvn/version "5.2.1"}
@@ -11,6 +11,7 @@
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.11"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
         junit/junit                                 {:mvn/version "4.13.2"}
+        medley/medley                               {:mvn/version "1.4.0"}
         mvxcvi/clj-cbor                             {:mvn/version "1.1.0"}}
 
  :paths ["src" "target/classes"]
@@ -31,9 +32,8 @@
                               incanter/incanter-charts    {:mvn/version "1.9.3"}}}
 
            :test {:extra-paths ["test"]
-                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.64.1010"}
+                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.70.1086"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.0.107"}
-                               io.replikativ/datahike-jdbc {:mvn/version "0.1.2-SNAPSHOT"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}}}
 
            :repl {:extra-deps {cider/cider-nrepl           {:mvn/version "0.28.3"}

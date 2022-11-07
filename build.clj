@@ -6,7 +6,7 @@
   (:import (clojure.lang ExceptionInfo)))
 
 (def lib 'io.replikativ/datahike)
-(def version (format "0.5.%s" (b/git-count-revs nil)))
+(def version (format "0.6.%s" (b/git-count-revs nil)))
 (def current-commit (gh/current-commit))
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))

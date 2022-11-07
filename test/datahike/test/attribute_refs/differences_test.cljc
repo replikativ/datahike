@@ -6,6 +6,7 @@
    [datahike.api :as d]
    [datahike.constants :as const]
    [datahike.db :as db :refer [ref-datoms]]
+   [datahike.db.interface :as dbi]
    [datahike.test.core-test])
   #?(:clj (:import [datahike.datom Datom])))
 
@@ -324,7 +325,7 @@
           schema [{:db/ident :name
                    :db/cardinality :db.cardinality/one
                    :db/valueType :db.type/string}]
-          ref (fn [ident] (db/-ref-for @conn ident))]
+          ref (fn [ident] (dbi/-ref-for @conn ident))]
       (d/transact conn schema)
       (d/transact conn [{:name "Alice"}
                         {:name "Bob"}])
@@ -344,7 +345,7 @@
           schema [{:db/ident :name
                    :db/cardinality :db.cardinality/one
                    :db/valueType :db.type/string}]
-          ref (fn [ident] (db/-ref-for @conn ident))]
+          ref (fn [ident] (dbi/-ref-for @conn ident))]
       (d/transact conn schema)
       (d/transact conn [{:name "Alice"}
                         {:name "Bob"}])

@@ -316,7 +316,46 @@
     (is (= (:tempids tx) {-1 3, -2 4, "B" 5, -3 6, :db/current-tx (+ const/tx0 2)}))
     (is (= (d/q {:query q :args [@conn "Sergey"]}) #{["Ivan"] ["Petr"]}))
     (is (= (d/q {:query q :args [@conn "Boris"]}) #{["Oleg"]}))
-    (is (= (d/q {:query q :args [@conn "Oleg"]}) #{["Boris"]}))))
+    (is (= (d/q {:query q :args [@conn "Oleg"]}) #{["Boris"]})))
+
+  (testing "Resolve eid for unique attributes with temporary reference value"
+    (let [conn (fn [] (du/setup-db {:initial-tx [{:db/ident       :foo/match
+                                                  :db/valueType   :db.type/ref
+                                                  :db/cardinality :db.cardinality/one
+                                                  :db/unique      :db.unique/identity}]}))
+          query '[:find ?e ?a ?v
+                  :where [?e ?a ?v]
+                  [(= ?a :foo/match)]]]
+      (testing "with maps"
+        (testing "temp-eid first"
+          (let [report (d/transact (conn) [{:db/id 16
+                                            :foo/match -1000001}
+                                           {:db/id -1000001
+                                            :foo/match 16}])
+                id (get-in report [:tempids -1000001])]
+            (is (= (d/q query (:db-after report))
+                   #{[16 :foo/match id] [id :foo/match 16]}))))
+        (testing "temp-vid first"
+          (let [report (d/transact (conn) [{:db/id -1000001
+                                            :foo/match 16}
+                                           {:db/id 16
+                                            :foo/match -1000001}])
+                id (get-in report [:tempids -1000001])]
+            (is (= (d/q query (:db-after report))
+                   #{[16 :foo/match id] [id :foo/match 16]})))))
+      (testing "with vectors"
+        (testing "temp-eid first"
+          (let [report (d/transact (conn) [[:db/add 16 :foo/match -1000001]
+                                           [:db/add -1000001 :foo/match 16]])
+                id (get-in report [:tempids -1000001])]
+            (is (= (d/q query (:db-after report))
+                   #{[16 :foo/match id] [id :foo/match 16]}))))
+        (testing "temp-vid first"
+          (let [report (d/transact (conn) [[:db/add -1000001 :foo/match 16]
+                                           [:db/add 16 :foo/match -1000001]])
+                id (get-in report [:tempids -1000001])]
+            (is (= (d/q query (:db-after report))
+                   #{[16 :foo/match id] [id :foo/match 16]}))))))))
 
 (deftest test-resolve-current-tx
   (doseq [tx-tempid [:db/current-tx "datomic.tx" "datahike.tx"]]

@@ -4,15 +4,17 @@
       :clj  [clojure.test :as t :refer [is deftest testing]])
    [datahike.api :as d]
    [datahike.schema :as ds]
-   [datahike.db :as db]
+   [datahike.db.interface :as dbi]
+   [datahike.db.transaction :as dbt]
    [datahike.datom :as da]
    [datahike.constants :as const]
    [datahike.test.cljs-utils])
-  (:import [java.lang System]))
+  (:import [java.lang System]
+           [java.util UUID]))
 
 #?(:clj
    (defn random-uuid []
-     (java.util.UUID/randomUUID)))
+     (UUID/randomUUID)))
 
 (def name-schema {:db/ident       :name
                   :db/valueType   :db.type/string
@@ -40,7 +42,7 @@
         db (d/db conn)
         tx [{:name "Alice"}]]
 
-    (is (= const/non-ref-implicit-schema (db/-schema db)))
+    (is (= const/non-ref-implicit-schema (dbi/-schema db)))
 
     (testing "transact without schema present"
       (is (thrown-msg?
@@ -56,7 +58,7 @@
                                     :valueType   :db.type/string
                                     :cardinality :db.cardinality/one}
                      1         :name})
-             (db/-schema (d/db conn)))))
+             (dbi/-schema (d/db conn)))))
 
     (testing "transacting data with schema present"
       (d/transact conn tx)
@@ -108,7 +110,7 @@
                                       :valueType   :db.type/string
                                       :cardinality :db.cardinality/one}
                        1         :name})
-               (db/-schema db)))
+               (dbi/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q db)))))
 
     (testing "insert new data according to schema"
@@ -129,7 +131,7 @@
                                       :valueType   :db.type/long
                                       :cardinality :db.cardinality/one}
                        3         :age})
-               (db/-schema db)))
+               (dbi/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/one] [:age :db.type/long :db.cardinality/one]}
                (d/q find-schema-q db)))))
 
@@ -150,7 +152,7 @@
                                       :valueType   :db.type/long
                                       :cardinality :db.cardinality/one}
                        3         :age})
-               (db/-schema db)))
+               (dbi/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/many] [:age :db.type/long :db.cardinality/one]}
                (d/q find-schema-q db)))))))
 
@@ -340,7 +342,7 @@
         db (d/db conn)]
     (testing "non existing schema should throw exception"
       (is (thrown-msg? "Schema with attribute :name does not exist"
-                       (db/remove-schema db (da/datom 1 :db/ident :name)))))
+                       (dbt/remove-schema db (da/datom 1 :db/ident :name)))))
     (testing "when upserting a non existing schema, it should not throw an exception"
       (is (d/transact conn [name-schema])))))
 
@@ -349,8 +351,6 @@
         _ (d/delete-database cfg)
         _ (d/create-database cfg :initial-schema [name-schema personal-id-schema])
         conn (d/connect cfg)
-        db (d/db conn)
-
         update-name-attr (fn [attr new-value] (d/transact conn {:tx-data [(assoc name-schema attr new-value)]}))]
     (testing "Allow to update doc"
       (is (update-name-attr :db/doc "Some doc") "It should be allowed to add :db/doc.")
