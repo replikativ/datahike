@@ -68,7 +68,7 @@
    :attribute-refs? false
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)
-   :crypto-hash? true
+   :crypto-hash? false
    :search-cache-size default-search-cache-size
    :store-cache-size default-store-cache-size})
 
@@ -110,7 +110,7 @@
    :index default-index
    :search-cache-size default-search-cache-size
    :store-cache-size default-store-cache-size
-   :crypto-hash? true
+   :crypto-hash? false
    :index-config (di/default-index-config default-index)})
 
 (defn remove-nils
@@ -146,7 +146,7 @@
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
                  :index index
-                 :crypto-hash? true
+                 :crypto-hash? false
                  :search-cache-size (int-from-env :datahike-search-cache-size default-search-cache-size)
                  :store-cache-size (int-from-env :datahike-store-cache-size default-store-cache-size)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
