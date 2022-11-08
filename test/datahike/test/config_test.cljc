@@ -59,7 +59,7 @@
                      :keep-history? true
                      :schema-flexibility :write
                      :index c/default-index
-                     :crypto-hash? true
+                     :crypto-hash? false
                      :search-cache-size c/default-search-cache-size
                      :store-cache-size c/default-store-cache-size}
                     (when (seq (di/default-index-config c/default-index))
