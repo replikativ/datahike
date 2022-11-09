@@ -8,7 +8,6 @@
    [datahike.index.persistent-set :refer [mark]]
    [konserve.core :as k]))
 
-
 (defn- count-store [db]
   (count (k/keys (:store db) {:sync? true})))
 
