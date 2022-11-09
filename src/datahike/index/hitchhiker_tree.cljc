@@ -117,6 +117,10 @@
 (defn flush-tree [tree backend]
   (:tree (async/<?? (tree/flush-tree-without-root tree backend))))
 
+(defn mark [_tree]
+  (throw (ex-info "Mark phase not implemented for hitchhiker-tree."
+                  {:type :gc-not-implemented})))
+
 (extend-type DataNode
   IIndex
   (-all [eavt-tree]
@@ -142,7 +146,9 @@
   (-transient [tree]
     (identity tree))
   (-persistent! [tree]
-    (identity tree)))
+    (identity tree))
+  (-mark [tree]
+    (mark tree)))
 
 (extend-type IndexNode
   IIndex
@@ -169,7 +175,9 @@
   (-transient [tree]
     (identity tree))
   (-persistent! [tree]
-    (identity tree)))
+    (identity tree))
+  (-mark [tree]
+    (mark tree)))
 
 (defn empty-tree [b-factor data-node-size log-size]
   (async/<?? (tree/b-tree (tree/->Config b-factor data-node-size log-size))))

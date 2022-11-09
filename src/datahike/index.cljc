@@ -17,6 +17,7 @@
 (def -flush di/-flush)
 (def -transient di/-transient)
 (def -persistent! di/-persistent!)
+(def -mark di/-mark)
 
 ;; Aliases for multimethods
 

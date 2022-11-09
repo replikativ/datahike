@@ -1,7 +1,6 @@
 (ns ^:no-doc datahike.index.persistent-set
   (:require [me.tonsky.persistent-sorted-set :as psset]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
-            [clojure.core.async :as async]
             [clojure.core.cache :as cache]
             [clojure.core.cache.wrapped :as wrapped]
             [datahike.datom :as dd]
@@ -9,7 +8,6 @@
             [datahike.index.interface :as di :refer [IIndex]]
             [konserve.core :as k]
             [konserve.serializers :refer [fressian-serializer]]
-            [superv.async :refer [<?? S]]
             [hasch.core :refer [uuid]]
             [taoensso.timbre :refer [warn debug]])
   #?(:clj (:import [datahike.datom Datom]
@@ -104,6 +102,14 @@
                     (index-type->cmp-quick index-type false))
         pset))))
 
+(defn mark [^PersistentSortedSet pset]
+  (when-not (.-_address pset)
+    (throw (ex-info "Index needs to be properly flushed before marking."
+                    {:type :flush-before-marking})))
+  (let [addresses (atom #{})]
+    (psset/walk-addresses pset (fn [address] (swap! addresses conj address)))
+    @addresses))
+
 (extend-type PersistentSortedSet
   IIndex
   (-slice [^PersistentSortedSet pset from to index-type]
@@ -130,7 +136,9 @@
   (-transient [^PersistentSortedSet pset]
     (transient pset))
   (-persistent! [^PersistentSortedSet pset]
-    (persistent! pset)))
+    (persistent! pset))
+  (-mark [^PersistentSortedSet pset]
+    (mark pset)))
 
 (defn- gen-address [^ANode node crypto-hash?]
   (if crypto-hash?
