@@ -8,8 +8,10 @@
    [datahike.db.utils :as dbu]
    [datahike.impl.entity :as de]
    [datahike.lru]
+   [datahike.middleware.query]
    [datahike.pull-api :as dpa]
    [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
+   [datahike.middleware.utils :as middleware-utils]
    [datalog.parser :refer [parse]]
    [datalog.parser.impl :as dpi]
    [datalog.parser.impl.proto :as dpip]
@@ -1140,7 +1142,7 @@
 (defmethod q clojure.lang.PersistentList [query & args]
   (q {:query query :args args}))
 
-(defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
+(defn raw-q [query-map & inputs]
   (let [query         (if (contains? query-map :query) (:query query-map) query-map)
         query         (if (string? query) (edn/read-string query) query)
         query         (if (= 'quote (first query)) (second query) query)
@@ -1171,3 +1173,10 @@
       (some #(instance? Pull %) find-elements)      (pull find-elements context)
       true                                          (-post-process find)
       returnmaps                                    (convert-to-return-maps returnmaps))))
+
+(defmethod q clojure.lang.PersistentArrayMap [{:keys [args] :as query-map} & inputs]
+  (if-let [middleware (when (dbu/db? (first args))
+                        (get-in (dbi/-config (first args)) [:middleware :query]))]
+    (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
+      (q-with-middleware query-map inputs))
+    (apply raw-q query-map inputs)))
