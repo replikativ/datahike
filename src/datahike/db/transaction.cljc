@@ -488,7 +488,7 @@
 (defn flush-tx-meta
   "Generates add-operations for transaction meta data."
   [{:keys [tx-meta db-before] :as report}]
-  (let [tx-meta (merge {:db/txInstant (get-time)} tx-meta)
+  (let [;; tx-meta (merge {:db/txInstant (get-time)} tx-meta)
         tid (current-tx report)
         {:keys [attribute-refs?]} (dbi/-config db-before)]
     (reduce-kv
@@ -748,6 +748,8 @@
         initial-es' (if has-tuples?
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)
+        initial-report (update initial-report :tx-meta
+                               #(merge {:db/txInstant (get-time)} %))
         meta-entities (flush-tx-meta initial-report)]
     (loop [report (update initial-report :db-after transient)
            es (if (dbi/-keep-history? db-before)

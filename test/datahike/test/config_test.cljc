@@ -40,6 +40,7 @@
                                         :index-data-node-size dih/default-index-data-node-size}
                          :schema-flexibility :write
                          :crypto-hash? false
+                         :branch :db
                          :search-cache-size c/default-search-cache-size
                          :store-cache-size c/default-store-cache-size}]
     (is (= (merge default-new-cfg
@@ -60,6 +61,7 @@
                      :schema-flexibility :write
                      :index c/default-index
                      :crypto-hash? false
+                     :branch :db
                      :search-cache-size c/default-search-cache-size
                      :store-cache-size c/default-store-cache-size}
                     (when (seq (di/default-index-config c/default-index))

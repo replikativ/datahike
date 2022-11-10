@@ -19,6 +19,7 @@
 (s/def ::search-cache-size nat-int?)
 (s/def ::store-cache-size pos-int?)
 (s/def ::crypto-hash? boolean?)
+(s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
 (s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
 (s/def ::name string?)
@@ -37,7 +38,8 @@
                                          ::store-cache-size
                                          ::crypto-hash?
                                          ::initial-tx
-                                         ::name]))
+                                         ::name
+                                         ::branch]))
 
 (s/def :deprecated/schema-on-read boolean?)
 (s/def :deprecated/temporal-index boolean?)
@@ -69,6 +71,7 @@
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)
    :crypto-hash? false
+   :branch :db
    :search-cache-size default-search-cache-size
    :store-cache-size default-store-cache-size})
 
@@ -111,6 +114,7 @@
    :search-cache-size default-search-cache-size
    :store-cache-size default-store-cache-size
    :crypto-hash? false
+   :branch :db
    :index-config (di/default-index-config default-index)})
 
 (defn remove-nils
@@ -147,6 +151,7 @@
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
                  :index index
                  :crypto-hash? false
+                 :branch :db
                  :search-cache-size (int-from-env :datahike-search-cache-size default-search-cache-size)
                  :store-cache-size (int-from-env :datahike-store-cache-size default-store-cache-size)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]

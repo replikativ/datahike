@@ -6,7 +6,8 @@
    [datahike.api :as d]
    [datahike.gc :refer [gc!]]
    [datahike.index.persistent-set :refer [mark]]
-   [konserve.core :as k]))
+   [konserve.core :as k]
+   [datahike.test.core-test]))
 
 (defn- count-store [db]
   (count (k/keys (:store db) {:sync? true})))
@@ -33,9 +34,9 @@
       (is (= fresh-count (count-store @conn)))
       (d/transact conn schema)
       (is (= 1 (count (mark (:eavt @conn)))))
-      (is (= (+ fresh-count num-roots) (count-store @conn)))
+      (is (= (+ 1 fresh-count num-roots) (count-store @conn)))
       ;; delete old roots
-      (is (= num-roots (count (async/<!! (gc! @conn (java.util.Date.))))))
+      (is (= (+ 1 num-roots) (count (async/<!! (gc! @conn (java.util.Date.))))))
       (is (= fresh-count (count-store @conn)))
 
       ;; try to run on dirty index
