@@ -16,60 +16,74 @@
 
 (s/def ::connection #(instance? Atom %))
 
-(defn update-and-flush-db [connection tx-data tx-meta update-fn]
-  (let [{:keys [db-after]
-         {:keys [db/txInstant]} :tx-meta
-         :as tx-report} @(update-fn connection tx-data tx-meta)
-        {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx max-eid op-count hash meta branches]} db-after
-        store (:store @connection)
-        backend (di/konserve-backend (:index config) store)
-        ;; flush for in-memory backends would only make sense if multiple processes access the db
-        ;; TODO: update can also be skipped for external stores when single process writes unless memory should be freed up
-        ;;       -> add options to config
-        backend? (not= :mem (-> config :store :backend))
-        eavt-flushed (cond-> eavt backend? (di/-flush backend))
-        aevt-flushed (cond-> aevt backend? (di/-flush backend))
-        avet-flushed (cond-> avet backend? (di/-flush backend))
-        keep-history? (:keep-history? config)
-        temporal-eavt-flushed (when keep-history? (cond-> temporal-eavt backend? (di/-flush backend)))
-        temporal-aevt-flushed (when keep-history? (cond-> temporal-aevt backend? (di/-flush backend)))
-        temporal-avet-flushed (when keep-history? (cond-> temporal-avet backend? (di/-flush backend)))
-        old-db (k/get store :db nil {:sync? true})
-        old-id (if (:crypto-hash? config) (uuid old-db) (uuid))]
-    (when old-db
-      (k/assoc store old-id old-db {:sync? true}))
-    (k/assoc store :db
-                (merge
-                 {:schema schema
-                  :rschema rschema
-                  :system-entities system-entities
-                  :ident-ref-map ident-ref-map
-                  :ref-ident-map ref-ident-map
-                  :config config
-                  :meta meta
-                  :hash hash
-                  :max-tx max-tx
-                  :max-eid max-eid
-                  :op-count op-count
-                  :eavt-key eavt-flushed
-                  :aevt-key aevt-flushed
-                  :avet-key avet-flushed
-                  :branches (update branches (:branch config) #{old-id})
-                  :tx-instant txInstant}
-                 (when keep-history?
-                   {:temporal-eavt-key temporal-eavt-flushed
-                    :temporal-aevt-key temporal-aevt-flushed
-                    :temporal-avet-key temporal-avet-flushed}))
-                {:sync? true})
-    (when backend?
-      (reset! connection (assoc db-after
-                                :eavt eavt-flushed
-                                :aevt aevt-flushed
-                                :avet avet-flushed
-                                :temporal-eavt temporal-eavt-flushed
-                                :temporal-aevt temporal-aevt-flushed
-                                :temporal-avet temporal-avet-flushed)))
-    tx-report))
+(defn stored-db? [obj]
+  (let [keys-to-check [:eavt-key :aevt-key :avet-key :schema :rschema
+                       :system-entities :ident-ref-map :ref-ident-map :config
+                       :max-tx :max-eid :op-count :hash :meta]]
+    (= (count (select-keys obj keys-to-check))
+       (count keys-to-check))))
+
+(defn update-and-flush-db
+  ([connection tx-data tx-meta update-fn]
+   (let [{:keys [store config]} @connection
+         {{:keys [datahike/commit-id]} :meta :as old-db} (k/get store (:branch config) nil {:sync? true})]
+     (when old-db
+       (k/assoc store commit-id old-db {:sync? true}))
+     (update-and-flush-db connection tx-data tx-meta update-fn #{commit-id})))
+  ([connection tx-data tx-meta update-fn parents]
+   (let [{:keys                  [db-after]
+          {:keys [db/txInstant]} :tx-meta
+          :as                    tx-report}       @(update-fn connection tx-data tx-meta)
+         {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
+                 schema rschema system-entities ident-ref-map ref-ident-map config
+                 max-tx max-eid op-count hash meta]}
+         db-after
+         store                 (:store @connection)
+         backend               (di/konserve-backend (:index config) store)
+         ;; flush for in-memory backends would only make sense if multiple processes access the db
+         ;; TODO: update can also be skipped for external stores when single process writes unless memory should be freed up
+         ;;       -> add options to config
+         backend?              (not= :mem (-> config :store :backend))
+         eavt-flushed          (cond-> eavt backend? (di/-flush backend))
+         aevt-flushed          (cond-> aevt backend? (di/-flush backend))
+         avet-flushed          (cond-> avet backend? (di/-flush backend))
+         keep-history?         (:keep-history? config)
+         temporal-eavt-flushed (when keep-history? (cond-> temporal-eavt backend? (di/-flush backend)))
+         temporal-aevt-flushed (when keep-history? (cond-> temporal-aevt backend? (di/-flush backend)))
+         temporal-avet-flushed (when keep-history? (cond-> temporal-avet backend? (di/-flush backend)))]
+     (k/assoc store :db
+              (merge
+               {:schema          schema
+                :rschema         rschema
+                :system-entities system-entities
+                :ident-ref-map   ident-ref-map
+                :ref-ident-map   ref-ident-map
+                :config          config
+                :meta            (assoc meta
+                                        :datahike/parents parents
+                                        :datahike/updated-at txInstant
+                                        :datahike/commit-id (uuid [hash max-tx max-eid]))
+                :hash            hash
+                :max-tx          max-tx
+                :max-eid         max-eid
+                :op-count        op-count
+                :eavt-key        eavt-flushed
+                :aevt-key        aevt-flushed
+                :avet-key        avet-flushed}
+               (when keep-history?
+                 {:temporal-eavt-key temporal-eavt-flushed
+                  :temporal-aevt-key temporal-aevt-flushed
+                  :temporal-avet-key temporal-avet-flushed}))
+              {:sync? true})
+     (when backend?
+       (reset! connection (assoc db-after
+                                 :eavt eavt-flushed
+                                 :aevt aevt-flushed
+                                 :avet avet-flushed
+                                 :temporal-eavt temporal-eavt-flushed
+                                 :temporal-aevt temporal-aevt-flushed
+                                 :temporal-avet temporal-avet-flushed)))
+     tx-report)))
 
 (defn transact!
   [connection {:keys [tx-data tx-meta]}]
@@ -158,9 +172,8 @@
           {:keys [eavt-key aevt-key avet-key
                   temporal-eavt-key temporal-aevt-key temporal-avet-key
                   schema rschema system-entities ref-ident-map ident-ref-map
-                  config max-tx max-eid op-count hash meta branches tx-instant]
-           :or {op-count 0
-                branches {:db nil}}} stored-db
+                  config max-tx max-eid op-count hash meta]
+           :or {op-count 0}} stored-db
           empty (db/empty-db nil config store)
           conn (d/conn-from-db (assoc empty
                                       :max-tx max-tx
@@ -180,9 +193,7 @@
                                       :system-entities system-entities
                                       :ident-ref-map ident-ref-map
                                       :ref-ident-map ref-ident-map
-                                      :store store
-                                      :branches branches
-                                      :tx-instant tx-instant))]
+                                      :store store))]
       (swap! conn assoc :transactor (t/create-transactor (:transactor config) conn update-and-flush-db))
       conn))
 
@@ -199,6 +210,7 @@
                   config max-tx max-eid op-count hash meta]}
           (db/empty-db nil config store)
           backend (di/konserve-backend (:index config) store)]
+      (k/assoc store :branches #{:db})
       (k/assoc store :db
                (merge {:schema          schema
                        :max-tx          max-tx
@@ -210,11 +222,10 @@
                        :ident-ref-map   ident-ref-map
                        :ref-ident-map   ref-ident-map
                        :config          config
-                       :meta            meta
+                       :meta            (assoc meta :datahike/commit-id (uuid [hash max-tx max-eid]))
                        :eavt-key        (di/-flush eavt backend)
                        :aevt-key        (di/-flush aevt backend)
-                       :avet-key        (di/-flush avet backend)
-                       :branches        {:db nil}}
+                       :avet-key        (di/-flush avet backend)}
                       (when keep-history?
                         {:temporal-eavt-key (di/-flush temporal-eavt backend)
                          :temporal-aevt-key (di/-flush temporal-aevt backend)
