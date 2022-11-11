@@ -146,6 +146,14 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
+          _ (let [intended-index (:index config)
+                  stored-index   (get-in stored-db [:config :index])]
+              (when-not (= intended-index stored-index)
+                (ds/release-store store-config store)
+                (dt/raise (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config.")
+                          {:type     :stored-index-does-not-match-configuration
+                           :intended intended-index
+                           :stored   stored-index})))
           {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx max-eid op-count hash meta]
            :or {op-count 0}} stored-db
           empty (db/empty-db nil config store)

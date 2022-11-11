@@ -8,7 +8,7 @@
             [datahike.index :as di])
   (:import [java.net URI]))
 
-(def ^:dynamic default-index :datahike.index/hitchhiker-tree)
+(def ^:dynamic default-index :datahike.index/persistent-set)
 (def ^:dynamic default-search-cache-size 10000)
 (def ^:dynamic default-store-cache-size 1000)
 
