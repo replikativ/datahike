@@ -147,13 +147,19 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
-          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx max-eid op-count hash meta]
-           :or {op-count 0}} stored-db
-          config (let [intended-index (:index config)
-                       stored-index   (get-in stored-db [:config :index])]
-                   (when-not (= intended-index stored-index)
-                     (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. Using stored index setting now, but this might throw an error in the future.")))
-                   (assoc config :index stored-index))
+          [config store stored-db]
+          (let [intended-index (:index config)
+                stored-index   (get-in stored-db [:config :index])]
+            (if-not (= intended-index stored-index)
+              (do
+                (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. The default index is now :datahike/persistent-set. Using stored index setting now, but this might throw an error in the future."))
+                (let [config (assoc config :index stored-index)
+                      store (ds/add-cache-and-handlers raw-store config)
+                      stored-db (k/get-in store [:db] nil {:sync? true})]
+                  [config store stored-db]))
+              [config store stored-db]))
+          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map max-tx max-eid op-count hash meta config]
+           :or   {op-count 0}} stored-db
           empty (db/empty-db nil config store)
           conn (d/conn-from-db (assoc empty
                                       :max-tx max-tx
