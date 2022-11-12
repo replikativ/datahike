@@ -17,23 +17,84 @@
 (s/def ::connection #(instance? Atom %))
 
 (defn stored-db? [obj]
+  ;; TODO use proper schema to match?
   (let [keys-to-check [:eavt-key :aevt-key :avet-key :schema :rschema
                        :system-entities :ident-ref-map :ref-ident-map :config
                        :max-tx :max-eid :op-count :hash :meta]]
     (= (count (select-keys obj keys-to-check))
        (count keys-to-check))))
 
+(defn db->stored
+  "Maps memory db to storage layout."
+  [db]
+  (when-not (db/db? db)
+    (dt/raise "Argument is not a database."
+              {:type :argument-is-not-a-db
+               :argument db}))
+  (let [{:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
+                schema rschema system-entities ident-ref-map ref-ident-map config
+                max-tx max-eid op-count hash meta store]} db
+        backend (di/konserve-backend (:index config) store)]
+    (merge
+     {:schema          schema
+      :rschema         rschema
+      :system-entities system-entities
+      :ident-ref-map   ident-ref-map
+      :ref-ident-map   ref-ident-map
+      :config          config
+      :meta            meta
+      :hash            hash
+      :max-tx          max-tx
+      :max-eid         max-eid
+      :op-count        op-count
+      :eavt-key        (di/-flush eavt backend)
+      :aevt-key        (di/-flush aevt backend)
+      :avet-key        (di/-flush avet backend)}
+     (when (:keep-history? config)
+       {:temporal-eavt-key (di/-flush temporal-eavt backend)
+        :temporal-aevt-key (di/-flush temporal-aevt backend)
+        :temporal-avet-key (di/-flush temporal-avet backend)}))))
+
+(defn stored->db
+  "Constructs in-memory db instance from stored map value."
+  [stored-db store]
+  (let [{:keys [eavt-key aevt-key avet-key
+                temporal-eavt-key temporal-aevt-key temporal-avet-key
+                schema rschema system-entities ref-ident-map ident-ref-map
+                config max-tx max-eid op-count hash meta]
+         :or   {op-count 0}} stored-db
+        empty              (db/empty-db nil config store)]
+    (assoc empty
+           :max-tx max-tx
+           :max-eid max-eid
+           :config config
+           :meta meta
+           :schema schema
+           :hash hash
+           :op-count op-count
+           :eavt eavt-key
+           :aevt aevt-key
+           :avet avet-key
+           :temporal-eavt temporal-eavt-key
+           :temporal-aevt temporal-aevt-key
+           :temporal-avet temporal-avet-key
+           :rschema rschema
+           :system-entities system-entities
+           :ident-ref-map ident-ref-map
+           :ref-ident-map ref-ident-map
+           :store store)))
+
 (defn store-branch-heads-as-commits [store parents]
   (set (doall (for [p parents]
                 (if-not (keyword? p) p
-                  (let [{{:keys [datahike/commit-id]} :meta :as old-db}
-                        (k/get store p nil {:sync? true})]
-                    (when-not old-db
-                      (dt/raise "Parent does not exist in store."
-                                {:type   :parent-does-not-exist-in-store
-                                 :parent p}))
-                    (k/assoc store commit-id old-db {:sync? true})
-                    commit-id))))))
+                        (let [{{:keys [datahike/commit-id]} :meta :as old-db}
+                              (k/get store p nil {:sync? true})]
+                          (when-not old-db
+                            (dt/raise "Parent does not exist in store."
+                                      {:type   :parent-does-not-exist-in-store
+                                       :parent p}))
+                          (k/assoc store commit-id old-db {:sync? true})
+                          commit-id))))))
 
 (defn commit-id [db]
   (let [{:keys [hash max-tx max-eid config]
@@ -121,7 +182,7 @@
               :else (dt/raise "Bad argument to transact, expected map with :tx-data as key.
                                Vector and sequence are allowed as argument but deprecated."
                               {:error :transact/syntax :argument arg-map}))
-        _ (log/debug "Transacting " (count (:tx-data arg)) " objects with arguments: "
+        _ (log/debug "Transacting" (count (:tx-data arg)) "objects with arguments: "
                      (dissoc arg :tx-data))
         _ (log/trace "Transaction data: " (:tx-data arg))]
     (try
@@ -148,34 +209,9 @@
   (-delete-database [config])
   (-database-exists? [config]))
 
-(defn stored->db
-  "Constructs in-memory db instance from stored map value."
-  [stored-db store]
-  (let [{:keys [eavt-key aevt-key avet-key
-                temporal-eavt-key temporal-aevt-key temporal-avet-key
-                schema rschema system-entities ref-ident-map ident-ref-map
-                config max-tx max-eid op-count hash meta]
-           :or {op-count 0}} stored-db
-        empty (db/empty-db nil config store)]
-    (assoc empty
-           :max-tx max-tx
-           :max-eid max-eid
-           :config config
-           :meta meta
-           :schema schema
-           :hash hash
-           :op-count op-count
-           :eavt eavt-key
-           :aevt aevt-key
-           :avet avet-key
-           :temporal-eavt temporal-eavt-key
-           :temporal-aevt temporal-aevt-key
-           :temporal-avet temporal-avet-key
-           :rschema rschema
-           :system-entities system-entities
-           :ident-ref-map ident-ref-map
-           :ref-ident-map ref-ident-map
-           :store store)))
+(defn config-merge [stored-config config]
+  (let [merged-config (dt/deep-merge config stored-config)]
+    (dt/deep-merge merged-config (select-keys config #{:branch}))))
 
 (extend-protocol IConfiguration
   String
@@ -219,8 +255,10 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
+          config (config-merge (:config stored-db) config)
           conn (d/conn-from-db (stored->db (assoc stored-db :config config) store))]
-      (swap! conn assoc :transactor (t/create-transactor (:transactor config) conn update-and-flush-db))
+      (swap! conn assoc :transactor
+             (t/create-transactor (:transactor config) conn update-and-flush-db))
       conn))
 
   (-create-database [config & deprecated-config]
@@ -233,7 +271,7 @@
                         {:type :db-already-exists :config store-config}))
           {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
                   schema rschema system-entities ref-ident-map ident-ref-map
-                  config max-tx max-eid op-count hash meta]:as db}
+                  config max-tx max-eid op-count hash meta] :as db}
           (db/empty-db nil config store)
           backend (di/konserve-backend (:index config) store)
           meta (assoc meta :datahike/commit-id (commit-id db))]

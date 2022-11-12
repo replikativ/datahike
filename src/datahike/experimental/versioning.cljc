@@ -1,10 +1,11 @@
 (ns datahike.experimental.versioning
   "Git-like versioning tools for Datahike."
- (:require [konserve.core :as k]
-           [datahike.core :refer [transact]]
-           [datahike.connector :refer [update-and-flush-db stored-db? stored->db]]
-           [superv.async :refer [<? S go-loop-try]]
-           [datahike.tools :as dt]))
+  (:require [konserve.core :as k]
+            [datahike.core :refer [transact]]
+            [datahike.connector :refer [update-and-flush-db stored-db?
+                                        stored->db db->stored]]
+            [superv.async :refer [<? S go-loop-try]]
+            [datahike.tools :as dt]))
 
 (defn branch-history
   "Returns a go-channel with the commit history of the branch of the connection in
@@ -54,6 +55,20 @@
                                           :branch branch}))
     (k/update store :branches #(disj % branch) {:sync? true})))
 
+(defn force-branch!
+  "Force the branch to point to the provided db value. Branch will be created if
+  it does not exist. Parents need to point to a set of branches or commits."
+  [db branch parents]
+  (when-not (pos? (count parents))
+    (dt/raise "You must provide at least one parent."
+              {:type    :must-provide-at-least-one-parent
+               :parents parents}))
+  (let [store (:store db)]
+    (k/update store :branches #(conj % branch) {:sync? true})
+    (k/assoc store branch (assoc-in (db->stored db)
+                                    [:meta :datahike/parents] parents)
+             {:sync? true})))
+
 (defn merge!
   "Create a merge commit to the current branch of this connection for parent
   commit uuids. It is the responsibility of the caller to make sure that tx-data
@@ -62,6 +77,9 @@
   ([conn parents tx-data]
    (merge! conn parents tx-data nil))
   ([conn parents tx-data tx-meta]
-   (assert (pos? (count parents)) "You must provide at least one parent.")
+   (when-not (pos? (count parents))
+     (dt/raise "You must provide at least one parent."
+               {:type :must-provide-at-least-one-parent
+                :parents parents}))
    (update-and-flush-db conn tx-data tx-meta transact
                         (conj parents (get-in @conn [:config :branch])))))

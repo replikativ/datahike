@@ -231,6 +231,9 @@
                       datoms-b (di/-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
                   (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
 
+(defn db? [obj]
+  (= (type obj) DB))
+
 ;; FilteredDB
 
 (defrecord-updatable FilteredDB [unfiltered-db pred]
