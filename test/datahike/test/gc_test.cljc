@@ -40,7 +40,7 @@
                  (d/connect cfg))
           ;; everything will fit into the root nodes of each index here
           num-roots 6
-          fresh-count (+ num-roots 2) ;; :branches + :db + roots
+          fresh-count (+ num-roots 3) ;; :branches + :db + cid + roots
           ]
       (is (= 1 (count (mark (:eavt @conn)))))
       (is (= fresh-count (count-store @conn)))

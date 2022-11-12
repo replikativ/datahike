@@ -1,6 +1,6 @@
 # Garbage collection
 
-**This is an experimental feature. Please try it out in test environment and provide feedback.**
+**This is an experimental feature. Please try it out in a test environment and provide feedback.**
 
 Updates to a Datahike database leave behind tree fragments that can become not
 reachable anymore from the new root node of each index tree (a good explanation

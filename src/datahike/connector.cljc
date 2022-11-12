@@ -84,7 +84,7 @@
            :ref-ident-map ref-ident-map
            :store store)))
 
-(defn store-branch-heads-as-commits [store parents]
+(defn branch-heads-as-commits [store parents]
   (set (doall (for [p parents]
                 (if-not (keyword? p) p
                         (let [{{:keys [datahike/commit-id]} :meta :as old-db}
@@ -93,7 +93,6 @@
                             (dt/raise "Parent does not exist in store."
                                       {:type   :parent-does-not-exist-in-store
                                        :parent p}))
-                          (k/assoc store commit-id old-db {:sync? true})
                           commit-id))))))
 
 (defn commit-id [db]
@@ -108,7 +107,7 @@
    (update-and-flush-db connection tx-data tx-meta update-fn
                         #{(get-in @connection [:config :branch])}))
   ([connection tx-data tx-meta update-fn parents]
-   (let [parents               (store-branch-heads-as-commits (:store @connection) parents)
+   (let [parents               (branch-heads-as-commits (:store @connection) parents)
          {:keys [db-after]
           {:keys [db/txInstant]}
           :tx-meta
@@ -117,10 +116,11 @@
                  schema rschema system-entities ident-ref-map ref-ident-map config
                  max-tx max-eid op-count hash meta]}
          db-after
+         cid (commit-id db-after)
          meta                  (assoc meta
                                       :datahike/parents parents
                                       :datahike/updated-at txInstant
-                                      :datahike/commit-id (commit-id db-after))
+                                      :datahike/commit-id cid)
          store                 (:store @connection)
          backend               (di/konserve-backend (:index config) store)
          ;; flush for in-memory backends would only make sense if multiple processes access the db
@@ -133,30 +133,31 @@
          keep-history?         (:keep-history? config)
          temporal-eavt-flushed (when keep-history? (cond-> temporal-eavt backend? (di/-flush backend)))
          temporal-aevt-flushed (when keep-history? (cond-> temporal-aevt backend? (di/-flush backend)))
-         temporal-avet-flushed (when keep-history? (cond-> temporal-avet backend? (di/-flush backend)))]
-     (k/assoc store (:branch config)
-              (merge
-               {:schema          schema
-                :rschema         rschema
-                :system-entities system-entities
-                :ident-ref-map   ident-ref-map
-                :ref-ident-map   ref-ident-map
-                :config          config
-                :meta            meta
-                :hash            hash
-                :max-tx          max-tx
-                :max-eid         max-eid
-                :op-count        op-count
-                :eavt-key        eavt-flushed
-                :aevt-key        aevt-flushed
-                :avet-key        avet-flushed}
-               (when keep-history?
-                 {:temporal-eavt-key temporal-eavt-flushed
-                  :temporal-aevt-key temporal-aevt-flushed
-                  :temporal-avet-key temporal-avet-flushed}))
-              {:sync? true})
+         temporal-avet-flushed (when keep-history? (cond-> temporal-avet backend? (di/-flush backend)))
+         db-to-store (merge
+                      {:schema          schema
+                       :rschema         rschema
+                       :system-entities system-entities
+                       :ident-ref-map   ident-ref-map
+                       :ref-ident-map   ref-ident-map
+                       :config          config
+                       :meta            meta
+                       :hash            hash
+                       :max-tx          max-tx
+                       :max-eid         max-eid
+                       :op-count        op-count
+                       :eavt-key        eavt-flushed
+                       :aevt-key        aevt-flushed
+                       :avet-key        avet-flushed}
+                      (when keep-history?
+                        {:temporal-eavt-key temporal-eavt-flushed
+                         :temporal-aevt-key temporal-aevt-flushed
+                         :temporal-avet-key temporal-avet-flushed}))]
+     (k/assoc store cid db-to-store {:sync? true})
+     (k/assoc store (:branch config) db-to-store {:sync? true})
      (when backend?
        (reset! connection (assoc db-after
+                                 :meta meta
                                  :eavt eavt-flushed
                                  :aevt aevt-flushed
                                  :avet avet-flushed
@@ -274,28 +275,29 @@
                   config max-tx max-eid op-count hash meta] :as db}
           (db/empty-db nil config store)
           backend (di/konserve-backend (:index config) store)
-          meta (assoc meta :datahike/commit-id (commit-id db))]
+          cid (commit-id db)
+          meta (assoc meta :datahike/commit-id cid)
+          db-to-store (merge {:schema          schema
+                              :max-tx          max-tx
+                              :max-eid         max-eid
+                              :op-count        op-count
+                              :hash            hash
+                              :rschema         rschema
+                              :system-entities system-entities
+                              :ident-ref-map   ident-ref-map
+                              :ref-ident-map   ref-ident-map
+                              :config          config
+                              :meta            meta
+                              :eavt-key        (di/-flush eavt backend)
+                              :aevt-key        (di/-flush aevt backend)
+                              :avet-key        (di/-flush avet backend)}
+                             (when keep-history?
+                               {:temporal-eavt-key (di/-flush temporal-eavt backend)
+                                :temporal-aevt-key (di/-flush temporal-aevt backend)
+                                :temporal-avet-key (di/-flush temporal-avet backend)}))]
       (k/assoc store :branches #{:db})
-      (k/assoc store :db
-               (merge {:schema          schema
-                       :max-tx          max-tx
-                       :max-eid         max-eid
-                       :op-count        op-count
-                       :hash            hash
-                       :rschema         rschema
-                       :system-entities system-entities
-                       :ident-ref-map   ident-ref-map
-                       :ref-ident-map   ref-ident-map
-                       :config          config
-                       :meta            meta
-                       :eavt-key        (di/-flush eavt backend)
-                       :aevt-key        (di/-flush aevt backend)
-                       :avet-key        (di/-flush avet backend)}
-                      (when keep-history?
-                        {:temporal-eavt-key (di/-flush temporal-eavt backend)
-                         :temporal-aevt-key (di/-flush temporal-aevt backend)
-                         :temporal-avet-key (di/-flush temporal-avet backend)}))
-               {:sync? true})
+      (k/assoc store cid db-to-store {:sync? true})
+      (k/assoc store :db db-to-store {:sync? true})
       (ds/release-store store-config store)
       (when initial-tx
         (let [conn (-connect config)]
