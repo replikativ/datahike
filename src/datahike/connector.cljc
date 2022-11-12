@@ -79,7 +79,8 @@
               :else (dt/raise "Bad argument to transact, expected map with :tx-data as key.
                                Vector and sequence are allowed as argument but deprecated."
                               {:error :transact/syntax :argument arg-map}))
-        _ (log/debug "Transacting with arguments: " arg)]
+        _ (log/debug "Transacting" (count (:tx-data arg)) " objects with arguments: " (dissoc arg :tx-data))
+        _ (log/trace "Transaction data" (:tx-data arg))]
     (try
       (deref (transact! connection arg))
       (catch Exception e
@@ -146,16 +147,13 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
-          _ (let [intended-index (:index config)
-                  stored-index   (get-in stored-db [:config :index])]
-              (when-not (= intended-index stored-index)
-                (ds/release-store store-config store)
-                (dt/raise (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config.")
-                          {:type     :stored-index-does-not-match-configuration
-                           :intended intended-index
-                           :stored   stored-index})))
           {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx max-eid op-count hash meta]
            :or {op-count 0}} stored-db
+          config (let [intended-index (:index config)
+                       stored-index   (get-in stored-db [:config :index])]
+                   (when-not (= intended-index stored-index)
+                     (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. Using stored index setting now, but this might throw an error in the future.")))
+                   (assoc config :index stored-index))
           empty (db/empty-db nil config store)
           conn (d/conn-from-db (assoc empty
                                       :max-tx max-tx

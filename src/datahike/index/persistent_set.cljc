@@ -1,7 +1,6 @@
 (ns ^:no-doc datahike.index.persistent-set
   (:require [me.tonsky.persistent-sorted-set :as psset]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
-            [clojure.core.async :as async]
             [clojure.core.cache :as cache]
             [clojure.core.cache.wrapped :as wrapped]
             [datahike.datom :as dd]
@@ -9,9 +8,8 @@
             [datahike.index.interface :as di :refer [IIndex]]
             [konserve.core :as k]
             [konserve.serializers :refer [fressian-serializer]]
-            [superv.async :refer [<?? S]]
             [hasch.core :refer [uuid]]
-            [taoensso.timbre :refer [warn debug]])
+            [taoensso.timbre :refer [trace]])
   #?(:clj (:import [datahike.datom Datom]
                    [org.fressian.handlers WriteHandler ReadHandler]
                    [me.tonsky.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode]
@@ -144,17 +142,17 @@
   (store [_ node]
     (swap! stats update :writes inc)
     (let [address (gen-address node (:crypto-hash? config))
-          _ (debug "writing storage: " address " crypto: " (:crypto-hash? config))]
+          _ (trace "writing storage: " address " crypto: " (:crypto-hash? config))]
       (k/assoc store address node {:sync? true})
       (wrapped/miss cache address node)
       address))
   (accessed [_ address]
-    (debug "accessing storage: " address)
+    (trace "accessing storage: " address)
     (swap! stats update :accessed inc)
     (wrapped/hit cache address)
     nil)
   (restore [_ address]
-    (debug "reading: " address)
+    (trace "reading: " address)
     ;; persistent sorted set accesses the restored node immediately again (above)
     ;; so we avoid double counting
     #_(wrapped/miss cache address node)
