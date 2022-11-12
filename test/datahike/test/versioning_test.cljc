@@ -1,9 +1,10 @@
 (ns datahike.test.versioning-test
   (:require #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
                :clj  [clojure.test :as t :refer [is deftest testing]])
-            [datahike.experimental.versioning :refer [branch! delete-branch! merge!]]
+            [datahike.experimental.versioning :refer [branch-history branch! delete-branch! merge!]]
             [datahike.api :as d]
-            [konserve.core :as k]))
+            [konserve.core :as k]
+            [superv.async :refer [<?? S]]))
 
 (deftest datahike-versioning-test
   (testing "Testing versioning functionality."
@@ -26,8 +27,9 @@
              #{:db :foo}))
       (let [foo-conn (d/connect (assoc cfg :branch :foo))]
         (d/transact foo-conn [{:age 42}])
-        ;; extract data from foo and decide to merge it into :db
+        ;; extracted data from foo and decide to merge it into :db
         (merge! conn #{:foo} [{:age 42}]))
+      (is (= 4 (count (<?? S (branch-history conn)))))
       (is (= 2 (count (k/get-in store [:db :meta :datahike/parents] nil {:sync? true}))))
       (delete-branch! conn :foo)
       (is (= (k/get store :branches nil {:sync? true})

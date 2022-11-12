@@ -23,21 +23,43 @@
     (= (count (select-keys obj keys-to-check))
        (count keys-to-check))))
 
+(defn store-branch-heads-as-commits [store parents]
+  (set (doall (for [p parents]
+                (if-not (keyword? p) p
+                  (let [{{:keys [datahike/commit-id]} :meta :as old-db}
+                        (k/get store p nil {:sync? true})]
+                    (when-not old-db
+                      (dt/raise "Parent does not exist in store."
+                                {:type   :parent-does-not-exist-in-store
+                                 :parent p}))
+                    (k/assoc store commit-id old-db {:sync? true})
+                    commit-id))))))
+
+(defn commit-id [db]
+  (let [{:keys [hash max-tx max-eid config]
+         {:keys [parents]} :meta} db]
+    (if (:crypto-hash? config)
+      (uuid [hash max-tx max-eid parents])
+      (uuid))))
+
 (defn update-and-flush-db
   ([connection tx-data tx-meta update-fn]
-   (let [{:keys [store config]} @connection
-         {{:keys [datahike/commit-id]} :meta :as old-db} (k/get store (:branch config) nil {:sync? true})]
-     (when old-db
-       (k/assoc store commit-id old-db {:sync? true}))
-     (update-and-flush-db connection tx-data tx-meta update-fn #{commit-id})))
+   (update-and-flush-db connection tx-data tx-meta update-fn
+                        #{(get-in @connection [:config :branch])}))
   ([connection tx-data tx-meta update-fn parents]
-   (let [{:keys                  [db-after]
-          {:keys [db/txInstant]} :tx-meta
-          :as                    tx-report}       @(update-fn connection tx-data tx-meta)
+   (let [parents               (store-branch-heads-as-commits (:store @connection) parents)
+         {:keys [db-after]
+          {:keys [db/txInstant]}
+          :tx-meta
+          :as   tx-report}     @(update-fn connection tx-data tx-meta)
          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
                  schema rschema system-entities ident-ref-map ref-ident-map config
                  max-tx max-eid op-count hash meta]}
          db-after
+         meta                  (assoc meta
+                                      :datahike/parents parents
+                                      :datahike/updated-at txInstant
+                                      :datahike/commit-id (commit-id db-after))
          store                 (:store @connection)
          backend               (di/konserve-backend (:index config) store)
          ;; flush for in-memory backends would only make sense if multiple processes access the db
@@ -51,7 +73,7 @@
          temporal-eavt-flushed (when keep-history? (cond-> temporal-eavt backend? (di/-flush backend)))
          temporal-aevt-flushed (when keep-history? (cond-> temporal-aevt backend? (di/-flush backend)))
          temporal-avet-flushed (when keep-history? (cond-> temporal-avet backend? (di/-flush backend)))]
-     (k/assoc store :db
+     (k/assoc store (:branch config)
               (merge
                {:schema          schema
                 :rschema         rschema
@@ -59,10 +81,7 @@
                 :ident-ref-map   ident-ref-map
                 :ref-ident-map   ref-ident-map
                 :config          config
-                :meta            (assoc meta
-                                        :datahike/parents parents
-                                        :datahike/updated-at txInstant
-                                        :datahike/commit-id (uuid [hash max-tx max-eid]))
+                :meta            meta
                 :hash            hash
                 :max-tx          max-tx
                 :max-eid         max-eid
@@ -102,7 +121,9 @@
               :else (dt/raise "Bad argument to transact, expected map with :tx-data as key.
                                Vector and sequence are allowed as argument but deprecated."
                               {:error :transact/syntax :argument arg-map}))
-        _ (log/debug "Transacting with arguments: " arg)]
+        _ (log/debug "Transacting " (count (:tx-data arg)) " objects with arguments: "
+                     (dissoc arg :tx-data))
+        _ (log/trace "Transaction data: " (:tx-data arg))]
     (try
       (deref (transact! connection arg))
       (catch Exception e
@@ -126,6 +147,35 @@
   (-create-database [config opts])
   (-delete-database [config])
   (-database-exists? [config]))
+
+(defn stored->db
+  "Constructs in-memory db instance from stored map value."
+  [stored-db store]
+  (let [{:keys [eavt-key aevt-key avet-key
+                temporal-eavt-key temporal-aevt-key temporal-avet-key
+                schema rschema system-entities ref-ident-map ident-ref-map
+                config max-tx max-eid op-count hash meta]
+           :or {op-count 0}} stored-db
+        empty (db/empty-db nil config store)]
+    (assoc empty
+           :max-tx max-tx
+           :max-eid max-eid
+           :config config
+           :meta meta
+           :schema schema
+           :hash hash
+           :op-count op-count
+           :eavt eavt-key
+           :aevt aevt-key
+           :avet avet-key
+           :temporal-eavt temporal-eavt-key
+           :temporal-aevt temporal-aevt-key
+           :temporal-avet temporal-avet-key
+           :rschema rschema
+           :system-entities system-entities
+           :ident-ref-map ident-ref-map
+           :ref-ident-map ref-ident-map
+           :store store)))
 
 (extend-protocol IConfiguration
   String
@@ -169,31 +219,7 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
-          {:keys [eavt-key aevt-key avet-key
-                  temporal-eavt-key temporal-aevt-key temporal-avet-key
-                  schema rschema system-entities ref-ident-map ident-ref-map
-                  config max-tx max-eid op-count hash meta]
-           :or {op-count 0}} stored-db
-          empty (db/empty-db nil config store)
-          conn (d/conn-from-db (assoc empty
-                                      :max-tx max-tx
-                                      :max-eid max-eid
-                                      :config config
-                                      :meta meta
-                                      :schema schema
-                                      :hash hash
-                                      :op-count op-count
-                                      :eavt eavt-key
-                                      :aevt aevt-key
-                                      :avet avet-key
-                                      :temporal-eavt temporal-eavt-key
-                                      :temporal-aevt temporal-aevt-key
-                                      :temporal-avet temporal-avet-key
-                                      :rschema rschema
-                                      :system-entities system-entities
-                                      :ident-ref-map ident-ref-map
-                                      :ref-ident-map ref-ident-map
-                                      :store store))]
+          conn (d/conn-from-db (stored->db (assoc stored-db :config config) store))]
       (swap! conn assoc :transactor (t/create-transactor (:transactor config) conn update-and-flush-db))
       conn))
 
@@ -207,9 +233,10 @@
                         {:type :db-already-exists :config store-config}))
           {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
                   schema rschema system-entities ref-ident-map ident-ref-map
-                  config max-tx max-eid op-count hash meta]}
+                  config max-tx max-eid op-count hash meta]:as db}
           (db/empty-db nil config store)
-          backend (di/konserve-backend (:index config) store)]
+          backend (di/konserve-backend (:index config) store)
+          meta (assoc meta :datahike/commit-id (commit-id db))]
       (k/assoc store :branches #{:db})
       (k/assoc store :db
                (merge {:schema          schema
@@ -222,7 +249,7 @@
                        :ident-ref-map   ident-ref-map
                        :ref-ident-map   ref-ident-map
                        :config          config
-                       :meta            (assoc meta :datahike/commit-id (uuid [hash max-tx max-eid]))
+                       :meta            meta
                        :eavt-key        (di/-flush eavt backend)
                        :aevt-key        (di/-flush aevt backend)
                        :avet-key        (di/-flush avet backend)}

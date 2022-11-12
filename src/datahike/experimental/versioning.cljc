@@ -2,12 +2,39 @@
   "Git-like versioning tools for Datahike."
  (:require [konserve.core :as k]
            [datahike.core :refer [transact]]
-           [datahike.connector :refer [update-and-flush-db stored-db?]]))
+           [datahike.connector :refer [update-and-flush-db stored-db? stored->db]]
+           [superv.async :refer [<? S go-loop-try]]
+           [datahike.tools :as dt]))
+
+(defn branch-history
+  "Returns a go-channel with the commit history of the branch of the connection in
+  form of all stored db values. Performs backtracking and returns dbs in order."
+  [conn]
+  (let [{:keys [store]
+         {:keys [branch]} :config} @conn]
+    (go-loop-try S [[to-check & r] [branch]
+                    visited #{}
+                    reachable []]
+                 (if to-check
+                   (if (visited to-check) ;; skip
+                     (recur r visited reachable)
+                     (if-let [raw-db (<? S (k/get store to-check))]
+                       (let [{{:keys [datahike/parents]} :meta
+                              :as                        db} (stored->db raw-db store)]
+                         (recur (concat r parents)
+                                (conj visited to-check)
+                                (conj reachable db)))
+                       reachable))
+                   reachable))))
 
 (defn branch!
   "Create a new branch from commit-id or existing branch as new-branch."
   [conn from new-branch]
   (let [store (:store @conn)
+        branches (k/get store :branches nil {:sync? true})
+        _ (when (branches new-branch)
+            (dt/raise "Branch already exists." {:type :branch-already-exists
+                                                :new-branch new-branch}))
         db (k/get store from nil {:sync? true})]
     (when-not (stored-db? db)
       (throw (ex-info "From does not point to an existing branch or commit."
@@ -16,8 +43,15 @@
     (k/assoc store new-branch db {:sync? true})
     (k/update store :branches #(conj % new-branch) {:sync? true})))
 
-(defn delete-branch! [conn branch]
-  (let [store (:store @conn)]
+(defn delete-branch!
+  "Removes this branch from set of known branches. The branch will still be
+  accessible until the next gc."
+  [conn branch]
+  (let [store (:store @conn)
+        branches (k/get store :branches nil {:sync? true})]
+    (when-not (branches branch)
+      (dt/raise "Branch does not exist." {:type :branch-does-not-exist
+                                          :branch branch}))
     (k/update store :branches #(disj % branch) {:sync? true})))
 
 (defn merge!
@@ -28,18 +62,6 @@
   ([conn parents tx-data]
    (merge! conn parents tx-data nil))
   ([conn parents tx-data tx-meta]
-   (let [{:keys [store config]} @conn
-         _ (doseq [p parents]
-             (when-not (k/get store p nil {:sync? true})
-               (throw (ex-info "Parent does not exist in store."
-                               {:type   :parent-does-not-exist-in-store
-                                :parent p}))))
-         commit-parents (doall (for [p (conj parents (:branch config))]
-                                (if (keyword? p)
-                                  (if-let [id (k/get-in store [p :meta :datahike/commit-id] nil {:sync? true})]
-                                    id
-                                    (throw (ex-info "Parent not pointing to a valid branch."
-                                                    {:type   :parent-not-pointing-to-a-valid-branch
-                                                     :parent p})))
-                                  p)))]
-     (update-and-flush-db conn tx-data tx-meta transact commit-parents))))
+   (assert (pos? (count parents)) "You must provide at least one parent.")
+   (update-and-flush-db conn tx-data tx-meta transact
+                        (conj parents (get-in @conn [:config :branch])))))
