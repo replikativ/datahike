@@ -3,7 +3,7 @@
   (:require [konserve.core :as k]
             [datahike.core :refer [transact]]
             [datahike.connector :refer [update-and-flush-db stored-db?
-                                        stored->db db->stored]]
+                                        stored->db db->stored create-commit-id]]
             [superv.async :refer [<? S go-loop-try]]
             [datahike.db :refer [db?]]
             [datahike.tools :as dt]))
@@ -87,11 +87,14 @@
   (db-check db)
   (branch-check branch)
   (parent-check parents)
-  (let [store (:store db)]
+  (let [store (:store db)
+        cid (create-commit-id db)
+        db (db->stored (-> db
+                         (assoc-in [:meta :datahike/parents] parents)
+                         (assoc-in [:meta :datahike/commit-id] cid)))]
     (k/update store :branches #(conj % branch) {:sync? true})
-    (k/assoc store branch (assoc-in (db->stored db)
-                                    [:meta :datahike/parents] parents)
-             {:sync? true})))
+    (k/assoc store cid db {:sync? true})
+    (k/assoc store branch db {:sync? true})))
 
 (defn commit-id
   "Retrieve the commit-id for this db."

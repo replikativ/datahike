@@ -95,7 +95,7 @@
                                        :parent p}))
                           commit-id))))))
 
-(defn commit-id [db]
+(defn create-commit-id [db]
   (let [{:keys [hash max-tx max-eid config]
          {:keys [parents]} :meta} db]
     (if (:crypto-hash? config)
@@ -116,7 +116,7 @@
                  schema rschema system-entities ident-ref-map ref-ident-map config
                  max-tx max-eid op-count hash meta]}
          db-after
-         cid (commit-id db-after)
+         cid (create-commit-id db-after)
          meta                  (assoc meta
                                       :datahike/parents parents
                                       :datahike/updated-at txInstant
@@ -275,7 +275,7 @@
                   config max-tx max-eid op-count hash meta] :as db}
           (db/empty-db nil config store)
           backend (di/konserve-backend (:index config) store)
-          cid (commit-id db)
+          cid (create-commit-id db)
           meta (assoc meta :datahike/commit-id cid)
           db-to-store (merge {:schema          schema
                               :max-tx          max-tx
