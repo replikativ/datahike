@@ -109,7 +109,9 @@
           _ (d/transact conn txs)
           _ (d/transact conn-branch1 txs)
           ;; record before-date for gc
+          _ (Thread/sleep 100)
           remove-before (Date.)]
+      (Thread/sleep 100)
       ;; transact
       (d/transact conn [{:age 42}])
       (d/transact conn-branch1 [{:age 42}])
