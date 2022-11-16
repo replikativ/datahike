@@ -140,7 +140,3 @@
 
 (def ^:const ue0 (transduce (comp (map :db/id) (remove #{tx0})) max 0 system-schema))
 (def ^:const utx0 tx0)
-
-(def ^:const default-index-b-factor 17)
-(def ^:const default-index-data-node-size 300)
-(def ^:const default-index-log-size (- 300 17))

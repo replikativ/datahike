@@ -257,39 +257,40 @@
                                                              (reduced false)
                                                              res))
                                          true (map vector (cons x more) more))
-                            :cljs (apply >= x more))))
+                            :cljs (apply >= x more)))
+
+  Object ;; default
+  (-strictly-decreasing? [x more] #?(:clj (reduce (fn [res [v1 s2]] (if (neg? (compare  v1 s2))
+                                                                      res
+                                                                      (reduced false)))
+                                                  true (map vector (cons x more) more))))
+
+  (-decreasing? [x more] #?(:clj (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
+                                                             (reduced false)
+                                                             res))
+                                         true (map vector (cons x more) more))))
+
+  (-strictly-increasing? [x more] #?(:clj (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
+                                                                      res
+                                                                      (reduced false)))
+                                                  true (map vector (cons x more) more))))
+
+  (-increasing? [x more] #?(:clj (reduce (fn [res [v1 v2]] (if (neg? (compare v1 v2))
+                                                             (reduced false)
+                                                             res))
+                                         true (map vector (cons x more) more)))))
 
 (defn- lesser? [& args]
-  (if (satisfies? CollectionOrder (first args))
-    (-strictly-decreasing? (first args) (rest args))
-    (reduce (fn [res [v1 s2]] (if (neg? (compare  v1 s2))
-                                res
-                                (reduced false)))
-            true (map vector args (rest args)))))
+  (-strictly-decreasing? (first args) (rest args)))
 
 (defn- lesser-equal? [& args]
-  (if (satisfies? CollectionOrder (first args))
-    (-decreasing? (first args) (rest args))
-    (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
-                                (reduced false)
-                                res))
-            true (map vector args (rest args)))))
+  (-decreasing? (first args) (rest args)))
 
 (defn- greater? [& args]
-  (if (satisfies? CollectionOrder (first args))
-    (-strictly-increasing? (first args) (rest args))
-    (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
-                                res
-                                (reduced false)))
-            true (map vector args (rest args)))))
+  (-strictly-increasing? (first args) (rest args)))
 
 (defn- greater-equal? [& args]
-  (if (satisfies? CollectionOrder (first args))
-    (-increasing? (first args) (rest args))
-    (reduce (fn [res [v1 v2]] (if (neg? (compare v1 v2))
-                                (reduced false)
-                                res))
-            true (map vector args (rest args)))))
+  (-increasing? (first args) (rest args)))
 
 (defn -min
   ([coll] (reduce (fn [acc x]

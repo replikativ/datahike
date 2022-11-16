@@ -219,39 +219,32 @@
                                    :age 26}]})
       (is (= 3 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :age)))))))
 
-(deftest temporal-history-mem-hht
+(deftest temporal-history-mem
   (let [config {:store {:backend :mem :id "temp-hist-hht"}
                 :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/hitchhiker-tree}]
+                :keep-history? true}]
     (temporal-history-test config)))
 
 (deftest temporal-history-file
   (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
                 :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/hitchhiker-tree}]
+                :keep-history? true}]
     (temporal-history-test config)))
 
 (deftest temporal-history-file-with-attr-refs
   (let [config {:store {:backend :file :path "/tmp/temp-hist-attr-refs"}
                 :schema-flexibility :write
                 :keep-history? true
-                :attribute-refs? true
-                :index :datahike.index/hitchhiker-tree}]
-    (temporal-history-test config)))
-
-(deftest temporal-history-mem-set
-  (let [config {:store {:backend :mem :id "temp-hist-set"}
-                :schema-flexibility :write
-                :keep-history? true
-                :index :datahike.index/persistent-set}]
+                :attribute-refs? true}]
     (temporal-history-test config)))
 
 (deftest test-upsert-after-large-coll
   (let [ascii-ish (map char (concat (range 48 58) (range 65 91) (range 97 123)))
         file-cfg {:store {:backend :file
                           :path "/tmp/upsert-large-test"}}
+        file-pss-cfg {:store {:backend :file
+                              :index :datahike.index/persistent-set
+                              :path    "/tmp/upsert-large-pss-test"}}
         mem-cfg {:store {:backend :mem
                          :id "upsert-large-test"}}
         _ (if (d/database-exists? file-cfg)
@@ -259,12 +252,18 @@
               (d/delete-database file-cfg)
               (d/create-database file-cfg))
             (d/create-database file-cfg))
+        _ (if (d/database-exists? file-pss-cfg)
+            (do
+              (d/delete-database file-pss-cfg)
+              (d/create-database file-pss-cfg))
+            (d/create-database file-pss-cfg))
         _ (if (d/database-exists? mem-cfg)
             (do
               (d/delete-database mem-cfg)
               (d/create-database mem-cfg))
             (d/create-database mem-cfg))
         file-conn (d/connect file-cfg)
+        file-pss-conn (d/connect file-pss-cfg)
         mem-conn (d/connect mem-cfg)
         initial-active-count 8
         inactive-count 5
@@ -330,6 +329,15 @@
               actual-count (- initial-active-count inactive-count)
               cached-count (active-count cached-db)
               fresh-count (active-count fresh-db)]
+          (is (= actual-count cached-count))
+          (is (= cached-count fresh-count))))
+      (testing "File pss upsert"
+        (init-data file-pss-conn)
+        (let [cached-db    @file-pss-conn
+              fresh-db     @(d/connect file-pss-cfg)
+              actual-count (- initial-active-count inactive-count)
+              cached-count (active-count cached-db)
+              fresh-count  (active-count fresh-db)]
           (is (= actual-count cached-count))
           (is (= cached-count fresh-count))))
       (testing "Mem upsert"

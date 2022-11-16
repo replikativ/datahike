@@ -241,7 +241,11 @@
         schema?       (ds/schema-attr? a-ident)
         keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident))
                            (not= :db/txInstant a-ident))
-        op-count      (:op-count db)]
+        op-count      (:op-count db)
+        old-datom (first (di/-slice (:eavt db)
+                                    (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                    (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
+                                    :eavt))]
     (cond-> db
             ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
       schema? (try
@@ -249,14 +253,14 @@
                 (catch clojure.lang.ExceptionInfo _e
                   db))
 
-      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt op-count))
-      true          (update-in [:eavt] #(di/-upsert % datom :eavt op-count))
+      keep-history? (update-in [:temporal-eavt] #(di/-temporal-upsert % datom :eavt op-count old-datom))
+      true          (update-in [:eavt] #(di/-upsert % datom :eavt op-count old-datom))
 
-      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt op-count))
-      true          (update-in [:aevt] #(di/-upsert % datom :aevt op-count))
+      keep-history? (update-in [:temporal-aevt] #(di/-temporal-upsert % datom :aevt op-count old-datom))
+      true          (update-in [:aevt] #(di/-upsert % datom :aevt op-count old-datom))
 
-      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count))
-      indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count))
+      (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count old-datom))
+      indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count old-datom))
 
       true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))

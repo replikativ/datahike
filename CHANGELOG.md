@@ -20,6 +20,8 @@
 - Improve code samples using transact with arg-map @podgorniy
 - Insert into persistent sorted set does not replace existing datom with identical EAV
 - Single datom retraction fixed for persistent set index
+- Refactor index namespaces
+- Make persistent set durable
 
 ## 0.4.0
 

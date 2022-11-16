@@ -2,6 +2,7 @@
 
 set -o errexit
 set -o pipefail
+
 echo "Recompiling Java"
 clj -T:build clean
 clj -T:build compile

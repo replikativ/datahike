@@ -134,5 +134,5 @@
         (is (= #{[25 false] [30 true]}
                (find-ages (d/history @conn) name)))
         (d/transact conn [[:db.history.purge/before (java.util.Date.)]])
-        (is (= #{[30 true]}                                 ;; TODO: fails
+        (is (= #{[30 true]}
                (find-ages (d/history @conn) name)))))))

@@ -5,19 +5,13 @@
             [datahike.store :as ds]
             [datahike.config :as dc]
             [datahike.tools :as dt :refer [throwable-promise]]
-            [datahike.index.hitchhiker-tree.upsert :as ups]
-            [datahike.index.hitchhiker-tree.insert :as ins]
             [datahike.transactor :as t]
-            [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
-            [konserve.cache :as kc]
             [superv.async :refer [<?? S]]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
-            [clojure.core.async :refer [go <!]]
-            [clojure.core.cache :as cache])
-  (:import #?(:clj [java.net URI])
-           [clojure.lang Atom]))
+            [clojure.core.async :refer [go <!]])
+  (:import  [clojure.lang Atom]))
 
 (s/def ::connection #(instance? Atom %))
 
@@ -25,14 +19,18 @@
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data tx-meta)
         {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ident-ref-map ref-ident-map config max-tx max-eid op-count hash meta]} db-after
         store (:store @connection)
-        backend (kons/->KonserveBackend store true)
-        eavt-flushed (di/-flush eavt backend)
-        aevt-flushed (di/-flush aevt backend)
-        avet-flushed (di/-flush avet backend)
+        backend (di/konserve-backend (:index config) store)
+        ;; flush for in-memory backends would only make sense if multiple processes access the db
+        ;; TODO: update can also be skipped for external stores when single process writes unless memory should be freed up
+        ;;       -> add options to config
+        backend? (not= :mem (-> config :store :backend))
+        eavt-flushed (cond-> eavt backend? (di/-flush backend))
+        aevt-flushed (cond-> aevt backend? (di/-flush backend))
+        avet-flushed (cond-> avet backend? (di/-flush backend))
         keep-history? (:keep-history? config)
-        temporal-eavt-flushed (when keep-history? (di/-flush temporal-eavt backend))
-        temporal-aevt-flushed (when keep-history? (di/-flush temporal-aevt backend))
-        temporal-avet-flushed (when keep-history? (di/-flush temporal-avet backend))]
+        temporal-eavt-flushed (when keep-history? (cond-> temporal-eavt backend? (di/-flush backend)))
+        temporal-aevt-flushed (when keep-history? (cond-> temporal-aevt backend? (di/-flush backend)))
+        temporal-avet-flushed (when keep-history? (cond-> temporal-avet backend? (di/-flush backend)))]
     (k/assoc-in store [:db]
                 (merge
                  {:schema schema
@@ -54,13 +52,14 @@
                     :temporal-aevt-key temporal-aevt-flushed
                     :temporal-avet-key temporal-avet-flushed}))
                 {:sync? true})
-    (reset! connection (assoc db-after
-                              :eavt eavt-flushed
-                              :aevt aevt-flushed
-                              :avet avet-flushed
-                              :temporal-eavt temporal-eavt-flushed
-                              :temporal-aevt temporal-aevt-flushed
-                              :temporal-avet temporal-avet-flushed))
+    (when backend?
+      (reset! connection (assoc db-after
+                                :eavt eavt-flushed
+                                :aevt aevt-flushed
+                                :avet avet-flushed
+                                :temporal-eavt temporal-eavt-flushed
+                                :temporal-aevt temporal-aevt-flushed
+                                :temporal-avet temporal-avet-flushed)))
     tx-report))
 
 (defn transact!
@@ -80,7 +79,8 @@
               :else (dt/raise "Bad argument to transact, expected map with :tx-data as key.
                                Vector and sequence are allowed as argument but deprecated."
                               {:error :transact/syntax :argument arg-map}))
-        _ (log/debug "Transacting with arguments: " arg)]
+        _ (log/debug "Transacting" (count (:tx-data arg)) " objects with arguments: " (dissoc arg :tx-data))
+        _ (log/trace "Transaction data" (:tx-data arg))]
     (try
       (deref (transact! connection arg))
       (catch Exception e
@@ -125,12 +125,7 @@
           store-config (:store config)
           raw-store (ds/connect-store store-config)]
       (if (not (nil? raw-store))
-        (let [store (ups/add-upsert-handler
-                     (ins/add-insert-handler
-                      (kons/add-hitchhiker-tree-handlers
-                       (kc/ensure-cache
-                        raw-store
-                        (atom (cache/lru-cache-factory {} :threshold 1000))))))
+        (let [store (ds/add-cache-and-handlers raw-store config)
               stored-db (k/get-in store [:db] nil {:sync? true})]
           (ds/release-store store-config store)
           (not (nil? stored-db)))
@@ -146,20 +141,26 @@
           _ (when-not raw-store
               (dt/raise "Backend does not exist." {:type :backend-does-not-exist
                                                    :config config}))
-          store (ups/add-upsert-handler
-                 (ins/add-insert-handler
-                  (kons/add-hitchhiker-tree-handlers
-                   (kc/ensure-cache
-                    raw-store
-                    (atom (cache/lru-cache-factory {} :threshold 1000))))))
+          store (ds/add-cache-and-handlers raw-store config)
           stored-db (k/get-in store [:db] nil {:sync? true})
           _ (when-not stored-db
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
-          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map config max-tx max-eid op-count hash meta]
-           :or {op-count 0}} stored-db
-          empty (db/empty-db nil config)
+          [config store stored-db]
+          (let [intended-index (:index config)
+                stored-index   (get-in stored-db [:config :index])]
+            (if-not (= intended-index stored-index)
+              (do
+                (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. The default index is now :datahike/persistent-set. Using stored index setting now, but this might throw an error in the future."))
+                (let [config (assoc config :index stored-index)
+                      store (ds/add-cache-and-handlers raw-store config)
+                      stored-db (k/get-in store [:db] nil {:sync? true})]
+                  [config store stored-db]))
+              [config store stored-db]))
+          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema system-entities ref-ident-map ident-ref-map max-tx max-eid op-count hash meta config]
+           :or   {op-count 0}} stored-db
+          empty (db/empty-db nil config store)
           conn (d/conn-from-db (assoc empty
                                       :max-tx max-tx
                                       :max-eid max-eid
@@ -185,15 +186,13 @@
   (-create-database [config & deprecated-config]
     (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)
           store-config (:store config)
-          store (kc/ensure-cache
-                 (ds/empty-store store-config)
-                 (atom (cache/lru-cache-factory {} :threshold 1000)))
+          store (ds/add-cache-and-handlers (ds/empty-store store-config) config)
           stored-db (k/get-in store [:db] nil {:sync? true})
           _ (when stored-db
               (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
           {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet schema rschema system-entities ref-ident-map ident-ref-map config max-tx max-eid op-count hash meta]}
-          (db/empty-db nil config)
-          backend (kons/->KonserveBackend store true)]
+          (db/empty-db nil config store)
+          backend (di/konserve-backend (:index config) store)]
       (k/assoc-in store [:db]
                   (merge {:schema schema
                           :max-tx max-tx

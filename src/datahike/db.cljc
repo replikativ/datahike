@@ -12,6 +12,7 @@
    [datahike.index :as di]
    [datahike.schema :as ds]
    [datahike.tools :as tools :refer [raise]]
+   [me.tonsky.persistent-sorted-set.arrays :as arrays]
    [medley.core :as m]
    [taoensso.timbre :refer [warn]])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable]]
@@ -33,6 +34,29 @@
 ;; code taken from prismatic:
 ;;  https://github.com/Prismatic/schema/commit/e31c419c56555c83ef9ee834801e13ef3c112597
 ;;
+
+;; ----------------------------------------------------------------------------
+
+#?(:cljs
+   (do
+     (def Exception js/Error)
+     (def IllegalArgumentException js/Error)
+     (def UnsupportedOperationException js/Error)))
+
+;; ----------------------------------------------------------------------------
+
+(defn #?@(:clj [^Boolean seqable?]
+          :cljs [^boolean seqable?])
+  [x]
+  (and (not (string? x))
+       #?(:cljs (or (cljs.core/seqable? x)
+                    (arrays/array? x))
+          :clj (or (seq? x)
+                   (instance? Seqable x)
+                   (nil? x)
+                   (instance? Iterable x)
+                   (arrays/array? x)
+                   (instance? java.util.Map x)))))
 
 (defn- cljs-env?
   "Take the &env from a macro, and tell whether we are expanding into cljs."
@@ -128,14 +152,14 @@
       :clj
       [Object (hashCode [db] hash)
        clojure.lang.IHashEq (hasheq [db] hash)
-       clojure.lang.Seqable (seq [db] (di/-seq eavt))
-       clojure.lang.IPersistentCollection
+       Seqable (seq [db] (di/-seq eavt))
+       IPersistentCollection
        (count [db] (di/-count eavt))
        (equiv [db other] (equiv-db db other))
        (empty [db] (empty-db (ds/get-user-schema db)))
-       clojure.lang.IEditableCollection
+       IEditableCollection
        (asTransient [db] (db-transient db))
-       clojure.lang.ITransientCollection
+       ITransientCollection
        (conj [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
        (persistent [db] (db-persistent! db))])
 
@@ -694,9 +718,10 @@
 
 (defn ^DB empty-db
   "Prefer create-database in api, schema only in index for attribute reference database."
-  ([] (empty-db nil nil))
-  ([schema] (empty-db schema nil))
-  ([schema user-config]
+  ([] (empty-db nil nil nil))
+  ([schema] (empty-db schema nil nil))
+  ([schema user-config] (empty-db schema user-config nil))
+  ([schema user-config store]
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
    (let [complete-config (merge (dc/storeless-config) user-config)
          _ (dc/validate-config complete-config)
@@ -720,15 +745,15 @@
          index-config (merge (:index-config complete-config)
                              {:indexed indexed})
          eavt (if attribute-refs?
-                (di/init-index index ref-datoms :eavt 0 index-config)
-                (di/empty-index index :eavt index-config))
+                (di/init-index index store ref-datoms :eavt 0 index-config)
+                (di/empty-index index store :eavt index-config))
          aevt (if attribute-refs?
-                (di/init-index index ref-datoms :aevt 0 index-config)
-                (di/empty-index index :aevt index-config))
+                (di/init-index index store ref-datoms :aevt 0 index-config)
+                (di/empty-index index store :aevt index-config))
          indexed-datoms (filter (fn [[_ a _ _]] (contains? indexed a)) ref-datoms)
          avet (if attribute-refs?
-                (di/init-index index indexed-datoms :avet 0 index-config)
-                (di/empty-index index :avet index-config))
+                (di/init-index index store indexed-datoms :avet 0 index-config)
+                (di/empty-index index store :avet index-config))
          max-eid (if attribute-refs? ue0 e0)
          max-tx (if attribute-refs? utx0 tx0)]
      (map->DB
@@ -748,17 +773,18 @@
         :meta (tools/meta-data)
         :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
-         {:temporal-eavt (di/empty-index index :eavt index-config)
-          :temporal-aevt (di/empty-index index :aevt index-config)
-          :temporal-avet (di/empty-index index :avet index-config)}))))))
+         {:temporal-eavt (di/empty-index index store :eavt index-config)
+          :temporal-aevt (di/empty-index index store :aevt index-config)
+          :temporal-avet (di/empty-index index store :avet index-config)}))))))
 
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (di/-all eavt)))
 
 (defn ^DB init-db
-  ([datoms] (init-db datoms nil nil))
-  ([datoms schema] (init-db datoms schema nil))
-  ([datoms schema user-config]
+  ([datoms] (init-db datoms nil nil nil))
+  ([datoms schema] (init-db datoms schema nil nil))
+  ([datoms schema user-config] (init-db datoms schema user-config nil))
+  ([datoms schema user-config store]
    (validate-schema schema)
    (let [{:keys [index keep-history? attribute-refs?] :as complete-config}  (merge (dc/storeless-config) user-config)
          _ (dc/validate-config complete-config)
@@ -779,9 +805,9 @@
          op-count 0
          index-config (assoc (:index-config complete-config)
                              :indexed indexed)
-         avet (di/init-index index indexed-datoms :avet op-count index-config)
-         eavt (di/init-index index new-datoms :eavt op-count index-config)
-         aevt (di/init-index index new-datoms :aevt op-count index-config)
+         avet (di/init-index index store indexed-datoms :avet op-count index-config)
+         eavt (di/init-index index store new-datoms :eavt op-count index-config)
+         aevt (di/init-index index store new-datoms :aevt op-count index-config)
          max-eid (init-max-eid eavt)
          max-tx (get-max-tx eavt)
          op-count (count new-datoms)]
@@ -800,9 +826,9 @@
                       :ref-ident-map ref-ident-map
                       :ident-ref-map ident-ref-map}
                      (when keep-history?
-                       {:temporal-eavt (di/empty-index index :eavt index-config)
-                        :temporal-aevt (di/empty-index index :aevt index-config)
-                        :temporal-avet (di/empty-index index :avet index-config)}))))))
+                       {:temporal-eavt (di/empty-index index store :eavt index-config)
+                        :temporal-aevt (di/empty-index index store :aevt index-config)
+                        :temporal-avet (di/empty-index index store :avet index-config)}))))))
 
 (defn db-from-reader [{:keys [schema datoms]}]
   (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema))
@@ -830,3 +856,4 @@
                                         (reduce (fn [m datom] (update-count-in m [(dbi/-ident-for db (.-a datom))]))
                                                 {})
                                         sum-indexed-attr-counts)}))))
+

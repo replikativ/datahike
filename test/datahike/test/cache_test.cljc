@@ -1,7 +1,7 @@
 (ns datahike.test.cache-test
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+      :clj  [clojure.test :as t :refer [is deftest]])
    [datahike.api :as d]))
 
 (defn setup-db [cfg]
@@ -15,7 +15,7 @@
              :name               "cache-test"
              :keep-history?      true
              :schema-flexibility :write
-             :cache-size         2
+             :search-cache-size  2
              :attribute-refs?    true}
         conn (setup-db cfg)
         schema [{:db/ident       :name

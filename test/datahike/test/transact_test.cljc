@@ -479,21 +479,3 @@
                       (:db/current-tx tempids))
               :db/txInstant
               inst?)))))
-
-(comment
-  (def conn (du/setup-db))
-  (def tx (d/transact conn {:tx-data [{:name "Sergey"
-                                       :age  5}]
-                            :tx-meta {:foo "bar"}}))
-  (def tempids (:tempids tx))
-  (def ctx (:db/current-tx (:tempids tx)))
-  (d/pull @conn '[:db/txInstant] ctx)
-  (d/datoms @conn :eavt)
-  (def conn (du/setup-db {:keep-history? false}))
-  (d/transact conn {:tx-data [{:db/ident :created-at :db/valueType :db.type/ref}
-                              {:name "X", :created-at :db/current-tx}
-                              {:db/id :db/current-tx, :prop1 "prop1"}
-                              [:db/add :db/current-tx :prop2 "prop2"]
-                              [:db/add -1 :name "Y"]
-                              [:db/add -1 :created-at :db/current-tx]]})
-  (d/q '[:find ?e ?a ?v :where [?e ?a ?v]] @conn))
