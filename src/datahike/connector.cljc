@@ -183,9 +183,8 @@
               :else (dt/raise "Bad argument to transact, expected map with :tx-data as key.
                                Vector and sequence are allowed as argument but deprecated."
                               {:error :transact/syntax :argument arg-map}))
-        _ (log/debug "Transacting" (count (:tx-data arg)) "objects with arguments: "
-                     (dissoc arg :tx-data))
-        _ (log/trace "Transaction data: " (:tx-data arg))]
+        _ (log/debug "Transacting" (count (:tx-data arg)) " objects with arguments: " (dissoc arg :tx-data))
+        _ (log/trace "Transaction data" (:tx-data arg))]
     (try
       (deref (transact! connection arg))
       (catch Exception e
@@ -256,6 +255,17 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
+          [config store stored-db]
+          (let [intended-index (:index config)
+                stored-index   (get-in stored-db [:config :index])]
+            (if-not (= intended-index stored-index)
+              (do
+                (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. The default index is now :datahike/persistent-set. Using stored index setting now, but this might throw an error in the future."))
+                (let [config    (assoc config :index stored-index)
+                      store     (ds/add-cache-and-handlers raw-store config)
+                      stored-db (k/get-in store [:db] nil {:sync? true})]
+                  [config store stored-db]))
+              [config store stored-db]))
           config (config-merge (:config stored-db) config)
           conn (d/conn-from-db (stored->db (assoc stored-db :config config) store))]
       (swap! conn assoc :transactor

@@ -8,7 +8,7 @@
             [datahike.index :as di])
   (:import [java.net URI]))
 
-(def ^:dynamic default-index :datahike.index/hitchhiker-tree)
+(def ^:dynamic default-index :datahike.index/persistent-set)
 (def ^:dynamic default-search-cache-size 10000)
 (def ^:dynamic default-store-cache-size 1000)
 
@@ -25,6 +25,12 @@
 (s/def ::name string?)
 
 (s/def ::index-config map?)
+(s/def ::index-b-factor long)
+(s/def ::index-log-size long)
+(s/def ::index-data-node-size long)
+(s/def :datahike.middleware/fn symbol?)
+(s/def :datahike.middleware/query (s/coll-of :datahike.middleware/fn))
+(s/def ::middleware (s/keys :opt-un [:datahike.middleware/query]))
 
 (s/def ::store map?)
 
@@ -39,7 +45,8 @@
                                          ::crypto-hash?
                                          ::initial-tx
                                          ::name
-                                         ::branch]))
+                                         ::branch
+                                         ::middleware]))
 
 (s/def :deprecated/schema-on-read boolean?)
 (s/def :deprecated/temporal-index boolean?)

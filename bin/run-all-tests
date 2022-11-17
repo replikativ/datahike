@@ -3,12 +3,13 @@
 set -o errexit
 set -o pipefail
 
-echo "Check format"
-clj -M:format
-echo "Running unit tests with hitchhiker-tree index"
-bin/run-hht-tests --reporter kaocha.report/dots
-echo "Running unit tests with persistent-set index"
-bin/run-pss-tests --reporter kaocha.report/dots
+echo "Recompiling Java"
+clj -T:build clean
+clj -T:build compile
+echo "Fix formatting"
+clj -M:ffix
+echo "Running unit tests"
+bin/run-unittests --reporter kaocha.report/dots
 echo "Running integration tests"
 bin/run-integrationtests --reporter kaocha.report/dots
 echo "Running backward compatibility tests"

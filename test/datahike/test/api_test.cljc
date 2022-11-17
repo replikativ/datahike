@@ -6,6 +6,7 @@
    [datahike.api :as d]
    [datahike.db :as db]
    [datahike.db.interface :as dbi]
+   [datahike.index.interface :as di]
    [datahike.constants :refer [tx0]]))
 
 (deftest test-transact-docs
@@ -729,7 +730,7 @@
            (-> @conn :meta keys set)))))
 
 (def ^:private metrics-base-cfg {:store              {:backend :mem}
-                                 :index              :datahike.index/hitchhiker-tree
+                                 :index              :datahike.index/persistent-set
                                  :keep-history?      true
                                  :schema-flexibility :write
                                  :attribute-refs?    false})
@@ -820,10 +821,11 @@
                     (:attribute-refs? (.-config @conn)) update-for-attr-refs))))
 
 (deftest test-metrics-hht
-  (test-metrics metrics-base-cfg))
+  (test-metrics (assoc metrics-base-cfg :index :datahike.index/hitchhiker-tree
+                       :index-config (di/default-index-config :datahike.index/hitchhiker-tree))))
 
 (deftest test-metrics-pset
-  (test-metrics (assoc metrics-base-cfg :index :datahike.index/persistent-set)))
+  (test-metrics metrics-base-cfg))
 
 (deftest test-metrics-history
   (test-metrics (assoc metrics-base-cfg :keep-history? false)))
