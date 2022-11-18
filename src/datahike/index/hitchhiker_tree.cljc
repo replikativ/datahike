@@ -11,7 +11,6 @@
             [datahike.datom :as dd]
             [datahike.constants :refer [e0 tx0 emax txmax]]
             [clojure.spec.alpha :as s]
-            [hasch.core :as h]
             [datahike.index.interface :as di :refer [IIndex]])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [hitchhiker.tree DataNode IndexNode]
