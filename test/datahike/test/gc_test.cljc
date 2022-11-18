@@ -25,50 +25,49 @@
 (def cfg {:store              {:backend :file}
           :keep-history?      true
           :schema-flexibility :write
-          :index              :datahike.index/persistent-set
-          })
+          :index              :datahike.index/persistent-set})
 
 (def schema [{:db/ident       :age
               :db/cardinality :db.cardinality/one
               :db/valueType   :db.type/long}])
 
 (deftest datahike-gc-test
-(let [cfg (assoc-in cfg [:store :path] "/tmp/dh-gc-test")
-          conn (do
-                 (d/delete-database cfg)
-                 (d/create-database cfg)
-                 (d/connect cfg))
+  (let [cfg (assoc-in cfg [:store :path] "/tmp/dh-gc-test")
+        conn (do
+               (d/delete-database cfg)
+               (d/create-database cfg)
+               (d/connect cfg))
           ;; everything will fit into the root nodes of each index here
-          num-roots 6
-          fresh-count (+ num-roots 3) ;; :branches + :db + cid + roots
-          ]
-  (testing "Test initial store counts."
-    (is (= 1 (count (-mark (:eavt @conn)))))
-    (is (= fresh-count (count-store @conn)))
-    (d/transact conn schema)
-    (is (= 1 (count (-mark (:eavt @conn)))))
-    (is (= (+ 1 fresh-count num-roots) (count-store @conn))))
-  (testing "Delete old db with roots."
-    (is (= (+ 1 num-roots) (count (<?? S (gc! @conn (Date.))))))
-    (is (= fresh-count (count-store @conn))))
-  (testing "Try to run on dirty index and fail."
-    (is (thrown-msg? "Index needs to be properly flushed before marking."
-                     (-mark (:eavt
-                             (:db-after
-                              (d/with @conn [{:db/id 100
-                                              :age   5}])))))))
+        num-roots 6
+        fresh-count (+ num-roots 3) ;; :branches + :db + cid + roots
+        ]
+    (testing "Test initial store counts."
+      (is (= 1 (count (-mark (:eavt @conn)))))
+      (is (= fresh-count (count-store @conn)))
+      (d/transact conn schema)
+      (is (= 1 (count (-mark (:eavt @conn)))))
+      (is (= (+ 1 fresh-count num-roots) (count-store @conn))))
+    (testing "Delete old db with roots."
+      (is (= (+ 1 num-roots) (count (<?? S (gc! @conn (Date.))))))
+      (is (= fresh-count (count-store @conn))))
+    (testing "Try to run on dirty index and fail."
+      (is (thrown-msg? "Index needs to be properly flushed before marking."
+                       (-mark (:eavt
+                               (:db-after
+                                (d/with @conn [{:db/id 100
+                                                :age   5}])))))))
 
-  (testing "Check that we can still read the data."
-    (d/transact conn txs)
-    (<?? S (gc! @conn (Date.)))
-    (is (= 1000 (d/q count-query @(d/connect cfg)))))))
+    (testing "Check that we can still read the data."
+      (d/transact conn txs)
+      (<?? S (gc! @conn (Date.)))
+      (is (= 1000 (d/q count-query @(d/connect cfg)))))))
 
 (deftest datahike-gc-versioning-test
   (let [cfg          (assoc-in cfg [:store :path] "/tmp/dh-gc-versioning-test")
         conn         (do
-               (d/delete-database cfg)
-               (d/create-database cfg)
-               (d/connect cfg))
+                       (d/delete-database cfg)
+                       (d/create-database cfg)
+                       (d/connect cfg))
         _            (d/transact conn schema)
         ;; create two more branches
         _            (branch! conn :db :branch1)
@@ -127,9 +126,9 @@
           new-history      (set (filter (fn [db]
                                           (let [db-date ^Date (or (get-in db [:meta :datahike/updated-at])
                                                                   (get-in db [:meta :datahike/created-at]))]
-                                       (> (.getTime db-date)
-                                          (.getTime remove-before))))
-                                   (concat db-history branch1-history)))
+                                            (> (.getTime db-date)
+                                               (.getTime remove-before))))
+                                        (concat db-history branch1-history)))
           ;; gc
           _                (<?? S (gc! @conn remove-before))
           history-after-gc (set (<?? S (branch-history conn)))]
