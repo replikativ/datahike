@@ -35,7 +35,7 @@
                 schema rschema system-entities ident-ref-map ref-ident-map config
                 max-tx max-eid op-count hash meta store]} db
         backend (di/konserve-backend (:index config) store)
-        in-memory? (not= :mem (-> config :store :backend))]
+        not-in-memory? (not= :mem (-> config :store :backend))]
     (merge
      {:schema          schema
       :rschema         rschema
@@ -48,13 +48,13 @@
       :max-tx          max-tx
       :max-eid         max-eid
       :op-count        op-count
-      :eavt-key        (cond-> eavt in-memory? (di/-flush backend))
-      :aevt-key        (cond-> aevt in-memory? (di/-flush backend))
-      :avet-key        (cond-> avet in-memory? (di/-flush backend))}
+      :eavt-key        (cond-> eavt not-in-memory? (di/-flush backend))
+      :aevt-key        (cond-> aevt not-in-memory? (di/-flush backend))
+      :avet-key        (cond-> avet not-in-memory? (di/-flush backend))}
      (when (:keep-history? config)
-       {:temporal-eavt-key (cond-> temporal-eavt in-memory? (di/-flush backend))
-        :temporal-aevt-key (cond-> temporal-aevt in-memory? (di/-flush backend))
-        :temporal-avet-key (cond-> temporal-avet in-memory? (di/-flush backend))}))))
+       {:temporal-eavt-key (cond-> temporal-eavt not-in-memory? (di/-flush backend))
+        :temporal-aevt-key (cond-> temporal-aevt not-in-memory? (di/-flush backend))
+        :temporal-avet-key (cond-> temporal-avet not-in-memory? (di/-flush backend))}))))
 
 (defn stored->db
   "Constructs in-memory db instance from stored map value."
