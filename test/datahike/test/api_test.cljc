@@ -261,14 +261,14 @@
         dvec #(vector (:e %) (:a %) (:v %))]
     ;; add a single datom to an existing entity (1)
     (let [res (d/with @conn {:tx-data [[:db/add 1 :name "Ivan"]]})]
-      (is (= nil
-             (:tx-meta res)))
+      (is (= #{:db/txInstant}
+             (set (keys (:tx-meta res)))))
       (is (= '([1 :name "Ivan"])
              (map dvec (:tx-data res)))))
     (let [res (d/with @conn {:tx-data [[:db/add 1 :name "Ivan"]]
                              :tx-meta {:foo :bar}})]
       (is (= {:foo :bar}
-             (:tx-meta res)))
+             (dissoc (:tx-meta res) :db/txInstant)))
       (is (= '([1 :name "Ivan"])
              (map dvec (:tx-data res)))))))
 
@@ -726,7 +726,7 @@
              :attribute-refs?    false
              :schema-flexibility :write}
         conn (utils/setup-db cfg)]
-    (is (= #{:datahike/version :datahike/id :datahike/created-at :konserve/version :hitchhiker.tree/version :persistent.set/version}
+    (is (= #{:datahike/version :datahike/id :datahike/created-at :konserve/version :hitchhiker.tree/version :persistent.set/version :datahike/commit-id}
            (-> @conn :meta keys set)))))
 
 (def ^:private metrics-base-cfg {:store              {:backend :mem}

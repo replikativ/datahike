@@ -13,7 +13,8 @@
   (-slice [index from to index-type] "Returns a slice of the index")
   (-flush [index backend] "Saves the changes to the index to the given konserve backend")
   (-transient [index] "Returns a transient version of the index")
-  (-persistent! [index] "Returns a persistent version of the index"))
+  (-persistent! [index] "Returns a persistent version of the index")
+  (-mark [index] "Return konserve addresses that should be whitelisted for mark and sweep gc."))
 
 (defmulti empty-index
   "Creates an empty index"

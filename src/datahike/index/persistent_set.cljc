@@ -102,6 +102,14 @@
                     (index-type->cmp-quick index-type false))
         pset))))
 
+(defn mark [^PersistentSortedSet pset]
+  (when-not (.-_address pset)
+    (throw (ex-info "Index needs to be properly flushed before marking."
+                    {:type :flush-before-marking})))
+  (let [addresses (atom #{})]
+    (psset/walk-addresses pset (fn [address] (swap! addresses conj address)))
+    @addresses))
+
 (extend-type PersistentSortedSet
   IIndex
   (-slice [^PersistentSortedSet pset from to index-type]
@@ -128,7 +136,9 @@
   (-transient [^PersistentSortedSet pset]
     (transient pset))
   (-persistent! [^PersistentSortedSet pset]
-    (persistent! pset)))
+    (persistent! pset))
+  (-mark [^PersistentSortedSet pset]
+    (mark pset)))
 
 (defn- gen-address [^ANode node crypto-hash?]
   (if crypto-hash?

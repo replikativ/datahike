@@ -115,6 +115,7 @@ Refer to the docs for more information:
 
 - [backend development](./doc/backend-development.md)
 - [benchmarking](./doc/benchmarking.md)
+- [garbage collection](./doc/gc.md)
 - [contributing to Datahike](./doc/contributing.md)
 - [configuration](./doc/config.md)
 - [differences to Datomic](./doc/datomic_differences.md)
@@ -122,6 +123,7 @@ Refer to the docs for more information:
 - [logging and error handling](./doc/logging_and_error_handling.md)
 - [schema flexibility](./doc/schema.md)
 - [time variance](./doc/time_variance.md)
+- [versioning](./doc/versioning.md)
 
 
 For simple examples have a look at the projects in the `examples` folder.

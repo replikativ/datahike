@@ -42,7 +42,7 @@ system. Use `db` for this view. The following example shows a simple interaction
              {:db/ident :age
               :db/valueType :db.type/long
               :db/cardinality :db.cardinality/one}])
-              
+
 (def cfg {:store {:backend :mem :id "current-db"} :initial-tx schema})
 
 ;; create our temporal database
