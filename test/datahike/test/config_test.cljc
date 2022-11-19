@@ -1,11 +1,12 @@
 (ns datahike.test.config-test
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing]])
+      :clj [clojure.test :as t :refer [is are deftest testing]])
    [datahike.config :as c]
-   [datahike.constants :as const]
    [datahike.db :as db]
-   [datahike.api :as d]))
+   [datahike.api :as d]
+   [datahike.index :as di]
+   [datahike.index.hitchhiker-tree :as dih]))
 
 (deftest int-from-env-test
   (is (= 1000
@@ -34,11 +35,13 @@
                          :keep-history? true
                          :initial-tx nil
                          :index :datahike.index/hitchhiker-tree
-                         :index-config {:index-b-factor       const/default-index-b-factor
-                                        :index-log-size       const/default-index-log-size
-                                        :index-data-node-size const/default-index-data-node-size}
+                         :index-config {:index-b-factor       dih/default-index-b-factor
+                                        :index-log-size       dih/default-index-log-size
+                                        :index-data-node-size dih/default-index-data-node-size}
                          :schema-flexibility :write
-                         :cache-size 100000}]
+                         :crypto-hash? false
+                         :search-cache-size c/default-search-cache-size
+                         :store-cache-size c/default-store-cache-size}]
     (is (= (merge default-new-cfg
                   {:store {:backend :mem :id "deprecated-test"}})
            (c/from-deprecated mem-cfg)))
@@ -50,16 +53,17 @@
 (deftest load-config-test
   (testing "configuration defaults"
     (let [config (c/load-config)]
-      (is (= {:store {:backend :mem
-                      :id "default"}
-              :attribute-refs? false
-              :keep-history? true
-              :schema-flexibility :write
-              :index :datahike.index/hitchhiker-tree
-              :index-config       {:index-b-factor       const/default-index-b-factor
-                                   :index-log-size       const/default-index-log-size
-                                   :index-data-node-size const/default-index-data-node-size}
-              :cache-size 100000}
+      (is (= (merge {:store {:backend :mem
+                             :id "default"}
+                     :attribute-refs? false
+                     :keep-history? true
+                     :schema-flexibility :write
+                     :index c/default-index
+                     :crypto-hash? false
+                     :search-cache-size c/default-search-cache-size
+                     :store-cache-size c/default-store-cache-size}
+                    (when (seq (di/default-index-config c/default-index))
+                      {:index-config (di/default-index-config c/default-index)}))
              (-> config (dissoc :name)))))))
 
 (deftest core-config-test

@@ -63,7 +63,8 @@
   (is (= '({:db-datoms 4
             :db-entities 1
             :dh-config {:backend :mem
-                        :cache-size 0
+                        :search-cache-size 0
+                        :store-cache-size 1
                         :index :datahike.index/persistent-set
                         :keep-history? false
                         :schema-flexibility :write}
@@ -71,7 +72,8 @@
            {:db-datoms 40
             :db-entities 10
             :dh-config {:backend :mem
-                        :cache-size 0
+                        :search-cache-size 0
+                        :store-cache-size 1
                         :index :datahike.index/persistent-set
                         :keep-history? false
                         :schema-flexibility :write}
@@ -81,7 +83,8 @@
   (is (= '({:db-datoms 4
             :db-entities 1
             :dh-config {:backend :mem
-                        :cache-size 0
+                        :search-cache-size 0
+                        :store-cache-size 1
                         :index :datahike.index/persistent-set
                         :keep-history? false
                         :schema-flexibility :write}
@@ -89,7 +92,8 @@
            {:db-datoms 40
             :db-entities 10
             :dh-config {:backend :mem
-                        :cache-size 0
+                        :search-cache-size 0
+                        :store-cache-size 1
                         :index :datahike.index/persistent-set
                         :keep-history? false
                         :schema-flexibility :write}
@@ -97,7 +101,8 @@
            {:db-datoms 4
             :db-entities 1
             :dh-config {:backend :mem
-                        :cache-size 0
+                        :search-cache-size 0
+                        :store-cache-size 1
                         :index :datahike.index/hitchhiker-tree
                         :keep-history? false
                         :schema-flexibility :write}
@@ -105,7 +110,8 @@
            {:db-datoms 40
             :db-entities 10
             :dh-config {:backend :mem
-                        :cache-size 0
+                        :search-cache-size 0
+                        :store-cache-size 1
                         :index :datahike.index/hitchhiker-tree
                         :keep-history? false
                         :schema-flexibility :write}
@@ -113,7 +119,8 @@
            {:db-datoms 4
             :db-entities 1
             :dh-config {:backend :file
-                        :cache-size 0
+                        :search-cache-size 0
+                        :store-cache-size 1
                         :index :datahike.index/persistent-set
                         :keep-history? false
                         :schema-flexibility :write}
@@ -121,7 +128,8 @@
            {:db-datoms 40
             :db-entities 10
             :dh-config {:backend :file
-                        :cache-size 0
+                        :search-cache-size 0
+                        :store-cache-size 1
                         :index :datahike.index/persistent-set
                         :keep-history? false
                         :schema-flexibility :write}
@@ -129,7 +137,8 @@
            {:db-datoms 4
             :db-entities 1
             :dh-config {:backend :file
-                        :cache-size 0
+                        :search-cache-size 0
+                        :store-cache-size 1
                         :index :datahike.index/hitchhiker-tree
                         :keep-history? false
                         :schema-flexibility :write}
@@ -137,7 +146,8 @@
            {:db-datoms 40
             :db-entities 10
             :dh-config {:backend :file
-                        :cache-size 0
+                        :search-cache-size 0
+                        :store-cache-size 1
                         :index :datahike.index/hitchhiker-tree
                         :keep-history? false
                         :schema-flexibility :write}

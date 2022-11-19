@@ -89,8 +89,7 @@
       (is (= [[1 :age 44 1] nil] (first (msg/lookup-fwd-iter tree [1 :age 44 1])))))))
 
 (defn connect []
-  (let [cfg  {:keep-history?      true
-              :schema-flexibility :read
+  (let [cfg  {:schema-flexibility :read
               :initial-tx         []}
         _    (d/delete-database cfg)
         _    (d/create-database cfg)]
@@ -125,25 +124,24 @@
               [1 :age 44]]
              (map dvec (d/datoms db :avet)))))))
 
-(def schema [{:db/ident       :name
-              :db/valueType   :db.type/string
-              :db/unique      :db.unique/identity
-              :db/index       true
-              :db/cardinality :db.cardinality/one}
-             {:db/ident       :age
-              :db/valueType   :db.type/long
-              :db/cardinality :db.cardinality/one}
-             {:name "Alice"
-              :age  25}
-             {:name "Bob"
-              :age  35}])
-
 (deftest temporal-upsert
-  (let [cfg {:store {:backend :mem
+  (let [schema [{:db/ident       :name
+                 :db/valueType   :db.type/string
+                 :db/unique      :db.unique/identity
+                 :db/index       true
+                 :db/cardinality :db.cardinality/one}
+                {:db/ident       :age
+                 :db/valueType   :db.type/long
+                 :db/cardinality :db.cardinality/one}]
+        initial-tx (conj schema
+                         {:name "Alice"
+                          :age  25}
+                         {:name "Bob"
+                          :age  35})
+        cfg {:store {:backend :mem
                      :id "test-upsert-history"}
-             :keep-history? true
              :schema-flexibility :read
-             :initial-tx schema}
+             :initial-tx initial-tx}
         conn (setup-db cfg)
         query '[:find ?a ?t ?op
                 :where
@@ -180,8 +178,7 @@
 (deftest upsert-read-handlers
   (let [config {:store {:backend :file :path "/tmp/upsert-read-handlers"}
                 :schema-flexibility :write
-                :keep-history? false
-                :index :datahike.index/hitchhiker-tree}
+                :keep-history? false}
         schema [{:db/ident       :block/string
                  :db/valueType   :db.type/string
                  :db/cardinality :db.cardinality/one}

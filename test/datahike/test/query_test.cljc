@@ -389,8 +389,6 @@
 (deftest test-zeros-in-pattern
   (let [cfg {:store {:backend :mem
                      :id "sandbox"}
-             :index :datahike.index/hitchhiker-tree
-             :keep-history? true
              :schema-flexibility :write
              :attribute-refs? false}
         conn (do
@@ -423,7 +421,6 @@
                  :db/valueType   :db.type/long}]
         cfg    {:store              {:backend :mem
                                      :id      "DEV"}
-                :keep-history?      true
                 :schema-flexibility :write
                 :attribute-refs?    true}
         conn   (utils/setup-db cfg)]

@@ -3,6 +3,11 @@
 set -o errexit
 set -o pipefail
 
+echo "Recompiling Java"
+clj -T:build clean
+clj -T:build compile
+echo "Fix formatting"
+clj -M:ffix
 echo "Running unit tests"
 bin/run-unittests --reporter kaocha.report/dots
 echo "Running integration tests"

@@ -28,52 +28,39 @@
 (deftest test-db-mem-store
   (test-store {:store {:backend :mem :id "test-mem"}}))
 
-(deftest test-persistent-set-index
+(deftest test-index
   (let [config {:store {:backend :mem
-                        :id "test-persistent-set"}
+                        :id "test-index"}
                 :schema-flexibility :read
-                :keep-history? false
-                :index :datahike.index/persistent-set}]
+                :keep-history? false}]
     (d/delete-database config)
     (d/create-database config)
     (let [conn (d/connect config)]
-      (d/transact conn [{:db/id 1, :name "Alice"}])
-      (is (= me.tonsky.persistent_sorted_set.PersistentSortedSet
-             (-> @conn :eavt type)))
-      ;; test upsert
-      (d/transact conn [{:db/id 1, :name "Paula"}])
-      (is (= "Paula" (:name (d/entity @conn 1)))))))
-
-(deftest test-hitchhiker-tree-index
-  (let [config {:store {:backend :mem
-                        :id "test-hitchhiker-tree"}
-                :schema-flexibility :read
-                :keep-history? false
-                :index :datahike.index/hitchhiker-tree}]
-    (d/delete-database config)
-    (d/create-database config)
-    (let [conn (d/connect config)]
-      (d/transact conn [{:db/id 1, :name "Alice"}])
-      (is (= hitchhiker.tree.DataNode
-             (-> @conn :eavt type))))))
+      (testing "root node type"
+        (d/transact conn [{:db/id 1, :name "Alice"}])
+        (is (= (if (= :datahike.index/persistent-set (-> @conn :config :index))
+                 me.tonsky.persistent_sorted_set.PersistentSortedSet
+                 hitchhiker.tree.DataNode)
+               (-> @conn :eavt type))))
+      (testing "upsert"
+        (d/transact conn [{:db/id 1, :name "Paula"}])
+        (is (= "Paula" (:name (d/entity @conn 1))))))))
 
 (deftest test-binary-support
-  (doseq [index [:datahike.index/persistent-set :datahike.index/hitchhiker-tree]]
-    (let [config {:store {:backend :mem
-                          :id "test-hitchhiker-tree-binary-support"}
-                  :schema-flexibility :read
-                  :keep-history? false
-                  :index index}]
-      (d/delete-database config)
-      (d/create-database config)
-      (let [conn (d/connect config)]
-        (d/transact conn [{:db/id 1, :name "Jiayi", :payload (byte-array [0 2 3])}
-                          {:db/id 2, :name "Peter", :payload (byte-array [1 2 3])}])
-        (is (= "Jiayi"
-               (d/q '[:find ?n .
-                      :in $ ?arr
-                      :where
-                      [?e :payload ?arr]
-                      [?e :name ?n]]
-                    @conn
-                    (byte-array [0 2 3]))))))))
+  (let [config {:store {:backend :mem
+                        :id "test-binary-support"}
+                :schema-flexibility :read
+                :keep-history? false}]
+    (d/delete-database config)
+    (d/create-database config)
+    (let [conn (d/connect config)]
+      (d/transact conn [{:db/id 1, :name "Jiayi", :payload (byte-array [0 2 3])}
+                        {:db/id 2, :name "Peter", :payload (byte-array [1 2 3])}])
+      (is (= "Jiayi"
+             (d/q '[:find ?n .
+                    :in $ ?arr
+                    :where
+                    [?e :payload ?arr]
+                    [?e :name ?n]]
+                  @conn
+                  (byte-array [0 2 3])))))))

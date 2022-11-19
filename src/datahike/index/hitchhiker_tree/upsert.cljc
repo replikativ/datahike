@@ -34,12 +34,12 @@
                   (diu/equals-on-indices? new (-> candidates first first) indices))
           (let [res (->> candidates
                          (map first)
-                      ;; Returns the key which has not been retracted.
-                      ;; There will at most be one such key.
-                      ;; Because of the ordering in keys, we know that
-                      ;; when two successive keys have a positive
-                      ;; :t value, then the second key is our answer,
-                      ;; the one that has not been retracted."
+                         ;; Returns the key which has not been retracted.
+                         ;; There will at most be one such key.
+                         ;; Because of the ordering in keys, we know that
+                         ;; when two successive keys have a positive
+                         ;; :t value, then the second key is our answer,
+                         ;; the one that has not been retracted."
                          (reduce (fn [prev-pos? k]
                                    (let [curr-pos? (pos? (nth k 3))]
                                      (if (and curr-pos?

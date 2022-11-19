@@ -95,6 +95,7 @@
   {:datahike/version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT")
    :konserve/version (get-version 'io.replikativ/konserve)
    :hitchhiker.tree/version (get-version 'io.replikativ/hitchhiker-tree)
+   :persistent.set/version (get-version 'persistent-sorted-set/persistent-sorted-set)
    :datahike/id (UUID/randomUUID)
    :datahike/created-at (Date.)})
 

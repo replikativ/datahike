@@ -28,7 +28,6 @@
    datahike.test.query-or-test
    datahike.test.query-pull-test
    datahike.test.query-rules-test
-   datahike.test.query-v3-test
    datahike.test.schema-test
    datahike.test.store-test
    datahike.test.time-variance-test
@@ -42,7 +41,9 @@
    datahike.test.attribute-refs.pull-api-test
    datahike.test.attribute-refs.query-test
    datahike.test.attribute-refs.transact-test
-   datahike.test.attribute-refs.utils))
+   datahike.test.attribute-refs.utils
+   datahike.test.middleware.query-test
+   datahike.test.middleware.utils-test))
 
 (defn ^:export test-clj []
   (datahike.test.core/wrap-res #(t/run-all-tests #"datahike\..*")))

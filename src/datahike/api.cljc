@@ -1,6 +1,7 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
   (:require [datahike.connector :as dc]
+            [datahike.constants :as const]
             [datahike.core :as dcore]
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
@@ -659,7 +660,13 @@
   (fn [db time-point]
     {:pre [(or (int? time-point) (date? time-point))]}
     (if (dbi/-temporal-index? db)
-      (AsOfDB. db time-point)
+      (if (int? time-point)
+        (if (<= const/tx0 time-point)
+          (AsOfDB. db time-point)
+          (throw (ex-info
+                  (format "Invalid transaction ID. Must be bigger than %d." const/tx0)
+                  {:time-point time-point})))
+        (AsOfDB. db time-point))
       (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
 
 (def ^{:arglists '([db])

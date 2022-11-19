@@ -5,13 +5,20 @@
             [environ.core :refer [env]]
             [datahike.tools :as tools]
             [datahike.store :as ds]
-            [datahike.constants :as c])
+            [datahike.index :as di])
   (:import [java.net URI]))
+
+(def ^:dynamic default-index :datahike.index/persistent-set)
+(def ^:dynamic default-search-cache-size 10000)
+(def ^:dynamic default-store-cache-size 1000)
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
 (s/def ::schema-flexibility #{:read :write})
 (s/def ::attribute-refs? boolean?)
+(s/def ::search-cache-size nat-int?)
+(s/def ::store-cache-size pos-int?)
+(s/def ::crypto-hash? boolean?)
 (s/def ::entity (s/or :map associative? :vec vector?))
 (s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
 (s/def ::name string?)
@@ -20,6 +27,9 @@
 (s/def ::index-b-factor long)
 (s/def ::index-log-size long)
 (s/def ::index-data-node-size long)
+(s/def :datahike.middleware/fn symbol?)
+(s/def :datahike.middleware/query (s/coll-of :datahike.middleware/fn))
+(s/def ::middleware (s/keys :opt-un [:datahike.middleware/query]))
 
 (s/def ::store map?)
 
@@ -29,8 +39,12 @@
                                          ::keep-history?
                                          ::schema-flexibility
                                          ::attribute-refs?
+                                         ::search-cache-size
+                                         ::store-cache-size
+                                         ::crypto-hash?
                                          ::initial-tx
-                                         ::name]))
+                                         ::name
+                                         ::middleware]))
 
 (s/def :deprecated/schema-on-read boolean?)
 (s/def :deprecated/temporal-index boolean?)
@@ -38,9 +52,9 @@
                                   :opt-un [:deprecated/temporal-index :deprecated/schema-on-read]))
 
 (defn from-deprecated
-  [{:keys [backend username password path host port] :as backend-cfg}
+  [{:keys [backend username password path host port] :as _backend-cfg}
    & {:keys [schema-on-read temporal-index index initial-tx]
-      :as index-cfg
+      :as _index-cfg
       :or {schema-on-read false
            index :datahike.index/hitchhiker-tree
            temporal-index true}}]
@@ -56,14 +70,14 @@
                    :level {:path path}
                    :file {:path path}))
    :index index
-   :index-config {:index-b-factor       c/default-index-b-factor
-                  :index-log-size       c/default-index-log-size
-                  :index-data-node-size c/default-index-data-node-size}
+   :index-config (di/default-index-config index)
    :keep-history? temporal-index
    :attribute-refs? false
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)
-   :cache-size 100000})
+   :crypto-hash? false
+   :search-cache-size default-search-cache-size
+   :store-cache-size default-store-cache-size})
 
 (defn int-from-env
   [key default]
@@ -100,11 +114,11 @@
    :schema-flexibility :read
    :name (z/rand-german-mammal)
    :attribute-refs? false
-   :index :datahike.index/hitchhiker-tree
-   :cache-size 100000
-   :index-config {:index-b-factor       c/default-index-b-factor
-                  :index-log-size       c/default-index-log-size
-                  :index-data-node-size c/default-index-data-node-size}})
+   :index default-index
+   :search-cache-size default-search-cache-size
+   :store-cache-size default-store-cache-size
+   :crypto-hash? false
+   :index-config (di/default-index-config default-index)})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -129,17 +143,22 @@
          store-config (ds/default-config (merge
                                           {:backend (keyword (:datahike-store-backend env :mem))}
                                           (:store config-as-arg)))
+         index (if (:datahike-index env)
+                 (keyword "datahike.index" (:datahike-index env))
+                 default-index)
          config {:store store-config
                  :initial-tx (:datahike-intial-tx env)
                  :keep-history? (bool-from-env :datahike-keep-history true)
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
                  :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
-                 :index (keyword "datahike.index" (:datahike-index env "hitchhiker-tree"))
-                 :cache-size (:cache-size env 100000)
-                 :index-config {:index-b-factor       (int-from-env :datahike-b-factor c/default-index-b-factor)
-                                :index-log-size       (int-from-env :datahike-log-size c/default-index-log-size)
-                                :index-data-node-size (int-from-env :datahike-data-node-size c/default-index-data-node-size)}}
+                 :index index
+                 :crypto-hash? false
+                 :search-cache-size (int-from-env :datahike-search-cache-size default-search-cache-size)
+                 :store-cache-size (int-from-env :datahike-store-cache-size default-store-cache-size)
+                 :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
+                                 index-config
+                                 (di/default-index-config index))}
          merged-config ((comp remove-nils tools/deep-merge) config config-as-arg)
          {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config
          config-spec (ds/config-spec store)]

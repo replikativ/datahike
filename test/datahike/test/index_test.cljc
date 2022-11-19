@@ -158,13 +158,12 @@
             [5 :age 20]
             [4 :age 45]]))))
 
-(defn test-slice [cfg]
+(deftest test-slice []
   (testing "Test index -slice"
     (let [dvec #(vector (:e %) (:a %) (:v %))
           db (d/db-with
               (db/empty-db {:name {:db/index true}
-                            :age  {:db/index true}}
-                           cfg)
+                            :age  {:db/index true}})
               [{:db/id 1 :name "Ivan"   :age 15}
                {:db/id 2 :name "Oleg"   :age 20}
                {:db/id 3 :name "Sergey" :age 7}
@@ -176,7 +175,7 @@
 
       (is (= (di/-slice eavt (dd/datom e0 nil nil tx0) (dd/datom emax nil nil txmax) :eavt)
              (d/datoms db :eavt)))
-      (is (= (map dvec (di/-slice eavt (dd/datom e0 nil nil tx0) (dd/datom 2 nil nil tx0) :eavt))
+      (is (= (map dvec (di/-slice eavt (dd/datom e0 nil nil tx0) (dd/datom 2 nil nil txmax) :eavt))
              [[1 :age 15]
               [1 :name "Ivan"]
               [2 :age 20]
@@ -241,9 +240,3 @@
               [2 :age 20]
               [5 :age 20]
               [4 :age 45]])))))
-
-(deftest test-slice-hht
-  (test-slice nil))
-
-(deftest test-slice-ps
-  (test-slice {:index :datahike.index/persistent-set}))

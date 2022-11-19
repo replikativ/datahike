@@ -8,8 +8,10 @@
    [datahike.db.utils :as dbu]
    [datahike.impl.entity :as de]
    [datahike.lru]
+   [datahike.middleware.query]
    [datahike.pull-api :as dpa]
    [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
+   [datahike.middleware.utils :as middleware-utils]
    [datalog.parser :refer [parse]]
    [datalog.parser.impl :as dpi]
    [datalog.parser.impl.proto :as dpip]
@@ -255,39 +257,40 @@
                                                              (reduced false)
                                                              res))
                                          true (map vector (cons x more) more))
-                            :cljs (apply >= x more))))
+                            :cljs (apply >= x more)))
+
+  Object ;; default
+  (-strictly-decreasing? [x more] #?(:clj (reduce (fn [res [v1 s2]] (if (neg? (compare  v1 s2))
+                                                                      res
+                                                                      (reduced false)))
+                                                  true (map vector (cons x more) more))))
+
+  (-decreasing? [x more] #?(:clj (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
+                                                             (reduced false)
+                                                             res))
+                                         true (map vector (cons x more) more))))
+
+  (-strictly-increasing? [x more] #?(:clj (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
+                                                                      res
+                                                                      (reduced false)))
+                                                  true (map vector (cons x more) more))))
+
+  (-increasing? [x more] #?(:clj (reduce (fn [res [v1 v2]] (if (neg? (compare v1 v2))
+                                                             (reduced false)
+                                                             res))
+                                         true (map vector (cons x more) more)))))
 
 (defn- lesser? [& args]
-  (if (satisfies? CollectionOrder (first args))
-    (-strictly-decreasing? (first args) (rest args))
-    (reduce (fn [res [v1 s2]] (if (neg? (compare  v1 s2))
-                                res
-                                (reduced false)))
-            true (map vector args (rest args)))))
+  (-strictly-decreasing? (first args) (rest args)))
 
 (defn- lesser-equal? [& args]
-  (if (satisfies? CollectionOrder (first args))
-    (-decreasing? (first args) (rest args))
-    (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
-                                (reduced false)
-                                res))
-            true (map vector args (rest args)))))
+  (-decreasing? (first args) (rest args)))
 
 (defn- greater? [& args]
-  (if (satisfies? CollectionOrder (first args))
-    (-strictly-increasing? (first args) (rest args))
-    (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
-                                res
-                                (reduced false)))
-            true (map vector args (rest args)))))
+  (-strictly-increasing? (first args) (rest args)))
 
 (defn- greater-equal? [& args]
-  (if (satisfies? CollectionOrder (first args))
-    (-increasing? (first args) (rest args))
-    (reduce (fn [res [v1 v2]] (if (neg? (compare v1 v2))
-                                (reduced false)
-                                res))
-            true (map vector args (rest args)))))
+  (-increasing? (first args) (rest args)))
 
 (defn -min
   ([coll] (reduce (fn [acc x]
@@ -1139,7 +1142,7 @@
 (defmethod q clojure.lang.PersistentList [query & args]
   (q {:query query :args args}))
 
-(defmethod q clojure.lang.PersistentArrayMap [query-map & inputs]
+(defn raw-q [query-map & inputs]
   (let [query         (if (contains? query-map :query) (:query query-map) query-map)
         query         (if (string? query) (edn/read-string query) query)
         query         (if (= 'quote (first query)) (second query) query)
@@ -1170,3 +1173,10 @@
       (some #(instance? Pull %) find-elements)      (pull find-elements context)
       true                                          (-post-process find)
       returnmaps                                    (convert-to-return-maps returnmaps))))
+
+(defmethod q clojure.lang.PersistentArrayMap [{:keys [args] :as query-map} & inputs]
+  (if-let [middleware (when (dbu/db? (first args))
+                        (get-in (dbi/-config (first args)) [:middleware :query]))]
+    (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
+      (q-with-middleware query-map inputs))
+    (apply raw-q query-map inputs)))
