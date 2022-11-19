@@ -28,6 +28,6 @@ out/
 /.settings
 .classpath
 /.clj-kondo
-datahike
+./datahike
 datahike.build_artifacts.txt
 tests.user.edn
