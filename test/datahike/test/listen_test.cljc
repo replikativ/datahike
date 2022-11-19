@@ -31,10 +31,10 @@
             (dd/datom 4 :name "Evgeny" (+ const/tx0 2) true)]
            (rest (:tx-data (first @reports)))))
     (is (= {:some-metadata 1}
-           (:tx-meta (first @reports))))
+           (dissoc (:tx-meta (first @reports)) :db/txInstant)))
     (is (= [(dd/datom 5 :name "Fedor"  (+ const/tx0 3) true)
             (dd/datom 1 :name "Alex2"  (+ const/tx0 3) true)
             (dd/datom 4 :name "Evgeny" (+ const/tx0 3) false)]
            (rest (:tx-data (second @reports)))))
-    (is (= (:tx-meta (second @reports))
-           nil))))
+    (is (= (dissoc (:tx-meta (second @reports)) :db/txInstant)
+           {}))))
