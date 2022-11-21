@@ -72,6 +72,40 @@ jobs:
             - .m2
             - .npm
             - replikativ
+  persistent-set-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Retrieve ssh-fingerprints
+          command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+          no_output_timeout: 1m
+      - run:
+          name: Run Unittests for persistent sorted set index
+          command: ./bin/run-pss-tests
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+  hitchhiker-tree-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Retrieve ssh-fingerprints
+          command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+          no_output_timeout: 1m
+      - run:
+          name: Run Unittests for hitchhiker-tree index
+          command: ./bin/run-hht-tests
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
   backward-compatibility-test:
     executor: tools/clojurecli
     steps:
@@ -82,7 +116,7 @@ jobs:
           command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
           no_output_timeout: 1m
       - run:
-          name: Run Unittests
+          name: Run Backward compatibility test
           command: ./bin/run-backward-compatibility-tests
           no_output_timeout: 5m
       - save_cache:
@@ -112,7 +146,11 @@ workflows:
           context: dockerhub-deploy
           requires:
             - setup
-      - tools/unittest:
+      - persistent-set-test:
+          context: dockerhub-deploy
+          requires:
+            - build
+      - hitchhiker-tree-test:
           context: dockerhub-deploy
           requires:
             - build

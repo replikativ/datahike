@@ -1,17 +1,15 @@
 #kaocha/v1
-        #meta-merge [{:tests    [{:id          :clj
+        #meta-merge [{:tests    [{:id          :clj-pss
                                   :focus-meta [:focused]
-                                  :ns-patterns ["datahike.test."]}
+                                  :ns-patterns ["datahike.test."]
+                                  :bindings {datahike.config/*default-index* :datahike.index/persistent-set}}
+                                 {:id          :clj-hht
+                                  :focus-meta [:focused]
+                                  :ns-patterns ["datahike.test."]
+                                  :bindings {datahike.config/*default-index* :datahike.index/hitchhiker-tree}}
                                  #_{:id          :cljs
                                     :type        :kaocha.type/cljs
                                     :ns-patterns ["datahike.test."]}
-                                 {:id          :quick
-                                  :focus-meta [:focused]
-                                  :ns-patterns ["datahike.test."]
-                                  :bindings    {datahike.test.config/*user-filter-map* [{:index              :datahike.index/persistent-set
-                                                                                         :backend            :mem
-                                                                                         :schema-flexibility :read
-                                                                                         }]}}
                                  {:id         :integration
                                   :focus-meta [:focused]
                                   :test-paths ["test/datahike/integration_test"]}]
