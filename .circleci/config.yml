@@ -172,7 +172,8 @@ workflows:
               only: main
           requires:
             - tools/format
-            - tools/unittest
+            - persistent-set-test
+            - hitchhiker-tree-test
             - backward-compatibility-test
             - tools/integrationtest
       - tools/release:
