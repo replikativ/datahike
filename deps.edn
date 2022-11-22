@@ -79,14 +79,17 @@
                                                         :sha "a83ee8da47d56a80b6380cbb6b4b9274048067bd"}
                           babashka/babashka.curl {:mvn/version "0.1.2"}
                           babashka/fs {:mvn/version "0.1.4"}
-                          cheshire/cheshire {:mvn/version "5.10.2"}}
+                          cheshire/cheshire {:mvn/version "5.11.0"}}
                    :ns-default build}
-           :native-image {:main-opts ["-m" "clj.native-image" "datahike.cli"
-                                      "--initialize-at-build-time"
-                                      ;; optional native image name override
-                                      "-H:Name=datahike"]
-                          :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
-                          :extra-deps
-                          {clj.native-image/clj.native-image
-                           {:git/url "https://github.com/taylorwood/clj.native-image.git"
-                            :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}}}
+           :libdatahike {:extra-paths ["libdatahike/src"]
+                         :extra-deps {cheshire/cheshire {:mvn/version "5.11.0"}}}
+           :native-cli {:main-opts ["-m" "clj.native-image" "datahike.cli"
+                                    "--initialize-at-build-time"
+                                    ;; optional native image name override
+                                    "-H:Name=datahike"]
+                        :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
+                        :extra-deps
+                        {cheshire/cheshire {:mvn/version "5.11.0"}
+                         clj.native-image/clj.native-image
+                         {:git/url "https://github.com/taylorwood/clj.native-image.git"
+                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}}}

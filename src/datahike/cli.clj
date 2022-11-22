@@ -6,16 +6,7 @@
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [datahike.api :as api]
-            [taoensso.timbre :as log]
-
-            ;; hh-tree benchmark
-            [konserve.filestore :refer [connect-fs-store delete-store]]
-            [hitchhiker.tree.bootstrap.konserve :as kons]
-            [konserve.cache :as kc]
-            [hitchhiker.tree :as core]
-            [hitchhiker.tree.utils.async :as ha]
-            [hitchhiker.tree.messaging :as msg]
-            [clojure.core.async :as async]))
+            [taoensso.timbre :as log]))
 
 ;; This file is following https://github.com/clojure/tools.cli
 
@@ -31,7 +22,6 @@
         "  transact                Transact transactions in second argument into db configuration provided as path in first argument."
         "  query                   Query the database provided as first argument with provided query and an arbitrary number of arguments pointing to db configuration files or denoting values."
         "  benchmark               Benchmark transacts into db config provided by first argument. The following arguments are starting eid, ending eid and the batch partitioning of the added synthetic Datoms. The Datoms have the form [eid :name ?random-name]"
-        "  hbenchmark              Benchmark writes to a single hitchhiker-tree using the store path of the first argument. The following arguments are starting eid, ending eid and the batch partitioning of the added synthetic Datoms. The final two arguments are branching factor of tree (e.g. 32) and node size (e.g. 1024)."
         ""
         "Please refer to the manual page for more information."]
        (str/join \newline)))
@@ -40,7 +30,7 @@
   (str "The following errors occurred while parsing your command:\n\n"
        (str/join \newline errors)))
 
-(def actions #{"transact" "query" "benchmark" "hbenchmark"})
+(def actions #{"transact" "query" "benchmark"})
 
 (def cli-options
   ;; An option with a required argument
@@ -105,24 +95,6 @@
     (log/info "Created database:" (get-in cfg [:store :path])))
   (api/connect cfg))
 
-(defn hbenchmark [folder data branching node-size]
-  (let [_ (delete-store folder)
-        store (kons/add-hitchhiker-tree-handlers
-               (kc/ensure-cache (async/<!! (connect-fs-store folder))))
-        backend (kons/konserve-backend store)
-        op-count (atom 0)]
-    (doseq [d data]
-      (time
-       (ha/<?? (core/flush-tree
-                (reduce (fn [t i]
-                          (ha/<?? (msg/insert t i nil (swap! op-count inc))))
-                        (ha/<?? (core/b-tree (core/->Config branching
-                                                            node-size
-                                                            (- node-size branching))))
-                        d)
-
-                backend))))))
-
 (defn -main [& args]
   (let [{:keys [action options arguments exit-message ok?]}
         (validate-args args)]
@@ -163,20 +135,6 @@
           (doseq [txs (partition (read-string (nth args 2)) tx-data)]
             (time
              (api/transact conn txs))))
-
-        :hbenchmark
-        (let [args (rest arguments)
-              tx-data (vec (for [i (range (read-string (first args))
-                                          (read-string (second args)))]
-                             [:db/add (inc i)
-                              :name (rand-nth ["Chrislain" "Christian"
-                                               "Jiayi" "Judith"
-                                               "Konrad" "Pablo"
-                                               "Timo" "Wade"])]))]
-          (hbenchmark (first arguments)
-                      (partition (read-string (nth args 2)) tx-data)
-                      (read-string (nth args 3))
-                      (read-string (nth args 4))))
 
         :query
         (let [q-args (mapv
