@@ -4,14 +4,12 @@
                                   :ns-patterns ["datahike.test."]
                                   :bindings {datahike.config/*default-index* :datahike.index/persistent-set}}
                                  {:id          :clj-hht
-                                  :focus-meta [:focused]
                                   :ns-patterns ["datahike.test."]
                                   :bindings {datahike.config/*default-index* :datahike.index/hitchhiker-tree}}
                                  #_{:id          :cljs
                                     :type        :kaocha.type/cljs
                                     :ns-patterns ["datahike.test."]}
                                  {:id         :integration
-                                  :focus-meta [:focused]
                                   :test-paths ["test/datahike/integration_test"]}]
                       :reporter kaocha.report/documentation}
                      #include "tests.user.edn"]
