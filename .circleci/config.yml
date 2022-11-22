@@ -78,11 +78,7 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: Retrieve ssh-fingerprints
-          command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
-          no_output_timeout: 1m
-      - run:
-          name: Run Unittests for persistent sorted set index
+          name: Run unittests for persistent sorted set index
           command: ./bin/run-pss-tests
           no_output_timeout: 5m
       - save_cache:
@@ -95,11 +91,7 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: Retrieve ssh-fingerprints
-          command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
-          no_output_timeout: 1m
-      - run:
-          name: Run Unittests for hitchhiker-tree index
+          name: Run unittests for hitchhiker-tree index
           command: ./bin/run-hht-tests
           no_output_timeout: 5m
       - save_cache:
@@ -116,7 +108,7 @@ jobs:
           command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
           no_output_timeout: 1m
       - run:
-          name: Run Backward compatibility test
+          name: Run backward compatibility test
           command: ./bin/run-backward-compatibility-tests
           no_output_timeout: 5m
       - save_cache:
