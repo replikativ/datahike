@@ -15,7 +15,7 @@
 
 (defn usage [options-summary]
   (->> ["This is the Datahike command line interface."
-        "The commands mostly reflect the datahike.api Clojure API. You can find its documentation under api https://cljdoc.org/d/io.replikativ/datahike/. To instantiate a specific database, you can use db:config_file to access the current database value, conn:config_file to create mutable connection for manipulation, history:config_file for the historical database over all transactions, since:unix_time_in_ms:config_file to create a since database and asof:unix_time_in_ms:config_file to create an asOf database. To read in edn data use edn:edn_file and to read in JSON use json:json_file."
+        "The commands mostly reflect the datahike.api Clojure API. You can find its documentation under api at https://cljdoc.org/d/io.replikativ/datahike/. To instantiate a specific database, you can use db:config_file to access the current database value, conn:config_file to create a mutable connection for manipulation, history:config_file for the historical database over all transactions, since:unix_time_in_ms:config_file to create a database with all facts since the time provided and asof:unix_time_in_ms:config_file to create an asOf snapshot database. To pass in edn data use edn:edn_file and for JSON use json:json_file."
         ""
         "Usage: datahike [options] action arguments"
         ""
@@ -23,12 +23,12 @@
         options-summary
         ""
         "Actions:"
-        "  create-database         Create database for a provided configuration file as edn:config_file"
-        "  delete-database         Delete database for a provided configuration file as edn:config_file"
-        "  database-exists         Check whether database exists for a provided configuration file as edn:config_file"
-        "  transact                Transact transactions in second argument into db configuration provided as path in first argument."
-      "  query                   Query the database provided as first argument with provided query and an arbitrary number of arguments pointing to db configuration files or denoting values, e.g. query '[:find (count ?e) . :where [?e :name _]]' db:mydb.edn"
-        "  benchmark               Benchmark transacts into db config provided by first argument. The following arguments are starting eid, ending eid and the batch partitioning of the added synthetic Datoms. The Datoms have the form [eid :name ?randomly-sampled-name]"
+        "  create-database         Create database for a provided configuration file, e.g. create-database config_file"
+        "  delete-database         Delete database for a provided configuration file, e.g. delete-database config_file"
+        "  database-exists         Check whether database exists for a provided configuration file, e.g. database-exists config_file"
+        "  transact                Transact transactions, optionally from a file with --tx-file or from STDIN. Exampe: transact conn:config_file \"[{:name \"Peter\" :age 42}]\""
+        "  query                   Query the database, e.g. query '[:find (count ?e) . :where [?e :name _]]' db:mydb.edn. You can pass an arbitrary number of data sources to the query."
+        "  benchmark               Benchmarks write performance. The arguments are starting eid, ending eid and the batch partitioning of the added synthetic Datoms. The Datoms have the form [eid :name ?randomly-sampled-name]"
         "  pull                    Pull data in a map syntax for a specific entity: pull db:mydb.edn \"[:db/id, :name]\" \"1\"."
         "  pull-many               Pull data in a map syntax for a list of entities: pull db:mydb.edn \"[:db/id, :name]\" \"[1,2]\""
         "  entity                  Fetch entity: entity db:mydb.edn \"1\""
