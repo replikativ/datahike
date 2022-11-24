@@ -8,7 +8,6 @@
             [datahike.transactor :as t]
             [konserve.core :as k]
             [hasch.core :refer [uuid]]
-            [superv.async :refer [<?? S]]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.core.async :refer [go <!]])
@@ -114,7 +113,7 @@
           :tx-meta
           :as   tx-report}     @(update-fn connection tx-data tx-meta)
          {:keys [config meta]} db-after
-         cid (create-commit-id db-after)
+         cid                   (create-commit-id db-after)
          meta                  (assoc meta
                                       :datahike/parents parents
                                       :datahike/updated-at txInstant
@@ -130,6 +129,9 @@
 (defn transact!
   [connection {:keys [tx-data tx-meta]}]
   {:pre [(d/conn? connection)]}
+  #_(let [p (throwable-promise)]
+    (deliver p (update-and-flush-db connection tx-data tx-meta datahike.core/transact))
+    p)
   (let [p (throwable-promise)]
     (go
       (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data tx-meta 'datahike.core/transact))]
@@ -160,7 +162,7 @@
     p))
 
 (defn release [connection]
-  (<?? S (t/shutdown (:transactor @connection)))
+  (t/shutdown (:transactor @connection))
   (ds/release-store (get-in @connection [:config :store]) (:store @connection)))
 
 ;; deprecation begin

@@ -5,13 +5,17 @@
             [clojure.pprint :refer [pprint]]
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
-            [datahike.api :as api]
-            [taoensso.timbre :as log]))
+            [datahike.api :as d]
+            [clojure.edn :as edn]
+            [cheshire.core :as ch]
+            [taoensso.timbre :as log])
+  (:import [java.util Date]))
 
 ;; This file is following https://github.com/clojure/tools.cli
 
 (defn usage [options-summary]
   (->> ["This is the Datahike command line interface."
+        "The commands mostly reflect the datahike.api Clojure API. You can find its documentation under api https://cljdoc.org/d/io.replikativ/datahike/. To instantiate a specific database, you can use db:config_file to access the current database value, conn:config_file to create mutable connection for manipulation, history:config_file for the historical database over all transactions, since:unix_time_in_ms:config_file to create a since database and asof:unix_time_in_ms:config_file to create an asOf database. To read in edn data use edn:edn_file and to read in JSON use json:json_file."
         ""
         "Usage: datahike [options] action arguments"
         ""
@@ -19,9 +23,19 @@
         options-summary
         ""
         "Actions:"
+        "  create-database         Create database for a provided configuration file as edn:config_file"
+        "  delete-database         Delete database for a provided configuration file as edn:config_file"
+        "  database-exists         Check whether database exists for a provided configuration file as edn:config_file"
         "  transact                Transact transactions in second argument into db configuration provided as path in first argument."
-        "  query                   Query the database provided as first argument with provided query and an arbitrary number of arguments pointing to db configuration files or denoting values."
-        "  benchmark               Benchmark transacts into db config provided by first argument. The following arguments are starting eid, ending eid and the batch partitioning of the added synthetic Datoms. The Datoms have the form [eid :name ?random-name]"
+      "  query                   Query the database provided as first argument with provided query and an arbitrary number of arguments pointing to db configuration files or denoting values, e.g. query '[:find (count ?e) . :where [?e :name _]]' db:mydb.edn"
+        "  benchmark               Benchmark transacts into db config provided by first argument. The following arguments are starting eid, ending eid and the batch partitioning of the added synthetic Datoms. The Datoms have the form [eid :name ?randomly-sampled-name]"
+        "  pull                    Pull data in a map syntax for a specific entity: pull db:mydb.edn \"[:db/id, :name]\" \"1\"."
+        "  pull-many               Pull data in a map syntax for a list of entities: pull db:mydb.edn \"[:db/id, :name]\" \"[1,2]\""
+        "  entity                  Fetch entity: entity db:mydb.edn \"1\""
+        "  datoms                  Fetch all datoms from an index: datoms db:mydb.edn  \"{:index :eavt :components [1]}\" "
+        "  schema                  Fetch schema for a db."
+        "  reverse-schema          Fetch reverse schema for a db."
+        "  metrics                 Fetch metrics for a db."
         ""
         "Please refer to the manual page for more information."]
        (str/join \newline)))
@@ -30,7 +44,8 @@
   (str "The following errors occurred while parsing your command:\n\n"
        (str/join \newline errors)))
 
-(def actions #{"transact" "query" "benchmark"})
+(def actions #{"create-database" "delete-database" "database-exists" "transact" "query" "benchmark"
+              "pull" "pull-many" "entity" "datoms" "schema" "reverse-schema" "metrics"})
 
 (def cli-options
   ;; An option with a required argument
@@ -85,15 +100,45 @@
   (println msg)
   (System/exit status))
 
-(defn read-config [^String config-path]
-  (assert (.startsWith config-path "db:") "Database configuration path needs to start with \"db:\".")
-  (read-string (slurp (subs config-path 3))))
+;; format: optional first argument Unix time in ms for history, last file for db
+(def input->db
+  {#"conn:(.+)"       #(d/connect (edn/read-string %))
+   #"db:(.+)"         #(deref (d/connect (edn/read-string %)))
+   #"history:(.+)"    #(d/history @(d/connect (edn/read-string %)))
+   #"since:(.+):(.+)" #(d/since @(d/connect (edn/read-string %2))
+                               (Date. ^Long (edn/read-string %1)))
+   #"asof:(.+):(.+)"  #(d/as-of @(d/connect (edn/read-string %2))
+                               (Date. ^Long (edn/read-string %1)))
+   #"edn:(.+)"        edn/read-string
+   #"json:(.+)"       #(ch/parse-string % keyword)})
 
-(defn connect [cfg]
-  (when-not (api/database-exists? cfg)
-    (api/create-database cfg)
-    (log/info "Created database:" (get-in cfg [:store :path])))
-  (api/connect cfg))
+(defn slurp-config [args]
+  (if (= 1 (count args))
+    (list (slurp (first args)))
+    (list (first args) (slurp (second args)))))
+
+(defn load-input
+  ([s]
+   (load-input s identity))
+  ([s read-fn]
+   (if-let [res
+            (reduce (fn [_ [p f]]
+                      (let [m (re-matches p s)]
+                        (when (first m)
+                          (reduced (apply f (read-fn (rest m)))))))
+                    nil
+                    input->db)]
+     res
+     (throw (ex-info "Input format not know." {:type  :input-format-not-known
+                                               :input s})))))
+
+(defn report [format out]
+  (println
+   (case format
+     :json        (json/json-str out)
+     :pretty-json (with-out-str (json/pprint out))
+     :edn         (pr-str out)
+     :pprint      (with-out-str (pprint out)))))
 
 (defn -main [& args]
   (let [{:keys [action options arguments exit-message ok?]}
@@ -112,18 +157,31 @@
     (if exit-message
       (exit (if ok? 0 1) exit-message)
       (case action
+        :create-database
+        (report (:format options)
+                 (d/create-database (read-string (slurp (first arguments)))))
+
+        :delete-database
+        (report (:format options)
+                 (d/delete-database (read-string (slurp (first arguments)))))
+
+        :database-exists
+        (report (:format options)
+                 (d/database-exists? (read-string (slurp (first arguments)))))
+
         :transact
-        (api/transact (connect (read-config (first arguments)))
-                      (vec ;; TODO support set inputs for transact
-                       (if-let [tf (:tx-file options)]
-                         (read-string (slurp tf))
-                         (if-let [s (second arguments)]
-                           (read-string s)
-                           (read)))))
+        (report (:format options)
+                 (:tx-meta
+                  (d/transact (load-input (first arguments) slurp-config)
+                              (vec ;; TODO support set inputs for transact
+                               (if-let [tf (:tx-file options)]
+                                 (load-input tf slurp-config)
+                                 (if-let [s (second arguments)]
+                                   (read-string s)
+                                   (read)))))))
 
         :benchmark
-        (let [cfg (read-config (first arguments))
-              conn (connect cfg)
+        (let [conn (load-input (first arguments) slurp-config)
               args (rest arguments)
               tx-data (vec (for [i (range (read-string (first args))
                                           (read-string (second args)))]
@@ -134,20 +192,45 @@
                                                "Timo" "Wade"])]))]
           (doseq [txs (partition (read-string (nth args 2)) tx-data)]
             (time
-             (api/transact conn txs))))
+             (d/transact conn txs))))
 
         :query
-        (let [q-args (mapv
-                      #(if (.startsWith ^String % "db:") ;; TODO better db denotation
-                         @(connect (read-config %)) (read-string %))
-                      (rest arguments))
-              _ (when (pos? (:verbosity options))
-                  (log/info "Parsed query arguments:" (pr-str q-args)))
-              out (apply api/q (read-string (first arguments))
+        (let [q-args (mapv #(load-input % slurp-config) (rest arguments))
+              out (apply d/q (read-string (first arguments))
                          q-args)]
-          (println
-           (case (:format options)
-             :json (json/json-str out)
-             :pretty-json (with-out-str (json/pprint out))
-             :edn (pr-str out)
-             :pprint (with-out-str (pprint out)))))))))
+          (report (:format options) out))
+
+        :pull
+        (let [out (d/pull (load-input (first arguments) slurp-config)
+                          (read-string (second arguments))
+                          (read-string (nth arguments 2)))]
+          (report (:format options) out))
+
+        :pull-many
+        (let [out (d/pull-many (load-input (first arguments) slurp-config)
+                               (read-string (second arguments))
+                               (read-string (nth arguments 2)))]
+          (report (:format options) out))
+
+
+        :entity
+        (let [out (d/entity (load-input (first arguments) slurp-config)
+                            (read-string (second arguments)))]
+          (report (:format options) out))
+
+        :datoms
+        (let [out (d/datoms (load-input (first arguments) slurp-config)
+                            (read-string (second arguments)))]
+          (report (:format options) out))
+
+        :schema
+        (let [out (d/schema (load-input (first arguments) slurp-config))]
+          (report (:format options) out))
+
+        :reverse-schema
+        (let [out (d/reverse-schema (load-input (first arguments) slurp-config))]
+          (report (:format options) out))
+
+        :metrics
+        (let [out (d/metrics (load-input (first arguments) slurp-config))]
+          (report (:format options) out))))))

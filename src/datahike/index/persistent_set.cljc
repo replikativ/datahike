@@ -13,7 +13,7 @@
   #?(:clj (:import [datahike.datom Datom]
                    [org.fressian.handlers WriteHandler ReadHandler]
                    [me.tonsky.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode]
-                   [java.util UUID])))
+                   [java.util UUID List])))
 
 (defn index-type->cmp
   ([index-type] (index-type->cmp index-type true))
@@ -226,7 +226,7 @@
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
                                                        (let [{:keys [keys level addresses]} (.readObject reader)]
-                                                         (Branch. (int level) keys (seq addresses)))))
+                                                         (Branch. (int level) ^List keys ^List (seq addresses)))))
                                                    "datahike.datom.Datom"
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]

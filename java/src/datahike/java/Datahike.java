@@ -175,11 +175,11 @@ public class Datahike {
      *
      * @param db the database
      * @param selector the criteria for the pull query
-     * @param eid an entity id
+     * @param eid an iterable of entity ids
      * @return the result of the query as a map
      */
-    public static APersistentMap pull(Object db, String selector, Iterable eid) {
-        return (APersistentMap)pullFn.invoke(db, Clojure.read(selector), eid);
+    public static APersistentMap pull(Object db, String selector, Iterable eids) {
+        return (APersistentMap)pullFn.invoke(db, Clojure.read(selector), eids);
     }
 
     /**
@@ -187,7 +187,7 @@ public class Datahike {
      *
      * @param db the database
      * @param selector the criteria for the pull query
-     * @param eids a vector of entity ids
+     * @param eids an iterable of entity ids
      * @return the result of the query as a list of maps
      */
     public static List pullMany(Object db, String selector, Iterable eids) {

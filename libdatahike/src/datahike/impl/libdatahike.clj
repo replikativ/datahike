@@ -112,9 +112,6 @@
 (defn -toJSONString [edn]
   (ch/generate-string edn))
 
-(defn -transact [conn tx-data]
-  (:tx-meta (d/transact conn tx-data)))
-
 (comment
 
   (-JSONAsTxData "[{\":age\": 42}]" nil)

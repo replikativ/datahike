@@ -194,7 +194,7 @@
                      (di/-slice temporal-index from to index-type))))
 
 (defn filter-txInstant [datoms pred db]
-  (let [txInstant (if (:attribute-refs? (.-config db))
+  (let [txInstant (if (:attribute-refs? (dbi/-config db))
                     (dbi/-ref-for db :db/txInstant)
                     :db/txInstant)]
     (into #{}

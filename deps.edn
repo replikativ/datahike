@@ -81,11 +81,12 @@
                           babashka/fs {:mvn/version "0.1.4"}
                           cheshire/cheshire {:mvn/version "5.11.0"}}
                    :ns-default build}
-           :libdatahike {:extra-paths ["libdatahike/src"]
+           :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
+                         :extra-paths ["libdatahike/src"]
                          :extra-deps {cheshire/cheshire {:mvn/version "5.11.0"}}}
-           :native-cli {:main-opts ["-m" "clj.native-image" "datahike.cli"
+           :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
+                                    "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
-                                    ;; optional native image name override
                                     "-H:Name=datahike"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps

@@ -4,13 +4,34 @@ TMPSTORE=/tmp/dh-test-store
 
 trap "rm -rf $TMPSTORE" EXIT
 
-./datahike benchmark db:bin/testconfig.edn 0 100000 10000
-./datahike transact db:bin/testconfig.edn '[[:db/add -1 :name "Judea"]]'
+./datahike delete-database bin/testconfig.edn
+./datahike create-database bin/testconfig.edn
+
+./datahike database-exists bin/testconfig.edn
+
+./datahike benchmark conn:bin/testconfig.edn 0 100000 10000
+./datahike transact conn:bin/testconfig.edn '[[:db/add -1 :name "Judea"]]'
 QUERY_OUT=`./datahike query '[:find (count ?e) . :where [?e :name _]]' db:bin/testconfig.edn`
 
 if [ $QUERY_OUT -eq 100001 ]
 then
   echo "Test successful."
 else
-  echo "Query did not return correct value."
+  echo "Exception: Query did not return correct value."
 fi
+
+# test history input parsing
+./datahike query '[:find (count ?e) . :where [?e :name _]]' history:bin/testconfig.edn
+./datahike query '[:find (count ?e) . :where [?e :name _]]' since:0:bin/testconfig.edn
+./datahike query '[:find (count ?e) . :where [?e :name _]]' asof:0:bin/testconfig.edn
+
+# other calls
+./datahike pull db:bin/testconfig.edn "[:db/id, :name]" "1"
+./datahike pull-many db:bin/testconfig.edn "[:db/id, :name]" "[1]"
+./datahike entity db:bin/testconfig.edn "1"
+./datahike datoms db:bin/testconfig.edn "{:index :eavt :components [1]}"
+./datahike schema db:bin/testconfig.edn
+./datahike reverse-schema db:bin/testconfig.edn
+./datahike metrics db:bin/testconfig.edn
+
+./datahike delete-database bin/testconfig.edn

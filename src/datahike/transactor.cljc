@@ -1,7 +1,7 @@
 (ns ^:no-doc datahike.transactor
   (:require [superv.async :refer [<??- S thread-try]]
             [taoensso.timbre :as log]
-            [clojure.core.async :refer [chan close! promise-chan put!]])
+            [clojure.core.async :refer [chan close! promise-chan put! go-loop <!]])
   (:import [clojure.lang ExceptionInfo]))
 
 (defprotocol PTransactor
@@ -27,8 +27,8 @@
   (thread-try
    S
    (let [resolve-fn (memoize resolve)]
-     (loop []
-       (if-let [{:keys [tx-data tx-meta callback tx-fn]} (<??- rx-queue)]
+     (go-loop []
+       (if-let [{:keys [tx-data tx-meta callback tx-fn]} (<! rx-queue)]
          (do
            (let [update-fn (resolve-fn tx-fn)
                  tx-report (try (update-and-flush-db connection tx-data tx-meta update-fn)
