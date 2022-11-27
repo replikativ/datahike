@@ -114,8 +114,6 @@
    #"edn:(.+)"        (comp edn/read-string slurp)
    #"json:(.+)"       (comp #(ch/parse-string % keyword) slurp)})
 
-
-
 (defn load-input [s]
   (if-let [res
            (reduce (fn [_ [p f]]
@@ -127,7 +125,6 @@
     res
     (throw (ex-info "Input format not know." {:type  :input-format-not-known
                                               :input s}))))
-
 
 (defn report [format out]
   (case format
