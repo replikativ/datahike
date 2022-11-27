@@ -171,8 +171,19 @@
                               (if-let [tf (:tx-file options)]
                                 (load-input tf)
                                 (if-let [s (second arguments)]
-                                  (read-string s)
-                                  (read)))))))
+                                  (case (:format options)
+                                    :edn (edn/read-string s)
+                                    :pprint (edn/read-string s)
+                                    :json (ch/parse-string s keyword)
+                                    :pretty-json (ch/parse-string s keyword)
+                                    :cbor (cbor/decode s) ;; does this really make sense?
+                                    )
+                                  (case (:format options)
+                                    :edn (edn/read)
+                                    :pprint (edn/read)
+                                    :json (ch/decode-stream *in* keyword)
+                                    :pretty-json :json (ch/decode-stream *in*)
+                                    :cbor (cbor/decode *in*))))))))
 
         :benchmark
         (let [conn (load-input (first arguments))
