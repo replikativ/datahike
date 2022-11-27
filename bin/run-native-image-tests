@@ -34,4 +34,8 @@ fi
 ./datahike reverse-schema db:bin/testconfig.edn
 ./datahike metrics db:bin/testconfig.edn
 
+# test serialization
+./datahike query '[:find ?e . :where [?e :name ?n]]' db:myconfig.edn --format cbor >> /tmp/test
+./datahike query '[:find ?i :in $ ?i . :where [?e :name ?n]]' db:myconfig.edn cbor:/tmp/test # => 1
+
 ./datahike delete-database bin/testconfig.edn

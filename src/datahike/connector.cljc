@@ -129,9 +129,6 @@
 (defn transact!
   [connection {:keys [tx-data tx-meta]}]
   {:pre [(d/conn? connection)]}
-  #_(let [p (throwable-promise)]
-    (deliver p (update-and-flush-db connection tx-data tx-meta datahike.core/transact))
-    p)
   (let [p (throwable-promise)]
     (go
       (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data tx-meta 'datahike.core/transact))]

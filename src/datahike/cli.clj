@@ -8,6 +8,7 @@
             [datahike.api :as d]
             [clojure.edn :as edn]
             [cheshire.core :as ch]
+            [clj-cbor.core :as cbor]
             [taoensso.timbre :as log])
   (:import [java.util Date]))
 
@@ -45,11 +46,11 @@
        (str/join \newline errors)))
 
 (def actions #{"create-database" "delete-database" "database-exists" "transact" "query" "benchmark"
-              "pull" "pull-many" "entity" "datoms" "schema" "reverse-schema" "metrics"})
+               "pull" "pull-many" "entity" "datoms" "schema" "reverse-schema" "metrics"})
 
 (def cli-options
   ;; An option with a required argument
-  (let [formats #{:json :edn :pretty-json :pprint}]
+  (let [formats #{:json :edn :pretty-json :pprint :cbor}]
     [["-f" "--format FORMAT" "Output format for the result."
       :default :edn
       :parse-fn keyword
@@ -102,43 +103,39 @@
 
 ;; format: optional first argument Unix time in ms for history, last file for db
 (def input->db
-  {#"conn:(.+)"       #(d/connect (edn/read-string %))
-   #"db:(.+)"         #(deref (d/connect (edn/read-string %)))
-   #"history:(.+)"    #(d/history @(d/connect (edn/read-string %)))
-   #"since:(.+):(.+)" #(d/since @(d/connect (edn/read-string %2))
-                               (Date. ^Long (edn/read-string %1)))
-   #"asof:(.+):(.+)"  #(d/as-of @(d/connect (edn/read-string %2))
-                               (Date. ^Long (edn/read-string %1)))
-   #"edn:(.+)"        edn/read-string
-   #"json:(.+)"       #(ch/parse-string % keyword)})
+  {#"conn:(.+)"       #(d/connect (edn/read-string (slurp %)))
+   #"db:(.+)"         #(deref (d/connect (edn/read-string (slurp %))))
+   #"history:(.+)"    #(d/history @(d/connect (edn/read-string (slurp %))))
+   #"since:(.+):(.+)" #(d/since @(d/connect (edn/read-string (slurp %2)))
+                                (Date. ^Long (edn/read-string %1)))
+   #"asof:(.+):(.+)"  #(d/as-of @(d/connect (edn/read-string (slurp %2)))
+                                (Date. ^Long (edn/read-string %1)))
+   #"cbor:(.+)"       #(cbor/decode (io/input-stream %))
+   #"edn:(.+)"        (comp edn/read-string slurp)
+   #"json:(.+)"       (comp #(ch/parse-string % keyword) slurp)})
 
-(defn slurp-config [args]
-  (if (= 1 (count args))
-    (list (slurp (first args)))
-    (list (first args) (slurp (second args)))))
 
-(defn load-input
-  ([s]
-   (load-input s identity))
-  ([s read-fn]
-   (if-let [res
-            (reduce (fn [_ [p f]]
-                      (let [m (re-matches p s)]
-                        (when (first m)
-                          (reduced (apply f (read-fn (rest m)))))))
-                    nil
-                    input->db)]
-     res
-     (throw (ex-info "Input format not know." {:type  :input-format-not-known
-                                               :input s})))))
+
+(defn load-input [s]
+  (if-let [res
+           (reduce (fn [_ [p f]]
+                     (let [m (re-matches p s)]
+                       (when (first m)
+                         (reduced (apply f (rest m))))))
+                   nil
+                   input->db)]
+    res
+    (throw (ex-info "Input format not know." {:type  :input-format-not-known
+                                              :input s}))))
+
 
 (defn report [format out]
-  (println
-   (case format
-     :json        (json/json-str out)
-     :pretty-json (with-out-str (json/pprint out))
-     :edn         (pr-str out)
-     :pprint      (with-out-str (pprint out)))))
+  (case format
+    :json        (println (json/json-str out))
+    :pretty-json (json/pprint out)
+    :edn         (println (pr-str out))
+    :pprint      (pprint out)
+    :cbor        (.write System/out ^bytes (cbor/encode out))))
 
 (defn -main [& args]
   (let [{:keys [action options arguments exit-message ok?]}
@@ -159,29 +156,29 @@
       (case action
         :create-database
         (report (:format options)
-                 (d/create-database (read-string (slurp (first arguments)))))
+                (d/create-database (read-string (slurp (first arguments)))))
 
         :delete-database
         (report (:format options)
-                 (d/delete-database (read-string (slurp (first arguments)))))
+                (d/delete-database (read-string (slurp (first arguments)))))
 
         :database-exists
         (report (:format options)
-                 (d/database-exists? (read-string (slurp (first arguments)))))
+                (d/database-exists? (read-string (slurp (first arguments)))))
 
         :transact
         (report (:format options)
-                 (:tx-meta
-                  (d/transact (load-input (first arguments) slurp-config)
-                              (vec ;; TODO support set inputs for transact
-                               (if-let [tf (:tx-file options)]
-                                 (load-input tf slurp-config)
-                                 (if-let [s (second arguments)]
-                                   (read-string s)
-                                   (read)))))))
+                (:tx-meta
+                 (d/transact (load-input (first arguments))
+                             (vec ;; TODO support set inputs for transact
+                              (if-let [tf (:tx-file options)]
+                                (load-input tf)
+                                (if-let [s (second arguments)]
+                                  (read-string s)
+                                  (read)))))))
 
         :benchmark
-        (let [conn (load-input (first arguments) slurp-config)
+        (let [conn (load-input (first arguments))
               args (rest arguments)
               tx-data (vec (for [i (range (read-string (first args))
                                           (read-string (second args)))]
@@ -195,42 +192,41 @@
              (d/transact conn txs))))
 
         :query
-        (let [q-args (mapv #(load-input % slurp-config) (rest arguments))
+        (let [q-args (mapv #(load-input %) (rest arguments))
               out (apply d/q (read-string (first arguments))
                          q-args)]
           (report (:format options) out))
 
         :pull
-        (let [out (d/pull (load-input (first arguments) slurp-config)
+        (let [out (d/pull (load-input (first arguments))
                           (read-string (second arguments))
                           (read-string (nth arguments 2)))]
           (report (:format options) out))
 
         :pull-many
-        (let [out (d/pull-many (load-input (first arguments) slurp-config)
+        (let [out (d/pull-many (load-input (first arguments))
                                (read-string (second arguments))
                                (read-string (nth arguments 2)))]
           (report (:format options) out))
 
-
         :entity
-        (let [out (d/entity (load-input (first arguments) slurp-config)
+        (let [out (d/entity (load-input (first arguments))
                             (read-string (second arguments)))]
           (report (:format options) out))
 
         :datoms
-        (let [out (d/datoms (load-input (first arguments) slurp-config)
+        (let [out (d/datoms (load-input (first arguments))
                             (read-string (second arguments)))]
           (report (:format options) out))
 
         :schema
-        (let [out (d/schema (load-input (first arguments) slurp-config))]
+        (let [out (d/schema (load-input (first arguments)))]
           (report (:format options) out))
 
         :reverse-schema
-        (let [out (d/reverse-schema (load-input (first arguments) slurp-config))]
+        (let [out (d/reverse-schema (load-input (first arguments)))]
           (report (:format options) out))
 
         :metrics
-        (let [out (d/metrics (load-input (first arguments) slurp-config))]
+        (let [out (d/metrics (load-input (first arguments)))]
           (report (:format options) out))))))
