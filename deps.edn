@@ -87,7 +87,7 @@
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
                                     "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
-                                    "-H:Name=datahike"]
+                                    "-H:Name=dhi"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
                         {cheshire/cheshire {:mvn/version "5.11.0"}

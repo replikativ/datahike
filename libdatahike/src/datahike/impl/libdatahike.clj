@@ -3,14 +3,16 @@
             [cheshire.core :as ch]
             [clojure.edn :as edn]
             [datahike.schema :as s]
-            [datahike.api :as d]
+            [clj-cbor.core :as cbor]
             [taoensso.timbre :as timbre])
   (:gen-class
    :methods [^{:static true} [parseJSON [String] Object]
              ^{:static true} [parseEdn [String] Object]
+             ^{:static true} [parseCBOR [bytes] Object]
              ^{:static true} [JSONAsTxData [String Object] Iterable]
+             ^{:static true} [toEdnString [Object] String]
              ^{:static true} [toJSONString [Object] String]
-             ^{:static true} [transact [Object Iterable] Object]]))
+             ^{:static true} [toCBOR [Object] bytes]]))
 
 (timbre/set-level! :warn)
 
@@ -106,14 +108,18 @@
 (defn -parseEdn [s]
   (edn/read-string s))
 
+(defn -parseCBOR [^bytes b]
+  (cbor/decode b))
+
+(defn -toJSONString [obj]
+  (ch/generate-string obj))
+
+(defn -toEdnString [obj]
+  (pr-str obj))
+
+(defn ^bytes -toCBOR [edn]
+  (cbor/encode edn))
+
 (defn -JSONAsTxData [tx-data db]
   (xf-data-for-tx (ch/parse-string tx-data keyword) db))
 
-(defn -toJSONString [edn]
-  (ch/generate-string edn))
-
-(comment
-
-  (-JSONAsTxData "[{\":age\": 42}]" nil)
-
-  )

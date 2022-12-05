@@ -18,7 +18,7 @@
   (->> ["This is the Datahike command line interface."
         "The commands mostly reflect the datahike.api Clojure API. You can find its documentation under api at https://cljdoc.org/d/io.replikativ/datahike/. To instantiate a specific database, you can use db:config_file to access the current database value, conn:config_file to create a mutable connection for manipulation, history:config_file for the historical database over all transactions, since:unix_time_in_ms:config_file to create a database with all facts since the time provided and asof:unix_time_in_ms:config_file to create an asOf snapshot database. To pass in edn data use edn:edn_file and for JSON use json:json_file."
         ""
-        "Usage: datahike [options] action arguments"
+        "Usage: dhi [options] action arguments"
         ""
         "Options:"
         options-summary

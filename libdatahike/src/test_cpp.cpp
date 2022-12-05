@@ -11,16 +11,22 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  char *config_str = &argv[1][0];
+  const char *config_str = &argv[1][0];
   create_database((long)thread, config_str);
   assert(database_exists((long)thread, config_str) && "Database should exist.");
   char *json_str = &argv[2][0];
-  char *tx_result = transact_json((long)thread, config_str, json_str);
-  // std::cout << "tx result: " << tx_result << std::endl;
+  char *tx_result = transact((long)thread, config_str, "json", json_str, "json");
+  std::cout << "tx result: " << tx_result << std::endl;
   char *query_str = &argv[3][0];
-  char *q_result = q_json((long)thread, query_str, config_str);
-  //std::cout << "q result: " << q_result << std::endl;
+
+  long num_inputs = 1;
+  // char** input_formats = new char[num_inputs];
+  const char *input_format = "db";
+  const char *output_format = "edn";
+  char *query_result = query((long)thread, query_str, num_inputs, &input_format, &config_str, output_format);
+  std::cout << "query result: " << query_result << std::endl;
   std::string expected_q_result = "1";
-  assert(expected_q_result.compare(q_result) == 0);
+  assert(expected_q_result.compare(query_result) == 0);
+  libdatahike_free((long)thread, &query_result);
   return 0;
 }
