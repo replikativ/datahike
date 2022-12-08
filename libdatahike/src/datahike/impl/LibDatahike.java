@@ -1,6 +1,8 @@
 package datahike.impl;
 
 import org.graalvm.nativeimage.c.function.CEntryPoint;
+import org.graalvm.nativeimage.c.function.InvokeCFunctionPointer;
+import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CCharPointerPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
@@ -70,74 +72,78 @@ public final class LibDatahike {
         }
     }
 
+    // callback function to read return value
+    interface OutputReader extends CFunctionPointer {
+        @InvokeCFunctionPointer
+        void call(@CConst CCharPointer output);
+    }
+
     // core API
 
     @CEntryPoint(name = "database_exists")
-    public static @CConst CCharPointer database_exists (@CEntryPoint.IsolateThreadContext long isolateId,
-                                                        @CConst CCharPointer db_config) {
+    public static void database_exists (@CEntryPoint.IsolateThreadContext long isolateId,
+                                        @CConst CCharPointer db_config,
+                                        @CConst OutputReader output_reader) {
         try {
-            return toCCharPointer(libdatahike.toJSONString(Datahike.databaseExists(readConfig(db_config))));
+            output_reader.call(toCCharPointer(libdatahike.toJSONString(Datahike.databaseExists(readConfig(db_config)))));
         } catch (Exception e) {
-            return toException(e);
+            output_reader.call(toException(e));
         }
     }
 
     @CEntryPoint(name = "delete_database")
-    public static @CConst CCharPointer delete_database (@CEntryPoint.IsolateThreadContext long isolateId,
-                                                        @CConst CCharPointer db_config) {
+    public static void delete_database (@CEntryPoint.IsolateThreadContext long isolateId,
+                                        @CConst CCharPointer db_config,
+                                        @CConst OutputReader output_reader) {
         try {
             Datahike.deleteDatabase(readConfig(db_config));
-            return toCCharPointer("");
+            output_reader.call(toCCharPointer(""));
         } catch (Exception e) {
-            return toException(e);
+            output_reader.call(toException(e));
         }
     }
 
     @CEntryPoint(name = "create_database")
-    public static @CConst CCharPointer create_database (@CEntryPoint.IsolateThreadContext long isolateId,
-                                                        @CConst CCharPointer db_config) {
+    public static void create_database (@CEntryPoint.IsolateThreadContext long isolateId,
+                                        @CConst CCharPointer db_config,
+                                        @CConst OutputReader output_reader) {
         try {
             Datahike.createDatabase(readConfig(db_config));
-            return toCCharPointer("");
+            output_reader.call(toCCharPointer(""));
         } catch (Exception e) {
-            return toException(e);
+            output_reader.call(toException(e));
         }
     }
 
     @CEntryPoint(name = "query")
-    public static @CConst CCharPointer query (@CEntryPoint.IsolateThreadContext long isolateId,
-                                              @CConst CCharPointer query,
-                                              long num_inputs,
-                                              @CConst CCharPointerPointer input_formats,
-                                              @CConst CCharPointerPointer raw_inputs,
-                                              @CConst CCharPointer output_format) {
+    public static void query (@CEntryPoint.IsolateThreadContext long isolateId,
+                              @CConst CCharPointer query,
+                              long num_inputs,
+                              @CConst CCharPointerPointer input_formats,
+                              @CConst CCharPointerPointer raw_inputs,
+                              @CConst CCharPointer output_format,
+                              @CConst OutputReader output_reader) {
         try {
             Object[] inputs = loadInputs(num_inputs, input_formats, raw_inputs);
-            return toOutput(output_format, Datahike.q(CTypeConversion.toJavaString(query), inputs));
+            output_reader.call(toOutput(output_format, Datahike.q(CTypeConversion.toJavaString(query), inputs)));
         } catch (Exception e) {
-            return toException(e);
+            output_reader.call(toException(e));
         }
     }
 
     @CEntryPoint(name = "transact")
-    public static @CConst CCharPointer transact (@CEntryPoint.IsolateThreadContext long isolateId,
-                                                 @CConst CCharPointer db_config,
-                                                 @CConst CCharPointer tx_format,
-                                                 @CConst CCharPointer tx_data,
-                                                 @CConst CCharPointer output_format) {
+    public static void transact (@CEntryPoint.IsolateThreadContext long isolateId,
+                                 @CConst CCharPointer db_config,
+                                 @CConst CCharPointer tx_format,
+                                 @CConst CCharPointer tx_data,
+                                 @CConst CCharPointer output_format,
+                                 @CConst OutputReader output_reader) {
         try {
             Object conn = Datahike.connect(readConfig(db_config));
             Iterable txData = (Iterable)loadInput(tx_format, tx_data);
-            return toOutput(output_format, Datahike.transact(conn, txData).get(Util.kwd(":tx-meta")));
+            output_reader.call(toOutput(output_format, Datahike.transact(conn, txData).get(Util.kwd(":tx-meta"))));
         } catch (Exception e) {
-            return toException(e);
+            output_reader.call(toException(e));
         }
-    }
-
-    // memory handling
-
-    @CEntryPoint(name = "libdatahike_free")
-    public static void libdatahike_free(@CEntryPoint.IsolateThreadContext long isolateId, @CConst PointerBase ptr) {
-        UnmanagedMemory.free(ptr);
     }
 }
