@@ -16,7 +16,8 @@
 
 (defn usage [options-summary]
   (->> ["This is the Datahike command line interface."
-        "The commands mostly reflect the datahike.api Clojure API. You can find its documentation under api at https://cljdoc.org/d/io.replikativ/datahike/. To instantiate a specific database, you can use db:config_file to access the current database value, conn:config_file to create a mutable connection for manipulation, history:config_file for the historical database over all transactions, since:unix_time_in_ms:config_file to create a database with all facts since the time provided and asof:unix_time_in_ms:config_file to create an asOf snapshot database. To pass in edn data use edn:edn_file and for JSON use json:json_file."
+        ""
+        "The commands mostly reflect the datahike.api Clojure API. You can find its documentation under api at https://cljdoc.org/d/io.replikativ/datahike/. To instantiate a specific database, you can use db:config_file to access the current database value, conn:config_file to create a mutable connection for manipulation, history:config_file for the historical database over all transactions, since:unix_time_in_ms:config_file to create a database with all facts since the time provided and asof:unix_time_in_ms:config_file to create an snapshot as-of the time provided. To pass in edn data use edn:edn_file and for JSON use json:json_file."
         ""
         "Usage: dhi [options] action arguments"
         ""
@@ -55,7 +56,11 @@
       :default :edn
       :parse-fn keyword
       :validate [formats (str "Must be one of: " (str/join ", " formats))]]
-     [nil "--tx-file PATH" "Use this input file for transactions."
+     ["-if" "--input-format FORMAT" "Input format for the transaction."
+      :default :edn
+      :parse-fn keyword
+      :validate [formats (str "Must be one of: " (str/join ", " formats))]]
+     [nil "--tx-file PATH" "Use this input file for transactions instead of command line or STDIN."
       :default nil
       :validate [#(.exists (io/file %)) "Transaction file does not exist."]]
      ;; A non-idempotent option (:default is applied first)
@@ -137,7 +142,7 @@
 (defn -main [& args]
   (let [{:keys [action options arguments exit-message ok?]}
         (validate-args args)]
-    (case (:verbosity options)
+    (case (int (:verbosity options))
       0 ;; default
       (log/set-level! :warn)
       1
@@ -171,14 +176,14 @@
                               (if-let [tf (:tx-file options)]
                                 (load-input tf)
                                 (if-let [s (second arguments)]
-                                  (case (:format options)
+                                  (case (:input-format options)
                                     :edn (edn/read-string s)
                                     :pprint (edn/read-string s)
                                     :json (ch/parse-string s keyword)
                                     :pretty-json (ch/parse-string s keyword)
                                     :cbor (cbor/decode s) ;; does this really make sense?
                                     )
-                                  (case (:format options)
+                                  (case (:input-format options)
                                     :edn (edn/read)
                                     :pprint (edn/read)
                                     :json (ch/decode-stream *in* keyword)
@@ -206,20 +211,21 @@
           (report (:format options) out))
 
         :pull
-        (let [out (d/pull (load-input (first arguments))
-                          (read-string (second arguments))
-                          (read-string (nth arguments 2)))]
+        (let [out (into {} (d/pull (load-input (first arguments))
+                                   (read-string (second arguments))
+                                   (read-string (nth arguments 2))))]
           (report (:format options) out))
 
         :pull-many
-        (let [out (d/pull-many (load-input (first arguments))
-                               (read-string (second arguments))
-                               (read-string (nth arguments 2)))]
+        (let [out (mapv #(into {} %)
+                        (d/pull-many (load-input (first arguments))
+                                     (read-string (second arguments))
+                                     (read-string (nth arguments 2))))]
           (report (:format options) out))
 
         :entity
-        (let [out (d/entity (load-input (first arguments))
-                            (read-string (second arguments)))]
+        (let [out (into {} (d/entity (load-input (first arguments))
+                                     (read-string (second arguments))))]
           (report (:format options) out))
 
         :datoms
@@ -238,3 +244,5 @@
         :metrics
         (let [out (d/metrics (load-input (first arguments)))]
           (report (:format options) out))))))
+
+

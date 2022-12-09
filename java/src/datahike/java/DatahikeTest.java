@@ -165,10 +165,6 @@ public class DatahikeTest {
         Map res = Datahike.pull(deref(conn), "[*]", 10);
         assertEquals("Joe", res.get(kwd(":name")));
 
-        res = Datahike.pull(deref(conn), "[*]", vec(kwd(":name"), "Alice"));
-        assertEquals("Alice", res.get(kwd(":name")));
-
-
         Datahike.transact(conn, vec(map(kwd(":db/id"), 20,
                 kwd(":name"), "Jane",
                 kwd(":age"), 25L)));

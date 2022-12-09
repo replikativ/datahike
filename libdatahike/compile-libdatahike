@@ -20,7 +20,7 @@ $GRAALVM_HOME/bin/javac -cp "$DATAHIKE_JAR:$SVM_JAR" libdatahike/src/datahike/im
 echo "Compiling shared library through native image."
 $GRAALVM_HOME/bin/native-image \
   -jar $DATAHIKE_JAR \
-  -cp libdtahike/src \
+  -cp libdatahike/src \
   -H:Name=libdatahike \
   --shared \
   -H:+ReportExceptionStackTraces \

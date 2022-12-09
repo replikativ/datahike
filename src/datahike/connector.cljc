@@ -124,7 +124,7 @@
      (k/assoc store cid db-to-store {:sync? true})
      (k/assoc store (:branch config) db-to-store {:sync? true})
      (reset! connection db)
-     tx-report)))
+     (assoc-in tx-report [:tx-meta :db/commitId] cid))))
 
 (defn transact!
   [connection {:keys [tx-data tx-meta]}]

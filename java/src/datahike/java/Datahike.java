@@ -37,6 +37,7 @@ public class Datahike {
     private static final IFn pullFn = Clojure.var("datahike.api", "pull");
     private static final IFn releaseFn = Clojure.var("datahike.api", "release");
     private static final IFn pullManyFn = Clojure.var("datahike.api", "pull-many");
+    private static final IFn datomsFn = Clojure.var("datahike.api", "datoms");
     private static final IFn seekDatomsFn = Clojure.var("datahike.api", "seek-datoms");
     private static final IFn tempIdFn = Clojure.var("datahike.api", "tempid");
     private static final IFn entityFn = Clojure.var("datahike.api", "entity");
@@ -46,6 +47,9 @@ public class Datahike {
     private static final IFn withFn = Clojure.var("datahike.api", "with");
     private static final IFn dbWithFn = Clojure.var("datahike.api", "db-with");
     private static final IFn databaseExistsFn = Clojure.var("datahike.api", "database-exists?");
+    private static final IFn schemaFn = Clojure.var("datahike.api", "schema");
+    private static final IFn reverseSchemaFn = Clojure.var("datahike.api", "reverse-schema");
+    private static final IFn metricsFn = Clojure.var("datahike.api", "metrics");
 
     /**
      * Forbids instances creation.
@@ -161,25 +165,12 @@ public class Datahike {
      * @see <a href="https://docs.datomic.com/on-prem/pull.html">docs.datomic.com/on-prem/pull.html</a>
      *
      * @param db the database
-     * @param selector the criteria for the pull query
-     * @param eid the entity id
+     * @param selector the scoping for the pull query
+     * @param eid the entity id to pull
      * @return the result of the query as map
      */
-    public static APersistentMap pull(Object db, String selector, int eid) {
+    public static APersistentMap pull(Object db, String selector, long eid) {
         return (APersistentMap)pullFn.invoke(db, Clojure.read(selector), eid);
-    }
-
-    /**
-     * Fetches data from database using recursive declarative description.
-     * @see <a href="https://docs.datomic.com/on-prem/pull.html">docs.datomic.com/on-prem/pull.html</a>
-     *
-     * @param db the database
-     * @param selector the criteria for the pull query
-     * @param eid an iterable of entity ids
-     * @return the result of the query as a map
-     */
-    public static APersistentMap pull(Object db, String selector, Iterable eids) {
-        return (APersistentMap)pullFn.invoke(db, Clojure.read(selector), eids);
     }
 
     /**
@@ -201,6 +192,17 @@ public class Datahike {
      */
     public static void release(Object conn) {
         releaseFn.invoke(conn);
+    }
+
+    /**
+     * Returns datoms of the given index.
+     *
+     * @param db the database
+     * @param index a keyword describing the type of index. E.g. {@code kwd(":eavt")}
+     * @return the list of datoms
+     */
+    public static List datoms(Object db, Keyword index) {
+        return (List)datomsFn.invoke(db, index);
     }
 
     /**
@@ -289,7 +291,7 @@ public class Datahike {
      * @param eid an entity id
      * @return an entity
      */
-    public static IEntity entity(Object db, int eid) {
+    public static IEntity entity(Object db, long eid) {
         return (IEntity)entityFn.invoke(db, eid);
     }
 
@@ -335,5 +337,32 @@ public class Datahike {
      */
     public static Object dbWith(Object db, Object txData) {
         return dbWithFn.invoke(db, txData);
+    }
+
+    /**
+     * Return the schema of the database
+     *
+     * @param db a database
+     */
+    public static APersistentMap schema(Object db) {
+        return (APersistentMap)schemaFn.invoke(db);
+    }
+
+    /**
+     * Return the reverse schema of the database
+     *
+     * @param db a database
+     */
+    public static APersistentMap reverseSchema(Object db) {
+        return (APersistentMap)reverseSchemaFn.invoke(db);
+    }
+
+    /**
+     * Return the metrics of the database
+     *
+     * @param db a database
+     */
+    public static APersistentMap metrics(Object db) {
+        return (APersistentMap)metricsFn.invoke(db);
     }
 }

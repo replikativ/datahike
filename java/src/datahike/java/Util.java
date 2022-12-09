@@ -31,6 +31,8 @@ public class Util {
         return (APersistentVector) vectorFn.invoke(items);
     }
 
+
+
     /** Read string into edn data structure. */
     public static Object ednFromString(String str) {
         return readStringFn.invoke(str);

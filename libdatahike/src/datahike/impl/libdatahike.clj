@@ -5,6 +5,7 @@
             [datahike.schema :as s]
             [clj-cbor.core :as cbor]
             [taoensso.timbre :as timbre])
+  (:import [datahike.datom Datom])
   (:gen-class
    :methods [^{:static true} [parseJSON [String] Object]
              ^{:static true} [parseEdn [String] Object]
@@ -12,7 +13,8 @@
              ^{:static true} [JSONAsTxData [String Object] Iterable]
              ^{:static true} [toEdnString [Object] String]
              ^{:static true} [toJSONString [Object] String]
-             ^{:static true} [toCBOR [Object] bytes]]))
+             ^{:static true} [toCBOR [Object] bytes]
+             ^{:static true} [datomsToVecs [Iterable] Iterable]]))
 
 (timbre/set-level! :warn)
 
@@ -123,3 +125,5 @@
 (defn -JSONAsTxData [tx-data db]
   (xf-data-for-tx (ch/parse-string tx-data keyword) db))
 
+(defn -datomsToVecs [datoms]
+  (mapv #(vec (seq ^Datom %)) datoms))
