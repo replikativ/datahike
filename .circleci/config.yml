@@ -105,7 +105,7 @@ jobs:
       - persist_to_workspace:
           root: /home/circleci/
           paths:
-            - replikativ/datahike
+            - replikativ/dhi
   native-image-test:
     executor: tools/clojurecli
     steps:
