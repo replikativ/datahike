@@ -1,7 +1,7 @@
 (ns datahike.test.attribute-refs.query-or-test
   (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is deftest are]]
-      :clj [clojure.test :as t :refer [is deftest are]])
+   #?(:cljs [cljs.test :as t :refer-macros [deftest are]]
+      :clj [clojure.test :as t :refer [deftest are]])
    [datahike.test.attribute-refs.utils :refer [ref-db ref-e0
                                                shift-entities
                                                wrap-direct-datoms
@@ -122,14 +122,14 @@
         ($2 or ($ or [?e :weight 40]))]
       (shift #{1} ref-e0))))
 
-(deftest test-errors
-  (is (thrown-msg? "Join variable not declared inside clauses: [?a]"
+#_(deftest test-errors ;; TODO: move to datalog-parser
+  (is (thrown-with-msg? Throwable #"Join variable not declared inside clauses: [?a]"
                    (d/q '[:find ?e
                           :where (or [?e :weight _]
                                      [?e :age ?a])]
                         test-db)))
 
-  (is (thrown-msg? "Insufficient bindings: #{?e} not bound in (or-join [[?e]] [?e :weight 40])"
+  (is (thrown-with-msg? Throwable #"Insufficient bindings: #{?e} not bound in (or-join [[?e]] [?e :weight 40])"
                    (d/q '[:find ?e
                           :where (or-join [[?e]]
                                           [?e :weight 40])]

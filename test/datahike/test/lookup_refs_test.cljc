@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
    [datahike.test.core-test :as tdc]))
 
@@ -18,10 +19,10 @@
       [:name "Sergey"] nil
       [:name nil]      nil)
 
-    (are [eid msg] (thrown-msg? msg (d/entity db eid))
-      [:name]     "Lookup ref should contain 2 elements: [:name]"
-      [:name 1 2] "Lookup ref should contain 2 elements: [:name 1 2]"
-      [:age 10]   "Lookup ref attribute should be marked as :db/unique: [:age 10]")))
+    (are [eid msg] (thrown-with-msg? Throwable msg (d/entity db eid))
+      [:name]     #"Lookup ref should contain 2 elements: [:name]"
+      [:name 1 2] #"Lookup ref should contain 2 elements: [:name 1 2]"
+      [:age 10]   #"Lookup ref attribute should be marked as :db/unique: [:age 10]")))
 
 (deftest test-lookup-refs-transact
   (let [db (d/db-with (db/empty-db {:name    {:db/unique :db.unique/identity}
@@ -81,12 +82,12 @@
       [[:db.fn/retractEntity [:name "Ivan"]]]
       {:db/id 1})
 
-    (are [tx msg] (thrown-msg? msg (d/db-with db tx))
+    (are [tx msg] (thrown-with-msg? Throwable msg (d/db-with db tx))
       [{:db/id [:name "Oleg"], :age 10}]
-      "Nothing found for entity id [:name \"Oleg\"]"
+      #"Nothing found for entity id [:name \"Oleg\"]"
 
       [[:db/add [:name "Oleg"] :age 10]]
-      "Nothing found for entity id [:name \"Oleg\"]")))
+      #"Nothing found for entity id [:name \"Oleg\"]")))
 
 (deftest test-lookup-refs-transact-multi
   (let [db (d/db-with (db/empty-db {:name    {:db/unique :db.unique/identity}
@@ -256,7 +257,7 @@
                   db)
              #{[1]}))
 
-      (is (thrown-msg? "Nothing found for entity id [:name \"Valery\"]"
+      (is (thrown-with-msg? #"Nothing found for entity id [:name \"Valery\"]"
                        (d/q '[:find ?e
                               :where [[:name "Valery"] :friend ?e]]
                             db))))))

@@ -1,4 +1,5 @@
 (ns ^:no-doc datahike.index
+    (:refer-clojure :exclude [-flush -seq -count -persistent!])
   (:require [datahike.index.interface :as di]
             [datahike.index.persistent-set]
             [datahike.index.hitchhiker-tree]))
@@ -17,6 +18,7 @@
 (def -flush di/-flush)
 (def -transient di/-transient)
 (def -persistent! di/-persistent!)
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (def -mark di/-mark)
 
 ;; Aliases for multimethods
@@ -29,4 +31,5 @@
 
 ;; Other functions
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (def index-types (keys (methods empty-index)))

@@ -2,7 +2,6 @@
   (:require [datahike.api :as api]
             [datahike.constants :as c]
             [datahike.datom :as d]
-            [datahike.db :as db]
             [clj-cbor.core :as cbor]))
 
 (defn export-db

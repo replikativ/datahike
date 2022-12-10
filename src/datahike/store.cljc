@@ -95,7 +95,7 @@
 
 ;; file
 
-(defmethod empty-store :file [{:keys [path config]}]
+(defmethod empty-store :file [{:keys [path _config]}]
   (fs/connect-fs-store path :opts {:sync? true}))
 
 (defmethod delete-store :file [{:keys [path]}]

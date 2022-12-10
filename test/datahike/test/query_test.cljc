@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
    [datahike.test.utils :as utils]
    [datahike.query :as dq])
@@ -380,7 +381,7 @@
                                     [(= ?age 37)]]}
                    :args [db]})
              #{[2] [3]}))
-      (is (thrown-msg? "Insufficient bindings: #{?age} not bound in [(= ?age 37)]"
+      (is (thrown-with-msg? Throwable #"Insufficient bindings: #{?age} not bound in [(= ?age 37)]"
                        (d/q {:query '{:find [?e]
                                       :where [[(= ?age 37)]
                                               [?e :age ?age]]}

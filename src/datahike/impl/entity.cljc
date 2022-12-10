@@ -1,10 +1,9 @@
 (ns ^:no-doc datahike.impl.entity
   (:refer-clojure :exclude [keys get])
-  (:require [#?(:cljs cljs.core :clj clojure.core)]
-            [datahike.db :as db]
+  (:require [#?(:cljs cljs.core :clj clojure.core) :as c]
             [datahike.db.interface :as dbi]
             [datahike.db.utils :as dbu])
-  (:import [datahike.java IEntity]))
+  #?(:clj (:import [datahike.java IEntity])))
 
 (declare entity ->Entity equiv-entity lookup-entity touch)
 
@@ -46,7 +45,7 @@
    (defn- js-seq [e]
      (touch e)
      (for [[a v] @(.-cache e)]
-       (if (db/multival? (.-db e) a)
+       (if (dbu/multival? (.-db e) a)
          [a (multival->js v)]
          [a v]))))
 
@@ -125,8 +124,8 @@
       :clj
       [Object
        IEntity
-       (toString [e]      (pr-str (assoc @cache :db/id eid)))
-       (hashCode [e]      (hash eid)) ; db?
+       (toString [_e]      (pr-str (assoc @cache :db/id eid)))
+       (hashCode [_e]      (hash eid)) ; db?
        (equals [e o]      (equiv-entity e o))
 
        clojure.lang.Seqable
@@ -137,9 +136,9 @@
        (containsKey [e k] (not= ::nf (lookup-entity e k ::nf)))
        (entryAt [e k]     (some->> (lookup-entity e k) (clojure.lang.MapEntry. k)))
 
-       (empty [e]         {})
-       (assoc [e k v]     (throw (UnsupportedOperationException.)))
-       (cons  [e [k v]]   (throw (UnsupportedOperationException.)))
+       (empty [_e]         {})
+       (assoc [_e _k _v]     (throw (UnsupportedOperationException.)))
+       (cons  [_e [_k _v]]   (throw (UnsupportedOperationException.)))
        (count [e]         (touch e) (count @(.-cache e)))
 
        clojure.lang.ILookup

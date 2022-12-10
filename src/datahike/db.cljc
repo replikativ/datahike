@@ -1,26 +1,30 @@
 (ns ^:no-doc datahike.db
-  (:require
-   [clojure.data :as data]
-   [clojure.walk :refer [postwalk]]
-   #?(:clj [clojure.pprint :as pp])
-   [datahike.config :as dc]
-   [datahike.constants :as c :refer [ue0 e0 tx0 utx0 emax txmax system-schema]]
-   [datahike.datom :as dd :refer [datom datom-tx datom-added]]
-   [datahike.db.interface :as dbi]
-   [datahike.db.search :as dbs]
-   [datahike.db.utils :as dbu]
-   [datahike.index :as di]
-   [datahike.schema :as ds]
-   [datahike.tools :as tools :refer [raise]]
-   [me.tonsky.persistent-sorted-set.arrays :as arrays]
-   [medley.core :as m]
-   [taoensso.timbre :refer [warn]])
+  (:require #?(:clj [clojure.pprint :as pp])
+            [clojure.data :as data]
+            [clojure.set :as set]
+            #?(:clj [clojure.walk :refer [postwalk]])
+            [datahike.config :as dc]
+            [datahike.constants :as c :refer [e0 emax system-schema tx0 txmax
+                                              ue0 utx0]]
+            [datahike.datom :as dd :refer [datom datom-added datom-tx]]
+            [datahike.db.interface :as dbi]
+            [datahike.db.search :as dbs]
+            [datahike.db.utils :as dbu]
+            [datahike.index :as di]
+            [datahike.schema :as ds]
+            [datahike.tools :as dt]
+            #_[me.tonsky.persistent-sorted-set.arrays :as arrays]
+            [medley.core :as m]
+            [taoensso.timbre :refer [warn]])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable]]
-                            [datahike.datom :refer [combine-cmp datom]]
-                            [datahike.tools :refer [case-tree raise]]))
+                            [datahike.datom :refer [datom]]))
   (:refer-clojure :exclude [seqable?])
-  #?(:clj (:import [clojure.lang AMapEntry ITransientCollection IEditableCollection IPersistentCollection Seqable
-                    IHashEq Associative IKeywordLookup ILookup]
+  #?(:clj (:import [clojure.lang
+                    Associative
+                    IEditableCollection
+                    IPersistentCollection
+                    ITransientCollection
+                    Seqable]
                    [datahike.datom Datom]
                    [java.io Writer]
                    [java.util Date])))
@@ -39,36 +43,26 @@
 
 #?(:cljs
    (do
+     #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
      (def Exception js/Error)
+     #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
      (def IllegalArgumentException js/Error)
+     #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
      (def UnsupportedOperationException js/Error)))
 
 ;; ----------------------------------------------------------------------------
 
-(defn #?@(:clj [^Boolean seqable?]
-          :cljs [^boolean seqable?])
-  [x]
-  (and (not (string? x))
-       #?(:cljs (or (cljs.core/seqable? x)
-                    (arrays/array? x))
-          :clj (or (seq? x)
-                   (instance? Seqable x)
-                   (nil? x)
-                   (instance? Iterable x)
-                   (arrays/array? x)
-                   (instance? java.util.Map x)))))
 
 (defn- cljs-env?
   "Take the &env from a macro, and tell whether we are expanding into cljs."
   [env]
   (boolean (:ns env)))
 
-#?(:clj
-   (defmacro if-cljs
-     "Return then if we are generating cljs code and else for Clojure code.
+(defmacro if-cljs
+  "Return then if we are generating cljs code and else for Clojure code.
      https://groups.google.com/d/msg/clojurescript/iBY5HaQda4A/w1lAQi9_AwsJ"
-     [then else]
-     (if (cljs-env? &env) then else)))
+  [then else]
+  (if (cljs-env? &env) then else))
 
 #?(:clj
    (defn- get-sig [method]
@@ -138,49 +132,49 @@
 
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map meta]
   #?@(:cljs
-      [IHash (-hash [db] hash)
+      [IHash (-hash [_db] hash)
        IEquiv (-equiv [db other] (equiv-db db other))
-       ISeqable (-seq [db] (di/-seq eavt))
-       IReversible (-rseq [db] (-rseq eavt))
-       ICounted (-count [db] (count eavt))
+       ISeqable (-seq [_db] (di/-seq eavt))
+       IReversible (-rseq [_db] (-rseq eavt))
+       ICounted (-count [_db] (count eavt))
        IEmptyableCollection (-empty [db] (empty-db (ds/get-user-schema db)))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
        IEditableCollection (-as-transient [db] (db-transient db))
-       ITransientCollection (-conj! [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
+       ITransientCollection (-conj! [_db _key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
        (-persistent! [db] (db-persistent! db))]
 
       :clj
-      [Object (hashCode [db] hash)
-       clojure.lang.IHashEq (hasheq [db] hash)
-       Seqable (seq [db] (di/-seq eavt))
+      [Object (hashCode [_db] hash)
+       clojure.lang.IHashEq (hasheq [_db] hash)
+       Seqable (seq [_db] (di/-seq eavt))
        IPersistentCollection
-       (count [db] (di/-count eavt))
+       (count [_db] (di/-count eavt))
        (equiv [db other] (equiv-db db other))
        (empty [db] (empty-db (ds/get-user-schema db)))
        IEditableCollection
        (asTransient [db] (db-transient db))
        ITransientCollection
-       (conj [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
+       (conj [_db _key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
        (persistent [db] (db-persistent! db))])
 
   dbi/IDB
-  (-schema [db] schema)
-  (-rschema [db] rschema)
-  (-system-entities [db] system-entities)
-  (-attrs-by [db property] (rschema property))
+  (-schema [_db] schema)
+  (-rschema [_db] rschema)
+  (-system-entities [_db] system-entities)
+  (-attrs-by [_db property] (rschema property))
   (-temporal-index? [db] (dbi/-keep-history? db))
-  (-keep-history? [db] (:keep-history? config))
-  (-max-tx [db] max-tx)
-  (-max-eid [db] max-eid)
-  (-config [db] config)
-  (-ref-for [db a-ident]
+  (-keep-history? [_db] (:keep-history? config))
+  (-max-tx [_db] max-tx)
+  (-max-eid [_db] max-eid)
+  (-config [_db] config)
+  (-ref-for [_db a-ident]
             (if (:attribute-refs? config)
               (let [ref (get ident-ref-map a-ident)]
                 (when (nil? ref)
                   (warn (str "Attribute " a-ident " has not been found in database")))
                 ref)
               a-ident))
-  (-ident-for [db a-ref]
+  (-ident-for [_db a-ref]
               (if (:attribute-refs? config)
                 (let [a-ident (get ref-ident-map a-ref)]
                   (when (nil? a-ident)
@@ -215,7 +209,7 @@
 
   (-index-range [db attr start end]
                 (when-not (dbu/indexing? db attr)
-                  (raise "Attribute" attr "should be marked as :db/index true" {}))
+                  (dt/raise "Attribute" attr "should be marked as :db/index true" {}))
                 (dbu/validate-attr attr (list '-index-range 'db attr start end) db)
                 (di/-slice avet
                            (dbu/resolve-datom db nil attr start nil e0 tx0)
@@ -223,7 +217,7 @@
                            :avet))
 
   data/EqualityPartition
-  (equality-partition [x] :datahike/db)
+  (equality-partition [_x] :datahike/db)
 
   data/Diff
   (diff-similar [a b]
@@ -256,33 +250,33 @@
       [IPersistentCollection
        (count [db] (count (dbi/-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
-       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on FilteredDB")))
-       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on FilteredDB")))
+       (cons [_db [_k _v]] (throw (UnsupportedOperationException. "cons is not supported on FilteredDB")))
+       (empty [_db] (throw (UnsupportedOperationException. "empty is not supported on FilteredDB")))
 
        Seqable (seq [db] (dbi/-datoms db :eavt []))
 
-       clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on FilteredDB")))
-       (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on FilteredDB")))
-       clojure.lang.IKeywordLookup (getLookupThunk [db k]
+       clojure.lang.ILookup (valAt [_db _k] (throw (UnsupportedOperationException. "valAt/2 is not supported on FilteredDB")))
+       (valAt [_db _k _nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on FilteredDB")))
+       clojure.lang.IKeywordLookup (getLookupThunk [_db _k]
                                                    (throw (UnsupportedOperationException. "getLookupThunk is not supported on FilteredDB")))
 
        Associative
-       (containsKey [e k] (throw (UnsupportedOperationException. "containsKey is not supported on FilteredDB")))
-       (entryAt [db k] (throw (UnsupportedOperationException. "entryAt is not supported on FilteredDB")))
-       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on FilteredDB")))])
+       (containsKey [_e _k] (throw (UnsupportedOperationException. "containsKey is not supported on FilteredDB")))
+       (entryAt [_db _k] (throw (UnsupportedOperationException. "entryAt is not supported on FilteredDB")))
+       (assoc [_db _k _v] (throw (UnsupportedOperationException. "assoc is not supported on FilteredDB")))])
 
   dbi/IDB
-  (-schema [db] (dbi/-schema unfiltered-db))
-  (-rschema [db] (dbi/-rschema unfiltered-db))
-  (-system-entities [db] (dbi/-system-entities unfiltered-db))
-  (-attrs-by [db property] (dbi/-attrs-by unfiltered-db property))
+  (-schema [_db] (dbi/-schema unfiltered-db))
+  (-rschema [_db] (dbi/-rschema unfiltered-db))
+  (-system-entities [_db] (dbi/-system-entities unfiltered-db))
+  (-attrs-by [_db property] (dbi/-attrs-by unfiltered-db property))
   (-temporal-index? [db] (dbi/-keep-history? db))
-  (-keep-history? [db] (dbi/-keep-history? unfiltered-db))
-  (-max-tx [db] (dbi/-max-tx unfiltered-db))
-  (-max-eid [db] (dbi/-max-eid unfiltered-db))
-  (-config [db] (dbi/-config unfiltered-db))
-  (-ref-for [db a-ident] (dbi/-ref-for unfiltered-db a-ident))
-  (-ident-for [db a-ref] (dbi/-ident-for unfiltered-db a-ref))
+  (-keep-history? [_db] (dbi/-keep-history? unfiltered-db))
+  (-max-tx [_db] (dbi/-max-tx unfiltered-db))
+  (-max-eid [_db] (dbi/-max-eid unfiltered-db))
+  (-config [_db] (dbi/-config unfiltered-db))
+  (-ref-for [_db a-ident] (dbi/-ref-for unfiltered-db a-ident))
+  (-ident-for [_db a-ref] (dbi/-ident-for unfiltered-db a-ref))
 
   dbi/ISearch
   (-search [db pattern]
@@ -322,42 +316,42 @@
       [IPersistentCollection
        (count [db] (count (dbi/-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
-       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on HistoricalDB")))
-       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on HistoricalDB")))
+       (cons [_db _kv] (throw (UnsupportedOperationException. "cons is not supported on HistoricalDB")))
+       (empty [_db] (throw (UnsupportedOperationException. "empty is not supported on HistoricalDB")))
 
        Seqable
        (seq [db] (dbi/-datoms db :eavt []))
 
        Associative
-       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on HistoricalDB")))])
+       (assoc [_db _k _v] (throw (UnsupportedOperationException. "assoc is not supported on HistoricalDB")))])
 
   dbi/IDB
-  (-schema [db] (dbi/-schema origin-db))
-  (-rschema [db] (dbi/-rschema origin-db))
-  (-system-entities [db] (dbi/-system-entities origin-db))
-  (-attrs-by [db property] (dbi/-attrs-by origin-db property))
-  (-temporal-index? [db] (dbi/-keep-history? origin-db))
-  (-keep-history? [db] (dbi/-keep-history? origin-db))
-  (-max-tx [db] (dbi/-max-tx origin-db))
-  (-max-eid [db] (dbi/-max-eid origin-db))
-  (-config [db] (dbi/-config origin-db))
-  (-ref-for [db a-ident] (dbi/-ref-for origin-db a-ident))
-  (-ident-for [db a-ref] (dbi/-ident-for origin-db a-ref))
+  (-schema [_db] (dbi/-schema origin-db))
+  (-rschema [_db] (dbi/-rschema origin-db))
+  (-system-entities [_db] (dbi/-system-entities origin-db))
+  (-attrs-by [_db property] (dbi/-attrs-by origin-db property))
+  (-temporal-index? [_db] (dbi/-keep-history? origin-db))
+  (-keep-history? [_db] (dbi/-keep-history? origin-db))
+  (-max-tx [_db] (dbi/-max-tx origin-db))
+  (-max-eid [_db] (dbi/-max-eid origin-db))
+  (-config [_db] (dbi/-config origin-db))
+  (-ref-for [_db a-ident] (dbi/-ref-for origin-db a-ident))
+  (-ident-for [_db a-ref] (dbi/-ident-for origin-db a-ref))
 
   dbi/IHistory
-  (-time-point [db] nil)
-  (-origin [db] origin-db)
+  (-time-point [_db] nil)
+  (-origin [_db] origin-db)
 
   dbi/ISearch
-  (-search [db pattern]
+  (-search [_db pattern]
            (dbs/temporal-search origin-db pattern))
 
   dbi/IIndexAccess
-  (-datoms [db index-type cs] (dbu/temporal-datoms origin-db index-type cs))
+  (-datoms [_db index-type cs] (dbu/temporal-datoms origin-db index-type cs))
 
-  (-seek-datoms [db index-type cs] (dbs/temporal-seek-datoms origin-db index-type cs))
+  (-seek-datoms [_db index-type cs] (dbs/temporal-seek-datoms origin-db index-type cs))
 
-  (-rseek-datoms [db index-type cs] (dbs/temporal-rseek-datoms origin-db index-type cs))
+  (-rseek-datoms [_db index-type cs] (dbs/temporal-rseek-datoms origin-db index-type cs))
 
   (-index-range [db attr start end] (dbs/temporal-index-range origin-db db attr start end)))
 
@@ -419,47 +413,47 @@
       [IPersistentCollection
        (count [db] (count (dbi/-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
-       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on AsOfDB")))
-       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on AsOfDB")))
+       (cons [_db _kv] (throw (UnsupportedOperationException. "cons is not supported on AsOfDB")))
+       (empty [_db] (throw (UnsupportedOperationException. "empty is not supported on AsOfDB")))
 
        Seqable
        (seq [db] (dbi/-datoms db :eavt []))
 
        Associative
-       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on AsOfDB")))])
+       (assoc [_db _k _v] (throw (UnsupportedOperationException. "assoc is not supported on AsOfDB")))])
 
   dbi/IDB
-  (-schema [db] (dbi/-schema origin-db))
-  (-rschema [db] (dbi/-rschema origin-db))
-  (-system-entities [db] (dbi/-system-entities origin-db))
-  (-attrs-by [db property] (dbi/-attrs-by origin-db property))
-  (-temporal-index? [db] (dbi/-keep-history? origin-db))
-  (-keep-history? [db] (dbi/-keep-history? origin-db))
-  (-max-tx [db] (dbi/-max-tx origin-db))
-  (-max-eid [db] (dbi/-max-eid origin-db))
-  (-config [db] (dbi/-config origin-db))
-  (-ref-for [db a-ident] (dbi/-ref-for origin-db a-ident))
-  (-ident-for [db a-ref] (dbi/-ident-for origin-db a-ref))
+  (-schema [_db] (dbi/-schema origin-db))
+  (-rschema [_db] (dbi/-rschema origin-db))
+  (-system-entities [_db] (dbi/-system-entities origin-db))
+  (-attrs-by [_db property] (dbi/-attrs-by origin-db property))
+  (-temporal-index? [_db] (dbi/-keep-history? origin-db))
+  (-keep-history? [_db] (dbi/-keep-history? origin-db))
+  (-max-tx [_db] (dbi/-max-tx origin-db))
+  (-max-eid [_db] (dbi/-max-eid origin-db))
+  (-config [_db] (dbi/-config origin-db))
+  (-ref-for [_db a-ident] (dbi/-ref-for origin-db a-ident))
+  (-ident-for [_db a-ref] (dbi/-ident-for origin-db a-ref))
 
   dbi/IHistory
-  (-time-point [db] time-point)
-  (-origin [db] origin-db)
+  (-time-point [_db] time-point)
+  (-origin [_db] origin-db)
 
   dbi/ISearch
-  (-search [db pattern]
+  (-search [_db pattern]
            (-> (dbs/temporal-search origin-db pattern)
                (filter-as-of-datoms time-point origin-db)))
 
   dbi/IIndexAccess
-  (-datoms [db index-type cs]
+  (-datoms [_db index-type cs]
            (-> (dbu/temporal-datoms origin-db index-type cs)
                (filter-as-of-datoms time-point origin-db)))
 
-  (-seek-datoms [db index-type cs]
+  (-seek-datoms [_db index-type cs]
                 (-> (dbs/temporal-seek-datoms origin-db index-type cs)
                     (filter-as-of-datoms time-point origin-db)))
 
-  (-rseek-datoms [db index-type cs]
+  (-rseek-datoms [_db index-type cs]
                  (-> (dbs/temporal-rseek-datoms origin-db index-type cs)
                      (filter-as-of-datoms time-point origin-db)))
 
@@ -498,47 +492,47 @@
       [IPersistentCollection
        (count [db] (count (dbi/-datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
-       (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on SinceDB")))
-       (empty [db] (throw (UnsupportedOperationException. "empty is not supported on SinceDB")))
+       (cons [_db _kv] (throw (UnsupportedOperationException. "cons is not supported on SinceDB")))
+       (empty [_db] (throw (UnsupportedOperationException. "empty is not supported on SinceDB")))
 
        Seqable
        (seq [db] (dbi/-datoms db :eavt []))
 
        Associative
-       (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on SinceDB")))])
+       (assoc [_db _k _v] (throw (UnsupportedOperationException. "assoc is not supported on SinceDB")))])
 
   dbi/IDB
-  (-schema [db] (dbi/-schema origin-db))
-  (-rschema [db] (dbi/-rschema origin-db))
-  (-system-entities [db] (dbi/-system-entities origin-db))
-  (-attrs-by [db property] (dbi/-attrs-by origin-db property))
+  (-schema [_db] (dbi/-schema origin-db))
+  (-rschema [_db] (dbi/-rschema origin-db))
+  (-system-entities [_db] (dbi/-system-entities origin-db))
+  (-attrs-by [_db property] (dbi/-attrs-by origin-db property))
   (-temporal-index? [db] (dbi/-keep-history? db))
-  (-keep-history? [db] (dbi/-keep-history? origin-db))
-  (-max-tx [db] (dbi/-max-tx origin-db))
-  (-max-eid [db] (dbi/-max-eid origin-db))
-  (-config [db] (dbi/-config origin-db))
-  (-ref-for [db a-ident] (dbi/-ref-for origin-db a-ident))
-  (-ident-for [db a-ref] (dbi/-ident-for origin-db a-ref))
+  (-keep-history? [_db] (dbi/-keep-history? origin-db))
+  (-max-tx [_db] (dbi/-max-tx origin-db))
+  (-max-eid [_db] (dbi/-max-eid origin-db))
+  (-config [_db] (dbi/-config origin-db))
+  (-ref-for [_db a-ident] (dbi/-ref-for origin-db a-ident))
+  (-ident-for [_db a-ref] (dbi/-ident-for origin-db a-ref))
 
   dbi/IHistory
-  (-time-point [db] time-point)
-  (-origin [db] origin-db)
+  (-time-point [_db] time-point)
+  (-origin [_db] origin-db)
 
   dbi/ISearch
-  (-search [db pattern]
+  (-search [_db pattern]
            (-> (dbs/temporal-search origin-db pattern)
                (filter-since time-point origin-db)))
 
   dbi/IIndexAccess
-  (dbi/-datoms [db index-type cs]
+  (dbi/-datoms [_db index-type cs]
                (-> (dbu/temporal-datoms origin-db index-type cs)
                    (filter-since time-point origin-db)))
 
-  (dbi/-seek-datoms [db index-type cs]
+  (dbi/-seek-datoms [_db index-type cs]
                     (-> (dbs/temporal-seek-datoms origin-db index-type cs)
                         (filter-since time-point origin-db)))
 
-  (dbi/-rseek-datoms [db index-type cs]
+  (dbi/-rseek-datoms [_db index-type cs]
                      (-> (dbs/temporal-rseek-datoms origin-db index-type cs)
                          (filter-since time-point origin-db)))
 
@@ -560,7 +554,7 @@
        (equiv-db-index (dbi/-datoms db :eavt []) (dbi/-datoms other :eavt []))))
 
 #?(:cljs
-   (defn pr-db [db w opts]
+   (defn pr-db [db w]
      (-write w "#datahike/DB {")
      (-write w (str ":max-tx " (dbi/-max-tx db) " "))
      (-write w (str ":max-eid " (dbi/-max-eid db) " "))
@@ -568,7 +562,7 @@
 
 #?(:clj
    (do
-     (defn pr-db [db, ^Writer w]
+     (defn pr-db [db ^Writer w]
        (.write w (str "#datahike/DB {"))
        (.write w (str ":max-tx " (dbi/-max-tx db) " "))
        (.write w (str ":max-eid " (dbi/-max-eid db)))
@@ -608,13 +602,13 @@
        (pp/pprint-logical-block :prefix "#datahike/DB {" :suffix "}"
                                 (pp/pprint-logical-block
                                  (pp/write-out :max-tx)
-                                 (.write ^Writer *out* " ")
+                                 (.write ^Writer w " ")
                                  (pp/pprint-newline :linear)
                                  (pp/write-out (dbi/-max-tx db))
-                                 (.write ^Writer *out* " ")
+                                 (.write ^Writer w " ")
                                  (pp/pprint-newline :linear)
                                  (pp/write-out :max-eid)
-                                 (.write ^Writer *out* " ")
+                                 (.write ^Writer w " ")
                                  (pp/pprint-newline :linear)
                                  (pp/write-out (dbi/-max-eid db)))
                                 (pp/pprint-newline :linear)))
@@ -675,7 +669,7 @@
 
 (defn- validate-write-schema [schema]
   (when-not (ds/old-schema-valid? schema)
-    (raise "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
+    (dt/raise "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
            (ds/explain-old-schema schema))))
 
 (defn init-max-eid [eavt]
@@ -719,12 +713,12 @@
    {}
    schema))
 
-(defn ^DB empty-db
+(defn empty-db
   "Prefer create-database in api, schema only in index for attribute reference database."
-  ([] (empty-db nil nil nil))
-  ([schema] (empty-db schema nil nil))
-  ([schema user-config] (empty-db schema user-config nil))
-  ([schema user-config store]
+  (^DB [] (empty-db nil nil nil))
+  (^DB [schema] (empty-db schema nil nil))
+  (^DB [schema user-config] (empty-db schema user-config nil))
+  (^DB [schema user-config store]
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
    (let [complete-config (merge (dc/storeless-config) user-config)
          _ (dc/validate-config complete-config)
@@ -773,21 +767,18 @@
         :system-entities system-entities
         :ref-ident-map ref-ident-map
         :ident-ref-map ident-ref-map
-        :meta (tools/meta-data)
+        :meta (dt/meta-data)
         :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt (di/empty-index index store :eavt index-config)
           :temporal-aevt (di/empty-index index store :aevt index-config)
           :temporal-avet (di/empty-index index store :avet index-config)}))))))
 
-(defn get-max-tx [eavt]
-  (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (di/-all eavt)))
-
-(defn ^DB init-db
-  ([datoms] (init-db datoms nil nil nil))
-  ([datoms schema] (init-db datoms schema nil nil))
-  ([datoms schema user-config] (init-db datoms schema user-config nil))
-  ([datoms schema user-config store]
+(defn init-db
+  (^DB [datoms] (init-db datoms nil nil nil))
+  (^DB [datoms schema] (init-db datoms schema nil nil))
+  (^DB [datoms schema user-config] (init-db datoms schema user-config nil))
+  (^DB [datoms schema user-config store]
    (validate-schema schema)
    (let [{:keys [index keep-history? attribute-refs?] :as complete-config}  (merge (dc/storeless-config) user-config)
          _ (dc/validate-config complete-config)
@@ -825,7 +816,7 @@
                       :op-count op-count
                       :hash (reduce #(+ %1 (hash %2)) 0 datoms)
                       :system-entities system-entities
-                      :meta (tools/meta-data)
+                      :meta (dt/meta-data)
                       :ref-ident-map ref-ident-map
                       :ident-ref-map ident-ref-map}
                      (when keep-history?

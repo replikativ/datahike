@@ -1,8 +1,8 @@
 (ns ^:no-doc datahike.integration-test
   "This namespace is the minimum test a Datahike backend needs to pass for compatibility assessment."
   (:require [datahike.api :as d]
-            #?(:clj [clojure.test :refer :all]
-               :cljs [cljs.test :refer :all :include-macros true])))
+            #?(:clj [clojure.test :refer [is]]
+               :cljs [cljs.test :refer [is] :include-macros true])))
 
 (defn integration-test-fixture [config]
   (d/delete-database config)

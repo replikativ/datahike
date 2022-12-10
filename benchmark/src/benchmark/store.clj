@@ -98,6 +98,7 @@
 (defn transact-data [db tx-data]
   (db-request db :post "transact" {:tx-data tx-data}))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn get-datoms [db]
   (db-request db :post "datoms" {:index :eavt}))
 

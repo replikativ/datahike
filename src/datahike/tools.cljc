@@ -1,9 +1,10 @@
 (ns ^:no-doc datahike.tools
   (:require
-   [superv.async :refer [throw-if-exception-]]
+   #?(:clj [superv.async :refer [throw-if-exception-]])
    #?(:clj [clojure.java.io :as io])
    [taoensso.timbre :as log])
-  #?(:clj (:import [java.util Properties UUID Date])))
+  #?(:clj (:import [java.util Properties UUID Date]
+                   [java.util.concurrent TimeUnit])))
 
 (defn combine-hashes [x y]
   #?(:clj  (clojure.lang.Util/hashCombine x y)
@@ -48,7 +49,8 @@
 ; *   By using this software in any fashion, you are agreeing to be bound by
 ; * 	 the terms of this license.
 ; *   You must not remove this notice, or any other, from this software.
-(defn throwable-promise
+#?(:clj 
+   (defn throwable-promise
   "Returns a promise object that can be read with deref/@, and set,
   once only, with deliver. Calls to deref/@ prior to delivery will
   block, unless the variant of deref with timeout is used. All
@@ -63,11 +65,11 @@
       clojure.lang.IBlockingDeref
       (deref
         [_ timeout-ms timeout-val]
-        (if (.await d timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+        (if (.await d timeout-ms TimeUnit/MILLISECONDS)
           (throw-if-exception- @v)
           timeout-val))
       clojure.lang.IPending
-      (isRealized [this]
+      (isRealized [_this]
         (zero? (.getCount d)))
       clojure.lang.IFn
       (invoke
@@ -75,11 +77,12 @@
         (when (and (pos? (.getCount d))
                    (compare-and-set! v d x))
           (.countDown d)
-          this)))))
+          this))))))
 
 (defn get-version
   "Retrieves the current version of a dependency. Thanks to https://stackoverflow.com/a/33070806/10978897"
-  [dep]
+  #?(:clj [dep]
+     :cljs [_])
   #?(:clj
      (let [path (str "META-INF/maven/" (or (namespace dep) (name dep))
                      "/" (name dep) "/pom.properties")
@@ -91,12 +94,13 @@
      :cljs
      "JavaScript"))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn meta-data []
   {:datahike/version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT")
    :konserve/version (get-version 'io.replikativ/konserve)
    :hitchhiker.tree/version (get-version 'io.replikativ/hitchhiker-tree)
    :persistent.set/version (get-version 'persistent-sorted-set/persistent-sorted-set)
-   :datahike/id (UUID/randomUUID)
+   :datahike/id #?(:clj (UUID/randomUUID) :cljs (random-uuid))
    :datahike/created-at (Date.)})
 
 (defn deep-merge

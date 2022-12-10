@@ -2,8 +2,7 @@
   (:require
    [datahike.db.utils :as dbu]
    [datahike.db.interface :as dbi]
-   [datalog.parser.pull :as dpp])
-  #?@(:cljs [datalog.parser.pull :refer [PullSpec]])
+   [datalog.parser.pull :as dpp #?@(:cljs [:refer [PullSpec]])])
   #?(:clj
      (:import
       [datahike.datom Datom]
@@ -84,7 +83,7 @@
   Replaces current frame with
   - one frame with remaining entiy IDs and
   - one subpattern frame"
-  [db [frame & frames]]
+  [_db [frame & frames]]
   (if-let [eids (seq (:eids frame))]
     (let [frame  (reset-frame frame (rest eids) (recursion-result frame))
           eid    (first eids)]
@@ -97,7 +96,7 @@
 
 (defn recurse-attr
   "Adds recursion frame to frame set if maximum recursion depth not reached"
-  [db attr multi? eids eid parent frames]
+  [db attr multi? eids _eid parent frames]
   (let [{:keys [recursion pattern]} parent
         depth  (-> recursion (get :depth) (get attr 0))]
     (if (-> pattern :attrs (get attr) :recursion (= depth))
@@ -214,7 +213,7 @@
 
 (defn pull-expand-reverse-frame
   "Adds expand results of current frame to next frame in frame set."
-  [db [frame & frames]]
+  [_db [frame & frames]]
   (->> (or (single-frame-result ::expand-rev frame) {})
        (into! (:expand-kvps frame))
        (expand-result frames)))

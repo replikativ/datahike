@@ -7,9 +7,6 @@
    [datahike.test.utils :as dtu]
    [datahike.test.core-test]))
 
-#?(:cljs
-   (def Throwable js/Error))
-
 (deftest test-explode
   (doseq [coll [["Devil" "Tupen"]
                 #{"Devil" "Tupen"}
@@ -61,7 +58,7 @@
                     [?e :name ?n]] db)
              #{["Petr"] ["Evgeny"]})))
 
-    (is (thrown-msg? "Bad attribute :_parent: reverse attribute name requires {:db/valueType :db.type/ref} in schema"
+    (is (thrown-with-msg? #"Bad attribute :_parent: reverse attribute name requires {:db/valueType :db.type/ref} in schema"
                      (d/db-with db0 [{:name "Sergey" :_parent 1}])))))
 
 (deftest test-explode-nested-maps

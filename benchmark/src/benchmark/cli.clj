@@ -77,13 +77,13 @@
                                                "Available backends are: " backend-names)]]
    ["-k" "--search-caches SIZES"
     (str "Search cache sizes for which measurements should be done")
-    :default [dc/default-search-cache-size]
+    :default [dc/*default-search-cache-size*]
     :parse-fn read-string
     :validate [vector? "Must be a vector of non-negative integers."
                #(every? nat-int? %) "Vector must consist of non-negative integers."]]
    ["-m" "--store-caches SIZES"
     (str "Store cache sizes for which measurements should be done")
-    :default [dc/default-store-cache-size]
+    :default [dc/*default-store-cache-size*]
     :parse-fn read-string
     :validate [vector? "Must be a vector of positive integers."
                #(every? pos-int? %) "Vector must consist of non-negative integers."]]

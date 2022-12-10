@@ -1,7 +1,7 @@
 (ns datahike.test.attribute_refs.query-fns-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.core :as d]
    [datahike.test.attribute-refs.utils :refer [ref-db ref-e0 shift-entities]])
   #?(:clj

@@ -1,9 +1,10 @@
 (ns sandbox-transact-bench
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d]
+            [taoensso.timbre :as log]))
 
 
 (comment
-  (log/set-level! :warn)
+  (log/set-min-level! :warn)
 
     ;; if profiling
     ;;(require '[clj-async-profiler.core :as prof])
@@ -78,7 +79,7 @@
       counter))
 
 
-  (for [i (range 3)]
+  (for [_ (range 3)]
     (do
       (bench-all 100000)
       (prn " ========================== DONE ============")))
@@ -100,10 +101,10 @@
   ;; (prof/profile (d/transact conn txs))
 
 
-  (d/q '[:find ?e ?a
+  #_(d/q '[:find ?e ?a
          :in $ ?a
          :where  [?e :age ?a]]
        (d/history @conn) ;; use @conn if no history
        35)
 
-  (d/datoms @conn :eavt 35))
+  #_(d/datoms @conn :eavt 35))

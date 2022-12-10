@@ -1,5 +1,5 @@
 (ns datahike.test.migrate-test
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
             [datahike.datom :as datom]
             [datahike.migrate :as m]

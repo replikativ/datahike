@@ -2,9 +2,10 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj [clojure.test :as t :refer [is are deftest testing]])
+   [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.config :as c]
    [datahike.db :as db]
-   [datahike.api :as d]
    [datahike.index :as di]
    [datahike.index.hitchhiker-tree :as dih]))
 
@@ -41,8 +42,8 @@
                          :schema-flexibility :write
                          :crypto-hash? false
                          :branch :db
-                         :search-cache-size c/default-search-cache-size
-                         :store-cache-size c/default-store-cache-size}]
+                         :search-cache-size c/*default-search-cache-size*
+                         :store-cache-size c/*default-store-cache-size*}]
     (is (= (merge default-new-cfg
                   {:store {:backend :mem :id "deprecated-test"}})
            (c/from-deprecated mem-cfg)))
@@ -59,24 +60,24 @@
                      :attribute-refs? false
                      :keep-history? true
                      :schema-flexibility :write
-                     :index c/default-index
+                     :index c/*default-index*
                      :crypto-hash? false
                      :branch :db
-                     :search-cache-size c/default-search-cache-size
-                     :store-cache-size c/default-store-cache-size}
-                    (when (seq (di/default-index-config c/default-index))
-                      {:index-config (di/default-index-config c/default-index)}))
+                     :search-cache-size c/*default-search-cache-size*
+                     :store-cache-size c/*default-store-cache-size*}
+                    (when (seq (di/default-index-config c/*default-index*))
+                      {:index-config (di/default-index-config c/*default-index*)}))
              (-> config (dissoc :name)))))))
 
 (deftest core-config-test
   (testing "Schema on write in core empty database"
-    (is (thrown-msg?
-         "Bad entity attribute :name at {:db/id 1, :name \"Ivan\"}, not defined in current schema"
+    (is (thrown-with-msg?
+         Throwable #"Bad entity attribute :name at {:db/id 1, :name \"Ivan\"}, not defined in current schema"
          (d/db-with (db/empty-db nil {:schema-flexibility :write})
                     [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
                      {:db/id 2 :name "Petr" :age 37 :huh? false}])))
-    (is (thrown-msg?
-         "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
+    (is (thrown-with-msg?
+         Throwable #"Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
          (db/empty-db {:name {:db/cardinality :db.cardinality/one}} {:schema-flexibility :write})))
     (is (= #{["Alice"]}
            (let [db (-> (db/empty-db {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}} {:schema-flexibility :write})

@@ -2,7 +2,8 @@
   (:require  [clojure.walk]
              [clojure.data]
              [datahike.tools :refer [combine-hashes]]
-             [datahike.constants :refer [tx0]]))
+             [datahike.constants :refer [tx0]] 
+             #?(:cljs [goog.array :as garray])))
 
 (declare hash-datom equiv-datom seq-datom nth-datom assoc-datom val-at-datom)
 
@@ -13,8 +14,8 @@
 (deftype Datom #?(:clj  [^long e a v ^long tx ^:unsynchronized-mutable ^int _hash]
                   :cljs [^number e a v ^number tx ^:mutable ^number _hash])
   IDatom
-  (datom-tx [d] (if (pos? tx) tx (- tx)))
-  (datom-added [d] (pos? tx))
+  (datom-tx [_d] (if (pos? tx) tx (- tx)))
+  (datom-added [_d] (pos? tx))
 
   #?@(:cljs
       [IHash
@@ -42,9 +43,9 @@
        IAssociative
        (-assoc [d k v] (assoc-datom d k v))
 
-       IPrintWithWriter
-       (-pr-writer [d writer opts]
-                   (pr-sequential-writer writer pr-writer
+       #_IPrintWithWriter
+       #_(-pr-writer [d writer opts]
+                   (pr-sequential-writer writer pr-writer ;; TODO: private in cljs
                                          "#datahike/Datom [" " " "]"
                                          opts [(.-e d) (.-a d) (.-v d) (datom-tx d) (datom-added d)]))]
       :clj
@@ -65,8 +66,8 @@
 
        clojure.lang.IPersistentCollection
        (equiv [d o] (and (instance? Datom o) (equiv-datom d o)))
-       (empty [d] (throw (UnsupportedOperationException. "empty is not supported on Datom")))
-       (count [d] 5)
+       (empty [_d] (throw (UnsupportedOperationException. "empty is not supported on Datom")))
+       (count [_d] 5)
        (cons [d [k v]] (assoc-datom d k v))
 
        clojure.lang.Indexed
@@ -83,15 +84,15 @@
 
        clojure.lang.Associative
        (entryAt [d k] (some->> (val-at-datom d k nil) (clojure.lang.MapEntry. k)))
-       (containsKey [e k] (#{:e :a :v :tx :added} k))
+       (containsKey [_e k] (#{:e :a :v :tx :added} k))
        (assoc [d k v] (assoc-datom d k v))]))
 
 #?(:cljs (goog/exportSymbol "datahike.db.Datom" Datom))
 
-(defn ^Datom datom
-  ([e a v] (Datom. e a v tx0 0))
-  ([e a v tx] (Datom. e a v tx 0))
-  ([e a v tx added] (Datom. e a v (if added tx (- tx)) 0)))
+(defn datom
+  (^Datom [e a v] (Datom. e a v tx0 0))
+  (^Datom [e a v tx] (Datom. e a v tx 0))
+  (^Datom [e a v tx added] (Datom. e a v (if added tx (- tx)) 0)))
 
 (defn datom? [x] (instance? Datom x))
 
@@ -140,7 +141,7 @@
      4 (datom-added d)
      not-found)))
 
-(defn- ^Datom assoc-datom [^Datom d k v]
+(defn- assoc-datom ^Datom [^Datom d k v]
   (case k
     :e (datom v (.-a d) (.-v d) (datom-tx d) (datom-added d))
     :a (datom (.-e d) v (.-v d) (datom-tx d) (datom-added d))
@@ -152,7 +153,7 @@
 ;; printing and reading
 ;; #datomic/DB {:schema <map>, :datoms <vector of [e a v tx]>}
 
-(defn ^Datom datom-from-reader [vec]
+(defn datom-from-reader ^Datom [vec]
   (apply datom vec))
 
 #?(:clj
@@ -177,59 +178,6 @@
                ~res
                c#)))
          res))))
-
-(defn cmp [o1 o2]
-  (if (nil? o1) 0
-      (if (nil? o2) 0
-          (compare o1 o2))))
-
-;; Slower cmp-* fns allows for datom fields to be nil.
-;; Such datoms come from slice method where they are used as boundary markers.
-
-(defn cmp-datoms-eavt [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (cmp (.-a d1) (.-a d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
-
-(defn cmp-datoms-aevt [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (cmp (.-a d1) (.-a d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
-
-(defn cmp-datoms-avet [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (cmp (.-a d1) (.-a d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
-
-(defn cmp-temporal-datoms-eavt [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (cmp (.-a d1) (.-a d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
-   (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
-
-(defn cmp-temporal-datoms-aevt [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (cmp (.-a d1) (.-a d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
-   (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
-
-(defn cmp-temporal-datoms-avet [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (cmp (.-a d1) (.-a d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
-   (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
 
 ;; fast versions without nil checks
 
@@ -318,6 +266,8 @@
           (< diff 0) (recur (conj only-a first-a) only-b both (next a) b)
           (> diff 0) (recur only-a (conj only-b first-b) both a (next b)))))))
 
+
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn coll->datoms
   "Converts a collection with elements of form [e a v t] into a collection of Datoms."
   [coll]

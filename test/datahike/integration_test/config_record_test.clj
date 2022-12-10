@@ -1,5 +1,5 @@
 (ns datahike.integration-test.config-record-test
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest use-fixtures]]
             [datahike.integration-test :as it]))
 
 (def config {})

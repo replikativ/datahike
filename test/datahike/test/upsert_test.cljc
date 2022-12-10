@@ -268,12 +268,7 @@
         initial-active-count 8
         inactive-count 5
         space-taker-count 1000]
-    (letfn [(ident-eid [db ident]
-              (d/q '[:find ?e .
-                     :in $ ?ident
-                     :where [?e :db/ident ?ident]]
-                   db ident))
-            (random-uuid []
+    (letfn [(random-uuid []
               (UUID/randomUUID))
             (random-char []
               (rand-nth ascii-ish))

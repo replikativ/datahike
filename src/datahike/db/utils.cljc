@@ -7,57 +7,62 @@
    [datahike.db.interface :as dbi]
    [datahike.index :as di]
    [datahike.schema :as ds]
-   [datahike.tools :refer [raise]])
-  #?(:cljs (:require-macros [datahike.datom :refer [datom]]
-                            [datahike.tools :refer [raise]]))
+   [datahike.tools :as dt])
+  #?(:cljs (:require-macros [datahike.datom :refer [datom]]))
   #?(:clj (:import [datahike.datom Datom])))
 
-(defn #?@(:clj [^Boolean is-attr?]
-          :cljs [^boolean is-attr?]) [db attr property]
+(defn is-attr?
+  #?@(:clj [^Boolean [db attr property]]
+          :cljs [^boolean [db attr property]])
   (let [a-ident (if (and (:attribute-refs? (dbi/-config db))
                          (number? attr))
                   (dbi/-ident-for db attr)
                   attr)]
     (contains? (dbi/-attrs-by db property) a-ident)))
 
-(defn #?@(:clj [^Boolean multival?]
-          :cljs [^boolean multival?]) [db attr]
+(defn multival?
+  #?@(:clj [^Boolean [db attr]]
+          :cljs [^boolean [db attr]])
   (is-attr? db attr :db.cardinality/many))
 
-(defn #?@(:clj [^Boolean ref?]
-          :cljs [^boolean ref?]) [db attr]
+(defn ref?
+  #?@(:clj [^Boolean [db attr]]
+          :cljs [^boolean [db attr]])
   (is-attr? db attr :db.type/ref))
 
-(defn #?@(:clj [^Boolean component?]
-          :cljs [^boolean component?]) [db attr]
+(defn component?
+  #?@(:clj [^Boolean [db attr]]
+          :cljs [^boolean [db attr]])
   (is-attr? db attr :db/isComponent))
 
-(defn #?@(:clj [^Boolean indexing?]
-          :cljs [^boolean indexing?]) [db attr]
+(defn indexing?
+  #?@(:clj [^Boolean [db attr]]
+          :cljs [^boolean [db attr]])
   (is-attr? db attr :db/index))
 
-(defn #?@(:clj [^Boolean no-history?]
-          :cljs [^boolean no-history?]) [db attr]
+(defn no-history?
+  #?@(:clj [^Boolean [db attr]]
+          :cljs [^boolean [db attr]])
   (is-attr? db attr :db/noHistory))
 
-(defn #?@(:clj  [^Boolean tuple-source?]
-          :cljs [^boolean tuple-source?])
+(defn tuple-source?
   "Returns true if 'attr' is an attribute basis of a tuple attribute.
    E.g. ':a' is an attribute part of the tuple attribute ':a+b'.
    (tuple-source? :a) returns true."
-  [db attr]
+  #?@(:clj  [^Boolean [db attr]]
+      :cljs [^boolean [db attr]]) 
   (is-attr? db attr :db/attrTuples))
 
-(defn #?@(:clj  [^Boolean tuple?]
-          :cljs [^boolean tuple?])
+(defn tuple?
   "Returns true if 'attr' is a tuple attribute.
    I.e., if 'attr' value is of type ':db.type/tuple'"
-  [db attr]
+  #?@(:clj  [^Boolean [db attr]]
+      :cljs [^boolean [db attr]])
   (is-attr? db attr :db.type/tuple))
 
-(defn #?@(:clj [^Boolean reverse-ref?]
-          :cljs [^boolean reverse-ref?])
-  [ident]
+(defn reverse-ref?
+  #?@(:clj [^Boolean [ident]]
+      :cljs [^boolean [ident]]) 
   (cond
     (keyword? ident)
     (= \_ (nth (name ident) 0))
@@ -69,7 +74,7 @@
     false
 
     :else
-    (raise "Bad attribute type: " ident ", expected keyword or string"
+    (dt/raise "Bad attribute type: " ident ", expected keyword or string"
            {:error :transact/syntax, :attribute ident})))
 
 (defn reverse-ref [ident]
@@ -86,7 +91,7 @@
         (if ns (str ns "/_" name) (str "_" name))))
 
     :else
-    (raise "Bad attribute type: " ident ", expected keyword or string"
+    (dt/raise "Bad attribute type: " ident ", expected keyword or string"
            {:error :transact/syntax, :attribute ident})))
 
 (defn db? [x]
@@ -104,10 +109,10 @@
     (let [[attr value] eid]
       (cond
         (not= (count eid) 2)
-        (raise "Lookup ref should contain 2 elements: " eid
+        (dt/raise "Lookup ref should contain 2 elements: " eid
                {:error :lookup-ref/syntax, :entity-id eid})
         (not (is-attr? db attr :db/unique))
-        (raise "Lookup ref attribute should be marked as :db/unique: " eid
+        (dt/raise "Lookup ref attribute should be marked as :db/unique: " eid
                {:error :lookup-ref/unique, :entity-id eid})
         (nil? value)
         nil
@@ -120,12 +125,12 @@
     (-> (dbi/-datoms db :avet [:db/ident eid]) first :e)
 
     :else
-    (raise "Expected number or lookup ref for entity id, got " eid
+    (dt/raise "Expected number or lookup ref for entity id, got " eid
            {:error :entity-id/syntax, :entity-id eid})))
 
 (defn entid-strict [db eid]
   (or (entid db eid)
-      (raise "Nothing found for entity id " eid
+      (dt/raise "Nothing found for entity id " eid
              {:error :entity-id/missing
               :entity-id eid})))
 
@@ -145,7 +150,7 @@
 
 (defn validate-attr-ident [a-ident at db]
   (when-not (or (keyword? a-ident) (string? a-ident))
-    (raise "Bad entity attribute " a-ident " at " at ", expected keyword or string"
+    (dt/raise "Bad entity attribute " a-ident " at " at ", expected keyword or string"
            {:error :transact/syntax, :attribute a-ident, :context at}))
   (when (and (= :write (:schema-flexibility (dbi/-config db)))
              (not (or (ds/meta-attr? a-ident) (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident))))
@@ -154,9 +159,9 @@
                    (reverse-ref a-ident)
                    a-ident)]
         (when-not (db-idents attr)
-          (raise "Bad entity attribute " a-ident " at " at ", not defined in current schema"
+          (dt/raise "Bad entity attribute " a-ident " at " at ", not defined in current schema"
                  {:error :transact/schema :attribute a-ident :context at})))
-      (raise "No schema found in db."
+      (dt/raise "No schema found in db."
              {:error :transact/schema :attribute a-ident :context at}))))
 
 (defn resolve-datom [db e a v t default-e default-tx]
@@ -210,11 +215,11 @@
 (defn validate-attr [attr at db]
   (if (:attribute-refs? (dbi/-config db))
     (do (when-not (number? attr)
-          (raise "Bad entity attribute " attr " at " at ", expected reference number"
+          (dt/raise "Bad entity attribute " attr " at " at ", expected reference number"
                  {:error :transact/syntax, :attribute attr, :context at}))
         (if-let [a-ident (get-in db [:ref-ident-map attr])]
           (validate-attr-ident a-ident at db)
-          (raise "Bad entity attribute " attr " at " at ", not defined in current schema"
+          (dt/raise "Bad entity attribute " attr " at " at ", not defined in current schema"
                  {:error :transact/schema :attribute attr :context at})))
     (validate-attr-ident attr at db)))
 

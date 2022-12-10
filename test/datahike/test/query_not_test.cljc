@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [are deftest]]
       :clj  [clojure.test :as t :refer        [are deftest]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
    [datahike.test.core-test]))
 
@@ -171,18 +172,18 @@
     #{[4 3] [3 3] [4 4]}))
 
 (deftest test-insufficient-bindings
-  (are [q msg] (thrown-msg? msg
+  (are [q msg] (thrown-with-msg? Throwable msg
                             (d/q (concat '[:find ?e :where] (quote q)) @test-db))
     [(not [?e :name "Ivan"])
      [?e :name]]
-    "Insufficient bindings: none of #{?e} is bound in (not [?e :name \"Ivan\"])"
+    #"Insufficient bindings: none of #{?e} is bound in (not [?e :name \"Ivan\"])"
 
     [[?e :name]
      (not-join [?e]
                (not [1 :age ?a])
                [?e :age ?a])]
-    "Insufficient bindings: none of #{?a} is bound in (not [1 :age ?a])"
+    #"Insufficient bindings: none of #{?a} is bound in (not [1 :age ?a])"
 
     [[?e :name]
      (not [?a :name "Ivan"])]
-    "Insufficient bindings: none of #{?a} is bound in (not [?a :name \"Ivan\"])"))
+    #"Insufficient bindings: none of #{?a} is bound in (not [?a :name \"Ivan\"])"))

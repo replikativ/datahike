@@ -1,4 +1,5 @@
 (ns backward-test
+  (:refer-clojure :exclude [read])
   (:require [datahike.api :as d]
             [taoensso.timbre :as t]))
 
@@ -12,7 +13,8 @@
 
 (def size 10000)
 
-(defn write [opt]
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
+(defn write [_opt]
   (t/info "Writing to db using latest released version of datahike ....")
   (t/set-level! :warn)
 
@@ -24,7 +26,8 @@
                        [:db/add (inc i) :age i]))))
   (t/info "Wrote " size " entries."))
 
-(defn read [opt]
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
+(defn read [_opt]
   (t/info "Reading using latest code ....")
   (let [conn (d/connect cfg)
         res (first (d/q '[:find (count ?a)

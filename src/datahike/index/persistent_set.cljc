@@ -1,31 +1,18 @@
 (ns ^:no-doc datahike.index.persistent-set
-  (:require [me.tonsky.persistent-sorted-set :as psset]
-            [me.tonsky.persistent-sorted-set.arrays :as arrays]
-            [clojure.core.cache :as cache]
-            [clojure.core.cache.wrapped :as wrapped]
+  (:require [clojure.core.cache :as cache]
             [datahike.datom :as dd]
             [datahike.constants :refer [tx0 txmax]]
-            [datahike.index.interface :as di :refer [IIndex]]
-            [konserve.core :as k]
-            [konserve.serializers :refer [fressian-serializer]]
-            [hasch.core :refer [uuid]]
-            [taoensso.timbre :refer [trace]])
+            [datahike.index.interface :as di :refer [IIndex]] 
+            #?(:clj [konserve.serializers :refer [fressian-serializer]])
+            [me.tonsky.persistent-sorted-set :as psset #?@(:cljs [:refer [BTSet]])]
+            [me.tonsky.persistent-sorted-set.arrays :as arrays]
+            #?@(:clj [[clojure.core.cache.wrapped :as wrapped]
+                      [hasch.core :refer [uuid]]
+                      [konserve.core :as k]
+                      [taoensso.timbre :refer [trace]]]))
   #?(:clj (:import [datahike.datom Datom]
                    [org.fressian.handlers WriteHandler ReadHandler]
-                   [me.tonsky.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode]
-                   [java.util UUID])))
-
-(defn index-type->cmp
-  ([index-type] (index-type->cmp index-type true))
-  ([index-type current?] (if current?
-                           (case index-type
-                             :aevt dd/cmp-datoms-aevt
-                             :avet dd/cmp-datoms-avet
-                             dd/cmp-datoms-eavt)
-                           (case index-type
-                             :aevt dd/cmp-temporal-datoms-aevt
-                             :avet dd/cmp-temporal-datoms-avet
-                             dd/cmp-temporal-datoms-eavt))))
+                   [me.tonsky.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode])))
 
 (defn index-type->cmp-quick
   ([index-type] (index-type->cmp-quick index-type true))
@@ -75,9 +62,6 @@
     pset
     (psset/conj pset datom (index-type->cmp-quick index-type))))
 
-(defn temporal-insert [pset ^Datom datom index-type]
-  (psset/conj pset datom (index-type->cmp-quick index-type false)))
-
 (defn upsert [pset ^Datom datom index-type old-datom]
   (psset/conj (if old-datom
                 (remove-datom pset old-datom index-type)
@@ -110,7 +94,7 @@
     (psset/walk-addresses pset (fn [address] (swap! addresses conj address)))
     @addresses))
 
-(extend-type PersistentSortedSet
+(extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IIndex
   (-slice [^PersistentSortedSet pset from to index-type]
     (slice pset from to index-type))
@@ -140,14 +124,17 @@
   (-mark [^PersistentSortedSet pset]
     (mark pset)))
 
-(defn- gen-address [^ANode node crypto-hash?]
+#?(:clj
+ (defn- gen-address [^ANode node crypto-hash?]
   (if crypto-hash?
-    (if (instance? Branch node)
+    #?(:clj (if (instance? Branch node)
       (uuid (vec (.addresses ^Branch node)))
       (uuid (mapv (comp vec seq) (.keys node))))
-    (uuid)))
+            :cljs (uuid (mapv (comp vec seq) (.keys node))))
+    (uuid))))
 
-(defrecord CachedStorage [store config cache stats]
+#?(:clj
+   (defrecord CachedStorage [store config cache stats]
   IStorage
   (store [_ node]
     (swap! stats update :writes inc)
@@ -167,7 +154,7 @@
     ;; so we avoid double counting
     #_(wrapped/miss cache address node)
     (swap! stats update :reads inc)
-    (k/get store address nil {:sync? true})))
+    (k/get store address nil {:sync? true}))))
 
 (def init-stats {:writes   0
                  :reads    0
@@ -202,11 +189,11 @@
     (with-meta pset
       {:index-type index-type})))
 
-(defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
+ (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
   ;; deal with circular reference between storage and store
   (let [storage (atom nil)
         store
-        (assoc store
+       #?(:clj (assoc store
                :serializers {:FressianSerializer (fressian-serializer
                                                   {"datahike.index.PersistentSortedSet"
                                                    (reify ReadHandler
@@ -220,7 +207,7 @@
                                                    "datahike.index.PersistentSortedSet.Leaf"
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
-                                                       (let [{:keys [keys level]} (.readObject reader)]
+                                                       (let [{:keys [keys _level]} (.readObject reader)]
                                                          (Leaf. keys))))
                                                    "datahike.index.PersistentSortedSet.Branch"
                                                    (reify ReadHandler
@@ -261,7 +248,8 @@
                                                     (reify WriteHandler
                                                       (write [_ writer datom]
                                                         (.writeTag writer "datahike.datom.Datom" 1)
-                                                        (.writeObject writer (vec (seq ^Datom datom)))))}})})]
+                                                        (.writeObject writer (vec (seq ^Datom datom)))))}})})
+:cljs store)]
     (reset! storage (or (:storage store)
                         (create-storage store config)))
     (assoc store :storage @storage)))

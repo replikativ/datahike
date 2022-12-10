@@ -1,9 +1,10 @@
 (ns datahike.test.api-test
   (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing]])
-   [datahike.test.utils :as utils]
+   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer [is deftest testing]])
+   [datahike.test.utils :as utils :refer [sleep]]
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
    [datahike.db.interface :as dbi]
    [datahike.index.interface :as di]
@@ -116,10 +117,10 @@
                                                          [:db/add -1 :friend 297]]))))))
 
     ;; incorrect arguments
-    (is (thrown? clojure.lang.ExceptionInfo (d/transact conn nil)))
-    (is (thrown? clojure.lang.ExceptionInfo (d/transact conn :foo)))
-    (is (thrown? clojure.lang.ExceptionInfo (d/transact conn 1)))
-    (is (thrown? clojure.lang.ExceptionInfo (d/transact conn {:foo "bar"})))))
+    (is (thrown? Throwable (d/transact conn nil)))
+    (is (thrown? Throwable (d/transact conn :foo)))
+    (is (thrown? Throwable (d/transact conn 1)))
+    (is (thrown? Throwable (d/transact conn {:foo "bar"})))))
 
 (deftest test-transact!-docs
   (let [cfg {:store {:backend :mem
@@ -141,8 +142,7 @@
                            :db/cardinality :db.cardinality/many}]
              :keep-history? false
              :schema-flexibility :read}
-        conn (utils/setup-db cfg)
-        dvec #(vector (:e %) (:a %) (:v %))]
+        conn (utils/setup-db cfg)]
     (is (d/transact conn [{:db/id 1
                            :name "Ivan"
                            :likes :pizza
@@ -332,9 +332,9 @@
 
     (d/transact conn {:tx-data [{:name "Alice" :age 25} {:name "Bob" :age 30}]})
 
-    (Thread/sleep 100)
+    (sleep 100)
 
-    (def date (java.util.Date.))
+    (let [date #?(:clj (java.util.Date.) :cljs (js/Date))]
 
     (d/transact conn {:tx-data [{:db/id [:name "Alice"] :age 35}]})
 
@@ -344,7 +344,7 @@
 
     (is (= #{["Alice" 35] ["Bob" 30]}
            (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                 :args [(d/db conn)]})))))
+                 :args [(d/db conn)]}))))))
 
 (deftest test-since-docs
   (let [cfg {:store {:backend :mem
@@ -362,11 +362,12 @@
         conn (utils/setup-db cfg)]
     (d/transact conn {:tx-data [{:name "Alice" :age 25} {:name "Bob" :age 30}]})
 
-    (Thread/sleep 100)
+    (sleep 100)
 
-    (def date (java.util.Date.))
+    (let [date #?(:clj (java.util.Date.)
+                      :cljs (js/Date.))]
 
-    (Thread/sleep 100)
+    (sleep 100)
 
     (d/transact conn [{:db/id [:name "Alice"] :age 30}])
 
@@ -381,7 +382,7 @@
 
     (is (= #{["Alice" 30] ["Bob" 30]}
            (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                 :args [(d/db conn)]})))))
+                 :args [(d/db conn)]}))))))
 
 (deftest test-datoms-docs
   (let [cfg {:store {:backend :mem

@@ -1,19 +1,21 @@
 (ns ^:no-doc datahike.connector
-  (:require [datahike.db :as db]
-            [datahike.core :as d]
+  (:require [clojure.spec.alpha :as s]
+            [clojure.core.async :refer [go <!]] 
+            #?(:cljs [datahike.cljs :refer [Throwable]])
+            [datahike.config :as dc]
+            [datahike.core :as d] 
+            [datahike.db :as db]
             [datahike.index :as di]
             [datahike.store :as ds]
-            [datahike.config :as dc]
-            [datahike.tools :as dt :refer [throwable-promise]]
+            [datahike.tools :as dt #?@(:clj [:refer [throwable-promise]])]
             [datahike.transactor :as t]
             [konserve.core :as k]
             [hasch.core :refer [uuid]]
             [superv.async :refer [<?? S]]
-            [taoensso.timbre :as log]
-            [clojure.spec.alpha :as s]
-            [clojure.core.async :refer [go <!]])
-  (:import  [clojure.lang Atom]))
+            [taoensso.timbre :as log])
+  (:import  [clojure.lang Atom IPersistentMap]))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (s/def ::connection #(instance? Atom %))
 
 (defn stored-db? [obj]
@@ -130,11 +132,13 @@
 (defn transact!
   [connection {:keys [tx-data tx-meta]}]
   {:pre [(d/conn? connection)]}
-  (let [p (throwable-promise)]
+  #?(:clj
+     (let [p (throwable-promise)];; TODO: enable for cljs (problems: throwable-promise, deliver)
     (go
       (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data tx-meta 'datahike.core/transact))]
         (deliver p tx-report)))
-    p))
+    p)
+     :cljs (go (<! (t/send-transaction! (:transactor @connection) tx-data tx-meta 'datahike.core/transact)))))
 
 (defn transact [connection arg-map]
   (let [arg (cond
@@ -144,20 +148,24 @@
               :else (dt/raise "Bad argument to transact, expected map with :tx-data as key.
                                Vector and sequence are allowed as argument but deprecated."
                               {:error :transact/syntax :argument arg-map}))
-        _ (log/debug "Transacting" (count (:tx-data arg)) " objects with arguments: " (dissoc arg :tx-data))
+        _ (log/debug "Transacting" (count (:tx-data arg)) " objects" 
+                     (let [args (dissoc arg :tx-data)]
+                       (when (seq args)
+                         (str " with arguments: " args))))
         _ (log/trace "Transaction data" (:tx-data arg))]
     (try
       (deref (transact! connection arg))
-      (catch Exception e
+      (catch Throwable e
         (log/errorf "Error during transaction %s" (.getMessage e))
         (throw (.getCause e))))))
 
-(defn load-entities [connection entities]
+#?(:clj
+   (defn load-entities [connection entities] 
   (let [p (throwable-promise)]
     (go
       (let [tx-report (<! (t/send-transaction! (:transactor @connection) entities nil 'datahike.core/load-entities))]
         (deliver p tx-report)))
-    p))
+    p)))
 
 (defn release [connection]
   (<?? S (t/shutdown (:transactor @connection)))
@@ -175,7 +183,7 @@
     (dt/deep-merge merged-config (select-keys config #{:branch}))))
 
 (extend-protocol IConfiguration
-  String
+  #?(:clj String :cljs string)
   (-connect [uri]
     (-connect (dc/uri->config uri)))
 
@@ -188,7 +196,7 @@
   (-database-exists? [uri]
     (-database-exists? (dc/uri->config uri)))
 
-  clojure.lang.IPersistentMap
+  IPersistentMap
   (-database-exists? [config]
     (let [config (dc/load-config config)
           store-config (:store config)

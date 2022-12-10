@@ -1,5 +1,5 @@
 (ns datahike.integration-test.config-record-file-test
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest use-fixtures]]
             [datahike.integration-test :as it]))
 
 (def config {:store {:backend :file :path "/tmp/file-test-1"}})

@@ -4,9 +4,6 @@
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]))
 
-#?(:cljs
-   (def Throwable js/Error))
-
 ;; Test that the second insertion of the same datom does not replace the initial one.
 ;; That is similar to Datomic's behaviour.
 

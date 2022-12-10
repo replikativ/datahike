@@ -4,6 +4,7 @@
    #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
       :clj [clojure.test :as t :refer [is deftest testing]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.impl.entity :as de]
    [datahike.test.attribute-refs.utils :refer [ref-db ref-e0 shift-entities]]
    [datahike.test.core-test :as tdc]))
@@ -82,5 +83,5 @@
     (is (nil? (d/entity db :keyword)))
     (is (nil? (d/entity db [:name "Petr"])))
     (is (= 777 (:db/id (d/entity db 777))))
-    (is (thrown-msg? "Lookup ref attribute should be marked as :db/unique: [:not-an-attr 777]"
+    (is (thrown-with-msg? Throwable #"Lookup ref attribute should be marked as :db/unique: [:not-an-attr 777]"
                      (d/entity db [:not-an-attr 777])))))

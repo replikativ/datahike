@@ -1,4 +1,5 @@
 (ns ^:no-doc datahike.index.hitchhiker-tree.insert
+    (:refer-clojure :exclude [mask])
   (:require [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
 

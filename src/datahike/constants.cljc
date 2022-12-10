@@ -118,7 +118,7 @@
 (def ^:const system-entities
   "Holds the entity IDs of system attributes"
   (set (reduce
-        (fn [m {:keys [db/ident db/id] :as attr}]
+        (fn [m {:keys [db/ident db/id] :as _attr}]
           (when ident (conj m id)))
         []
         system-schema)))

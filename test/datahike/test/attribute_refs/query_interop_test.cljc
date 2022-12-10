@@ -2,6 +2,7 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [deftest is are]]
       :clj [clojure.test :as t :refer [deftest is are]])
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.test.attribute-refs.utils :refer [ref-db ref-e0
                                                wrap-direct-datoms]]
    [datahike.api :as d]))
@@ -38,7 +39,7 @@
     #{["vlad"] ["ivan"] ["sergey"]}))
 
 (deftest test-method-not-found
-  (is (thrown? Exception (d/q '[:find ?v
+  (is (thrown? Throwable (d/q '[:find ?v
                                 :where
                                 [?e :name ?v]
                                 [(.thisMethodDoesNotExist ?v 1)]]

@@ -1,21 +1,28 @@
 (ns ^:no-doc datahike.schema
-  (:require [clojure.spec.alpha :as s]
-            [datahike.datom])
-  (:import [datahike.datom Datom]))
+  (:require #?(:cljs [datahike.datom :refer [Datom]])
+            [clojure.spec.alpha :as s]
+            [clojure.string :as str])
+  #?(:clj (:import [datahike.datom Datom]
+                   [java.lang Long]
+                   [java.util Date])))
 
-(s/def :db.type/id #(or (= (class %) java.lang.Long) string?))
+(defn long? [x]
+  #?(:clj (instance? Long x)  
+          :cljs (integer? x)))
+
+(s/def :db.type/id #(or long? string?))
 
 ;; db types
-(s/def :db.type/bigdec decimal?)
+#?(:clj (s/def :db.type/bigdec decimal?))
 (s/def :db.type/bigint integer?)
 (s/def :db.type/boolean boolean?)
-(s/def :db.type/bytes bytes?)
+#?(:clj (s/def :db.type/bytes bytes?))
 (s/def :db.type/double double?)
 (s/def :db.type/float float?)
 (s/def :db.type/number number?)
-(s/def :db.type/instant #(= (class %) java.util.Date))
+(s/def :db.type/instant #(instance? #?(:clj Date :cljs js/Date) %))
 (s/def :db.type/keyword keyword?)
-(s/def :db.type/long #(= (class %) java.lang.Long))
+(s/def :db.type/long long?)
 (s/def :db.type/ref :db.type/id)
 (s/def :db.type/string string?)
 (s/def :db.type/symbol symbol?)
@@ -60,10 +67,13 @@
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality]
                         :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory :db/tupleType :db/tupleTypes]))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (s/def ::entity-spec (s/keys :opt [:db.entity/attrs :db.entity/preds]))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (s/def ::enum (s/keys :req [:db/ident]))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (def required-keys #{:db/ident :db/valueType :db/cardinality})
 
 (def ^:const implicit-schema-spec {:db/ident {:db/valueType   :db.type/keyword
@@ -161,6 +171,7 @@
         value-type (get-in schema [a-ident :db/valueType])]
     (s/valid? value-type v-ident)))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn instant? [db ^Datom datom schema]
   (let [a-ident (if (:attribute-refs? (:config db))
                   ((:ref-ident-map db) (.-a datom))
@@ -208,8 +219,8 @@
 (defn is-system-keyword? [value]
   (and (or (keyword? value) (string? value))
        (if-let [ns (namespace (keyword value))]
-         (= "db" (first (clojure.string/split ns #"\.")))
+         (= "db" (first (str/split ns #"\.")))
          false)))
 
-(defn get-user-schema [{:keys [schema] :as db}]
+(defn get-user-schema [{:keys [schema] :as _db}]
   (into {} (filter #(not (is-system-keyword? (key %))) schema)))

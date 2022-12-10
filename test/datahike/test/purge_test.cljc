@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.test.utils :as tu]))
 
 (def schema-tx [{:db/ident       :name
@@ -26,9 +27,6 @@
 
 (defn find-age [db name]
   (d/q '[:find ?a . :in $ ?n :where [?e :name ?n] [?e :age ?a]] db name))
-
-(defn find-entity [db name]
-  (d/q '[:find (pull ?e [:name :age]) :in $ ?n :where [?e :name ?n]] db name))
 
 (defn find-entities [db]
   (into #{}
@@ -95,7 +93,7 @@
           (is (= #{} (find-entities @conn)))
           (is (= #{} (find-entities (d/history @conn)))))))
     (testing "purge something that is not present in the database"
-      (is (thrown-msg?
+      (is (thrown-with-msg? Throwable
            "Can't find entity with ID [:name \"Alice\"] to be purged"
            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
 
@@ -103,7 +101,7 @@
   (let [conn (tu/setup-db (-> (assoc-in cfg-template [:store :id] "purge-non-temporal")
                               (assoc :keep-history? false)))]
     (testing "purge data in non temporal database"
-      (is (thrown-msg?
+      (is (thrown-with-msg? Throwable
            "Purge entity is only available in temporal databases."
            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
 

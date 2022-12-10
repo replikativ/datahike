@@ -95,7 +95,6 @@
     {:conn conn :db @conn :e0 max-eid}))
 
 (def ref-db (:db test-setup))
-(def ref-conn (:conn test-setup))
 (def ref-e0 (:e0 test-setup))
 
 (defn wrap-ref-datoms [db offset op datoms]

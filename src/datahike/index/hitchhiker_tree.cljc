@@ -6,24 +6,24 @@
             [hitchhiker.tree.utils.async :as async]
             [hitchhiker.tree.messaging :as hmsg]
             [hitchhiker.tree.key-compare :as kc]
-            [hitchhiker.tree :as tree]
+            [hitchhiker.tree :as tree #?@(:cljs [:refer [DataNode IndexNode]])]
             [datahike.array :refer [compare-arrays]]
             [datahike.datom :as dd]
             [datahike.constants :refer [e0 tx0 emax txmax]]
             [clojure.spec.alpha :as s]
             [datahike.index.interface :as di :refer [IIndex]])
-  #?(:clj (:import [clojure.lang AMapEntry]
-                   [hitchhiker.tree DataNode IndexNode]
-                   [datahike.datom Datom])))
+  #?(:clj (:import [clojure.lang AMapEntry PersistentVector Keyword]
+                   [datahike.datom Datom]
+                   [hitchhiker.tree DataNode IndexNode])))
 
 (def ^:const default-index-b-factor 17)
 (def ^:const default-index-data-node-size 300)
 (def ^:const default-index-log-size (- 300 17))
 
 (extend-protocol kc/IKeyCompare
-  clojure.lang.PersistentVector
+  PersistentVector
   (-compare [key1 key2]
-    (if-not (= (class key2) clojure.lang.PersistentVector)
+    (if-not (instance? PersistentVector key2)
       (if (nil? key2)
         +1    ;; Case for tuples. E.g. (compare [100 200] nil)
         -1)   ;; HACK for nil
@@ -34,14 +34,15 @@
          (kc/-compare b f)
          (kc/-compare c g)
          (kc/-compare d h)))))
-  java.lang.String
-  (-compare [key1 key2]
-    (compare key1 key2))
-  clojure.lang.Keyword
+ #?@(:clj 
+     [String 
+     (-compare [key1 key2] 
+               (compare key1 key2))])
+  Keyword
   (-compare [key1 key2]
     (compare key1 key2))
   nil
-  (-compare [key1 key2]
+  (-compare [_key1 key2]
     (if (nil? key2)
       0 -1)))
 
@@ -203,8 +204,11 @@
 (defmethod di/konserve-backend :datahike.index/hitchhiker-tree [_index-name store]
   (hk/->KonserveBackend store true))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (s/def ::index-b-factor long)
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (s/def ::index-log-size long)
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (s/def ::index-data-node-size long)
 
 (defmethod di/default-index-config :datahike.index/hitchhiker-tree [_index-name]

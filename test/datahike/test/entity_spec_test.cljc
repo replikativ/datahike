@@ -1,7 +1,8 @@
 (ns datahike.test.entity-spec-test
   (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer [is are deftest testing use-fixtures]])
+   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer [is deftest testing]])
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.test.core-test]
    [datahike.api :as d]))
 
@@ -43,12 +44,12 @@
             (let [{:keys [db-after]} (tx-with-ensure conn valid-account)]
               (is (= valid-account (d/pull db-after '[:account/email :account/balance] [:account/email (:account/email valid-account)])))))
           (testing "assert invalid account"
-            (is (thrown-msg?
-                 "Entity 5 missing attributes #{:account/balance} of spec :account/guard"
+            (is (thrown-with-msg? Throwable
+                 #"Entity 5 missing attributes #{:account/balance} of spec :account/guard"
                  (tx-with-ensure conn invalid-account))))
           (testing "assert empty entity"
-            (is (thrown-msg?
-                 "Entity 5 missing attributes #{:account/balance :account/email} of spec :account/guard"
+            (is (thrown-with-msg? Throwable
+                 #"Entity 5 missing attributes #{:account/balance :account/email} of spec :account/guard"
                  (tx-with-ensure conn empty-account))))))
       (testing "with read schema flexibility"
         (let [cfg (-> cfg-template
@@ -60,20 +61,22 @@
             (let [{:keys [db-after]} (tx-with-ensure conn valid-account)]
               (is (= valid-account (d/pull db-after '[:account/email :account/balance] [:account/email (:account/email valid-account)])))))
           (testing "assert invalid account"
-            (is (thrown-msg?
-                 "Entity 5 missing attributes #{:account/balance} of spec :account/guard"
+            (is (thrown-with-msg? Throwable
+                 #"Entity 5 missing attributes #{:account/balance} of spec :account/guard"
                  (tx-with-ensure conn invalid-account))))
           (testing "assert empty entity"
-            (is (thrown-msg?
-                 "Entity 5 missing attributes #{:account/balance :account/email} of spec :account/guard"
+            (is (thrown-with-msg? Throwable
+                 #"Entity 5 missing attributes #{:account/balance :account/email} of spec :account/guard"
                  (tx-with-ensure conn empty-account)))))))))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn is-email? [db eid]
   ;; email could not exist
   (if-let [email (:account/email (d/entity db eid))]
-    (-> (re-find #"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)" email) empty? not)
+    (seq (re-find #"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)" email))
     false))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn positive-balance? [db eid]
   ;; balance could not exist
   (if-let [balance (-> (d/entity db eid) :account/balance)]
@@ -101,16 +104,16 @@
         (let [{:keys [db-after]} (tx-with-ensure valid-account)]
           (is (= valid-account (d/pull db-after '[:account/email :account/balance] [:account/email (:account/email valid-account)])))))
       (testing "assert invalid account with one invalid predicate"
-        (is (thrown-msg?
-             "Entity 5 failed predicates #{datahike.test.entity-spec-test/is-email?} of spec :account/guard"
+        (is (thrown-with-msg? Throwable
+             #"Entity 5 failed predicates #{datahike.test.entity-spec-test/is-email?} of spec :account/guard"
              (tx-with-ensure invalid-account))))
       (testing "assert invalid account with mulitple invalid predicates"
-        (is (thrown-msg?
-             "Entity 5 failed predicates #{datahike.test.entity-spec-test/positive-balance? datahike.test.entity-spec-test/is-email?} of spec :account/guard"
+        (is (thrown-with-msg? Throwable
+             #"Entity 5 failed predicates #{datahike.test.entity-spec-test/positive-balance? datahike.test.entity-spec-test/is-email?} of spec :account/guard"
              (tx-with-ensure invalid-account-multiple))))
       (testing "assert empty account"
-        (is (thrown-msg?
-             "Entity 5 failed predicates #{datahike.test.entity-spec-test/positive-balance? datahike.test.entity-spec-test/is-email?} of spec :account/guard"
+        (is (thrown-with-msg? Throwable
+             #"Entity 5 failed predicates #{datahike.test.entity-spec-test/positive-balance? datahike.test.entity-spec-test/is-email?} of spec :account/guard"
              (tx-with-ensure empty-account)))))))
 
 (deftest test-attribute-and-predicate-assertion
@@ -136,18 +139,18 @@
         (let [{:keys [db-after]} (tx-with-ensure valid-account)]
           (is (= valid-account (d/pull db-after '[:account/email :account/balance] [:account/email (:account/email valid-account)])))))
       (testing "assert invalid account with missing attributes"
-        (is (thrown-msg?
-             "Entity 5 missing attributes #{:account/balance} of spec :account/guard"
+        (is (thrown-with-msg? Throwable
+             #"Entity 5 missing attributes #{:account/balance} of spec :account/guard"
              (tx-with-ensure invalid-account-attr))))
       (testing "assert invalid account with one invalid predicate"
-        (is (thrown-msg?
-             "Entity 5 failed predicates #{datahike.test.entity-spec-test/is-email?} of spec :account/guard"
+        (is (thrown-with-msg? Throwable
+             #"Entity 5 failed predicates #{datahike.test.entity-spec-test/is-email?} of spec :account/guard"
              (tx-with-ensure invalid-account-pred))))
       (testing "assert invalid account with mulitple invalid predicates"
-        (is (thrown-msg?
-             "Entity 5 failed predicates #{datahike.test.entity-spec-test/positive-balance? datahike.test.entity-spec-test/is-email?} of spec :account/guard"
+        (is (thrown-with-msg? Throwable
+             #"Entity 5 failed predicates #{datahike.test.entity-spec-test/positive-balance? datahike.test.entity-spec-test/is-email?} of spec :account/guard"
              (tx-with-ensure invalid-account-pred-multiple))))
       (testing "assert empty account with required attributes precidenting over predicates"
-        (is (thrown-msg?
-             "Entity 5 missing attributes #{:account/balance :account/email} of spec :account/guard"
+        (is (thrown-with-msg? Throwable
+             #"Entity 5 missing attributes #{:account/balance :account/email} of spec :account/guard"
              (tx-with-ensure empty-account)))))))

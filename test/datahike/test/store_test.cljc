@@ -1,9 +1,13 @@
 (ns datahike.test.store-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
+   #?(:cljs [me.tonsky.persistent-sorted-set :refer [BTSet]])
+   #?(:cljs [hitchhiker.tree :refer [DataNode]])
    [datahike.api :as d])
-  (:import [java.lang System]))
+  #?(:clj (:import [hitchhiker.tree DataNode]
+                   #_[java.lang System]
+                   [me.tonsky.persistent-sorted-set PersistentSortedSet])))
 
 (defn test-store [cfg]
   (let [_ (d/delete-database cfg)]
@@ -21,9 +25,11 @@
       (is (d/database-exists? cfg)))))
 
 (deftest test-db-file-store
-  (test-store {:store {:backend :file :path (case (System/getProperty "os.name")
-                                              "Windows 10" (str (System/getProperty "java.io.tmpdir") "api-fs")
-                                              "/tmp/api-fs")}}))
+  (let [tmpdir #?(:clj (case (System/getProperty "os.name")
+                         "Windows 10" (System/getProperty "java.io.tmpdir")
+                         "/tmp/")
+                  :cljs (js/os.tmpdir))]
+    (test-store {:store {:backend :file :path (str tmpdir "api-fs")}})))
 
 (deftest test-db-mem-store
   (test-store {:store {:backend :mem :id "test-mem"}}))
@@ -39,14 +45,15 @@
       (testing "root node type"
         (d/transact conn [{:db/id 1, :name "Alice"}])
         (is (= (if (= :datahike.index/persistent-set (-> @conn :config :index))
-                 me.tonsky.persistent_sorted_set.PersistentSortedSet
-                 hitchhiker.tree.DataNode)
+                 #?(:clj PersistentSortedSet :cljs BTSet)
+                 DataNode)
                (-> @conn :eavt type))))
       (testing "upsert"
         (d/transact conn [{:db/id 1, :name "Paula"}])
         (is (= "Paula" (:name (d/entity @conn 1))))))))
 
-(deftest test-binary-support
+#?(:clj
+   (deftest test-binary-support
   (let [config {:store {:backend :mem
                         :id "test-binary-support"}
                 :schema-flexibility :read
@@ -63,4 +70,4 @@
                     [?e :payload ?arr]
                     [?e :name ?n]]
                   @conn
-                  (byte-array [0 2 3])))))))
+                  (byte-array [0 2 3]))))))))

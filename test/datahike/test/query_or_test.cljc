@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest]]
       :clj  [clojure.test :as t :refer        [is are deftest]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
    [datahike.test.core-test]))
 
@@ -144,13 +145,13 @@
       #{1})))
 
 (deftest test-errors
-  (is (thrown-msg? "Join variable not declared inside clauses: [?a]"
+  (is (thrown-with-msg? Throwable #"Join variable not declared inside clauses: [?a]"
                    (d/q '[:find ?e
                           :where (or [?e :name _]
-                                     [?e :age ?a])]
+                                     [?e :age _])]
                         @test-db)))
 
-  (is (thrown-msg? "Insufficient bindings: #{?e} not bound in (or-join [[?e]] [?e :name \"Ivan\"])"
+  (is (thrown-with-msg? Throwable #"Insufficient bindings: #{?e} not bound in (or-join [[?e]] [?e :name \"Ivan\"])"
                    (d/q '[:find ?e
                           :where (or-join [[?e]]
                                           [?e :name "Ivan"])]

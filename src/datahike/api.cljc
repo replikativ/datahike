@@ -1,18 +1,21 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
-  (:require [datahike.connector :as dc]
+  (:require [clojure.pprint :refer [cl-format]]
+            [datahike.connector :as dc]
             [datahike.constants :as const]
             [datahike.core :as dcore]
-            [datahike.pull-api :as dp]
-            [datahike.query :as dq]
-            [datahike.schema :as ds]
-            [datahike.db :as db #?@(:cljs [:refer [HistoricalDB AsOfDB SinceDB FilteredDB]])]
+            [datahike.db :as db #?@(:cljs [:refer [DB HistoricalDB AsOfDB SinceDB FilteredDB]])]
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
             [datahike.db.utils :as dbu]
-            [datahike.impl.entity :as de])
+            [datahike.impl.entity :as de]
+            [datahike.pull-api :as dp]
+            [datahike.query :as dq]
+            [datahike.schema :as ds]
+            [datahike.tools :as dt])
   #?(:clj
-     (:import [datahike.db DB HistoricalDB AsOfDB SinceDB FilteredDB]
+     (:import [clojure.lang PersistentArrayMap Keyword]
+              [datahike.db DB HistoricalDB AsOfDB SinceDB FilteredDB]
               [datahike.impl.entity Entity]
               [java.util Date])))
 
@@ -392,12 +395,12 @@
     ([_db index & _components]
      (type index))))
 
-(defmethod datoms clojure.lang.PersistentArrayMap
+(defmethod datoms PersistentArrayMap
   [db {:keys [index components]}]
   {:pre [(dbu/db? db)]}
   (dbi/-datoms db index components))
 
-(defmethod datoms clojure.lang.Keyword
+(defmethod datoms Keyword
   [db index & components]
   {:pre [(dbu/db? db)
          (keyword? index)]}
@@ -443,12 +446,12 @@
     ([_db index & _components]
      (type index))))
 
-(defmethod seek-datoms clojure.lang.PersistentArrayMap
+(defmethod seek-datoms PersistentArrayMap
   [db {:keys [index components]}]
   {:pre [(dbu/db? db)]}
   (dbi/-seek-datoms db index components))
 
-(defmethod seek-datoms clojure.lang.Keyword
+(defmethod seek-datoms Keyword
   [db index & components]
   {:pre [(dbu/db? db)
          (keyword? index)]}
@@ -456,6 +459,7 @@
     (dbi/-seek-datoms db index [])
     (dbi/-seek-datoms db index components)))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (def ^{:arglists '([part] [part x])
        :doc "Allocates and returns a unique temporary id (a negative integer). Ignores `part`. Returns `x` if it is specified.
 
@@ -538,7 +542,8 @@
   filter
   dcore/filter)
 
-(defn- is-temporal? [x]
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
+(defn is-temporal? [x]
   (or (instance? HistoricalDB x)
       (instance? AsOfDB x)
       (instance? SinceDB x)))
@@ -663,9 +668,8 @@
       (if (int? time-point)
         (if (<= const/tx0 time-point)
           (AsOfDB. db time-point)
-          (throw (ex-info
-                  (format "Invalid transaction ID. Must be bigger than %d." const/tx0)
-                  {:time-point time-point})))
+          (dt/raise (cl-format "Invalid transaction ID. Must be bigger than %d." const/tx0)
+                 {:time-point time-point}))
         (AsOfDB. db time-point))
       (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
 

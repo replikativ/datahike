@@ -360,8 +360,6 @@
                 [(?pred ?a)]]
               (d/db-with (db/empty-db) [[:db/add 1 :age 20]])))))
 
-(defn sample-query-fn [] 42)
-
 #?(:clj
    (deftest test-symbol-resolution
      (is (= 42 (d/q '[:find ?x .

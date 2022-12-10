@@ -1,6 +1,8 @@
 (ns ^:no-doc datahike.core
   (:refer-clojure :exclude [filter])
   (:require
+   #?(:cljs [cljs.reader :as reader])
+   #?(:cljs [clojure.lang :refer [IBlockingDeref]])
    [datahike.constants :as dc]
    [datahike.datom :as dd]
    [datahike.db :as db #?@(:cljs [:refer [FilteredDB]])]
@@ -12,10 +14,10 @@
    [datahike.query :as dq])
   #?(:clj
      (:import
+      [clojure.lang IDeref IBlockingDeref IAtom IPending]
       [datahike.db FilteredDB]
       [datahike.impl.entity Entity]
-      [java.util UUID]
-      (clojure.lang IDeref IBlockingDeref IAtom IPending))))
+      [java.util UUID])))
 
 (def ^:const ^:no-doc tx0 dc/tx0)
 
@@ -25,6 +27,7 @@
 
   entity de/entity)
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (def ^{:arglists '([db eid])
        :doc      "Given lookup ref `[unique-attr value]`, returns numeric entity id.
 
@@ -80,6 +83,7 @@
              ```"}
   empty-db db/empty-db)
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (def ^{:arglists '([x])
        :doc      "Returns `true` if the given value is an immutable database, `false` otherwise."}
   db? dbu/db?)
@@ -92,6 +96,7 @@
              See also [[init-db]]."}
   datom dd/datom)
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (def ^{:arglists '([x])
        :doc      "Returns `true` if the given value is a datom, `false` otherwise."}
   datom? dd/datom?)
@@ -168,6 +173,7 @@
   ([db index c1 c2 c3] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index [c1 c2 c3]))
   ([db index c1 c2 c3 c4] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index [c1 c2 c3 c4])))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn rseek-datoms
   "Same as [[seek-datoms]], but goes backwards until the beginning of the index."
   ([db index] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index []))
@@ -252,8 +258,8 @@
      db)))
 
 (defn- atom? [a]
-  #?(:cljs (instance? Atom a)
-     :clj  (instance? IAtom a)))
+  #?(:clj  (instance? IAtom a)
+           :cljs (instance? Atom a)))
 
 (defn listen!
   "Listen for changes on the given connection. Whenever a transaction is applied to the database via [[transact!]], the callback is called
@@ -306,6 +312,7 @@
 #?(:cljs
    (doseq [[tag cb] data-readers] (cljs.reader/register-tag-parser! tag cb)))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn resolve-tempid
   "Does a lookup in tempids map, returning an entity id that tempid was resolved to.
    
@@ -313,6 +320,7 @@
   [_db tempids tempid]
   (get tempids tempid))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn db
   "Returns the underlying immutable database value from a connection.
    
@@ -329,23 +337,24 @@
   ([conn tx-data tx-meta]
    {:pre [(conn? conn)]}
    (let [res (transact! conn tx-data tx-meta)]
-     #?(:cljs
+     #?(:clj
+(reify
+  IDeref
+  (deref [_] res)
+  IBlockingDeref
+  (deref [_ _ _] res)
+  IPending
+  (isRealized [_] true))
+        :cljs
         (reify
           IDeref
           (-deref [_] res)
           IDerefWithTimeout
           (-deref-with-timeout [_ _ _] res)
           IPending
-          (-realized? [_] true))
-        :clj
-        (reify
-          IDeref
-          (deref [_] res)
-          IBlockingDeref
-          (deref [_ _ _] res)
-          IPending
-          (isRealized [_] true))))))
+          (-realized? [_] true))))))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn load-entities
   ([conn entities]
    (load-entities conn entities nil))
@@ -374,6 +383,7 @@
          IPending
          (-realized? [_] @realized)))))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn transact-async
   "In CLJ, calls [[transact!]] on a future thread pool, returning immediately.
   
@@ -383,8 +393,9 @@
    {:pre [(conn? conn)]}
    (future-call #(transact! conn tx-data tx-meta))))
 
-(defn- rand-bits [pow]
-  (rand-int (bit-shift-left 1 pow)))
+#?(:cljs 
+   (defn- rand-bits [pow]
+  (rand-int (bit-shift-left 1 pow))))
 
 #?(:cljs
    (defn- to-hex-string [n l]

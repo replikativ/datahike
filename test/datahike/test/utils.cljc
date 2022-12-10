@@ -1,7 +1,7 @@
 (ns datahike.test.utils
   (:require [datahike.api :as d]
             [datahike.tools :as tools])
-  (:import (java.util UUID)))
+  #?(:clj (:import (java.util UUID))))
 
 (defn cfg-template
   "Returning a config template with a random store-id"
@@ -18,7 +18,7 @@
    (setup-db cfg true))
   ([cfg gen-uuid?]
    (let [cfg (cond-> (tools/deep-merge (cfg-template) cfg)
-               gen-uuid? (assoc-in [:store :id] (str (UUID/randomUUID))))]
+               gen-uuid? (assoc-in [:store :id] (str #?(:clj (UUID/randomUUID) :cljs (random-uuid)))))]
      (d/delete-database cfg)
      (d/create-database cfg)
      (d/connect cfg))))
@@ -26,3 +26,7 @@
 (defn all-true? [c] (every? true? c))
 
 (defn all-eq? [c1 c2] (all-true? (map = c1 c2)))
+
+(defn sleep [ms]
+  #?(:clj (Thread/sleep ms)
+     :cljs (js/setTimeout (fn []) ms)))

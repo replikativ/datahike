@@ -41,7 +41,7 @@
          (log/debug "Transactor rx thread gracefully closed"))))))
 
 (defmulti create-transactor
-  (fn [transactor-config conn update-and-flush-db]
+  (fn [transactor-config _conn _update-and-flush-db]
     (or (:backend transactor-config) :local)))
 
 (defmethod create-transactor :local

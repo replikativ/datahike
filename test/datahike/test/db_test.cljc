@@ -4,6 +4,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.constants :as const]
    [datahike.test.core-test]
    [datahike.test.cljs-utils]
@@ -15,8 +16,8 @@
 ;; compiler or runtime error
 ;;
 (defrecord-updatable HashBeef [x]
-  #?@(:cljs [IHash                (-hash  [hb] 0xBEEF)]
-      :clj  [clojure.lang.IHashEq (hasheq [hb] 0xBEEF)]))
+  #?@(:cljs [IHash                (-hash  [_] 0xBEEF)]
+      :clj  [clojure.lang.IHashEq (hasheq [_] 0xBEEF)]))
 
 (deftest test-defrecord-updatable
   (is (= 0xBEEF (-> (map->HashBeef {:x :ignored}) hash))))
@@ -36,8 +37,8 @@
 
 (deftest empty-db-with-schema
   (testing "Test old write schema"
-    (is (thrown-msg?
-         "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
+    (is (thrown-with-msg? Throwable
+         #"Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
          (db/empty-db {:name {:db/cardinality :db.cardinality/many}} {:schema-flexibility :write})))
     (is (= (merge const/non-ref-implicit-schema
                   {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}})

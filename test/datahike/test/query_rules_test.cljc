@@ -235,7 +235,7 @@
                            (parent-info ?child "Alice" ?age)]}
                  :args [@conn "Charlie" rules]})))
 
-    (is (thrown-msg? "Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
+    (is (thrown-with-msg? #"Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
                      (d/q {:query '{:find [?age]
                                     :in [$ ?n %]
                                     :where

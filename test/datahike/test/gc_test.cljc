@@ -5,10 +5,12 @@
    [clojure.set :as set]
    [superv.async :refer [<?? S]]
    [datahike.api :as d]
-   [datahike.index.interface :refer [-mark]]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.experimental.gc :refer [gc!]]
    [datahike.experimental.versioning :refer [branch! delete-branch! merge!
                                              branch-history]]
+   [datahike.index.interface :refer [-mark]]
+   [datahike.test.utils :refer [sleep]]
    [konserve.core :as k]
    [datahike.test.core-test])
   (:import [java.util Date]))
@@ -51,7 +53,7 @@
       (is (= (+ 1 num-roots) (count (<?? S (gc! @conn (Date.))))))
       (is (= fresh-count (count-store @conn))))
     (testing "Try to run on dirty index and fail."
-      (is (thrown-msg? "Index needs to be properly flushed before marking."
+      (is (thrown-with-msg? Throwable #"Index needs to be properly flushed before marking."
                        (-mark (:eavt
                                (:db-after
                                 (d/with @conn [{:db/id 100
@@ -88,7 +90,7 @@
       (<?? S (gc! @conn (Date.)))
       (is (nil? (d/q count-query @(d/connect cfg))))
       (is (= 1000 (d/q count-query @(d/connect cfg1))))
-      (is (thrown-msg? "Database does not exist."
+      (is (thrown-with-msg? #"Database does not exist."
                        (d/q count-query @(d/connect cfg2)))))))
 
 (deftest datahike-gc-range-test
@@ -105,18 +107,18 @@
         _             (d/transact conn txs)
         _             (d/transact conn-branch1 txs)
         ;; record before-date for gc
-        _             (Thread/sleep 100)
+        _             (sleep 100)
         remove-before (Date.)]
-    (Thread/sleep 100)
+    (sleep 100)
     ;; transact
     (d/transact conn [{:age 42}])
     (d/transact conn-branch1 [{:age 42}])
     ;; transact again
     (d/transact conn [{:age 42}])
     (d/transact conn-branch1 [{:age 42}])
-    ;; merge back
-    _ (merge! conn #{:branch1} [])
-    _ (delete-branch! conn :branch1)
+    ;; merge back 
+    (merge! conn #{:branch1} []) 
+    (delete-branch! conn :branch1)
     (let [db-history       (<?? S (branch-history conn))
           branch1-history  (<?? S (branch-history conn-branch1))
           _ (testing "Check branch counts"

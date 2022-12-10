@@ -1,4 +1,5 @@
 (ns ^:no-doc datahike.index.hitchhiker-tree.upsert
+    (:refer-clojure :exclude [mask])
   (:require [datahike.index.utils :as diu]
             [hitchhiker.tree :as tree]
             [hitchhiker.tree.op :as op]))
@@ -73,7 +74,7 @@
 (defn old-retracted
   "Returns a new datom to be inserted in the tree to signal the retraction of
   its corresponding 'old' datom."
-  [kvs key old indices]
+  [_kvs key old _indices]
   (let [[a b c _] old
         [_ _ _ nt] key]
     ;; '-' means it is retracted and 'nt' is the current transaction time.

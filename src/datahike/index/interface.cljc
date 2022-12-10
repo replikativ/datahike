@@ -1,5 +1,6 @@
-(ns datahike.index.interface
-  "All the functions in this namespace must be implemented for each index type")
+(ns datahike.index.interface 
+  "All the functions in this namespace must be implemented for each index type"
+  (:refer-clojure :exclude [-flush -seq -count -persistent!]))
 
 (defprotocol IIndex
   (-all [index] "Returns a sequence of all datoms in the index")

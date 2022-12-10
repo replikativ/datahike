@@ -1,10 +1,9 @@
 (ns datahike.test.query-find-specs-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
-   [datahike.db :as db]
-   [datahike.test.core-test :as tdc]))
+   [datahike.db :as db]))
 
 (def test-db (d/db-with
               (db/empty-db)

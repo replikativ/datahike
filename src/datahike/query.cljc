@@ -1,8 +1,9 @@
 (ns ^:no-doc datahike.query
+  (:refer-clojure :exclude [seqable?])
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    [clojure.set :as set]
-   [clojure.string :as str]
+   #?(:clj [clojure.string :as str])
    [clojure.walk :as walk]
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
@@ -10,22 +11,21 @@
    [datahike.lru]
    [datahike.middleware.query]
    [datahike.pull-api :as dpa]
-   [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
+   [datahike.tools :as dt]
    [datahike.middleware.utils :as middleware-utils]
    [datalog.parser :refer [parse]]
    [datalog.parser.impl :as dpi]
    [datalog.parser.impl.proto :as dpip]
    [datalog.parser.pull :as dpp]
-   [me.tonsky.persistent-sorted-set.arrays :as da])
-  (:refer-clojure :exclude [seqable?])
   #?(:cljs [datalog.parser.type :refer [Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                                         FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                                         RulesVar SrcVar Variable]])
-  #?(:clj (:import [clojure.lang Reflector Seqable]
+   [me.tonsky.persistent-sorted-set.arrays :as da])
+  #?(:clj (:import [clojure.lang Reflector Seqable LazySeq PersistentVector PersistentList 
+                    PersistentArrayMap]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                     FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                     RulesVar SrcVar Variable]
-                   [datahike.datom Datom]
                    [java.lang.reflect Method]
                    [java.util Date Map])))
 
@@ -33,7 +33,7 @@
 
 (def ^:const lru-cache-size 100)
 
-(declare -collect -resolve-clause resolve-clause direct-getter-fn q)
+(declare -collect -resolve-clause resolve-clause q)
 
 (defmulti q (fn [query & _args] (type query)))
 
@@ -50,9 +50,9 @@
 
 ;; Utilities
 
-(defn #?@(:clj [^Boolean seqable?]
-          :cljs [^boolean seqable?])
-  [x]
+(defn seqable?
+#?@(:clj [^Boolean [x]]
+          :cljs [^boolean [x]]) 
   (and (not (string? x))
        #?(:cljs (or (cljs.core/seqable? x)
                     (da/array? x))
@@ -73,10 +73,6 @@
 
 (defn concatv [& xs]
   (into [] cat xs))
-
-(defn zip
-  ([a b] (mapv vector a b))
-  ([a b & rest] (apply mapv vector a b rest)))
 
 (defn same-keys? [a b]
   (and (= (count a) (count b))
@@ -139,7 +135,7 @@
       (Relation. attrs-a (into (vec tuples-a) tuples-b))
 
       (not (same-keys? attrs-a attrs-b))
-      (raise "Can’t sum relations with different attrs: " attrs-a " and " attrs-b
+      (dt/raise "Can’t sum relations with different attrs: " attrs-a " and " attrs-b
              {:error :query/where})
 
       (every? number? (vals attrs-a))                       ;; can’t conj into BTSetIter
@@ -194,7 +190,7 @@
 (defn- -get-else
   [db e a else-val]
   (when (nil? else-val)
-    (raise "get-else: nil default value is not supported" {:error :query/where}))
+    (dt/raise "get-else: nil default value is not supported" {:error :query/where}))
   (if-some [datom (first (dbi/-search db [e (translate-for db a)]))]
     (:v datom)
     else-val))
@@ -231,13 +227,13 @@
 
 (extend-protocol CollectionOrder
 
-  Number
+  #?(:clj Number :cljs number)
   (-strictly-decreasing? [x more] (apply < x more))
   (-decreasing? [x more] (apply <= x more))
   (-strictly-increasing? [x more] (apply > x more))
   (-increasing? [x more] (apply >= x more))
 
-  java.util.Date
+  #?(:clj Date :cljs js/Date)
   (-strictly-decreasing? [x more] #?(:clj (reduce (fn [res [d1 d2]] (if (.before ^Date d1 ^Date d2)
                                                                       res
                                                                       (reduced false)))
@@ -260,25 +256,25 @@
                             :cljs (apply >= x more)))
 
   Object ;; default
-  (-strictly-decreasing? [x more] #?(:clj (reduce (fn [res [v1 s2]] (if (neg? (compare  v1 s2))
-                                                                      res
-                                                                      (reduced false)))
-                                                  true (map vector (cons x more) more))))
+  (-strictly-decreasing? [x more] (reduce (fn [res [v1 s2]] (if (neg? (compare  v1 s2))
+                                                              res
+                                                              (reduced false)))
+                                          true (map vector (cons x more) more)))
 
-  (-decreasing? [x more] #?(:clj (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
-                                                             (reduced false)
-                                                             res))
-                                         true (map vector (cons x more) more))))
+  (-decreasing? [x more] (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
+                                                     (reduced false)
+                                                     res))
+                                 true (map vector (cons x more) more)))
 
-  (-strictly-increasing? [x more] #?(:clj (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
-                                                                      res
-                                                                      (reduced false)))
-                                                  true (map vector (cons x more) more))))
+  (-strictly-increasing? [x more] (reduce (fn [res [v1 v2]] (if (pos? (compare v1 v2))
+                                                              res
+                                                              (reduced false)))
+                                          true (map vector (cons x more) more)))
 
-  (-increasing? [x more] #?(:clj (reduce (fn [res [v1 v2]] (if (neg? (compare v1 v2))
-                                                             (reduced false)
-                                                             res))
-                                         true (map vector (cons x more) more)))))
+  (-increasing? [x more] (reduce (fn [res [v1 v2]] (if (neg? (compare v1 v2))
+                                                     (reduced false)
+                                                     res))
+                                 true (map vector (cons x more) more))))
 
 (defn- lesser? [& args]
   (-strictly-decreasing? (first args) (rest args)))
@@ -410,7 +406,7 @@
   (in->rel [binding coll]
     (cond
       (not (seqable? coll))
-      (raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
+      (dt/raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
              {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (empty? coll)
       (empty-rel binding)
@@ -423,10 +419,10 @@
   (in->rel [binding coll]
     (cond
       (not (seqable? coll))
-      (raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
+      (dt/raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
              {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (< (count coll) (count (:bindings binding)))
-      (raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
+      (dt/raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
              {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       :else
       (reduce prod-rel
@@ -589,11 +585,6 @@
         data (filter #(matches-pattern? pattern %) coll)]
     (Relation. attr->idx (mapv to-array data))))            ;; FIXME to-array
 
-(defn normalize-pattern-clause [clause]
-  (if (source? (first clause))
-    clause
-    (concat ['$] clause)))
-
 (defn lookup-pattern [context source pattern orig-pattern]
   (cond
     (dbu/db? source)
@@ -652,12 +643,13 @@
             (da/aset static-args i v))))
       (apply f static-args))))
 
-(defn- resolve-sym [sym]
+(defn- resolve-sym [_sym]
   #?(:cljs nil
-     :clj (when (namespace sym)
-            (when-some [v (resolve sym)] @v))))
+     :clj (when (namespace _sym)
+            (when-some [v (resolve _sym)] @v))))
 
-(def ^:private find-method
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
+(def find-method
   #?(:cljs nil
      :clj (memoize
            (fn find-method-impl [^Class this-class method-name args-classes]
@@ -679,9 +671,9 @@
                                   :method-name method-name
                                   :args-classes args-classes})))))))
 
-(defn- resolve-method [method-sym]
+(defn- resolve-method [_method-sym]
   #?(:cljs nil
-     :clj (let [method-str (name method-sym)]
+     :clj (let [method-str (name _method-sym)]
             (when (= \. (.charAt method-str 0))
               (let [method-name (subs method-str 1)]
                 (fn [this & args]
@@ -696,7 +688,7 @@
                  (resolve-sym f)
                  (resolve-method f)
                  (when (nil? (rel-with-attr context f))
-                   (raise "Unknown predicate '" f " in " clause
+                   (dt/raise "Unknown predicate '" f " in " clause
                           {:error :query/where, :form clause, :var f})))
         [context production] (rel-prod-by-attrs context (filter symbol? args))
         new-rel (if pred
@@ -714,7 +706,7 @@
                 (resolve-sym f)
                 (resolve-method f)
                 (when (nil? (rel-with-attr context f))
-                  (raise "Unknown function '" f " in " clause
+                  (dt/raise "Unknown function '" f " in " clause
                          {:error :query/where, :form clause, :var f})))
         [context production] (rel-prod-by-attrs context (filter symbol? args))
         new-rel (if fun
@@ -913,7 +905,7 @@
                            (keys (:consts context))))]
     (when-not (set/subset? vars bound)
       (let [missing (set/difference (set vars) bound)]
-        (raise "Insufficient bindings: " missing " not bound in " form
+        (dt/raise "Insufficient bindings: " missing " not bound in " form
                {:error :query/where
                 :form form
                 :vars missing})))))
@@ -966,7 +958,7 @@
                                    (mapcat #(keys (:attrs %)) (:rels context))))
            negation-vars (collect-vars clauses)
            _ (when (empty? (set/intersection bound-vars negation-vars))
-               (raise "Insufficient bindings: none of " negation-vars " is bound in " orig-clause
+               (dt/raise "Insufficient bindings: none of " negation-vars " is bound in " orig-clause
                       {:error :query/where
                        :form orig-clause}))
            context' (assoc context :rels [(reduce hash-join (:rels context))])
@@ -1133,13 +1125,13 @@
   (->> (-collect context symbols)
        (map vec)))
 
-(defmethod q clojure.lang.LazySeq [query & args]
+(defmethod q LazySeq [query & args]
   (q {:query query :args args}))
 
-(defmethod q clojure.lang.PersistentVector [query & args]
+(defmethod q PersistentVector [query & args]
   (q {:query query :args args}))
 
-(defmethod q clojure.lang.PersistentList [query & args]
+(defmethod q #?(:clj PersistentList :cljs List) [query & args]
   (q {:query query :args args}))
 
 (defn raw-q [query-map & inputs]
@@ -1174,7 +1166,7 @@
       true                                          (-post-process find)
       returnmaps                                    (convert-to-return-maps returnmaps))))
 
-(defmethod q clojure.lang.PersistentArrayMap [{:keys [args] :as query-map} & inputs]
+(defmethod q PersistentArrayMap [{:keys [args] :as query-map} & inputs]
   (if-let [middleware (when (dbu/db? (first args))
                         (get-in (dbi/-config (first args)) [:middleware :query]))]
     (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]

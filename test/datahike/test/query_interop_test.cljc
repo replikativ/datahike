@@ -1,8 +1,9 @@
 (ns datahike.test.query-interop-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest]]
+      :clj  [clojure.test :as t :refer        [is are deftest]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]))
 
 (def test-db
@@ -38,7 +39,7 @@
     #{["vlad"] ["ivan"] ["sergey"]}))
 
 (deftest test-method-not-found
-  (is (thrown? Exception (d/q '[:find ?v
+  (is (thrown? Throwable (d/q '[:find ?v
                                 :where
                                 [?e :name ?v]
                                 [(.thisMethodDoesNotExist ?v 1)]]

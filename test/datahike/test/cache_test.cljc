@@ -1,6 +1,6 @@
 (ns datahike.test.cache-test
   (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
+   #?(:cljs [cljs.test :as t :refer-macros [is deftest]]
       :clj  [clojure.test :as t :refer [is deftest]])
    [datahike.api :as d]))
 

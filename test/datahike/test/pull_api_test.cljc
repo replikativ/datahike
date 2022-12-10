@@ -119,13 +119,6 @@
                          (partial into [{:db/id 10}]))
         recdb (db/init-db
                (concat test-datoms [(dd/datom 12 :part 10)])
-               test-schema)
-
-        mutdb (db/init-db
-               (concat test-datoms [(dd/datom 12 :part 10)
-                                    (dd/datom 12 :spec 10)
-                                    (dd/datom 10 :spec 13)
-                                    (dd/datom 13 :spec 12)])
                test-schema)]
 
     (testing "Component entities are expanded recursively"
