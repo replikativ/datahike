@@ -14,10 +14,12 @@
              ^{:static true} [toEdnString [Object] String]
              ^{:static true} [toJSONString [Object] String]
              ^{:static true} [toCBOR [Object] bytes]
-             ^{:static true} [datomsToVecs [Iterable] Iterable]]))
+             ^{:static true} [datomsToVecs [Iterable] Iterable]
+             ^{:static true} [intoMap [Object] Object]]))
 
 (timbre/set-level! :warn)
 
+;; TODO move this code to a shared JSON mapping with serve, e.g. in datahike.json
 (defn- filter-value-type-attrs [valtypes schema]
   (into #{} (filter #(-> % schema :db/valueType valtypes) (keys schema))))
 
@@ -127,3 +129,6 @@
 
 (defn -datomsToVecs [datoms]
   (mapv #(vec (seq ^Datom %)) datoms))
+
+(defn -intoMap [edn]
+  (into {} edn))

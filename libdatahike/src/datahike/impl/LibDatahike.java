@@ -19,6 +19,7 @@ import java.io.PrintWriter;
 import java.util.Date;
 import java.util.List;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.nio.charset.StandardCharsets;
@@ -45,7 +46,7 @@ public final class LibDatahike {
     }
 
     public static @CConst CCharPointer toCCharPointer(byte[] result) {
-        CTypeConversion.CCharPointerHolder holder = CTypeConversion.toCBytes(result);
+        CTypeConversion.CCharPointerHolder holder = CTypeConversion.toCBytes(Base64.getEncoder().encode(result));
         CCharPointer value = holder.get();
         return value;
     }
@@ -212,7 +213,7 @@ public final class LibDatahike {
                                @CConst OutputReader output_reader) {
         try {
             Object db = loadInput(input_format, raw_input);
-            output_reader.call(toOutput(output_format, Datahike.entity(db, eid)));
+            output_reader.call(toOutput(output_format, libdatahike.intoMap(Datahike.entity(db, eid))));
         } catch (Exception e) {
             output_reader.call(toException(e));
         }
