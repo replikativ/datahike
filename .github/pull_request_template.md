@@ -8,7 +8,6 @@
 - [ ] Integration tests added
 - [ ] Architecture Decision Record added if design changes necessary
 - [ ] Formatting checked
-- [ ] `CHANGELOG.md` updated
 
 ##### Feature
 - [ ] Implements an existing feature request. Make sure the feature request has been accepted for implementation before opening a PR.
@@ -17,7 +16,6 @@
 - [ ] Documentation added
 - [ ] Architecture Decision Record added 
 - [ ] Formatting checked
-- [ ] `CHANGELOG.md` updated
 
 
 #### ADDITIONAL INFORMATION
