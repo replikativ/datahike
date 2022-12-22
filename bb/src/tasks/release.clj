@@ -28,7 +28,8 @@
                             :tag (version-str)
                             :commit (gh/current-commit)
                             :file jar-path
-                            :content-type "application/java-archive"})
+                            :content-type "application/java-archive"
+                            :draft false})
        (catch ExceptionInfo e
          (assoc (ex-data e) :failure? true))))
 
