@@ -7,7 +7,7 @@
 
 (defn kaocha [& args]
   (with-opts {:extra-env {"TIMBRE_LEVEL" ":warn"}}
-             (partial apply clj "-M:test" "-m" "kaocha.runner" args)))
+             (apply clj "-M:test" "-m" "kaocha.runner" args)))
 
 (def settings (load-settings))
 
@@ -19,13 +19,10 @@
     (when-not (fs/exists? ssh-dir)
       (fs/create-dirs ssh-dir))
     (fs/delete-on-exit old-version-dir)
-    
     (let [output (:out (with-opts {:out :string} 
                          (sh "ssh-keyscan" "github.com")))]
       (when-not (fs/exists? known-hosts-file)
         (fs/create-file known-hosts-file))
-      (println known-hosts-file)
-      (println output)
       (fs/write-lines known-hosts-file [output] {:append true}))
     
 (git "clone" "--depth" "1" (:git-url settings) old-version-dir)
@@ -45,7 +42,8 @@
          "-X" "backward-test/read")))
 
 (defn all []
-  (kaocha "--focus" "unit")
+  (kaocha "--focus" "clj")
+  #_(kaocha "--focus" "cljs") ;; TODO: enable when cljs supported 
   (kaocha "--focus" "integration")
   (back-compat))
 

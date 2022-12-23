@@ -10,7 +10,7 @@
   (spit settings-file (update-in (load-settings) ks fn)))
 
 (defn get-in-settings [ks]
-  (get-in (load-settings) [ks]))
+  (get-in (load-settings) ks))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn show [& args]

@@ -1,10 +1,11 @@
 (ns tasks.version
   "Update the project version."
-  (:require [utils.shell :refer [git]]
+  (:require [utils.shell :refer [git with-opts]]
             [tasks.settings :refer [update-in-settings get-in-settings]]))
 
 (defn commit-nr []
-  (git "rev-list" "HEAD" "--count"))
+  (with-opts {:out :string}
+    (:out (git "rev-list" "HEAD" "--count"))))
 
 (defn version-str []
   (let [{:keys [major minor]} (get-in-settings [:version])]
