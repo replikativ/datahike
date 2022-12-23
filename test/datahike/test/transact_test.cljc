@@ -395,7 +395,7 @@
           tx   (d/transact conn {:tx-data [{:name "Sergey"
                                             :age  5}]
                                  :tx-meta {:foo "bar"}})]
-      (is (= (dissoc (:tx-meta tx) :db/txInstant)
+      (is (= (dissoc (:tx-meta tx) :db/txInstant :db/commitId)
              {:foo "bar"}))))
   (testing "generative test"
     (let [conn (du/setup-db)
@@ -408,7 +408,7 @@
           tx-report (d/transact conn {:tx-data [{:name "Sergey"
                                                  :age  5}]
                                       :tx-meta generated})]
-      (is (= (dissoc (:tx-meta tx-report) :db/txInstant)
+      (is (= (dissoc (:tx-meta tx-report) :db/txInstant :db/commitId)
              generated))))
   (testing "manual txInstant is the same as auto-generated"
     (let [conn (du/setup-db)

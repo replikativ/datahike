@@ -839,7 +839,7 @@
 (defn metrics [^DB db]
   (let [update-count-in (fn [m ks] (update-in m ks #(if % (inc %) 1)))
         counts-map (->> (di/-seq (.-eavt db))
-                        (reduce (fn [m datom]
+                        (reduce (fn [m ^Datom datom]
                                   (-> m
                                       (update-count-in [:per-attr-counts (dbi/-ident-for db (.-a datom))])
                                       (update-count-in [:per-entity-counts (.-e datom)])))
@@ -856,7 +856,7 @@
       (dbi/-keep-history? db)
       (merge {:temporal-count (di/-count (.-temporal-eavt db))
               :temporal-avet-count (->> (di/-seq (.-temporal-eavt db))
-                                        (reduce (fn [m datom] (update-count-in m [(dbi/-ident-for db (.-a datom))]))
+                                        (reduce (fn [m ^Datom datom] (update-count-in m [(dbi/-ident-for db (.-a datom))]))
                                                 {})
                                         sum-indexed-attr-counts)}))))
 
