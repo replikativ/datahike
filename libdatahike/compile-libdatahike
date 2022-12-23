@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+set -eo pipefail
+
+if [ -z "$GRAALVM_HOME" ]; then
+    echo "GRAALVM_HOME not set"
+    exit 1
+fi
+
+echo "Building uber jar for native library."
+clj -T:build native-shared-library
+DATAHIKE_VERSION=$(cat resources/DATAHIKE_VERSION)
+DATAHIKE_JAR=target/datahike-$DATAHIKE_VERSION-native-shared-library.jar
+
+SVM_JAR=$(find "$GRAALVM_HOME" | grep svm.jar)
+
+echo "Compiling LibDatahike native bindings Java class."
+$GRAALVM_HOME/bin/javac -cp "$DATAHIKE_JAR:$SVM_JAR" libdatahike/src/datahike/impl/LibDatahike.java
+
+echo "Compiling shared library through native image."
+$GRAALVM_HOME/bin/native-image \
+  -jar $DATAHIKE_JAR \
+  -cp libdatahike/src \
+  -H:Name=libdatahike \
+  --shared \
+  -H:+ReportExceptionStackTraces \
+  -J-Dclojure.spec.skip-macros=true \
+  -J-Dclojure.compiler.direct-linking=true \
+  "-H:IncludeResources=DATAHIKE_VERSION" \
+  --initialize-at-build-time  \
+  -H:Log=registerResource: \
+  --verbose \
+  --no-fallback \
+  --no-server \
+  "-J-Xmx5g"
+
+rm -rf libdatahike/target
+mkdir -p libdatahike/target
+
+mv graal_isolate_dynamic.h libdatahike.h graal_isolate.h libdatahike.so libdatahike_dynamic.h libdatahike/target

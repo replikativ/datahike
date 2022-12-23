@@ -1,0 +1,41 @@
+#!/bin/bash
+
+TMPSTORE=/tmp/dh-test-store
+
+trap "rm -rf $TMPSTORE" EXIT
+
+./dhi delete-database bin/testconfig.edn
+./dhi create-database bin/testconfig.edn
+
+./dhi database-exists bin/testconfig.edn
+
+./dhi benchmark conn:bin/testconfig.edn 0 100000 10000
+./dhi transact conn:bin/testconfig.edn '[[:db/add -1 :name "Judea"]]'
+QUERY_OUT=`./dhi query '[:find (count ?e) . :where [?e :name _]]' db:bin/testconfig.edn`
+
+if [ $QUERY_OUT -eq 100001 ]
+then
+  echo "Test successful."
+else
+  echo "Exception: Query did not return correct value."
+fi
+
+# test history input parsing
+./dhi query '[:find (count ?e) . :where [?e :name _]]' history:bin/testconfig.edn
+./dhi query '[:find (count ?e) . :where [?e :name _]]' since:0:bin/testconfig.edn
+./dhi query '[:find (count ?e) . :where [?e :name _]]' asof:0:bin/testconfig.edn
+
+# other calls
+./dhi pull db:bin/testconfig.edn "[:db/id, :name]" "1"
+./dhi pull-many db:bin/testconfig.edn "[:db/id, :name]" "[1]"
+./dhi entity db:bin/testconfig.edn "1"
+./dhi datoms db:bin/testconfig.edn "{:index :eavt :components [1]}"
+./dhi schema db:bin/testconfig.edn
+./dhi reverse-schema db:bin/testconfig.edn
+./dhi metrics db:bin/testconfig.edn
+
+# test serialization
+./dhi query '[:find ?e . :where [?e :name ?n]]' db:myconfig.edn --format cbor >> /tmp/test
+./dhi query '[:find ?i :in $ ?i . :where [?e :name ?n]]' db:myconfig.edn cbor:/tmp/test # => 1
+
+./dhi delete-database bin/testconfig.edn

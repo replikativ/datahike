@@ -73,12 +73,24 @@
 
            :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
                   :main-opts ["-m" "cljfmt.main" "fix"]}
-
            :build {:deps {io.github.clojure/tools.build {:git/tag "v0.8.1" :git/sha "7d40500"}
                           slipset/deps-deploy {:mvn/version "0.2.0"}
                           borkdude/gh-release-artifact {:git/url "https://github.com/borkdude/gh-release-artifact"
                                                         :sha "a83ee8da47d56a80b6380cbb6b4b9274048067bd"}
                           babashka/babashka.curl {:mvn/version "0.1.2"}
                           babashka/fs {:mvn/version "0.1.4"}
-                          cheshire/cheshire {:mvn/version "5.10.2"}}
-                   :ns-default build}}}
+                          cheshire/cheshire {:mvn/version "5.11.0"}}
+                   :ns-default build}
+           :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
+                         :extra-paths ["libdatahike/src"]
+                         :extra-deps {cheshire/cheshire {:mvn/version "5.11.0"}}}
+           :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
+                                    "-m" "clj.native-image" "datahike.cli"
+                                    "--initialize-at-build-time"
+                                    "-H:Name=dhi"]
+                        :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
+                        :extra-deps
+                        {cheshire/cheshire {:mvn/version "5.11.0"}
+                         clj.native-image/clj.native-image
+                         {:git/url "https://github.com/taylorwood/clj.native-image.git"
+                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}}}
