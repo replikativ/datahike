@@ -8,7 +8,6 @@
             [datahike.transactor :as t]
             [konserve.core :as k]
             [hasch.core :refer [uuid]]
-            [superv.async :refer [<?? S]]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.core.async :refer [go <!]])
@@ -114,7 +113,7 @@
           :tx-meta
           :as   tx-report}     @(update-fn connection tx-data tx-meta)
          {:keys [config meta]} db-after
-         cid (create-commit-id db-after)
+         cid                   (create-commit-id db-after)
          meta                  (assoc meta
                                       :datahike/parents parents
                                       :datahike/updated-at txInstant
@@ -125,7 +124,7 @@
      (k/assoc store cid db-to-store {:sync? true})
      (k/assoc store (:branch config) db-to-store {:sync? true})
      (reset! connection db)
-     tx-report)))
+     (assoc-in tx-report [:tx-meta :db/commitId] cid))))
 
 (defn transact!
   [connection {:keys [tx-data tx-meta]}]
@@ -160,7 +159,7 @@
     p))
 
 (defn release [connection]
-  (<?? S (t/shutdown (:transactor @connection)))
+  (t/shutdown (:transactor @connection))
   (ds/release-store (get-in @connection [:config :store]) (:store @connection)))
 
 ;; deprecation begin
