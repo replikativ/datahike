@@ -11,9 +11,9 @@
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.core.async :refer [go <!]])
-  (:import  [clojure.lang Atom]))
+  (:import [clojure.lang IDeref IAtom IMeta ILookup]))
 
-(s/def ::connection #(instance? Atom %))
+;; mapping to storage
 
 (defn stored-db? [obj]
   ;; TODO use proper schema to match?
@@ -84,6 +84,45 @@
            :ref-ident-map ref-ident-map
            :store store)))
 
+;; connection
+
+(declare deref-db)
+
+(deftype Connection [wrapped-atom]
+  IDeref
+  (deref [conn] (deref-db conn))
+  ;; These interfaces should not be used from the outside, they are here to keep
+  ;; the internal interfaces lean and working.
+  ILookup
+  (valAt [c k] (if (= k :wrapped-atom)
+                 wrapped-atom nil))
+  IAtom
+  (swap [_ f] (swap! wrapped-atom f))
+  (swap [_ f arg] (swap! wrapped-atom f arg))
+  (swap [_ f arg1 arg2] (swap! wrapped-atom f arg1 arg2))
+  (swap [_ f arg1 arg2 args] (apply swap! wrapped-atom f arg1 arg2 args))
+  (compareAndSet [_ oldv newv] (compare-and-set! wrapped-atom oldv newv))
+  (reset [_ newval] (reset! wrapped-atom newval))
+
+  IMeta
+  (meta [_] (meta wrapped-atom)))
+
+(defn deref-db [^Connection conn]
+  (let [wrapped-atom (.-wrapped-atom conn)]
+    (if (not (t/streaming? (get @wrapped-atom :transactor)))
+      (let [store  (:store @wrapped-atom)
+            stored (k/get store (:branch (:config @wrapped-atom)) nil {:sync? true})]
+        (log/trace "Fetched db for deref: " (:config stored))
+        (stored->db stored store))
+      @wrapped-atom)))
+
+(defn conn-from-db
+  "Creates a mutable reference to a given immutable database. See [[create-conn]]."
+  [db]
+  (Connection. (atom db :meta {:listeners (atom {})})))
+
+(s/def ::connection #(instance? Connection %))
+
 (defn branch-heads-as-commits [store parents]
   (set (doall (for [p parents]
                 (if-not (keyword? p) p
@@ -105,9 +144,9 @@
 (defn update-and-flush-db
   ([connection tx-data tx-meta update-fn]
    (update-and-flush-db connection tx-data tx-meta update-fn
-                        #{(get-in @connection [:config :branch])}))
+                        #{(get-in @(:wrapped-atom connection) [:config :branch])}))
   ([connection tx-data tx-meta update-fn parents]
-   (let [parents               (branch-heads-as-commits (:store @connection) parents)
+   (let [parents               (branch-heads-as-commits (:store @(:wrapped-atom connection)) parents)
          {:keys [db-after]
           {:keys [db/txInstant]}
           :tx-meta
@@ -119,7 +158,7 @@
                                       :datahike/updated-at txInstant
                                       :datahike/commit-id cid)
          db (assoc db-after :meta meta)
-         store (:store @connection)
+         store (:store @(:wrapped-atom connection))
          db-to-store (db->stored db)]
      (k/assoc store cid db-to-store {:sync? true})
      (k/assoc store (:branch config) db-to-store {:sync? true})
@@ -131,7 +170,7 @@
   {:pre [(d/conn? connection)]}
   (let [p (throwable-promise)]
     (go
-      (let [tx-report (<! (t/send-transaction! (:transactor @connection) tx-data tx-meta 'datahike.core/transact))]
+      (let [tx-report (<! (t/send-transaction! (:transactor @(:wrapped-atom connection)) tx-data tx-meta 'datahike.core/transact))]
         (deliver p tx-report)))
     p))
 
@@ -154,13 +193,31 @@
 (defn load-entities [connection entities]
   (let [p (throwable-promise)]
     (go
-      (let [tx-report (<! (t/send-transaction! (:transactor @connection) entities nil 'datahike.core/load-entities))]
+      (let [tx-report (<! (t/send-transaction! (:transactor @(:wrapped-atom connection)) entities nil 'datahike.core/load-entities))]
         (deliver p tx-report)))
     p))
 
+(def connections (atom {}))
+
+(defn get-connection [store-id]
+  (when-let [conn (get-in @connections [store-id :conn])]
+    (swap! connections update-in [store-id :count] inc)
+    conn))
+
+(defn add-connection! [store-id conn]
+  (swap! connections assoc store-id {:conn conn :count 1}))
+
 (defn release [connection]
-  (t/shutdown (:transactor @connection))
-  (ds/release-store (get-in @connection [:config :store]) (:store @connection)))
+  (let [db @(:wrapped-atom connection)
+        store-id (ds/store-identity (get-in db [:config :store]))]
+    (if-not (get @connections store-id)
+      (log/info "Connection already released." store-id)
+      (let [new-conns (swap! connections update-in [store-id :count] dec)]
+        (when (zero? (get-in new-conns [store-id :count]))
+          (swap! connections dissoc store-id)
+          (t/shutdown (:transactor db))
+          (ds/release-store (get-in db [:config :store])
+                            (:store db)))))))
 
 ;; deprecation begin
 (defprotocol IConfiguration
@@ -205,32 +262,36 @@
     (let [config (dc/load-config config)
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))
           store-config (:store config)
-          raw-store (ds/connect-store store-config)
-          _ (when-not raw-store
-              (dt/raise "Backend does not exist." {:type :backend-does-not-exist
-                                                   :config config}))
-          store (ds/add-cache-and-handlers raw-store config)
-          stored-db (k/get store (:branch config) nil {:sync? true})
-          _ (when-not stored-db
-              (ds/release-store store-config store)
-              (dt/raise "Database does not exist." {:type :db-does-not-exist
-                                                    :config config}))
-          [config store stored-db]
-          (let [intended-index (:index config)
-                stored-index   (get-in stored-db [:config :index])]
-            (if-not (= intended-index stored-index)
-              (do
-                (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. The default index is now :datahike/persistent-set. Using stored index setting now, but this might throw an error in the future."))
-                (let [config    (assoc config :index stored-index)
-                      store     (ds/add-cache-and-handlers raw-store config)
-                      stored-db (k/get-in store [:db] nil {:sync? true})]
+          store-id (ds/store-identity store-config)]
+      (if-let [conn (get-connection store-id)]
+        conn
+        (let [raw-store (ds/connect-store store-config)
+              _         (when-not raw-store
+                          (dt/raise "Backend does not exist." {:type   :backend-does-not-exist
+                                                               :config config}))
+              store     (ds/add-cache-and-handlers raw-store config)
+              stored-db (k/get store (:branch config) nil {:sync? true})
+              _         (when-not stored-db
+                          (ds/release-store store-config store)
+                          (dt/raise "Database does not exist." {:type   :db-does-not-exist
+                                                                :config config}))
+              [config store stored-db]
+              (let [intended-index (:index config)
+                    stored-index   (get-in stored-db [:config :index])]
+                (if-not (= intended-index stored-index)
+                  (do
+                    (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. The default index is now :datahike/persistent-set. Using stored index setting now, but this might throw an error in the future."))
+                    (let [config    (assoc config :index stored-index)
+                          store     (ds/add-cache-and-handlers raw-store config)
+                          stored-db (k/get-in store [:db] nil {:sync? true})]
+                      [config store stored-db]))
                   [config store stored-db]))
-              [config store stored-db]))
-          config (config-merge (:config stored-db) config)
-          conn (d/conn-from-db (stored->db (assoc stored-db :config config) store))]
-      (swap! conn assoc :transactor
-             (t/create-transactor (:transactor config) conn update-and-flush-db))
-      conn))
+              config    (config-merge (:config stored-db) config)
+              conn      (conn-from-db (stored->db (assoc stored-db :config config) store))]
+          (swap! (:wrapped-atom conn) assoc :transactor
+                 (t/create-transactor (:transactor config) conn update-and-flush-db))
+          (add-connection! store-id conn)
+          conn))))
 
   (-create-database [config & deprecated-config]
     (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)

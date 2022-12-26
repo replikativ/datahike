@@ -15,6 +15,11 @@
     (not= :mem (get-in config [:backend :store]))
     (di/add-konserve-handlers config)))
 
+(defmulti store-identity
+  "Value that identifies the underlying store."
+  {:arglist '([config])}
+  :backend)
+
 (defmulti empty-store
   "Creates an empty store"
   {:arglists '([config])}
@@ -69,6 +74,10 @@
 
 (def memory (atom {}))
 
+(defmethod store-identity :mem
+  [config]
+  [:mem (:id config)])
+
 (defmethod empty-store :mem [{:keys [id]}]
   (if-let [store (get @memory id)]
     store
@@ -95,6 +104,9 @@
 (defmethod config-spec :mem [_config] ::mem)
 
 ;; file
+
+(defmethod store-identity :file [config]
+  [:file (:path config)])
 
 (defmethod empty-store :file [{:keys [path]}]
   (fs/connect-fs-store path :opts {:sync? true}))
