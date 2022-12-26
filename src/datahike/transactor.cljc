@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.transactor
-  (:require [superv.async :refer [<??- S thread-try]]
+  (:require [superv.async :refer [S thread-try]]
             [taoensso.timbre :as log]
+            [datahike.core]
             [clojure.core.async :refer [chan close! promise-chan put! go-loop <!]])
   (:import [clojure.lang ExceptionInfo]))
 
@@ -8,7 +9,8 @@
   ; Send a transaction. Returns a channel that resolves when the transaction finalizes.
   (send-transaction! [_ tx-data tx-meta tx-fn])
   ; Returns a channel that resolves when the transactor has shut down.
-  (shutdown [_]))
+  (shutdown [_])
+  (streaming? [_]))
 
 (defrecord LocalTransactor [rx-queue rx-thread]
   PTransactor
@@ -16,17 +18,18 @@
     (let [p (promise-chan)]
       (put! rx-queue {:tx-data tx-data :tx-meta tx-meta :callback p :tx-fn tx-fn})
       p))
-
   (shutdown [_]
     (close! rx-queue)
-    rx-thread))
+    rx-thread)
+  (streaming? [_] true))
 
 (defn create-rx-thread
   "Creates new transaction thread"
   [connection rx-queue update-and-flush-db]
   (thread-try
    S
-   (let [resolve-fn (memoize resolve)]
+   (let [resolve-fn {'datahike.core/transact datahike.core/transact
+                     'datahike.core/load-entities datahike.core/load-entities}]
      (go-loop []
        (if-let [{:keys [tx-data tx-meta callback tx-fn]} (<! rx-queue)]
          (do
