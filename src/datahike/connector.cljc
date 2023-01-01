@@ -228,7 +228,8 @@
       (let [new-conns (swap! connections update-in [conn-id :count] dec)]
         (when (zero? (get-in new-conns [conn-id :count]))
           (delete-connection! conn-id)
-          (t/shutdown (:transactor db)))))))
+          (t/shutdown (:transactor db))
+          nil)))))
 
 ;; deprecation begin
 (defprotocol IConfiguration
