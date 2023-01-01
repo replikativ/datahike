@@ -90,6 +90,7 @@
 
 (defn connect []
   (let [cfg  {:schema-flexibility :read
+              :store {:backend :mem :id (str (.getTime (java.util.Date.)))}
               :initial-tx         []}
         _    (d/delete-database cfg)
         _    (d/create-database cfg)]
@@ -186,6 +187,7 @@
                  :db/valueType   :db.type/ref
                  :db/index       true
                  :db/cardinality :db.cardinality/one}]
+        _      (d/delete-database config)
         _      (d/create-database config)
         conn   (d/connect config)]
     (d/transact conn schema)

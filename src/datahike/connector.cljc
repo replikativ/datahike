@@ -26,16 +26,17 @@
 
 (defn db->stored
   "Maps memory db to storage layout and flushes dirty indices."
-  [db]
+  [db flush?]
   (when-not (dbu/db? db)
     (dt/raise "Argument is not a database."
-              {:type :argument-is-not-a-db
+              {:type     :argument-is-not-a-db
                :argument db}))
   (let [{:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
                 schema rschema system-entities ident-ref-map ref-ident-map config
                 max-tx max-eid op-count hash meta store]} db
-        backend (di/konserve-backend (:index config) store)
-        not-in-memory? (not= :mem (-> config :store :backend))]
+        backend                                           (di/konserve-backend (:index config) store)
+        not-in-memory?                                    (not= :mem (-> config :store :backend))
+        flush! (and flush? not-in-memory?)]
     (merge
      {:schema          schema
       :rschema         rschema
@@ -48,13 +49,13 @@
       :max-tx          max-tx
       :max-eid         max-eid
       :op-count        op-count
-      :eavt-key        (cond-> eavt not-in-memory? (di/-flush backend))
-      :aevt-key        (cond-> aevt not-in-memory? (di/-flush backend))
-      :avet-key        (cond-> avet not-in-memory? (di/-flush backend))}
+      :eavt-key        (cond-> eavt flush! (di/-flush backend))
+      :aevt-key        (cond-> aevt flush! (di/-flush backend))
+      :avet-key        (cond-> avet flush! (di/-flush backend))}
      (when (:keep-history? config)
-       {:temporal-eavt-key (cond-> temporal-eavt not-in-memory? (di/-flush backend))
-        :temporal-aevt-key (cond-> temporal-aevt not-in-memory? (di/-flush backend))
-        :temporal-avet-key (cond-> temporal-avet not-in-memory? (di/-flush backend))}))))
+       {:temporal-eavt-key (cond-> temporal-eavt flush! (di/-flush backend))
+        :temporal-aevt-key (cond-> temporal-aevt flush! (di/-flush backend))
+        :temporal-avet-key (cond-> temporal-avet flush! (di/-flush backend))}))))
 
 (defn stored->db
   "Constructs in-memory db instance from stored map value."
@@ -95,8 +96,7 @@
   ;; These interfaces should not be used from the outside, they are here to keep
   ;; the internal interfaces lean and working.
   ILookup
-  (valAt [c k] (if (= k :wrapped-atom)
-                 wrapped-atom nil))
+  (valAt [c k] (if (= k :wrapped-atom) wrapped-atom nil))
   IAtom
   (swap [_ f] (swap! wrapped-atom f))
   (swap [_ f arg] (swap! wrapped-atom f arg))
@@ -122,7 +122,8 @@
   [db]
   (Connection. (atom db :meta {:listeners (atom {})})))
 
-(s/def ::connection #(instance? Connection %))
+(s/def ::connection #(and (instance? Connection %)
+                          (not= @(:wrapped-atom %) :deleted)))
 
 (defn branch-heads-as-commits [store parents]
   (set (doall (for [p parents]
@@ -142,29 +143,36 @@
       (uuid [hash max-tx max-eid parents])
       (uuid))))
 
+(defn commit! [store config db parents]
+  (let [parents (or parents #{(get config :branch)})
+        parents (branch-heads-as-commits store parents)
+        cid (create-commit-id db)
+        db (-> db
+               (assoc-in [:meta :datahike/commit-id] cid)
+               (assoc-in [:meta :datahike/parents] parents))
+        db-to-store (db->stored db true)]
+    (k/assoc store cid db-to-store {:sync? true})
+    (k/assoc store (:branch config) db-to-store {:sync? true})
+    db))
+
 (defn update-and-flush-db
   ([connection tx-data tx-meta update-fn]
-   (update-and-flush-db connection tx-data tx-meta update-fn
-                        #{(get-in @(:wrapped-atom connection) [:config :branch])}))
+   (update-and-flush-db connection tx-data tx-meta update-fn nil))
   ([connection tx-data tx-meta update-fn parents]
-   (let [parents               (branch-heads-as-commits (:store @(:wrapped-atom connection)) parents)
+   (let [{:keys [db/noCommit]} tx-meta
          {:keys [db-after]
           {:keys [db/txInstant]}
           :tx-meta
           :as   tx-report}     @(update-fn connection tx-data tx-meta)
          {:keys [config meta]} db-after
-         cid                   (create-commit-id db-after)
-         meta                  (assoc meta
-                                      :datahike/parents parents
-                                      :datahike/updated-at txInstant
-                                      :datahike/commit-id cid)
-         db (assoc db-after :meta meta)
-         store (:store @(:wrapped-atom connection))
-         db-to-store (db->stored db)]
-     (k/assoc store cid db-to-store {:sync? true})
-     (k/assoc store (:branch config) db-to-store {:sync? true})
+         meta                  (assoc meta :datahike/updated-at txInstant)
+         db                    (assoc db-after :meta meta)
+         store                 (:store @(:wrapped-atom connection))
+         db                    (if noCommit db (commit! store config db parents))]
      (reset! connection db)
-     (assoc-in tx-report [:tx-meta :db/commitId] cid))))
+     (if noCommit
+       tx-report
+       (assoc-in tx-report [:tx-meta :db/commitId] (get-in db [:meta :datahike/commit-id]))))))
 
 (defn transact!
   [connection {:keys [tx-data tx-meta]}]
@@ -200,25 +208,28 @@
 
 (def connections (atom {}))
 
-(defn get-connection [store-id]
-  (when-let [conn (get-in @connections [store-id :conn])]
-    (swap! connections update-in [store-id :count] inc)
+(defn get-connection [conn-id]
+  (when-let [conn (get-in @connections [conn-id :conn])]
+    (swap! connections update-in [conn-id :count] inc)
     conn))
 
-(defn add-connection! [store-id conn]
-  (swap! connections assoc store-id {:conn conn :count 1}))
+(defn add-connection! [conn-id conn]
+  (swap! connections assoc conn-id {:conn conn :count 1}))
+
+(defn delete-connection! [conn-id]
+  (reset! (get-connection conn-id) :deleted)
+  (swap! connections dissoc conn-id))
 
 (defn release [connection]
   (let [db @(:wrapped-atom connection)
-        store-id (ds/store-identity (get-in db [:config :store]))]
-    (if-not (get @connections store-id)
-      (log/info "Connection already released." store-id)
-      (let [new-conns (swap! connections update-in [store-id :count] dec)]
-        (when (zero? (get-in new-conns [store-id :count]))
-          (swap! connections dissoc store-id)
-          (t/shutdown (:transactor db))
-          (ds/release-store (get-in db [:config :store])
-                            (:store db)))))))
+        conn-id (conj (ds/store-identity (get-in db [:config :store]))
+                      (get-in db [:config :branch]))]
+    (if-not (get @connections conn-id)
+      (log/info "Connection already released." conn-id)
+      (let [new-conns (swap! connections update-in [conn-id :count] dec)]
+        (when (zero? (get-in new-conns [conn-id :count]))
+          (delete-connection! conn-id)
+          (t/shutdown (:transactor db)))))))
 
 ;; deprecation begin
 (defprotocol IConfiguration
@@ -263,13 +274,14 @@
     (let [config (dc/load-config config)
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))
           store-config (:store config)
-          store-id (ds/store-identity store-config)]
-      (if-let [conn (get-connection store-id)]
+          store-id (ds/store-identity store-config)
+          conn-id (conj store-id (:branch config))]
+      (if-let [conn (get-connection conn-id)]
         conn
         (let [raw-store (ds/connect-store store-config)
               _         (when-not raw-store
                           (dt/raise "Backend does not exist." {:type   :backend-does-not-exist
-                                                               :config config}))
+                                                               :config store-config}))
               store     (ds/add-cache-and-handlers raw-store config)
               stored-db (k/get store (:branch config) nil {:sync? true})
               _         (when-not stored-db
@@ -291,7 +303,7 @@
               conn      (conn-from-db (stored->db (assoc stored-db :config config) store))]
           (swap! (:wrapped-atom conn) assoc :transactor
                  (t/create-transactor (:transactor config) conn update-and-flush-db))
-          (add-connection! store-id conn)
+          (add-connection! conn-id conn)
           conn))))
 
   (-create-database [config & deprecated-config]
