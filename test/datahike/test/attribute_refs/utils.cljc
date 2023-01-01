@@ -2,8 +2,7 @@
   (:require [datahike.api :as d]
             [datahike.db.interface :as dbi]))
 
-(def ref-config {:store {:backend :mem
-                         :id "attr-refs-test.util"}
+(def ref-config {:store {:backend :mem}
                  :attribute-refs? true
                  :keep-history? false
                  :schema-flexibility :write})
@@ -83,11 +82,12 @@
     :db/valueType   :db.type/ref}])
 
 (defn setup-new-connection []
-  (d/delete-database ref-config)
-  (d/create-database ref-config)
-  (let [conn (d/connect ref-config)]
-    (d/transact conn test-schema)
-    conn))
+  (let [ref-config (assoc-in ref-config [:store :id] (str (.getTime (java.util.Date.))))]
+    (d/delete-database ref-config)
+    (d/create-database ref-config)
+    (let [conn (d/connect ref-config)]
+      (d/transact conn test-schema)
+      conn)))
 
 (def test-setup
   (let [conn (setup-new-connection)

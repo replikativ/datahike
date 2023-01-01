@@ -55,7 +55,7 @@
 (s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleAttrs  :db/tupleType :db/tupleTypes})
 
 (s/def ::entity-spec-attribute #{:db/ensure :db.entity/attrs :db.entity/preds})
-(s/def ::meta-attribute #{:db/txInstant :db/retracted})
+(s/def ::meta-attribute #{:db/txInstant :db/retracted :db/noCommit})
 
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality]
                         :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory :db/tupleType :db/tupleTypes]))
@@ -93,6 +93,9 @@
                                    :db/txInstant {:db/valueType :db.type/instant
                                                   :db/unique :db.unique/identity
                                                   :db/index true
+                                                  :db/cardinality :db.cardinality/one}
+                                   :db/noCommit  {:db/valueType :db.type/boolean
+                                                  :db/unique :db.unique/identity
                                                   :db/cardinality :db.cardinality/one}
                                    :db/retracted {:db/valueType :db.type/long
                                                   :db/unique :db.unique/identity

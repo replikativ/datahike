@@ -1,7 +1,6 @@
 (ns ^:no-doc datahike.config
   (:require [clojure.edn :as edn]
             [clojure.spec.alpha :as s]
-            [zufall.core :as z]
             [environ.core :refer [env]]
             [datahike.tools :as tools]
             [datahike.store :as ds]
@@ -115,7 +114,6 @@
   {:store nil
    :keep-history? false
    :schema-flexibility :read
-   :name (z/rand-german-mammal)
    :attribute-refs? false
    :index default-index
    :search-cache-size default-search-cache-size
@@ -154,7 +152,6 @@
                  :initial-tx (:datahike-intial-tx env)
                  :keep-history? (bool-from-env :datahike-keep-history true)
                  :attribute-refs? (bool-from-env :datahike-attribute-refs false)
-                 :name (:datahike-name env (z/rand-german-mammal))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
                  :index index
                  :crypto-hash? false
