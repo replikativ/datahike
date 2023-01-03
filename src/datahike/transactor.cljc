@@ -2,30 +2,31 @@
   (:require [superv.async :refer [S thread-try]]
             [taoensso.timbre :as log]
             [datahike.core]
+            [datahike.storing :refer [update-and-flush-db]]
             [clojure.core.async :refer [chan close! promise-chan put! go-loop <!]])
   (:import [clojure.lang ExceptionInfo]))
 
 (defprotocol PTransactor
   ; Send a transaction. Returns a channel that resolves when the transaction finalizes.
-  (send-transaction! [_ tx-data tx-meta tx-fn])
+  (dispatch! [_ tx-fn tx-data tx-meta])
   ; Returns a channel that resolves when the transactor has shut down.
   (shutdown [_])
   (streaming? [_]))
 
-(defrecord LocalTransactor [rx-queue rx-thread]
+(defrecord LocalTransactor [rx-queue rx-thread streaming?]
   PTransactor
-  (send-transaction! [_ tx-data tx-meta tx-fn]
+  (dispatch! [_ tx-fn tx-data tx-meta]
     (let [p (promise-chan)]
       (put! rx-queue {:tx-data tx-data :tx-meta tx-meta :callback p :tx-fn tx-fn})
       p))
   (shutdown [_]
     (close! rx-queue)
     rx-thread)
-  (streaming? [_] true))
+  (streaming? [_] streaming?))
 
 (defn create-rx-thread
   "Creates new transaction thread"
-  [connection rx-queue update-and-flush-db]
+  [connection rx-queue]
   (thread-try
    S
    (let [resolve-fn {'datahike.core/transact datahike.core/transact
@@ -44,13 +45,14 @@
          (log/debug "Transactor rx thread gracefully closed"))))))
 
 (defmulti create-transactor
-  (fn [transactor-config conn update-and-flush-db]
+  (fn [transactor-config _]
     (or (:backend transactor-config) :local)))
 
 (defmethod create-transactor :local
-  [{:keys [rx-buffer-size]} connection update-and-flush-db]
+  [{:keys [rx-buffer-size]} connection]
   (let [rx-queue (chan rx-buffer-size)
-        rx-thread (create-rx-thread connection rx-queue update-and-flush-db)]
+        rx-thread (create-rx-thread connection rx-queue)]
     (map->LocalTransactor
      {:rx-queue  rx-queue
-      :rx-thread rx-thread})))
+      :rx-thread rx-thread
+      :streaming? true})))
