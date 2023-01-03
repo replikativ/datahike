@@ -83,13 +83,13 @@
       (if-let [conn (get-connection conn-id)]
         conn
         #_(let [conn-config (:config @(:wrapped-atom conn))]
-          (if-not (= config conn-config)
-            (dt/raise "Configuration does not match existing connections."
-                      {:type :config-does-not-match-existing-connections
-                       :config config
-                       :existing-connections-config conn-config
-                       :diff (diff config conn-config)})
-            conn))
+            (if-not (= config conn-config)
+              (dt/raise "Configuration does not match existing connections."
+                        {:type :config-does-not-match-existing-connections
+                         :config config
+                         :existing-connections-config conn-config
+                         :diff (diff config conn-config)})
+              conn))
         (let [raw-store (ds/connect-store store-config)
               _         (when-not raw-store
                           (dt/raise "Backend does not exist." {:type   :backend-does-not-exist
