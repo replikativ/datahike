@@ -3,9 +3,9 @@
   (:require [konserve.core :as k]
             [datahike.core :refer [transact]]
             [datahike.store :refer [store-identity]]
-            [datahike.connector :refer [update-and-flush-db stored-db?
-                                        stored->db db->stored create-commit-id
-                                        delete-connection!]]
+            [datahike.storing :refer [stored->db db->stored stored-db?
+                                      update-and-flush-db create-commit-id]]
+            [datahike.connector :refer [delete-connection!]]
             [superv.async :refer [<? S go-loop-try]]
             [datahike.db :refer [db?]]
             [datahike.tools :as dt]))
@@ -70,11 +70,11 @@
   "Removes this branch from set of known branches. The branch will still be
   accessible until the next gc."
   [conn branch]
+  (when (= branch :db)
+    (dt/raise "Connot delete main :db branch. Delete database instead."
+              {:type :cannot-delete-main-db-branch}))
   (let [store (:store @conn)
         branches (k/get store :branches nil {:sync? true})]
-    (when (= branch :db)
-      (dt/raise "Connot delete main :db branch. Delete database instead."
-                {:type :cannot-delete-main-db-branch}))
     (when-not (branches branch)
       (dt/raise "Branch does not exist." {:type :branch-does-not-exist
                                           :branch branch}))

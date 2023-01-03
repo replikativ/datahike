@@ -1,6 +1,7 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
   (:require [datahike.connector :as dc]
+            [datahike.storing :as storing]
             [datahike.constants :as const]
             [datahike.core :as dcore]
             [datahike.pull-api :as dp]
@@ -45,7 +46,7 @@
           Usage:
 
               (database-exists? {:store {:backend :mem :id \"example\"}})"}
-  database-exists? dc/database-exists?)
+  database-exists? storing/database-exists?)
 
 (def
   ^{:arglists '([] [config & deprecated-opts])
@@ -83,13 +84,18 @@
               (create-database {:store {:backend :mem :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"}
 
   create-database
-  dc/create-database)
+  (fn [& args]
+    (let [config (apply storing/create-database args)]
+      (when-let [txs (:initial-tx config)]
+        (let [conn (dc/connect config)]
+          (dc/transact conn txs)
+          (dc/release conn))))))
 
 (def ^{:arglists '([config])
        :doc      "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
                   For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
   delete-database
-  dc/delete-database)
+  storing/delete-database)
 
 (def ^{:arglists '([conn arg-map])
        :doc      "Applies transaction to the underlying database value and atomically updates the connection reference to point to the result of that transaction, the new db value.

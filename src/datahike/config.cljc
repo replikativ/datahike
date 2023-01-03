@@ -1,8 +1,10 @@
 (ns ^:no-doc datahike.config
   (:require [clojure.edn :as edn]
+            [clojure.walk :refer [postwalk]]
+            [clojure.string :as str]
             [clojure.spec.alpha :as s]
             [environ.core :refer [env]]
-            [datahike.tools :as tools]
+            [datahike.tools :as dt]
             [datahike.store :as ds]
             [datahike.index :as di])
   (:import [java.net URI]))
@@ -130,7 +132,7 @@
               (let [kvs (filter (comp not nil? second) x)]
                 (if (empty? kvs) nil (into {} kvs)))
               x))]
-    (clojure.walk/postwalk f m)))
+    (postwalk f m)))
 
 (defn load-config
   "Load and validate configuration with defaults from the store."
@@ -161,7 +163,7 @@
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
                                  index-config
                                  (di/default-index-config index))}
-         merged-config ((comp remove-nils tools/deep-merge) config config-as-arg)
+         merged-config ((comp remove-nils dt/deep-merge) config config-as-arg)
          {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config
          config-spec (ds/config-spec store)]
      (when config-spec
@@ -174,6 +176,10 @@
      (if (string? initial-tx)
        (update merged-config :initial-tx (fn [path] (-> path slurp read-string)))
        merged-config))))
+
+(defn config-merge [stored-config config]
+  (let [merged-config (dt/deep-merge config stored-config)]
+    (dt/deep-merge merged-config (select-keys config #{:branch}))))
 
 ;; deprecation begin
 (s/def ::backend-depr keyword?)
@@ -194,7 +200,7 @@
         sub-uri (URI. (.getSchemeSpecificPart base-uri))
         backend (keyword (.getScheme sub-uri))
         [username password] (when-let [user-info (.getUserInfo sub-uri)]
-                              (clojure.string/split user-info #":"))
+                              (str/split user-info #":"))
         credentials (when-not (and (nil? username) (nil? password))
                       {:username username
                        :password password})
