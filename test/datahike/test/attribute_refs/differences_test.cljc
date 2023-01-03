@@ -272,7 +272,8 @@
       (is (not (nil? (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
   (testing "Keyword transaction in reference DB"
-    (let [conn (setup-db ref-cfg)
+    (let [[no-ref-cfg ref-cfg] (init-cfgs)
+          conn (setup-db ref-cfg)
           next-eid (inc (:max-eid @conn))]
       (is (thrown-msg? (str "Bad entity attribute " :db/ident " at " [:db/add next-eid :db/ident :name] ", expected reference number") ;; TODO: ensure to have error thrown
                        (d/transact conn [[:db/add next-eid :db/ident :name]]))))))

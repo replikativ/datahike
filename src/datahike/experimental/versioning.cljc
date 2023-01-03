@@ -63,7 +63,7 @@
       (throw (ex-info "From does not point to an existing branch or commit."
                       {:type :from-branch-does-not-point-to-existing-branch-or-commit
                        :from from})))
-    (k/assoc store new-branch db {:sync? true})
+    (k/assoc store new-branch (assoc-in db [:config :branch] new-branch) {:sync? true})
     (k/update store :branches #(conj % new-branch) {:sync? true})))
 
 (defn delete-branch!
@@ -95,6 +95,7 @@
   (let [store (:store db)
         cid (create-commit-id db)
         db (db->stored (-> db
+                           (assoc-in [:config :branch] branch)
                            (assoc-in [:meta :datahike/parents] parents)
                            (assoc-in [:meta :datahike/commit-id] cid))
                        true)]

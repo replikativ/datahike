@@ -8,7 +8,8 @@
 (defn test-store [cfg]
   (let [_ (d/delete-database cfg)]
     (is (not (d/database-exists? cfg)))
-    (let [_ (d/create-database (merge cfg {:schema-flexibility :read}))
+    (let [cfg (merge cfg {:schema-flexibility :read})
+          _ (d/create-database cfg)
           conn (d/connect cfg)]
       (d/transact conn [{:db/id 1, :name  "Ivan", :age   15}
                         {:db/id 2, :name  "Petr", :age   37}

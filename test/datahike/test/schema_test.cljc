@@ -304,9 +304,11 @@
 
 (deftest test-schema-on-read-db
   (testing "test database creation with schema-on-read"
-    (let [cfg "datahike:mem://test-schemaless-db"
+    (let [cfg {:store {:backend :mem
+                       :id "test-schemaless-db"}
+               :schema-flexibility :read}
           _ (d/delete-database cfg)
-          _ (d/create-database cfg :schema-on-read true)
+          _ (d/create-database cfg)
           conn (d/connect cfg)]
       (testing "insert any data"
         (d/transact conn [{:name "Alice" :age 26} {:age "12" :car :bmw}])
