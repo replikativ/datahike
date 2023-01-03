@@ -9,8 +9,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.transaction :as dbt]
    [datahike.datom :as da]
-   [datahike.constants :as const]
-   [datahike.test.cljs-utils])
+   [datahike.constants :as const])
   #?(:clj (:import [java.lang System] 
                    [java.util UUID])))
 
@@ -44,7 +43,7 @@
 
     (testing "transact without schema present"
       (is (thrown-with-msg? Throwable
-           #"Bad entity attribute :name at {:db/id 1, :name \"Alice\"}, not defined in current schema"
+           #"Bad entity attribute :name at \{:db/id 1, :name \"Alice\"\}, not defined in current schema"
            (d/transact conn tx))))
 
     (testing "transacting new schema"
@@ -65,12 +64,12 @@
 
     (testing "insert new data with wrong data type"
       (is (thrown-with-msg? Throwable
-           #"Bad entity value 42 at [:db/add 3 :name 42], value does not match schema definition. Must be conform to: string?"
+           #"Bad entity value 42 at \[:db/add 3 :name 42\], value does not match schema definition. Must be conform to: string?"
            (d/transact conn [{:name 42}]))))
 
     (testing "insert new data with additional attributes not in schema"
       (is (thrown-with-msg? Throwable
-           #"Bad entity attribute :age at {:db/id 3, :age 42}, not defined in current schema"
+           #"Bad entity attribute :age at \{:db/id 3, :age 42\}, not defined in current schema"
            (d/transact conn [{:name "Bob" :age 42}]))))
 
     (testing "insert incomplete schema :db/valueType"
@@ -84,13 +83,13 @@
            (d/transact conn [{:db/cardinality :db.cardinality/many}]))))
 
     (testing "insert incomplete schema :db/cardinality, :db/ident"
-      (is (thrown-with-msg?
+      (is (thrown-with-msg? Throwable
            #"Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
            (d/transact conn [{:db/ident :phone :db/cardinality :db.cardinality/many}]))))
 
     (testing "insert schema with incorrect value type"
-      (is (thrown-with-msg?
-           #"Bad entity value :string at [:db/add 3 :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/number :db.type/unique :db.type/instant :db.type/cardinality :db.type/tuple :db.type/boolean :db.type/bytes :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type.install/attribute :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/valueType :db.type/symbol}"
+      (is (thrown-with-msg? Throwable
+           #"Bad entity value :string at \[:db/add 3 :db/valueType :string\], value does not match schema definition. Must be conform to: #\{:db.type/number :db.type/unique :db.type/instant :db.type/cardinality :db.type/tuple :db.type/boolean :db.type/bytes :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type.install/attribute :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/valueType :db.type/symbol\}"
            (d/transact conn [{:db/ident       :phone
                               :db/cardinality :db.cardinality/one
                               :db/valueType   :string}]))))))

@@ -10,7 +10,6 @@
    [datahike.tools :as tools]
    [datahike.test.utils :as du]
    [datahike.test.core-test]
-   [datahike.test.cljs-utils]
    [clojure.spec.alpha :as s]
    [clojure.spec.gen.alpha :as gen]))
 

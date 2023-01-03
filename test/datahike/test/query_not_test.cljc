@@ -176,14 +176,14 @@
                             (d/q (concat '[:find ?e :where] (quote q)) @test-db))
     [(not [?e :name "Ivan"])
      [?e :name]]
-    #"Insufficient bindings: none of #{?e} is bound in (not [?e :name \"Ivan\"])"
+    #"Insufficient bindings: none of #\{?e\} is bound in \(not \[?e :name \"Ivan\"\]\)"
 
     [[?e :name]
      (not-join [?e]
                (not [1 :age ?a])
                [?e :age ?a])]
-    #"Insufficient bindings: none of #{?a} is bound in (not [1 :age ?a])"
+    #"Insufficient bindings: none of #\{?a\} is bound in \(not \[1 :age ?a\]\)"
 
     [[?e :name]
      (not [?a :name "Ivan"])]
-    #"Insufficient bindings: none of #{?a} is bound in (not [?a :name \"Ivan\"])"))
+    #"Insufficient bindings: none of #\{?a\} is bound in \(not \[?a :name \"Ivan\"\]\)"))

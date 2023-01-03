@@ -7,7 +7,6 @@
             #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.constants :as const]
    [datahike.test.core-test]
-   [datahike.test.cljs-utils]
    [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
                            :clj  [:refer [defrecord-updatable]])]))
 

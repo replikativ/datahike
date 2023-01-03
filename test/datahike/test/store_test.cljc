@@ -6,8 +6,7 @@
    #?(:cljs [hitchhiker.tree :refer [DataNode]])
    [datahike.api :as d])
   #?(:clj (:import [hitchhiker.tree DataNode]
-                   #_[java.lang System]
-                   [me.tonsky.persistent-sorted-set PersistentSortedSet])))
+                   [me.tonsky.persistent_sorted_set PersistentSortedSet])))
 
 (defn test-store [cfg]
   (let [_ (d/delete-database cfg)]

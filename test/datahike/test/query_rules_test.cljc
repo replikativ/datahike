@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]))
 
 (deftest test-rules
@@ -235,7 +236,7 @@
                            (parent-info ?child "Alice" ?age)]}
                  :args [@conn "Charlie" rules]})))
 
-    (is (thrown-with-msg? #"Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
+    (is (thrown-with-msg? Throwable #"Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
                      (d/q {:query '{:find [?age]
                                     :in [$ ?n %]
                                     :where

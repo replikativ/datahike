@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
    [datahike.test.utils :as dtu]
    [datahike.test.core-test]))
@@ -58,7 +59,7 @@
                     [?e :name ?n]] db)
              #{["Petr"] ["Evgeny"]})))
 
-    (is (thrown-with-msg? #"Bad attribute :_parent: reverse attribute name requires {:db/valueType :db.type/ref} in schema"
+    (is (thrown-with-msg? Throwable #"Bad attribute :_parent: reverse attribute name requires \{:db/valueType :db.type/ref\} in schema"
                      (d/db-with db0 [{:name "Sergey" :_parent 1}])))))
 
 (deftest test-explode-nested-maps
@@ -136,4 +137,3 @@
     (is (= (mapv (juxt :e :a :v) (d/datoms db :eavt))
            [[1 :comp 2]
             [2 :name "C"]]))))
-

@@ -10,7 +10,7 @@
   #?(:clj (instance? Long x)  
           :cljs (integer? x)))
 
-(s/def :db.type/id #(or long? string?))
+(s/def :db.type/id #(or (long? %) (string? %)))
 
 ;; db types
 #?(:clj (s/def :db.type/bigdec decimal?))

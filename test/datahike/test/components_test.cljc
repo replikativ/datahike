@@ -4,19 +4,17 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
+            #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
    [datahike.test.core-test :as tdc]
    [datahike.impl.entity :as de]))
 
 (t/use-fixtures :once tdc/no-namespace-maps)
 
-#?(:cljs
-   (def Throwable js/Error))
-
 (deftest test-components
-  (is (thrown-with-msg? Throwable #"Bad attribute specification for :profile: {:db/isComponent true} should also have {:db/valueType :db.type/ref}"
+  (is (thrown-with-msg? Throwable #"Bad attribute specification for :profile: \{:db/isComponent true\} should also have \{:db/valueType :db.type/ref\}"
                    (db/empty-db {:profile {:db/isComponent true}})))
-  (is (thrown-with-msg? Throwable #"Bad attribute specification for {:profile {:db/isComponent \"aaa\"}}, expected one of #{true false}"
+  (is (thrown-with-msg? Throwable #"Bad attribute specification for \{:profile \{:db/isComponent \"aaa\"\}\}, expected one of #\{true false\}"
                    (db/empty-db {:profile {:db/isComponent "aaa" :db/valueType :db.type/ref}})))
 
   (let [db (d/db-with

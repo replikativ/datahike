@@ -90,7 +90,7 @@
       (<?? S (gc! @conn (Date.)))
       (is (nil? (d/q count-query @(d/connect cfg))))
       (is (= 1000 (d/q count-query @(d/connect cfg1))))
-      (is (thrown-with-msg? #"Database does not exist."
+      (is (thrown-with-msg? Throwable #"Database does not exist."
                        (d/q count-query @(d/connect cfg2)))))))
 
 (deftest datahike-gc-range-test
