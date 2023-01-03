@@ -1,8 +1,8 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
-  (:require [datahike.config :as config]
+  (:require [datahike.connector :as dc]
             [clojure.spec.alpha :as s]
-            [datahike.connector :as dc]
+            [datahike.storing :as storing]
             [datahike.constants :as const]
             [datahike.core :as dcore]
             [datahike.spec :as spec]
@@ -58,7 +58,7 @@
           Usage:
 
               (database-exists? {:store {:backend :mem :id \"example\"}})"}
-  database-exists? dc/database-exists?)
+  database-exists? storing/database-exists?)
 
 (s/fdef
   create-database
@@ -104,7 +104,12 @@
               (create-database {:store {:backend :mem :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"}
 
   create-database
-  dc/create-database)
+  (fn [& args]
+    (let [config (apply storing/create-database args)]
+      (when-let [txs (:initial-tx config)]
+        (let [conn (dc/connect config)]
+          (dc/transact conn txs)
+          (dc/release conn))))))
 
 (s/fdef
   delete-database
@@ -115,7 +120,7 @@
        :doc      "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
                   For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
   delete-database
-  dc/delete-database)
+  storing/delete-database)
 
 (s/fdef
   transact
