@@ -40,16 +40,6 @@ public class DatahikeTest {
     private Date firstDate;
     private String query;
 
-    // @org.junit.Before
-    // public void setUp() throws Exception {
-    //     Datahike.deleteDatabase(config);
-    // }
-
-    // @org.junit.After
-    // public void tearDown() throws Exception {
-    //     Datahike.deleteDatabase(config);
-    // }
-
     private Object transactOnce() {
         APersistentMap config = config();
         Datahike.createDatabase(config);
@@ -62,13 +52,6 @@ public class DatahikeTest {
                 map(kwd(":name"), "Bob", kwd(":age"), 30L)));
         return conn;
     }
-
-    // @org.junit.Test
-    /* public void db() {
-        Datahike.createDatabase(config);
-        conn = Datahike.connect(config);
-        assertEquals(Datahike.db(conn), deref(conn));
-        } */
 
     @org.junit.Test
     public void databaseExists() {
