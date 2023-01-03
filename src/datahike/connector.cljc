@@ -144,7 +144,10 @@
   (let [p (throwable-promise)
         transactor (:transactor @(:wrapped-atom connection))]
     (go
-      (let [tx-report (<! (t/dispatch! transactor 'datahike.core/transact tx-data tx-meta))]
+      (let [tx-report (<! (t/dispatch! transactor
+                                       {:tx-fn 'datahike.core/transact
+                                        :tx-data tx-data
+                                        :tx-meta tx-meta}))]
         (deliver p tx-report)))
     p))
 
@@ -168,7 +171,9 @@
   (let [p (throwable-promise)
         transactor (:transactor @(:wrapped-atom connection))]
     (go
-      (let [tx-report (<! (t/dispatch! transactor 'datahike.core/load-entities entities nil))]
+      (let [tx-report (<! (t/dispatch! transactor {:tx-fn 'datahike.core/load-entities
+                                                   :tx-data entities
+                                                   :tx-x-meta nil}))]
         (deliver p tx-report)))
     p))
 
