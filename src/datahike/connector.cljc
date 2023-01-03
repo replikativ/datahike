@@ -69,12 +69,17 @@
   (swap! connections dissoc conn-id))
 
 (defn ensure-stored-config-consistency [config stored-config]
-  (when-not (= config (dissoc stored-config :initial-tx :name :index-config))
-    (dt/raise "Configuration does not match stored configuration."
-              {:type          :config-does-not-match-stored-db
-               :config        config
-               :stored-config stored-config
-               :diff          (diff config stored-config)})))
+  (let [config (dissoc config :name)
+        stored-config (dissoc stored-config :initial-tx :name)
+        stored-config (if (empty? (:index-config stored-config))
+                        (dissoc stored-config :index-config)
+                        stored-config)]
+    (when-not (= config stored-config)
+      (dt/raise "Configuration does not match stored configuration."
+                {:type          :config-does-not-match-stored-db
+                 :config        config
+                 :stored-config stored-config
+                 :diff          (diff config stored-config)}))))
 
 (extend-protocol PConnector
   String
