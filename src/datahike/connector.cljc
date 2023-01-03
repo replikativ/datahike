@@ -68,28 +68,35 @@
   (reset! (get-connection conn-id) :deleted)
   (swap! connections dissoc conn-id))
 
+(defn ensure-stored-config-consistency [config stored-config]
+  (when-not (= config stored-config)
+    (dt/raise "Configuration does not match stored configuration."
+              {:type          :config-does-not-match-stored-db
+               :config        config
+               :stored-config stored-config
+               :diff          (diff config stored-config)})))
+
 (extend-protocol PConnector
   String
   (-connect [uri]
     (-connect (dc/uri->config uri)))
 
   clojure.lang.IPersistentMap
-  (-connect [config]
-    (let [config (dc/load-config config)
+  (-connect [raw-config]
+    (let [config (dissoc (dc/load-config raw-config) :initial-tx)
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))
           store-config (:store config)
           store-id (ds/store-identity store-config)
           conn-id (conj store-id (:branch config))]
       (if-let [conn (get-connection conn-id)]
-        conn
-        #_(let [conn-config (:config @(:wrapped-atom conn))]
-            (if-not (= config conn-config)
-              (dt/raise "Configuration does not match existing connections."
-                        {:type :config-does-not-match-existing-connections
-                         :config config
-                         :existing-connections-config conn-config
-                         :diff (diff config conn-config)})
-              conn))
+        (let [conn-config (:config @(:wrapped-atom conn))]
+          (when-not (= config conn-config)
+            (dt/raise "Configuration does not match existing connections."
+                      {:type :config-does-not-match-existing-connections
+                       :config config
+                       :existing-connections-config conn-config
+                       :diff (diff config conn-config)}))
+          conn)
         (let [raw-store (ds/connect-store store-config)
               _         (when-not raw-store
                           (dt/raise "Backend does not exist." {:type   :backend-does-not-exist
@@ -108,10 +115,10 @@
                     (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. The default index is now :datahike/persistent-set. Using stored index setting now, but this might throw an error in the future."))
                     (let [config    (assoc config :index stored-index)
                           store     (ds/add-cache-and-handlers raw-store config)
-                          stored-db (k/get-in store [:db] nil {:sync? true})]
+                          stored-db (k/get store (:branch config) nil {:sync? true})]
                       [config store stored-db]))
                   [config store stored-db]))
-              config    (dc/config-merge (:config stored-db) config)
+              _ (ensure-stored-config-consistency config (:config stored-db))
               conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
           (swap! (:wrapped-atom conn) assoc :transactor
                  (t/create-transactor (:transactor config) conn))
