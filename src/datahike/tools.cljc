@@ -24,9 +24,17 @@
    (defmacro case-tree [qs vs]
      (-case-tree qs vs)))
 
-(defn get-time []
+(defn get-date 
+  "Returns current date-time"
+  []
   #?(:clj (java.util.Date.)
      :cljs (js/Date.)))
+
+(defn get-uuid 
+  "Returns a random uuid"
+  []
+  #?(:clj (UUID/randomUUID)
+     :cljs (random-uuid)))
 
 (defmacro raise
   "Logging an error and throwing an exception with message and structured data.
@@ -100,7 +108,7 @@
    :konserve/version (get-version 'io.replikativ/konserve)
    :hitchhiker.tree/version (get-version 'io.replikativ/hitchhiker-tree)
    :persistent.set/version (get-version 'persistent-sorted-set/persistent-sorted-set)
-   :datahike/id #?(:clj (UUID/randomUUID) :cljs (random-uuid))
+   :datahike/id (get-uuid)
    :datahike/created-at (Date.)})
 
 (defn deep-merge

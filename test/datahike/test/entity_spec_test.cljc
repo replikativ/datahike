@@ -105,15 +105,15 @@
           (is (= valid-account (d/pull db-after '[:account/email :account/balance] [:account/email (:account/email valid-account)])))))
       (testing "assert invalid account with one invalid predicate"
         (is (thrown-with-msg? Throwable
-             #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/is-email?\} of spec :account/guard"
+             #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/is-email\?\} of spec :account/guard"
              (tx-with-ensure invalid-account))))
       (testing "assert invalid account with mulitple invalid predicates"
         (is (thrown-with-msg? Throwable
-             #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/positive-balance? datahike.test.entity-spec-test/is-email?\} of spec :account/guard"
+             #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/positive-balance\? datahike.test.entity-spec-test/is-email\?\} of spec :account/guard"
              (tx-with-ensure invalid-account-multiple))))
       (testing "assert empty account"
         (is (thrown-with-msg? Throwable
-             #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/positive-balance? datahike.test.entity-spec-test/is-email?\} of spec :account/guard"
+             #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/positive-balance\? datahike.test.entity-spec-test/is-email\?\} of spec :account/guard"
              (tx-with-ensure empty-account)))))))
 
 (deftest test-attribute-and-predicate-assertion
@@ -144,11 +144,11 @@
              (tx-with-ensure invalid-account-attr))))
       (testing "assert invalid account with one invalid predicate"
         (is (thrown-with-msg? Throwable
-             #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/is-email?\} of spec :account/guard"
+             #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/is-email\?\} of spec :account/guard"
              (tx-with-ensure invalid-account-pred))))
       (testing "assert invalid account with mulitple invalid predicates"
         (is (thrown-with-msg? Throwable
-             #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/positive-balance? datahike.test.entity-spec-test/is-email?\} of spec :account/guard"
+             #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/positive-balance\? datahike.test.entity-spec-test/is-email\?\} of spec :account/guard"
              (tx-with-ensure invalid-account-pred-multiple))))
       (testing "assert empty account with required attributes precidenting over predicates"
         (is (thrown-with-msg? Throwable

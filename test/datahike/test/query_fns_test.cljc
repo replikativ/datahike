@@ -3,10 +3,12 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.api :as d]
-   [datahike.db :as db])
-  (:import [java.util UUID Date])
+   [datahike.db :as db]
+   [datahike.tools :as dt]  
+   #?(:cljs [js.Date]))
   #?(:clj
-     (:import [clojure.lang ExceptionInfo])))
+     (:import [clojure.lang ExceptionInfo]
+              [java.util Date])))
 
 (deftest test-query-fns
   (testing "predicate without free variables"
@@ -360,14 +362,18 @@
                 [(?pred ?a)]]
               (d/db-with (db/empty-db) [[:db/add 1 :age 20]])))))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
+(defn sample-query-fn [] 42)
+
 #?(:clj
    (deftest test-symbol-resolution
      (is (= 42 (d/q '[:find ?x .
                       :where [(datahike.test.query-fns-test/sample-query-fn) ?x]])))))
 
 (deftest test-built-in-predicates-types
-  (let [uuids (sort (repeatedly 3 #(UUID/randomUUID)))
-        dates (map #(-> (Date.) .getTime (+ (* % 86400 1000)) Date.) (range 3))
+  (let [uuids (sort (repeatedly 3 dt/get-uuid))
+        dates (map #(->> (dt/get-date) .getTime (+ (* % 86400 1000)) #?(:clj Date. :cljs (js.Date/set-time js/Date))) 
+                   (range 3))
         entities [{:db/id 1 :uuid (nth uuids 0) :birthday (nth dates 0) :symbol 'a :name "Alek" :age 20
                    :group :a :collegues [1 2] :married? false}
                   {:db/id 2 :uuid (nth uuids 1) :birthday (nth dates 1) :symbol 'i :name "Ivan" :age 30

@@ -203,7 +203,7 @@
     (is (= (:weight (d/entity @conn 1)) 300))
     (d/transact conn {:tx-data [[:db/cas 1 :weight 300 400]]})
     (is (= (:weight (d/entity @conn 1)) 400))
-    (is (thrown-with-msg? Throwable #":db.fn/cas failed on datom [1 :weight 400], expected 200"
+    (is (thrown-with-msg? Throwable #":db\.fn/cas failed on datom \[1 :weight 400\], expected 200"
                      (d/transact conn {:tx-data [[:db.fn/cas 1 :weight 200 210]]}))))
 
   (let [conn  (du/setup-db {:initial-tx [{:db/ident :label :db/cardinality :db.cardinality/many}]})]
@@ -211,18 +211,18 @@
     (d/transact conn {:tx-data [[:db/add 1 :label :y]]})
     (d/transact conn {:tx-data [[:db.fn/cas 1 :label :y :z]]})
     (is (= (:label (d/entity @conn 1)) #{:x :y :z}))
-    (is (thrown-with-msg? Throwable #":db.fn/cas failed on datom [1 :label (:x :y :z)], expected :s"
+    (is (thrown-with-msg? Throwable #":db\.fn/cas failed on datom \[1 :label \(:x :y :z\)\], expected :s"
                      (d/transact conn {:tx-data [[:db.fn/cas 1 :label :s :t]]}))))
 
   (let [conn (du/setup-db)]
     (d/transact conn {:tx-data [[:db/add 1 :name "Ivan"]]})
     (d/transact conn {:tx-data [[:db.fn/cas 1 :age nil 42]]})
     (is (= (:age (d/entity @conn 1)) 42))
-    (is (thrown-with-msg? Throwable #":db.fn/cas failed on datom [1 :age 42], expected nil"
+    (is (thrown-with-msg? Throwable #":db\.fn/cas failed on datom \[1 :age 42\], expected nil"
                      (d/transact conn {:tx-data [[:db.fn/cas 1 :age nil 4711]]}))))
 
   (let [conn (du/setup-db)]
-    (is (thrown-with-msg? Throwable #"Can't use tempid in '[:db.fn/cas -1 :attr nil :val]'. Tempids are allowed in :db/add only"
+    (is (thrown-with-msg? Throwable #"Can't use tempid in '\[:db\.fn/cas -1 :attr nil :val\]'. Tempids are allowed in :db/add only"
                      (d/transact conn {:tx-data [[:db/add    -1 :name "Ivan"]
                                                  [:db.fn/cas -1 :attr nil :val]]})))))
 
@@ -412,7 +412,7 @@
              generated))))
   (testing "manual txInstant is the same as auto-generated"
     (let [conn (du/setup-db)
-          date (tools/get-time)
+          date (tools/get-date)
           _   (d/transact conn {:tx-data [{:name "Sergey"
                                             :age  5}]
                                  :tx-meta {:db/txInstant date}})]
@@ -436,7 +436,7 @@
                    :db/valueType   :db.type/long}]
           conn (du/setup-db {:initial-tx schema
                              :schema-flexibility :write})]
-      (is (thrown-with-msg? Throwable #"Bad entity attribute :foo at [:db/add 536870914 :foo :bar 536870914], not defined in current schema"
+      (is (thrown-with-msg? Throwable #"Bad entity attribute :foo at \[:db/add 536870914 :foo :bar 536870914\], not defined in current schema"
                        (d/transact conn {:tx-data [{:name "Sergey"
                                                     :age  5}]
                                          :tx-meta {:foo :bar}})))))

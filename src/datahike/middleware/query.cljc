@@ -2,7 +2,7 @@
   (:require [clojure.pprint :as pprint]))
 
 (defn now []
-  #?(:clj (. System (nanoTime)) 
+  #?(:clj (. System (nanoTime))
           :cljs (.getTime (js/Date.))))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
@@ -16,4 +16,3 @@
                       :q      (update query :args str)
                       :inputs (str inputs)})
       result)))
-

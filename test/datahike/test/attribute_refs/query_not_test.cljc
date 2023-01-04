@@ -180,14 +180,14 @@
                                  test-db))
     '[(not [?e :mname "Ivan"])
       [?e :mname]]
-    #"Insufficient bindings: none of #\{?e\} is bound in \(not \[?e :mname \"Ivan\"\]\)"
+    #"Insufficient bindings: none of #\{\?e\} is bound in \(not \[\?e :mname \"Ivan\"\]\)"
 
     '[[?e :mname]
       (not-join [?e]
                 (not [1 :age ?a])
                 [?e :age ?a])]
-    #"Insufficient bindings: none of #\{?a\} is bound in \(not \[1 :age ?a\]\)"
+    #"Insufficient bindings: none of #\{\?a\} is bound in \(not \[1 :age \?a\]\)"
 
     '[[?e :mname]
       (not [?a :mname "Ivan"])]
-    #"Insufficient bindings: none of #\{?a\} is bound in \(not \[?a :mname \"Ivan\"\]\)"))
+    #"Insufficient bindings: none of #\{\?a\} is bound in \(not \[\?a :mname \"Ivan\"\]\)"))

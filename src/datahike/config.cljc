@@ -5,12 +5,12 @@
             [clojure.walk :as walk]
             #?(:cljs [datahike.cljs :refer [Throwable]])
             [datahike.index :as di]
-            #?(:clj [datahike.store :as ds])
-            #?(:clj [datahike.tools :as dt])
+            #?(:clj [datahike.store :as ds]) 
+            [datahike.tools :as dt]
             [environ.core :refer [env]]
             [zufall.core :as z]
             #?(:cljs [js.Boolean :as Boolean]))
-  (:import [java.net URI]))
+  #?(:clj (:import [java.net URI])))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (def ^:dynamic *default-index* :datahike.index/persistent-set)
@@ -80,8 +80,7 @@
                         :path path
                         :host host
                         :port port
-                        :id (str #?(:clj (java.util.UUID/randomUUID)
-                                         :cljs (random-uuid)))}
+                        :id (str (dt/get-uuid))}
                    :level {:path path}
                    :file {:path path}))
    :index index

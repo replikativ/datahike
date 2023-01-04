@@ -3,11 +3,11 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.api :as d]
-   [datahike.db :as db]
-   [datahike.impl.entity :as de]
    [datahike.constants :as const]
-   [datahike.test.core-test :as tdc])
-  (:import [java.util UUID]))
+   [datahike.db :as db] 
+   [datahike.impl.entity :as de]
+   [datahike.tools :as dt]
+   [datahike.test.core-test :as tdc]))
 
 #?(:cljs
    (def Throwable js/Error))
@@ -269,7 +269,7 @@
         inactive-count 5
         space-taker-count 1000]
     (letfn [(random-uuid []
-              (UUID/randomUUID))
+              (dt/get-uuid))
             (random-char []
               (rand-nth ascii-ish))
             (random-string [length]

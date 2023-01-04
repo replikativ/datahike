@@ -260,17 +260,17 @@
   (testing "Keyword transaction in reference DB"
     (let [conn (setup-db ref-cfg)
           next-eid (inc (:max-eid @conn))]
-      (is (thrown-with-msg? Throwable (re-pattern (str "Bad entity attribute " :db/ident 
-                                                       " at " [:db/add next-eid :db/ident :name] ","
-                                                       " expected reference number")) ;; TODO: ensure to have error thrown
+      (is (thrown-with-msg? Throwable (re-pattern (str "Bad entity attribute :db/ident"
+                                                       " at \\[:db/add " next-eid " :db/ident :name\\],"
+                                                       " expected reference number"))
                        (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
 (deftest test-transact-data-with-reference-attr
   (testing "Reference transaction in keyword DB"
     (let [conn (setup-db no-ref-cfg)
           next-eid (inc (:max-eid @conn))]
-      (is (thrown-with-msg? Throwable (re-pattern (str "Bad entity attribute " 1 
-                                                       " at " [:db/add next-eid 1 :name] ","
+      (is (thrown-with-msg? Throwable (re-pattern (str "Bad entity attribute 1"
+                                                       " at \\[:db/add " next-eid " 1 :name\\],"
                                                        " expected keyword or string"))
                        (d/transact conn [[:db/add next-eid 1 :name]])))))
 

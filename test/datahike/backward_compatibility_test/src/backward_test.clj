@@ -15,7 +15,7 @@
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn write [_opt]
-  (t/info "Writing to db using latest released version of datahike ....")
+  (t/info "Writing to db using latest released version of datahike...")
   (t/set-level! :warn)
 
   (d/delete-database cfg)
@@ -24,7 +24,7 @@
     (d/transact conn
                 (vec (for [i (range size)]
                        [:db/add (inc i) :age i]))))
-  (t/info "Wrote " size " entries."))
+  (t/info (str "Wrote " size " entries.")))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn read [_opt]
@@ -35,4 +35,4 @@
                           :where [?e :age ?a]]
                         @conn))]
     (assert (= [size] res))
-    (t/info "Read " (first res) " entries.")))
+    (t/info (str "Read " (first res) " entries."))))

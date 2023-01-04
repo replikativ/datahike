@@ -34,9 +34,9 @@
          (kc/-compare b f)
          (kc/-compare c g)
          (kc/-compare d h)))))
- #?@(:clj 
-     [String 
-     (-compare [key1 key2] 
+ #?@(:clj
+     [String
+     (-compare [key1 key2]
                (compare key1 key2))])
   Keyword
   (-compare [key1 key2]

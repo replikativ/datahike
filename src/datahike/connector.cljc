@@ -1,9 +1,9 @@
 (ns ^:no-doc datahike.connector
   (:require [clojure.spec.alpha :as s]
-            [clojure.core.async :refer [go <!]] 
+            [clojure.core.async :refer [go <!]]
             #?(:cljs [datahike.cljs :refer [Throwable]])
             [datahike.config :as dc]
-            [datahike.core :as d] 
+            [datahike.core :as d]
             [datahike.db :as db]
             [datahike.index :as di]
             [datahike.store :as ds]

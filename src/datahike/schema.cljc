@@ -3,14 +3,16 @@
             [clojure.spec.alpha :as s]
             [clojure.string :as str])
   #?(:clj (:import [datahike.datom Datom]
-                   [java.lang Long]
-                   [java.util Date])))
+                   [java.lang Long])))
 
 (defn long? [x]
-  #?(:clj (instance? Long x)  
+  #?(:clj (instance? Long x)
           :cljs (integer? x)))
 
-(s/def :db.type/id #(or (long? %) (string? %)))
+(s/def :db.type/id (s/or :long long?
+                         :string string?
+                         :enum :db.type/keyword
+                         :ref vector?))
 
 ;; db types
 #?(:clj (s/def :db.type/bigdec decimal?))
@@ -20,7 +22,7 @@
 (s/def :db.type/double double?)
 (s/def :db.type/float float?)
 (s/def :db.type/number number?)
-(s/def :db.type/instant #(instance? #?(:clj Date :cljs js/Date) %))
+(s/def :db.type/instant inst?)
 (s/def :db.type/keyword keyword?)
 (s/def :db.type/long long?)
 (s/def :db.type/ref :db.type/id)

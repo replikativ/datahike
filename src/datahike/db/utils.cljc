@@ -50,7 +50,7 @@
    E.g. ':a' is an attribute part of the tuple attribute ':a+b'.
    (tuple-source? :a) returns true."
   #?@(:clj  [^Boolean [db attr]]
-      :cljs [^boolean [db attr]]) 
+      :cljs [^boolean [db attr]])
   (is-attr? db attr :db/attrTuples))
 
 (defn tuple?
@@ -62,7 +62,7 @@
 
 (defn reverse-ref?
   #?@(:clj [^Boolean [ident]]
-      :cljs [^boolean [ident]]) 
+      :cljs [^boolean [ident]])
   (cond
     (keyword? ident)
     (= \_ (nth (name ident) 0))

@@ -1,4 +1,4 @@
-(ns datahike.index.interface 
+(ns datahike.index.interface
   "All the functions in this namespace must be implemented for each index type"
   (:refer-clojure :exclude [-flush -seq -count -persistent!]))
 

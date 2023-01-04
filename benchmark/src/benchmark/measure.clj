@@ -2,9 +2,9 @@
   (:require [benchmark.config :as c]
             [taoensso.timbre :as log]
             [datahike.api :as d]
+            [datahike.index :as di]
             [datahike.store :as ds]
-            [datahike.index :as di])
-  (:import [java.util UUID]))
+            [datahike.tools :as dt]))
 
 (defmacro timed
   "Evaluates expr. Returns the value of expr and the time in a map."
@@ -93,7 +93,7 @@
   ([entity-count options cfg] (measure-performance-full entity-count options cfg {}))
   ([entity-count {:keys [iterations function] :as options} config
     {:keys [spec-fn-name make-fn-invocation] :as _specified-fn}]
-   (let [unique-cfg (assoc config :name (str (UUID/randomUUID)))
+   (let [unique-cfg (assoc config :name (str (dt/get-uuid)))
          simple-cfg (-> config
                         (assoc :backend (get-in config [:store :backend]))
                         (dissoc :store))

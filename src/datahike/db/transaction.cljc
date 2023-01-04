@@ -10,7 +10,7 @@
             [datahike.db.utils :as dbu]
             [datahike.index :as di]
             [datahike.schema :as ds]
-            [datahike.tools :as dt :refer [get-time]]
+            [datahike.tools :as dt :refer [get-date]]
             #?(:cljs [js.Date :refer [Date]])
             [me.tonsky.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]))
@@ -23,13 +23,13 @@
   (when (and (datom-added datom)
              (dbu/is-attr? db (.-a datom) :db/unique))
     (when-let [found (not-empty (dbi/-datoms db :avet [(.-a datom) (.-v datom)]))]
-      (dt/raise "Cannot add " datom " because of unique constraint: " found
-             {:error :transact/unique :attribute (.-a datom) :datom datom}))))
+      (dt/raise (str "Cannot add " datom " because of unique constraint: " found) 
+                {:error :transact/unique :attribute (.-a datom) :datom datom}))))
 
 (defn- validate-val [v [_ _ a _ _ :as at] {:keys [config schema ref-ident-map] :as db}]
   (when (nil? v)
-    (dt/raise "Cannot store nil as a value at " at
-           {:error :transact/syntax, :value v, :context at}))
+    (dt/raise (str "Cannot store nil as a value at " at) 
+              {:error :transact/syntax, :value v, :context at}))
   (let [{:keys [attribute-refs? schema-flexibility]} config
         a-ident (if (and attribute-refs? (number? a)) (dbi/-ident-for db a) a)
         v-ident (if (and attribute-refs?
@@ -43,9 +43,9 @@
                           ds/implicit-schema-spec
                           schema)]
         (when-not (ds/value-valid? a-ident v-ident schema)
-          (dt/raise "Bad entity value " v-ident " at " at ", value does not match schema definition. Must be conform to: "
-                 (ds/describe-type (get-in schema-spec [a-ident :db/valueType]))
-                 {:error :transact/schema :value v-ident :attribute a-ident :schema (get-in db [:schema a-ident])}))))))
+          (dt/raise (str "Bad entity value " v-ident " at " at ", value does not match schema definition. Must be conform to: " 
+                         (ds/describe-type (get-in schema-spec [a-ident :db/valueType]))) 
+                    {:error :transact/schema :value v-ident :type (type v-ident) :attribute a-ident :schema (get-in db [:schema a-ident])}))))))
 
 (defn- current-tx [report]
   (inc (get-in report [:db-before :max-tx])))
@@ -747,7 +747,7 @@
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)
         initial-report (update initial-report :tx-meta
-                               #(merge {:db/txInstant (get-time)} %))
+                               #(merge {:db/txInstant (get-date)} %))
         meta-entities (flush-tx-meta initial-report)]
     (loop [report (update initial-report :db-after transient)
            es (if (dbi/-keep-history? db-before)

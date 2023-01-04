@@ -52,7 +52,7 @@
     (testing "historical values after with retraction"
       (d/transact conn [[:db/retractEntity [:name "Alice"]]])
       (is (thrown-with-msg? Throwable
-           #"Nothing found for entity id [:name \"Alice\"]"
+           #"Nothing found for entity id \[:name \"Alice\"\]"
            (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])))
       (is (= #{[30] [25]}
              (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"]))))
@@ -424,5 +424,5 @@
 (deftest as-of-should-fail-on-invalid-time-points
   (let [cfg (assoc-in cfg-template [:store :id] "as-of-invalid-time-points")
         conn (setup-db cfg)]
-    (is (thrown-with-msg? Throwable #"Invalid transaction ID. Must be bigger than 536870912."
+    (is (thrown-with-msg? Throwable #"Invalid transaction ID\. Must be bigger than 536870912\."
                      (d/as-of @conn 42)))))

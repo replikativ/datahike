@@ -1,6 +1,7 @@
 (ns datahike.test.utils
   (:require [datahike.api :as d]
-            [datahike.tools :as tools])
+            [datahike.tools :as tools]
+            [datahike.tools :as dt])
   #?(:clj (:import (java.util UUID))))
 
 (defn cfg-template
@@ -18,7 +19,7 @@
    (setup-db cfg true))
   ([cfg gen-uuid?]
    (let [cfg (cond-> (tools/deep-merge (cfg-template) cfg)
-               gen-uuid? (assoc-in [:store :id] (str #?(:clj (UUID/randomUUID) :cljs (random-uuid)))))]
+               gen-uuid? (assoc-in [:store :id] (str (dt/get-uuid))))]
      (d/delete-database cfg)
      (d/create-database cfg)
      (d/connect cfg))))

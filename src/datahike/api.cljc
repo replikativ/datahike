@@ -574,7 +574,7 @@
     ([db tx-data tx-meta]
      {:pre [(dbu/db? db)]}
      (if (is-filtered db)
-       (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
+       (dt/raise "Filtered DB cannot be modified" {:error :transaction/filtered})
        (dbt/transact-tx-data (db/map->TxReport
                               {:db-before db
                                :db-after  db
@@ -635,7 +635,7 @@
     {:pre [(or (int? time-point) (date? time-point))]}
     (if (dbi/-temporal-index? db)
       (SinceDB. db time-point)
-      (throw (ex-info "since is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
+      (dt/raise "since is only allowed on temporal indexed databases." {:config (dbi/-config db)}))))
 
 (def ^{:arglists '([db time-point])
        :doc "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long).
@@ -668,10 +668,10 @@
       (if (int? time-point)
         (if (<= const/tx0 time-point)
           (AsOfDB. db time-point)
-          (dt/raise (cl-format "Invalid transaction ID. Must be bigger than %d." const/tx0)
+          (dt/raise (str "Invalid transaction ID. Must be bigger than " const/tx0 ".")
                  {:time-point time-point}))
         (AsOfDB. db time-point))
-      (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
+      (dt/raise "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)}))))
 
 (def ^{:arglists '([db])
        :doc "Returns the full historical state of the database you may interact with.
@@ -702,7 +702,7 @@
   (fn [db]
     (if (dbi/-temporal-index? db)
       (HistoricalDB. db)
-      (throw (ex-info "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
+      (dt/raise "history is only allowed on temporal indexed databases." {:config (dbi/-config db)}))))
 
 (def ^{:arglists '([db arg-map])
        :doc "Returns part of `:avet` index between `[_ attr start]` and `[_ attr end]` in AVET sort order.

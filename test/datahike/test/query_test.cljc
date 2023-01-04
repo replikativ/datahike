@@ -381,7 +381,7 @@
                                     [(= ?age 37)]]}
                    :args [db]})
              #{[2] [3]}))
-      (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{?age\} not bound in \[\(= ?age 37\)\]"
+      (is (thrown-with-msg? Throwable  #"Insufficient bindings: \#\{\?age\} not bound in \[\(\= \?age 37\)\]"
                        (d/q {:query '{:find [?e]
                                       :where [[(= ?age 37)]
                                               [?e :age ?age]]}

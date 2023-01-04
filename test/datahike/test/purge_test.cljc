@@ -94,7 +94,7 @@
           (is (= #{} (find-entities (d/history @conn)))))))
     (testing "purge something that is not present in the database"
       (is (thrown-with-msg? Throwable
-           "Can't find entity with ID [:name \"Alice\"] to be purged"
+           #"Can't find entity with ID \[:name \"Alice\"\] to be purged"
            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
 
 (deftest test-purge-non-temporal-database
@@ -102,7 +102,7 @@
                               (assoc :keep-history? false)))]
     (testing "purge data in non temporal database"
       (is (thrown-with-msg? Throwable
-           "Purge entity is only available in temporal databases."
+           #"Purge entity is only available in temporal databases\."
            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
 
 (defn find-ages [db name]

@@ -44,7 +44,7 @@
    [16 :part 18]])
 
 (defn test-datoms [db offset]
-  (vec (concat (wrap-direct-datoms db offset :db/add  test-direct-datoms)
+  (vec (concat (wrap-direct-datoms db offset :db/add test-direct-datoms)
                (wrap-ref-datoms db offset :db/add test-ref-datoms))))
 
 (def test-db (d/db-with ref-db (test-datoms ref-db ref-e0)))

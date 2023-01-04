@@ -84,10 +84,10 @@
 
     (are [tx msg] (thrown-with-msg? Throwable msg (d/db-with db tx))
       [{:db/id [:name "Oleg"], :age 10}]
-      #"Nothing found for entity id [:name \"Oleg\"]"
+      #"Nothing found for entity id \[:name \"Oleg\"\]"
 
       [[:db/add [:name "Oleg"] :age 10]]
-      #"Nothing found for entity id [:name \"Oleg\"]")))
+      #"Nothing found for entity id \[:name \"Oleg\"\]")))
 
 (deftest test-lookup-refs-transact-multi
   (let [db (d/db-with (db/empty-db {:name    {:db/unique :db.unique/identity}
@@ -257,9 +257,7 @@
                   db)
              #{[1]}))
 
-      (is (thrown-with-msg? Throwable #"Nothing found for entity id [:name \"Valery\"]"
+      (is (thrown-with-msg? Throwable #"Nothing found for entity id \[:name \"Valery\"\]"
                        (d/q '[:find ?e
                               :where [[:name "Valery"] :friend ?e]]
                             db))))))
-
-

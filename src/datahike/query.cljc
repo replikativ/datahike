@@ -21,7 +21,7 @@
                                         FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                                         RulesVar SrcVar Variable]])
    [me.tonsky.persistent-sorted-set.arrays :as da])
-  #?(:clj (:import [clojure.lang Reflector Seqable LazySeq PersistentVector PersistentList 
+  #?(:clj (:import [clojure.lang Reflector Seqable LazySeq PersistentVector PersistentList
                     PersistentArrayMap]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                     FindColl FindRel FindScalar FindTuple PlainSymbol Pull
@@ -52,7 +52,7 @@
 
 (defn seqable?
 #?@(:clj [^Boolean [x]]
-          :cljs [^boolean [x]]) 
+          :cljs [^boolean [x]])
   (and (not (string? x))
        #?(:cljs (or (cljs.core/seqable? x)
                     (da/array? x))
