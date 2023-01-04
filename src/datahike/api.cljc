@@ -68,6 +68,9 @@
                               :schema-on-read (s/? (s/cat :k (s/? (s/and #(= % :schema-on-read))) :v boolean?)))
                :nil (s/cat))
   :ret nil?)
+
+(declare transact release)
+
 (def
   ^{:arglists '([] [config & deprecated-opts])
     :doc "Creates a database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
@@ -107,9 +110,9 @@
   (fn [& args]
     (let [config (apply storing/create-database args)]
       (when-let [txs (:initial-tx config)]
-        (let [conn (dc/connect config)]
-          (dc/transact conn txs)
-          (dc/release conn))))))
+        (let [conn (connect config)]
+          (transact conn txs)
+          (release conn))))))
 
 (s/fdef
   delete-database
