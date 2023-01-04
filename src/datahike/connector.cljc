@@ -265,7 +265,7 @@
                                {:temporal-eavt-key (di/-flush temporal-eavt backend)
                                 :temporal-aevt-key (di/-flush temporal-aevt backend)
                                 :temporal-avet-key (di/-flush temporal-avet backend)}))]
-      (k/assoc store :branches #{:db})
+      (k/assoc store :branches #{:db} {:sync? true})
       (k/assoc store cid db-to-store {:sync? true})
       (k/assoc store :db db-to-store {:sync? true})
       (ds/release-store store-config store)
