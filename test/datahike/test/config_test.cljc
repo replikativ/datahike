@@ -41,6 +41,7 @@
                          :schema-flexibility :write
                          :crypto-hash? false
                          :branch :db
+                         :transactor c/local-transactor
                          :search-cache-size c/*default-search-cache-size*
                          :store-cache-size c/*default-store-cache-size*}]
     (is (= (merge default-new-cfg
@@ -62,6 +63,7 @@
                      :index c/*default-index*
                      :crypto-hash? c/*default-crypto-hash?*
                      :branch c/*default-db-branch*
+                     :transactor c/local-transactor
                      :search-cache-size c/*default-search-cache-size*
                      :store-cache-size c/*default-store-cache-size*}
                     (when (seq (di/default-index-config c/*default-index*))

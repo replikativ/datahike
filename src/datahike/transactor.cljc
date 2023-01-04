@@ -44,9 +44,11 @@
            (recur))
          (log/debug "Transactor rx thread gracefully closed"))))))
 
+;; public API
+
 (defmulti create-transactor
   (fn [transactor-config _]
-    (or (:backend transactor-config) :local)))
+    (:backend transactor-config)))
 
 (defmethod create-transactor :local
   [{:keys [rx-buffer-size]} connection]
@@ -56,8 +58,6 @@
      {:rx-queue  rx-queue
       :rx-thread rx-thread
       :streaming? true})))
-
-;; public API
 
 (defn dispatch! [transactor arg-map]
   (-dispatch! transactor arg-map))
