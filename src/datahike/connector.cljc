@@ -74,7 +74,12 @@
         stored-config (merge {:transactor dc/local-transactor} stored-config)
         stored-config (if (empty? (:index-config stored-config))
                         (dissoc stored-config :index-config)
-                        stored-config)]
+                        stored-config)
+        ;; if we connect to remote allow transactor to be different
+        [config stored-config] (if-not (= dc/local-transactor config)
+                                 [(dissoc config :transactor)
+                                  (dissoc stored-config :transactor)]
+                                 [config stored-config])]
     (when-not (= config stored-config)
       (dt/raise "Configuration does not match stored configuration."
                 {:type          :config-does-not-match-stored-db
