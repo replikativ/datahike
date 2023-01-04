@@ -71,6 +71,7 @@
 (defn ensure-stored-config-consistency [config stored-config]
   (let [config (dissoc config :name)
         stored-config (dissoc stored-config :initial-tx :name)
+        stored-config (merge {:transactor dc/local-transactor} stored-config)
         stored-config (if (empty? (:index-config stored-config))
                         (dissoc stored-config :index-config)
                         stored-config)]
@@ -185,7 +186,7 @@
     (go
       (let [tx-report (<! (t/dispatch! transactor {:tx-fn 'datahike.core/load-entities
                                                    :tx-data entities
-                                                   :tx-x-meta nil}))]
+                                                   :tx-meta nil}))]
         (deliver p tx-report)))
     p))
 

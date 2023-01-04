@@ -27,6 +27,7 @@
 (s/def ::search-cache-size nat-int?)
 (s/def ::store-cache-size pos-int?)
 (s/def ::crypto-hash? boolean?)
+(s/def ::transactor map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
 (s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
@@ -51,12 +52,15 @@
                                          ::initial-tx
                                          ::name
                                          ::branch
+                                         ::transactor
                                          ::middleware]))
 
 (s/def :deprecated/schema-on-read boolean?)
 (s/def :deprecated/temporal-index boolean?)
 (s/def :deprecated/config (s/keys :req-un [:datahike/store]
                                   :opt-un [:deprecated/temporal-index :deprecated/schema-on-read]))
+
+(def local-transactor {:backend :local})
 
 (defn from-deprecated
   [{:keys [backend username password path host port] :as _backend-cfg}
@@ -83,6 +87,7 @@
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)
    :branch *default-db-branch*
+   :transactor local-transactor
    :crypto-hash? *default-crypto-hash?*
    :search-cache-size *default-search-cache-size*
    :store-cache-size *default-store-cache-size*})
@@ -126,6 +131,7 @@
    :store-cache-size *default-store-cache-size*
    :crypto-hash? *default-crypto-hash?*
    :branch *default-db-branch*
+   :transactor local-transactor
    :index-config (di/default-index-config *default-index*)})
 
 (defn remove-nils
@@ -162,6 +168,7 @@
                  :index index
                  :branch *default-db-branch*
                  :crypto-hash? *default-crypto-hash?*
+                 :transactor local-transactor
                  :search-cache-size (int-from-env :datahike-search-cache-size *default-search-cache-size*)
                  :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
