@@ -40,7 +40,7 @@ public final class LibDatahike {
     }
 
     public static @CConst CCharPointer toCCharPointer(String result) {
-        CTypeConversion.CCharPointerHolder holder = CTypeConversion.toCBytes(result.getBytes(StandardCharsets.UTF_8));
+        CTypeConversion.CCharPointerHolder holder = CTypeConversion.toCString(result);
         CCharPointer value = holder.get();
         return value;
     }
