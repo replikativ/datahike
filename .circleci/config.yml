@@ -214,7 +214,6 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
-            - native-image
       - native-image-test:
           context: dockerhub-deploy
           requires:
@@ -224,12 +223,10 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
-            - native-image
       - integration-test:
           context: dockerhub-deploy
           requires:
             - build
-            - native-image
       - deploy:
           context:
             - dockerhub-deploy
