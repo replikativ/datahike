@@ -8,11 +8,7 @@
         environ/environ                             {:mvn/version "1.2.0"}
         com.taoensso/timbre                         {:mvn/version "6.0.2"}
         io.replikativ/superv.async                  {:mvn/version "0.3.43"}
-<<<<<<< HEAD
         io.replikativ/datalog-parser                {:mvn/version "0.2.25"}
-=======
-        io.lambdaforge/datalog-parser               {:mvn/version "0.2.23"}
->>>>>>> 9724475 (Use bb tasks for ci operations)
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
