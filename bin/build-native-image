@@ -4,6 +4,6 @@ if ! $(builtin type -P native-image &> /dev/null); then
     echo "PATH does not contain native-image. Make sure to add your GraalVM to it."
     exit 1
 else
-    clojure -T:build compile
+    bb compile
     clojure -M:native-cli --no-fallback "-J-Xmx4g"
 fi
