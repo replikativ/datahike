@@ -90,9 +90,12 @@ jobs:
       - run: 
           name: install babashka
           command: |
+            cd /home/circleci
+            mkdir bin
             curl -sLO https://raw.githubusercontent.com/babashka/babashka/master/install
             chmod +x install
-            ./install --dir .
+            ./install --dir /home/circleci/bin
+            export PATH=/home/circleci/bin:$PATH
       - run:
           name: build native-image
           command: |
