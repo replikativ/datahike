@@ -127,7 +127,8 @@
      (reset! connection db)
      (if noCommit
        tx-report
-       (assoc-in tx-report [:tx-meta :db/commitId] (get-in db [:meta :datahike/commit-id]))))))
+       (assoc-in tx-report [:tx-meta :db/commitId]
+                 (get-in db [:meta :datahike/commit-id]))))))
 
 (defprotocol PDatabaseCreator
   (-create-database [config opts])
@@ -183,7 +184,7 @@
                               :system-entities system-entities
                               :ident-ref-map   ident-ref-map
                               :ref-ident-map   ref-ident-map
-                              :config          (dissoc config :initial-tx)
+                              :config          (update config :initial-tx (comp not empty?))
                               :meta            meta
                               :eavt-key        (di/-flush eavt backend)
                               :aevt-key        (di/-flush aevt backend)

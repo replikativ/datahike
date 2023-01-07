@@ -30,7 +30,8 @@
 (s/def ::transactor map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
-(s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
+(s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?
+                                    :was-added? boolean?)))
 (s/def ::name string?)
 
 (s/def ::index-config map?)
