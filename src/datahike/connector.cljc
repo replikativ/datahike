@@ -1,15 +1,13 @@
 (ns ^:no-doc datahike.connector
-  (:require [datahike.core :as d]
-            [datahike.store :as ds]
-            [datahike.storing :as dsi]
+  (:require [datahike.store :as ds]
+            [datahike.writing :as dsi]
             [datahike.config :as dc]
-            [datahike.tools :as dt :refer [throwable-promise]]
-            [datahike.transactor :as t]
+            [datahike.writer :as t]
+            [datahike.tools :as dt]
             [konserve.core :as k]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
-            [clojure.data :refer [diff]]
-            [clojure.core.async :refer [go <!]])
+            [clojure.data :refer [diff]])
   (:import [clojure.lang IDeref IAtom IMeta ILookup]))
 
 ;; connection
@@ -39,7 +37,7 @@
 
 (defn deref-conn [^Connection conn]
   (let [wrapped-atom (.-wrapped-atom conn)]
-    (if (not (t/streaming? (get @wrapped-atom :transactor)))
+    (if (not (t/streaming? (get @wrapped-atom :writer)))
       (let [store  (:store @wrapped-atom)
             stored (k/get store (:branch (:config @wrapped-atom)) nil {:sync? true})]
         (log/trace "Fetched db for deref: " (:config stored))
@@ -71,14 +69,14 @@
 (defn ensure-stored-config-consistency [config stored-config]
   (let [config (dissoc config :name)
         stored-config (dissoc stored-config :initial-tx :name)
-        stored-config (merge {:transactor dc/local-transactor} stored-config)
+        stored-config (merge {:writer dc/local-writer} stored-config)
         stored-config (if (empty? (:index-config stored-config))
                         (dissoc stored-config :index-config)
                         stored-config)
-        ;; if we connect to remote allow transactor to be different
-        [config stored-config] (if-not (= dc/local-transactor config)
-                                 [(dissoc config :transactor)
-                                  (dissoc stored-config :transactor)]
+        ;; if we connect to remote allow writer to be different
+        [config stored-config] (if-not (= dc/local-writer config)
+                                 [(dissoc config :writer)
+                                  (dissoc stored-config :writer)]
                                  [config stored-config])]
     (when-not (= config stored-config)
       (dt/raise "Configuration does not match stored configuration."
@@ -131,8 +129,8 @@
                   [config store stored-db]))
               _ (ensure-stored-config-consistency config (:config stored-db))
               conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
-          (swap! (:wrapped-atom conn) assoc :transactor
-                 (t/create-transactor (:transactor config) conn))
+          (swap! (:wrapped-atom conn) assoc :writer
+                 (t/create-writer (:writer config) conn))
           (add-connection! conn-id conn)
           conn)))))
 
@@ -153,45 +151,5 @@
       (let [new-conns (swap! connections update-in [conn-id :count] dec)]
         (when (zero? (get-in new-conns [conn-id :count]))
           (delete-connection! conn-id)
-          (t/shutdown (:transactor db))
+          (t/shutdown (:writer db))
           nil)))))
-
-(defn transact!
-  [connection {:keys [tx-data tx-meta]}]
-  {:pre [(d/conn? connection)]}
-  (let [p (throwable-promise)
-        transactor (:transactor @(:wrapped-atom connection))]
-    (go
-      (let [tx-report (<! (t/dispatch! transactor
-                                       {:tx-fn 'datahike.core/transact
-                                        :tx-data tx-data
-                                        :tx-meta tx-meta}))]
-        (deliver p tx-report)))
-    p))
-
-(defn transact [connection arg-map]
-  (let [arg (cond
-              (and (map? arg-map) (contains? arg-map :tx-data)) arg-map
-              (vector? arg-map) {:tx-data arg-map}
-              (seq? arg-map) {:tx-data arg-map}
-              :else (dt/raise "Bad argument to transact, expected map with :tx-data as key.
-                               Vector and sequence are allowed as argument but deprecated."
-                              {:error :transact/syntax :argument arg-map}))
-        _ (log/debug "Transacting" (count (:tx-data arg)) " objects with arguments: " (dissoc arg :tx-data))
-        _ (log/trace "Transaction data" (:tx-data arg))]
-    (try
-      (deref (transact! connection arg))
-      (catch Exception e
-        (log/errorf "Error during transaction %s" (.getMessage e))
-        (throw (.getCause e))))))
-
-(defn load-entities [connection entities]
-  (let [p (throwable-promise)
-        transactor (:transactor @(:wrapped-atom connection))]
-    (go
-      (let [tx-report (<! (t/dispatch! transactor {:tx-fn 'datahike.core/load-entities
-                                                   :tx-data entities
-                                                   :tx-meta nil}))]
-        (deliver p tx-report)))
-    p))
-

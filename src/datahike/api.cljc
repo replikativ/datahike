@@ -2,7 +2,9 @@
   (:refer-clojure :exclude [filter])
   (:require [datahike.connector :as dc]
             [clojure.spec.alpha :as s]
-            [datahike.storing :as storing]
+            [datahike.writer :as dw]
+            [datahike.tools :as dt]
+            [datahike.writing :as writing]
             [datahike.constants :as const]
             [datahike.core :as dcore]
             [datahike.spec :as spec]
@@ -58,7 +60,7 @@
           Usage:
 
               (database-exists? {:store {:backend :mem :id \"example\"}})"}
-  database-exists? storing/database-exists?)
+  database-exists? writing/database-exists?)
 
 (s/fdef
   create-database
@@ -85,7 +87,7 @@
             - `:read` validates the data when your read data from the database, `:write` validates the data when you transact new data.
           - `:index` defines the data type of the index. Available are `:datahike.index/hitchhiker-tree`, `:datahike.index/persistent-set` (only available with in-memory storage)
           - `:name` defines your database name optionally, if not set, a random name is created
-          - `:transactor` optionally configures a transactor as a hash map. If not set, the default local transactor is used.
+          - `:writer` optionally configures a writer as a hash map. If not set, the default local writer is used.
 
           Default configuration has in-memory store, keeps history with write schema flexibility, and has no initial transaction:
           {:store {:backend :mem :id \"default\"} :keep-history? true :schema-flexibility :write}
@@ -99,7 +101,7 @@
               ;; You may influence this behaviour using the `:schema-flexibility` attribute:
               (create-database {:store {:backend :mem :id \"example\"} :schema-flexibility :read})
 
-              ;; By storing historical data in a separate index, datahike has the capability of querying data from any point in time.
+              ;; By writing historical data in a separate index, datahike has the capability of querying data from any point in time.
               ;; You may control this feature using the `:keep-history?` attribute:
               (create-database {:store {:backend :mem :id \"example\"} :keep-history? false})
 
@@ -108,7 +110,7 @@
 
   create-database
   (fn [& args]
-    (let [config (apply storing/create-database args)]
+    (let [config (apply writing/create-database args)]
       (when-let [txs (:initial-tx config)]
         (let [conn (connect config)]
           (transact conn txs)
@@ -123,7 +125,16 @@
        :doc      "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
                   For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
   delete-database
-  storing/delete-database)
+  writing/delete-database)
+
+(s/fdef
+    transact!
+  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
+  :ret #(s/valid? spec/STransactionReport @%))
+(def ^{:arglists '([conn tx-data tx-meta])
+       :no-doc   true}
+  transact!
+  dw/transact!)
 
 (s/fdef
   transact
@@ -216,16 +227,15 @@
                       (transact conn [[:db/add  -1 :name   \"Oleg\"]
                                       {:db/add 296 :friend -1]])"}
   transact
-  dc/transact)
-
-(s/fdef
-  transact!
-  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
-  :ret #(s/valid? spec/STransactionReport @%))
-(def ^{:arglists '([conn tx-data tx-meta])
-       :no-doc    true}
-  transact!
-  dc/transact!)
+  (fn [connection arg-map]
+    (let [arg (cond
+                (and (map? arg-map) (contains? arg-map :tx-data)) arg-map
+                (vector? arg-map)                                 {:tx-data arg-map}
+                (seq? arg-map)                                    {:tx-data arg-map}
+                :else                                             (dt/raise "Bad argument to transact, expected map with :tx-data as key.
+                               Vector and sequence are allowed as argument but deprecated."
+                                                                            {:error :transact/syntax :argument arg-map}))]
+      (deref (transact! connection arg)))))
 
 (s/fdef
   load-entities
@@ -234,7 +244,7 @@
 (def ^{:arglists '([conn tx-data])
        :doc "Load entities directly"}
   load-entities
-  dc/load-entities)
+  dw/load-entities)
 
 (s/fdef
   release

@@ -3,7 +3,7 @@
   (:require [konserve.core :as k]
             [datahike.core :refer [transact]]
             [datahike.store :refer [store-identity]]
-            [datahike.storing :refer [stored->db db->stored stored-db?
+            [datahike.writing :refer [stored->db db->stored stored-db?
                                       update-and-flush-db create-commit-id]]
             [datahike.connector :refer [delete-connection!]]
             [superv.async :refer [<? S go-loop-try]]

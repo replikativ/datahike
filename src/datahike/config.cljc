@@ -27,11 +27,11 @@
 (s/def ::search-cache-size nat-int?)
 (s/def ::store-cache-size pos-int?)
 (s/def ::crypto-hash? boolean?)
-(s/def ::transactor map?)
+(s/def ::writer map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
 (s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?
-                                    :was-added? boolean?)))
+                                     :was-added? boolean?)))
 (s/def ::name string?)
 
 (s/def ::index-config map?)
@@ -53,7 +53,7 @@
                                          ::initial-tx
                                          ::name
                                          ::branch
-                                         ::transactor
+                                         ::writer
                                          ::middleware]))
 
 (s/def :deprecated/schema-on-read boolean?)
@@ -61,7 +61,7 @@
 (s/def :deprecated/config (s/keys :req-un [:datahike/store]
                                   :opt-un [:deprecated/temporal-index :deprecated/schema-on-read]))
 
-(def local-transactor {:backend :local})
+(def local-writer {:backend :local})
 
 (defn from-deprecated
   [{:keys [backend username password path host port] :as _backend-cfg}
@@ -87,11 +87,19 @@
    :attribute-refs? *default-attribute-refs?*
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)
+<<<<<<< HEAD
    :branch *default-db-branch*
    :transactor local-transactor
    :crypto-hash? *default-crypto-hash?*
    :search-cache-size *default-search-cache-size*
    :store-cache-size *default-store-cache-size*})
+=======
+   :crypto-hash? false
+   :branch :db
+   :writer local-writer
+   :search-cache-size default-search-cache-size
+   :store-cache-size default-store-cache-size})
+>>>>>>> 2f67aa9 (Factorize transaction functions and introduce more precise naming.)
 
 (defn int-from-env
   [key default]
@@ -132,7 +140,7 @@
    :store-cache-size *default-store-cache-size*
    :crypto-hash? *default-crypto-hash?*
    :branch *default-db-branch*
-   :transactor local-transactor
+   :writer local-writer
    :index-config (di/default-index-config *default-index*)})
 
 (defn remove-nils
@@ -169,7 +177,7 @@
                  :index index
                  :branch *default-db-branch*
                  :crypto-hash? *default-crypto-hash?*
-                 :transactor local-transactor
+                 :writer local-writer
                  :search-cache-size (int-from-env :datahike-search-cache-size *default-search-cache-size*)
                  :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]

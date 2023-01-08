@@ -1,11 +1,13 @@
-(ns datahike.storing
+(ns datahike.writing
   "Manage all state changes and access to state of durable store."
   (:require [datahike.db :as db]
             [datahike.index :as di]
             [datahike.store :as ds]
             [datahike.tools :as dt]
+            [datahike.core :as core]
             [datahike.config :as dc]
             [konserve.core :as k]
+            [taoensso.timbre :as log]
             [hasch.core :refer [uuid]]))
 
 ;; mapping to storage
@@ -226,3 +228,11 @@
    ;; TODO log deprecation notice with #54
    (-database-exists? config)))
 
+(defn transact! [connection {:keys [tx-data tx-meta]}]
+  (log/debug "Transacting" (count tx-data) " objects with meta: " tx-meta)
+  (log/trace "Transaction data" tx-data)
+  (update-and-flush-db connection tx-data tx-meta core/transact))
+
+(defn load-entities [connection entities]
+  (log/debug "Loading" (count entities) " entities.")
+  (update-and-flush-db connection entities nil core/load-entities))
