@@ -57,7 +57,7 @@
   (fn [writer-config _]
     (:backend writer-config)))
 
-(defmethod create-writer :local
+(defmethod create-writer :self
   [{:keys [rx-buffer-size write-fn-map]} connection]
   (let [rx-queue (chan rx-buffer-size)
         rx-thread (create-rx-thread connection rx-queue
@@ -77,13 +77,25 @@
 (defn streaming? [writer]
   (-streaming? writer))
 
-(defn create-database [config])
+(defn backend-dispatch [config & _args]
+  (get-in config [:writer :backend] :self))
 
-(defn delete-database [config])
+(defmulti create-database backend-dispatch)
+
+(defmethod create-database :self [& args]
+  (let [p (throwable-promise)]
+    (deliver p (apply w/create-database args))
+    p))
+
+(defmulti delete-database backend-dispatch)
+
+(defmethod delete-database :self [& args]
+  (let [p (throwable-promise)]
+    (deliver p (apply w/delete-database args))
+    p))
 
 (defn transact!
   [connection {:keys [tx-data tx-meta]}]
-  #_{:pre [(d/conn? connection)]}
   (let [p (throwable-promise)
         writer (:writer @(:wrapped-atom connection))]
     (go

@@ -61,7 +61,7 @@
 (s/def :deprecated/config (s/keys :req-un [:datahike/store]
                                   :opt-un [:deprecated/temporal-index :deprecated/schema-on-read]))
 
-(def local-writer {:backend :local})
+(def self-writer {:backend :self})
 
 (defn from-deprecated
   [{:keys [backend username password path host port] :as _backend-cfg}
@@ -87,19 +87,11 @@
    :attribute-refs? *default-attribute-refs?*
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)
-<<<<<<< HEAD
    :branch *default-db-branch*
-   :transactor local-transactor
+   :writer self-writer
    :crypto-hash? *default-crypto-hash?*
    :search-cache-size *default-search-cache-size*
    :store-cache-size *default-store-cache-size*})
-=======
-   :crypto-hash? false
-   :branch :db
-   :writer local-writer
-   :search-cache-size default-search-cache-size
-   :store-cache-size default-store-cache-size})
->>>>>>> 2f67aa9 (Factorize transaction functions and introduce more precise naming.)
 
 (defn int-from-env
   [key default]
@@ -140,7 +132,7 @@
    :store-cache-size *default-store-cache-size*
    :crypto-hash? *default-crypto-hash?*
    :branch *default-db-branch*
-   :writer local-writer
+   :writer self-writer
    :index-config (di/default-index-config *default-index*)})
 
 (defn remove-nils
@@ -175,11 +167,19 @@
                  :attribute-refs? (bool-from-env :datahike-attribute-refs *default-attribute-refs?*)
                  :schema-flexibility (keyword (:datahike-schema-flexibility env *default-schema-flexibility*))
                  :index index
+<<<<<<< HEAD
                  :branch *default-db-branch*
                  :crypto-hash? *default-crypto-hash?*
                  :writer local-writer
                  :search-cache-size (int-from-env :datahike-search-cache-size *default-search-cache-size*)
                  :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)
+=======
+                 :crypto-hash? false
+                 :branch :db
+                 :writer self-writer
+                 :search-cache-size (int-from-env :datahike-search-cache-size default-search-cache-size)
+                 :store-cache-size (int-from-env :datahike-store-cache-size default-store-cache-size)
+>>>>>>> 4700986 (Handle create and delete database. Extend file identity to scope/host.)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
                                  index-config
                                  (di/default-index-config index))}

@@ -3,6 +3,7 @@
             [datahike.db.interface :as dbi]))
 
 (def ref-config {:store {:backend :mem}
+                 :writer {:backend :self}
                  :attribute-refs? true
                  :keep-history? false
                  :schema-flexibility :write})
