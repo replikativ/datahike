@@ -110,7 +110,7 @@
 
   create-database
   (fn [& args]
-    (let [config (apply writing/create-database args)]
+    (let [config @(apply dw/create-database args)]
       (when-let [txs (:initial-tx config)]
         (let [conn (connect config)]
           (transact conn txs)
@@ -125,7 +125,8 @@
        :doc      "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
                   For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
   delete-database
-  writing/delete-database)
+  (fn [& args]
+    @(apply dw/delete-database args)))
 
 (s/fdef
     transact!

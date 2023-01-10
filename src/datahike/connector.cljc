@@ -35,6 +35,13 @@
   IMeta
   (meta [_] (meta wrapped-atom)))
 
+#?(:clj
+   (defmethod print-method Connection
+     [^Connection conn ^java.io.Writer w]
+     (let [config (:config @(:wrapped-atom conn))]
+       (.write w "#datahike/Connection")
+       (.write w (pr-str [(ds/store-identity (:store config)) (:branch config)])))))
+
 (defn deref-conn [^Connection conn]
   (let [wrapped-atom (.-wrapped-atom conn)]
     (if (not (t/streaming? (get @wrapped-atom :writer)))
@@ -69,12 +76,12 @@
 (defn ensure-stored-config-consistency [config stored-config]
   (let [config (dissoc config :name)
         stored-config (dissoc stored-config :initial-tx :name)
-        stored-config (merge {:writer dc/local-writer} stored-config)
+        stored-config (merge {:writer dc/self-writer} stored-config)
         stored-config (if (empty? (:index-config stored-config))
                         (dissoc stored-config :index-config)
                         stored-config)
         ;; if we connect to remote allow writer to be different
-        [config stored-config] (if-not (= dc/local-writer config)
+        [config stored-config] (if-not (= dc/self-writer config)
                                  [(dissoc config :writer)
                                   (dissoc stored-config :writer)]
                                  [config stored-config])]
@@ -96,7 +103,7 @@
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))
           store-config (:store config)
           store-id (ds/store-identity store-config)
-          conn-id (conj store-id (:branch config))]
+          conn-id [store-id (:branch config)]]
       (if-let [conn (get-connection conn-id)]
         (let [conn-config (:config @(:wrapped-atom conn))]
           (when-not (= config conn-config)
@@ -144,8 +151,8 @@
 
 (defn release [connection]
   (let [db      @(:wrapped-atom connection)
-        conn-id (conj (ds/store-identity (get-in db [:config :store]))
-                      (get-in db [:config :branch]))]
+        conn-id [(ds/store-identity (get-in db [:config :store]))
+                 (get-in db [:config :branch])]]
     (if-not (get @connections conn-id)
       (log/info "Connection already released." conn-id)
       (let [new-conns (swap! connections update-in [conn-id :count] dec)]
