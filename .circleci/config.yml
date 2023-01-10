@@ -107,7 +107,7 @@ jobs:
           paths:
             - replikativ/dhi
   persistent-set-test:
-        executor: tools/clojurecli
+    executor: tools/clojurecli
     steps:
       - attach_workspace:
           at: /home/circleci
