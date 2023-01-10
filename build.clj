@@ -11,6 +11,8 @@
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
+(def native-shared-library-file (format "target/%s-%s-native-shared-library.jar"
+                                        (name lib) version))
 
 (defn clean
   [_]
@@ -21,7 +23,8 @@
   (b/javac {:src-dirs ["java"]
             :class-dir class-dir
             :basis basis
-            :javac-opts ["-source" "8" "-target" "8"]}))
+            :javac-opts ["-source" "8" "-target" "8"]})
+  (spit "resources/DATAHIKE_VERSION" version))
 
 (defn jar
   [_]
@@ -36,6 +39,25 @@
                :target-dir class-dir})
   (b/jar {:class-dir class-dir
           :jar-file jar-file}))
+
+(defn native-shared-library [_]
+  (clean nil)
+  (b/delete {:path "libdatahike/target"})
+  (compile nil)
+  (b/copy-dir {:src-dirs   ["src" "resources" "libdatahike/src"]
+               :target-dir class-dir})
+  (let [basis (b/create-basis {:project "deps.edn"
+                               :aliases [:libdatahike]})]
+    (b/compile-clj {:basis     basis
+                    :src-dirs  ["src"]
+                    :class-dir class-dir})
+    (b/compile-clj {:basis     basis
+                    :src-dirs  ["libdatahike/src"]
+                    :class-dir class-dir})
+    (b/uber {:class-dir class-dir
+             :uber-file native-shared-library-file
+             :basis     basis
+             :main      'datahike.cli})))
 
 (defn deploy
   "Don't forget to set CLOJARS_USERNAME and CLOJARS_PASSWORD env vars."
@@ -63,7 +85,8 @@
                             :tag version
                             :commit current-commit
                             :file jar-file
-                            :content-type "application/java-archive"})
+                            :content-type "application/java-archive"
+                            :draft false})
        (catch ExceptionInfo e
          (assoc (ex-data e) :failure? true))))
 

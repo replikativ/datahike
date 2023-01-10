@@ -13,7 +13,7 @@
   #?(:clj (:import [datahike.datom Datom]
                    [org.fressian.handlers WriteHandler ReadHandler]
                    [me.tonsky.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode]
-                   [java.util UUID])))
+                   [java.util UUID List])))
 
 (defn index-type->cmp
   ([index-type] (index-type->cmp index-type true))
@@ -182,7 +182,7 @@
 
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
   (psset/set-branching-factor! BRANCHING_FACTOR)
-  (let [pset (psset/sorted-set-by (index-type->cmp-quick index-type false))]
+  (let [^PersistentSortedSet pset (psset/sorted-set-by (index-type->cmp-quick index-type false))]
     (set! (.-_storage pset) (:storage store))
     (with-meta pset
       {:index-type index-type})))
@@ -197,7 +197,7 @@
                 (not (arrays/array? datoms))
                 (arrays/into-array)))
         _ (arrays/asort arr (index-type->cmp-quick index-type false))
-        pset (psset/from-sorted-array (index-type->cmp-quick index-type false) arr)]
+        ^PersistentSortedSet pset (psset/from-sorted-array (index-type->cmp-quick index-type false) arr)]
     (set! (.-_storage pset) (:storage store))
     (with-meta pset
       {:index-type index-type})))
@@ -226,7 +226,7 @@
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
                                                        (let [{:keys [keys level addresses]} (.readObject reader)]
-                                                         (Branch. (int level) keys (seq addresses)))))
+                                                         (Branch. (int level) ^List keys ^List (seq addresses)))))
                                                    "datahike.datom.Datom"
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]

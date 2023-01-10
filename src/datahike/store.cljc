@@ -5,7 +5,8 @@
             [environ.core :refer [env]]
             [datahike.index :as di]
             [konserve.cache :as kc]
-            [clojure.core.cache :as cache]))
+            [clojure.core.cache :as cache]
+            [taoensso.timbre :refer [info]]))
 
 (defn add-cache-and-handlers [raw-store config]
   (cond->> (kc/ensure-cache
@@ -53,7 +54,7 @@
   :backend)
 
 (defmethod default-config :default [{:keys [backend] :as config}]
-  (println "INFO: No default configuration found for" backend)
+  (info "No default configuration found for" backend)
   config)
 
 (defmulti config-spec
@@ -62,7 +63,7 @@
   :backend)
 
 (defmethod config-spec :default [{:keys [backend]}]
-  (println "INFO: Not configuration spec found for" backend))
+  (info "No configuration spec found for" backend))
 
 ;; memory
 
@@ -95,7 +96,7 @@
 
 ;; file
 
-(defmethod empty-store :file [{:keys [path config]}]
+(defmethod empty-store :file [{:keys [path]}]
   (fs/connect-fs-store path :opts {:sync? true}))
 
 (defmethod delete-store :file [{:keys [path]}]
