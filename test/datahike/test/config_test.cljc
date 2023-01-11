@@ -41,8 +41,8 @@
                          :schema-flexibility :write
                          :crypto-hash? false
                          :branch :db
-                         :search-cache-size c/default-search-cache-size
-                         :store-cache-size c/default-store-cache-size}]
+                         :search-cache-size c/*default-search-cache-size*
+                         :store-cache-size c/*default-store-cache-size*}]
     (is (= (merge default-new-cfg
                   {:store {:backend :mem :id "deprecated-test"}})
            (c/from-deprecated mem-cfg)))
@@ -56,16 +56,16 @@
     (let [config (c/load-config)]
       (is (= (merge {:store {:backend :mem
                              :id "default"}
-                     :attribute-refs? false
-                     :keep-history? true
-                     :schema-flexibility :write
-                     :index c/default-index
-                     :crypto-hash? false
-                     :branch :db
-                     :search-cache-size c/default-search-cache-size
-                     :store-cache-size c/default-store-cache-size}
-                    (when (seq (di/default-index-config c/default-index))
-                      {:index-config (di/default-index-config c/default-index)}))
+                     :attribute-refs? c/*default-attribute-refs?*
+                     :keep-history? c/*default-keep-history?*
+                     :schema-flexibility c/*default-schema-flexibility*
+                     :index c/*default-index*
+                     :crypto-hash? c/*default-crypto-hash?*
+                     :branch c/*default-db-branch*
+                     :search-cache-size c/*default-search-cache-size*
+                     :store-cache-size c/*default-store-cache-size*}
+                    (when (seq (di/default-index-config c/*default-index*))
+                      {:index-config (di/default-index-config c/*default-index*)}))
              (-> config (dissoc :name)))))))
 
 (deftest core-config-test
