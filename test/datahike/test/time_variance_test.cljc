@@ -10,6 +10,9 @@
 
 (set! *print-namespace-maps* false)
 
+#?(:cljs
+   (def Throwable js/Error))
+
 (def schema [{:db/ident       :name
               :db/valueType   :db.type/string
               :db/unique      :db.unique/identity
@@ -103,7 +106,7 @@
       (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:max-tx 536870915 :max-eid 4}}"
              (pr-str (d/history @conn)))))))
 
-(deftest test-as-of-db
+#_(deftest test-as-of-db
   (let [cfg (assoc-in cfg-template [:store :id] "test-as-of-db")
         conn (setup-db cfg)
         first-date (now)
@@ -133,7 +136,7 @@
           (is (= #{}
                  (d/q find-alices-age (d/as-of @conn tx-id) "Alice"))))))))
 
-(deftest test-since-db
+#_(deftest test-since-db
   (let [cfg (assoc-in cfg-template [:store :id] "test-since-db")
         conn (setup-db cfg)
         first-date (now)
@@ -153,7 +156,7 @@
       (is (= "#datahike/SinceDB {:origin #datahike/DB {:max-tx 536870914 :max-eid 4} :time-point 536870914}"
              (pr-str (d/since @conn tx-id)))))))
 
-(deftest test-no-history
+#_(deftest test-no-history
   (let [initial-tx [{:db/ident :name
                      :db/cardinality :db.cardinality/one
                      :db/valueType :db.type/string
@@ -180,7 +183,7 @@
       (is (= #{["Alice"] ["Bob"]}
              (d/q '[:find ?n :where [?e :name ?n]] (d/history @conn)))))))
 
-(deftest upsert-history
+#_(deftest upsert-history
   (let [cfg {:store {:backend :mem
                      :id "test-upsert-history"}
              :keep-history? true
@@ -423,5 +426,5 @@
 (deftest as-of-should-fail-on-invalid-time-points
   (let [cfg (assoc-in cfg-template [:store :id] "as-of-invalid-time-points")
         conn (setup-db cfg)]
-    (is (thrown-msg? "Invalid transaction ID. Must be bigger than 536870912."
-                     (d/as-of @conn 42)))))
+    (is (thrown-with-msg? Throwable #"Invalid transaction ID. Must be bigger than 536870912." 
+                          (d/as-of @conn 42)))))

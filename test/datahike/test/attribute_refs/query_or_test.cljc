@@ -2,11 +2,12 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is deftest are]]
       :clj [clojure.test :as t :refer [is deftest are]])
+   #?(:cljs [datahike.cljs :refer [Throwable]])
+   [datahike.api :as d]
    [datahike.test.attribute-refs.utils :refer [ref-db ref-e0
                                                shift-entities
                                                wrap-direct-datoms
-                                               shift]]
-   [datahike.api :as d]))
+                                               shift]]))
 
 (def test-db
   (d/db-with ref-db
@@ -19,7 +20,7 @@
 
 (deftest test-or
   (are [q res] (= (into #{} (map vector) res)
-                  (d/q (concat '[:find ?e :where] q) test-db))
+                  (d/q (into '[:find ?e :where] q) test-db))
 
     ;; intersecting results
     '[(or [?e :weight 45]
@@ -68,7 +69,7 @@
 
 (deftest test-or-join
   (are [q res] (= (into #{} (map vector) res)
-                  (d/q (concat '[:find ?e :where] q)
+                  (d/q (into '[:find ?e :where] q)
                        test-db))
     '[(or-join [?e]
                [?e :weight ?n]
@@ -90,7 +91,7 @@
         db2 (d/db-with ref-db
                        (wrap-direct-datoms ref-db ref-e0 :db/add [[1 :age 10]
                                                                   [2 :age 20]]))]
-    (are [q res] (= (d/q (concat '[:find ?e :in $ $2 :where] q) db1 db2)
+    (are [q res] (= (d/q (into '[:find ?e :in $ $2 :where] q) db1 db2)
                     (into #{} (map vector) res))
       ;; OR inherits default source
       '[[?e :weight]
@@ -123,13 +124,15 @@
       (shift #{1} ref-e0))))
 
 (deftest test-errors
-  (is (thrown-msg? "Join variable not declared inside clauses: [?a]"
+  (is (thrown-with-msg? Throwable 
+                        #"Join variable not declared inside clauses: \[\?a\]"
                    (d/q '[:find ?e
                           :where (or [?e :weight _]
                                      [?e :age ?a])]
                         test-db)))
 
-  (is (thrown-msg? "Insufficient bindings: #{?e} not bound in (or-join [[?e]] [?e :weight 40])"
+  (is (thrown-with-msg? Throwable 
+                        #"Insufficient bindings: #\{\?e\} not bound in \(or-join \[\[\?e\]\] \[\?e :weight 40\]\)"
                    (d/q '[:find ?e
                           :where (or-join [[?e]]
                                           [?e :weight 40])]

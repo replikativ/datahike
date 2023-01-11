@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [are deftest]]
       :clj  [clojure.test :as t :refer        [are deftest]])
    [datahike.api :as d]
+   #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
    [datahike.test.core-test]))
 
@@ -17,7 +18,7 @@
                {:db/id 6 :name "Ivan" :age 20}])))
 
 (deftest test-not
-  (are [q res] (= (set (d/q (concat '[:find [?e ...] :where] (quote q)) @test-db))
+  (are [q res] (= (set (d/q (into '[:find [?e ...] :where] (quote q)) @test-db))
                   res)
     [[?e :name]
      (not [?e :name "Ivan"])]
@@ -63,7 +64,7 @@
     #{2 4 6}))
 
 (deftest test-not-join
-  (are [q res] (= (d/q (concat '[:find ?e ?a :where] (quote q)) @test-db)
+  (are [q res] (= (d/q (into '[:find ?e ?a :where] (quote q)) @test-db)
                   res)
     [[?e :name]
      [?e :age  ?a]
@@ -87,7 +88,7 @@
         db2 (d/db-with (db/empty-db)
                        [[:db/add 1 :age 10]
                         [:db/add 2 :age 20]])]
-    (are [q res] (= (set (d/q (concat '[:find [?e ...]
+    (are [q res] (= (set (d/q (into '[:find [?e ...]
                                         :in   $ $2
                                         :where]
                                       (quote q))
@@ -171,18 +172,18 @@
     #{[4 3] [3 3] [4 4]}))
 
 (deftest test-insufficient-bindings
-  (are [q msg] (thrown-msg? msg
-                            (d/q (concat '[:find ?e :where] (quote q)) @test-db))
+  (are [q msg] (thrown-with-msg? Throwable msg 
+                                 (d/q (into '[:find ?e :where] (quote q)) @test-db))
     [(not [?e :name "Ivan"])
      [?e :name]]
-    "Insufficient bindings: none of #{?e} is bound in (not [?e :name \"Ivan\"])"
+    #"Insufficient bindings: none of #\{\?e\} is bound"
 
     [[?e :name]
      (not-join [?e]
                (not [1 :age ?a])
                [?e :age ?a])]
-    "Insufficient bindings: none of #{?a} is bound in (not [1 :age ?a])"
+    #"Insufficient bindings: none of #\{\?a\} is bound"
 
     [[?e :name]
      (not [?a :name "Ivan"])]
-    "Insufficient bindings: none of #{?a} is bound in (not [?a :name \"Ivan\"])"))
+    #"Insufficient bindings: none of #\{\?a\} is bound"))

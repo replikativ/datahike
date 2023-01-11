@@ -22,13 +22,13 @@
                      :where [_ :name ?name]]
                    test-db))))
   (is (= ["Petr" 44]
-         (d/q (concat '[:find [?name ?age] :where]
-                      [[(+ ref-e0 1) :name '?name]
-                       [(+ ref-e0 1) :age  '?age]])
+         (d/q [:find ['?name '?age] :where
+                [(+ ref-e0 1) :name '?name]
+                [(+ ref-e0 1) :age  '?age]]
               test-db)))
   (is (= "Petr"
-         (d/q (concat '[:find ?name . :where]
-                      [[(+ ref-e0 1) :name '?name]])
+         (d/q [:find '?name '. :where 
+               [(+ ref-e0 1) :name '?name]]
               test-db)))
 
   (testing "Multiple results get cut"

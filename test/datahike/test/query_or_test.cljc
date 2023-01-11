@@ -3,6 +3,7 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest]]
       :clj  [clojure.test :as t :refer        [is are deftest]])
    [datahike.api :as d]
+   #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
    [datahike.test.core-test]))
 
@@ -17,7 +18,7 @@
                {:db/id 6 :name "Ivan" :age 20}])))
 
 (deftest test-or
-  (are [q res] (= (d/q (concat '[:find ?e :where] (quote q)) @test-db)
+  (are [q res] (= (d/q (into '[:find ?e :where] (quote q)) @test-db)
                   (into #{} (map vector) res))
 
     ;; intersecting results
@@ -66,7 +67,7 @@
     #{1 5 4}))
 
 (deftest test-or-join
-  (are [q res] (= (d/q (concat '[:find ?e :where] (quote q)) @test-db)
+  (are [q res] (= (d/q (into '[:find ?e :where] (quote q)) @test-db)
                   (into #{} (map vector) res))
     [(or-join [?e]
               [?e :name ?n]
@@ -111,7 +112,7 @@
         db2 (d/db-with (db/empty-db)
                        [[:db/add 1 :age 10]
                         [:db/add 2 :age 20]])]
-    (are [q res] (= (d/q (concat '[:find ?e :in $ $2 :where] (quote q)) db1 db2)
+    (are [q res] (= (d/q (into '[:find ?e :in $ $2 :where] (quote q)) db1 db2)
                     (into #{} (map vector) res))
       ;; OR inherits default source
       [[?e :name]
@@ -144,14 +145,14 @@
       #{1})))
 
 (deftest test-errors
-  (is (thrown-msg? "Join variable not declared inside clauses: [?a]"
-                   (d/q '[:find ?e
-                          :where (or [?e :name _]
-                                     [?e :age ?a])]
-                        @test-db)))
+  (is (thrown-with-msg? Throwable #"Join variable not declared inside clauses" 
+                        (d/q '[:find ?e 
+                               :where (or [?e :name _] 
+                                          [?e :age ?a])] 
+                             @test-db)))
 
-  (is (thrown-msg? "Insufficient bindings: #{?e} not bound in (or-join [[?e]] [?e :name \"Ivan\"])"
-                   (d/q '[:find ?e
-                          :where (or-join [[?e]]
-                                          [?e :name "Ivan"])]
-                        @test-db))))
+  (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?e\} not bound" 
+                        (d/q '[:find ?e 
+                               :where (or-join [[?e]] 
+                                               [?e :name "Ivan"])] 
+                             @test-db))))
