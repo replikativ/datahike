@@ -3,15 +3,13 @@
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.api :as d]
+   #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.constants :as const]
    [datahike.db.interface :as dbi]
-   [datahike.test.utils :refer [setup-db]])
+   [datahike.test.utils :refer [setup-db sleep]])
   (:import [java.util Date]))
 
 (set! *print-namespace-maps* false)
-
-#?(:cljs
-   (def Throwable js/Error))
 
 (def schema [{:db/ident       :name
               :db/valueType   :db.type/string
@@ -53,8 +51,7 @@
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
       (d/transact conn [[:db/retractEntity [:name "Alice"]]])
-      (is (thrown-msg?
-           "Nothing found for entity id [:name \"Alice\"]"
+      (is (thrown-with-msg? Throwable #"Nothing found for entity id"
            (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])))
       (is (= #{[30] [25]}
              (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"]))))
@@ -77,9 +74,9 @@
 
     (testing "get all values before specific time"
       (let [_ (d/transact conn [{:db/id [:name "Alice"] :age 30}])
-            _ (Thread/sleep 100)
+            _ (sleep 100)
             date (now)
-            _ (Thread/sleep 100)
+            _ (sleep 100)
             _ (d/transact conn [{:db/id [:name "Alice"] :age 35}])
             history-db (d/history @conn)
             current-db @conn
