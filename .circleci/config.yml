@@ -106,6 +106,32 @@ jobs:
           root: /home/circleci/
           paths:
             - replikativ/dhi
+  persistent-set-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run unittests for persistent sorted set index
+          command: bb test clj-pss
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+  hitchhiker-tree-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run unittests for hitchhiker-tree index
+          command: bb test clj-hht
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
   native-image-test:
     executor: tools/clojurecli
     steps:
@@ -129,19 +155,6 @@ jobs:
       - run:
           name: Run backward compatibility test
           command: bb test back-compat
-          no_output_timeout: 5m
-      - save_cache:
-          key: deps-{{ checksum "deps.edn" }}
-          paths:
-            - /home/circleci/.m2
-  unit-test:
-    executor: tools/clojurecli
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Run unit test
-          command: bb test unit
           no_output_timeout: 5m
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
@@ -218,7 +231,11 @@ workflows:
           context: dockerhub-deploy
           requires:
             - setup
-      - unit-test:
+      - persistent-set-test:
+          context: dockerhub-deploy
+          requires:
+            - build
+      - hitchhiker-tree-test:
           context: dockerhub-deploy
           requires:
             - build
@@ -245,7 +262,8 @@ workflows:
               only: main
           requires:
             - format
-            - unit-test
+            - persistent-set-test
+            - hitchhiker-tree-test
             - backward-compatibility-test
             - native-image-test
             - integration-test
