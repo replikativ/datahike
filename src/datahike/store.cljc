@@ -107,7 +107,7 @@
 ;; file
 
 (defmethod store-identity :file [config]
-  [(:scope config) :file (:path config)])
+  [:file (:scope config) (:path config)])
 
 (defmethod empty-store :file [{:keys [path]}]
   (fs/connect-fs-store path :opts {:sync? true}))
