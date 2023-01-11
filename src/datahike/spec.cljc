@@ -92,4 +92,4 @@
     {:name ::index-lookup-args
      :keys-default ds/req
      :spec {:index keyword?
-            (ds/opt :components) (s/coll-of any?)}}))
+            (ds/opt :components) (s/nilable coll?)}}))

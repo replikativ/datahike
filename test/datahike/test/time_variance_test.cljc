@@ -106,7 +106,7 @@
       (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:max-tx 536870915 :max-eid 4}}"
              (pr-str (d/history @conn)))))))
 
-#_(deftest test-as-of-db
+(deftest test-as-of-db
   (let [cfg (assoc-in cfg-template [:store :id] "test-as-of-db")
         conn (setup-db cfg)
         first-date (now)
@@ -136,7 +136,7 @@
           (is (= #{}
                  (d/q find-alices-age (d/as-of @conn tx-id) "Alice"))))))))
 
-#_(deftest test-since-db
+(deftest test-since-db
   (let [cfg (assoc-in cfg-template [:store :id] "test-since-db")
         conn (setup-db cfg)
         first-date (now)
@@ -156,7 +156,7 @@
       (is (= "#datahike/SinceDB {:origin #datahike/DB {:max-tx 536870914 :max-eid 4} :time-point 536870914}"
              (pr-str (d/since @conn tx-id)))))))
 
-#_(deftest test-no-history
+(deftest test-no-history
   (let [initial-tx [{:db/ident :name
                      :db/cardinality :db.cardinality/one
                      :db/valueType :db.type/string
@@ -183,7 +183,7 @@
       (is (= #{["Alice"] ["Bob"]}
              (d/q '[:find ?n :where [?e :name ?n]] (d/history @conn)))))))
 
-#_(deftest upsert-history
+(deftest upsert-history
   (let [cfg {:store {:backend :mem
                      :id "test-upsert-history"}
              :keep-history? true

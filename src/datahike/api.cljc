@@ -325,7 +325,8 @@
 (s/fdef
   datoms
   :args (s/alt :map (s/cat :db dbu/db? :args spec/SIndexLookupArgs)
-               :key (s/cat :db dbu/db? :index keyword? :components (s/* any?)))
+               :key (s/cat :db dbu/db? :index keyword? :components (s/alt :coll (s/* any?)
+                                                                          :nil nil?)))
   :ret (s/nilable spec/SDatoms))
 (defmulti datoms {:arglists '([db arg-map] [db index & components])
                   :doc "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components
