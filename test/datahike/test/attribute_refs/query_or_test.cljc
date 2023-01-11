@@ -125,13 +125,13 @@
 
 (deftest test-errors
   (is (thrown-with-msg? Throwable #"Join variable not declared inside clauses"
-                   (d/q '[:find ?e
-                          :where (or [?e :weight _]
-                                     [?e :age ?a])]
-                        test-db)))
+                        (d/q '[:find ?e
+                               :where (or [?e :weight _]
+                                          [?e :age ?a])]
+                             test-db)))
 
   (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?e\} not bound"
-                   (d/q '[:find ?e
-                          :where (or-join [[?e]]
-                                          [?e :weight 40])]
-                        test-db))))
+                        (d/q '[:find ?e
+                               :where (or-join [[?e]]
+                                               [?e :weight 40])]
+                             test-db))))

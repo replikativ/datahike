@@ -63,12 +63,12 @@
 
 (s/fdef
   create-database
-  :args (s/alt :config (s/cat :config (s/or :config spec/SConfig 
-                                            :deprecated/uri string?) 
-                              :initial-tx (s/? (s/cat :k (s/? (s/and #(= % :initial-tx))) :v spec/STransactions)) 
-                              :temporal-index (s/? (s/cat :k (s/? (s/and #(= % :temporal-index))) :v boolean?)) 
+  :args (s/alt :config (s/cat :config (s/or :config spec/SConfig
+                                            :deprecated/uri string?)
+                              :initial-tx (s/? (s/cat :k (s/? (s/and #(= % :initial-tx))) :v spec/STransactions))
+                              :temporal-index (s/? (s/cat :k (s/? (s/and #(= % :temporal-index))) :v boolean?))
                               :schema-on-read (s/? (s/cat :k (s/? (s/and #(= % :schema-on-read))) :v boolean?)))
-               :nil (s/cat)) 
+               :nil (s/cat))
   :ret nil?)
 (def
   ^{:arglists '([] [config & deprecated-opts])
@@ -865,7 +865,7 @@
   :args (s/alt :no-key (s/cat :conn spec/SConnectionAtom :callback fn?)
                :with-key (s/cat :conn spec/SConnectionAtom :key any? :callback fn?))
   :ret any?
-  :fn #(if (= :with-key (-> % :args first)) 
+  :fn #(if (= :with-key (-> % :args first))
          (= (:ret %) (-> % :args second :key))
          true))
 (def ^{:arglists '([conn callback] [conn key callback])

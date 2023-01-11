@@ -145,14 +145,14 @@
       #{1})))
 
 (deftest test-errors
-  (is (thrown-with-msg? Throwable #"Join variable not declared inside clauses" 
-                        (d/q '[:find ?e 
-                               :where (or [?e :name _] 
-                                          [?e :age ?a])] 
+  (is (thrown-with-msg? Throwable #"Join variable not declared inside clauses"
+                        (d/q '[:find ?e
+                               :where (or [?e :name _]
+                                          [?e :age ?a])]
                              @test-db)))
 
-  (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?e\} not bound" 
-                        (d/q '[:find ?e 
-                               :where (or-join [[?e]] 
-                                               [?e :name "Ivan"])] 
+  (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?e\} not bound"
+                        (d/q '[:find ?e
+                               :where (or-join [[?e]]
+                                               [?e :name "Ivan"])]
                              @test-db))))

@@ -2,7 +2,7 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [deftest are]]
       :clj [clojure.test :as t :refer [deftest are]])
-   [datahike.api :as d] 
+   [datahike.api :as d]
    #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.test.attribute-refs.utils :refer [ref-db ref-e0
                                                shift-entities shift shift-in
@@ -93,9 +93,9 @@
                                             [2 :age 20]]))]
     (are [q res] (= res
                     (set (d/q (into '[:find [?e ...]
-                                        :in   $ $2
-                                        :where]
-                                      q)
+                                      :in   $ $2
+                                      :where]
+                                    q)
                               db1 db2)))
       ;; NOT inherits default source
       '[[?e :mname]
@@ -176,8 +176,8 @@
 
 (deftest test-insufficient-bindings
   (are [q msg] (thrown-with-msg? Throwable msg
-                            (d/q (into '[:find ?e :where] q)
-                                 test-db))
+                                 (d/q (into '[:find ?e :where] q)
+                                      test-db))
     '[(not [?e :mname "Ivan"])
       [?e :mname]]
     #"Insufficient bindings: none of #\{\?e\} is bound"

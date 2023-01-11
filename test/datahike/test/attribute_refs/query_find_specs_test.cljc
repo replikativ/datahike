@@ -23,11 +23,11 @@
                    test-db))))
   (is (= ["Petr" 44]
          (d/q [:find ['?name '?age] :where
-                [(+ ref-e0 1) :name '?name]
-                [(+ ref-e0 1) :age  '?age]]
+               [(+ ref-e0 1) :name '?name]
+               [(+ ref-e0 1) :age  '?age]]
               test-db)))
   (is (= "Petr"
-         (d/q [:find '?name '. :where 
+         (d/q [:find '?name '. :where
                [(+ ref-e0 1) :name '?name]]
               test-db)))
 

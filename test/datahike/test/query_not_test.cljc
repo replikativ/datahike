@@ -89,9 +89,9 @@
                        [[:db/add 1 :age 10]
                         [:db/add 2 :age 20]])]
     (are [q res] (= (set (d/q (into '[:find [?e ...]
-                                        :in   $ $2
-                                        :where]
-                                      (quote q))
+                                      :in   $ $2
+                                      :where]
+                                    (quote q))
                               db1 db2))
                     res)
       ;; NOT inherits default source
@@ -172,7 +172,7 @@
     #{[4 3] [3 3] [4 4]}))
 
 (deftest test-insufficient-bindings
-  (are [q msg] (thrown-with-msg? Throwable msg 
+  (are [q msg] (thrown-with-msg? Throwable msg
                                  (d/q (into '[:find ?e :where] (quote q)) @test-db))
     [(not [?e :name "Ivan"])
      [?e :name]]
