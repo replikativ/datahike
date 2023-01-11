@@ -3,8 +3,12 @@
                                 :preloads]
                       ;; We preload the namespaces that have specs, so they can be instrumented
                       :kaocha.plugin.preloads/ns-names [datahike.api]
-                      :tests    [{:id          :clj
-                                  :ns-patterns ["datahike.test."]}
+                      :tests    [{:id          :clj-pss
+                                  :ns-patterns ["datahike.test."]
+                                  :bindings {datahike.config/*default-index* :datahike.index/persistent-set}}
+                                 {:id          :clj-hht
+                                  :ns-patterns ["datahike.test."]
+                                  :bindings {datahike.config/*default-index* :datahike.index/hitchhiker-tree}}
                                  #_{:id          :cljs
                                     :type        :kaocha.type/cljs
                                     :ns-patterns ["datahike.test."]}

@@ -8,9 +8,16 @@
             [datahike.index :as di])
   (:import [java.net URI]))
 
-(def ^:dynamic default-index :datahike.index/persistent-set)
-(def ^:dynamic default-search-cache-size 10000)
-(def ^:dynamic default-store-cache-size 1000)
+(def ^:dynamic *default-index* :datahike.index/persistent-set)
+(def ^:dynamic *default-schema-flexibility* :write)
+(def ^:dynamic *default-keep-history?* true)
+(def ^:dynamic *default-attribute-refs?* false)
+(def ^:dynamic *default-search-cache-size* 10000)
+(def ^:dynamic *default-store-cache-size* 1000)
+(def ^:dynamic *default-crypto-hash?* false)
+(def ^:dynamic *default-store* :mem)                           ;; store-less = in-memory?
+(def ^:dynamic *default-db-name* nil)                         ;; when nil creates random name
+(def ^:dynamic *default-db-branch* :db)                         ;; when nil creates random name
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
@@ -74,13 +81,13 @@
    :index index
    :index-config (di/default-index-config index)
    :keep-history? temporal-index
-   :attribute-refs? false
+   :attribute-refs? *default-attribute-refs?*
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)
-   :crypto-hash? false
-   :branch :db
-   :search-cache-size default-search-cache-size
-   :store-cache-size default-store-cache-size})
+   :branch *default-db-branch*
+   :crypto-hash? *default-crypto-hash?*
+   :search-cache-size *default-search-cache-size*
+   :store-cache-size *default-store-cache-size*})
 
 (defn int-from-env
   [key default]
@@ -115,14 +122,14 @@
   {:store nil
    :keep-history? false
    :schema-flexibility :read
-   :name (z/rand-german-mammal)
+   :name (or *default-db-name* (z/rand-german-mammal))
    :attribute-refs? false
-   :index default-index
-   :search-cache-size default-search-cache-size
-   :store-cache-size default-store-cache-size
-   :crypto-hash? false
-   :branch :db
-   :index-config (di/default-index-config default-index)})
+   :index *default-index*
+   :search-cache-size *default-search-cache-size*
+   :store-cache-size *default-store-cache-size*
+   :crypto-hash? *default-crypto-hash?*
+   :branch *default-db-branch*
+   :index-config (di/default-index-config *default-index*)})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -145,22 +152,22 @@
                          (apply from-deprecated config-as-arg (first opts))
                          config-as-arg)
          store-config (ds/default-config (merge
-                                          {:backend (keyword (:datahike-store-backend env :mem))}
+                                          {:backend (keyword (:datahike-store-backend env *default-store*))}
                                           (:store config-as-arg)))
          index (if (:datahike-index env)
                  (keyword "datahike.index" (:datahike-index env))
-                 default-index)
+                 *default-index*)
          config {:store store-config
                  :initial-tx (:datahike-intial-tx env)
-                 :keep-history? (bool-from-env :datahike-keep-history true)
-                 :attribute-refs? (bool-from-env :datahike-attribute-refs false)
-                 :name (:datahike-name env (z/rand-german-mammal))
-                 :schema-flexibility (keyword (:datahike-schema-flexibility env :write))
+                 :keep-history? (bool-from-env :datahike-keep-history *default-keep-history?*)
+                 :attribute-refs? (bool-from-env :datahike-attribute-refs *default-attribute-refs?*)
+                 :name (:datahike-name env (or *default-db-name* (z/rand-german-mammal)))
+                 :schema-flexibility (keyword (:datahike-schema-flexibility env *default-schema-flexibility*))
                  :index index
-                 :crypto-hash? false
-                 :branch :db
-                 :search-cache-size (int-from-env :datahike-search-cache-size default-search-cache-size)
-                 :store-cache-size (int-from-env :datahike-store-cache-size default-store-cache-size)
+                 :branch *default-db-branch*
+                 :crypto-hash? *default-crypto-hash?*
+                 :search-cache-size (int-from-env :datahike-search-cache-size *default-search-cache-size*)
+                 :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
                                  index-config
                                  (di/default-index-config index))}
