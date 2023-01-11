@@ -1,19 +1,15 @@
 #kaocha/v1
-        #meta-merge [{:tests    [{:id          :clj
-                                  :focus-meta [:focused]
+        #meta-merge [{:plugins [:orchestra
+                                :preloads]
+                      ;; We preload the namespaces that have specs, so they can be instrumented
+                      :kaocha.plugin.preloads/ns-names [datahike.api]
+                      :tests    [{:id          :clj
                                   :ns-patterns ["datahike.test."]}
                                  #_{:id          :cljs
                                     :type        :kaocha.type/cljs
                                     :ns-patterns ["datahike.test."]}
-                                 {:id          :quick
-                                  :focus-meta [:focused]
-                                  :ns-patterns ["datahike.test."]
-                                  :bindings    {datahike.test.config/*user-filter-map* [{:index              :datahike.index/persistent-set
-                                                                                         :backend            :mem
-                                                                                         :schema-flexibility :read
-                                                                                         }]}}
                                  {:id         :integration
-                                  :focus-meta [:focused]
                                   :test-paths ["test/datahike/integration_test"]}]
+                      ;; More verbose than the default reporter, and with prettier errors
                       :reporter kaocha.report/documentation}
                      #include "tests.user.edn"]
