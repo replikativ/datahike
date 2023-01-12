@@ -167,19 +167,11 @@
                  :attribute-refs? (bool-from-env :datahike-attribute-refs *default-attribute-refs?*)
                  :schema-flexibility (keyword (:datahike-schema-flexibility env *default-schema-flexibility*))
                  :index index
-<<<<<<< HEAD
                  :branch *default-db-branch*
                  :crypto-hash? *default-crypto-hash?*
-                 :writer local-writer
+                 :writer self-writer
                  :search-cache-size (int-from-env :datahike-search-cache-size *default-search-cache-size*)
                  :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)
-=======
-                 :crypto-hash? false
-                 :branch :db
-                 :writer self-writer
-                 :search-cache-size (int-from-env :datahike-search-cache-size default-search-cache-size)
-                 :store-cache-size (int-from-env :datahike-store-cache-size default-store-cache-size)
->>>>>>> 4700986 (Handle create and delete database. Extend file identity to scope/host.)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
                                  index-config
                                  (di/default-index-config index))}
