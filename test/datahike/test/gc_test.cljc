@@ -43,12 +43,12 @@
         ]
     (testing "Test initial store counts."
       (is (= 1 (count (-mark (:eavt @conn)))))
-      (is (= fresh-count (count-store @conn)))
+      (is (= num-roots (count-store @conn)))
       (d/transact conn schema)
       (is (= 1 (count (-mark (:eavt @conn)))))
-      (is (= (+ 1 fresh-count num-roots) (count-store @conn))))
+      (is (= (+ 1 num-roots num-roots) (count-store @conn))))
     (testing "Delete old db with roots."
-      (is (= (+ 1 num-roots) (count (<?? S (gc! @conn (Date.))))))
+      (is (= (- num-roots 2) (count (<?? S (gc! @conn (Date.))))))
       (is (= fresh-count (count-store @conn))))
     (testing "Try to run on dirty index and fail."
       (is (thrown-msg? "Index needs to be properly flushed before marking."

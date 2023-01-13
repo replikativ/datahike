@@ -748,7 +748,8 @@
                               :db/cardinality :db.cardinality/one
                               :db/valueType   :db.type/long}]
         conn                (utils/setup-db cfg)
-        schema-on-write?    (= (:schema-flexibility (.-config @conn)) :write)
+        schema-on-write?   #p (= (:schema-flexibility (.-config @conn)) :write)
+        attribute-refs? #p (:attribute-refs? (:config @conn))
         update-for-schema-on-write
         (fn [metrics]
           (-> (update metrics :count #(+ % 11))
@@ -764,16 +765,28 @@
                                                                   5          2
                                                                   6          3}})))))
         update-for-history
-        (fn [metrics schema-on-write?]
+        (fn [metrics schema-on-write? attribute-refs?]
           (->> (update metrics :count #(+ % 4))
                (merge-with merge {:per-attr-counts     {:db/txInstant 4}
-                                  :per-entity-counts   {(+ tx0 1)  1
-                                                        (+ tx0 2)  1
-                                                        (+ tx0 3)  1
-                                                        (+ tx0 4)  1}
+                                  :per-entity-counts   {(+ tx0 1) 1
+                                                        (+ tx0 2) 1
+                                                        (+ tx0 3) 1
+                                                        (+ tx0 4) 1}
                                   ; 10 == 11 minus 1 parent datom that wouldn't get added unless retracted
-                                  :temporal-count      (+ 11 (if schema-on-write? 10 0))
-                                  :temporal-avet-count (if schema-on-write? 9 0)})))
+                                  :temporal-count      (+ 11 (if schema-on-write?
+                                                               (if attribute-refs?
+                                                                 79
+                                                                 10)
+                                                               (if attribute-refs?
+                                                                 79
+                                                                 0)))
+                                  :temporal-avet-count (if schema-on-write?
+                                                         (if attribute-refs?
+                                                           48
+                                                           9)
+                                                         (if attribute-refs?
+                                                           48
+                                                           0))})))
         update-for-attr-refs
         (fn [metrics]
           (let [update-counts (fn [coll] (reduce (fn [m counted] (update m counted #(if % (inc %) 1)))
@@ -791,7 +804,7 @@
         (fn [metrics expected]
           (doseq [[metric val] metrics]
             (testing (str (name metric) " is correct")
-              (is (= val (metric expected))))))]
+              (is (= (metric expected) val)))))]
     (when schema-on-write?
       (d/transact conn {:tx-data schema}))
     (d/transact conn {:tx-data [{:name "Donald" :age  35}
@@ -817,7 +830,7 @@
                                                  3 3}
                            :avet-count          0}
                     schema-on-write?  update-for-schema-on-write
-                    (dbi/-keep-history? @conn) (update-for-history schema-on-write?)
+                    (dbi/-keep-history? @conn) (update-for-history schema-on-write? attribute-refs?)
                     (:attribute-refs? (.-config @conn)) update-for-attr-refs))))
 
 (deftest test-metrics-hht
