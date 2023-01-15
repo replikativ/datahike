@@ -91,11 +91,19 @@
      :cljs
      "JavaScript"))
 
+(def datahike-version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT"))
+
+(def hitchhiker-tree-version (get-version 'io.replikativ/hitchhiker-tree))
+
+(def persistent-set-version (get-version 'persistent-sorted-set/persistent-sorted-set))
+
+(def konserve-version (get-version 'io.replikativ/konserve))
+
 (defn meta-data []
-  {:datahike/version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT")
-   :konserve/version (get-version 'io.replikativ/konserve)
-   :hitchhiker.tree/version (get-version 'io.replikativ/hitchhiker-tree)
-   :persistent.set/version (get-version 'persistent-sorted-set/persistent-sorted-set)
+  {:datahike/version datahike-version
+   :konserve/version konserve-version
+   :hitchhiker.tree/version hitchhiker-tree-version
+   :persistent.set/version persistent-set-version
    :datahike/id (UUID/randomUUID)
    :datahike/created-at (Date.)})
 
