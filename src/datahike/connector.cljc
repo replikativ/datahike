@@ -73,6 +73,41 @@
   (reset! (get-connection conn-id) :deleted)
   (swap! connections dissoc conn-id))
 
+(defn version-check [{:keys [meta] :as db}]
+  (let [{dh-stored :datahike/version
+         hh-stored :hitchhiker.tree/version
+         pss-stored :persistent.set/version
+         ksv-stored :konserve/version} meta
+        dh-now dt/datahike-version
+        hh-now dt/hitchhiker-tree-version
+        pss-now dt/persistent-set-version
+        ksv-now dt/konserve-version]
+    (when-not (or (= dh-now "DEVELOPMENT")
+                  (>= (compare dh-now dh-stored) 0))
+      (dt/raise "Database was written with newer Datahike version."
+                {:type :db-was-written-with-newer-datahike-version
+                 :stored dh-stored
+                 :now dh-now
+                 :db db}))
+    (when-not (>= (compare hh-now hh-stored) 0)
+      (dt/raise "Database was written with newer hitchhiker-tree version."
+                {:type :db-was-written-with-newer-hht-version
+                 :stored hh-stored
+                 :now hh-now
+                 :db   db}))
+    (when-not (>= (compare pss-now pss-stored) 0)
+      (dt/raise "Database was written with newer persistent-sorted-set version."
+                {:type :db-was-written-with-newer-pss-version
+                 :stored pss-stored
+                 :now pss-now
+                 :db   db}))
+    (when-not (>= (compare ksv-now ksv-stored) 0)
+      (dt/raise "Database was written with newer konserve version."
+                {:type   :db-was-written-with-newer-konserve-version
+                 :stored ksv-stored
+                 :now    ksv-now
+                 :db     db}))))
+
 (defn ensure-stored-config-consistency [config stored-config]
   (let [config (dissoc config :name)
         config (update config :store #(if (get-in stored-config [:store :scope])
@@ -137,6 +172,7 @@
                           stored-db (k/get store (:branch config) nil {:sync? true})]
                       [config store stored-db]))
                   [config store stored-db]))
+              _ (version-check stored-db)
               _ (ensure-stored-config-consistency config (:config stored-db))
               conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
           (swap! (:wrapped-atom conn) assoc :writer
