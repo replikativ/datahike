@@ -73,7 +73,7 @@
   (reset! (get-connection conn-id) :deleted)
   (swap! connections dissoc conn-id))
 
-(defn version-check [{:keys [meta] :as db}]
+(defn version-check [{:keys [meta config] :as db}]
   (let [{dh-stored :datahike/version
          hh-stored :hitchhiker.tree/version
          pss-stored :persistent.set/version
@@ -88,25 +88,25 @@
                 {:type :db-was-written-with-newer-datahike-version
                  :stored dh-stored
                  :now dh-now
-                 :db db}))
+                 :config config}))
     (when-not (<= (compare hh-now hh-stored) 0)
       (dt/raise "Database was written with newer hitchhiker-tree version."
                 {:type :db-was-written-with-newer-hht-version
                  :stored hh-stored
                  :now hh-now
-                 :db   db}))
+                 :config config}))
     (when-not (<= (compare pss-now pss-stored) 0)
       (dt/raise "Database was written with newer persistent-sorted-set version."
                 {:type :db-was-written-with-newer-pss-version
                  :stored pss-stored
                  :now pss-now
-                 :db   db}))
+                 :config config}))
     (when-not (<= (compare ksv-now ksv-stored) 0)
       (dt/raise "Database was written with newer konserve version."
                 {:type   :db-was-written-with-newer-konserve-version
                  :stored ksv-stored
                  :now    ksv-now
-                 :db     db}))))
+                 :config config}))))
 
 (defn ensure-stored-config-consistency [config stored-config]
   (let [config (dissoc config :name)
