@@ -748,8 +748,8 @@
                               :db/cardinality :db.cardinality/one
                               :db/valueType   :db.type/long}]
         conn                (utils/setup-db cfg)
-        schema-on-write?   #p (= (:schema-flexibility (.-config @conn)) :write)
-        attribute-refs? #p (:attribute-refs? (:config @conn))
+        schema-on-write? (= (:schema-flexibility (.-config @conn)) :write)
+        attribute-refs? (:attribute-refs? (:config @conn))
         update-for-schema-on-write
         (fn [metrics]
           (-> (update metrics :count #(+ % 11))
