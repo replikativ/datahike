@@ -750,6 +750,11 @@
         conn                (utils/setup-db cfg)
         schema-on-write? (= (:schema-flexibility (.-config @conn)) :write)
         attribute-refs? (:attribute-refs? (:config @conn))
+        schema-count 11                                     ;; amount of user schema datoms in temporal eavt index
+        temporal-count 10                                   ;; amount of user data datoms in temporal eavt index when using schema-on-write
+        temporal-avet-count 9                               ;; amount of user data datoms in temporal avet index when using schema-on write
+        sys-attr-count 69                                   ;; amount of system schema datoms in temporal eavt index when using attribute refs
+        sys-attr-avet-count 48                              ;; amount of system schema datoms in temporal avet index when using attribute refs
         update-for-schema-on-write
         (fn [metrics]
           (-> (update metrics :count #(+ % 11))
@@ -773,19 +778,20 @@
                                                         (+ tx0 3) 1
                                                         (+ tx0 4) 1}
                                   ; 10 == 11 minus 1 parent datom that wouldn't get added unless retracted
-                                  :temporal-count      (+ 11 (if schema-on-write?
-                                                               (if attribute-refs?
-                                                                 79
-                                                                 10)
-                                                               (if attribute-refs?
-                                                                 79
-                                                                 0)))
+                                  :temporal-count      (+ schema-count
+                                                          (if schema-on-write?
+                                                            (if attribute-refs?
+                                                              (+ temporal-count sys-attr-count)
+                                                              temporal-count)
+                                                            (if attribute-refs?
+                                                              (+ temporal-count sys-attr-count)
+                                                              0)))
                                   :temporal-avet-count (if schema-on-write?
                                                          (if attribute-refs?
-                                                           48
-                                                           9)
+                                                           sys-attr-avet-count
+                                                           temporal-avet-count)
                                                          (if attribute-refs?
-                                                           48
+                                                           sys-attr-avet-count
                                                            0))})))
         update-for-attr-refs
         (fn [metrics]
