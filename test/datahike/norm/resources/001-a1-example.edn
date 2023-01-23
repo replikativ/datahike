@@ -1,0 +1,6 @@
+{:norm    :a1-example
+ :tx-data [{:db/doc         "foo"
+            :db/ident       :foo
+            :db/valueType   :db.type/string
+            :db/cardinality :db.cardinality/one}]
+ :tx-fn   io.replikativ.garantie/neutral-fn}
