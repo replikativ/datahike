@@ -1,51 +1,83 @@
 # Contributing to Datahike
 ## Compile Java classes
 ```
-clj -T:build compile
+bb compile
 ```
 
 ## Start a REPL
 
 ```
-clj -M:repl
+bb rpl
 ```
 
+Be careful not to type `bb repl` as this will start a babashka repl
+
 ## Run the tests
-- `./bin/run-unittests` or `./bin/run-unittests --watch`
-- `./bin/run-integrationtests` (Docker needed)
+
+Unittests
+
+```
+# Persistent sorted set index (fast)
+
+bb test pss
+#or 
+bb test pss --watch
+
+# Hitchhiker-tree index (slow)
+
+bb test hht
+```
+
+Integration tests (Docker needed)
+
+```
+bb test integration
+```
+
+Backward-compatibility test
+
+```
+bb test back-compat
+```
+
+Native-image test (native-image needed)
+
+```
+bb test native-image
+```
 
 ## Start the benchmarks
 ```
-TIMBRE_LEVEL=':info' clj -M:benchmark run
+bb bench
 ```
 
 ## Build a Datahike jar
 ```
-clj -T:build jar
+bb jar
 ```
 
 ## Install Datahike to local maven repository
 ```
-clj -T:build install
+bb install
 ```
 
 ## Format
 Check the formatting:
 ```
-clj -M:format
+bb format
 ```
 or fix the formatting:
 ```
-clj -M:ffix
+bb ffix
 ```
 
 ## Release Datahike
 ### Deploying Datahike to Clojars manually
 #### Manually
 **Should only be done in case of emergency**
-First you have to build the artifact with `clj -T:build jar`, then you need to
+First you have to build the artifact with `bb jar`, then you need to
 set `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` as environment variables, then
-you can run `clj -T:build deploy` to deploy the artifact to Clojars.
+you can run `bb deploy` to deploy the artifact to Clojars.
 
 #### Pipeline
 [Datahike is released everytime there is a commit to the `main` branch](https://github.com/replikativ/datahike/blob/development/doc/adl/adr-004-github-flow.md).

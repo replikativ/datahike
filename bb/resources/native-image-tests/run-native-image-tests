@@ -1,5 +1,8 @@
 #!/bin/bash
 
+set -o errexit
+set -o pipefail
+
 TMPSTORE=/tmp/dh-test-store
 
 trap "rm -rf $TMPSTORE" EXIT
@@ -18,6 +21,7 @@ then
   echo "Test successful."
 else
   echo "Exception: Query did not return correct value."
+  exit 1
 fi
 
 # test history input parsing

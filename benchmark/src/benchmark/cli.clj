@@ -77,13 +77,13 @@
                                                "Available backends are: " backend-names)]]
    ["-k" "--search-caches SIZES"
     (str "Search cache sizes for which measurements should be done")
-    :default [dc/default-search-cache-size]
+    :default [dc/*default-search-cache-size*]
     :parse-fn read-string
     :validate [vector? "Must be a vector of non-negative integers."
                #(every? nat-int? %) "Vector must consist of non-negative integers."]]
    ["-m" "--store-caches SIZES"
     (str "Store cache sizes for which measurements should be done")
-    :default [dc/default-store-cache-size]
+    :default [dc/*default-store-cache-size*]
     :parse-fn read-string
     :validate [vector? "Must be a vector of positive integers."
                #(every? pos-int? %) "Vector must consist of non-negative integers."]]
@@ -189,7 +189,7 @@
   (shutdown-agents))
 
 (comment
-  (-main "run" "-x" "[0 10000 5000]" "-t" "test-bench" "-o" "edn" "bench.edn")
+  (-main "measure" "-x" "[0 10000 5000]" "-t" "test-bench" "-o" "edn" "bench.edn")
   )
 
-;TIMBRE_LEVEL=":info" clj -M:benchmark run --backend :file --index :datahike.index/persistent-set -t pss -o edn pss.edn --schema :write --history false
+;TIMBRE_LEVEL=":info" clj -M:benchmark measure --backend :file --index :datahike.index/persistent-set -t pss -o edn pss.edn --schema :write --history false

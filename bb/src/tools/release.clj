@@ -1,12 +1,9 @@
-(ns tasks.release
-  (:require
-    [borkdude.gh-release-artifact.internal :as gh]                   ;; functions in internal???
-    [tasks.build :refer [package jar-path]]
-    [tasks.settings :refer [load-settings]]
-    [tasks.version :refer [version-str]])
+(ns tools.release
+  (:require [babashka.fs :as fs]
+            [borkdude.gh-release-artifact.internal :as gh]
+            [tools.build :refer [jar-path]]
+            [tools.version :refer [version-str]])
   (:import (clojure.lang ExceptionInfo)))
-
-(def settings (load-settings))
 
 (defn fib [a b]
   (lazy-seq (cons a (fib b (+ a b)))))
@@ -22,23 +19,27 @@
           (recur (rest idle-times)))
         result))))
 
-(defn try-release []
-  (try (gh/overwrite-asset {:org (:org settings)
-                            :repo (name (:lib settings))
-                            :tag (version-str)
+(defn try-release [config]
+  (try (gh/overwrite-asset {:org (:org config)
+                            :repo (name (:lib config))
+                            :tag (version-str config)
                             :commit (gh/current-commit)
-                            :file jar-path
+                            :file (jar-path config)
                             :content-type "application/java-archive"
                             :draft false})
        (catch ExceptionInfo e
          (assoc (ex-data e) :failure? true))))
 
-(defn release []
-  (println "Trying to release artifact...")
-  (-> (retry-with-fib-backoff 10 #(try-release) :failure?)
-      :url
-      println))
 
-(defn -main []
-  (package)
-  release)
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
+(defn gh-release
+  "Create a GitHub release and upload the library jar"
+  [config]
+  (println "Trying to release artifact...")
+  (let [jar-file (jar-path config)]
+    (when-not (fs/exists? jar-file) 
+      (println "Library jar file at" jar-file "doesn't exist!")
+      (System/exit 1))
+  (-> (retry-with-fib-backoff 10 #(try-release config) :failure?)
+      :url
+      println)))

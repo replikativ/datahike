@@ -31,3 +31,5 @@ out/
 datahike.build_artifacts.txt
 tests.user.edn
 /libdatahike/target
+dhi
+dhi.build_artifacts.txt

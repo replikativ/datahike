@@ -1,62 +1,106 @@
 {:min-bb-version "0.8.0"
  :pods {;since babashka 0.8.0, can only be declared in bb.edn
         org.babashka/tools-deps-native {:version "0.0.5"}   ;; for babashka build
-        clj-kondo/clj-kondo            {:version "2022.10.05"}}
- :deps  {datahike/bb {:local/root "bb"}}
- :tasks {; tools
-
-         fmt {:doc "Format source files"
-              :task tasks.format/fix}
-
+        clj-kondo/clj-kondo {:version "2022.10.05"}}
+ :deps {datahike/bb {:local/root "bb"}}
+ :tasks {:requires [[clojure.edn :as edn]
+                    [pod.borkdude.clj-kondo :as clj-kondo]
+                    [tools.build :as build]
+                    [tools.cljdoc :as cljdoc]
+                    [tools.deps :as deps]
+                    [tools.deploy :as deploy]
+                    [tools.release :as relase]
+                    [tools.test :as test]
+                    [tools.version :as version]]
+         :init (do (def config-file "config.edn")
+                   (def config (edn/read-string (slurp config-file))))
+         ;; hook :enter could be used to load config according to project
+         
+         ; tools
+         
+         bench {:doc "Run benchmarks"
+                :task (clojure "-M:benchmark" "measure")} 
+         
          docs {:doc "Get a preview on the clojure docs"
-               :task tasks.cljdoc/preview}
+               :task (cljdoc/preview config)}
+         
+         fmt {:doc "Format source files"
+              :task (clojure "-M:ffix")}
+         
+         rpl {:doc "Start a repl"
+              :task (clojure "-M:repl")}
+
 
          ; checks
-
+         
          fmt? {:doc "Test formatting"
-               :task tasks.format/check}
+               :task (clojure "-M:format")}
 
-         lint {:doc "Run linter"
-               :task tasks.lint/-main}
+         lint {:doc "Run clj-kondo linter"
+               :require [[pod.borkdude.clj-kondo :as clj-kondo]]
+               :task (clj-kondo/print! (clj-kondo/run! {:lint "."}))}
 
-         test {:doc "Run all tests or restrict to 'unit', 'integration' or 'back-compat'"
-               :task tasks.test/-main}
+         test {:doc "Run all tests or restrict to 'native-image', 'back-compat' or a kaocha test id (see tests.edn)"
+               :depends [compile]
+               :task (apply test/-main config *command-line-args*)}
 
          kaocha {:doc "Run kaocha with arbitrary arguments"
-                 :task tasks.test/kaocha}
+                 :task (apply test/kaocha *command-line-args*)}
 
          deps {:doc "Check consistency of dependencies"
-               :task tasks.deps/check}
+               :task deps/check}
+         
+         outdated {:doc "Find outdated libraries"
+                   :task (clojure "-M:outdated")}
 
          check {:doc "Run all checks"
-                :depends [test fmt? lint deps]}
+                :depends [test fmt? lint deps outdated]}
+         
 
          ; build and release
-
-         settings {:doc "Show content of settings file"
-                   :task tasks.settings/show}
-
-         version {:doc "Set or increment the project version [major|minor] <version>"
-                  :task tasks.version/-main}
+         
+         version {:doc "Increment the project version: [major|minor] <version>"
+                  :task (apply version/inc config-file *command-line-args*)}
 
          tag {:doc "Return current version as a tag"
-              :task tasks.version/as-tag}
+              :task (println (version/as-tag config))}
 
-         clean {:doc "Remove build files" :task tasks.build/clean}
+         clean {:doc "Remove build files" 
+                :task (build/clean config)}
 
-         compile {:doc "Compile classes" :task tasks.build/compile}
+         compile {:doc "Compile classes"
+                  :depends [clean]
+                  :task (build/compile config)}
 
-         pom {:doc "Create pom file" :task tasks.build/pom}
+         pom {:doc "Create pom file" 
+              :depends [compile]
+              :task (build/pom config)}
 
-         jar {:doc "Build jar" :task tasks.build/jar}
-
-         build {:doc "Process files and build jar" :task tasks.build/package}
+         jar {:doc "Build jar"
+              :depends [pom]
+              :task (build/jar config)}
 
          install {:doc "Install jar locally"
-                  :task tasks.deploy/local}
+                  :task (deploy/local config)}
 
-         clojars {:doc "Install jar to clojars; environment variables have to be set"
-                  :task tasks.deploy/remote}
+         clojars {:doc "Install jar to clojars"
+                  :task (deploy/remote config)}
 
          release {:doc "Build and release jar to Github"
-                  :task tasks.release/-main}}}
+                  :depends [jar]
+                  :task (release/gh-release config)}
+         
+         ;; native image
+         
+         ni-check {:doc "Check for 'native-image'"
+                   :task (if (:out (shell {:out :string} "which" "native-image"))
+                           (println "Program native-image found!")
+                           (do (println "PATH does not contain native-image. Make sure to add your GraalVM to it.") 
+                               (System/exit 1)))}
+         
+         ni-cli {:doc "Build native image cli"
+                 :depends [compile ni-check] 
+                 :task (clojure "-M:native-cli" "--no-fallback" "-J-Xmx4g")}
+         
+         ni-build {:doc "Build native image library"
+                   :task (build/native-shared-library config)}}}

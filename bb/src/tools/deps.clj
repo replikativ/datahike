@@ -1,8 +1,8 @@
-(ns tasks.deps
+(ns tools.deps
   (:require [babashka.fs :as fs]
+            [babashka.process :as p]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [tools.shell :refer [clj]]
             [clojure.pprint :as pp]
             [clojure.set :as set]
             [clojure.string :as string]
@@ -33,7 +33,7 @@
   (string/join "\n" ["Usage: bb deps/consistency [options]\n" "Options:" summary]))
 
 (defn create-trace-file [alias filename]
-  (clj (str "-M:" alias) "-Strace")
+  (p/shell "clojure" (str "-M:" alias) "-Strace")
   (when (not= "trace.edn" filename)
     (fs/move "trace.edn" filename)))
 

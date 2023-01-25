@@ -1,19 +1,18 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.11.1"}
-        org.clojure/clojurescript                   {:mvn/version "1.11.60"}
-        org.clojure/data.json                       {:mvn/version "0.2.6"}
+        org.clojure/clojurescript                   {:mvn/version "1.11.4"}
         io.replikativ/hasch                         {:mvn/version "0.3.7"}
         io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"}
         io.replikativ/incognito                     {:mvn/version "0.3.66"}
         io.replikativ/konserve                      {:mvn/version "0.7.285"}
-        persistent-sorted-set/persistent-sorted-set {:mvn/version "0.2.2"}
+        persistent-sorted-set/persistent-sorted-set {:mvn/version "0.2.1"}
         environ/environ                             {:mvn/version "1.2.0"}
-        com.taoensso/timbre                         {:mvn/version "6.0.2"}
+        com.taoensso/timbre                         {:mvn/version "5.2.1"}
         io.replikativ/superv.async                  {:mvn/version "0.3.43"}
         io.replikativ/datalog-parser                {:mvn/version "0.2.25"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
-        mvxcvi/clj-cbor                             {:mvn/version "1.1.0"}}
+        mvxcvi/clj-cbor                             {:mvn/version "1.1.0"}} 
 
  :paths ["src" "target/classes"]
 
@@ -44,26 +43,15 @@
                                org.clojure/tools.namespace {:mvn/version "1.3.0"}}
                   :main-opts ["-m" "nrepl.cmdline" "--middleware" "[cider.nrepl/cider-middleware]"]}
 
-           :bench-dev {:extra-paths ["benchmark/src" "benchmark/test"]
-                       :extra-deps {clj-http/clj-http     {:mvn/version "3.12.3"}
-                                    org.clojure/tools.cli {:mvn/version "1.0.206"}}}
-
-           :benchmark {:main-opts ["-m" "benchmark.cli"]
-                       :extra-paths ["benchmark/src"]
-                       :extra-deps {clj-http/clj-http     {:mvn/version "3.12.3"}
-                                    org.clojure/tools.cli {:mvn/version "1.0.214"}
-                                    incanter/incanter-core {:mvn/version "1.9.3"}
-                                    incanter/incanter-charts {:mvn/version "1.9.3"}}}
-
-           :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}} 
-
-           :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}}
+           :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
            
-           :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.0"}}}
-
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
                          :extra-paths ["libdatahike/src"]
                          :extra-deps {cheshire/cheshire {:mvn/version "5.11.0"}}}
+
+           ;; Build Tools
+           
+           :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}} 
            
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
                                     "-m" "clj.native-image" "datahike.cli"
@@ -74,4 +62,22 @@
                         {cheshire/cheshire {:mvn/version "5.11.0"}
                          clj.native-image/clj.native-image
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
-                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}}}
+                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}}
+           
+           ;; Other Tools
+           
+           :benchmark {:extra-paths ["benchmark/src"]
+                       :extra-deps {clj-http/clj-http {:mvn/version "3.12.3"}
+                                    org.clojure/tools.cli {:mvn/version "1.0.206"}
+                                    incanter/incanter-core {:mvn/version "1.9.3"}
+                                    incanter/incanter-charts {:mvn/version "1.9.3"}}
+                       :main-opts ["-m" "benchmark.cli"]}
+           
+           :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
+                    :main-opts ["-m" "cljfmt.main" "check"]}
+
+           :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}} 
+                  :main-opts ["-m" "cljfmt.main" "fix"]}
+           
+           :outdated {:deps {com.github.liquidz/antq {:mvn/version "2.2.983"}}
+                      :main-opts ["-m" "antq.core"]}}
