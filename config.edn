@@ -1,7 +1,7 @@
 {:org "replikativ"
  :version {:major 0
            :minor 6}
- :git-url "git@github.com:replikativ/datahike.git" 
+ :git-url "git@github.com:replikativ/datahike.git"
  
  :build/class-dir "target/classes"
  :build/clj-src-dirs ["src"]
@@ -14,4 +14,7 @@
                 :src-dirs ["libdatahike/src"]
                 :target-dir "libdatahike/target"}
  :build/pom-template "./bb/resources/template/pom.xml"
+ :buil/scm {:connection "scm:git:git@github.com:replikativ/datahike.git"
+            :developerConnection "scm:git:git@github.com:replikativ/datahike.git"
+            :url "https://github.com/replikativ/datahike"}
  :build/target-dir "target"}

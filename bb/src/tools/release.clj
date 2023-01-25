@@ -2,7 +2,7 @@
   (:require [babashka.fs :as fs]
             [borkdude.gh-release-artifact.internal :as gh]
             [tools.build :refer [jar-path]]
-            [tools.version :refer [version-str]])
+            [tools.version :as version])
   (:import (clojure.lang ExceptionInfo)))
 
 (defn fib [a b]
@@ -22,7 +22,7 @@
 (defn try-release [config]
   (try (gh/overwrite-asset {:org (:org config)
                             :repo (name (:lib config))
-                            :tag (version-str config)
+                            :tag (version/string config)
                             :commit (gh/current-commit)
                             :file (jar-path config)
                             :content-type "application/java-archive"

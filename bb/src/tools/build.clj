@@ -3,7 +3,7 @@
   (:require [babashka.fs :as fs]
             [clojure.edn :as edn]
             [clojure.tools.build.api :as b]
-            [tools.version :refer [version-str]]))
+            [tools.version :as version]))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn clean [{:build/keys [target-dir native] :as _config}]
@@ -29,32 +29,33 @@
                :class-dir class-dir}))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
-(defn pom [{:build/keys [deps-file class-dir pom-template lib clj-src-dirs] :as config}]
+(defn pom [{:build/keys [deps-file class-dir pom-template lib clj-src-dirs scm] :as config}]
   (print (str "Creating pom file from template at '" pom-template "'..."))
   (b/write-pom {:class-dir class-dir
                 :src-pom pom-template
                 :lib lib
-                :version (version-str config)
+                :version (version/string config)
                 :basis (b/create-basis {:project deps-file})
-                :src-dirs clj-src-dirs})
+                :src-dirs clj-src-dirs
+                :scm (assoc scm :tag (version/sha))})
   (println "Done." "Saved to" (pom-path config)))
 
 (defn jar-path [{:build/keys [target-dir lib] :as config}]
-  (str target-dir "/" (format "%s-%s.jar" (name lib) (version-str config))))
+  (str target-dir "/" (format "%s-%s.jar" (name lib) (version/string config))))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn jar
   "Returns paths to the jar and the pom file"
-  [{:build/keys [class-dir target-dir clj-src-dirs] :as config}]
+  [{:build/keys [class-dir target-dir clj-src-dirs resource-dirs] :as config}]
   (print (str "Packaging jar at '" target-dir "'..."))
-  (b/copy-dir {:src-dirs clj-src-dirs
+  (b/copy-dir {:src-dirs (concat clj-src-dirs resource-dirs)
                :target-dir class-dir})
   (b/jar {:class-dir class-dir
           :jar-file (jar-path config)})
   (println "Done."))
 
 (defn native-jar-path [{:build/keys [target-dir lib] :as config}]
-  (str target-dir "/" (format "%s-%s-native-shared-library.jar" (name lib) (version-str config))))
+  (str target-dir "/" (format "%s-%s-native-shared-library.jar" (name lib) (version/string config))))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn native-shared-library [{:build/keys [deps-file class-dir resource-dirs clj-src-dirs native] :as config}]

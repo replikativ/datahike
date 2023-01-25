@@ -1,7 +1,9 @@
 (ns tools.version
   "Update the project version."
   (:refer-clojure :exclude [inc])
-  (:require [clojure.edn :as edn]
+  (:require [babashka.process :as p]
+            [clojure.edn :as edn]
+            [clojure.string :as str]
             [clojure.tools.build.api :as b]))
 
 (defn read-edn-file [filename]
@@ -10,7 +12,13 @@
 (defn commit-nr []
   (b/git-count-revs {:dir "."}))
 
-(defn version-str [config]
+(defn sha []
+  (-> (p/shell {:out :string} "git" "log" "-1") 
+      :out
+      (str/split #"\s+")
+      second))
+
+(defn string [config]
   (let [{:keys [major minor]} (:version config)]
     (str major "." minor "." (commit-nr))))
 
@@ -20,7 +28,7 @@
 (defn show
   "Show the version string of a library"
   [config]
-  (println (version-str config)))
+  (println (string config)))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn inc
@@ -35,4 +43,4 @@
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn as-tag [config]
-  (str "v" (version-str config)))
+  (str "v" (string config)))

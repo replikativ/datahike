@@ -1,0 +1,1444 @@
+{:log
+ [{:path [],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.11.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.1"},
+   :coord-id {:mvn/version "1.11.1"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib io.replikativ/datalog-parser,
+   :coord {:mvn/version "0.2.25", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.2.25"},
+   :coord-id {:mvn/version "0.2.25"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib io.replikativ/hitchhiker-tree,
+   :coord {:mvn/version "0.2.222", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.2.222"},
+   :coord-id {:mvn/version "0.2.222"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib io.replikativ/hasch,
+   :coord {:mvn/version "0.3.7", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.3.7"},
+   :coord-id {:mvn/version "0.3.7"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib io.replikativ/incognito,
+   :coord {:mvn/version "0.3.66", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.3.66"},
+   :coord-id {:mvn/version "0.3.66"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib mvxcvi/clj-cbor,
+   :coord {:mvn/version "1.1.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.1.0"},
+   :coord-id {:mvn/version "1.1.0"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib org.clojure/clojurescript,
+   :coord {:mvn/version "1.11.4", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.4"},
+   :coord-id {:mvn/version "1.11.4"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib io.replikativ/zufall,
+   :coord {:mvn/version "0.1.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.1.0"},
+   :coord-id {:mvn/version "0.1.0"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib environ/environ,
+   :coord {:mvn/version "1.2.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.2.0"},
+   :coord-id {:mvn/version "1.2.0"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib com.taoensso/timbre,
+   :coord {:mvn/version "5.2.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "5.2.1"},
+   :coord-id {:mvn/version "5.2.1"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib persistent-sorted-set/persistent-sorted-set,
+   :coord {:mvn/version "0.2.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.2.1"},
+   :coord-id {:mvn/version "0.2.1"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib junit/junit,
+   :coord {:mvn/version "4.13.2", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "4.13.2"},
+   :coord-id {:mvn/version "4.13.2"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib cheshire/cheshire,
+   :coord {:mvn/version "5.11.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "5.11.0"},
+   :coord-id {:mvn/version "5.11.0"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib io.replikativ/superv.async,
+   :coord {:mvn/version "0.3.43", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.3.43"},
+   :coord-id {:mvn/version "0.3.43"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib io.replikativ/konserve,
+   :coord {:mvn/version "0.7.285", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.7.285"},
+   :coord-id {:mvn/version "0.7.285"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [],
+   :lib medley/medley,
+   :coord {:mvn/version "1.4.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.4.0"},
+   :coord-id {:mvn/version "1.4.0"},
+   :include true,
+   :reason :new-top-dep}
+  {:path [org.clojure/clojure],
+   :lib org.clojure/spec.alpha,
+   :coord {:mvn/version "0.3.218", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.3.218"},
+   :coord-id {:mvn/version "0.3.218"},
+   :include true,
+   :reason :new-dep}
+  {:path [org.clojure/clojure],
+   :lib org.clojure/core.specs.alpha,
+   :coord {:mvn/version "0.2.62", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.2.62"},
+   :coord-id {:mvn/version "0.2.62"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/datalog-parser],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.11.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.1"},
+   :coord-id {:mvn/version "1.11.1"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/hitchhiker-tree],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.11.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.1"},
+   :coord-id {:mvn/version "1.11.1"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/hitchhiker-tree],
+   :lib org.clojure/clojurescript,
+   :coord {:mvn/version "1.11.60", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.60"},
+   :coord-id {:mvn/version "1.11.60"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/hitchhiker-tree],
+   :lib com.taoensso/carmine,
+   :coord {:mvn/version "3.1.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "3.1.0"},
+   :coord-id {:mvn/version "3.1.0"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/hitchhiker-tree],
+   :lib org.clojure/core.rrb-vector,
+   :coord {:mvn/version "0.1.2", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.1.2"},
+   :coord-id {:mvn/version "0.1.2"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/hitchhiker-tree],
+   :lib org.clojure/core.memoize,
+   :coord {:mvn/version "1.0.257", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.257"},
+   :coord-id {:mvn/version "1.0.257"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/hitchhiker-tree],
+   :lib org.clojure/core.cache,
+   :coord {:mvn/version "1.0.225", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.225"},
+   :coord-id {:mvn/version "1.0.225"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/hitchhiker-tree],
+   :lib io.replikativ/konserve,
+   :coord {:mvn/version "0.7.271", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.7.271"},
+   :coord-id {:mvn/version "0.7.271"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/hasch],
+   :lib io.replikativ/incognito,
+   :coord {:mvn/version "0.2.2", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.2.2"},
+   :coord-id {:mvn/version "0.2.2"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/incognito],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.10.3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.10.3"},
+   :coord-id {:mvn/version "1.10.3"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/incognito],
+   :lib org.clojure/tools.cli,
+   :coord {:mvn/version "1.0.206", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.206"},
+   :coord-id {:mvn/version "1.0.206"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/incognito],
+   :lib com.cognitect/transit-cljs,
+   :coord {:mvn/version "0.8.269", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.8.269"},
+   :coord-id {:mvn/version "0.8.269"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/incognito],
+   :lib org.clojure/clojurescript,
+   :coord {:mvn/version "1.11.4", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.4"},
+   :coord-id {:mvn/version "1.11.4"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/incognito],
+   :lib fress/fress,
+   :coord {:mvn/version "0.3.3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.3.3"},
+   :coord-id {:mvn/version "0.3.3"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/incognito],
+   :lib org.clojure/data.fressian,
+   :coord {:mvn/version "1.0.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.0"},
+   :coord-id {:mvn/version "1.0.0"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/incognito],
+   :lib com.cognitect/transit-clj,
+   :coord {:mvn/version "1.0.329", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.329"},
+   :coord-id {:mvn/version "1.0.329"},
+   :include true,
+   :reason :new-dep}
+  {:path [mvxcvi/clj-cbor],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.10.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.10.1"},
+   :coord-id {:mvn/version "1.10.1"},
+   :include false,
+   :reason :use-top}
+  {:path [org.clojure/clojurescript],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.8.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.8.0"},
+   :coord-id {:mvn/version "1.8.0"},
+   :include false,
+   :reason :use-top}
+  {:path [org.clojure/clojurescript],
+   :lib com.google.javascript/closure-compiler-unshaded,
+   :coord {:mvn/version "v20210808", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "v20210808"},
+   :coord-id {:mvn/version "v20210808"},
+   :include true,
+   :reason :new-dep}
+  {:path [org.clojure/clojurescript],
+   :lib org.clojure/google-closure-library,
+   :coord {:mvn/version "0.0-20211011-0726fdeb", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.0-20211011-0726fdeb"},
+   :coord-id {:mvn/version "0.0-20211011-0726fdeb"},
+   :include true,
+   :reason :new-dep}
+  {:path [org.clojure/clojurescript],
+   :lib org.clojure/data.json,
+   :coord {:mvn/version "0.2.6", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.2.6"},
+   :coord-id {:mvn/version "0.2.6"},
+   :include true,
+   :reason :new-dep}
+  {:path [org.clojure/clojurescript],
+   :lib org.clojure/tools.reader,
+   :coord {:mvn/version "1.3.3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.3.3"},
+   :coord-id {:mvn/version "1.3.3"},
+   :include true,
+   :reason :new-dep}
+  {:path [org.clojure/clojurescript],
+   :lib com.cognitect/transit-clj,
+   :coord
+   {:mvn/version "0.8.309",
+    :exclusions #{org.clojure/clojure},
+    :deps/manifest :mvn},
+   :orig-coord
+   {:mvn/version "0.8.309", :exclusions #{org.clojure/clojure}},
+   :coord-id {:mvn/version "0.8.309"},
+   :include false,
+   :reason :older-version}
+  {:path [io.replikativ/zufall],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.10.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.10.0"},
+   :coord-id {:mvn/version "1.10.0"},
+   :include false,
+   :reason :use-top}
+  {:path [environ/environ],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.8.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.8.0"},
+   :coord-id {:mvn/version "1.8.0"},
+   :include false,
+   :reason :use-top}
+  {:path [com.taoensso/timbre],
+   :lib com.taoensso/encore,
+   :coord {:mvn/version "3.21.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "3.21.0"},
+   :coord-id {:mvn/version "3.21.0"},
+   :include true,
+   :reason :new-dep}
+  {:path [com.taoensso/timbre],
+   :lib io.aviso/pretty,
+   :coord {:mvn/version "1.1.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.1.1"},
+   :coord-id {:mvn/version "1.1.1"},
+   :include true,
+   :reason :new-dep}
+  {:path [junit/junit],
+   :lib org.hamcrest/hamcrest-core,
+   :coord {:mvn/version "1.3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.3"},
+   :coord-id {:mvn/version "1.3"},
+   :include true,
+   :reason :new-dep}
+  {:path [cheshire/cheshire],
+   :lib com.fasterxml.jackson.core/jackson-core,
+   :coord {:mvn/version "2.13.3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "2.13.3"},
+   :coord-id {:mvn/version "2.13.3"},
+   :include true,
+   :reason :new-dep}
+  {:path [cheshire/cheshire],
+   :lib com.fasterxml.jackson.dataformat/jackson-dataformat-smile,
+   :coord
+   {:mvn/version "2.13.3",
+    :exclusions #{com.fasterxml.jackson.core/jackson-databind},
+    :deps/manifest :mvn},
+   :orig-coord
+   {:mvn/version "2.13.3",
+    :exclusions #{com.fasterxml.jackson.core/jackson-databind}},
+   :coord-id {:mvn/version "2.13.3"},
+   :include true,
+   :reason :new-dep}
+  {:path [cheshire/cheshire],
+   :lib com.fasterxml.jackson.dataformat/jackson-dataformat-cbor,
+   :coord
+   {:mvn/version "2.13.3",
+    :exclusions #{com.fasterxml.jackson.core/jackson-databind},
+    :deps/manifest :mvn},
+   :orig-coord
+   {:mvn/version "2.13.3",
+    :exclusions #{com.fasterxml.jackson.core/jackson-databind}},
+   :coord-id {:mvn/version "2.13.3"},
+   :include true,
+   :reason :new-dep}
+  {:path [cheshire/cheshire],
+   :lib tigris/tigris,
+   :coord {:mvn/version "0.1.2", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.1.2"},
+   :coord-id {:mvn/version "0.1.2"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/superv.async],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.10.3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.10.3"},
+   :coord-id {:mvn/version "1.10.3"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/superv.async],
+   :lib org.clojure/clojurescript,
+   :coord {:mvn/version "1.11.4", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.4"},
+   :coord-id {:mvn/version "1.11.4"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/superv.async],
+   :lib org.clojure/core.async,
+   :coord {:mvn/version "1.5.648", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.5.648"},
+   :coord-id {:mvn/version "1.5.648"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/konserve],
+   :lib org.lz4/lz4-java,
+   :coord {:mvn/version "1.8.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.8.0"},
+   :coord-id {:mvn/version "1.8.0"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/konserve],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.11.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.1"},
+   :coord-id {:mvn/version "1.11.1"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve],
+   :lib io.replikativ/hasch,
+   :coord {:mvn/version "0.3.7", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.3.7"},
+   :coord-id {:mvn/version "0.3.7"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve],
+   :lib io.replikativ/incognito,
+   :coord {:mvn/version "0.3.66", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.3.66"},
+   :coord-id {:mvn/version "0.3.66"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve],
+   :lib com.github.pkpkpk/cljs-node-io,
+   :coord {:mvn/version "2.0.332", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "2.0.332"},
+   :coord-id {:mvn/version "2.0.332"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/konserve],
+   :lib org.clojure/clojurescript,
+   :coord {:mvn/version "1.11.60", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.60"},
+   :coord-id {:mvn/version "1.11.60"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve],
+   :lib fress/fress,
+   :coord {:mvn/version "0.4.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.4.0"},
+   :coord-id {:mvn/version "0.4.0"},
+   :include true,
+   :reason :newer-version}
+  {:path [io.replikativ/konserve],
+   :lib org.clojure/data.fressian,
+   :coord {:mvn/version "1.0.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.0"},
+   :coord-id {:mvn/version "1.0.0"},
+   :include false,
+   :reason :same-version}
+  {:path [io.replikativ/konserve],
+   :lib org.clojars.mmb90/cljs-cache,
+   :coord {:mvn/version "0.1.4", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.1.4"},
+   :coord-id {:mvn/version "0.1.4"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/konserve],
+   :lib com.taoensso/timbre,
+   :coord {:mvn/version "6.0.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "6.0.1"},
+   :coord-id {:mvn/version "6.0.1"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve],
+   :lib io.replikativ/superv.async,
+   :coord {:mvn/version "0.3.43", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.3.43"},
+   :coord-id {:mvn/version "0.3.43"},
+   :include false,
+   :reason :use-top}
+  {:path [medley/medley],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.9.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.9.0"},
+   :coord-id {:mvn/version "1.9.0"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/hitchhiker-tree com.taoensso/carmine],
+   :lib com.taoensso/encore,
+   :coord {:mvn/version "3.9.2", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "3.9.2"},
+   :coord-id {:mvn/version "3.9.2"},
+   :include false,
+   :reason :older-version}
+  {:path [io.replikativ/hitchhiker-tree com.taoensso/carmine],
+   :lib com.taoensso/timbre,
+   :coord {:mvn/version "5.1.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "5.1.0"},
+   :coord-id {:mvn/version "5.1.0"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/hitchhiker-tree com.taoensso/carmine],
+   :lib com.taoensso/nippy,
+   :coord {:mvn/version "3.1.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "3.1.1"},
+   :coord-id {:mvn/version "3.1.1"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/hitchhiker-tree com.taoensso/carmine],
+   :lib org.apache.commons/commons-pool2,
+   :coord {:mvn/version "2.9.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "2.9.0"},
+   :coord-id {:mvn/version "2.9.0"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/hitchhiker-tree com.taoensso/carmine],
+   :lib commons-codec/commons-codec,
+   :coord {:mvn/version "1.15", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.15"},
+   :coord-id {:mvn/version "1.15"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/hitchhiker-tree org.clojure/core.rrb-vector],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.6.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.6.0"},
+   :coord-id {:mvn/version "1.6.0"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/hitchhiker-tree org.clojure/core.memoize],
+   :lib org.clojure/core.cache,
+   :coord {:mvn/version "1.0.225", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.225"},
+   :coord-id {:mvn/version "1.0.225"},
+   :include false,
+   :reason :same-version}
+  {:path [io.replikativ/hitchhiker-tree org.clojure/core.memoize],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.6.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.6.0"},
+   :coord-id {:mvn/version "1.6.0"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/hitchhiker-tree org.clojure/core.cache],
+   :lib org.clojure/data.priority-map,
+   :coord {:mvn/version "1.1.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.1.0"},
+   :coord-id {:mvn/version "1.1.0"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/hitchhiker-tree org.clojure/core.cache],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.6.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.6.0"},
+   :coord-id {:mvn/version "1.6.0"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/incognito org.clojure/tools.cli],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.8.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.8.0"},
+   :coord-id {:mvn/version "1.8.0"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/incognito com.cognitect/transit-cljs],
+   :lib com.cognitect/transit-js,
+   :coord {:mvn/version "0.8.874", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.8.874"},
+   :coord-id {:mvn/version "0.8.874"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/incognito fress/fress],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.10.3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.10.3"},
+   :coord-id {:mvn/version "1.10.3"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/incognito fress/fress],
+   :lib org.clojure/data.fressian,
+   :coord {:mvn/version "1.0.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.0"},
+   :coord-id {:mvn/version "1.0.0"},
+   :include false,
+   :reason :parent-omitted}
+  {:path [io.replikativ/incognito org.clojure/data.fressian],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.7.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.7.0"},
+   :coord-id {:mvn/version "1.7.0"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/incognito org.clojure/data.fressian],
+   :lib org.fressian/fressian,
+   :coord {:mvn/version "0.6.6", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.6.6"},
+   :coord-id {:mvn/version "0.6.6"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/incognito com.cognitect/transit-clj],
+   :lib com.cognitect/transit-java,
+   :coord {:mvn/version "1.0.362", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.362"},
+   :coord-id {:mvn/version "1.0.362"},
+   :include true,
+   :reason :new-dep}
+  {:path
+   [org.clojure/clojurescript org.clojure/google-closure-library],
+   :lib org.clojure/google-closure-library-third-party,
+   :coord {:mvn/version "0.0-20211011-0726fdeb", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.0-20211011-0726fdeb"},
+   :coord-id {:mvn/version "0.0-20211011-0726fdeb"},
+   :include true,
+   :reason :new-dep}
+  {:path [org.clojure/clojurescript org.clojure/data.json],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.4.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.4.0"},
+   :coord-id {:mvn/version "1.4.0"},
+   :include false,
+   :reason :use-top}
+  {:path [org.clojure/clojurescript org.clojure/tools.reader],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.5.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.5.1"},
+   :coord-id {:mvn/version "1.5.1"},
+   :include false,
+   :reason :use-top}
+  {:path [com.taoensso/timbre com.taoensso/encore],
+   :lib org.clojure/tools.reader,
+   :coord {:mvn/version "1.3.6", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.3.6"},
+   :coord-id {:mvn/version "1.3.6"},
+   :include true,
+   :reason :newer-version}
+  {:path [com.taoensso/timbre com.taoensso/encore],
+   :lib com.taoensso/truss,
+   :coord {:mvn/version "1.6.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.6.0"},
+   :coord-id {:mvn/version "1.6.0"},
+   :include true,
+   :reason :new-dep}
+  {:path [com.taoensso/timbre io.aviso/pretty],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.7.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.7.0"},
+   :coord-id {:mvn/version "1.7.0"},
+   :include false,
+   :reason :use-top}
+  {:path
+   [cheshire/cheshire
+    com.fasterxml.jackson.dataformat/jackson-dataformat-smile],
+   :lib com.fasterxml.jackson.core/jackson-core,
+   :coord {:mvn/version "2.13.3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "2.13.3"},
+   :coord-id {:mvn/version "2.13.3"},
+   :include false,
+   :reason :same-version}
+  {:path
+   [cheshire/cheshire
+    com.fasterxml.jackson.dataformat/jackson-dataformat-cbor],
+   :lib com.fasterxml.jackson.core/jackson-core,
+   :coord {:mvn/version "2.13.3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "2.13.3"},
+   :coord-id {:mvn/version "2.13.3"},
+   :include false,
+   :reason :same-version}
+  {:path [io.replikativ/superv.async org.clojure/core.async],
+   :lib org.clojure/tools.analyzer.jvm,
+   :coord {:mvn/version "1.2.2", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.2.2"},
+   :coord-id {:mvn/version "1.2.2"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/superv.async org.clojure/core.async],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.9.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.9.0"},
+   :coord-id {:mvn/version "1.9.0"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve com.github.pkpkpk/cljs-node-io],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.11.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.1"},
+   :coord-id {:mvn/version "1.11.1"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve com.github.pkpkpk/cljs-node-io],
+   :lib org.clojure/clojurescript,
+   :coord {:mvn/version "1.11.54", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.11.54"},
+   :coord-id {:mvn/version "1.11.54"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve com.github.pkpkpk/cljs-node-io],
+   :lib org.clojure/core.async,
+   :coord {:mvn/version "1.5.648", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.5.648"},
+   :coord-id {:mvn/version "1.5.648"},
+   :include false,
+   :reason :same-version}
+  {:path [io.replikativ/konserve fress/fress],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.10.3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.10.3"},
+   :coord-id {:mvn/version "1.10.3"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve fress/fress],
+   :lib org.clojure/data.fressian,
+   :coord {:mvn/version "1.0.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.0"},
+   :coord-id {:mvn/version "1.0.0"},
+   :include false,
+   :reason :same-version}
+  {:path [io.replikativ/konserve org.clojars.mmb90/cljs-cache],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.9.0-alpha10", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.9.0-alpha10"},
+   :coord-id {:mvn/version "1.9.0-alpha10"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve org.clojars.mmb90/cljs-cache],
+   :lib org.clojure/core.async,
+   :coord {:mvn/version "0.2.385", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.2.385"},
+   :coord-id {:mvn/version "0.2.385"},
+   :include false,
+   :reason :older-version}
+  {:path [io.replikativ/konserve org.clojars.mmb90/cljs-cache],
+   :lib org.clojure/clojurescript,
+   :coord {:mvn/version "1.9.89", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.9.89"},
+   :coord-id {:mvn/version "1.9.89"},
+   :include false,
+   :reason :use-top}
+  {:path [io.replikativ/konserve org.clojars.mmb90/cljs-cache],
+   :lib adzerk/boot-test,
+   :coord {:mvn/version "1.1.2", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.1.2"},
+   :coord-id {:mvn/version "1.1.2"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/konserve org.clojars.mmb90/cljs-cache],
+   :lib crisptrutski/boot-cljs-test,
+   :coord
+   {:mvn/version "0.2.2-20160402.204547-3", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.2.2-20160402.204547-3"},
+   :coord-id {:mvn/version "0.2.2-20160402.204547-3"},
+   :include true,
+   :reason :new-dep}
+  {:path [io.replikativ/konserve org.clojars.mmb90/cljs-cache],
+   :lib tailrecursion/cljs-priority-map,
+   :coord {:mvn/version "1.2.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.2.1"},
+   :coord-id {:mvn/version "1.2.1"},
+   :include true,
+   :reason :new-dep}
+  {:path
+   [io.replikativ/hitchhiker-tree
+    com.taoensso/carmine
+    com.taoensso/nippy],
+   :lib org.clojure/tools.reader,
+   :coord {:mvn/version "1.3.4", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.3.4"},
+   :coord-id {:mvn/version "1.3.4"},
+   :include false,
+   :reason :older-version}
+  {:path
+   [io.replikativ/hitchhiker-tree
+    com.taoensso/carmine
+    com.taoensso/nippy],
+   :lib com.taoensso/encore,
+   :coord {:mvn/version "3.9.2", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "3.9.2"},
+   :coord-id {:mvn/version "3.9.2"},
+   :include false,
+   :reason :older-version}
+  {:path
+   [io.replikativ/hitchhiker-tree
+    com.taoensso/carmine
+    com.taoensso/nippy],
+   :lib org.iq80.snappy/snappy,
+   :coord {:mvn/version "0.4", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.4"},
+   :coord-id {:mvn/version "0.4"},
+   :include true,
+   :reason :new-dep}
+  {:path
+   [io.replikativ/hitchhiker-tree
+    com.taoensso/carmine
+    com.taoensso/nippy],
+   :lib org.tukaani/xz,
+   :coord {:mvn/version "1.8", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.8"},
+   :coord-id {:mvn/version "1.8"},
+   :include true,
+   :reason :new-dep}
+  {:path
+   [io.replikativ/hitchhiker-tree
+    com.taoensso/carmine
+    com.taoensso/nippy],
+   :lib org.lz4/lz4-java,
+   :coord {:mvn/version "1.7.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.7.1"},
+   :coord-id {:mvn/version "1.7.1"},
+   :include false,
+   :reason :older-version}
+  {:path
+   [io.replikativ/hitchhiker-tree
+    org.clojure/core.cache
+    org.clojure/data.priority-map],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.5.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.5.1"},
+   :coord-id {:mvn/version "1.5.1"},
+   :include false,
+   :reason :use-top}
+  {:path
+   [io.replikativ/incognito
+    com.cognitect/transit-clj
+    com.cognitect/transit-java],
+   :lib com.fasterxml.jackson.core/jackson-core,
+   :coord {:mvn/version "2.8.7", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "2.8.7"},
+   :coord-id {:mvn/version "2.8.7"},
+   :include false,
+   :reason :older-version}
+  {:path
+   [io.replikativ/incognito
+    com.cognitect/transit-clj
+    com.cognitect/transit-java],
+   :lib org.msgpack/msgpack,
+   :coord {:mvn/version "0.6.12", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "0.6.12"},
+   :coord-id {:mvn/version "0.6.12"},
+   :include true,
+   :reason :new-dep}
+  {:path
+   [io.replikativ/incognito
+    com.cognitect/transit-clj
+    com.cognitect/transit-java],
+   :lib javax.xml.bind/jaxb-api,
+   :coord {:mvn/version "2.3.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "2.3.0"},
+   :coord-id {:mvn/version "2.3.0"},
+   :include true,
+   :reason :new-dep}
+  {:path
+   [com.taoensso/timbre com.taoensso/encore org.clojure/tools.reader],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.5.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.5.1"},
+   :coord-id {:mvn/version "1.5.1"},
+   :include false,
+   :reason :use-top}
+  {:path
+   [io.replikativ/superv.async
+    org.clojure/core.async
+    org.clojure/tools.analyzer.jvm],
+   :lib org.clojure/tools.analyzer,
+   :coord {:mvn/version "1.1.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.1.0"},
+   :coord-id {:mvn/version "1.1.0"},
+   :include true,
+   :reason :new-dep}
+  {:path
+   [io.replikativ/superv.async
+    org.clojure/core.async
+    org.clojure/tools.analyzer.jvm],
+   :lib org.clojure/core.memoize,
+   :coord {:mvn/version "1.0.253", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.0.253"},
+   :coord-id {:mvn/version "1.0.253"},
+   :include false,
+   :reason :older-version}
+  {:path
+   [io.replikativ/superv.async
+    org.clojure/core.async
+    org.clojure/tools.analyzer.jvm],
+   :lib org.ow2.asm/asm,
+   :coord {:mvn/version "9.2", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "9.2"},
+   :coord-id {:mvn/version "9.2"},
+   :include true,
+   :reason :new-dep}
+  {:path
+   [io.replikativ/superv.async
+    org.clojure/core.async
+    org.clojure/tools.analyzer.jvm],
+   :lib org.clojure/tools.reader,
+   :coord {:mvn/version "1.3.6", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.3.6"},
+   :coord-id {:mvn/version "1.3.6"},
+   :include false,
+   :reason :same-version}
+  {:path
+   [io.replikativ/superv.async
+    org.clojure/core.async
+    org.clojure/tools.analyzer.jvm],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.5.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.5.1"},
+   :coord-id {:mvn/version "1.5.1"},
+   :include false,
+   :reason :use-top}
+  {:path
+   [io.replikativ/konserve
+    org.clojars.mmb90/cljs-cache
+    tailrecursion/cljs-priority-map],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.7.0", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.7.0"},
+   :coord-id {:mvn/version "1.7.0"},
+   :include false,
+   :reason :use-top}
+  {:path
+   [io.replikativ/konserve
+    org.clojars.mmb90/cljs-cache
+    tailrecursion/cljs-priority-map],
+   :lib org.clojure/clojurescript,
+   :coord {:mvn/version "1.7.170", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.7.170"},
+   :coord-id {:mvn/version "1.7.170"},
+   :include false,
+   :reason :use-top}
+  {:path
+   [io.replikativ/incognito
+    com.cognitect/transit-clj
+    com.cognitect/transit-java
+    org.msgpack/msgpack],
+   :lib com.googlecode.json-simple/json-simple,
+   :coord
+   {:mvn/version "1.1.1",
+    :exclusions #{junit/junit},
+    :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.1.1", :exclusions #{junit/junit}},
+   :coord-id {:mvn/version "1.1.1"},
+   :include true,
+   :reason :new-dep}
+  {:path
+   [io.replikativ/incognito
+    com.cognitect/transit-clj
+    com.cognitect/transit-java
+    org.msgpack/msgpack],
+   :lib org.javassist/javassist,
+   :coord {:mvn/version "3.18.1-GA", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "3.18.1-GA"},
+   :coord-id {:mvn/version "3.18.1-GA"},
+   :include true,
+   :reason :new-dep}
+  {:path
+   [io.replikativ/superv.async
+    org.clojure/core.async
+    org.clojure/tools.analyzer.jvm
+    org.clojure/tools.analyzer],
+   :lib org.clojure/clojure,
+   :coord {:mvn/version "1.5.1", :deps/manifest :mvn},
+   :orig-coord {:mvn/version "1.5.1"},
+   :coord-id {:mvn/version "1.5.1"},
+   :include false,
+   :reason :use-top}],
+ :vmap
+ {com.cognitect/transit-java
+  {:versions
+   {{:mvn/version "1.0.362"}
+    {:mvn/version "1.0.362", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.0.362"}
+    #{[io.replikativ/incognito com.cognitect/transit-clj]}},
+   :select {:mvn/version "1.0.362"}},
+  org.clojure/data.json
+  {:versions
+   {{:mvn/version "0.2.6"}
+    {:mvn/version "0.2.6", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.2.6"} #{[org.clojure/clojurescript]}},
+   :select {:mvn/version "0.2.6"}},
+  org.lz4/lz4-java
+  {:versions
+   {{:mvn/version "1.8.0"}
+    {:mvn/version "1.8.0", :deps/manifest :mvn}},
+   :paths {{:mvn/version "1.8.0"} #{[io.replikativ/konserve]}},
+   :select {:mvn/version "1.8.0"}},
+  org.clojure/clojure
+  {:versions
+   {{:mvn/version "1.11.1"}
+    {:mvn/version "1.11.1", :deps/manifest :mvn}},
+   :paths {{:mvn/version "1.11.1"} #{[]}},
+   :select {:mvn/version "1.11.1"},
+   :top true},
+  commons-codec/commons-codec
+  {:versions
+   {{:mvn/version "1.15"} {:mvn/version "1.15", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.15"}
+    #{[io.replikativ/hitchhiker-tree com.taoensso/carmine]}},
+   :select {:mvn/version "1.15"}},
+  org.clojure/tools.analyzer
+  {:versions
+   {{:mvn/version "1.1.0"}
+    {:mvn/version "1.1.0", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.1.0"}
+    #{[io.replikativ/superv.async
+       org.clojure/core.async
+       org.clojure/tools.analyzer.jvm]}},
+   :select {:mvn/version "1.1.0"}},
+  org.clojure/core.specs.alpha
+  {:versions
+   {{:mvn/version "0.2.62"}
+    {:mvn/version "0.2.62", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.2.62"} #{[org.clojure/clojure]}},
+   :select {:mvn/version "0.2.62"}},
+  org.tukaani/xz
+  {:versions
+   {{:mvn/version "1.8"} {:mvn/version "1.8", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.8"}
+    #{[io.replikativ/hitchhiker-tree
+       com.taoensso/carmine
+       com.taoensso/nippy]}},
+   :select {:mvn/version "1.8"}},
+  io.replikativ/datalog-parser
+  {:versions
+   {{:mvn/version "0.2.25"}
+    {:mvn/version "0.2.25", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.2.25"} #{[]}},
+   :select {:mvn/version "0.2.25"},
+   :top true},
+  io.replikativ/hitchhiker-tree
+  {:versions
+   {{:mvn/version "0.2.222"}
+    {:mvn/version "0.2.222", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.2.222"} #{[]}},
+   :select {:mvn/version "0.2.222"},
+   :top true},
+  org.clojure/spec.alpha
+  {:versions
+   {{:mvn/version "0.3.218"}
+    {:mvn/version "0.3.218", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.3.218"} #{[org.clojure/clojure]}},
+   :select {:mvn/version "0.3.218"}},
+  io.replikativ/hasch
+  {:versions
+   {{:mvn/version "0.3.7"}
+    {:mvn/version "0.3.7", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.3.7"} #{[]}},
+   :select {:mvn/version "0.3.7"},
+   :top true},
+  org.clojure/tools.cli
+  {:versions
+   {{:mvn/version "1.0.206"}
+    {:mvn/version "1.0.206", :deps/manifest :mvn}},
+   :paths {{:mvn/version "1.0.206"} #{[io.replikativ/incognito]}},
+   :select {:mvn/version "1.0.206"}},
+  tailrecursion/cljs-priority-map
+  {:versions
+   {{:mvn/version "1.2.1"}
+    {:mvn/version "1.2.1", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.2.1"}
+    #{[io.replikativ/konserve org.clojars.mmb90/cljs-cache]}},
+   :select {:mvn/version "1.2.1"}},
+  com.taoensso/encore
+  {:versions
+   {{:mvn/version "3.21.0"}
+    {:mvn/version "3.21.0", :deps/manifest :mvn}},
+   :paths {{:mvn/version "3.21.0"} #{[com.taoensso/timbre]}},
+   :select {:mvn/version "3.21.0"}},
+  io.replikativ/incognito
+  {:versions
+   {{:mvn/version "0.3.66"}
+    {:mvn/version "0.3.66", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.3.66"} #{[]}},
+   :select {:mvn/version "0.3.66"},
+   :top true},
+  org.apache.commons/commons-pool2
+  {:versions
+   {{:mvn/version "2.9.0"}
+    {:mvn/version "2.9.0", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "2.9.0"}
+    #{[io.replikativ/hitchhiker-tree com.taoensso/carmine]}},
+   :select {:mvn/version "2.9.0"}},
+  org.clojure/tools.analyzer.jvm
+  {:versions
+   {{:mvn/version "1.2.2"}
+    {:mvn/version "1.2.2", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.2.2"}
+    #{[io.replikativ/superv.async org.clojure/core.async]}},
+   :select {:mvn/version "1.2.2"}},
+  com.fasterxml.jackson.dataformat/jackson-dataformat-cbor
+  {:versions
+   {{:mvn/version "2.13.3"}
+    {:mvn/version "2.13.3",
+     :exclusions #{com.fasterxml.jackson.core/jackson-databind},
+     :deps/manifest :mvn}},
+   :paths {{:mvn/version "2.13.3"} #{[cheshire/cheshire]}},
+   :select {:mvn/version "2.13.3"}},
+  com.googlecode.json-simple/json-simple
+  {:versions
+   {{:mvn/version "1.1.1"}
+    {:mvn/version "1.1.1",
+     :exclusions #{junit/junit},
+     :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.1.1"}
+    #{[io.replikativ/incognito
+       com.cognitect/transit-clj
+       com.cognitect/transit-java
+       org.msgpack/msgpack]}},
+   :select {:mvn/version "1.1.1"}},
+  org.iq80.snappy/snappy
+  {:versions
+   {{:mvn/version "0.4"} {:mvn/version "0.4", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "0.4"}
+    #{[io.replikativ/hitchhiker-tree
+       com.taoensso/carmine
+       com.taoensso/nippy]}},
+   :select {:mvn/version "0.4"}},
+  mvxcvi/clj-cbor
+  {:versions
+   {{:mvn/version "1.1.0"}
+    {:mvn/version "1.1.0", :deps/manifest :mvn}},
+   :paths {{:mvn/version "1.1.0"} #{[]}},
+   :select {:mvn/version "1.1.0"},
+   :top true},
+  com.cognitect/transit-cljs
+  {:versions
+   {{:mvn/version "0.8.269"}
+    {:mvn/version "0.8.269", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.8.269"} #{[io.replikativ/incognito]}},
+   :select {:mvn/version "0.8.269"}},
+  org.clojure/google-closure-library
+  {:versions
+   {{:mvn/version "0.0-20211011-0726fdeb"}
+    {:mvn/version "0.0-20211011-0726fdeb", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "0.0-20211011-0726fdeb"}
+    #{[org.clojure/clojurescript]}},
+   :select {:mvn/version "0.0-20211011-0726fdeb"}},
+  io.aviso/pretty
+  {:versions
+   {{:mvn/version "1.1.1"}
+    {:mvn/version "1.1.1", :deps/manifest :mvn}},
+   :paths {{:mvn/version "1.1.1"} #{[com.taoensso/timbre]}},
+   :select {:mvn/version "1.1.1"}},
+  com.github.pkpkpk/cljs-node-io
+  {:versions
+   {{:mvn/version "2.0.332"}
+    {:mvn/version "2.0.332", :deps/manifest :mvn}},
+   :paths {{:mvn/version "2.0.332"} #{[io.replikativ/konserve]}},
+   :select {:mvn/version "2.0.332"}},
+  org.clojure/clojurescript
+  {:versions
+   {{:mvn/version "1.11.4"}
+    {:mvn/version "1.11.4", :deps/manifest :mvn}},
+   :paths {{:mvn/version "1.11.4"} #{[]}},
+   :select {:mvn/version "1.11.4"},
+   :top true},
+  fress/fress
+  {:versions
+   {{:mvn/version "0.3.3"} {:mvn/version "0.3.3", :deps/manifest :mvn},
+    {:mvn/version "0.4.0"}
+    {:mvn/version "0.4.0", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "0.4.0"} #{[io.replikativ/konserve]},
+    {:mvn/version "0.3.3"} #{[io.replikativ/incognito]}},
+   :select {:mvn/version "0.4.0"}},
+  com.taoensso/carmine
+  {:versions
+   {{:mvn/version "3.1.0"}
+    {:mvn/version "3.1.0", :deps/manifest :mvn}},
+   :paths {{:mvn/version "3.1.0"} #{[io.replikativ/hitchhiker-tree]}},
+   :select {:mvn/version "3.1.0"}},
+  org.clojure/data.fressian
+  {:versions
+   {{:mvn/version "1.0.0"}
+    {:mvn/version "1.0.0", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.0.0"}
+    #{[io.replikativ/konserve]
+      [io.replikativ/incognito]
+      [io.replikativ/konserve fress/fress]}},
+   :select {:mvn/version "1.0.0"}},
+  com.fasterxml.jackson.core/jackson-core
+  {:versions
+   {{:mvn/version "2.13.3"}
+    {:mvn/version "2.13.3", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "2.13.3"}
+    #{[cheshire/cheshire]
+      [cheshire/cheshire
+       com.fasterxml.jackson.dataformat/jackson-dataformat-cbor]
+      [cheshire/cheshire
+       com.fasterxml.jackson.dataformat/jackson-dataformat-smile]}},
+   :select {:mvn/version "2.13.3"}},
+  org.ow2.asm/asm
+  {:versions
+   {{:mvn/version "9.2"} {:mvn/version "9.2", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "9.2"}
+    #{[io.replikativ/superv.async
+       org.clojure/core.async
+       org.clojure/tools.analyzer.jvm]}},
+   :select {:mvn/version "9.2"}},
+  com.cognitect/transit-js
+  {:versions
+   {{:mvn/version "0.8.874"}
+    {:mvn/version "0.8.874", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "0.8.874"}
+    #{[io.replikativ/incognito com.cognitect/transit-cljs]}},
+   :select {:mvn/version "0.8.874"}},
+  io.replikativ/zufall
+  {:versions
+   {{:mvn/version "0.1.0"}
+    {:mvn/version "0.1.0", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.1.0"} #{[]}},
+   :select {:mvn/version "0.1.0"},
+   :top true},
+  com.taoensso/truss
+  {:versions
+   {{:mvn/version "1.6.0"}
+    {:mvn/version "1.6.0", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.6.0"}
+    #{[com.taoensso/timbre com.taoensso/encore]}},
+   :select {:mvn/version "1.6.0"}},
+  org.clojure/google-closure-library-third-party
+  {:versions
+   {{:mvn/version "0.0-20211011-0726fdeb"}
+    {:mvn/version "0.0-20211011-0726fdeb", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "0.0-20211011-0726fdeb"}
+    #{[org.clojure/clojurescript org.clojure/google-closure-library]}},
+   :select {:mvn/version "0.0-20211011-0726fdeb"}},
+  org.clojars.mmb90/cljs-cache
+  {:versions
+   {{:mvn/version "0.1.4"}
+    {:mvn/version "0.1.4", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.1.4"} #{[io.replikativ/konserve]}},
+   :select {:mvn/version "0.1.4"}},
+  org.javassist/javassist
+  {:versions
+   {{:mvn/version "3.18.1-GA"}
+    {:mvn/version "3.18.1-GA", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "3.18.1-GA"}
+    #{[io.replikativ/incognito
+       com.cognitect/transit-clj
+       com.cognitect/transit-java
+       org.msgpack/msgpack]}},
+   :select {:mvn/version "3.18.1-GA"}},
+  environ/environ
+  {:versions
+   {{:mvn/version "1.2.0"}
+    {:mvn/version "1.2.0", :deps/manifest :mvn}},
+   :paths {{:mvn/version "1.2.0"} #{[]}},
+   :select {:mvn/version "1.2.0"},
+   :top true},
+  adzerk/boot-test
+  {:versions
+   {{:mvn/version "1.1.2"}
+    {:mvn/version "1.1.2", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.1.2"}
+    #{[io.replikativ/konserve org.clojars.mmb90/cljs-cache]}},
+   :select {:mvn/version "1.1.2"}},
+  org.msgpack/msgpack
+  {:versions
+   {{:mvn/version "0.6.12"}
+    {:mvn/version "0.6.12", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "0.6.12"}
+    #{[io.replikativ/incognito
+       com.cognitect/transit-clj
+       com.cognitect/transit-java]}},
+   :select {:mvn/version "0.6.12"}},
+  com.taoensso/timbre
+  {:versions
+   {{:mvn/version "5.2.1"}
+    {:mvn/version "5.2.1", :deps/manifest :mvn}},
+   :paths {{:mvn/version "5.2.1"} #{[]}},
+   :select {:mvn/version "5.2.1"},
+   :top true},
+  com.cognitect/transit-clj
+  {:versions
+   {{:mvn/version "1.0.329"}
+    {:mvn/version "1.0.329", :deps/manifest :mvn}},
+   :paths {{:mvn/version "1.0.329"} #{[io.replikativ/incognito]}},
+   :select {:mvn/version "1.0.329"}},
+  org.fressian/fressian
+  {:versions
+   {{:mvn/version "0.6.6"}
+    {:mvn/version "0.6.6", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "0.6.6"}
+    #{[io.replikativ/incognito org.clojure/data.fressian]}},
+   :select {:mvn/version "0.6.6"}},
+  org.clojure/core.rrb-vector
+  {:versions
+   {{:mvn/version "0.1.2"}
+    {:mvn/version "0.1.2", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.1.2"} #{[io.replikativ/hitchhiker-tree]}},
+   :select {:mvn/version "0.1.2"}},
+  org.hamcrest/hamcrest-core
+  {:versions
+   {{:mvn/version "1.3"} {:mvn/version "1.3", :deps/manifest :mvn}},
+   :paths {{:mvn/version "1.3"} #{[junit/junit]}},
+   :select {:mvn/version "1.3"}},
+  persistent-sorted-set/persistent-sorted-set
+  {:versions
+   {{:mvn/version "0.2.1"}
+    {:mvn/version "0.2.1", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.2.1"} #{[]}},
+   :select {:mvn/version "0.2.1"},
+   :top true},
+  junit/junit
+  {:versions
+   {{:mvn/version "4.13.2"}
+    {:mvn/version "4.13.2", :deps/manifest :mvn}},
+   :paths {{:mvn/version "4.13.2"} #{[]}},
+   :select {:mvn/version "4.13.2"},
+   :top true},
+  cheshire/cheshire
+  {:versions
+   {{:mvn/version "5.11.0"}
+    {:mvn/version "5.11.0", :deps/manifest :mvn}},
+   :paths {{:mvn/version "5.11.0"} #{[]}},
+   :select {:mvn/version "5.11.0"},
+   :top true},
+  tigris/tigris
+  {:versions
+   {{:mvn/version "0.1.2"}
+    {:mvn/version "0.1.2", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.1.2"} #{[cheshire/cheshire]}},
+   :select {:mvn/version "0.1.2"}},
+  org.clojure/tools.reader
+  {:versions
+   {{:mvn/version "1.3.3"} {:mvn/version "1.3.3", :deps/manifest :mvn},
+    {:mvn/version "1.3.6"}
+    {:mvn/version "1.3.6", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.3.6"}
+    #{[io.replikativ/superv.async
+       org.clojure/core.async
+       org.clojure/tools.analyzer.jvm]
+      [com.taoensso/timbre com.taoensso/encore]},
+    {:mvn/version "1.3.3"} #{[org.clojure/clojurescript]}},
+   :select {:mvn/version "1.3.6"}},
+  io.replikativ/superv.async
+  {:versions
+   {{:mvn/version "0.3.43"}
+    {:mvn/version "0.3.43", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.3.43"} #{[]}},
+   :select {:mvn/version "0.3.43"},
+   :top true},
+  com.taoensso/nippy
+  {:versions
+   {{:mvn/version "3.1.1"}
+    {:mvn/version "3.1.1", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "3.1.1"}
+    #{[io.replikativ/hitchhiker-tree com.taoensso/carmine]}},
+   :select {:mvn/version "3.1.1"}},
+  com.google.javascript/closure-compiler-unshaded
+  {:versions
+   {{:mvn/version "v20210808"}
+    {:mvn/version "v20210808", :deps/manifest :mvn}},
+   :paths {{:mvn/version "v20210808"} #{[org.clojure/clojurescript]}},
+   :select {:mvn/version "v20210808"}},
+  org.clojure/core.memoize
+  {:versions
+   {{:mvn/version "1.0.257"}
+    {:mvn/version "1.0.257", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.0.257"} #{[io.replikativ/hitchhiker-tree]}},
+   :select {:mvn/version "1.0.257"}},
+  org.clojure/data.priority-map
+  {:versions
+   {{:mvn/version "1.1.0"}
+    {:mvn/version "1.1.0", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.1.0"}
+    #{[io.replikativ/hitchhiker-tree org.clojure/core.cache]}},
+   :select {:mvn/version "1.1.0"}},
+  crisptrutski/boot-cljs-test
+  {:versions
+   {{:mvn/version "0.2.2-20160402.204547-3"}
+    {:mvn/version "0.2.2-20160402.204547-3", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "0.2.2-20160402.204547-3"}
+    #{[io.replikativ/konserve org.clojars.mmb90/cljs-cache]}},
+   :select {:mvn/version "0.2.2-20160402.204547-3"}},
+  org.clojure/core.cache
+  {:versions
+   {{:mvn/version "1.0.225"}
+    {:mvn/version "1.0.225", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.0.225"}
+    #{[io.replikativ/hitchhiker-tree]
+      [io.replikativ/hitchhiker-tree org.clojure/core.memoize]}},
+   :select {:mvn/version "1.0.225"}},
+  io.replikativ/konserve
+  {:versions
+   {{:mvn/version "0.7.285"}
+    {:mvn/version "0.7.285", :deps/manifest :mvn}},
+   :paths {{:mvn/version "0.7.285"} #{[]}},
+   :select {:mvn/version "0.7.285"},
+   :top true},
+  medley/medley
+  {:versions
+   {{:mvn/version "1.4.0"}
+    {:mvn/version "1.4.0", :deps/manifest :mvn}},
+   :paths {{:mvn/version "1.4.0"} #{[]}},
+   :select {:mvn/version "1.4.0"},
+   :top true},
+  org.clojure/core.async
+  {:versions
+   {{:mvn/version "1.5.648"}
+    {:mvn/version "1.5.648", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "1.5.648"}
+    #{[io.replikativ/konserve com.github.pkpkpk/cljs-node-io]
+      [io.replikativ/superv.async]}},
+   :select {:mvn/version "1.5.648"}},
+  com.fasterxml.jackson.dataformat/jackson-dataformat-smile
+  {:versions
+   {{:mvn/version "2.13.3"}
+    {:mvn/version "2.13.3",
+     :exclusions #{com.fasterxml.jackson.core/jackson-databind},
+     :deps/manifest :mvn}},
+   :paths {{:mvn/version "2.13.3"} #{[cheshire/cheshire]}},
+   :select {:mvn/version "2.13.3"}},
+  javax.xml.bind/jaxb-api
+  {:versions
+   {{:mvn/version "2.3.0"}
+    {:mvn/version "2.3.0", :deps/manifest :mvn}},
+   :paths
+   {{:mvn/version "2.3.0"}
+    #{[io.replikativ/incognito
+       com.cognitect/transit-clj
+       com.cognitect/transit-java]}},
+   :select {:mvn/version "2.3.0"}}},
+ :exclusions
+ {[cheshire/cheshire
+   com.fasterxml.jackson.dataformat/jackson-dataformat-smile]
+  #{com.fasterxml.jackson.core/jackson-databind},
+  [cheshire/cheshire
+   com.fasterxml.jackson.dataformat/jackson-dataformat-cbor]
+  #{com.fasterxml.jackson.core/jackson-databind},
+  [io.replikativ/incognito
+   com.cognitect/transit-clj
+   com.cognitect/transit-java
+   org.msgpack/msgpack
+   com.googlecode.json-simple/json-simple]
+  #{junit/junit}}}

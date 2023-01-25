@@ -2,7 +2,7 @@
   (:require [babashka.fs :as fs]
             [babashka.process :refer [shell]]
             [clojure.string :as str]
-            [tools.version :refer [version-str]]))
+            [tools.version :as version]))
 
 (def tmp-dir "/tmp/cljdoc")
 
@@ -13,7 +13,7 @@
 (defn lib-installed? [{:build/keys [lib] :as config}]
   (let [lib-dir (str maven-dir "/repository/"
                      (str/replace (str lib) "." "/") "/"
-                     (version-str config))]
+                     (version/string config))]
     (println lib-dir)
     (fs/exists? lib-dir)))
 
@@ -24,7 +24,7 @@
   (fs/create-dirs tmp-dir)
 
   (when-not (lib-installed? config)
-    (println "Version" (version-str config) "of" (str lib) "is not installed!"
+    (println "Version" (version/string config) "of" (str lib) "is not installed!"
              " Please run 'bb jar' and 'bb install' and try again.")
     (System/exit 1))
 
@@ -33,7 +33,7 @@
           "--volume" (str (fs/cwd) ":/repo-to-import")
           "--volume" (str maven-dir ":/root/.m2")
           "--volume" (str tmp-dir ":/app/data")
-          "--entrypoint" "clojure" "cljdoc/cljdoc" "-M:cli" "ingest" "-p" (str lib) "-v" (version-str config)
+          "--entrypoint" "clojure" "cljdoc/cljdoc" "-M:cli" "ingest" "-p" (str lib) "-v" (version/string config)
           "--git" "/repo-to-import")
 
   (println "---- cljdoc preview: starting server on port 8000")
