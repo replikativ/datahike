@@ -13,7 +13,7 @@
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
-        mvxcvi/clj-cbor                             {:mvn/version "1.1.0"}} 
+        mvxcvi/clj-cbor                             {:mvn/version "1.1.0"}}
 
  :paths ["src" "target/classes"]
 
@@ -22,7 +22,7 @@
                  :fn compile}
 
  :aliases {;; Development
-           
+
            :1.9 {:override-deps {org.clojure/clojure {:mvn/version "1.9.0"}}}
 
            :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
@@ -47,42 +47,42 @@
                   :main-opts ["-m" "nrepl.cmdline" "--middleware" "[cider.nrepl/cider-middleware]"]}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
-           
+
            :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
                   :main-opts ["-m" "cljfmt.main" "fix"]}
 
            ;; Build
-           
+
            :build {:replace-paths []
                    :replace-deps {datahike.bb {:local/root "bb"}}
                    :ns-default tools.build}
-           
-           :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}} 
-           
+
+           :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}}
+
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
                          :extra-paths ["libdatahike/src"]}
-           
+
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
                                     "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
                                     "-H:Name=dhi"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
-                        { clj.native-image/clj.native-image
+                        {clj.native-image/clj.native-image
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
-                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}}
-           
+                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}
+
            ;; Checks
-           
+
            :benchmark {:extra-paths ["benchmark/src"]
                        :extra-deps {clj-http/clj-http {:mvn/version "3.12.3"}
                                     org.clojure/tools.cli {:mvn/version "1.0.206"}
                                     incanter/incanter-core {:mvn/version "1.9.3"}
                                     incanter/incanter-charts {:mvn/version "1.9.3"}}
                        :main-opts ["-m" "benchmark.cli"]}
-           
+
            :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
                     :main-opts ["-m" "cljfmt.main" "check"]}
-           
-           :outdated {:deps {com.github.liquidz/antq {:mvn/version "2.2.983"}}
-                      :main-opts ["-m" "antq.core"]}}
+
+           :outdated {:extra-deps {com.github.liquidz/antq {:mvn/version "2.2.983"}}
+                      :main-opts ["-m" "antq.core"]}}}
