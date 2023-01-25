@@ -4,7 +4,7 @@
             [babashka.process :as p]
             [tools.build :as build]))
 
-(defn clj [opts & args] (apply p/shell opts "clj" args))
+(defn clj [opts & args] (apply p/shell opts "clojure" args))
 (defn git [opts & args] (apply p/shell opts "git" args))
 
 (defn kaocha [& args]

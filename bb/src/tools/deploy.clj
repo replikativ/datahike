@@ -2,7 +2,7 @@
   (:require [babashka.process :refer [shell]]
             [tools.build :refer [pom-path jar-path]]))
 
-(defn clj [& args] (apply shell "clj" args))
+(defn clj [& args] (apply shell "clojure" args))
 (defn quoted [s] (str \" s \"))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
