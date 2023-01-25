@@ -141,7 +141,7 @@ jobs:
           name: Run native-image test
           command: |
             cd /home/circleci/replikativ
-            ./bin/run-native-image-tests
+            bb test native-image
           no_output_timeout: 5m
   backward-compatibility-test:
     executor: tools/clojurecli
