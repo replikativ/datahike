@@ -46,7 +46,7 @@
 (defn native-image []
   (if (fs/exists? "./dhi")
     (p/shell "./bb/resources/native-image-tests/run-native-image-tests")
-    (println "Native image cli missin. Please run 'bb ni-build' and try again.")))
+    (println "Native image cli missing. Please run 'bb ni-build' and try again.")))
 
 (defn all [config]
   (let [kaocha-ids ["clj-pss" "clj-hht" "integration"]] 
