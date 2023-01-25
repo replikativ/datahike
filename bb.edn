@@ -24,8 +24,8 @@
          docs {:doc "Get a preview on the clojure docs"
                :task (cljdoc/preview config)}
          
-         fmt {:doc "Format source files"
-              :task (clojure "-M:ffix")}
+         ffix {:doc "Format source files" 
+               :task (clojure "-M:ffix")}
          
          rpl {:doc "Start a repl"
               :task (clojure "-M:repl")}
@@ -33,8 +33,8 @@
 
          ; checks
          
-         fmt? {:doc "Test formatting"
-               :task (clojure "-M:format")}
+         format {:doc "Test formatting"
+                 :task (clojure "-M:format")}
 
          lint {:doc "Run clj-kondo linter"
                :require [[pod.borkdude.clj-kondo :as clj-kondo]]
