@@ -1,26 +1,28 @@
 (ns tools.build
   (:refer-clojure :exclude [compile])
-  (:require
-   [babashka.fs :as fs]
-   [clojure.tools.build.api :as b]
-   [tools.version :refer [version-str]]))
+  (:require [babashka.fs :as fs]
+            [clojure.edn :as edn]
+            [clojure.tools.build.api :as b]
+            [tools.version :refer [version-str]]))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn clean [{:build/keys [target-dir native] :as _config}]
   (print (str "Cleaning up target directory '" target-dir "'..."))
   (fs/delete-tree target-dir)
   (when (fs/exists? (:target-dir native))
-    (println (str "Cleaning up native target directory '" (:target-dir native) "'...")) 
+    (println (str "Cleaning up native target directory '" (:target-dir native) "'..."))
     (fs/delete-tree (:target-dir native)))
   (println "Done."))
 
-(defn compile [{:build/keys [deps-file class-dir java-src-dirs] :as _config}]
-  (print (str "Compiling Java classes saving them to '" class-dir "'..."))
-  (b/javac {:src-dirs java-src-dirs
-            :class-dir class-dir
-            :basis (b/create-basis {:project deps-file})
-            :javac-opts ["-source" "8" "-target" "8"]})
-  (println "Done."))
+(defn compile
+  ([] (compile (edn/read-string (slurp "config.edn"))))
+  ([{:build/keys [deps-file class-dir java-src-dirs] :as _config}]
+   (print (str "Compiling Java classes saving them to '" class-dir "'..."))
+   (b/javac {:src-dirs java-src-dirs
+             :class-dir class-dir
+             :basis (b/create-basis {:project deps-file})
+             :javac-opts ["-source" "8" "-target" "8"]})
+   (println "Done.")))
 
 (defn pom-path [{:build/keys [class-dir lib] :as _config}]
   (b/pom-path {:lib lib

@@ -13,7 +13,8 @@
                     [tools.test :as test]
                     [tools.version :as version]]
          :init (do (def config-file "config.edn")
-                   (def config (edn/read-string (slurp config-file))))
+                   (def config (edn/read-string (slurp config-file)))
+                   (def deps (edn/read-string (slurp "deps.edn"))))
          ;; hook :enter could be used to load config according to project
          
          ; tools
@@ -47,9 +48,11 @@
 
          kaocha {:doc "Run kaocha with arbitrary arguments"
                  :task (apply test/kaocha *command-line-args*)}
-
+         
          deps {:doc "Check consistency of dependencies"
-               :task deps/check}
+               :task (if *command-line-args*
+                       (apply deps/-main *command-line-args*)
+                       (deps/check {:alias (-> deps :aliases (dissoc :datomic :1.9 :1.10) keys)}))}
          
          outdated {:doc "Find outdated libraries"
                    :task (clojure "-M:outdated")}

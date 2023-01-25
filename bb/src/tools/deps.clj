@@ -8,6 +8,8 @@
             [clojure.string :as string]
             [clojure.tools.cli :as cli]))
 
+(def tmpdir (str (fs/temp-dir) "/clj_deps/"))
+
 (defn read-edn [filepath]
   (edn/read-string (slurp filepath)))
 
@@ -20,7 +22,6 @@
     :multi true
     :update-fn conj
     :validate [#(% project-aliases) #(str "Invalid alias: " % " is undeclared in deps.edn")]]
-   ["-A" "--aliases-only" "Exclude direct (release) dependencies"]
    ["-o" "--output FILEPATH" "Filepath to which output should be written"
     :default nil]
    ["-h" "--help"]])
@@ -30,10 +31,10 @@
   (System/exit status))
 
 (defn usage [summary]
-  (string/join "\n" ["Usage: bb deps/consistency [options]\n" "Options:" summary]))
+  (string/join "\n" ["Usage: bb deps [options]\n" "Options:" summary]))
 
 (defn create-trace-file [alias filename]
-  (p/shell "clojure" (str "-M:" alias) "-Strace")
+  (p/shell "clojure" "-Strace" (str "-M:" alias))
   (when (not= "trace.edn" filename)
     (fs/move "trace.edn" filename)))
 
@@ -58,15 +59,23 @@
                               (assoc! m pkg build-vns) m))
                           (transient {}) pkg-build-versions)))
 
+(defn check [{:keys [output alias] :as _config}]
+  (fs/delete-tree tmpdir)
+  (fs/create-dirs tmpdir)
+  (let [trace-filenames #(str tmpdir "trace-" (name %) ".edn")
+        alias-filenames (zipmap alias (map trace-filenames alias))]
+    
+    (doseq [[alias filename] alias-filenames] (create-trace-file alias filename))
+      (pp/pprint (-> alias-filenames
+                     map-build-pkg-vns
+                     map-pkg-build-vns
+                     get-inconsistent-pkgs)
+                 (if output (io/writer output) *out*))
+      (run! fs/delete (vals alias-filenames))))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
-(defn check [& args]
-  (let [{:keys [options errors summary] :as _parsed-opts} (cli/parse-opts args cli-options)
-        {:keys [alias aliases-only output]} options
-        tmpdir (fs/temp-dir)
-        trace-filenames #(str tmpdir "trace-" (name %) ".edn")
-        alias-filenames (cond-> (zipmap alias (map trace-filenames alias))
-                                (nil? aliases-only) (assoc :release (str tmpdir "trace.edn")))]
+(defn -main [& args]
+  (let [{:keys [options errors summary] :as _parsed-opts} (cli/parse-opts args cli-options)]
     (cond
       (:help options)
       (exit 0 (usage summary))
@@ -74,11 +83,5 @@
       errors
       (exit 1 (string/join "\n" ["Errors:" (string/join "\n" errors) "" (usage summary)]))
 
-      :else
-      (do (doseq [[alias filename] alias-filenames] (create-trace-file alias filename))
-          (pp/pprint (-> alias-filenames
-                         map-build-pkg-vns
-                         map-pkg-build-vns
-                         get-inconsistent-pkgs)
-                     (if output (io/writer output) *out*))
-          (run! fs/delete (vals alias-filenames))))))
+      :else 
+      (check options))))

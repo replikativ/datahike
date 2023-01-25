@@ -53,6 +53,10 @@
 
            ;; Build
            
+           :build {:replace-paths []
+                   :replace-deps {datahike.bb {:local/root "bb"}}
+                   :ns-default tools.build}
+           
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}} 
            
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
