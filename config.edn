@@ -1,6 +1,6 @@
 {:org "replikativ"
  :version {:major 0
-           :minor 5}
+           :minor 6}
  :git-url "git@github.com:replikativ/datahike.git" 
  
  :build/class-dir "target/classes"

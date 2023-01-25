@@ -1,6 +1,6 @@
 {:min-bb-version "0.8.0"
  :pods {;since babashka 0.8.0, can only be declared in bb.edn
-        org.babashka/tools-deps-native {:version "0.0.5"}   ;; for babashka build
+        org.babashka/tools-deps-native {:version "0.0.5"}
         clj-kondo/clj-kondo {:version "2022.10.05"}}
  :deps {datahike/bb {:local/root "bb"}}
  :tasks {:requires [[clojure.edn :as edn]
@@ -22,6 +22,7 @@
                 :task (clojure "-M:benchmark" "measure")} 
          
          docs {:doc "Get a preview on the clojure docs"
+               :depends [jar install]
                :task (cljdoc/preview config)}
          
          ffix {:doc "Format source files" 
@@ -54,7 +55,7 @@
                    :task (clojure "-M:outdated")}
 
          check {:doc "Run all checks"
-                :depends [test fmt? lint deps outdated]}
+                :depends [test format lint deps outdated]}
          
 
          ; build and release

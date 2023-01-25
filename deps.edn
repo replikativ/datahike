@@ -6,6 +6,7 @@
         io.replikativ/konserve                      {:mvn/version "0.7.285"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.2.1"}
         environ/environ                             {:mvn/version "1.2.0"}
+        cheshire/cheshire                           {:mvn/version "5.11.0"}
         com.taoensso/timbre                         {:mvn/version "5.2.1"}
         io.replikativ/superv.async                  {:mvn/version "0.3.43"}
         io.replikativ/datalog-parser                {:mvn/version "0.2.25"}
@@ -20,7 +21,9 @@
                  :alias :build
                  :fn compile}
 
- :aliases {:1.9 {:override-deps {org.clojure/clojure {:mvn/version "1.9.0"}}}
+ :aliases {;; Development
+           
+           :1.9 {:override-deps {org.clojure/clojure {:mvn/version "1.9.0"}}}
 
            :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
 
@@ -45,13 +48,15 @@
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
            
-           :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
-                         :extra-paths ["libdatahike/src"]
-                         :extra-deps {cheshire/cheshire {:mvn/version "5.11.0"}}}
+           :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
+                  :main-opts ["-m" "cljfmt.main" "fix"]}
 
-           ;; Build Tools
+           ;; Build
            
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.0"}}} 
+           
+           :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
+                         :extra-paths ["libdatahike/src"]}
            
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
                                     "-m" "clj.native-image" "datahike.cli"
@@ -59,12 +64,11 @@
                                     "-H:Name=dhi"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
-                        {cheshire/cheshire {:mvn/version "5.11.0"}
-                         clj.native-image/clj.native-image
+                        { clj.native-image/clj.native-image
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
                           :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}}
            
-           ;; Other Tools
+           ;; Checks
            
            :benchmark {:extra-paths ["benchmark/src"]
                        :extra-deps {clj-http/clj-http {:mvn/version "3.12.3"}
@@ -75,9 +79,6 @@
            
            :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}}
                     :main-opts ["-m" "cljfmt.main" "check"]}
-
-           :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.8.0"}} 
-                  :main-opts ["-m" "cljfmt.main" "fix"]}
            
            :outdated {:deps {com.github.liquidz/antq {:mvn/version "2.2.983"}}
                       :main-opts ["-m" "antq.core"]}}

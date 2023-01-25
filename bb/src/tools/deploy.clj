@@ -18,6 +18,7 @@
            :artifact (jar-path config) 
            :pom-file (quoted (pom-path config))))))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn local
   "Install library locally"
   [config]
