@@ -3,7 +3,8 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.api :as d]
-   [datahike.db :as db])
+   [datahike.db :as db]
+   [datahike.test.utils :refer [get-time]])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
@@ -23,8 +24,7 @@
 (defn connect
   []
   (let [config {:schema-flexibility :write
-                :store              {:backend :mem
-                                     :id      (str (.getTime (java.util.Date.)))}}]
+                :store              {:backend :mem :id      (str (get-time))}}]
     (d/delete-database config)
     (d/create-database config)
     (d/connect config)))

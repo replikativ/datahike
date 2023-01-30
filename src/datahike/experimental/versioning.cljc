@@ -71,7 +71,7 @@
   accessible until the next gc."
   [conn branch]
   (when (= branch :db)
-    (dt/raise "Connot delete main :db branch. Delete database instead."
+    (dt/raise "Cannot delete main :db branch. Delete database instead."
               {:type :cannot-delete-main-db-branch}))
   (let [store (:store @conn)
         branches (k/get store :branches nil {:sync? true})]

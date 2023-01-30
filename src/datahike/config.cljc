@@ -189,10 +189,6 @@
        (update merged-config :initial-tx (fn [path] (-> path slurp read-string)))
        merged-config))))
 
-(defn config-merge [stored-config config]
-  (let [merged-config (dt/deep-merge config stored-config)]
-    (dt/deep-merge merged-config (select-keys config #{:branch}))))
-
 ;; deprecation begin
 (s/def ::backend-depr keyword?)
 (s/def ::username-depr string?)

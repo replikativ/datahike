@@ -117,9 +117,9 @@
         (let [cfg (merge base-config
                          {:keep-history? hist
                           :attribute-refs? attr-ref})
-              old-cfg (assoc-in cfg [:store :path] (str old-path (.getTime (java.util.Date.))))
+              old-cfg (assoc-in cfg [:store :path] (str old-path (utils/get-time)))
               old-conn (utils/setup-db old-cfg)
-              new-cfg (assoc-in cfg [:store :path] (str new-path (.getTime (java.util.Date.))))
+              new-cfg (assoc-in cfg [:store :path] (str new-path (utils/get-time)))
               new-conn (utils/setup-db new-cfg)]
           (d/transact old-conn schema)
           (d/transact old-conn tx-data)
@@ -134,11 +134,11 @@
 
     (testing "Export history database, import non-history database"
       (let [old-cfg (-> base-config
-                        (assoc-in [:store :path] (str old-path (.getTime (java.util.Date.))))
+                        (assoc-in [:store :path] (str old-path (utils/get-time)))
                         (assoc :keep-history? true))
             old-conn (utils/setup-db old-cfg)
             new-cfg (-> base-config
-                        (assoc-in [:store :path] (str new-path (.getTime (java.util.Date.))))
+                        (assoc-in [:store :path] (str new-path (utils/get-time)))
                         (assoc :keep-history? false))
             new-conn (utils/setup-db new-cfg)]
         (d/transact old-conn schema)
@@ -152,11 +152,11 @@
 
     (testing "Export non-history database, import history database"
       (let [old-cfg (-> base-config
-                        (assoc-in [:store :path] (str old-path (.getTime (java.util.Date.))))
+                        (assoc-in [:store :path] (str old-path (utils/get-time)))
                         (assoc :keep-history? false))
             old-conn (utils/setup-db old-cfg)
             new-cfg (-> base-config
-                        (assoc-in [:store :path] (str new-path (.getTime (java.util.Date.))))
+                        (assoc-in [:store :path] (str new-path (utils/get-time)))
                         (assoc :keep-history? true))
             new-conn (utils/setup-db new-cfg)]
         (d/transact old-conn schema)

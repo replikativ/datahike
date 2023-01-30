@@ -7,7 +7,8 @@
    [datahike.constants :as const]
    [datahike.db :as db :refer [ref-datoms]]
    [datahike.db.interface :as dbi]
-   [datahike.test.core-test])
+   [datahike.test.core-test]
+   [datahike.test.utils :refer [get-time]])
   #?(:clj (:import [datahike.datom Datom])))
 
 (def no-ref-cfg
@@ -23,7 +24,7 @@
    :schema-flexibility :write})
 
 (defn init-cfgs []
-  (let [t (.getTime (java.util.Date.))]
+  (let [t (get-time)]
     [(assoc-in no-ref-cfg [:store :id] (str t))
      (assoc-in ref-cfg [:store :id] (str (inc t)))]))
 

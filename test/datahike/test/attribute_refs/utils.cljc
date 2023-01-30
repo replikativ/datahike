@@ -1,6 +1,7 @@
 (ns datahike.test.attribute-refs.utils
   (:require [datahike.api :as d]
-            [datahike.db.interface :as dbi]))
+            [datahike.db.interface :as dbi]
+            [datahike.test.utils :refer [get-time]]))
 
 (def ref-config {:store {:backend :mem}
                  :writer {:backend :self}
@@ -83,7 +84,7 @@
     :db/valueType   :db.type/ref}])
 
 (defn setup-new-connection []
-  (let [ref-config (assoc-in ref-config [:store :id] (str (.getTime (java.util.Date.))))]
+  (let [ref-config (assoc-in ref-config [:store :id] (str (get-time)))]
     (d/delete-database ref-config)
     (d/create-database ref-config)
     (let [conn (d/connect ref-config)]

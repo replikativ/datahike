@@ -2,8 +2,8 @@
   (:require [datahike.store :as ds]
             [datahike.writing :as dsi]
             [datahike.config :as dc]
-            [datahike.writer :as t]
             [datahike.tools :as dt]
+            [datahike.writer :as w]
             [konserve.core :as k]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
@@ -44,7 +44,7 @@
 
 (defn deref-conn [^Connection conn]
   (let [wrapped-atom (.-wrapped-atom conn)]
-    (if (not (t/streaming? (get @wrapped-atom :writer)))
+    (if (not (w/streaming? (get @wrapped-atom :writer)))
       (let [store  (:store @wrapped-atom)
             stored (k/get store (:branch (:config @wrapped-atom)) nil {:sync? true})]
         (log/trace "Fetched db for deref: " (:config stored))
@@ -176,7 +176,7 @@
               _ (ensure-stored-config-consistency config (:config stored-db))
               conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
           (swap! (:wrapped-atom conn) assoc :writer
-                 (t/create-writer (:writer config) conn))
+                 (w/create-writer (:writer config) conn))
           (add-connection! conn-id conn)
           conn)))))
 
@@ -197,5 +197,5 @@
       (let [new-conns (swap! connections update-in [conn-id :count] dec)]
         (when (zero? (get-in new-conns [conn-id :count]))
           (delete-connection! conn-id)
-          (t/shutdown (:writer db))
+          (w/shutdown (:writer db))
           nil)))))
