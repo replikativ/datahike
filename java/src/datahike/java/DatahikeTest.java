@@ -32,8 +32,9 @@ public class DatahikeTest {
             "                 :db/cardinality :db.cardinality/one}]");
 
     private APersistentMap config() {
+        String connId = ((Long)(new Date()).getTime()).toString();
         return map(kwd(":store"), map(kwd(":backend"), kwd(":mem"),
-                                      kwd(":id"), ((Long)(new Date()).getTime()).toString()),
+                                      kwd(":id"), connId),
                    kwd(":initial-tx"), this.schema);
     }
 

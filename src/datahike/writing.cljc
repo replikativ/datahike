@@ -132,12 +132,12 @@
        (assoc-in tx-report [:tx-meta :db/commitId]
                  (get-in db [:meta :datahike/commit-id]))))))
 
-(defprotocol PDatabaseCreator
+(defprotocol PDatabaseManager
   (-create-database [config opts])
   (-delete-database [config])
   (-database-exists? [config]))
 
-(extend-protocol PDatabaseCreator
+(extend-protocol PDatabaseManager
   String
   (-create-database [uri & opts]
     (apply -create-database (dc/uri->config uri) opts))

@@ -4,10 +4,10 @@
             [konserve.memory :as mem]
             [environ.core :refer [env]]
             [datahike.index :as di]
+            [datahike.tools :as dt]
             [konserve.cache :as kc]
             [clojure.core.cache :as cache]
-            [taoensso.timbre :refer [info]])
-  #?(:clj (:import [java.net InetAddress])))
+            [taoensso.timbre :refer [info]]))
 
 (defn add-cache-and-handlers [raw-store config]
   (cond->> (kc/ensure-cache
@@ -109,8 +109,8 @@
 (defmethod store-identity :file [config]
   [:file (:scope config) (:path config)])
 
-(defmethod empty-store :file [{:keys [path]}]
-  (fs/connect-fs-store path :opts {:sync? true}))
+(defmethod empty-store :file [{:keys [path config]}]
+  (fs/connect-fs-store path :opts {:sync? true} :config config))
 
 (defmethod delete-store :file [{:keys [path]}]
   (fs/delete-store path))
@@ -121,8 +121,7 @@
 (defmethod default-config :file [config]
   (merge
    {:path (:datahike-store-path env "datahike-db")
-    :scope #?(:clj (.getHostAddress (InetAddress/getLocalHost))
-              :cljs (throw (ex-info "Not supported yet." {})))}
+    :scope (dt/get-hostname)}
    config))
 
 (s/def :datahike.store.file/path string?)

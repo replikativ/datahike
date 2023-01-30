@@ -3,7 +3,8 @@
    [superv.async :refer [throw-if-exception-]]
    #?(:clj [clojure.java.io :as io])
    [taoensso.timbre :as log])
-  #?(:clj (:import [java.util Properties UUID Date])))
+  #?(:clj (:import [java.util Properties UUID Date]
+                   [java.net InetAddress])))
 
 (defn combine-hashes [x y]
   #?(:clj  (clojure.lang.Util/hashCombine x y)
@@ -142,3 +143,7 @@
              1000000.0)]
     {:res result
      :t t}))
+
+(defn get-hostname []
+  #?(:clj (.getHostAddress (InetAddress/getLocalHost))
+     :cljs (raise "Not supported yet." {:type :hostname-not-supported-yet})))

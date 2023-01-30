@@ -6,7 +6,7 @@
    [hitchhiker.tree :as tree]
    [hitchhiker.tree.messaging :as msg]
    [datahike.index.hitchhiker-tree.upsert :as htu]
-   [datahike.test.utils :refer [setup-db]]
+   [datahike.test.utils :refer [setup-db conn-id]]
    [datahike.constants :as const]
    [datahike.db :as db]
    [datahike.api :as d]))
@@ -90,7 +90,7 @@
 
 (defn connect []
   (let [cfg  {:schema-flexibility :read
-              :store {:backend :mem :id (str (.getTime (java.util.Date.)))}
+              :store {:backend :mem :id (conn-id)}
               :initial-tx         []}
         _    (d/delete-database cfg)
         _    (d/create-database cfg)]

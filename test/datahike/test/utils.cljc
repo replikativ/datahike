@@ -1,7 +1,7 @@
 (ns datahike.test.utils
   (:require [datahike.api :as d]
             [datahike.tools :as tools])
-  (:import (java.util UUID)))
+  #?(:clj (:import [java.util UUID Date])))
 
 (defn cfg-template
   "Returning a config template with a random store-id"
@@ -50,3 +50,10 @@
 (defn sleep [ms]
   #?(:clj (Thread/sleep ms)
      :cljs (js/setTimeout (fn []) ms)))
+
+(defn get-time []
+  #?(:clj (.getTime (Date.))
+     :cljs (.getTime (js/Date.))))
+
+(defn conn-id []
+  (str (get-time)))
