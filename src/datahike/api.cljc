@@ -17,7 +17,7 @@
             [datahike.db.transaction :as dbt]
             [datahike.db.utils :as dbu]
             [datahike.impl.entity :as de]
-            [taoennso.timbre :as log])
+            [taoensso.timbre :as log])
   #?(:clj
      (:import [clojure.lang Keyword PersistentArrayMap]
               [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
@@ -232,16 +232,16 @@
   transact
   (fn [connection arg-map]
     (let [arg (cond
-                (or (vector? arg-map)
-                    (seq? arg-map))   (do (log/warn "Vector and sequence as argument are deprecated."
-                                                    "Instead use a map with key :tx-data.")  
-                                          {:tx-data arg-map})
                 (map? arg-map)        (if (contains? arg-map :tx-data)
                                         arg-map
                                         (dt/raise "Bad argument to transact, map missing key :tx-data."
                                                   {:error :transact/syntax
                                                    :argument-keys (keys arg-map)}))
-                :else                 (dt/raise "Bad argument to transact, expected map."  
+                (or (vector? arg-map)
+                    (seq? arg-map))   (do (log/warn "Vector and sequence as argument are deprecated."
+                                                    "Instead use a map with key :tx-data.")
+                                          {:tx-data arg-map})
+                :else                 (dt/raise "Bad argument to transact, expected map."
                                                 {:error :transact/syntax
                                                  :argument-type (type arg-map)}))]
       (deref (transact! connection arg)))))
