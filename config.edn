@@ -14,7 +14,7 @@
                 :src-dirs ["libdatahike/src"]
                 :target-dir "libdatahike/target"}
  :build/pom-template "./bb/resources/template/pom.xml"
- :buil/scm {:connection "scm:git:git@github.com:replikativ/datahike.git"
-            :developerConnection "scm:git:git@github.com:replikativ/datahike.git"
-            :url "https://github.com/replikativ/datahike"}
+ :build/scm {:connection "scm:git:git@github.com:replikativ/datahike.git"
+             :developerConnection "scm:git:git@github.com:replikativ/datahike.git"
+             :url "https://github.com/replikativ/datahike"}
  :build/target-dir "target"}

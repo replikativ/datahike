@@ -1,9 +1,8 @@
 (ns tools.build
   (:refer-clojure :exclude [compile])
   (:require [babashka.fs :as fs]
-            [clojure.edn :as edn]
             [clojure.tools.build.api :as b]
-            [tools.version :as version]))
+            [tools.version :as version :refer [read-edn-file]]))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn clean [{:build/keys [target-dir native] :as _config}]
@@ -15,7 +14,7 @@
   (println "Done."))
 
 (defn compile
-  ([] (compile (edn/read-string (slurp "config.edn"))))
+  ([] (compile (read-edn-file "config.edn")))
   ([{:build/keys [deps-file class-dir java-src-dirs] :as _config}]
    (print (str "Compiling Java classes saving them to '" class-dir "'..."))
    (b/javac {:src-dirs java-src-dirs
