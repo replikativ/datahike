@@ -20,7 +20,7 @@ bb compile
 bb rpl
 ```
 
-Be careful not to type `bb repl` as this will start a babashka repl
+Be careful not to type `bb repl` as this will start a babashka repl!
 
 ## Run the tests
 
