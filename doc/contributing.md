@@ -2,7 +2,7 @@
 
 The current process requires having [babashka](https://github.com/babashka/babashka) installed.
 
-An overview of the available tasks will be show with
+An overview of the available tasks will be shown with
 
 ```
 bb tasks
