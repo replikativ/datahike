@@ -53,9 +53,7 @@
    (ensure-norms! conn (io/resource "migrations")))
   ([conn migrations]
    (let [db (ensure-norm-attribute! conn)
-         norm-list (cond
-                     (string? migrations) (read-norm-files! migrations)
-                     (vector? migrations) migrations)]
+         norm-list (read-norm-files! migrations)]
      (log/info "Checking migrations ...")
      (doseq [{:keys [norm tx-data tx-fn]
               :or   {tx-data []
