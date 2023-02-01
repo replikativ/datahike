@@ -1,0 +1,4 @@
+{:tx-data [{:db/ident       :baz
+            :db/valueType   :db.type/string
+            :db/cardinality :db.cardinality/one}]
+ :tx-fn datahike.norm.norm-test/baz-test-fn-1}

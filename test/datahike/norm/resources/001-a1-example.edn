@@ -3,4 +3,4 @@
             :db/ident       :foo
             :db/valueType   :db.type/string
             :db/cardinality :db.cardinality/one}]
- :tx-fn   io.replikativ.garantie/neutral-fn}
+ :tx-fn   datahike.norm.norm/neutral-fn}

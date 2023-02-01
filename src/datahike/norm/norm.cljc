@@ -37,6 +37,7 @@
                            read-string
                            (update :norm (fn [norm] (or norm
                                                         (-> (.getName migration-file)
+                                                            (string/replace #" " "_")
                                                             (string/replace #"\.edn" "")
                                                             keyword))))))))]
         (sort-by :norm (into [] xf migration-files)))
@@ -65,7 +66,7 @@
          (log/info "Run migration" norm)
          (->> (d/transact conn {:tx-data (vec (concat [{:tx/norm norm}]
                                                       tx-data
-                                                      (tx-fn conn)))})
+                                                      ((eval tx-fn) conn)))})
               (log/info "Done")))))))
 
 (comment
@@ -76,7 +77,7 @@
   (def conn (d/connect {:store {:backend :file
                                 :path "/tmp/file-example"}}))
   (ensure-norms! conn "test/resources")
-  (def norm-list (read-norm-files! "test/resources"))
+  (def norm-list (read-norm-files! "test/datahike/norm/resources"))
   (norm-installed? (d/db conn) (:norm (first norm-list)))
   (d/transact conn {:tx-data [{:foo "foo"}]}))
 
