@@ -1,6 +1,5 @@
 #kaocha/v1
         #meta-merge [{:tests    [{:id          :clj-pss
-                                  :focus-meta [:focused]
                                   :ns-patterns ["datahike.test."]
                                   :bindings {datahike.config/*default-index* :datahike.index/persistent-set}}
                                  {:id          :clj-hht

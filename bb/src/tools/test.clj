@@ -49,8 +49,7 @@
     (println "Native image cli missing. Please run 'bb ni-build' and try again.")))
 
 (defn all [config]
-  (let [kaocha-ids ["clj-pss" "clj-hht" "integration"]] 
-    (run! #(kaocha "--focus" %) kaocha-ids))
+  (kaocha)
   (back-compat config)
   (native-image))
 
