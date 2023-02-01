@@ -40,6 +40,7 @@
 ;; Records
 
 (defrecord Context [rels sources rules consts])
+(defrecord StatContext [rels sources rules consts stats])
 
 ;; attrs:
 ;;    {?e 0, ?v 1} or {?e2 "a", ?age "v"}
@@ -999,13 +1000,41 @@
                                   *lookup-attrs*)]
          (update context :rels collapse-rels relation))))))
 
+(defn update-stats [context clause]
+  (update context :stats conj {:clause clause
+                               :rels-out (mapv #(fn [rel] (-> rel
+                                                              (update :attrs keys)
+                                                              (update :tuples count)))
+                                               (:rels context))
+                               :rules-out (:rules context)
+                               ;:bindings-out (mapv (comp keys :attrs) (:rels context))
+                               ;:rows-out (mapv (comp count :tuples) (:rels context))
+                               }))
+
+(defn datomic-stats [dh-stats]
+  (let [dt-outs (map (fn [{:keys [rels-out]}] {:bindings-out (transduce (map :attrs) into rels-out)
+                                               :rows-out (transduce (map :tuples) + rels-out)})
+                     dh-stats)]
+    (map #(merge %2 {:bindings-in (:bindings-out %1)
+                     :rows-in (:rows-out) %1})
+         (cons {:bindings-out {}
+                :rows-out 0}
+               dt-outs)
+         dt-outs)))
+
 (defn resolve-clause [context clause]
+  (println clause)
   (if (rule? context clause)
     (if (source? (first clause))
       (binding [*implicit-source* (get (:sources context) (first clause))]
         (resolve-clause context (next clause)))
-      (update context :rels collapse-rels (solve-rule context clause)))
-    (-resolve-clause context clause)))
+      (cond-> context
+          true             (update :rels collapse-rels (solve-rule context clause))
+          (:stats context)  (update-stats clause)))
+    (cond-> (-resolve-clause context clause)
+           true  ((fn [x] (println "before " x) x))
+            (:stats context)  (update-stats clause)
+            true  ((fn [x] (println "after " x) x)))))
 
 (defn -q [context clauses]
   (binding [*implicit-source* (get (:sources context) '$)]
@@ -1159,20 +1188,30 @@
         query         (cond-> query
                         (sequential? query) dpi/query->map)
         wheres        (:where query)
-        context       (-> (Context. [] {} {} {})
+        _ (println query-map)
+        _ (println "stats?" (:stats? query-map))
+        context-in    (-> (if (:stats? query-map)
+                            (StatContext. [] {} {} {} [])
+                            (Context. [] {} {} {}))
                           (resolve-ins (:qin parsed-q) args))
-        resultset     (-> context
-                          (-q wheres)
-                          (collect all-vars))]
+        context-out   (-q context-in wheres)
+       _ (println context-out)
+        resultset     (collect context-out all-vars)]
+    (println (:stats context-out))
     (cond->> resultset
       (or (:offset query-map) (:limit query-map))   (paginate (:offset query-map)
                                                               (:limit query-map))
       true                                          set
       (:with query)                                 (mapv #(subvec % 0 result-arity))
-      (some #(instance? Aggregate %) find-elements) (aggregate find-elements context)
-      (some #(instance? Pull %) find-elements)      (pull find-elements context)
+      (some #(instance? Aggregate %) find-elements) (aggregate find-elements context-in)
+      (some #(instance? Pull %) find-elements)      (pull find-elements context-in)
       true                                          (-post-process find)
-      returnmaps                                    (convert-to-return-maps returnmaps))))
+      returnmaps                                    (convert-to-return-maps returnmaps)
+      (:stats? query)                               (hash-map :query-stats {:query query
+                                                                            :consts context-in
+                                                                            :clauses (:stats context-out)}
+                                                              ;; keys: clause rows in, rows out, bind in, binds out, expansion, warning
+                                                              :ret))))
 
 (defmethod q clojure.lang.PersistentArrayMap [{:keys [args] :as query-map} & inputs]
   (if-let [middleware (when (dbu/db? (first args))
@@ -1180,3 +1219,10 @@
     (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
       (q-with-middleware query-map inputs))
     (apply raw-q query-map inputs)))
+
+(defn query-stats [query & inputs] 
+  (let [query-map (if (map? query)
+                    (if (contains? query :args) (:args query) inputs)
+                    {:query query :args inputs})]
+    (cond-> (apply q (assoc query-map :stats? true) inputs)
+            (:datomic-style-stats query-map) (update-in [:query-stats :clauses] datomic-stats ))))

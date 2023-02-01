@@ -1,5 +1,6 @@
 (ns user
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d]
+            [hashp.core]))
 
 (comment
 
@@ -18,7 +19,7 @@
   (def cfg {:store              {:backend :mem :id "sandbox"}
             :keep-history?      true
             :schema-flexibility :write
-            :middleware         {:query ['datahike.middleware.query/timed]}
+            ;:middleware         {:query ['datahike.middleware.query/timed]}
             :attribute-refs?    true})
 
   (def conn (do
@@ -44,7 +45,7 @@
                      :age     45
                      :sibling [[:name "Alice"] [:name "Bob"]]}])
 
-  (d/q '[:find ?e ?a ?v ?t
+  (d/query-stats '[:find ?e ?a ?v ?t
          :in $ ?a
          :where
          [?e :name ?v ?t]

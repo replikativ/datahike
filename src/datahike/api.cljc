@@ -262,6 +262,10 @@
              Query passed as map needs vectors as values. Query can not be passed as list. The 1-arity function takes a map with the arguments :query and :args and optionally the additional keys :offset and :limit."}
   q dq/q)
 
+(def ^{:arglists '([query & args] [arg-map])
+       :doc "Executes a datalog query and returns the result as well as some execution details."}
+  query-stats dq/query-stats)
+
 (defmulti datoms {:arglists '([db arg-map] [db index & components])
                   :doc "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components
                         (e, a, v) match passed arguments. Datoms are sorted in index sort order. Possible `index` values
