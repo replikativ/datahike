@@ -121,3 +121,8 @@
              :character/name "Lisa Simpson",
              :character/occupation :student}]
            (d/pull-many (d/db conn) '[*] lisabart)))))
+
+(comment
+  (def conn (create-test-db))
+  (sut/ensure-norms! conn "test/datahike/norm/resources")
+  (sut/norm-installed? (d/db conn) :003-tx-fn-test))

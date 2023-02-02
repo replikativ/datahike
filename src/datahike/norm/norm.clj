@@ -3,7 +3,9 @@
    [clojure.java.io :as io]
    [clojure.string :as string]
    [taoensso.timbre :as log]
-   [datahike.api :as d]))
+   [datahike.api :as d])
+  (:import
+    [java.security MessageDigest DigestInputStream]))
 
 (defn attribute-installed? [conn attr]
   (some? (d/entity @conn [:db/ident attr])))
@@ -16,13 +18,12 @@
     @conn))
 
 (defn norm-installed? [db norm]
-  (->> {:query '[:find (count ?t)
+  (->> {:query '[:find (count ?t) .
                  :in $ ?tn
                  :where
                  [_ :tx/norm ?tn ?t]]
         :args  [db norm]}
        d/q
-       first
        some?))
 
 (defn read-norm-files! [norms-folder]
@@ -35,11 +36,10 @@
                        (-> (.getPath migration-file)
                            slurp
                            read-string
-                           (update :norm (fn [norm] (or norm
-                                                        (-> (.getName migration-file)
-                                                            (string/replace #" " "_")
-                                                            (string/replace #"\.edn" "")
-                                                            keyword))))))))]
+                           (assoc :norm (-> (.getName migration-file)
+                                            (string/replace #" " "_")
+                                            (string/replace #"\.edn" "")
+                                            keyword))))))]
         (sort-by :norm (into [] xf migration-files)))
       (throw
        (ex-info
@@ -51,9 +51,9 @@
 (defn ensure-norms!
   ([conn]
    (ensure-norms! conn (io/resource "migrations")))
-  ([conn migrations]
+  ([conn norms-folder]
    (let [db (ensure-norm-attribute! conn)
-         norm-list (read-norm-files! migrations)]
+         norm-list (read-norm-files! norms-folder)]
      (log/info "Checking migrations ...")
      (doseq [{:keys [norm tx-data tx-fn]
               :or   {tx-data []
@@ -67,16 +67,36 @@
                                                       ((eval tx-fn) conn)))})
               (log/info "Done")))))))
 
+(defn update-checksums!
+  ([^String filename]
+   (update-checksums! filename (io/resource "migrations")))
+  ([^String filename ^String norms-folder]
+   (let [folder (io/file norms-folder)])))
+
 (comment
-  (d/delete-database {:store {:backend :file
-                              :path "/tmp/file-example"}})
-  (d/create-database {:store {:backend :file
-                              :path "/tmp/file-example"}})
-  (def conn (d/connect {:store {:backend :file
-                                :path "/tmp/file-example"}}))
-  (ensure-norms! conn "test/resources")
-  (def norm-list (read-norm-files! "test/datahike/norm/resources"))
-  (norm-installed? (d/db conn) (:norm (first norm-list)))
-  (d/transact conn {:tx-data [{:foo "foo"}]}))
+  (def norms-folder "test/datahike/norm/resources")
+  (let [folder (io/file norms-folder)]
+    (if (.exists folder)
+      (->> (file-seq folder)
+           (filter #(re-find #".edn" (.getPath %)))
+           (map #(.getName %))
+           sort)
+      (throw
+       (ex-info
+        (format "Norms folder %s does not exist." "foo")
+        {:folder "foo"}))))
 
 
+  (not (.exists (io/file (str norms-folder "checksums.edn"))))
+
+  (spit (str norms-folder "/" "checksums.edn") {:foo "foo"})
+
+  (def md (MessageDigest/getInstance "SHA-256"))
+  (.checksum "test/datahike/norm/resources/checksums.edn" md)
+  (import '[java.util Base64])
+  (-> (io/input-stream (str norms-folder "/" "checksums.edn"))
+      (DigestInputStream. md)
+      .getMessageDigest
+      .digest
+      (#(map (partial format "%02x") %))
+      (#(string/join "" %))))
