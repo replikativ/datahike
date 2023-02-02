@@ -2,7 +2,7 @@
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    [clojure.set :as set]
-   [clojure.string :as str]
+   #?(:clj [clojure.string :as str])
    [clojure.walk :as walk]
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
@@ -10,13 +10,14 @@
    [datahike.lru]
    [datahike.middleware.query]
    [datahike.pull-api :as dpa]
-   [datahike.tools #?(:cljs :refer-macros :clj :refer) [raise]]
+   [datahike.tools :as dt]
    [datahike.middleware.utils :as middleware-utils]
    [datalog.parser :refer [parse]]
    [datalog.parser.impl :as dpi]
    [datalog.parser.impl.proto :as dpip]
    [datalog.parser.pull :as dpp]
-   [me.tonsky.persistent-sorted-set.arrays :as da])
+   [me.tonsky.persistent-sorted-set.arrays :as da]
+   [taoensso.timbre :as log])
   (:refer-clojure :exclude [seqable?])
   #?(:cljs [datalog.parser.type :refer [Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                                         FindColl FindRel FindScalar FindTuple PlainSymbol Pull
@@ -25,7 +26,6 @@
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                     FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                     RulesVar SrcVar Variable]
-                   [datahike.datom Datom]
                    [java.lang.reflect Method]
                    [java.util Date Map])))
 
@@ -33,9 +33,7 @@
 
 (def ^:const lru-cache-size 100)
 
-(declare -collect -resolve-clause resolve-clause direct-getter-fn q)
-
-(defmulti q (fn [query & _args] (type query)))
+(declare -collect -resolve-clause resolve-clause q)
 
 ;; Records
 
@@ -140,8 +138,8 @@
       (Relation. attrs-a (into (vec tuples-a) tuples-b))
 
       (not (same-keys? attrs-a attrs-b))
-      (raise "Can’t sum relations with different attrs: " attrs-a " and " attrs-b
-             {:error :query/where})
+      (dt/raise "Can’t sum relations with different attrs: " attrs-a " and " attrs-b
+                {:error :query/where})
 
       (every? number? (vals attrs-a))                       ;; can’t conj into BTSetIter
       (let [idxb->idxa (vec (for [[sym idx-b] attrs-b]
@@ -195,7 +193,7 @@
 (defn- -get-else
   [db e a else-val]
   (when (nil? else-val)
-    (raise "get-else: nil default value is not supported" {:error :query/where}))
+    (dt/raise "get-else: nil default value is not supported" {:error :query/where}))
   (if-some [datom (first (dbi/-search db [e (translate-for db a)]))]
     (:v datom)
     else-val))
@@ -411,8 +409,8 @@
   (in->rel [binding coll]
     (cond
       (not (seqable? coll))
-      (raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
-             {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
+      (dt/raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
+                {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (empty? coll)
       (empty-rel binding)
       :else
@@ -424,11 +422,11 @@
   (in->rel [binding coll]
     (cond
       (not (seqable? coll))
-      (raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
-             {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
+      (dt/raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
+                {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (< (count coll) (count (:bindings binding)))
-      (raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
-             {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
+      (dt/raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
+                {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       :else
       (reduce prod-rel
               (map #(in->rel %1 %2) (:bindings binding) coll)))))
@@ -697,8 +695,8 @@
                  (resolve-sym f)
                  (resolve-method f)
                  (when (nil? (rel-with-attr context f))
-                   (raise "Unknown predicate '" f " in " clause
-                          {:error :query/where, :form clause, :var f})))
+                   (dt/raise "Unknown predicate '" f " in " clause
+                             {:error :query/where, :form clause, :var f})))
         [context production] (rel-prod-by-attrs context (filter symbol? args))
         new-rel (if pred
                   (let [tuple-pred (-call-fn context production pred args)]
@@ -715,8 +713,8 @@
                 (resolve-sym f)
                 (resolve-method f)
                 (when (nil? (rel-with-attr context f))
-                  (raise "Unknown function '" f " in " clause
-                         {:error :query/where, :form clause, :var f})))
+                  (dt/raise "Unknown function '" f " in " clause
+                            {:error :query/where, :form clause, :var f})))
         [context production] (rel-prod-by-attrs context (filter symbol? args))
         new-rel (if fun
                   (let [tuple-fn (-call-fn context production fun args)
@@ -818,23 +816,25 @@
         ;;         clause-cache    (atom {}) ;; TODO
         solve (fn [prefix-context clauses]
                 (reduce -resolve-clause prefix-context clauses))
-        empty-rels? (fn [context]
-                      (some #(empty? (:tuples %)) (:rels context)))]
+        empty-rels? (fn [ctx]
+                      (some #(empty? (:tuples %)) (:rels ctx)))]
     (loop [stack (list {:prefix-clauses []
                         :prefix-context context
                         :clauses [clause]
                         :used-args {}
                         :pending-guards {}})
-           rel (Relation. final-attrs-map [])]
+           rel (Relation. final-attrs-map [])
+           stats []]
       (if-some [frame (first stack)]
         (let [[clauses [rule-clause & next-clauses]] (split-with #(not (rule? context %)) (:clauses frame))]
           (if (nil? rule-clause)
 
             ;; no rules -> expand, collect, sum
-            (let [context (solve (:prefix-context frame) clauses)
-                  tuples (-collect context final-attrs)
-                  new-rel (Relation. final-attrs-map tuples)]
-              (recur (next stack) (sum-rel rel new-rel)))
+            (let [prefix-context (solve (:prefix-context frame) clauses)
+                  tuples (-collect prefix-context final-attrs)
+                  new-rel (Relation. final-attrs-map tuples)
+                  new-stats (:stats prefix-context)]
+              (recur (next stack) (sum-rel rel new-rel) new-stats))
 
             ;; has rule -> add guards -> check if dead -> expand rule -> push to stack, recur
             (let [[rule & call-args] rule-clause
@@ -844,14 +844,15 @@
               (if (some #(= % '[(-differ?)]) active-gs)     ;; trivial always false case like [(not= [?a ?b] [?a ?b])]
 
                 ;; this branch has no data, just drop it from stack
-                (recur (next stack) rel)
+                (recur (next stack) rel stats)
 
                 (let [prefix-clauses (concat clauses active-gs)
-                      prefix-context (solve (:prefix-context frame) prefix-clauses)]
+                      prefix-context (solve (:prefix-context frame) prefix-clauses) 
+                      new-stats (:stats prefix-context)]
                   (if (empty-rels? prefix-context)
 
                     ;; this branch has no data, just drop it from stack
-                    (recur (next stack) rel)
+                    (recur (next stack) rel new-stats)
 
                     ;; need to expand rule to branches
                     (let [used-args (assoc (:used-args frame) rule
@@ -865,8 +866,11 @@
                                  :used-args used-args
                                  :pending-guards pending-gs})
                               (next stack))
-                             rel))))))))
-        rel))))
+                             rel
+                             new-stats))))))))
+        (cond-> context
+          true             (update :rels collapse-rels rel)
+          (:stats context) (assoc-in [:tmp-stats :rule] stats))))))
 
 (defn resolve-pattern-lookup-refs
   "Translate pattern entries before using pattern for database search"
@@ -914,14 +918,14 @@
                            (keys (:consts context))))]
     (when-not (set/subset? vars bound)
       (let [missing (set/difference (set vars) bound)]
-        (raise "Insufficient bindings: " missing " not bound in " form
-               {:error :query/where
-                :form form
-                :vars missing})))))
+        (dt/raise "Insufficient bindings: " missing " not bound in " form
+                  {:error :query/where
+                   :form form
+                   :vars missing})))))
 
-(defn -resolve-clause
+(defn -resolve-clause*
   ([context clause]
-   (-resolve-clause context clause clause))
+   (-resolve-clause* context clause clause))
   ([context clause orig-clause]
    (condp looks-like? clause
      [[symbol? '*]]                                       ;; predicate [(pred ?a ?b ?c)]
@@ -967,9 +971,9 @@
                                    (mapcat #(keys (:attrs %)) (:rels context))))
            negation-vars (collect-vars clauses)
            _ (when (empty? (set/intersection bound-vars negation-vars))
-               (raise "Insufficient bindings: none of " negation-vars " is bound in " orig-clause
-                      {:error :query/where
-                       :form orig-clause}))
+               (dt/raise "Insufficient bindings: none of " negation-vars " is bound in " orig-clause
+                         {:error :query/where
+                          :form orig-clause}))
            context' (assoc context :rels [(reduce hash-join (:rels context))])
            negation-context (reduce resolve-clause context' clauses)
            negation (subtract-rel
@@ -1000,27 +1004,32 @@
                                   *lookup-attrs*)]
          (update context :rels collapse-rels relation))))))
 
-(defn update-stats [context clause]
-  (update context :stats conj {:clause clause
-                               :rels-out (mapv #(fn [rel] (-> rel
-                                                              (update :attrs keys)
-                                                              (update :tuples count)))
-                                               (:rels context))
-                               :rules-out (:rules context)
-                               ;:bindings-out (mapv (comp keys :attrs) (:rels context))
-                               ;:rows-out (mapv (comp count :tuples) (:rels context))
-                               }))
+(defn get-stats [context]
+  (mapv (fn [rel] {:attrs (keys (:attrs rel))
+                   :tuples (count (:tuples rel))})
+        (:rels context)))
 
-(defn datomic-stats [dh-stats]
-  (let [dt-outs (map (fn [{:keys [rels-out]}] {:bindings-out (transduce (map :attrs) into rels-out)
-                                               :rows-out (transduce (map :tuples) + rels-out)})
-                     dh-stats)]
-    (map #(merge %2 {:bindings-in (:bindings-out %1)
-                     :rows-in (:rows-out) %1})
-         (cons {:bindings-out {}
-                :rows-out 0}
-               dt-outs)
-         dt-outs)))
+(defn update-ctx-with-stats
+  "update-fn must expect [context clause] as argument"
+  [context clause update-fn]
+  (if (:stats context)
+    (let [{:keys [res t]} (dt/timed #(update-fn context))
+          clause-stats (merge {:clause clause 
+                               :in (get-stats context) 
+                               :out (get-stats res) 
+                               :t t}
+                              (:tmp-stats res))]
+      (-> res 
+          (update :stats conj clause-stats)
+          (dissoc :tmp-stats)))
+    (update-fn context)))
+
+(defn -resolve-clause
+  ([context clause]
+   (-resolve-clause context clause clause))
+  ([context clause orig-clause]
+   (update-ctx-with-stats context orig-clause
+                          (fn [context] (-resolve-clause* context clause orig-clause)))))
 
 (defn resolve-clause [context clause]
   (println clause)
@@ -1028,13 +1037,9 @@
     (if (source? (first clause))
       (binding [*implicit-source* (get (:sources context) (first clause))]
         (resolve-clause context (next clause)))
-      (cond-> context
-          true             (update :rels collapse-rels (solve-rule context clause))
-          (:stats context)  (update-stats clause)))
-    (cond-> (-resolve-clause context clause)
-           true  ((fn [x] (println "before " x) x))
-            (:stats context)  (update-stats clause)
-            true  ((fn [x] (println "after " x) x)))))
+      (update-ctx-with-stats context clause
+                             (fn [context] (solve-rule context clause))))
+    (-resolve-clause context clause)))
 
 (defn -q [context clauses]
   (binding [*implicit-source* (get (:sources context) '$)]
@@ -1162,67 +1167,59 @@
   (->> (-collect context symbols)
        (map vec)))
 
-(defmethod q clojure.lang.LazySeq [query & args]
-  (q {:query query :args args}))
-
-(defmethod q clojure.lang.PersistentVector [query & args]
-  (q {:query query :args args}))
-
-(defmethod q clojure.lang.PersistentList [query & args]
-  (q {:query query :args args}))
-
-(defn raw-q [query-map & inputs]
-  (let [query         (if (contains? query-map :query) (:query query-map) query-map)
-        query         (if (string? query) (edn/read-string query) query)
-        query         (if (= 'quote (first query)) (second query) query)
-        args          (if (contains? query-map :args) (:args query-map) inputs)
-        parsed-q      (memoized-parse-query query)
-        find          (:qfind parsed-q)
-        find-elements (dpip/find-elements find)
-        find-vars     (dpi/find-vars find)
-        result-arity  (count find-elements)
-        with          (:qwith parsed-q)
-        returnmaps    (:qreturnmaps parsed-q)
-        ;; TODO utilize parser
-        all-vars      (concat find-vars (map :symbol with))
-        query         (cond-> query
-                        (sequential? query) dpi/query->map)
-        wheres        (:where query)
-        _ (println query-map)
-        _ (println "stats?" (:stats? query-map))
-        context-in    (-> (if (:stats? query-map)
+(defn raw-q [{:keys [query args stats?] :as _query-map}]
+  (let [{:keys [qfind
+                qwith
+                qreturnmaps
+                qin]} (memoized-parse-query query)
+        context-in    (-> (if stats?
                             (StatContext. [] {} {} {} [])
                             (Context. [] {} {} {}))
-                          (resolve-ins (:qin parsed-q) args))
-        context-out   (-q context-in wheres)
-       _ (println context-out)
-        resultset     (collect context-out all-vars)]
-    (println (:stats context-out))
+                          (resolve-ins qin args))
+        ;; TODO utilize parser
+        all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))
+        context-out   (-q context-in (:where query))
+        resultset     (collect context-out all-vars)
+        find-elements (dpip/find-elements qfind)
+        result-arity  (count find-elements)]
     (cond->> resultset
-      (or (:offset query-map) (:limit query-map))   (paginate (:offset query-map)
-                                                              (:limit query-map))
+      (or (:offset query) (:limit query))           (paginate (:offset query) (:limit query))
       true                                          set
       (:with query)                                 (mapv #(subvec % 0 result-arity))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context-in)
       (some #(instance? Pull %) find-elements)      (pull find-elements context-in)
-      true                                          (-post-process find)
-      returnmaps                                    (convert-to-return-maps returnmaps)
-      (:stats? query)                               (hash-map :query-stats {:query query
-                                                                            :consts context-in
-                                                                            :clauses (:stats context-out)}
-                                                              ;; keys: clause rows in, rows out, bind in, binds out, expansion, warning
-                                                              :ret))))
+      true                                          (-post-process qfind)
+      qreturnmaps                                   (convert-to-return-maps qreturnmaps)
+      stats?                                        (#(-> context-out   
+                                                          (dissoc :rels)  
+                                                          (assoc :ret %))))))
 
-(defmethod q clojure.lang.PersistentArrayMap [{:keys [args] :as query-map} & inputs]
-  (if-let [middleware (when (dbu/db? (first args))
-                        (get-in (dbi/-config (first args)) [:middleware :query]))]
-    (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
-      (q-with-middleware query-map inputs))
-    (apply raw-q query-map inputs)))
+(defn normalize-q-input
+  "Turns input to q into a map with :query and :args fields.
+   Also normalizes the query into a map representation."
+  [query-input arg-inputs]
+  (let [query (-> query-input
+                  (#(if (contains? % :query) (:query %) %))
+                  (#(if (string? %) (edn/read-string %) %))
+                  (#(if (= 'quote (first %)) (second %) %))
+                  (#(if (sequential? %) (dpi/query->map %) %)))
+        args (if (contains? query-input :args)
+               (do (when arg-inputs
+                     (log/warn "Query-map '" query "' already defines query input. Additional arguments to q will be ignored!"))
+                   (:args query-input))
+               arg-inputs)]
+    {:query query :args args :stats? (:stats? query-input)}))
 
-(defn query-stats [query & inputs] 
-  (let [query-map (if (map? query)
-                    (if (contains? query :args) (:args query) inputs)
-                    {:query query :args inputs})]
-    (cond-> (apply q (assoc query-map :stats? true) inputs)
-            (:datomic-style-stats query-map) (update-in [:query-stats :clauses] datomic-stats ))))
+(defn q [query & inputs]
+  (let [{:keys [args] :as query-map} (normalize-q-input query inputs)]
+    (if-let [middleware (when (dbu/db? (first args))
+                          (get-in (dbi/-config (first args)) [:middleware :query]))]
+      (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
+        (q-with-middleware query-map inputs))
+      (raw-q query-map))))
+
+(defn query-stats [query & inputs]
+  (-> query
+      (normalize-q-input inputs)
+      (assoc :stats? true)
+      q))
