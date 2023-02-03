@@ -5,6 +5,7 @@
    [clojure.pprint :as pp]
    [clojure.data :as data]
    [clojure.edn :as edn]
+   [clojure.spec.alpha :as s]
    [taoensso.timbre :as log]
    [datahike.api :as d])
   (:import
@@ -63,7 +64,7 @@
                     (filter #(re-find #".edn" (.getPath %)))
                     (filter #(not= "checksums.edn" (.getName %)))))
             filenames (sort (into [] xf migration-files))]
-        (->> (for [f filenames]
+        (->> (doseq [f filenames]
                {(-> (.getName f)
                     (string/replace #" " "-")
                     (keyword))
@@ -83,6 +84,16 @@
     (when-not (every? nil? (butlast diff))
       diff)))
 
+(s/def ::tx-data vector?)
+(s/def ::tx-fn symbol?)
+(s/def ::norm-map (s/keys :opt-un [::tx-data ::tx-fn]))
+(defn- validate-norm [norm]
+  (if (s/valid? ::norm-map norm)
+    (log/debug "Norm validated" {:norm-map norm})
+    (let [res (s/explain-data ::norm-map norm)]
+      (throw
+        (ex-info "Invalid norm" {:validation-error res})))))
+
 (defn neutral-fn [_] [])
 
 (defn- ensure-norms [conn norms-folder]
@@ -90,10 +101,12 @@
         norm-list (read-norm-files! norms-folder)]
     (log/info "Checking migrations ...")
     (doseq [{:keys [norm tx-data tx-fn]
+             :as   norm-map
              :or   {tx-data []
                     tx-fn   #'neutral-fn}}
             norm-list]
       (log/info "Checking migration" norm)
+      (validate-norm norm-map)
       (when-not (norm-installed? db norm)
         (log/info "Run migration" norm)
         (->> (d/transact conn {:tx-data (vec (concat [{:tx/norm norm}]
