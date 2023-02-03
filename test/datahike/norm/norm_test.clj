@@ -13,10 +13,12 @@
     (d/connect {:store {:backend :mem
                         :id id}})))
 
+(def ensure-norms #'sut/ensure-norms)
+
 (deftest simple-test
   (let [conn (create-test-db)
-        _ (sut/ensure-norms! conn "test/datahike/norm/resources/001-a1-example.edn")
-        _ (sut/ensure-norms! conn "test/datahike/norm/resources/002-a2-example.edn")
+        _ (ensure-norms conn "test/datahike/norm/resources/001-a1-example.edn")
+        _ (ensure-norms conn "test/datahike/norm/resources/002-a2-example.edn")
         schema (d/schema (d/db conn))]
     (is (= #:db{:valueType :db.type/string, :cardinality :db.cardinality/one, :doc "Place of occupation", :ident :character/place-of-occupation}
            (-> (schema :character/place-of-occupation)
@@ -27,6 +29,13 @@
     (is (= #:db{:ident :tx/norm, :valueType :db.type/keyword, :cardinality :db.cardinality/one}
            (-> (schema :tx/norm)
                (dissoc :db/id))))))
+
+(comment
+  (def conn (create-test-db))
+  (ensure-norms conn "test/datahike/norm/resources/001-a1-example.edn")
+  (ensure-norms conn "test/datahike/norm/resources/002-a2-example.edn")
+  (def schema (d/schema (d/db conn))))
+
 
 (defn tx-fn-test-fn [conn]
   (-> (for [[eid value] (d/q '[:find ?e ?v
@@ -39,11 +48,11 @@
 
 (deftest tx-fn-test
   (let [conn (create-test-db)
-        _ (sut/ensure-norms! conn "test/datahike/norm/resources/001-a1-example.edn")
-        _ (sut/ensure-norms! conn "test/datahike/norm/resources/002-a2-example.edn")
+        _ (ensure-norms conn "test/datahike/norm/resources/001-a1-example.edn")
+        _ (ensure-norms conn "test/datahike/norm/resources/002-a2-example.edn")
         _ (d/transact conn {:tx-data [{:character/place-of-occupation "SPRINGFIELD ELEMENTARY SCHOOL"}
                                       {:character/place-of-occupation "SPRINGFIELD NUCLEAR POWER PLANT"}]})
-        _ (sut/ensure-norms! conn "test/datahike/norm/resources/003-tx-fn-test.edn")]
+        _ (ensure-norms conn "test/datahike/norm/resources/003-tx-fn-test.edn")]
     (is (= #{["springfield elementary school"] ["springfield nuclear power plant"]}
            (d/q '[:find ?v
                   :where
@@ -67,15 +76,15 @@
 
 (deftest tx-data-and-tx-fn-test
   (let [conn (create-test-db)
-        _ (sut/ensure-norms! conn "test/datahike/norm/resources/001-a1-example.edn")
-        _ (sut/ensure-norms! conn "test/datahike/norm/resources/002-a2-example.edn")
-        _ (sut/ensure-norms! conn "test/datahike/norm/resources/003-tx-fn-test.edn")
+        _ (ensure-norms conn "test/datahike/norm/resources/001-a1-example.edn")
+        _ (ensure-norms conn "test/datahike/norm/resources/002-a2-example.edn")
+        _ (ensure-norms conn "test/datahike/norm/resources/003-tx-fn-test.edn")
         _ (d/transact conn {:tx-data [{:character/name "Homer Simpson"}
                                       {:character/name "Marge Simpson"}
                                       {:character/name "Bart Simpson"}
                                       {:character/name "Lisa Simpson"}
                                       {:character/name "Maggie Simpson"}]})
-        _ (sut/ensure-norms! conn "test/datahike/norm/resources/004-tx-data-and-tx-fn-test.edn")
+        _ (ensure-norms conn "test/datahike/norm/resources/004-tx-data-and-tx-fn-test.edn")
         margehomer (d/q '[:find [?e ...]
                           :where
                           [?e :character/name]
@@ -123,6 +132,7 @@
            (d/pull-many (d/db conn) '[*] lisabart)))))
 
 (comment
+  (def norms-folder "test/datahike/norm/resources")
   (def conn (create-test-db))
-  (sut/ensure-norms! conn "test/datahike/norm/resources")
-  (sut/norm-installed? (d/db conn) :003-tx-fn-test))
+  (sut/ensure-norms! conn)
+  (#'(sut/read-norm-files!) norms-folder))
