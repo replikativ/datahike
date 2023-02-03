@@ -57,7 +57,7 @@
   (let [folder (io/file norms-folder)]
     (if (.exists folder)
       (let [md (MessageDigest/getInstance "SHA-256")
-            migration-files (.listFiles folder)
+            migration-files (file-seq folder)
             xf (-> (comp
                     (filter #(not (.isDirectory %)))
                     (filter #(re-find #".edn" (.getPath %)))
@@ -77,7 +77,7 @@
         (format "Norms folder %s does not exist." norms-folder)
         {:folder norms-folder})))))
 
-(defn- check-correctness [norms-folder]
+(defn- verify-checksums [norms-folder]
   (let [diff (data/diff (compute-checksums norms-folder)
                         (edn/read-string (slurp (str norms-folder "/checksums.edn"))))]
     (when-not (every? nil? (butlast diff))
@@ -105,7 +105,7 @@
  ([conn]
   (ensure-norms! conn (io/resource "migrations")))
  ([conn norms-folder]
-  (if-let [diff (check-correctness norms-folder)]
+  (if-let [diff (verify-checksums norms-folder)]
     (throw
       (ex-info "Deviation of the checksums found. Migration aborted."
                {:diff diff}))
@@ -118,14 +118,3 @@
   (-> (compute-checksums norms-folder)
       (#(spit (io/file (str norms-folder "/" "checksums.edn"))
               (with-out-str (pp/pprint %)))))))
-
-(comment
-  (require '[datahike.norm.norm-test :refer [create-test-db]])
-  (def conn (create-test-db))
-  (def norms-folder "test/datahike/norm/resources")
-  (update-checksums! norms-folder)
-  (ensure-norms! conn norms-folder)
-  (compute-checksums norms-folder)
-  (check-correctness norms-folder)
-  (.listFiles (io/file norms-folder))
-  (file-seq (io/file norms-folder)))

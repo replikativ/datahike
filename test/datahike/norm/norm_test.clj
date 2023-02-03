@@ -130,9 +130,3 @@
              :character/name "Lisa Simpson",
              :character/occupation :student}]
            (d/pull-many (d/db conn) '[*] lisabart)))))
-
-(comment
-  (def norms-folder "test/datahike/norm/resources")
-  (def conn (create-test-db))
-  (sut/ensure-norms! conn)
-  (#'(sut/read-norm-files!) norms-folder))
