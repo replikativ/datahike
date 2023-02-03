@@ -8,9 +8,9 @@
    [taoensso.timbre :as log]
    [datahike.api :as d])
   (:import
-    [java.security MessageDigest DigestInputStream]
-    [java.io File]
-    [java.nio.file Files]))
+   [java.security MessageDigest DigestInputStream]
+   [java.io File]
+   [java.nio.file Files]))
 
 (defn- attribute-installed? [conn attr]
   (some? (d/entity @conn [:db/ident attr])))
@@ -36,17 +36,17 @@
     (if (.exists folder)
       (let [migration-files (file-seq folder)
             xf (comp
-                 (filter #(not (.isDirectory %)))
-                 (filter #(re-find #".edn" (.getPath %)))
-                 (filter #(not= "checksums.edn" (.getName %)))
-                 (map (fn [migration-file]
-                        (-> (.getPath migration-file)
-                            slurp
-                            read-string
-                            (assoc :norm (-> (.getName migration-file)
-                                             (string/replace #" " "-")
-                                             (string/replace #"\.edn" "")
-                                             keyword))))))]
+                (filter #(not (.isDirectory %)))
+                (filter #(re-find #".edn" (.getPath %)))
+                (filter #(not= "checksums.edn" (.getName %)))
+                (map (fn [migration-file]
+                       (-> (.getPath migration-file)
+                           slurp
+                           read-string
+                           (assoc :norm (-> (.getName migration-file)
+                                            (string/replace #" " "-")
+                                            (string/replace #"\.edn" "")
+                                            keyword))))))]
         (sort-by :norm (into [] xf migration-files)))
       (throw
        (ex-info
@@ -102,19 +102,19 @@
              (log/info "Done"))))))
 
 (defn ensure-norms!
- ([conn]
-  (ensure-norms! conn (io/resource "migrations")))
- ([conn norms-folder]
-  (if-let [diff (verify-checksums norms-folder)]
-    (throw
+  ([conn]
+   (ensure-norms! conn (io/resource "migrations")))
+  ([conn norms-folder]
+   (if-let [diff (verify-checksums norms-folder)]
+     (throw
       (ex-info "Deviation of the checksums found. Migration aborted."
                {:diff diff}))
-    (ensure-norms conn norms-folder))))
+     (ensure-norms conn norms-folder))))
 
 (defn update-checksums!
- ([]
-  (update-checksums! (io/resource "migrations")))
- ([^String norms-folder]
-  (-> (compute-checksums norms-folder)
-      (#(spit (io/file (str norms-folder "/" "checksums.edn"))
-              (with-out-str (pp/pprint %)))))))
+  ([]
+   (update-checksums! (io/resource "migrations")))
+  ([^String norms-folder]
+   (-> (compute-checksums norms-folder)
+       (#(spit (io/file (str norms-folder "/" "checksums.edn"))
+               (with-out-str (pp/pprint %)))))))

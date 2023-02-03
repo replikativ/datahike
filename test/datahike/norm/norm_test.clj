@@ -36,7 +36,6 @@
   (ensure-norms conn "test/datahike/norm/resources/002-a2-example.edn")
   (def schema (d/schema (d/db conn))))
 
-
 (defn tx-fn-test-fn [conn]
   (-> (for [[eid value] (d/q '[:find ?e ?v
                                :where
