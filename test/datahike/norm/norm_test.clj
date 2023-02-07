@@ -129,3 +129,6 @@
              :character/name "Lisa Simpson",
              :character/occupation :student}]
            (d/pull-many (d/db conn) '[*] lisabart)))))
+
+(comment
+  (sut/update-checksums! "test/datahike/norm/resources"))

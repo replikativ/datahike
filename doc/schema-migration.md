@@ -1,6 +1,6 @@
 # Schema Migration
 
-Schema migration with Datahike is the evolution of your current schema into a future schema. When we are speaking of changes to your schema, these should always add new definitions and never change existing definitions. In case you want to change existing data to a new format you will have to create a new schema and transact your old data transformed again.
+Schema migration with Datahike is the evolution of your current schema into a future schema. When we are speaking of changes to your schema, these should always add new definitions and never change existing definitions. In case you want to change existing data to a new format you will have to create a new schema and transact your existing data transformed again.
 
 ## How to migrate
 
