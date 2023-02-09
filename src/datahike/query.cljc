@@ -10,6 +10,7 @@
    [datahike.lru]
    [datahike.middleware.query]
    [datahike.pull-api :as dpa]
+   [datahike.query-stats :as dqs]
    [datahike.tools :as dt]
    [datahike.middleware.utils :as middleware-utils]
    [datalog.parser :refer [parse]]
@@ -730,67 +731,6 @@
                                                              idx->const))
                                                    %)))))))
 
-;;; STATS
-
-(defn get-stats [context]
-  {:rels (mapv (fn [rel] {:rows (count (:tuples rel))
-                          :bound (set (keys (:attrs rel)))})
-               (:rels context))})
-
-(defn update-ctx-with-stats
-  "update-fn must expect [context] as argument"
-  [context clause update-fn]
-  (if (:stats context)
-    (let [{:keys [res t]} (dt/timed #(update-fn context))
-          clause-stats (merge (get-stats res)
-                              {:clause clause
-                               :t t}
-                              (:tmp-stats res))]
-      (-> res
-          (update :stats conj clause-stats)
-          (dissoc :tmp-stats)))
-    (update-fn context)))
-
-(defn extend-stat
-  "Adds summarized row counts, bindings and clause time for convenience"
-  [{:keys [branches rels] :as stat}]
-  (assoc stat
-         :t-clauses (reduce #(+ %1 (:t %2)) 0.0 branches)
-         :rel-count (count rels)
-         :rows (reduce #(+ %1 (:rows %2)) 0 rels)
-         :bound (reduce #(set/union %1 (:bound %2)) #{} rels)
-         :branches (mapv extend-stat branches)))
-
-(defn get-stat-diffs [prev-node {:keys [t t-clauses rows bound] :as node}]
-  (let [extend-and-branches (fn [branches]
-                              (mapv get-stat-diffs
-                                    (cons node branches)
-                                    branches))
-        extend-or-branches (fn [branches]
-                             (mapv (partial get-stat-diffs node) branches))]
-    (-> node
-        (dissoc :rows :bound)
-        (assoc :t-diff (- t t-clauses)
-               :rows-in (:rows prev-node)
-               :rows-out rows
-               :rows-diff (- rows (:rows prev-node))
-               :bound-in (:bound prev-node)
-               :bound-out bound
-               :bound-diff (clojure.set/difference bound (:bound prev-node)))
-        (update :branches (case (:type node)
-                            :and extend-and-branches
-                            :or extend-or-branches
-                            :or-join extend-or-branches
-                            :rule extend-or-branches
-                            :solve extend-and-branches
-                            identity)))))
-
-(defn extend-stats [stats]
-  (let [extended (map extend-stat stats)]
-      (mapv get-stat-diffs
-            (cons {:rows 0 :bound (set [])} extended)
-            extended)))
-
 ;;; RULES
 
 (defn rule? [context clause]
@@ -865,7 +805,7 @@
         ;;         clause-cache    (atom {}) ;; TODO
         solve (fn [prefix-context clause clauses]
                 (if stats?
-                  (update-ctx-with-stats prefix-context clause
+                  (dqs/update-ctx-with-stats prefix-context clause
                                          (fn [ctx]
                                            (let [tmp-context (reduce -resolve-clause
                                                                      (assoc ctx :stats [])
@@ -873,6 +813,7 @@
                                              (assoc tmp-context
                                                     :stats (:stats ctx)
                                                     :tmp-stats {:type :solve
+                                                                :clauses clauses
                                                                 :branches (:stats tmp-context)}))))
                   (reduce -resolve-clause prefix-context clauses)))
         empty-rels? (fn [ctx]
@@ -930,8 +871,8 @@
                              rel
                              new-stats))))))))
         (cond-> (update context :rels collapse-rels rel)
-         stats? (assoc :tmp-stats {:type :rule 
-                                   :branches tmp-stats}))))))
+          stats? (assoc :tmp-stats {:type :rule
+                                    :branches tmp-stats}))))))
 
 (defn resolve-pattern-lookup-refs
   "Translate pattern entries before using pattern for database search"
@@ -1098,13 +1039,14 @@
        (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
                                   (dynamic-lookup-attrs source pattern)
                                   *lookup-attrs*)]
-         (update context :rels collapse-rels relation))))))
+         (cond-> (update context :rels collapse-rels relation)
+           (:stats context) (assoc :tmp-stats {:type :lookup})))))))
 
 (defn -resolve-clause
   ([context clause]
    (-resolve-clause context clause clause))
   ([context clause orig-clause]
-   (update-ctx-with-stats context orig-clause
+   (dqs/update-ctx-with-stats context orig-clause
                           (fn [context] (-resolve-clause* context clause orig-clause)))))
 
 (defn resolve-clause [context clause]
@@ -1112,7 +1054,7 @@
     (if (source? (first clause))
       (binding [*implicit-source* (get (:sources context) (first clause))]
         (resolve-clause context (next clause)))
-      (update-ctx-with-stats context clause
+      (dqs/update-ctx-with-stats context clause
                              (fn [context] (solve-rule context clause))))
     (-resolve-clause context clause)))
 
@@ -1268,8 +1210,7 @@
       stats?                                        (#(-> context-out
                                                           (dissoc :rels :sources)
                                                           (assoc :ret %
-                                                                 :query query)
-                                                          (update :stats extend-stats))))))
+                                                                 :query query))))))
 
 (defn normalize-q-input
   "Turns input to q into a map with :query and :args fields.
@@ -1282,7 +1223,8 @@
                   (#(if (sequential? %) (dpi/query->map %) %)))
         args (if (and (map? query-input) (contains? query-input :args))
                (do (when arg-inputs
-                     (log/warn "Query-map '" query "' already defines query input. Additional arguments to q will be ignored!"))
+                     (log/warn (str "Query-map '" query "' already defines query input."
+                                    " Additional arguments to q will be ignored!")))
                    (:args query-input))
                arg-inputs)]
     (cond-> {:query query
@@ -1292,13 +1234,13 @@
 
 (defn q [query & inputs]
   (let [{:keys [args] :as query-map} (normalize-q-input query inputs)]
-    (println "q res " query-map)
     (if-let [middleware (when (dbu/db? (first args))
                           (get-in (dbi/-config (first args)) [:middleware :query]))]
       (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
         (q-with-middleware query-map))
       (raw-q query-map))))
 
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn query-stats [query & inputs]
   (-> query
       (normalize-q-input inputs)

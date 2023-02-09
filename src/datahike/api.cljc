@@ -1,6 +1,7 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
-  (:require [datahike.connector :as dc]
+  (:require [datahike.config :as config]
+            [datahike.connector :as dc]
             [datahike.constants :as const]
             [datahike.core :as dcore]
             [datahike.pull-api :as dp]
@@ -812,3 +813,9 @@
   [db]
   {:pre [(instance? DB db)]}
   (db/metrics db))
+
+(defn ^{:arglists '([])
+        :doc "Loads default config for the current environment"}
+  load-config
+  []
+  (config/load-config))
