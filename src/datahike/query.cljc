@@ -35,7 +35,7 @@
 
 (def ^:const lru-cache-size 100)
 
-(declare -collect -resolve-clause resolve-clause q)
+(declare -collect -resolve-clause resolve-clause raw-q)
 
 ;; Records
 
@@ -48,6 +48,46 @@
 ;;    [ #js [1 "Ivan" 5 14] ... ]
 ;; or [ (Datom. 2 "Oleg" 1 55) ... ]
 (defrecord Relation [attrs tuples])
+
+;; Main functions
+
+(defn normalize-q-input
+  "Turns input to q into a map with :query and :args fields.
+   Also normalizes the query into a map representation."
+  [query-input arg-inputs]
+  (let [query (-> query-input
+                  (#(or (and (map? %) (:query %)) %))
+                  (#(if (string? %) (edn/read-string %) %))
+                  (#(if (= 'quote (first %)) (second %) %))
+                  (#(if (sequential? %) (dpi/query->map %) %)))
+        args (if (and (map? query-input) (contains? query-input :args))
+               (do (when arg-inputs
+                     (log/warn (str "Query-map '" query "' already defines query input."
+                                    " Additional arguments to q will be ignored!")))
+                   (:args query-input))
+               arg-inputs)]
+    (cond-> {:query query
+             :args args}
+            (map? query-input)
+            (merge (select-keys query-input [:offset :limit :stats?])))))
+
+
+#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
+
+
+(defn q [query & inputs]
+  (let [{:keys [args] :as query-map} (normalize-q-input query inputs)]
+    (if-let [middleware (when (dbu/db? (first args))
+                          (get-in (dbi/-config (first args)) [:middleware :query]))]
+      (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
+        (q-with-middleware query-map))
+      (raw-q query-map))))
+
+(defn query-stats [query & inputs]
+  (-> query
+      (normalize-q-input inputs)
+      (assoc :stats? true)
+      q))
 
 ;; Utilities
 
@@ -1211,38 +1251,3 @@
                                                           (dissoc :rels :sources)
                                                           (assoc :ret %
                                                                  :query query))))))
-
-(defn normalize-q-input
-  "Turns input to q into a map with :query and :args fields.
-   Also normalizes the query into a map representation."
-  [query-input arg-inputs]
-  (let [query (-> query-input
-                  (#(or (and (map? %) (:query %)) %))
-                  (#(if (string? %) (edn/read-string %) %))
-                  (#(if (= 'quote (first %)) (second %) %))
-                  (#(if (sequential? %) (dpi/query->map %) %)))
-        args (if (and (map? query-input) (contains? query-input :args))
-               (do (when arg-inputs
-                     (log/warn (str "Query-map '" query "' already defines query input."
-                                    " Additional arguments to q will be ignored!")))
-                   (:args query-input))
-               arg-inputs)]
-    (cond-> {:query query
-             :args args}
-      (map? query-input)
-      (merge (select-keys query-input [:offset :limit :stats?])))))
-
-(defn q [query & inputs]
-  (let [{:keys [args] :as query-map} (normalize-q-input query inputs)]
-    (if-let [middleware (when (dbu/db? (first args))
-                          (get-in (dbi/-config (first args)) [:middleware :query]))]
-      (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
-        (q-with-middleware query-map))
-      (raw-q query-map))))
-
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
-(defn query-stats [query & inputs]
-  (-> query
-      (normalize-q-input inputs)
-      (assoc :stats? true)
-      q))
