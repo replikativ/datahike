@@ -68,12 +68,10 @@
                arg-inputs)]
     (cond-> {:query query
              :args args}
-            (map? query-input)
-            (merge (select-keys query-input [:offset :limit :stats?])))))
-
+      (map? query-input)
+      (merge (select-keys query-input [:offset :limit :stats?])))))
 
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
-
 
 (defn q [query & inputs]
   (let [{:keys [args] :as query-map} (normalize-q-input query inputs)]
