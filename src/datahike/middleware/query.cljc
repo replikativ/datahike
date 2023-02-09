@@ -2,7 +2,6 @@
   (:require [clojure.pprint :as pprint]
             [datahike.tools :as dt]))
 
-
 #_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn timed-query [query-handler]
   (fn [query & inputs]

@@ -36,8 +36,8 @@
 (deftest test-not
   (is (= {:consts {}
           :query  '{:find  [[?a ...]]
-                   :where [[?e :age ?a]
-                           (not [?e :age 60])]}
+                    :where [[?e :age ?a]
+                            (not [?e :age 60])]}
           :ret    [10 20 40 30 50]
           :rules  {}
           :stats  [{:clause '[?e :age ?a]
@@ -60,11 +60,11 @@
 (deftest test-not-join
   (is (= {:consts {}
           :query  '{:find  [?a]
-                   :where [[?e :name]
-                           [?e :age ?a]
-                           (not-join [?e]
-                                     [?e :name "Oleg"]
-                                     [?e :age ?a])]}
+                    :where [[?e :name]
+                            [?e :age ?a]
+                            (not-join [?e]
+                                      [?e :name "Oleg"]
+                                      [?e :age ?a])]}
           :ret    #{[10] [20] [50] [60]}
           :rules  {}
           :stats  [{:clause '[?e :name]
@@ -84,8 +84,8 @@
                                 :t      :measurement
                                 :type   :lookup}]
                     :clause   '(not-join [?e]
-                                        [?e :name "Oleg"]
-                                        [?e :age ?a])
+                                         [?e :name "Oleg"]
+                                         [?e :age ?a])
                     :rels     [{:bound #{'?a '?e} :rows  4}]
                     :t        :measurement
                     :type     :not}]}
@@ -100,9 +100,9 @@
 (deftest test-or
   (is (= {:consts {}
           :query  '{:find  [?a]
-                   :where [[?e :age ?a]
-                           (or [?e :name "Ivan"]
-                               [?e :name "Oleg"])]}
+                    :where [[?e :age ?a]
+                            (or [?e :name "Ivan"]
+                                [?e :name "Oleg"])]}
           :ret    #{[10] [20] [30] [40] [50]}
           :rules  {}
           :stats  [{:clause '[?e :age ?a]
@@ -119,7 +119,7 @@
                                  :t      :measurement
                                  :type   :lookup}]]
                     :clause   '(or [?e :name "Ivan"]
-                                  [?e :name "Oleg"])
+                                   [?e :name "Oleg"])
                     :rels     [{:bound #{'?a '?e} :rows  5}]
                     :t        :measurement
                     :type     :or}]}
@@ -163,13 +163,13 @@
                      :type :rule}
                     {:clause '[(even? ?x)], :rels [{:bound #{'?x '?y}, :rows 6}], :t :measurement}]}
            (unify-stats (query-stats '[:find ?y ?x
-                                   :in $ %
-                                   :where [_ _ ?x]
-                                   (rule ?x ?y)
-                                   [(even? ?x)]]
+                                       :in $ %
+                                       :where [_ _ ?x]
+                                       (rule ?x ?y)
+                                       [(even? ?x)]]
                                      db
                                      '[[(rule ?a ?b)
-                                    [?a :follow ?b]]]))))
+                                        [?a :follow ?b]]]))))
 
     (is (= {:consts '{?e1 1},
             :query {:find '[?e2], :in '[$ ?e1 %], :where '[(follow ?e1 ?e2)]},
@@ -209,12 +209,12 @@
                      :t :measurement,
                      :type :rule}]}
            (unify-stats (query-stats '[:find  ?e2
-                                   :in    $ ?e1 %
-                                   :where (follow ?e1 ?e2)]
+                                       :in    $ ?e1 %
+                                       :where (follow ?e1 ?e2)]
                                      db
                                      1
                                      '[[(follow ?e2 ?e1)
-                                    [?e2 :follow ?e1]]
-                                   [(follow ?e2 ?e1)
-                                    [?e2 :follow ?t]
-                                    [?t  :follow ?e1]]]))))))
+                                        [?e2 :follow ?e1]]
+                                       [(follow ?e2 ?e1)
+                                        [?e2 :follow ?t]
+                                        [?t  :follow ?e1]]]))))))

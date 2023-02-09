@@ -1,4 +1,4 @@
-(ns datahike.query-stats 
+(ns datahike.query-stats
   (:require [clojure.set :as set]
             [datahike.tools :as dt]))
 
@@ -84,51 +84,50 @@
         (map (apply juxt cols)))))
 
 (comment (->> [{:rels [{:rows 3, :bound #{'?n}}],
-                        :clause '(male ?n),
-                        :t 0.456356,
-                        :type :rule,
-                        :branches
-                        [{:rels [],
-                          :clause '(male ?n),
-                          :t 0.005561,
-                          :type :solve,
-                          :clauses (),
-                          :branches []}
-                         {:rels [{:rows 3, :bound #{'?n}}],
-                          :clause '([?n :male]),
-                          :t 0.252986,
-                          :type :solve,
-                          :clauses '([?n :male]),
-                          :branches
-                          [{:rels [{:rows 3, :bound #{'?n}}],
-                            :clause '[?n :male],
-                            :t 0.228498,
-                            :type :lookup}]}]}
-                       {:rels [{:rows 1, :bound #{'?n}}],
-                        :clause '(adult ?n),
-                        :t 0.965377,
-                        :type :rule,
-                        :branches
-                        [{:rels [{:rows 3, :bound #{'?n}}],
-                          :clause '(adult ?n),
-                          :t 0.004263,
-                          :type :solve,
-                          :clauses (),
-                          :branches []}
-                         {:rels [{:rows 1, :bound #{'?a__auto__30 '?n}}],
-                          :clause '([?n ?a__auto__30] [(>= ?a__auto__30 18)]),
-                          :t 0.731623,
-                          :type :solve,
-                          :clauses '([?n ?a__auto__30] [(>= ?a__auto__30 18)]),
-                          :branches
-                          [{:rels [{:rows 2, :bound #{'?a__auto__30 '?n}}],
-                            :clause '[?n ?a__auto__30],
-                            :t 0.31489,
-                            :type :lookup}
-                           {:rels [{:rows 1, :bound #{'?a__auto__30 '?n}}],
-                            :clause '[(>= ?a__auto__30 18)],
-                            :t 0.113082}]}]}]
-stats-table
-))
+                :clause '(male ?n),
+                :t 0.456356,
+                :type :rule,
+                :branches
+                [{:rels [],
+                  :clause '(male ?n),
+                  :t 0.005561,
+                  :type :solve,
+                  :clauses (),
+                  :branches []}
+                 {:rels [{:rows 3, :bound #{'?n}}],
+                  :clause '([?n :male]),
+                  :t 0.252986,
+                  :type :solve,
+                  :clauses '([?n :male]),
+                  :branches
+                  [{:rels [{:rows 3, :bound #{'?n}}],
+                    :clause '[?n :male],
+                    :t 0.228498,
+                    :type :lookup}]}]}
+               {:rels [{:rows 1, :bound #{'?n}}],
+                :clause '(adult ?n),
+                :t 0.965377,
+                :type :rule,
+                :branches
+                [{:rels [{:rows 3, :bound #{'?n}}],
+                  :clause '(adult ?n),
+                  :t 0.004263,
+                  :type :solve,
+                  :clauses (),
+                  :branches []}
+                 {:rels [{:rows 1, :bound #{'?a__auto__30 '?n}}],
+                  :clause '([?n ?a__auto__30] [(>= ?a__auto__30 18)]),
+                  :t 0.731623,
+                  :type :solve,
+                  :clauses '([?n ?a__auto__30] [(>= ?a__auto__30 18)]),
+                  :branches
+                  [{:rels [{:rows 2, :bound #{'?a__auto__30 '?n}}],
+                    :clause '[?n ?a__auto__30],
+                    :t 0.31489,
+                    :type :lookup}
+                   {:rels [{:rows 1, :bound #{'?a__auto__30 '?n}}],
+                    :clause '[(>= ?a__auto__30 18)],
+                    :t 0.113082}]}]}]
+              stats-table))
 
 

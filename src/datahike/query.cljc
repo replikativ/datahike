@@ -806,15 +806,15 @@
         solve (fn [prefix-context clause clauses]
                 (if stats?
                   (dqs/update-ctx-with-stats prefix-context clause
-                                         (fn [ctx]
-                                           (let [tmp-context (reduce -resolve-clause
-                                                                     (assoc ctx :stats [])
-                                                                     clauses)]
-                                             (assoc tmp-context
-                                                    :stats (:stats ctx)
-                                                    :tmp-stats {:type :solve
-                                                                :clauses clauses
-                                                                :branches (:stats tmp-context)}))))
+                                             (fn [ctx]
+                                               (let [tmp-context (reduce -resolve-clause
+                                                                         (assoc ctx :stats [])
+                                                                         clauses)]
+                                                 (assoc tmp-context
+                                                        :stats (:stats ctx)
+                                                        :tmp-stats {:type :solve
+                                                                    :clauses clauses
+                                                                    :branches (:stats tmp-context)}))))
                   (reduce -resolve-clause prefix-context clauses)))
         empty-rels? (fn [ctx]
                       (some #(empty? (:tuples %)) (:rels ctx)))]
@@ -1047,7 +1047,7 @@
    (-resolve-clause context clause clause))
   ([context clause orig-clause]
    (dqs/update-ctx-with-stats context orig-clause
-                          (fn [context] (-resolve-clause* context clause orig-clause)))))
+                              (fn [context] (-resolve-clause* context clause orig-clause)))))
 
 (defn resolve-clause [context clause]
   (if (rule? context clause)
@@ -1055,7 +1055,7 @@
       (binding [*implicit-source* (get (:sources context) (first clause))]
         (resolve-clause context (next clause)))
       (dqs/update-ctx-with-stats context clause
-                             (fn [context] (solve-rule context clause))))
+                                 (fn [context] (solve-rule context clause))))
     (-resolve-clause context clause)))
 
 (defn -q [context clauses]

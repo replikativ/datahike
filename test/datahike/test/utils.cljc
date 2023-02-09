@@ -34,7 +34,7 @@
     (d/transact conn test-data)
     conn))
 
-(defn teardown-db [conn] 
+(defn teardown-db [conn]
   (d/release conn)
   (d/delete-database (:config @conn)))
 
@@ -42,7 +42,7 @@
   "Test database fixture"
   ([config f]
    (with-db config [] f))
-  ([config test-data f] 
+  ([config test-data f]
    (let [conn (setup-default-db config test-data)]
      (f)
      (teardown-db conn))))

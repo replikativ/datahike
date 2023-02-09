@@ -124,7 +124,7 @@
   ([a b & more]
    (reduce deep-merge (or a {}) (cons b more))))
 
-(defn timed [f] 
+(defn timed [f]
   (let [now #?(:clj #(. System (nanoTime))
                :cljs #(* 1000 (. (js/Date.) (getTime))))
         start (now)
