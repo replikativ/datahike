@@ -83,17 +83,18 @@
          clojars {:doc "Install jar to clojars"
                   :task (deploy/remote config)}
 
-         release {:doc "Build and release jar to Github"
+         release {:doc "Build and release jar to GitHub"
                   :depends [jar]
                   :task (release/gh-release config)}
          
          ;; native image
          
          ni-check {:doc "Check for 'native-image'"
-                   :task (if (:out (shell {:out :string} "which" "native-image"))
-                           (println "Program native-image found!")
-                           (do (println "PATH does not contain native-image. Make sure to add your GraalVM to it.") 
-                               (System/exit 1)))}
+                  :task (try (shell "which" "native-image")
+                          (println "Program native-image found!")
+                          (catch Exception _
+                            (println "PATH does not contain native-image! Make sure to add your GraalVM to it.")
+                            (System/exit 1)))}
          
          ni-cli {:doc "Build native image cli"
                  :depends [compile ni-check] 
