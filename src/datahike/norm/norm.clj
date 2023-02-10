@@ -11,11 +11,11 @@
    [hasch.core :as h]
    [hasch.platform :as hp])
   (:import
-   [java.security MessageDigest DigestInputStream]
    [java.io File]
-   [java.nio.file Files]
    [java.util.jar JarFile JarEntry]
    [java.net URL]))
+
+(def checksums-file "checksums.edn")
 
 (defn- attribute-installed? [conn attr]
   (some? (d/entity @conn [:db/ident attr])))
@@ -36,6 +36,13 @@
        d/q
        some?))
 
+(defn- get-jar [resource]
+  (-> (.getPath resource)
+      (string/split #"!" 2)
+      first
+      (subs 5)
+      JarFile.))
+
 (defmulti ^:private retrieve-file-list
   (fn [file-or-resource] (type file-or-resource)))
 
@@ -44,8 +51,7 @@
     (let [migration-files (file-seq file)
           xf (comp
               (filter #(.isFile %))
-              (filter #(string/ends-with? (.getPath %) ".edn"))
-              (filter #(not= "checksums.edn" (.getName %))))]
+              (filter #(string/ends-with? (.getPath %) ".edn")))]
       (into [] xf migration-files))
     (throw
      (ex-info
@@ -54,21 +60,17 @@
 
 (defmethod ^:private retrieve-file-list URL [resource]
   (if resource
-    (let [abs-path (.getPath resource)]
+    (let [abs-path (.getPath resource)
+          last-path-segment (-> abs-path (string/split #"/") peek)]
       (if (string/starts-with? abs-path "file:")
-        (let [jar-path (-> abs-path (string/split #"!" 2) first (subs 5))
-              jar-file (JarFile. jar-path)]
-          (->> (enumeration-seq (.entries jar-file))
-               (filter #(and #_(string/starts-with? % abs-path)
-                             #_(not (string/ends-with? % "/"))
-                             (not (.isDirectory %))
-                             (string/ends-with? % ".edn")
-                             (not= "checksums.edn" (.getName %))))))
-        (->> (file-seq (io/file abs-path))
-             (filter #(and (.isFile (io/file %))
+        (->> (get-jar resource)
+             .entries
+             enumeration-seq
+             (filter #(and (string/starts-with? (.getName %) last-path-segment)
                            (not (.isDirectory %))
-                           (string/ends-with? % ".edn")
-                           (not= "checksums.edn" (.getName %)))))))
+                           (string/ends-with? % ".edn"))))
+        (->> (file-seq (io/file abs-path))
+             (filter #(not (.isDirectory %))))))
     (throw
      (ex-info
       "Resource does not exist."
@@ -78,10 +80,10 @@
   (throw (ex-info "Can only read a File or a URL (resource)" {:arg arg
                                                               :type (type arg)})))
 
-(comment
-  (retrieve-file-list (io/file norms-folder))
-  (def jar-path (-> (io/resource "migrations") (string/split #"!" 2) first (subs 5)))
-  (def jar-file (JarFile. jar-path)))
+(defn- filter-file-list [file-list]
+  (filter #(and (string/ends-with? % ".edn")
+                (not (string/ends-with? (.getName %) checksums-file)))
+          file-list))
 
 (defn filename->keyword [filename]
   (-> filename
@@ -89,60 +91,53 @@
       (keyword)))
 
 (defmulti ^:private read-edn-file
-  (fn [f & _args] (type f)))
+  (fn [file-or-entry _file-or-resource] (type file-or-entry)))
 
-(defmethod read-edn-file File [f]
+(defmethod read-edn-file File [f _file-or-resource]
   [(-> (slurp f)
        edn/read-string)
    {:name (.getName f)
     :norm (filename->keyword (.getName f))}])
 
-(defmethod read-edn-file JarEntry [entry jar-file]
-  [(-> (.getInputStream jar-file entry)
-       slurp
-       edn/read-string)
-   {:name (.getName entry)
-    :norm (filename->keyword (.getName entry))}])
+(defmethod read-edn-file JarEntry [entry file-or-resource]
+  (let [file-name (-> (.getName entry)
+                      (string/split #"/")
+                      peek)]
+    [(-> (get-jar file-or-resource)
+         (.getInputStream entry)
+         slurp
+         edn/read-string)
+     {:name file-name
+      :norm (filename->keyword file-name)}]))
 
-(defn- read-norm-files-with-meta [norm-files]
-  (->> norm-files
+(defmethod read-edn-file :default [t _]
+  (throw (ex-info "Can not handle argument" {:type (type t)
+                                             :arg t})))
+
+(defn- read-norm-files [norm-list file-or-resource]
+  (->> norm-list
        (map (fn [f]
-              (let [[content metadata] (read-edn-file f)]
+              (let [[content metadata] (read-edn-file f file-or-resource)]
                 (merge content metadata))))
-       (sort-by :norm)))
-
-(defn- read-norm-files [norm-files]
-  (->> norm-files
-       (map #(first (read-edn-file %)))
        (sort-by :norm)))
 
 (defn- compute-checksums [norm-files]
   (->> norm-files
        (reduce (fn [m {:keys [norm] :as content}]
-                (assoc m
-                       norm
-                       (-> (h/edn-hash content)
-                           (hp/hash->str))))
+                 (assoc m
+                        norm
+                        (-> (select-keys content [:tx-data :tx-fn])
+                            h/edn-hash
+                            hp/hash->str)))
                {})))
 
-(defn- verify-checksums [checksums checksums-edn]
-  (let [diff (data/diff checksums
-                        (read-edn-file checksums-edn))]
+(defn- verify-checksums [checksums checksums-edn file-or-resource]
+  (let [edn-content (-> (read-edn-file checksums-edn file-or-resource) first)
+        diff (data/diff checksums edn-content)]
     (when-not (every? nil? (butlast diff))
       (throw
        (ex-info "Deviation of the checksums found. Migration aborted."
                 {:diff diff})))))
-
-(comment
-  (def norms-folder "test/datahike/norm/resources")
-  (read-norm-files! (retrieve-file-list (io/file norms-folder)))
-  (verify-checksums (-> (io/file norms-folder)
-                        retrieve-file-list
-                        read-norm-files-with-meta
-                        compute-checksums)
-                    (-> (io/file (io/file norms-folder) "checksums.edn")
-                        read-edn-file
-                        first)))
 
 (s/def ::tx-data vector?)
 (s/def ::tx-fn symbol?)
@@ -156,15 +151,8 @@
 
 (defn neutral-fn [_] [])
 
-(defmulti ensure-norms
-  (fn [_conn file-or-resource] (type file-or-resource)))
-
-(defmethod ensure-norms File [conn file]
-  (verify-checksums file
-                    (io/file (io/file file) "checksums.edn"))
-  (let [db (ensure-norm-attribute! conn)
-        norm-list (-> (retrieve-file-list (io/file file))
-                      read-norm-files!)]
+(defn- transact-norms [conn norm-list]
+  (let [db (ensure-norm-attribute! conn)]
     (log/info "Checking migrations ...")
     (doseq [{:keys [norm tx-data tx-fn]
              :as   norm-map
@@ -179,6 +167,29 @@
                                                      tx-data
                                                      ((eval tx-fn) conn)))})
              (log/info "Done"))))))
+
+(defmulti ensure-norms
+  (fn [_conn file-or-resource] (type file-or-resource)))
+
+(defmethod ensure-norms File [conn file]
+  (let [norm-list (-> (retrieve-file-list file)
+                      filter-file-list
+                      (read-norm-files file))]
+    (verify-checksums (compute-checksums norm-list)
+                      (io/file (io/file file) checksums-file)
+                      file)
+    (transact-norms conn norm-list)))
+
+(defmethod ensure-norms URL [conn resource]
+  (let [file-list (retrieve-file-list resource)
+        norm-list (-> (filter-file-list file-list)
+                      (read-norm-files resource))]
+    (verify-checksums (compute-checksums norm-list)
+                      (->> file-list
+                           (filter #(-> (.getName %) (string/ends-with? checksums-file)))
+                           first)
+                      resource)
+    (transact-norms conn norm-list)))
 
 (defn ensure-norms!
   "Takes Datahike-connection and optional a folder as string.
@@ -213,11 +224,13 @@
   ([]
    (update-checksums! "resources/migrations"))
   ([^String norms-folder]
-   (-> (io/file norms-folder)
-       read-norm-files!
-       compute-checksums
-       (#(spit (io/file (str norms-folder "/" "checksums.edn"))
-               (with-out-str (pp/pprint %)))))))
+   (let [file (io/file norms-folder)]
+    (-> (retrieve-file-list file)
+        filter-file-list
+        (read-norm-files file)
+        compute-checksums
+        (#(spit (io/file (io/file norms-folder checksums-file))
+                (with-out-str (pp/pprint %))))))))
 
 (comment
   (def norms-folder "test/datahike/norm/resources")
