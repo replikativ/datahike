@@ -7,7 +7,6 @@
                     [pod.borkdude.clj-kondo :as clj-kondo]
                     [tools.build :as build]
                     [tools.cljdoc :as cljdoc]
-                    [tools.deps :as deps]
                     [tools.deploy :as deploy]
                     [tools.release :as release]
                     [tools.test :as test]
@@ -15,7 +14,6 @@
          :init (do (def config-file "config.edn")
                    (def config (edn/read-string (slurp config-file)))
                    (def deps (edn/read-string (slurp "deps.edn"))))
-         ;; hook :enter could be used to load config according to project
          
          ; tools
          
@@ -49,16 +47,11 @@
          kaocha {:doc "Run kaocha with arbitrary arguments"
                  :task (apply test/kaocha *command-line-args*)}
          
-         deps {:doc "Check consistency of dependencies"
-               :task (if *command-line-args*
-                       (apply deps/-main *command-line-args*)
-                       (deps/check {:alias (-> deps :aliases (dissoc :datomic :1.9 :1.10) keys)}))}
-         
          outdated {:doc "Find outdated libraries"
                    :task (clojure "-M:outdated")}
 
          check {:doc "Run all checks"
-                :depends [test format lint deps outdated]}
+                :depends [test format lint outdated]}
          
 
          ; build and release
