@@ -73,7 +73,6 @@
                  (if output (io/writer output) *out*))
       (run! fs/delete (vals alias-filenames))))
 
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn -main [& args]
   (let [{:keys [options errors summary] :as _parsed-opts} (cli/parse-opts args cli-options)]
     (cond

@@ -30,8 +30,6 @@
        (catch ExceptionInfo e
          (assoc (ex-data e) :failure? true))))
 
-
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn gh-release
   "Create a GitHub release and upload the library jar"
   [config]

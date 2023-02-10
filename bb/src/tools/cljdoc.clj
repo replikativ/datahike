@@ -17,7 +17,6 @@
     (println lib-dir)
     (fs/exists? lib-dir)))
 
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn preview [{:build/keys [lib] :as config}]
   (println "Creating temporary directory at" tmp-dir)
   (fs/delete-tree tmp-dir)

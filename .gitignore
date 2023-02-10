@@ -26,7 +26,7 @@ out/
 /.cache
 /.settings
 .classpath
-/.clj-kondo
+.cache
 /datahike
 datahike.build_artifacts.txt
 tests.user.edn
@@ -34,3 +34,4 @@ tests.user.edn
 dhi
 dhi.build_artifacts.txt
 trace.edn
+resources/DATAHIKE_VERSION

@@ -30,7 +30,6 @@
   [config]
   (println (string config)))
 
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn inc
   "Increment the library version.
    The version part can be 'major' or 'minor'."
@@ -41,6 +40,5 @@
      "major" (update-in-settings config-file [:version :major] inc)
      "minor" (update-in-settings config-file [:version :minor] inc))))
 
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn as-tag [config]
   (str "v" (string config)))

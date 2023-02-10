@@ -4,7 +4,6 @@
             [clojure.tools.build.api :as b]
             [tools.version :as version :refer [read-edn-file]]))
 
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn clean [{:build/keys [target-dir native] :as _config}]
   (print (str "Cleaning up target directory '" target-dir "'..."))
   (fs/delete-tree target-dir)
@@ -27,7 +26,6 @@
   (b/pom-path {:lib lib
                :class-dir class-dir}))
 
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn pom [{:build/keys [deps-file class-dir pom-template lib clj-src-dirs scm] :as config}]
   (print (str "Creating pom file from template at '" pom-template "'..."))
   (b/write-pom {:class-dir class-dir
@@ -42,7 +40,6 @@
 (defn jar-path [{:build/keys [target-dir lib] :as config}]
   (str target-dir "/" (format "%s-%s.jar" (name lib) (version/string config))))
 
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn jar
   "Returns paths to the jar and the pom file"
   [{:build/keys [class-dir target-dir clj-src-dirs resource-dirs] :as config}]
@@ -56,7 +53,6 @@
 (defn native-jar-path [{:build/keys [target-dir lib] :as config}]
   (str target-dir "/" (format "%s-%s-native-shared-library.jar" (name lib) (version/string config))))
 
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 (defn native-shared-library [{:build/keys [deps-file class-dir resource-dirs clj-src-dirs native] :as config}]
   (clean config)
   (compile config)

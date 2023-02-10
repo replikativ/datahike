@@ -1,0 +1,16 @@
+
+{:lint-as {datahike.db/defrecord-updatable clojure.core/deftype
+           datahike.lru/defcache clojure.core/deftype
+           datalog.parser.type/deftrecord clojure.core/defrecord}
+ :linters {;; For some reason not detected as resolved
+           :unresolved-var {:exclude [babashka.fs]}
+           ;; Used by bb.edn, but not detected as used 
+           :clojure-lsp/unused-public-var {:exclude [tools.build/native-shared-library
+                                                     tools.build/jar
+                                                     tools.build/pom
+                                                     tools.cljdoc/preview
+                                                     tools.deploy/local
+                                                     tools.deploy/remote
+                                                     tools.release/gh-release
+                                                     tools.version/as-tag
+                                                     tools.version/inc]}}}
