@@ -151,7 +151,7 @@
     (log/debug "Norm validated" {:norm-map norm})
     (let [res (s/explain-data ::norm-map norm)]
       (throw
-        (ex-info "Invalid norm" {:validation-error res})))))
+       (ex-info "Invalid norm" {:validation-error res})))))
 
 (defn- neutral-fn [_] [])
 
@@ -233,21 +233,21 @@
    (update-checksums! "resources/migrations"))
   ([^String norms-folder]
    (let [file (io/file norms-folder)]
-    (-> (retrieve-file-list file)
-        filter-file-list
-        (read-norm-files file)
-        compute-checksums
-        (#(spit (io/file (io/file norms-folder checksums-file))
-                (with-out-str (pp/pprint %))))))))
+     (-> (retrieve-file-list file)
+         filter-file-list
+         (read-norm-files file)
+         compute-checksums
+         (#(spit (io/file (io/file norms-folder checksums-file))
+                 (with-out-str (pp/pprint %))))))))
 
 (comment
   (def norms-folder "test/datahike/norm/resources")
   (def config {:store {:backend :mem
                        :id "bar"}})
   (def conn (do
-             (d/delete-database config)
-             (d/create-database config)
-             (d/connect config)))
+              (d/delete-database config)
+              (d/create-database config)
+              (d/connect config)))
   (ensure-norms! conn (io/file norms-folder))
   (ensure-norms! conn (io/resource "migrations"))
   (update-checksums! norms-folder)
