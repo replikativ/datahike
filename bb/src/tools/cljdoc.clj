@@ -32,7 +32,7 @@
           "--volume" (str (fs/cwd) ":/repo-to-import")
           "--volume" (str maven-dir ":/root/.m2")
           "--volume" (str tmp-dir ":/app/data")
-          "--entrypoint" "clojure" "cljdoc/cljdoc" "-M:cli" "ingest" "-p" (str lib) "-v" (version/string config)
+          "--entrypoint" "clojure" "docker.io/cljdoc/cljdoc" "-M:cli" "ingest" "-p" (str lib) "-v" (version/string config)
           "--git" "/repo-to-import")
 
   (println "---- cljdoc preview: starting server on port 8000")
