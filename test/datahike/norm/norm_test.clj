@@ -1,24 +1,16 @@
 (ns datahike.norm.norm-test
   (:require [clojure.test :refer [deftest is]]
             [clojure.string :as string]
+            [clojure.java.io :as io]
             [datahike.api :as d]
-            [datahike.norm.norm :as sut]))
-
-(defn create-test-db []
-  (let [id (apply str
-                  (for [_i (range 8)]
-                    (char (+ (rand 26) 65))))]
-    (d/create-database {:store {:backend :mem
-                                :id id}})
-    (d/connect {:store {:backend :mem
-                        :id id}})))
+            [datahike.norm.norm :as sut]
+            [datahike.test.utils :as tu]))
 
 (def ensure-norms #'sut/ensure-norms)
 
 (deftest simple-test
-  (let [conn (create-test-db)
-        _ (ensure-norms conn "test/datahike/norm/resources/001-a1-example.edn")
-        _ (ensure-norms conn "test/datahike/norm/resources/002-a2-example.edn")
+  (let [conn (tu/setup-db {} true)
+        _ (ensure-norms conn (io/file "test/datahike/norm/resources/simple-test"))
         schema (d/schema (d/db conn))]
     (is (= #:db{:valueType :db.type/string, :cardinality :db.cardinality/one, :doc "Place of occupation", :ident :character/place-of-occupation}
            (-> (schema :character/place-of-occupation)
@@ -30,12 +22,6 @@
            (-> (schema :tx/norm)
                (dissoc :db/id))))))
 
-(comment
-  (def conn (create-test-db))
-  (ensure-norms conn "test/datahike/norm/resources/001-a1-example.edn")
-  (ensure-norms conn "test/datahike/norm/resources/002-a2-example.edn")
-  (def schema (d/schema (d/db conn))))
-
 (defn tx-fn-test-fn [conn]
   (-> (for [[eid value] (d/q '[:find ?e ?v
                                :where
@@ -46,12 +32,11 @@
       vec))
 
 (deftest tx-fn-test
-  (let [conn (create-test-db)
-        _ (ensure-norms conn "test/datahike/norm/resources/001-a1-example.edn")
-        _ (ensure-norms conn "test/datahike/norm/resources/002-a2-example.edn")
+  (let [conn (tu/setup-db {} true)
+        _ (ensure-norms conn (io/file "test/datahike/norm/resources/tx-fn-test/first"))
         _ (d/transact conn {:tx-data [{:character/place-of-occupation "SPRINGFIELD ELEMENTARY SCHOOL"}
                                       {:character/place-of-occupation "SPRINGFIELD NUCLEAR POWER PLANT"}]})
-        _ (ensure-norms conn "test/datahike/norm/resources/003-tx-fn-test.edn")]
+        _ (ensure-norms conn (io/file "test/datahike/norm/resources/tx-fn-test/second"))]
     (is (= #{["springfield elementary school"] ["springfield nuclear power plant"]}
            (d/q '[:find ?v
                   :where
@@ -74,16 +59,14 @@
       vec))
 
 (deftest tx-data-and-tx-fn-test
-  (let [conn (create-test-db)
-        _ (ensure-norms conn "test/datahike/norm/resources/001-a1-example.edn")
-        _ (ensure-norms conn "test/datahike/norm/resources/002-a2-example.edn")
-        _ (ensure-norms conn "test/datahike/norm/resources/003-tx-fn-test.edn")
+  (let [conn (tu/setup-db {} true)
+        _ (ensure-norms conn (io/file "test/datahike/norm/resources/tx-data-and-tx-fn-test/first"))
         _ (d/transact conn {:tx-data [{:character/name "Homer Simpson"}
                                       {:character/name "Marge Simpson"}
                                       {:character/name "Bart Simpson"}
                                       {:character/name "Lisa Simpson"}
                                       {:character/name "Maggie Simpson"}]})
-        _ (ensure-norms conn "test/datahike/norm/resources/004-tx-data-and-tx-fn-test.edn")
+        _ (ensure-norms conn (io/file "test/datahike/norm/resources/tx-data-and-tx-fn-test/second"))
         margehomer (d/q '[:find [?e ...]
                           :where
                           [?e :character/name]
@@ -116,8 +99,8 @@
       vec))
 
 (deftest naming-and-sorting-test
-  (let [conn (create-test-db)
-        _ (sut/ensure-norms! conn "test/datahike/norm/resources")
+  (let [conn (tu/setup-db {} true)
+        _ (sut/ensure-norms! conn (io/file "test/datahike/norm/resources/naming-and-sorting-test"))
         lisabart (d/q '[:find [?e ...]
                         :where
                         [?e :character/occupation :student]]
@@ -129,6 +112,3 @@
              :character/name "Lisa Simpson",
              :character/occupation :student}]
            (d/pull-many (d/db conn) '[*] lisabart)))))
-
-(comment
-  (sut/update-checksums! "test/datahike/norm/resources"))

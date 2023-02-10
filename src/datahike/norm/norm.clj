@@ -93,24 +93,28 @@
 (defmulti ^:private read-edn-file
   (fn [file-or-entry _file-or-resource] (type file-or-entry)))
 
-(defmethod read-edn-file File [f _file-or-resource]
+(defmethod ^:private read-edn-file File [f _file]
+  (when (not (.exists f))
+    (throw (ex-info "Failed reading file because it does not exist" {:filename (str f)})))
   [(-> (slurp f)
        edn/read-string)
    {:name (.getName f)
     :norm (filename->keyword (.getName f))}])
 
-(defmethod read-edn-file JarEntry [entry file-or-resource]
+(defmethod ^:private read-edn-file JarEntry [entry resource]
+  (when (nil? resource)
+    (throw (ex-info "Failed reading resource because it does not exist" {:resource (str resource)})))
   (let [file-name (-> (.getName entry)
                       (string/split #"/")
                       peek)]
-    [(-> (get-jar file-or-resource)
+    [(-> (get-jar resource)
          (.getInputStream entry)
          slurp
          edn/read-string)
      {:name file-name
       :norm (filename->keyword file-name)}]))
 
-(defmethod read-edn-file :default [t _]
+(defmethod ^:private read-edn-file :default [t _]
   (throw (ex-info "Can not handle argument" {:type (type t)
                                              :arg t})))
 
@@ -149,7 +153,7 @@
       (throw
         (ex-info "Invalid norm" {:validation-error res})))))
 
-(defn neutral-fn [_] [])
+(defn- neutral-fn [_] [])
 
 (defn- transact-norms [conn norm-list]
   (let [db (ensure-norm-attribute! conn)]
@@ -157,21 +161,23 @@
     (doseq [{:keys [norm tx-data tx-fn]
              :as   norm-map
              :or   {tx-data []
-                    tx-fn   #'neutral-fn}}
+                    tx-fn   'datahike.norm.norm/neutral-fn}}
             norm-list]
       (log/info "Checking migration" norm)
       (validate-norm norm-map)
       (when-not (norm-installed? db norm)
-        (log/info "Run migration" norm)
+        (log/info "Run migration" {:tx-data (vec (concat [{:tx/norm norm}]
+                                                         tx-data
+                                                         ((var-get (requiring-resolve (symbol tx-fn))) conn)))})
         (->> (d/transact conn {:tx-data (vec (concat [{:tx/norm norm}]
                                                      tx-data
-                                                     ((eval tx-fn) conn)))})
+                                                     ((var-get (requiring-resolve tx-fn)) conn)))})
              (log/info "Done"))))))
 
-(defmulti ensure-norms
+(defmulti ^:private ensure-norms
   (fn [_conn file-or-resource] (type file-or-resource)))
 
-(defmethod ensure-norms File [conn file]
+(defmethod ^:private ensure-norms File [conn file]
   (let [norm-list (-> (retrieve-file-list file)
                       filter-file-list
                       (read-norm-files file))]
@@ -180,7 +186,7 @@
                       file)
     (transact-norms conn norm-list)))
 
-(defmethod ensure-norms URL [conn resource]
+(defmethod ^:private ensure-norms URL [conn resource]
   (let [file-list (retrieve-file-list resource)
         norm-list (-> (filter-file-list file-list)
                       (read-norm-files resource))]
@@ -192,16 +198,17 @@
     (transact-norms conn norm-list)))
 
 (defn ensure-norms!
-  "Takes Datahike-connection and optional a folder as string.
+  "Takes Datahike-connection and optional a java.io.File object
+   or java.net.URL to specify the location of your norms.
+   Defaults to the resource `migrations`.
    Returns nil when successful and throws exception when not.
 
-   Ensure your norms are present on your Datahike database.
-   All the edn-files in the folder and its subfolders are
-   considered as migration-files aka norms and will be sorted
-   and transacted into your database.
-   All norms that are successfully transacted will have an
-   attribute that marks them as migrated and they will not
-   be transacted twice."
+   Ensures your norms are present on your Datahike database.
+   All the edn-files in this folder and its subfolders are
+   considered migration-files aka norms and will be transacted
+   ordered by their names into your database. All norms that
+   are successfully transacted will have an attribute that
+   marks them as migrated and they will not be applied twice."
   ([conn]
    (ensure-norms! conn (io/resource "migrations")))
   ([conn file-or-resource]
@@ -210,9 +217,10 @@
 (defn update-checksums!
   "Optionally takes a folder as string. Defaults to the
    folder `resources/migrations`.
+   Returns nil when successful and throws exception when not.
 
    All the edn-files in the folder and its subfolders are
-   considered as migrations-files aka norms. For each of
+   considered migration-files aka norms. For each of
    these norms a checksum will be computed and written to
    the file `checksums.edn`. Each time this fn is run,
    the `checksums.edn` will be overwritten with the current
@@ -234,14 +242,17 @@
 
 (comment
   (def norms-folder "test/datahike/norm/resources")
-  (read-norm-files! (io/file norms-folder))
-  (read-norm-files! (io/resource "migrations"))
-  (read-norm-files! (io/resource "foo"))
-  (-> (io/resource "migrations")
-      (read-norm-files!)
-      (compute-checksums))
-  (-> (io/file norms-folder)
-      (read-norm-files!)
-      (compute-checksums))
-  (verify-checksums norms-folder)
-  (update-checksums! norms-folder))
+  (def config {:store {:backend :mem
+                       :id "bar"}})
+  (def conn (do
+             (d/delete-database config)
+             (d/create-database config)
+             (d/connect config)))
+  (ensure-norms! conn (io/file norms-folder))
+  (ensure-norms! conn (io/resource "migrations"))
+  (update-checksums! norms-folder)
+  (update-checksums! "resources/migrations")
+  (def my-fn 'datahike.norm.norm-test/tx-fn-test-fn)
+  (#'datahike.norm.norm-test/tx-fn-test-fn conn)
+  (def myfn (var-get (requiring-resolve my-fn)))
+  (qualified-symbol? (symbol conn)))
