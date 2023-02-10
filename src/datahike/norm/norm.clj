@@ -206,7 +206,7 @@
    Ensures your norms are present on your Datahike database.
    All the edn-files in this folder and its subfolders are
    considered migration-files aka norms and will be transacted
-   ordered by their names into your database. All norms that
+   sorted by their names into your database. All norms that
    are successfully transacted will have an attribute that
    marks them as migrated and they will not be applied twice."
   ([conn]
