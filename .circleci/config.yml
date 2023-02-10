@@ -193,15 +193,15 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: deploy
-          command: bb deploy
+          name: Deploy to clojars
+          command: bb clojars
   release:
     executor: tools/clojurecli
     steps:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: release
+          name: Release on GitHub
           command: bb release
 
 workflows:
