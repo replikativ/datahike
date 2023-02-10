@@ -9,7 +9,7 @@
                     [tools.cljdoc :as cljdoc]
                     [tools.deps :as deps]
                     [tools.deploy :as deploy]
-                    [tools.release :as relase]
+                    [tools.release :as release]
                     [tools.test :as test]
                     [tools.version :as version]]
          :init (do (def config-file "config.edn")
