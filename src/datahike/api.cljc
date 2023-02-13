@@ -238,9 +238,7 @@
                                                   {:error :transact/syntax
                                                    :argument-keys (keys arg-map)}))
                 (or (vector? arg-map)
-                    (seq? arg-map))   (do (log/warn "Vector and sequence as argument are deprecated."
-                                                    "Instead use a map with key :tx-data.")
-                                          {:tx-data arg-map})
+                    (seq? arg-map))   {:tx-data arg-map}
                 :else                 (dt/raise "Bad argument to transact, expected map."
                                                 {:error :transact/syntax
                                                  :argument-type (type arg-map)}))]
