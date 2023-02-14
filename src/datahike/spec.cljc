@@ -17,19 +17,9 @@
 
 (def SDB dbu/db?)
 
-(def STransactions
-  (s/coll-of (s/or :seq coll? :map map? :nil nil?)))
-
-;; TODO: deduplicate this Spec with the one in datahike.config
-(def SConfig
-  (ds/spec
-   {:name ::config
-    :keys-default ds/opt
-    :spec {:store map?
-           :name string?
-           :keep-history? boolean?
-           :schema-flexibility (s/spec #{:write :read})
-           :initial-tx STransactions}}))
+(def SConfig (s/alt :config :datahike/config
+                    :deprecated/map :deprecated/config
+                    :deprecated/uri string?))
 
 (def SConnectionAtom
   (fn [x]
@@ -72,6 +62,9 @@
            (ds/opt :limit) int?
            (ds/opt :offset) int?}}))
 
+(def STransactions
+  (s/coll-of (s/or :seq coll? :map map? :nil nil?)))
+
 (def SWithArgs
   (ds/spec
    {:name ::with-args
@@ -99,7 +92,7 @@
 (def SSchema
   (s/map-of any? SSchemaEntry))
 
-(def SMetrics 
+(def SMetrics
   (ds/spec
    {:name ::metrics
     :keys-default ds/req
@@ -111,4 +104,4 @@
            (ds/opt :temporal-avet-count) int?}}))
 
 (def SPred
-  (s/alt :fn fn? :keyword :keyword?))
+  (s/alt :fn fn? :keyword keyword?))

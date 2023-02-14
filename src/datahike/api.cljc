@@ -20,9 +20,8 @@
 
 (s/fdef
   connect
-  :args (s/alt :config spec/SConfig
-               :deprecated/uri string?
-               :nil (s/cat)) ;; no arguments
+  :args (s/alt :config (s/cat :config spec/SConfig)
+               :nil (s/cat))
   :ret spec/SConnectionAtom)
 (def
   ^{:arglists '([] [config])
@@ -49,11 +48,11 @@
 
 (s/fdef
   database-exists?
-  :args (s/alt :config spec/SConfig
-               :deprecated/uri string?)
+  :args (s/alt :config (s/cat :config spec/SConfig)
+               :nil (s/cat))
   :ret boolean?)
 (def
-  ^{:arglists '([config])
+  ^{:arglists '([] [config])
     :doc "Checks if a database exists via configuration map.
           Usage:
 
@@ -62,8 +61,7 @@
 
 (s/fdef
   create-database
-  :args (s/alt :config (s/cat :config (s/or :config spec/SConfig
-                                            :deprecated/uri string?)
+  :args (s/alt :config (s/cat :config spec/SConfig
                               :initial-tx (s/? (s/cat :k (s/? (s/and #(= % :initial-tx))) :v spec/STransactions))
                               :temporal-index (s/? (s/cat :k (s/? (s/and #(= % :temporal-index))) :v boolean?))
                               :schema-on-read (s/? (s/cat :k (s/? (s/and #(= % :schema-on-read))) :v boolean?)))
@@ -109,11 +107,10 @@
 
 (s/fdef
   delete-database
-  :args (s/alt :config spec/SConfig
-               :deprecated/uri string?
-               :nil (s/cat)) ; Picks up the default database
-  :ret (s/nilable map?)) ; TODO: should this be nilable?
-(def ^{:arglists '([config])
+  :args (s/alt :config (s/cat :config spec/SConfig)
+               :nil (s/cat))
+  :ret any?)
+(def ^{:arglists '([] [config])
        :doc      "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
                   For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
   delete-database
@@ -325,7 +322,7 @@
   datoms
   :args (s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
                :key (s/cat :db spec/SDB :index keyword? :components (s/alt :coll (s/* any?)
-                                                                          :nil nil?)))
+                                                                           :nil nil?)))
   :ret (s/nilable spec/SDatoms))
 (defmulti datoms {:arglists '([db arg-map] [db index & components])
                   :doc "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components
@@ -580,7 +577,7 @@
                   - Entities print as map, but are not exactly maps (they have compatible get interface though).
                   - Entities are effectively immutable “views” into a particular version of a database.
                   - Entities retain reference to the whole database.
-                  - You can’t change database through entities, only read.
+                  - You can't change database through entities, only read.
                   - Creating an entity by id is very cheap, almost no-op (attributes are looked up on demand).
                   - Comparing entities just compares their ids. Be careful when comparing entities taken from different dbs or from different versions of the same db.
                   - Accessed entity attributes are cached on entity itself (except backward references).
@@ -607,8 +604,8 @@
 
 (s/fdef
   filter
-  :args (s/cat :db spec/SDB :pred any?)
-  :ret #(instance? FilteredDB %) )
+  :args (s/cat :db spec/SDB :pred spec/SPred)
+  :ret #(instance? FilteredDB %))
 (def ^{:arglists '([db pred])
        :doc "Returns a view over database that has same interface but only includes datoms for which the `(pred db datom)` is true. Can be applied multiple times.
 
