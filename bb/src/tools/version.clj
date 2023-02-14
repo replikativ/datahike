@@ -12,9 +12,11 @@
 (defn commit-nr []
   (b/git-count-revs {:dir "."}))
 
+(defn current-commit []
+  (str/trim (b/git-process {:git-args "rev-parse HEAD"})))
+
 (defn sha []
-  (-> (p/shell {:out :string} "git" "log" "-1") 
-      :out
+  (-> (b/git-process {:git-args "log -1"})
       (str/split #"\s+")
       second))
 

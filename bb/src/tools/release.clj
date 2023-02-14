@@ -1,6 +1,6 @@
 (ns tools.release
   (:require [babashka.fs :as fs]
-            [borkdude.gh-release-artifact.internal :as gh]
+            [borkdude.gh-release-artifact :as gh]
             [tools.build :refer [jar-path]]
             [tools.version :as version])
   (:import (clojure.lang ExceptionInfo)))
@@ -20,13 +20,14 @@
         result))))
 
 (defn try-release [config]
-  (try (gh/overwrite-asset {:org (:org config)
-                            :repo (name (:lib config))
-                            :tag (version/string config)
-                            :commit (gh/current-commit)
-                            :file (jar-path config)
-                            :content-type "application/java-archive"
-                            :draft false})
+  (try (gh/release-artifact
+        {:org (:org config)
+         :repo (name (:build/lib config))
+         :tag (version/string config)
+         :commit (version/current-commit)
+         :file (jar-path config)
+         :content-type "application/java-archive"
+         :draft false})
        (catch ExceptionInfo e
          (assoc (ex-data e) :failure? true))))
 
