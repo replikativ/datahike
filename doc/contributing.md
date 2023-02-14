@@ -14,14 +14,6 @@ bb tasks
 bb compile
 ```
 
-## Start a REPL
-
-```
-bb rpl
-```
-
-Be careful not to type `bb repl` as this will start a babashka repl!
-
 ## Run the tests
 
 Unittests
