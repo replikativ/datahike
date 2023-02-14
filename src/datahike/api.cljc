@@ -9,14 +9,13 @@
             [datahike.query :as dq]
             [datahike.schema :as ds]
             [datahike.tools :as dt]
-            [datahike.db :as db #?@(:cljs [:refer [DB HistoricalDB AsOfDB SinceDB FilteredDB]])]
+            [datahike.db :as db #?@(:cljs [:refer [HistoricalDB AsOfDB SinceDB FilteredDB]])]
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
-            [datahike.db.utils :as dbu]
             [datahike.impl.entity :as de])
   #?(:clj
      (:import [clojure.lang Keyword PersistentArrayMap]
-              [datahike.db DB HistoricalDB AsOfDB SinceDB FilteredDB]
+              [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
               [datahike.impl.entity Entity])))
 
 (s/fdef
@@ -241,8 +240,8 @@
 
 (s/fdef
   pull
-  :args (s/alt :simple (s/cat :db dbu/db? :opts spec/SPullOptions)
-               :full (s/cat :db dbu/db? :selector coll? :eid spec/SEId))
+  :args (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
+               :full (s/cat :db spec/SDB :selector coll? :eid spec/SEId))
   :ret (s/nilable map?))
 (def ^{:arglists '([db selector eid] [db arg-map])
        :doc      "Fetches data from database using recursive declarative description. See [docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html).
@@ -261,8 +260,8 @@
 
 (s/fdef
   pull-many
-  :args (s/alt :simple (s/cat :db dbu/db? :opts spec/SPullOptions)
-               :full (s/cat :db dbu/db? :selector coll? :eid spec/SEId))
+  :args (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
+               :full (s/cat :db spec/SDB :selector coll? :eid spec/SEId))
   :ret (s/coll-of map?))
 (def ^{:arglists '([db selector eids])
        :doc      "Same as [[pull]], but accepts sequence of ids and returns sequence of maps.
@@ -324,8 +323,8 @@
 
 (s/fdef
   datoms
-  :args (s/alt :map (s/cat :db dbu/db? :args spec/SIndexLookupArgs)
-               :key (s/cat :db dbu/db? :index keyword? :components (s/alt :coll (s/* any?)
+  :args (s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
+               :key (s/cat :db spec/SDB :index keyword? :components (s/alt :coll (s/* any?)
                                                                           :nil nil?)))
   :ret (s/nilable spec/SDatoms))
 (defmulti datoms {:arglists '([db arg-map] [db index & components])
@@ -460,21 +459,18 @@
 
 (defmethod datoms PersistentArrayMap
   [db {:keys [index components]}]
-  {:pre [(dbu/db? db)]}
   (dbi/-datoms db index components))
 
 (defmethod datoms Keyword
   [db index & components]
-  {:pre [(dbu/db? db)
-         (keyword? index)]}
   (if (nil? components)
     (dbi/-datoms db index [])
     (dbi/-datoms db index components)))
 
 (s/fdef
   seek-atoms
-  :args (s/alt :map (s/cat :db dbu/db? :args spec/SIndexLookupArgs)
-               :key (s/cat :db dbu/db? :index keyword? :components (s/* any?)))
+  :args (s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
+               :key (s/cat :db spec/SDB :index keyword? :components (s/* any?)))
   :ret (s/nilable spec/SDatoms))
 (defmulti seek-datoms {:arglists '([db arg-map] [db index & components])
                        :doc "Similar to [[datoms]], but will return datoms starting from specified components and including rest of the database until the end of the index.
@@ -516,13 +512,10 @@
 
 (defmethod seek-datoms PersistentArrayMap
   [db {:keys [index components]}]
-  {:pre [(dbu/db? db)]}
   (dbi/-seek-datoms db index components))
 
 (defmethod seek-datoms Keyword
   [db index & components]
-  {:pre [(dbu/db? db)
-         (keyword? index)]}
   (if (nil? components)
     (dbi/-seek-datoms db index [])
     (dbi/-seek-datoms db index components)))
@@ -541,7 +534,7 @@
 
 (s/fdef
   entity
-  :args (s/cat :db dbu/db? :eid (s/alt :eid spec/SEId :div any?))
+  :args (s/cat :db spec/SDB :eid (s/alt :eid spec/SEId :div any?))
   :ret (s/nilable de/entity?))
 (def ^{:arglists '([db eid])
        :doc      "Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate Datahike database content.
@@ -597,22 +590,25 @@
 (s/fdef
   entity-db
   :args (s/cat :entity de/entity?)
-  :ret dbu/db?)
+  :ret spec/SDB)
 (defn entity-db
   "Returns a db that entity was created from."
   [^Entity entity]
-  {:pre [(de/entity? entity)]}
   (.-db entity))
 
 (s/fdef
   is-filtered
-  :args any?
+  :args (s/cat :db spec/SDB)
   :ret boolean?)
 (defn is-filtered
   "Returns `true` if this database was filtered using [[filter]], `false` otherwise."
-  [x]
-  (instance? FilteredDB x))
+  [db]
+  (instance? FilteredDB db))
 
+(s/fdef
+  filter
+  :args (s/cat :db spec/SDB :pred any?)
+  :ret #(instance? FilteredDB %) )
 (def ^{:arglists '([db pred])
        :doc "Returns a view over database that has same interface but only includes datoms for which the `(pred db datom)` is true. Can be applied multiple times.
 
@@ -628,9 +624,9 @@
 
 (s/fdef
   with
-  :args (s/alt :with-map (s/cat :db dbu/db? :argmap spec/SWithArgs)
-               :with-data (s/cat :db dbu/db? :tx-data spec/STransactions)
-               :with-meta (s/cat :db dbu/db? :tx-data spec/STransactions :tx-meta spec/STxMeta))
+  :args (s/alt :with-map (s/cat :db spec/SDB :argmap spec/SWithArgs)
+               :with-data (s/cat :db spec/SDB :tx-data spec/STransactions)
+               :with-meta (s/cat :db spec/SDB :tx-data spec/STransactions :tx-meta spec/STxMeta))
   :ret spec/STransactionReport)
 (def ^{:arglists '([db arg-map])
        :doc "Same as [[transact]]`, but applies to an immutable database value. Returns transaction report (see [[transact]]).
@@ -656,7 +652,6 @@
            tx-meta (if (:tx-meta arg-map) (:tx-meta arg-map) nil)]
        (with db tx-data tx-meta)))
     ([db tx-data tx-meta]
-     {:pre [(dbu/db? db)]}
      (if (is-filtered db)
        (dt/raise "Filtered DB cannot be modified" {:error :transaction/filtered})
        (dbt/transact-tx-data (db/map->TxReport
@@ -668,19 +663,18 @@
 
 (s/fdef
   db-with
-  :args (s/cat :db dbu/db? :tx-data spec/STransactions)
-  :ret dbu/db?)
+  :args (s/cat :db spec/SDB :tx-data spec/STransactions)
+  :ret spec/SDB)
 (def ^{:arglists '([db tx-data])
        :doc "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."}
   db-with
   (fn [db tx-data]
-    {:pre [(dbu/db? db)]}
     (:db-after (with db tx-data))))
 
 (s/fdef
   db
   :args (s/cat :conn spec/SConnectionAtom)
-  :ret dbu/db?)
+  :ret spec/SDB)
 (defn db
   "Returns the underlying immutable database value from a connection.
 
@@ -690,8 +684,8 @@
 
 (s/fdef
   since
-  :args (s/cat :db dbu/db? :time-point spec/time-point?)
-  :ret dbu/db?)
+  :args (s/cat :db spec/SDB :time-point spec/time-point?)
+  :ret spec/SDB)
 (def ^{:arglists '([db time-point])
        :doc "Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
              Be aware: the database contains only the datoms that were added since the date.
@@ -724,15 +718,14 @@
                      :args [@conn]}) ; => #{[\"Alice\" 30] [\"Bob\" 30]}"}
   since
   (fn [db time-point]
-    {:pre [(or (int? time-point) (spec/date? time-point))]}
     (if (dbi/-temporal-index? db)
       (SinceDB. db time-point)
       (dt/raise "since is only allowed on temporal indexed databases." {:config (dbi/-config db)}))))
 
 (s/fdef
   as-of
-  :args (s/cat :db dbu/db? :time-point spec/time-point?)
-  :ret dbu/db?)
+  :args (s/cat :db spec/SDB :time-point spec/time-point?)
+  :ret spec/SDB)
 (def ^{:arglists '([db time-point])
        :doc "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long).
 
@@ -759,7 +752,6 @@
                      :args [@conn]}) ; => #{[\"Alice\" 35] [\"Bob\" 30]}"}
   as-of
   (fn [db time-point]
-    {:pre [(or (int? time-point) (spec/date? time-point))]}
     (if (dbi/-temporal-index? db)
       (if (int? time-point)
         (if (<= const/tx0 time-point)
@@ -771,7 +763,7 @@
 
 (s/fdef
   history
-  :args (s/cat :db dbu/db?)
+  :args (s/cat :db spec/SDB)
   :ret coll?)
 (def ^{:arglists '([db])
        :doc "Returns the full historical state of the database you may interact with.
@@ -806,7 +798,7 @@
 
 (s/fdef
   index-range
-  :args (s/cat :db dbu/db? :args spec/SIndexRangeArgs)
+  :args (s/cat :db spec/SDB :args spec/SIndexRangeArgs)
   :ret spec/SDatoms)
 (def ^{:arglists '([db arg-map])
        :doc "Returns part of `:avet` index between `[_ attr start]` and `[_ attr end]` in AVET sort order.
@@ -857,7 +849,6 @@
                  (->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))"}
   index-range
   (fn [db {:keys [attrid start end]}]
-    {:pre [(dbu/db? db)]}
     (dbi/-index-range db attrid start end)))
 
 (s/fdef
@@ -887,11 +878,14 @@
   unlisten
   dcore/unlisten!)
 
+(s/fdef
+  schema
+  :args (s/cat :db spec/SDB)
+  :ret spec/SSchema)
 (defn ^{:arglists '([db])
         :doc "Returns current schema definition."}
   schema
   [db]
-  {:pre [(dbu/db? db)]}
   (reduce-kv
    (fn [m k v]
      (cond
@@ -904,11 +898,14 @@
    {}
    (dbi/-schema db)))
 
+(s/fdef
+  reverse-schema
+  :args (s/cat :db spec/SDB)
+  :ret map?)
 (defn ^{:arglists '([db])
         :doc "Returns current reverse schema definition."}
   reverse-schema
   [db]
-  {:pre [(dbu/db? db)]}
   (reduce-kv
    (fn [m k v]
      (let [attrs (->> v
@@ -922,9 +919,12 @@
    {}
    (dbi/-rschema db)))
 
+(s/fdef
+  metrics
+  :args (s/cat :db spec/SDB)
+  :ret spec/SMetrics)
 (defn ^{:arglists '([db])
         :doc "Returns database metrics"}
   metrics
   [db]
-  {:pre [(instance? DB db)]}
   (db/metrics db))

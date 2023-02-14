@@ -15,8 +15,8 @@
 
 (def time-point? (s/or :int int? :date date?))
 
-;; TODO: there's lots of runtime logic to conform these transactions - it would
-;; be nice to spec them accurately, and then conform them at runtime through spec
+(def SDB dbu/db?)
+
 (def STransactions
   (s/coll-of (s/or :seq coll? :map map? :nil nil?)))
 
@@ -35,7 +35,7 @@
   (fn [x]
     (and
      (instance? IAtom x)
-     (s/valid? dbu/db? @x))))
+     (s/valid? SDB @x))))
 
 (def SEId (s/or :number number? :coll sequential? :keyword keyword?))
 
@@ -57,8 +57,8 @@
   (ds/spec
    {:name ::transaction-report
     :keys-default ds/req
-    :spec {:db-before dbu/db?
-           :db-after dbu/db?
+    :spec {:db-before SDB
+           :db-after SDB
            :tx-data SDatoms
            :tempids map?
            :tx-meta STxMeta}}))
@@ -93,3 +93,22 @@
     :keys-default ds/req
     :spec {:index keyword?
            (ds/opt :components) (s/nilable coll?)}}))
+
+(def SSchemaEntry :datahike.schema/schema)
+
+(def SSchema
+  (s/map-of any? SSchemaEntry))
+
+(def SMetrics 
+  (ds/spec
+   {:name ::metrics
+    :keys-default ds/req
+    :spec {:count int?
+           :avet-count int?
+           :per-attr-counts map?
+           :per-entity-counts map?
+           (ds/opt :temporal-count) int?
+           (ds/opt :temporal-avet-count) int?}}))
+
+(def SPred
+  (s/alt :fn fn? :keyword :keyword?))
