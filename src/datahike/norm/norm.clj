@@ -7,9 +7,10 @@
    [clojure.edn :as edn]
    [clojure.spec.alpha :as s]
    [taoensso.timbre :as log]
-   [datahike.api :as d]
    [hasch.core :as h]
-   [hasch.platform :as hp])
+   [hasch.platform :as hp]
+   [datahike.api :as d]
+   [datahike.tools :as dt])
   (:import
    [java.io File]
    [java.util.jar JarFile JarEntry]
@@ -53,10 +54,7 @@
               (filter #(.isFile %))
               (filter #(string/ends-with? (.getPath %) ".edn")))]
       (into [] xf migration-files))
-    (throw
-     (ex-info
-      (format "Norms folder %s does not exist." file)
-      {:folder file}))))
+    (dt/raise (format "Norms folder %s does not exist." (str file)) {:folder file})))
 
 (defmethod ^:private retrieve-file-list URL [resource]
   (if resource
@@ -71,14 +69,10 @@
                            (string/ends-with? % ".edn"))))
         (->> (file-seq (io/file abs-path))
              (filter #(not (.isDirectory %))))))
-    (throw
-     (ex-info
-      "Resource does not exist."
-      {:resource (str resource)}))))
+    (dt/raise "Resource does not exist." {:resource (str resource)})))
 
 (defmethod ^:private retrieve-file-list :default [arg]
-  (throw (ex-info "Can only read a File or a URL (resource)" {:arg arg
-                                                              :type (type arg)})))
+  (dt/raise "Can only read a File or a URL (resource)" {:arg arg :type (type arg)}))
 
 (defn- filter-file-list [file-list]
   (filter #(and (string/ends-with? % ".edn")
@@ -95,7 +89,7 @@
 
 (defmethod ^:private read-edn-file File [f _file]
   (when (not (.exists f))
-    (throw (ex-info "Failed reading file because it does not exist" {:filename (str f)})))
+    (dt/raise "Failed reading file because it does not exist" {:filename (str f)}))
   [(-> (slurp f)
        edn/read-string)
    {:name (.getName f)
@@ -103,7 +97,7 @@
 
 (defmethod ^:private read-edn-file JarEntry [entry resource]
   (when (nil? resource)
-    (throw (ex-info "Failed reading resource because it does not exist" {:resource (str resource)})))
+    (dt/raise "Failed reading resource because it does not exist" {:resource (str resource)}))
   (let [file-name (-> (.getName entry)
                       (string/split #"/")
                       peek)]
@@ -115,8 +109,7 @@
       :norm (filename->keyword file-name)}]))
 
 (defmethod ^:private read-edn-file :default [t _]
-  (throw (ex-info "Can not handle argument" {:type (type t)
-                                             :arg t})))
+  (dt/raise "Can not handle argument" {:type (type t) :arg t}))
 
 (defn- read-norm-files [norm-list file-or-resource]
   (->> norm-list
@@ -139,9 +132,7 @@
   (let [edn-content (-> (read-edn-file checksums-edn file-or-resource) first)
         diff (data/diff checksums edn-content)]
     (when-not (every? nil? (butlast diff))
-      (throw
-       (ex-info "Deviation of the checksums found. Migration aborted."
-                {:diff diff})))))
+      (dt/raise "Deviation of the checksums found. Migration aborted." {:diff diff}))))
 
 (s/def ::tx-data vector?)
 (s/def ::tx-fn symbol?)
@@ -150,8 +141,7 @@
   (if (s/valid? ::norm-map norm)
     (log/debug "Norm validated" {:norm-map norm})
     (let [res (s/explain-data ::norm-map norm)]
-      (throw
-       (ex-info "Invalid norm" {:validation-error res})))))
+      (dt/raise "Invalid norm" {:validation-error res}))))
 
 (defn- neutral-fn [_] [])
 
