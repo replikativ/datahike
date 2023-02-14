@@ -166,9 +166,7 @@
       (log/info "Checking migration" norm)
       (validate-norm norm-map)
       (when-not (norm-installed? db norm)
-        (log/info "Run migration" {:tx-data (vec (concat [{:tx/norm norm}]
-                                                         tx-data
-                                                         ((var-get (requiring-resolve (symbol tx-fn))) conn)))})
+        (log/info "Running migration")
         (->> (d/transact conn {:tx-data (vec (concat [{:tx/norm norm}]
                                                      tx-data
                                                      ((var-get (requiring-resolve tx-fn)) conn)))})
@@ -206,7 +204,7 @@
    Ensures your norms are present on your Datahike database.
    All the edn-files in this folder and its subfolders are
    considered migration-files aka norms and will be transacted
-   sorted by their names into your database. All norms that
+   ordered by their names into your database. All norms that
    are successfully transacted will have an attribute that
    marks them as migrated and they will not be applied twice."
   ([conn]
@@ -228,7 +226,7 @@
    This prevents inadvertent migrations of your database
    when used in conjunction with a VCS. A merge-conflict
    should be raised when trying to merge a checksums.edn
-   with stale checksums."
+   with stale data."
   ([]
    (update-checksums! "resources/migrations"))
   ([^String norms-folder]
@@ -237,22 +235,5 @@
          filter-file-list
          (read-norm-files file)
          compute-checksums
-         (#(spit (io/file (io/file norms-folder checksums-file))
+         (#(spit (io/file norms-folder checksums-file)
                  (with-out-str (pp/pprint %))))))))
-
-(comment
-  (def norms-folder "test/datahike/norm/resources")
-  (def config {:store {:backend :mem
-                       :id "bar"}})
-  (def conn (do
-              (d/delete-database config)
-              (d/create-database config)
-              (d/connect config)))
-  (ensure-norms! conn (io/file norms-folder))
-  (ensure-norms! conn (io/resource "migrations"))
-  (update-checksums! norms-folder)
-  (update-checksums! "resources/migrations")
-  (def my-fn 'datahike.norm.norm-test/tx-fn-test-fn)
-  (#'datahike.norm.norm-test/tx-fn-test-fn conn)
-  (def myfn (var-get (requiring-resolve my-fn)))
-  (qualified-symbol? (symbol conn)))
