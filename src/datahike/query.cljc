@@ -33,14 +33,15 @@
 
 ;; ----------------------------------------------------------------------------
 
-(def ^:const lru-cache-size 100)
+(def ^:const parser-cache-size 100)
+(def ^:const rule-cache-size 100)
 
 (declare -collect -resolve-clause resolve-clause raw-q)
 
 ;; Records
 
-(defrecord Context [rels sources rules consts])
-(defrecord StatContext [rels sources rules consts stats])
+(defrecord Context [rels sources rules consts cache])
+(defrecord StatContext [rels sources rules consts stats cache])
 
 ;; attrs:
 ;;    {?e 0, ?v 1} or {?e2 "a", ?age "v"}
@@ -837,7 +838,7 @@
     [(filter pred guards)
      (remove pred guards)]))
 
-(defn solve-rule [context clause]
+(defn solve-rule' [context clause]
   (let [final-attrs (filter free-var? clause)
         final-attrs-map (zipmap final-attrs (range))
         stats? (:stats context)
@@ -909,9 +910,26 @@
                               (next stack))
                              rel
                              new-stats))))))))
-        (cond-> (update context :rels collapse-rels rel)
-          stats? (assoc :tmp-stats {:type :rule
-                                    :branches tmp-stats}))))))
+        [rel {:type :rule
+              :branches tmp-stats}]))))
+
+(defn generalize-clause [clause]
+  (walk/postwalk
+   #(if (free-var? %) '_ %)
+   clause))
+
+(defn solve-rule [context clause]
+  (let [generalized-clause (generalize-clause clause)
+        [rel tmp-stats] (if-some [cached-rels (get @(:cache context) (generalize-clause clause) nil)]
+                           [cached-rels {:type :rule}]
+                           (let [[rel tmp-stats] (solve-rule' context clause)]
+                             (swap! (:cache context) assoc generalized-clause rel)
+                             [rel tmp-stats]))] 
+    (cond-> (update context :rels collapse-rels rel) 
+            (and tmp-stats (:stats context)) 
+            (assoc :tmp-stats {:type :rule
+                               :branches tmp-stats}))))
+
 
 (defn resolve-pattern-lookup-refs
   "Translate pattern entries before using pattern for database search"
@@ -1195,13 +1213,14 @@
             resolved
             tuple))))
 
-(def ^:private query-cache (volatile! (datahike.lru/lru lru-cache-size)))
+;; Cache for the parsing of datalog queries; needs to be shared globally to have an effect
+(def ^:private parser-cache (volatile! (datahike.lru/lru parser-cache-size)))
 
 (defn memoized-parse-query [q]
-  (if-some [cached (get @query-cache q nil)]
+  (if-some [cached (get @parser-cache q nil)]
     cached
     (let [qp (parse q)]
-      (vswap! query-cache assoc q qp)
+      (vswap! parser-cache assoc q qp)
       qp)))
 
 (defn paginate [offset limit resultset]
@@ -1228,9 +1247,10 @@
                 qwith
                 qreturnmaps
                 qin]} (memoized-parse-query query)
+        empty-rule-cache (atom (datahike.lru/lru rule-cache-size))
         context-in    (-> (if stats?
-                            (StatContext. [] {} {} {} [])
-                            (Context. [] {} {} {}))
+                            (StatContext. [] {} {} {} [] empty-rule-cache)
+                            (Context. [] {} {} {} empty-rule-cache))
                           (resolve-ins qin args))
         ;; TODO utilize parser
         all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))
