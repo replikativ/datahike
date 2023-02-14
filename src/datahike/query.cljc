@@ -787,13 +787,14 @@
      ([x & more]
       `(let [x# ~x] (if (nil? x#) (some-of ~@more) x#)))))
 
-(defn expand-rule [clause context _used-args]
+(defn expand-rule [clause context _used-args] ;; TODO: rule-seq-id per query (in context?)
   (let [[rule & call-args] clause
         seqid (swap! rule-seqid inc)
         branches (get (:rules context) rule)
-        call-args-new (map #(if (free-var? %) % (symbol (str "?__auto__" %2)))
-                           call-args
-                           (range))
+        call-args-new (map-indexed (fn [idx v] (if (free-var? v) 
+                                                 v  
+                                                 (symbol (str "?__auto__" idx))))
+                                   call-args)
         consts (->> (map vector call-args-new call-args)
                     (filter (fn [[new old]] (not= new old)))
                     (into {}))]
