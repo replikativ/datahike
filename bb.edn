@@ -26,9 +26,6 @@
          
          ffix {:doc "Format source files" 
                :task (clojure "-M:ffix")}
-         
-         rpl {:doc "Start a repl"
-              :task (clojure "-M:repl")}
 
 
          ; checks
