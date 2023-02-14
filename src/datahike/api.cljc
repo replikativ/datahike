@@ -604,8 +604,8 @@
 
 (s/fdef
   filter
-  :args (s/cat :db spec/SDB :pred spec/SPred)
-  :ret #(instance? FilteredDB %))
+  :args (s/cat :db spec/SDB :pred any?)
+  :ret #(is-filtered %))
 (def ^{:arglists '([db pred])
        :doc "Returns a view over database that has same interface but only includes datoms for which the `(pred db datom)` is true. Can be applied multiple times.
 

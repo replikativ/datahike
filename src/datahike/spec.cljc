@@ -102,6 +102,3 @@
            :per-entity-counts map?
            (ds/opt :temporal-count) int?
            (ds/opt :temporal-avet-count) int?}}))
-
-(def SPred
-  (s/alt :fn fn? :keyword keyword?))
