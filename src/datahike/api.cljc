@@ -146,7 +146,7 @@
 (def ^{:arglists '([conn arg-map])
        :doc      "Applies transaction to the underlying database value and atomically updates the connection reference to point to the result of that transaction, the new db value.
 
-                  Accepts the connection and a map or a vector as argument, specifying the transaction data.
+                  Accepts the connection and a map, vector or sequence as argument, specifying the transaction data.
 
                   Returns transaction report, a map:
 
@@ -239,7 +239,7 @@
                                                    :argument-keys (keys arg-map)}))
                 (or (vector? arg-map)
                     (seq? arg-map))   {:tx-data arg-map}
-                :else                 (dt/raise "Bad argument to transact, expected map."
+                :else                 (dt/raise "Bad argument to transact, expected map, vector or sequence."
                                                 {:error :transact/syntax
                                                  :argument-type (type arg-map)}))]
       (deref (transact! connection arg)))))
