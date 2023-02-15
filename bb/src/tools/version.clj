@@ -1,8 +1,7 @@
 (ns tools.version
   "Update the project version."
   (:refer-clojure :exclude [inc])
-  (:require [babashka.process :as p]
-            [clojure.edn :as edn]
+  (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.tools.build.api :as b]))
 
@@ -36,7 +35,9 @@
   "Increment the library version.
    The version part can be 'major' or 'minor'."
   ([config-file]
-   (show (read-edn-file config-file)))
+   (println "Current library version: ")
+   (show (read-edn-file config-file))
+   (println "Call this function with :major or :minor to increase the respective version part!"))
   ([config-file part]
    (case (name part)
      "major" (update-in-settings config-file [:version :major] inc)

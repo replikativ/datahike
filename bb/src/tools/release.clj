@@ -8,15 +8,16 @@
 (defn fib [a b]
   (lazy-seq (cons a (fib b (+ a b)))))
 
-(defn retry-with-fib-backoff [retries exec-fn test-fn]
+(defn retry-with-fib-backoff [retries exec-fn fail-test-fn]
   (loop [idle-times (take retries (fib 1 2))]
     (let [result (exec-fn)]
-      (if (test-fn result)
-        (when-let [sleep-ms (first idle-times)]
-          (println "Returned: " result)
-          (println "Retrying with remaining back-off times (in s): " idle-times)
-          (Thread/sleep (* 1000 sleep-ms))
-          (recur (rest idle-times)))
+      (if (fail-test-fn result)
+        (do (println "Returned: " result)
+            (if-let [sleep-ms (first idle-times)]
+              (do (println "Retrying with remaining back-off times (in s): " idle-times)
+                  (Thread/sleep (* 1000 sleep-ms))
+                  (recur (rest idle-times)))
+              result))
         result))))
 
 (defn try-release [config]
@@ -35,10 +36,12 @@
   "Create a GitHub release and upload the library jar"
   [config]
   (println "Trying to release artifact...")
-  (let [jar-file (jar-path config)]
-    (when-not (fs/exists? jar-file) 
-      (println "Library jar file at" jar-file "doesn't exist!")
-      (System/exit 1))
-  (-> (retry-with-fib-backoff 10 #(try-release config) :failure?)
-      :url
-      println)))
+  (let [jar-file (jar-path config)
+        _ (when-not (fs/exists? jar-file)
+            (println "Library jar file at" jar-file "doesn't exist!")
+            (System/exit 1))
+        ret (retry-with-fib-backoff 10 #(try-release config) :failure?)]
+    (if (:failure? ret)
+      (do (println "GitHub release failed!")
+          (System/exit 1))
+      (println (:url ret)))))
