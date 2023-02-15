@@ -38,7 +38,7 @@
                        (apply op-fn connection args)
                        ;; Only catch ExceptionInfo here (intentionally rejected transactions).
                        ;; Any other exceptions should crash the writer and signal the supervisor.
-                       (catch ExceptionInfo e
+                       (catch Exception e
                          (log/errorf "Error during invocation" invocation e)
                          e))]
            (when (some? callback)
