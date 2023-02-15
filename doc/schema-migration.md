@@ -21,7 +21,7 @@ with dashes to compose the id.
 
 2. Write the transactions itself into your newly created file. The content of the file needs
 to be an edn-map with one or both of the keys `:tx-data` and `tx-fn`. `:tx-data` is just
-transaction data in the form of a vector, `:tx-fn` is a funtion that you can run during the
+transaction data in the form of a vector, `:tx-fn` is a function that you can run during the
 execution to migrate data from one attribute to another for example. This function needs to
 be qualified and callable from the classpath. It will be evaluated during the migration and
 needs to return transactions. These transactions will be transacted with `:tx-data` together
