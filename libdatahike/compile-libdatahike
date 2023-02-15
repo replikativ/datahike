@@ -8,7 +8,7 @@ if [ -z "$GRAALVM_HOME" ]; then
 fi
 
 echo "Building uber jar for native library."
-clj -T:build native-shared-library
+bb ni-build
 DATAHIKE_VERSION=$(cat resources/DATAHIKE_VERSION)
 DATAHIKE_JAR=target/datahike-$DATAHIKE_VERSION-native-shared-library.jar
 
