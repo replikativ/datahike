@@ -53,8 +53,8 @@
 
          ; build and release
          
-         version {:doc "Increment the project version: [major|minor] <version>"
-                  :task (apply version/inc config-file *command-line-args*)}
+         inc {:doc "Increment the project version: [major|minor] <version>" 
+              :task (apply version/inc config-file *command-line-args*)}
 
          tag {:doc "Return current version as a tag"
               :task (println (version/as-tag config))}
@@ -86,7 +86,7 @@
          
          ;; native image
          
-         ni-check {:doc "Check for 'native-image'"
+         ni-check {:doc "Check for 'native-image' program"
                   :task (try (shell "which" "native-image")
                           (println "Program native-image found!")
                           (catch Exception _
@@ -97,5 +97,5 @@
                  :depends [compile ni-check] 
                  :task (clojure "-M:native-cli" "--no-fallback" "-J-Xmx4g")}
          
-         ni-build {:doc "Build native image library"
-                   :task (build/native-shared-library config)}}}
+         ni-jar {:doc "Build native image library" 
+                 :task (build/native-shared-library config)}}}
