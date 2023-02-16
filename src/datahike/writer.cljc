@@ -40,7 +40,14 @@
                        ;; Any other exceptions should crash the writer and signal the supervisor.
                        (catch Exception e
                          (log/errorf "Error during invocation" invocation e)
-                         e))]
+                         ;; take a guess that a NPE was triggered by an invalid connection
+                         (if (= (type e) NullPointerException)
+                           (ex-info "Null pointer encountered in invocation. Connection may be invalid."
+                                    {:type       :error-during-invocation
+                                     :invocation invocation
+                                     :connection connection
+                                     :error      e})
+                           e)))]
            (when (some? callback)
              (put! callback res)))
          (recur))
