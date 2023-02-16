@@ -453,3 +453,38 @@
       (testing "keyword equals symbol keys"
         (is (= symbol-result
                keyword-result))))))
+
+
+(deftest test-normalize-q-input
+  (testing "query as vector"
+    (is (= {}
+           (dq/normalize-q-input '[:find ?n :where [?e :name ?n]]
+                                 :db))))
+
+  (testing "query in :query field"
+    (is (= {}
+           (dq/normalize-q-input {:query '{:find [?n]
+                                           :where [[?e :name ?n]]}
+                                  :args [:db]} [])))
+    (is (= {}
+           (dq/normalize-q-input {:query '{:find [?n]
+                                           :where [[?e :name ?n]]}}
+                                 [:db]))) 
+    (is (= {}
+           (dq/normalize-q-input {:query '{:find [?n]
+                                           :where [[?e :name ?n]]}
+                                  :args [:db]}
+                                 [:db2])))
+    (is (= {}
+           (dq/normalize-q-input {:query '[:find ?n :where [?e :name ?n]]
+                                  :offset 0
+                                  :limit 100
+                                  :args [:db]} []))))
+
+  (testing "query in top-level map"
+    (is (= {}
+           (dq/normalize-q-input {:find '[?e]
+                                  :in '[$ ?attr ?value]
+                                  :where '[[?e ?attr ?value]]
+                                  :offset 0
+                                  :limit 100} [])))))

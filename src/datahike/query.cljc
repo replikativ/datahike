@@ -61,7 +61,7 @@
                   (#(if (= 'quote (first %)) (second %) %))
                   (#(if (sequential? %) (dpi/query->map %) %)))
         args (if (and (map? query-input) (contains? query-input :args))
-               (do (when arg-inputs
+               (do (when (seq arg-inputs)
                      (log/warn (str "Query-map '" query "' already defines query input."
                                     " Additional arguments to q will be ignored!")))
                    (:args query-input))
@@ -70,8 +70,6 @@
              :args args}
       (map? query-input)
       (merge (select-keys query-input [:offset :limit :stats?])))))
-
-#_{:clj-kondo/ignore [:clojure-lsp/unused-public-var]}
 
 (defn q [query & inputs]
   (let [{:keys [args] :as query-map} (normalize-q-input query inputs)]
@@ -998,7 +996,7 @@
            sum-rel (->> contexts
                         (map #(reduce hash-join (:rels %)))
                         (reduce sum-rel))]
-       (cond-> (assoc context #_(first contexts) :rels [sum-rel])
+       (cond-> (assoc context :rels [sum-rel])
          (:stats context) (assoc :tmp-stats {:type :or
                                              :branches (mapv :stats contexts)})))
 
