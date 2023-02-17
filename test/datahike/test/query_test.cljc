@@ -457,32 +457,44 @@
 
 (deftest test-normalize-q-input
   (testing "query as vector"
-    (is (= {}
+    (is (= {:query {:find '[?n], :where '[[?e :name ?n]]}
+            :args :db}
            (dq/normalize-q-input '[:find ?n :where [?e :name ?n]]
                                  :db))))
 
   (testing "query in :query field"
-    (is (= {}
+    (is (= {:query {:find '[?n], :where '[[?e :name ?n]]}
+            :args [:db]}
            (dq/normalize-q-input {:query '{:find [?n]
                                            :where [[?e :name ?n]]}
-                                  :args [:db]} [])))
-    (is (= {}
+                                  :args [:db]}
+                                 [])))
+    (is (= {:query {:find '[?n], :where '[[?e :name ?n]]}
+            :args [:db]}
            (dq/normalize-q-input {:query '{:find [?n]
                                            :where [[?e :name ?n]]}}
-                                 [:db]))) 
-    (is (= {}
+                                 [:db])))
+    (is (= {:query {:find '[?n], :where '[[?e :name ?n]]}
+            :args [:db]}
            (dq/normalize-q-input {:query '{:find [?n]
                                            :where [[?e :name ?n]]}
                                   :args [:db]}
                                  [:db2])))
-    (is (= {}
+    (is (= {:query {:find '[?n], :where '[[?e :name ?n]]}
+            :args [:db]
+            :limit 100
+            :offset 0}
            (dq/normalize-q-input {:query '[:find ?n :where [?e :name ?n]]
                                   :offset 0
                                   :limit 100
-                                  :args [:db]} []))))
+                                  :args [:db]} 
+                                 []))))
 
   (testing "query in top-level map"
-    (is (= {}
+    (is (= {:query {:find '[?e], :in '[$ ?attr ?value], :limit 100, :offset 0, :where '[[?e ?attr ?value]]}
+            :args []
+            :limit 100
+            :offset 0}
            (dq/normalize-q-input {:find '[?e]
                                   :in '[$ ?attr ?value]
                                   :where '[[?e ?attr ?value]]

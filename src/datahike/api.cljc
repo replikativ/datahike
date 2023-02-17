@@ -264,7 +264,8 @@
   q dq/q)
 
 (def ^{:arglists '([query & args] [arg-map])
-       :doc "Executes a datalog query and returns the result as well as some execution details."}
+       :doc "Executes a datalog query and returns the result as well as some execution details.
+             Uses the same arguments as q does."}
   query-stats dq/query-stats)
 
 (defmulti datoms {:arglists '([db arg-map] [db index & components])
