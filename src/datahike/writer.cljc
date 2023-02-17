@@ -10,7 +10,7 @@
 (defprotocol PWriter
   (-dispatch! [_ arg-map] "Returns a channel that resolves when the transaction finalizes.")
   (-shutdown [_] "Returns a channel that resolves when the writer has shut down.")
-  (-streaming? [_]))
+  (-streaming? [_] "Returns whether the transactor is streaming updates directly into the connection, so it does not need to fetch from store on read."))
 
 (defrecord LocalWriter [queue thread streaming?]
   PWriter
