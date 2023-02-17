@@ -454,13 +454,12 @@
         (is (= symbol-result
                keyword-result))))))
 
-
 (deftest test-normalize-q-input
   (testing "query as vector"
     (is (= {:query {:find '[?n]
                     :where '[[?e :name ?n]]}
             :args :db}
-           (dq/normalize-q-input '[:find ?n 
+           (dq/normalize-q-input '[:find ?n
                                    :where [?e :name ?n]]
                                  :db))))
 
@@ -483,16 +482,16 @@
                                            :where [[?e :name ?n]]}
                                   :args [:db]}
                                  [:db2])))
-    (is (= {:query {:find '[?n] 
+    (is (= {:query {:find '[?n]
                     :where '[[?e :name ?n]]}
             :args [:db]
             :limit 100
             :offset 0}
-           (dq/normalize-q-input {:query '[:find ?n 
+           (dq/normalize-q-input {:query '[:find ?n
                                            :where [?e :name ?n]]
                                   :offset 0
                                   :limit 100
-                                  :args [:db]} 
+                                  :args [:db]}
                                  []))))
 
   (testing "query in top-level map"
