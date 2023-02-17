@@ -66,7 +66,7 @@
                                     " Additional arguments to q will be ignored!")))
                    (:args query-input))
                arg-inputs)]
-    (cond-> {:query query
+    (cond-> {:query (dissoc query :offset :limit :stats?)
              :args args}
       (map? query-input)
       (merge (select-keys query-input [:offset :limit :stats?])))))
