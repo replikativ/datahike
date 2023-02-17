@@ -8,30 +8,28 @@
   (:import [clojure.lang ExceptionInfo]))
 
 (defprotocol PWriter
-  ; Send a transaction. Returns a channel that resolves when the transaction finalizes.
-  (-dispatch! [_ arg-map])
-  ; Returns a channel that resolves when the writer has shut down.
-  (-shutdown [_])
+  (-dispatch! [_ arg-map] "Returns a channel that resolves when the transaction finalizes.")
+  (-shutdown [_] "Returns a channel that resolves when the writer has shut down.")
   (-streaming? [_]))
 
-(defrecord LocalWriter [rx-queue rx-thread streaming?]
+(defrecord LocalWriter [queue thread streaming?]
   PWriter
   (-dispatch! [_ arg-map]
     (let [p (promise-chan)]
-      (put! rx-queue (assoc arg-map :callback p))
+      (put! queue (assoc arg-map :callback p))
       p))
   (-shutdown [_]
-    (close! rx-queue)
-    rx-thread)
+    (close! queue)
+    thread)
   (-streaming? [_] streaming?))
 
-(defn create-rx-thread
+(defn create-thread
   "Creates new transaction thread"
-  [connection rx-queue write-fn-map]
+  [connection queue write-fn-map]
   (thread-try
    S
    (go-loop []
-     (if-let [{:keys [op args callback] :as invocation} (<! rx-queue)]
+     (if-let [{:keys [op args callback] :as invocation} (<! queue)]
        (do
          (let [op-fn (write-fn-map op)
                res   (try
@@ -42,8 +40,8 @@
                          (log/errorf "Error during invocation" invocation e)
                          ;; take a guess that a NPE was triggered by an invalid connection
                          (if (= (type e) NullPointerException)
-                           (ex-info "Null pointer encountered in invocation. Connection may be invalid."
-                                    {:type       :error-during-invocation
+                           (ex-info "Null pointer encountered in invocation. Connection may have been invalidated, e.g. through db deletion, and needs to be released everywhere."
+                                    {:type       :writer-error-during-invocation
                                      :invocation invocation
                                      :connection connection
                                      :error      e})
@@ -51,7 +49,7 @@
            (when (some? callback)
              (put! callback res)))
          (recur))
-       (log/debug "Writer rx thread gracefully closed")))))
+       (log/debug "Writer thread gracefully closed")))))
 
 ;; public API
 
@@ -65,14 +63,14 @@
     (:backend writer-config)))
 
 (defmethod create-writer :self
-  [{:keys [rx-buffer-size write-fn-map]} connection]
-  (let [rx-queue (chan rx-buffer-size)
-        rx-thread (create-rx-thread connection rx-queue
-                                    (merge default-write-fn-map
-                                           write-fn-map))]
+  [{:keys [buffer-size write-fn-map]} connection]
+  (let [queue (chan buffer-size)
+        thread (create-thread connection queue
+                              (merge default-write-fn-map
+                                     write-fn-map))]
     (map->LocalWriter
-     {:rx-queue  rx-queue
-      :rx-thread rx-thread
+     {:queue  queue
+      :thread thread
       :streaming? true})))
 
 (defn dispatch! [writer arg-map]
