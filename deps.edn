@@ -30,8 +30,7 @@
                               org.clojure/tools.cli       {:mvn/version "1.0.206"}
                               incanter/incanter-core      {:mvn/version "1.9.3"}
                               incanter/incanter-charts    {:mvn/version "1.9.3"}
-                              hashp/hashp {:mvn/version "0.2.2"}}
-                 :main-opts ["-e" "(require 'hashp.core)"]}
+                              hashp/hashp {:mvn/version "0.2.2"}}}
 
            :test {:extra-paths ["test"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.70.1086"}

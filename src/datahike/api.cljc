@@ -1,6 +1,7 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
-  (:require [datahike.connector :as dc]
+  (:require [datahike.config :as config]
+            [datahike.connector :as dc]
             [datahike.constants :as const]
             [datahike.core :as dcore]
             [datahike.pull-api :as dp]
@@ -261,6 +262,10 @@
 
              Query passed as map needs vectors as values. Query can not be passed as list. The 1-arity function takes a map with the arguments :query and :args and optionally the additional keys :offset and :limit."}
   q dq/q)
+
+(def ^{:arglists '([query & args] [arg-map])
+       :doc "Executes a datalog query and returns the result as well as some execution details."}
+  query-stats dq/query-stats)
 
 (defmulti datoms {:arglists '([db arg-map] [db index & components])
                   :doc "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components
@@ -808,3 +813,9 @@
   [db]
   {:pre [(instance? DB db)]}
   (db/metrics db))
+
+(defn ^{:arglists '([])
+        :doc "Loads default config for the current environment"}
+  load-config
+  []
+  (config/load-config))
