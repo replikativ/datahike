@@ -6,7 +6,6 @@
  :tasks {:requires [[clojure.edn :as edn]
                     [pod.borkdude.clj-kondo :as clj-kondo]
                     [tools.build :as build]
-                    [tools.cljdoc :as cljdoc]
                     [tools.deploy :as deploy]
                     [tools.release :as release]
                     [tools.test :as test]
@@ -19,10 +18,6 @@
          
          bench {:doc "Run benchmarks"
                 :task (clojure "-M:benchmark" "measure")} 
-         
-         docs {:doc "Get a preview on the clojure docs"
-               :depends [jar install]
-               :task (cljdoc/preview config)}
          
          ffix {:doc "Format source files" 
                :task (clojure "-M:ffix")}
