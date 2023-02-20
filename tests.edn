@@ -1,9 +1,5 @@
 #kaocha/v1
-        #meta-merge [{:plugins [:orchestra
-                                :preloads]
-                      ;; We preload the namespaces that have specs, so they can be instrumented
-                      :kaocha.plugin.preloads/ns-names [datahike.api]
-                      :tests    [{:id          :clj-pss
+        #meta-merge [{:tests    [{:id          :clj-pss
                                   :ns-patterns ["datahike.test."]
                                   :bindings {datahike.config/*default-index* :datahike.index/persistent-set}}
                                  {:id          :clj-hht
