@@ -83,25 +83,25 @@
         pss-now dt/persistent-set-version
         ksv-now dt/konserve-version]
     (when-not (or (= dh-now "DEVELOPMENT")
-                  (<= (compare dh-now dh-stored) 0))
+                  (>= (compare dh-now dh-stored) 0))
       (dt/raise "Database was written with newer Datahike version."
                 {:type :db-was-written-with-newer-datahike-version
                  :stored dh-stored
                  :now dh-now
                  :config config}))
-    (when-not (<= (compare hh-now hh-stored) 0)
+    (when-not (>= (compare hh-now hh-stored) 0)
       (dt/raise "Database was written with newer hitchhiker-tree version."
                 {:type :db-was-written-with-newer-hht-version
                  :stored hh-stored
                  :now hh-now
                  :config config}))
-    (when-not (<= (compare pss-now pss-stored) 0)
+    (when-not (>= (compare pss-now pss-stored) 0)
       (dt/raise "Database was written with newer persistent-sorted-set version."
                 {:type :db-was-written-with-newer-pss-version
                  :stored pss-stored
                  :now pss-now
                  :config config}))
-    (when-not (<= (compare ksv-now ksv-stored) 0)
+    (when-not (>= (compare ksv-now ksv-stored) 0)
       (dt/raise "Database was written with newer konserve version."
                 {:type   :db-was-written-with-newer-konserve-version
                  :stored ksv-stored
