@@ -83,6 +83,7 @@
         pss-now dt/persistent-set-version
         ksv-now dt/konserve-version]
     (when-not (or (= dh-now "DEVELOPMENT")
+                  (= dh-stored "DEVELOPMENT")
                   (>= (compare dh-now dh-stored) 0))
       (dt/raise "Database was written with newer Datahike version."
                 {:type :db-was-written-with-newer-datahike-version
