@@ -7,20 +7,20 @@
 
 (defn remote
   "Deploy library to clojars"
-  [config]
+  [repo-config project-config]
   (if-not (System/getenv "CLOJARS_USERNAME")
     (println "Environment variable CLOJARS_USERNAME not set!")
     (if-not (System/getenv "CLOJARS_PASSWORD") 
       (println "Environment variable CLOJARS_PASSWORD not set!") 
       (clj "-X:deploy" "deps-deploy.deps-deploy/deploy" 
            :installer :remote 
-           :artifact (jar-path config) 
-           :pom-file (quoted (pom-path config))))))
+           :artifact (jar-path repo-config project-config) 
+           :pom-file (quoted (pom-path project-config))))))
 
 (defn local
   "Install library locally"
-  [config]
-  (clj "-X:deploy" "deps-deploy.deps-deploy/deploy" ;; use clojure.tools.build.api/install instead?
+  [repo-config project-config]
+  (clj "-X:deploy" "deps-deploy.deps-deploy/deploy"
        :installer :local
-       :artifact (jar-path config)
-       :pom-file (quoted (pom-path config))))
+       :artifact (jar-path repo-config project-config)
+       :pom-file (quoted (pom-path project-config))))

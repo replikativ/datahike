@@ -3,7 +3,8 @@
         org.babashka/tools-deps-native {:version "0.0.5"}
         clj-kondo/clj-kondo {:version "2022.10.05"}}
  :deps {datahike/bb {:local/root "bb"}}
- :tasks {:requires [[clojure.edn :as edn]
+ :tasks {:requires [[babashka.fs :as fs]
+                    [clojure.edn :as edn]
                     [pod.borkdude.clj-kondo :as clj-kondo]
                     [tools.build :as build]
                     [tools.deploy :as deploy]
@@ -33,7 +34,7 @@
                :task (clj-kondo/print! (clj-kondo/run! {:lint "."}))}
 
          test {:doc "Run all tests or restrict to 'native-image', 'back-compat' or a kaocha test id (see tests.edn)"
-               :depends [compile]
+               :depends [jcompile]
                :task (apply test/-main config *command-line-args*)}
 
          kaocha {:doc "Run kaocha with arbitrary arguments"
@@ -55,31 +56,36 @@
               :task (println (version/as-tag config))}
 
          clean {:doc "Remove build files" 
-                :task (build/clean config)}
+                :task (build/clean (-> config :build :clj))}
 
-         compile {:doc "Compile classes"
-                  :depends [clean]
-                  :task (build/compile config)}
+         jcompile {:doc "Compile java classes"
+                   :depends [clean]
+                   :task (build/compile-java (-> config :build :clj))}
+         
+         ccompile {:doc "Compile clojure namespaces"
+                   :task (build/compile-clojure (-> config :build :clj))}
 
-         pom {:doc "Create pom file" 
-              :depends [compile]
-              :task (build/pom config)}
+         pom {:doc "Create pom file"
+              :task (build/pom config (-> config :build :clj))}
 
          jar {:doc "Build jar"
-              :depends [pom]
-              :task (build/jar config)}
+              :depends [jcompile pom]
+              :task (build/jar config (-> config :build :clj))} 
 
          install {:doc "Install jar locally"
-                  :task (deploy/local config)}
+                  :task (deploy/local config (-> config :build :clj))}
 
          clojars {:doc "Install jar to clojars"
-                  :task (deploy/remote config)}
+                  :task (deploy/remote config (-> config :build :clj))}
 
          release {:doc "Build and release jar to GitHub"
                   :depends [jar]
-                  :task (release/gh-release config)}
+                  :task (let [jar (build/jar-path config (-> config :build :clj))]
+                          (release/gh-release jar repo-config))}
          
          ;; native image
+         
+
          
          ni-check {:doc "Check for 'native-image' program"
                   :task (try (shell "which" "native-image")
@@ -89,8 +95,23 @@
                             (System/exit 1)))}
          
          ni-cli {:doc "Build native image cli"
-                 :depends [compile ni-check] 
-                 :task (clojure "-M:native-cli" "--no-fallback" "-J-Xmx4g")}
+                 :depends [jcompile ni-check] 
+                 :task (clojure "-M:native-cli" "--no-fallback" "-J-Xmx4g")} 
          
-         ni-jar {:doc "Build native image library" 
-                 :task (build/native-shared-library config)}}}
+         ni-ccompile {:doc "Create native cpp library"
+                      :task (build/compile-clojure (-> config :build :native))}
+         
+         ni-uber {:doc "Build native image uber jar"
+                  :depends [jcompile ccompile ni-ccompile]
+                  :task (build/uber config (-> config :build :native))}
+         
+         ni-compile {:doc "Create native cpp library" 
+                     :depends [ni-uber]
+                     :task (build/native-compile config (-> config :build :native))}
+         
+         ni-release {:doc "Build and release native assets to GitHub" 
+                     :depends [ni-compile]
+                     :task (let [{:keys [artifact target-dir]} (-> config :build :native)]
+                             (fs/zip artifact [target-dir]) 
+                             (release/gh-release artifact config)
+                             (fs/delete artifact))}}}

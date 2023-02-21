@@ -5,9 +5,12 @@
  :linters {;; For some reason not detected as resolved
            :unresolved-var {:exclude [babashka.fs]}
            ;; Used by bb.edn, but not detected as used 
-           :clojure-lsp/unused-public-var {:exclude [tools.build/native-shared-library
+           :clojure-lsp/unused-public-var {:exclude [tools.build/clean
+                                                     tools.build/compile-clojure
                                                      tools.build/jar
+                                                     tools.build/native-compile
                                                      tools.build/pom
+                                                     tools.build/uber
                                                      tools.cljdoc/preview
                                                      tools.deploy/local
                                                      tools.deploy/remote

@@ -12,6 +12,7 @@
          "-M:test" "-m" "kaocha.runner" args))
 
 (defn back-compat [config]
+  (println "Testing backwards compatibility")
   (let [old-version-dir "datahike-old"
         ssh-dir (fs/expand-home "~/.ssh")
         known-hosts-file (fs/expand-home "~/.ssh/known_hosts")]
@@ -24,19 +25,19 @@
       (when-not (fs/exists? known-hosts-file)
         (fs/create-file known-hosts-file))
       (fs/write-lines known-hosts-file [output] {:append true}))
-    
+    (fs/delete-tree old-version-dir)
     (git {:dir "."}
          "clone" "--depth" "1" (:git-url config) old-version-dir)
-    (build/compile {:build/class-dir (str old-version-dir "/" (:build/class-dir config))
-                    :build/java-src-dirs [(str old-version-dir "/java")]
-                    :build/deps-file (str old-version-dir "/deps.edn")})
-    
+    (build/compile-java {:class-dir (str old-version-dir "/target/classes")
+                         :java-src-dirs [(str old-version-dir "/java")]
+                         :deps-file (str old-version-dir "/deps.edn")})
+
     (clj {:dir old-version-dir}
          "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
                        " :paths [\"test/datahike/backward_compatibility_test/src\"]}")
          "-X" "backward-test/write")
     (fs/delete-tree old-version-dir)
-    
+
     (println "READING TEST DATA FROM TEST-DB")
     (clj {:dir "."}
          "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
@@ -46,7 +47,7 @@
 (defn native-image []
   (if (fs/exists? "./dhi")
     (p/shell "./bb/resources/native-image-tests/run-native-image-tests")
-    (println "Native image cli missing. Please run 'bb ni-build' and try again.")))
+    (println "Native image cli missing. Please run 'bb ni-cli' and try again.")))
 
 (defn all [config]
   (kaocha)

@@ -1,20 +1,35 @@
 {:org "replikativ"
+ :lib "datahike"
  :version {:major 0
            :minor 6}
  :git-url "git@github.com:replikativ/datahike.git"
- 
- :build/class-dir "target/classes"
- :build/clj-src-dirs ["src"]
- :build/resource-dirs []
- :build/java-src-dirs ["java"]
- :build/deps-file "deps.edn"
- :build/lib io.replikativ/datahike
- :build/native {:aliases [:libdatahike]
-                :main datahike.cli
-                :src-dirs ["libdatahike/src"]
-                :target-dir "libdatahike/target"}
- :build/pom-template "./bb/resources/template/pom.xml"
- :build/scm {:connection "scm:git:git@github.com:replikativ/datahike.git"
-             :developerConnection "scm:git:git@github.com:replikativ/datahike.git"
-             :url "https://github.com/replikativ/datahike"}
- :build/target-dir "target"}
+
+ :pom-template "./bb/resources/template/pom.xml"
+ :scm {:connection "scm:git:git@github.com:replikativ/datahike.git"
+       :developerConnection "scm:git:git@github.com:replikativ/datahike.git"
+       :url "https://github.com/replikativ/datahike"}
+
+ :build {:clj {;; jvm build
+               :src-dirs ["src"]
+               :java-src-dirs ["java"]
+               :target-dir "target"
+               :class-dir "target/classes"
+               :deps-file "deps.edn"
+               :jar-pattern "{{repo.lib}}-{{version-str}}.jar" 
+               :lib io.replikativ/datahike}
+         
+         :native {;; jvm build
+                  :src-dirs ["src" "libdatahike/src"] 
+                  :java-src-dirs ["java"]
+                  :target-dir "target"
+                  :class-dir "target/classes"
+                  :deps-file "deps.edn"
+                  :aliases [:libdatahike]
+                  :jar-pattern "{{repo.lib}}-{{version-str}}-native-shared-library.jar"
+                  :main datahike.cli
+                  ;; native build
+                  :artifact "libdatahike.zip"
+                  :project-target-dir "libdatahike/target" 
+                  :project-name "libdatahike"
+                  :class-path "libdatahike/src"
+                  :java-interface "libdatahike/src/datahike/impl/LibDatahike.java"}}}

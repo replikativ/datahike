@@ -372,15 +372,13 @@
                      :db/valueType   :db.type/string}]
             conn (setup-db keyword-cfg)
             _ (d/transact conn schema)
-            {:keys [tx-data] :as tx-report} (d/transact conn [{:name "Michal" :aka "Tupen"}])
-            _ (println tx-report)
+            {:keys [tx-data] :as _tx-report} (d/transact conn [{:name "Michal" :aka "Tupen"}]) 
             michal (:e (first (filter #(= "Michal" (:v %)) tx-data)))
             {{:keys [db/current-tx]} :tempids} (d/transact conn [[:db/retract michal :aka "Tupen"]
                                                                  [:db/add michal :aka "Devil"]
                                                                  [:db/retract michal :aka "Tupen"]])
             _                                  (d/transact conn [[:db/retract michal :aka "Devil"]])
             as-of-db (d/as-of @conn current-tx)]
-        (println "res " (d/pull as-of-db ['*] michal))
         (is (= {:aka "Devil"}
                (d/pull as-of-db [:aka] michal)))
         (is (= nil

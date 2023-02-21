@@ -1,7 +1,6 @@
 (ns tools.release
   (:require [babashka.fs :as fs]
             [borkdude.gh-release-artifact :as gh]
-            [tools.build :refer [jar-path]]
             [tools.version :as version])
   (:import (clojure.lang ExceptionInfo)))
 
@@ -20,13 +19,13 @@
               result))
         result))))
 
-(defn try-release [config]
+(defn try-release [file repo-config]
   (try (gh/release-artifact
-        {:org (:org config)
-         :repo (name (:build/lib config))
-         :tag (version/string config)
+        {:org (:org repo-config)
+         :repo (:lib repo-config)
+         :tag (version/string repo-config)
          :commit (version/current-commit)
-         :file (jar-path config)
+         :file file
          :content-type "application/java-archive"
          :draft false})
        (catch ExceptionInfo e
@@ -34,13 +33,12 @@
 
 (defn gh-release
   "Create a GitHub release and upload the library jar"
-  [config]
+  [file repo-config]
   (println "Trying to release artifact...")
-  (let [jar-file (jar-path config)
-        _ (when-not (fs/exists? jar-file)
-            (println "Library jar file at" jar-file "doesn't exist!")
+  (let [_ (when-not (fs/exists? file)
+            (println "Release file at" file "doesn't exist!")
             (System/exit 1))
-        ret (retry-with-fib-backoff 10 #(try-release config) :failure?)]
+        ret (retry-with-fib-backoff 10 #(try-release file repo-config) :failure?)]
     (if (:failure? ret)
       (do (println "GitHub release failed!")
           (System/exit 1))
