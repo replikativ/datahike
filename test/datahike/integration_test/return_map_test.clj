@@ -1,5 +1,5 @@
 (ns datahike.integration-test.return-map-test
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest is use-fixtures]]
             [datahike.api :as d]))
 
 (defn return-map-test-fixture [f]

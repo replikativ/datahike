@@ -46,3 +46,7 @@
    (let [conn (setup-default-db config test-data)]
      (f)
      (teardown-db conn))))
+
+(defn sleep [ms]
+  #?(:clj (Thread/sleep ms)
+     :cljs (js/setTimeout (fn []) ms)))
