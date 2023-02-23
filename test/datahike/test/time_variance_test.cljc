@@ -372,7 +372,7 @@
                      :db/valueType   :db.type/string}]
             conn (setup-db keyword-cfg)
             _ (d/transact conn schema)
-            {:keys [tx-data] :as _tx-report} (d/transact conn [{:name "Michal" :aka "Tupen"}]) 
+            {:keys [tx-data] :as _tx-report} (d/transact conn [{:name "Michal" :aka "Tupen"}])
             michal (:e (first (filter #(= "Michal" (:v %)) tx-data)))
             {{:keys [db/current-tx]} :tempids} (d/transact conn [[:db/retract michal :aka "Tupen"]
                                                                  [:db/add michal :aka "Devil"]
