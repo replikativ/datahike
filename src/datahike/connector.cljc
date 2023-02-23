@@ -1,5 +1,6 @@
 (ns ^:no-doc datahike.connector
   (:require [datahike.db :as db]
+            [datahike.db.utils :as dbu]
             [datahike.core :as d]
             [datahike.index :as di]
             [datahike.store :as ds]
@@ -26,7 +27,7 @@
 (defn db->stored
   "Maps memory db to storage layout and flushes dirty indices."
   [db]
-  (when-not (db/db? db)
+  (when-not (dbu/db? db)
     (dt/raise "Argument is not a database."
               {:type :argument-is-not-a-db
                :argument db}))

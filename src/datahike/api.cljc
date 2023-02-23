@@ -1,21 +1,28 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
-  (:require [datahike.connector :as dc]
+  (:require [clojure.spec.alpha :as s]
+            [datahike.connector :as dc]
             [datahike.constants :as const]
             [datahike.core :as dcore]
+            [datahike.spec :as spec]
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
             [datahike.schema :as ds]
+            [datahike.tools :as dt]
             [datahike.db :as db #?@(:cljs [:refer [HistoricalDB AsOfDB SinceDB FilteredDB]])]
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
-            [datahike.db.utils :as dbu]
             [datahike.impl.entity :as de])
   #?(:clj
-     (:import [datahike.db DB HistoricalDB AsOfDB SinceDB FilteredDB]
-              [datahike.impl.entity Entity]
-              [java.util Date])))
+     (:import [clojure.lang Keyword PersistentArrayMap]
+              [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
+              [datahike.impl.entity Entity])))
 
+(s/fdef
+  connect
+  :args (s/alt :config (s/cat :config spec/SConfig)
+               :nil (s/cat))
+  :ret spec/SConnectionAtom)
 (def
   ^{:arglists '([] [config])
     :doc "Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
@@ -39,14 +46,27 @@
 
   connect dc/connect)
 
+(s/fdef
+  database-exists?
+  :args (s/alt :config (s/cat :config spec/SConfig)
+               :nil (s/cat))
+  :ret boolean?)
 (def
-  ^{:arglists '([config])
+  ^{:arglists '([] [config])
     :doc "Checks if a database exists via configuration map.
           Usage:
 
               (database-exists? {:store {:backend :mem :id \"example\"}})"}
   database-exists? dc/database-exists?)
 
+(s/fdef
+  create-database
+  :args (s/alt :config (s/cat :config spec/SConfig
+                              :initial-tx (s/? (s/cat :k (s/? (s/and #(= % :initial-tx))) :v spec/STransactions))
+                              :temporal-index (s/? (s/cat :k (s/? (s/and #(= % :temporal-index))) :v boolean?))
+                              :schema-on-read (s/? (s/cat :k (s/? (s/and #(= % :schema-on-read))) :v boolean?)))
+               :nil (s/cat))
+  :ret nil?)
 (def
   ^{:arglists '([] [config & deprecated-opts])
     :doc "Creates a database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
@@ -85,12 +105,21 @@
   create-database
   dc/create-database)
 
-(def ^{:arglists '([config])
+(s/fdef
+  delete-database
+  :args (s/alt :config (s/cat :config spec/SConfig)
+               :nil (s/cat))
+  :ret any?)
+(def ^{:arglists '([] [config])
        :doc      "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
                   For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
   delete-database
   dc/delete-database)
 
+(s/fdef
+  transact
+  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
+  :ret spec/STransactionReport)
 (def ^{:arglists '([conn arg-map])
        :doc      "Applies transaction to the underlying database value and atomically updates the connection reference to point to the result of that transaction, the new db value.
 
@@ -180,20 +209,37 @@
   transact
   dc/transact)
 
+(s/fdef
+  transact!
+  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
+  :ret #(s/valid? spec/STransactionReport @%))
 (def ^{:arglists '([conn tx-data tx-meta])
        :no-doc    true}
   transact!
   dc/transact!)
 
+(s/fdef
+  load-entities
+  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
+  :ret #(s/valid? spec/STransactionReport @%)) ; This returns a throwable promise, so we have to dereference it..
 (def ^{:arglists '([conn tx-data])
        :doc "Load entities directly"}
   load-entities
   dc/load-entities)
 
+(s/fdef
+  release
+  :args (s/cat :conn spec/SConnectionAtom)
+  :ret nil?)
 (def ^{:arglists '([conn])
        :doc      "Releases a database connection"}
   release dc/release)
 
+(s/fdef
+  pull
+  :args (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
+               :full (s/cat :db spec/SDB :selector coll? :eid spec/SEId))
+  :ret (s/nilable map?))
 (def ^{:arglists '([db selector eid] [db arg-map])
        :doc      "Fetches data from database using recursive declarative description. See [docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html).
 
@@ -209,6 +255,11 @@
                   The arity-2 version takes :selector and :eid in arg-map."}
   pull dp/pull)
 
+(s/fdef
+  pull-many
+  :args (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
+               :full (s/cat :db spec/SDB :selector coll? :eid spec/SEId))
+  :ret (s/coll-of map?))
 (def ^{:arglists '([db selector eids])
        :doc      "Same as [[pull]], but accepts sequence of ids and returns sequence of maps.
 
@@ -218,6 +269,11 @@
                                                                 {:db/id 2, :name \"Oleg\"}]"}
   pull-many dp/pull-many)
 
+(s/fdef
+  q
+  :args (s/alt :argmap (s/cat :map spec/SQueryArgs)
+               :with-params (s/cat :q (s/or :vec vector? :map map?) :args (s/* any?))) ;; TODO: the doc could show more examples with varargs
+  :ret any?)
 (def ^{:arglists '([query & args] [arg-map])
        :doc "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
 
@@ -262,6 +318,12 @@
              Query passed as map needs vectors as values. Query can not be passed as list. The 1-arity function takes a map with the arguments :query and :args and optionally the additional keys :offset and :limit."}
   q dq/q)
 
+(s/fdef
+  datoms
+  :args (s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
+               :key (s/cat :db spec/SDB :index keyword? :components (s/alt :coll (s/* any?)
+                                                                           :nil nil?)))
+  :ret (s/nilable spec/SDatoms))
 (defmulti datoms {:arglists '([db arg-map] [db index & components])
                   :doc "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components
                         (e, a, v) match passed arguments. Datoms are sorted in index sort order. Possible `index` values
@@ -392,19 +454,21 @@
     ([_db index & _components]
      (type index))))
 
-(defmethod datoms clojure.lang.PersistentArrayMap
+(defmethod datoms PersistentArrayMap
   [db {:keys [index components]}]
-  {:pre [(dbu/db? db)]}
   (dbi/-datoms db index components))
 
-(defmethod datoms clojure.lang.Keyword
+(defmethod datoms Keyword
   [db index & components]
-  {:pre [(dbu/db? db)
-         (keyword? index)]}
   (if (nil? components)
     (dbi/-datoms db index [])
     (dbi/-datoms db index components)))
 
+(s/fdef
+  seek-atoms
+  :args (s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
+               :key (s/cat :db spec/SDB :index keyword? :components (s/* any?)))
+  :ret (s/nilable spec/SDatoms))
 (defmulti seek-datoms {:arglists '([db arg-map] [db index & components])
                        :doc "Similar to [[datoms]], but will return datoms starting from specified components and including rest of the database until the end of the index.
 
@@ -443,19 +507,21 @@
     ([_db index & _components]
      (type index))))
 
-(defmethod seek-datoms clojure.lang.PersistentArrayMap
+(defmethod seek-datoms PersistentArrayMap
   [db {:keys [index components]}]
-  {:pre [(dbu/db? db)]}
   (dbi/-seek-datoms db index components))
 
-(defmethod seek-datoms clojure.lang.Keyword
+(defmethod seek-datoms Keyword
   [db index & components]
-  {:pre [(dbu/db? db)
-         (keyword? index)]}
   (if (nil? components)
     (dbi/-seek-datoms db index [])
     (dbi/-seek-datoms db index components)))
 
+(s/fdef
+  tempid
+  :args (s/alt :part any?
+               :full (s/cat :part any? :x int?))
+  :ret neg-int?)
 (def ^{:arglists '([part] [part x])
        :doc "Allocates and returns a unique temporary id (a negative integer). Ignores `part`. Returns `x` if it is specified.
 
@@ -463,6 +529,10 @@
   tempid
   dcore/tempid)
 
+(s/fdef
+  entity
+  :args (s/cat :db spec/SDB :eid (s/alt :eid spec/SEId :div any?))
+  :ret (s/nilable de/entity?))
 (def ^{:arglists '([db eid])
        :doc      "Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate Datahike database content.
 
@@ -507,24 +577,35 @@
                   - Entities print as map, but are not exactly maps (they have compatible get interface though).
                   - Entities are effectively immutable “views” into a particular version of a database.
                   - Entities retain reference to the whole database.
-                  - You can’t change database through entities, only read.
+                  - You can't change database through entities, only read.
                   - Creating an entity by id is very cheap, almost no-op (attributes are looked up on demand).
                   - Comparing entities just compares their ids. Be careful when comparing entities taken from different dbs or from different versions of the same db.
                   - Accessed entity attributes are cached on entity itself (except backward references).
                   - When printing, only cached attributes (the ones you have accessed before) are printed. See [[touch]]."}
   entity de/entity)
 
+(s/fdef
+  entity-db
+  :args (s/cat :entity de/entity?)
+  :ret spec/SDB)
 (defn entity-db
   "Returns a db that entity was created from."
   [^Entity entity]
-  {:pre [(de/entity? entity)]}
   (.-db entity))
 
+(s/fdef
+  is-filtered
+  :args (s/cat :db spec/SDB)
+  :ret boolean?)
 (defn is-filtered
   "Returns `true` if this database was filtered using [[filter]], `false` otherwise."
-  [x]
-  (instance? FilteredDB x))
+  [db]
+  (instance? FilteredDB db))
 
+(s/fdef
+  filter
+  :args (s/cat :db spec/SDB :pred any?)
+  :ret #(is-filtered %))
 (def ^{:arglists '([db pred])
        :doc "Returns a view over database that has same interface but only includes datoms for which the `(pred db datom)` is true. Can be applied multiple times.
 
@@ -538,11 +619,12 @@
   filter
   dcore/filter)
 
-(defn- is-temporal? [x]
-  (or (instance? HistoricalDB x)
-      (instance? AsOfDB x)
-      (instance? SinceDB x)))
-
+(s/fdef
+  with
+  :args (s/alt :with-map (s/cat :db spec/SDB :argmap spec/SWithArgs)
+               :with-data (s/cat :db spec/SDB :tx-data spec/STransactions)
+               :with-meta (s/cat :db spec/SDB :tx-data spec/STransactions :tx-meta spec/STxMeta))
+  :ret spec/STransactionReport)
 (def ^{:arglists '([db arg-map])
        :doc "Same as [[transact]]`, but applies to an immutable database value. Returns transaction report (see [[transact]]).
 
@@ -567,9 +649,8 @@
            tx-meta (if (:tx-meta arg-map) (:tx-meta arg-map) nil)]
        (with db tx-data tx-meta)))
     ([db tx-data tx-meta]
-     {:pre [(dbu/db? db)]}
      (if (is-filtered db)
-       (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
+       (dt/raise "Filtered DB cannot be modified" {:error :transaction/filtered})
        (dbt/transact-tx-data (db/map->TxReport
                               {:db-before db
                                :db-after  db
@@ -577,13 +658,20 @@
                                :tempids   {}
                                :tx-meta   tx-meta}) tx-data)))))
 
+(s/fdef
+  db-with
+  :args (s/cat :db spec/SDB :tx-data spec/STransactions)
+  :ret spec/SDB)
 (def ^{:arglists '([db tx-data])
        :doc "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."}
   db-with
   (fn [db tx-data]
-    {:pre [(dbu/db? db)]}
     (:db-after (with db tx-data))))
 
+(s/fdef
+  db
+  :args (s/cat :conn spec/SConnectionAtom)
+  :ret spec/SDB)
 (defn db
   "Returns the underlying immutable database value from a connection.
 
@@ -591,10 +679,10 @@
   [conn]
   @conn)
 
-(defn- ^:no-doc date? [d]
-  #?(:cljs (instance? js/Date d)
-     :clj  (instance? Date d)))
-
+(s/fdef
+  since
+  :args (s/cat :db spec/SDB :time-point spec/time-point?)
+  :ret spec/SDB)
 (def ^{:arglists '([db time-point])
        :doc "Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
              Be aware: the database contains only the datoms that were added since the date.
@@ -627,11 +715,14 @@
                      :args [@conn]}) ; => #{[\"Alice\" 30] [\"Bob\" 30]}"}
   since
   (fn [db time-point]
-    {:pre [(or (int? time-point) (date? time-point))]}
     (if (dbi/-temporal-index? db)
       (SinceDB. db time-point)
-      (throw (ex-info "since is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
+      (dt/raise "since is only allowed on temporal indexed databases." {:config (dbi/-config db)}))))
 
+(s/fdef
+  as-of
+  :args (s/cat :db spec/SDB :time-point spec/time-point?)
+  :ret spec/SDB)
 (def ^{:arglists '([db time-point])
        :doc "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long).
 
@@ -658,17 +749,19 @@
                      :args [@conn]}) ; => #{[\"Alice\" 35] [\"Bob\" 30]}"}
   as-of
   (fn [db time-point]
-    {:pre [(or (int? time-point) (date? time-point))]}
     (if (dbi/-temporal-index? db)
       (if (int? time-point)
         (if (<= const/tx0 time-point)
           (AsOfDB. db time-point)
-          (throw (ex-info
-                  (format "Invalid transaction ID. Must be bigger than %d." const/tx0)
-                  {:time-point time-point})))
+          (dt/raise (str "Invalid transaction ID. Must be bigger than " const/tx0 ".")
+                    {:time-point time-point}))
         (AsOfDB. db time-point))
-      (throw (ex-info "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
+      (dt/raise "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)}))))
 
+(s/fdef
+  history
+  :args (s/cat :db spec/SDB)
+  :ret coll?)
 (def ^{:arglists '([db])
        :doc "Returns the full historical state of the database you may interact with.
 
@@ -698,8 +791,12 @@
   (fn [db]
     (if (dbi/-temporal-index? db)
       (HistoricalDB. db)
-      (throw (ex-info "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))))
+      (dt/raise "history is only allowed on temporal indexed databases." {:config (dbi/-config db)}))))
 
+(s/fdef
+  index-range
+  :args (s/cat :db spec/SDB :args spec/SIndexRangeArgs)
+  :ret spec/SDatoms)
 (def ^{:arglists '([db arg-map])
        :doc "Returns part of `:avet` index between `[_ attr start]` and `[_ attr end]` in AVET sort order.
 
@@ -749,9 +846,16 @@
                  (->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))"}
   index-range
   (fn [db {:keys [attrid start end]}]
-    {:pre [(dbu/db? db)]}
     (dbi/-index-range db attrid start end)))
 
+(s/fdef
+  listen
+  :args (s/alt :no-key (s/cat :conn spec/SConnectionAtom :callback fn?)
+               :with-key (s/cat :conn spec/SConnectionAtom :key any? :callback fn?))
+  :ret any?
+  :fn #(if (= :with-key (-> % :args first))
+         (= (:ret %) (-> % :args second :key))
+         true))
 (def ^{:arglists '([conn callback] [conn key callback])
        :doc "Listen for changes on the given connection. Whenever a transaction is applied to the database via
              [[transact]], the callback is called with the transaction report. `key` is any opaque unique value.
@@ -762,16 +866,23 @@
   listen
   dcore/listen!)
 
+(s/fdef
+  unlisten
+  :args (s/cat :conn spec/SConnectionAtom :key any?)
+  :ret map?)
 (def ^{:arglists '([conn key])
        :doc "Removes registered listener from connection. See also [[listen]]."}
   unlisten
   dcore/unlisten!)
 
+(s/fdef
+  schema
+  :args (s/cat :db spec/SDB)
+  :ret spec/SSchema)
 (defn ^{:arglists '([db])
         :doc "Returns current schema definition."}
   schema
   [db]
-  {:pre [(dbu/db? db)]}
   (reduce-kv
    (fn [m k v]
      (cond
@@ -784,11 +895,14 @@
    {}
    (dbi/-schema db)))
 
+(s/fdef
+  reverse-schema
+  :args (s/cat :db spec/SDB)
+  :ret map?)
 (defn ^{:arglists '([db])
         :doc "Returns current reverse schema definition."}
   reverse-schema
   [db]
-  {:pre [(dbu/db? db)]}
   (reduce-kv
    (fn [m k v]
      (let [attrs (->> v
@@ -802,9 +916,12 @@
    {}
    (dbi/-rschema db)))
 
+(s/fdef
+  metrics
+  :args (s/cat :db spec/SDB)
+  :ret spec/SMetrics)
 (defn ^{:arglists '([db])
         :doc "Returns database metrics"}
   metrics
   [db]
-  {:pre [(instance? DB db)]}
   (db/metrics db))

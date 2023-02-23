@@ -26,3 +26,7 @@
 (defn all-true? [c] (every? true? c))
 
 (defn all-eq? [c1 c2] (all-true? (map = c1 c2)))
+
+(defn sleep [ms]
+  #?(:clj (Thread/sleep ms)
+     :cljs (js/setTimeout (fn []) ms)))

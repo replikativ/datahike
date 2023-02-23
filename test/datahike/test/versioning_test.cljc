@@ -4,7 +4,7 @@
             [datahike.experimental.versioning :refer
              [branch-history branch! delete-branch! merge! force-branch! branch-as-db parent-commit-ids
               commit-id commit-as-db]]
-            [datahike.db :refer [db?]]
+            [datahike.db.utils :refer [db?]]
             [datahike.api :as d]
             [konserve.core :as k]
             [superv.async :refer [<?? S]]))
