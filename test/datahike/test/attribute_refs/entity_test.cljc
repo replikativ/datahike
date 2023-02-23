@@ -77,6 +77,7 @@
                                  [{:db/id 1, :name "Ivan"}
                                   {:db/id 2, :name "Oleg"}])
         db (d/db-with ref-db entities)]
+
     (is (nil? (d/entity db nil)))
     (is (nil? (d/entity db "abc")))
     (is (nil? (d/entity db :keyword)))

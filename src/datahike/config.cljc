@@ -32,17 +32,14 @@
 (s/def ::name string?)
 
 (s/def ::index-config map?)
-(s/def ::index-b-factor long)
-(s/def ::index-log-size long)
-(s/def ::index-data-node-size long)
 (s/def :datahike.middleware/fn symbol?)
 (s/def :datahike.middleware/query (s/coll-of :datahike.middleware/fn))
 (s/def ::middleware (s/keys :opt-un [:datahike.middleware/query]))
 
 (s/def ::store map?)
 
-(s/def :datahike/config (s/keys :req-un [:datahike/store]
-                                :opt-un [::index
+(s/def :datahike/config (s/keys :opt-un [:datahike/store
+                                         ::index
                                          ::index-config
                                          ::keep-history?
                                          ::schema-flexibility

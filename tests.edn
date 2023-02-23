@@ -1,6 +1,5 @@
 #kaocha/v1
         #meta-merge [{:tests    [{:id          :clj-pss
-                                  :focus-meta [:focused]
                                   :ns-patterns ["datahike.test."]
                                   :bindings {datahike.config/*default-index* :datahike.index/persistent-set}}
                                  {:id          :clj-hht
@@ -11,5 +10,6 @@
                                     :ns-patterns ["datahike.test."]}
                                  {:id         :integration
                                   :test-paths ["test/datahike/integration_test"]}]
+                      ;; More verbose than the default reporter, and with prettier errors
                       :reporter kaocha.report/documentation}
                      #include "tests.user.edn"]
