@@ -453,3 +453,54 @@
       (testing "keyword equals symbol keys"
         (is (= symbol-result
                keyword-result))))))
+
+(deftest test-normalize-q-input
+  (testing "query as vector"
+    (is (= {:query {:find '[?n]
+                    :where '[[?e :name ?n]]}
+            :args :db}
+           (dq/normalize-q-input '[:find ?n
+                                   :where [?e :name ?n]]
+                                 :db))))
+
+  (testing "query in :query field"
+    (is (= {:query {:find '[?n]
+                    :where '[[?e :name ?n]]}
+            :args [:db]}
+           (dq/normalize-q-input {:query '{:find [?n]
+                                           :where [[?e :name ?n]]}
+                                  :args [:db]}
+                                 [])))
+    (is (= {:query {:find '[?n], :where '[[?e :name ?n]]}
+            :args [:db]}
+           (dq/normalize-q-input {:query '{:find [?n]
+                                           :where [[?e :name ?n]]}}
+                                 [:db])))
+    (is (= {:query {:find '[?n], :where '[[?e :name ?n]]}
+            :args [:db]}
+           (dq/normalize-q-input {:query '{:find [?n]
+                                           :where [[?e :name ?n]]}
+                                  :args [:db]}
+                                 [:db2])))
+    (is (= {:query {:find '[?n]
+                    :where '[[?e :name ?n]]}
+            :args [:db]
+            :limit 100
+            :offset 0}
+           (dq/normalize-q-input {:query '[:find ?n
+                                           :where [?e :name ?n]]
+                                  :offset 0
+                                  :limit 100
+                                  :args [:db]}
+                                 []))))
+
+  (testing "query in top-level map"
+    (is (= {:query {:find '[?e]
+                    :where '[[?e :name ?value]]}
+            :args []
+            :limit 100
+            :offset 0}
+           (dq/normalize-q-input {:find '[?e]
+                                  :where '[[?e :name ?value]]
+                                  :offset 0
+                                  :limit 100} [])))))
