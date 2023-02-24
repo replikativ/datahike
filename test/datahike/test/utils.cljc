@@ -27,6 +27,26 @@
 
 (defn all-eq? [c1 c2] (all-true? (map = c1 c2)))
 
+(defn setup-default-db [config test-data]
+  (let [_ (d/delete-database config)
+        _ (d/create-database config)
+        conn (d/connect config)]
+    (d/transact conn test-data)
+    conn))
+
+(defn teardown-db [conn]
+  (d/release conn)
+  (d/delete-database (:config @conn)))
+
+(defn with-db
+  "Test database fixture"
+  ([config f]
+   (with-db config [] f))
+  ([config test-data f]
+   (let [conn (setup-default-db config test-data)]
+     (f)
+     (teardown-db conn))))
+
 (defn sleep [ms]
   #?(:clj (Thread/sleep ms)
      :cljs (js/setTimeout (fn []) ms)))

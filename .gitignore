@@ -32,3 +32,5 @@ out/
 datahike.build_artifacts.txt
 tests.user.edn
 /libdatahike/target
+/resources/DATAHIKE_VERSION
+tmp.edn

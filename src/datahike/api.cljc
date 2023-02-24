@@ -1,6 +1,7 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
-  (:require [clojure.spec.alpha :as s]
+  (:require [datahike.config :as config]
+            [clojure.spec.alpha :as s]
             [datahike.connector :as dc]
             [datahike.constants :as const]
             [datahike.core :as dcore]
@@ -317,6 +318,16 @@
 
              Query passed as map needs vectors as values. Query can not be passed as list. The 1-arity function takes a map with the arguments :query and :args and optionally the additional keys :offset and :limit."}
   q dq/q)
+
+(s/fdef
+  q
+  :args (s/alt :argmap (s/cat :map spec/SQueryArgs)
+               :with-params (s/cat :q (s/or :vec vector? :map map?) :args (s/* any?))) ;; TODO: the doc could show more examples with varargs
+  :ret map?)
+(def ^{:arglists '([query & args] [arg-map])
+       :doc "Executes a datalog query and returns the result as well as some execution details.
+             Uses the same arguments as q does."}
+  query-stats dq/query-stats)
 
 (s/fdef
   datoms
@@ -925,3 +936,9 @@
   metrics
   [db]
   (db/metrics db))
+
+(defn ^{:arglists '([])
+        :doc "Loads default config for the current environment"}
+  load-config
+  []
+  (config/load-config))

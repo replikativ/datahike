@@ -1,5 +1,6 @@
 (ns user
-  (:require [datahike.api :as d]))
+  (:require [datahike.api :as d]
+            [hashp.core]))
 
 (comment
 
