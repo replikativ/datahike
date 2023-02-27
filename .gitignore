@@ -28,10 +28,10 @@ out/
 .classpath
 .cache
 /datahike
-datahike.build_artifacts.txt
 tests.user.edn
 /libdatahike/target
+libdatahike.zip
 dhi
 dhi.build_artifacts.txt
 trace.edn
-resources/DATAHIKE_VERSION
+tmp.edn

@@ -231,9 +231,6 @@
                       datoms-b (di/-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
                   (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
 
-(defn db? [obj]
-  (= (type obj) DB))
-
 ;; FilteredDB
 
 (defrecord-updatable FilteredDB [unfiltered-db pred]
@@ -776,9 +773,9 @@
         :meta (tools/meta-data)
         :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
-         {:temporal-eavt (di/empty-index index store :eavt index-config)
-          :temporal-aevt (di/empty-index index store :aevt index-config)
-          :temporal-avet (di/empty-index index store :avet index-config)}))))))
+         {:temporal-eavt eavt
+          :temporal-aevt aevt
+          :temporal-avet avet}))))))
 
 (defn get-max-tx [eavt]
   (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (di/-all eavt)))

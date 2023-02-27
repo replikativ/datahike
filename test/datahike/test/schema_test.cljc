@@ -349,7 +349,7 @@
 (deftest test-update-schema
   (let [cfg "datahike:mem://test-update-schema"
         _ (d/delete-database cfg)
-        _ (d/create-database cfg :initial-schema [name-schema personal-id-schema])
+        _ (d/create-database cfg :initial-tx [name-schema personal-id-schema])
         conn (d/connect cfg)
         update-name-attr (fn [attr new-value] (d/transact conn {:tx-data [(assoc name-schema attr new-value)]}))]
     (testing "Allow to update doc"

@@ -5,7 +5,7 @@
             [datahike.connector :refer [update-and-flush-db stored-db?
                                         stored->db db->stored create-commit-id]]
             [superv.async :refer [<? S go-loop-try]]
-            [datahike.db :refer [db?]]
+            [datahike.db.utils :refer [db?]]
             [datahike.tools :as dt]))
 
 (defn- branch-check [branch]
