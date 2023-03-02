@@ -1,0 +1,47 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+
+TMPSTORE=/tmp/dh-test-store
+CONFIG=bb/resources/native-image-tests/testconfig.edn
+
+trap "rm -rf $TMPSTORE" EXIT
+
+./dhi delete-database $CONFIG
+./dhi create-database $CONFIG
+
+./dhi database-exists $CONFIG
+
+./dhi benchmark conn:$CONFIG 0 100000 10000
+./dhi transact conn:$CONFIG '[[:db/add -1 :name "Judea"]]'
+QUERY_OUT=`./dhi query '[:find (count ?e) . :where [?e :name _]]' db:$CONFIG`
+
+if [ $QUERY_OUT -eq 100001 ]
+then
+  echo "Test successful."
+else
+  echo "Exception: Query did not return correct value."
+  exit 1
+fi
+
+# test history input parsing
+./dhi query '[:find (count ?e) . :where [?e :name _]]' history:$CONFIG
+./dhi query '[:find (count ?e) . :where [?e :name _]]' since:0:$CONFIG
+./dhi query '[:find (count ?e) . :where [?e :name _]]' asof:0:$CONFIG
+
+
+# other calls
+./dhi pull db:$CONFIG "[:db/id, :name]" "1"
+./dhi pull-many db:$CONFIG "[:db/id, :name]" "[1]"
+./dhi entity db:$CONFIG "1"
+./dhi datoms db:$CONFIG "{:index :eavt :components [1]}"
+./dhi schema db:$CONFIG
+./dhi reverse-schema db:$CONFIG
+./dhi metrics db:$CONFIG
+
+# test serialization
+./dhi query '[:find ?e . :where [?e :name ?n]]' db:$CONFIG --format cbor >> /tmp/test
+./dhi query '[:find ?i :in $ ?i . :where [?e :name ?n]]' db:$CONFIG cbor:/tmp/test # => 1
+
+./dhi delete-database $CONFIG

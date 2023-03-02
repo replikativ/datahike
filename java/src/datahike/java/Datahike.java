@@ -113,7 +113,7 @@ public class Datahike {
      * @return the result of the query
      */
     public static Object q(String query, Object... inputs) {
-        List argsCopy = new ArrayList(Arrays.asList(inputs));
+        List<Object> argsCopy = new ArrayList<Object>(Arrays.asList(inputs));
         argsCopy.add(0, Clojure.read(query));
         return qFn.applyTo(RT.seq(argsCopy));
     }
