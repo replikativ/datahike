@@ -1,0 +1,8 @@
+{:paths ["src" "resources"]
+ :deps {org.babashka/spec.alpha {:git/url "https://github.com/babashka/spec.alpha"
+                                 :git/sha "644a7fc216e43d5da87b07471b0f87d874107d1a"}
+        ;; https://github.com/babashka/tools.bbuild
+        io.github.babashka/tools.bbuild {:git/sha "0a4959d2b1147f79e9fb37e0243727390b8ba2b3"}
+        ;; https://github.com/borkdude/gh-release-artifact
+        io.github.borkdude/gh-release-artifact {:git/sha "05f8d8659e6805d513c59447ff41dc8497878462"}
+        selmer/selmer {:mvn/version "1.12.55"}}}

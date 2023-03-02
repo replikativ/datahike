@@ -1,4 +1,3 @@
-
 version: 2.1
 
 orbs:
@@ -52,26 +51,19 @@ jobs:
             - .m2
             - .npm
             - replikativ
-  build:
+  format:
     executor: tools/clojurecli
     steps:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: clean
-          command: clojure -T:build clean
-      - run:
-          name: compile
-          command: clojure -T:build compile
-      - run:
-          name: jar
-          command: clojure -T:build jar
-      - persist_to_workspace:
-          root: /home/circleci/
+          name: Check format
+          command: bb format
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
           paths:
-            - .m2
-            - .npm
-            - replikativ
+            - /home/circleci/.m2
   native-image:
     machine:
       image: ubuntu-2004:202010-01
@@ -95,13 +87,21 @@ jobs:
             curl -O https://download.clojure.org/install/linux-install-1.11.1.1165.sh
             chmod +x linux-install-1.11.1.1165.sh
             ./linux-install-1.11.1.1165.sh --prefix /home/circleci/clojure
+      - run: 
+          name: install babashka
+          command: |
+            cd /home/circleci
+            curl -sLO https://raw.githubusercontent.com/babashka/babashka/master/install
+            chmod +x install
+            ./install --dir /home/circleci/bin
+            export PATH=/home/circleci/bin:$PATH
       - run:
           name: build native-image
           command: |
             cd /home/circleci/replikativ
             export PATH=/home/circleci/graalvm-ce-java17-22.2.0/bin:/home/circleci/clojure/bin:$PATH
             export JAVA_HOME=/home/circleci/graalvm-ce-java17-22.2.0/
-            ./bin/build-native-image
+            bb ni-cli
       - persist_to_workspace:
           root: /home/circleci/
           paths:
@@ -113,7 +113,7 @@ jobs:
           at: /home/circleci
       - run:
           name: Run unittests for persistent sorted set index
-          command: ./bin/run-pss-tests
+          command: bb test clj-pss
           no_output_timeout: 5m
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
@@ -126,7 +126,7 @@ jobs:
           at: /home/circleci
       - run:
           name: Run unittests for hitchhiker-tree index
-          command: ./bin/run-hht-tests
+          command: bb test clj-hht
           no_output_timeout: 5m
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
@@ -141,7 +141,7 @@ jobs:
           name: Run native-image test
           command: |
             cd /home/circleci/replikativ
-            ./bin/run-native-image-tests
+            bb test native-image
           no_output_timeout: 5m
   backward-compatibility-test:
     executor: tools/clojurecli
@@ -154,20 +154,55 @@ jobs:
           no_output_timeout: 1m
       - run:
           name: Run backward compatibility test
-          command: ./bin/run-backward-compatibility-tests
+          command: bb test back-compat
           no_output_timeout: 5m
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+  integration-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run integration test
+          command: bb test integration
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+  build:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Build jar
+          command: bb jar
+      - persist_to_workspace:
+          root: /home/circleci/
+          paths:
+            - .m2
+            - .npm
+            - replikativ
   deploy:
     executor: tools/clojurecli
     steps:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: deploy
-          command: clojure -T:build deploy
+          name: Deploy to clojars
+          command: bb clojars
+  release:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Release on GitHub
+          command: bb release
 
 workflows:
   build-test-and-deploy:
@@ -183,7 +218,7 @@ workflows:
           context: dockerhub-deploy
           requires:
             - setup
-      - tools/format:
+      - format:
           context: dockerhub-deploy
           requires:
             - setup
@@ -195,7 +230,6 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
-            - native-image
       - native-image-test:
           context: dockerhub-deploy
           requires:
@@ -205,12 +239,10 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
-            - native-image
-      - tools/integrationtest:
+      - integration-test:
           context: dockerhub-deploy
           requires:
             - build
-            - native-image
       - deploy:
           context:
             - dockerhub-deploy
@@ -220,13 +252,13 @@ workflows:
             branches:
               only: main
           requires:
-            - tools/format
+            - format
             - persistent-set-test
             - hitchhiker-tree-test
             - backward-compatibility-test
             - native-image-test
-            - tools/integrationtest
-      - tools/release:
+            - integration-test
+      - release:
           context:
             - dockerhub-deploy
             - github-token

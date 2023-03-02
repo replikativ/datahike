@@ -13,7 +13,6 @@ web/*.js
 release-js/datahike*.js
 release-js/npm-*
 web/target-cljs
-release.clj
 .idea
 *.iml
 .vscode
@@ -27,10 +26,12 @@ out/
 /.cache
 /.settings
 .classpath
-/.clj-kondo
+.cache
 /datahike
-datahike.build_artifacts.txt
 tests.user.edn
 /libdatahike/target
-/resources/DATAHIKE_VERSION
+libdatahike.zip
+dhi
+dhi.build_artifacts.txt
+trace.edn
 tmp.edn
