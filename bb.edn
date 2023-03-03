@@ -22,7 +22,9 @@
          
          ffix {:doc "Format source files" 
                :task (clojure "-M:ffix")}
-
+         
+         dupgrade {:doc "Upgrade all clojure deps"
+                   :task (clojure "-M:outdated" "--upgrade" "--force")}
 
          ; checks
          
