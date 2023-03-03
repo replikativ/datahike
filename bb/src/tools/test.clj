@@ -49,8 +49,12 @@
     (p/shell "./bb/resources/native-image-tests/run-native-image-tests")
     (println "Native image cli missing. Please run 'bb ni-cli' and try again.")))
 
+(defn specs []
+  (kaocha "--focus" "specs" "--plugin" "kaocha.plugin/orchestra"))
+
 (defn all [config]
-  (kaocha)
+  (kaocha "--skip" "specs")
+  (specs)
   (back-compat config)
   (native-image))
 
@@ -59,5 +63,6 @@
     (case (first args)
       "native-image" (native-image)
       "back-compat" (back-compat config)
+      "specs" (specs)
       (apply kaocha "--focus" args))
     (all config)))
