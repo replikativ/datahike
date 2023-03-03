@@ -320,7 +320,7 @@
   q dq/q)
 
 (s/fdef
-  q
+  query-stats
   :args (s/alt :argmap (s/cat :map spec/SQueryArgs)
                :with-params (s/cat :q (s/or :vec vector? :map map?) :args (s/* any?))) ;; TODO: the doc could show more examples with varargs
   :ret map?)

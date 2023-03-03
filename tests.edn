@@ -5,6 +5,9 @@
                                  {:id          :clj-hht
                                   :ns-patterns ["datahike.test."]
                                   :bindings {datahike.config/*default-index* :datahike.index/hitchhiker-tree}}
+                                 {:id          :specs
+                                  :skip-meta   [:no-spec]
+                                  :ns-patterns ["datahike.test."]}
                                  #_{:id          :cljs
                                     :type        :kaocha.type/cljs
                                     :ns-patterns ["datahike.test."]}
