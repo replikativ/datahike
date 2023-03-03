@@ -54,10 +54,10 @@
       (is (= (+ history-count fresh-count) (count-store @conn))))
     (testing "Try to run on dirty index and fail."
       (is (thrown-with-msg? Throwable #"Index needs to be properly flushed before marking."
-                       (-mark (:eavt
-                               (:db-after
-                                (d/with @conn [{:db/id 100
-                                                :age   5}])))))))
+                            (-mark (:eavt
+                                    (:db-after
+                                     (d/with @conn [{:db/id 100
+                                                     :age   5}])))))))
 
     (testing "Check that we can still read the data."
       (d/transact conn txs)
@@ -91,7 +91,7 @@
       (is (nil? (d/q count-query @(d/connect cfg))))
       (is (= 1000 (d/q count-query @(d/connect cfg1))))
       (is (thrown-with-msg? Throwable #"Database does not exist."
-                       (d/q count-query @(d/connect cfg2)))))))
+                            (d/q count-query @(d/connect cfg2)))))))
 
 (deftest datahike-gc-range-test
   (let [cfg           (assoc-in cfg [:store :path] "/tmp/dh-gc-range-test")

@@ -259,8 +259,8 @@
              #{[1]}))
 
       (is (thrown-with-msg? Throwable #"Nothing found for entity id"
-                       (d/q '[:find ?e
-                              :where [[:name "Valery"] :friend ?e]]
-                            db))))))
+                            (d/q '[:find ?e
+                                   :where [[:name "Valery"] :friend ?e]]
+                                 db))))))
 
 

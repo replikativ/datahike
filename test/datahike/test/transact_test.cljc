@@ -205,7 +205,7 @@
     (d/transact conn {:tx-data [[:db/cas 1 :weight 300 400]]})
     (is (= (:weight (d/entity @conn 1)) 400))
     (is (thrown-with-msg? Throwable #":db.fn/cas failed on datom \[1 :weight 400\], expected 200"
-                     (d/transact conn {:tx-data [[:db.fn/cas 1 :weight 200 210]]}))))
+                          (d/transact conn {:tx-data [[:db.fn/cas 1 :weight 200 210]]}))))
 
   (let [conn  (du/setup-db {:initial-tx [{:db/ident :label :db/cardinality :db.cardinality/many}]})]
     (d/transact conn {:tx-data [[:db/add 1 :label :x]]})
@@ -213,19 +213,19 @@
     (d/transact conn {:tx-data [[:db.fn/cas 1 :label :y :z]]})
     (is (= (:label (d/entity @conn 1)) #{:x :y :z}))
     (is (thrown-with-msg? Throwable #":db.fn/cas failed on datom \[1 :label \(:x :y :z\)\], expected :s"
-                     (d/transact conn {:tx-data [[:db.fn/cas 1 :label :s :t]]}))))
+                          (d/transact conn {:tx-data [[:db.fn/cas 1 :label :s :t]]}))))
 
   (let [conn (du/setup-db)]
     (d/transact conn {:tx-data [[:db/add 1 :name "Ivan"]]})
     (d/transact conn {:tx-data [[:db.fn/cas 1 :age nil 42]]})
     (is (= (:age (d/entity @conn 1)) 42))
     (is (thrown-with-msg? Throwable #":db.fn/cas failed on datom \[1 :age 42\], expected nil"
-                     (d/transact conn {:tx-data [[:db.fn/cas 1 :age nil 4711]]}))))
+                          (d/transact conn {:tx-data [[:db.fn/cas 1 :age nil 4711]]}))))
 
   (let [conn (du/setup-db)]
     (is (thrown-with-msg? Throwable #"Can't use tempid in '\[:db.fn/cas -1 :attr nil :val\]'. Tempids are allowed in :db/add only"
-                     (d/transact conn {:tx-data [[:db/add    -1 :name "Ivan"]
-                                                 [:db.fn/cas -1 :attr nil :val]]})))))
+                          (d/transact conn {:tx-data [[:db/add    -1 :name "Ivan"]
+                                                      [:db.fn/cas -1 :attr nil :val]]})))))
 
 (deftest test-db-fn
   (let [conn (du/setup-db {:initial-tx [{:db/ident :aka :db/cardinality :db.cardinality/many}]})
@@ -249,7 +249,7 @@
                   :where [?e :aka ?v]] @conn)
            #{["Devil"] ["Tupen"]}))
     (is (thrown-with-msg? Throwable #"No entity with name: Bob"
-                     (d/transact conn {:tx-data [[:db.fn/call inc-age "Bob"]]})))
+                          (d/transact conn {:tx-data [[:db.fn/call inc-age "Bob"]]})))
     (let [{:keys [db-after]} (d/transact conn {:tx-data [[:db.fn/call inc-age "Petr"]]})
           e (d/entity db-after 1)]
       (is (= (:age e) 32))
@@ -270,11 +270,11 @@
                                   {:db/ident :inc-age
                                    :db/fn    inc-age}]})
       (is (thrown-with-msg? "Can’t find entity for transaction fn :unknown-fn"
-                       (d/transact conn {:tx-data [[:unknown-fn]]})))
+                            (d/transact conn {:tx-data [[:unknown-fn]]})))
       (is (thrown-with-msg? "Entity :Petr expected to have :db/fn attribute with fn? value"
-                       (d/transact conn {:tx-data [[:Petr]]})))
+                            (d/transact conn {:tx-data [[:Petr]]})))
       (is (thrown-with-msg? "No entity with name: Bob"
-                       (d/transact conn {:tx-data [[:inc-age "Bob"]]})))
+                            (d/transact conn {:tx-data [[:inc-age "Bob"]]})))
       (d/transact conn {:tx-data [[:inc-age "Petr"]]})
       (let [e (d/entity @conn 1)]
         (is (= (:age e) 32))
@@ -437,10 +437,10 @@
                    :db/valueType   :db.type/long}]
           conn (du/setup-db {:initial-tx schema
                              :schema-flexibility :write})]
-      (is (thrown-with-msg? Throwable #"Bad entity attribute :foo at \[:db/add 536870914 :foo :bar 536870914\], not defined in current schema" 
-                       (d/transact conn {:tx-data [{:name "Sergey"
-                                                    :age  5}]
-                                         :tx-meta {:foo :bar}})))))
+      (is (thrown-with-msg? Throwable #"Bad entity attribute :foo at \[:db/add 536870914 :foo :bar 536870914\], not defined in current schema"
+                            (d/transact conn {:tx-data [{:name "Sergey"
+                                                         :age  5}]
+                                              :tx-meta {:foo :bar}})))))
   (testing "meta-data is available on the indices"
     (let [conn (du/setup-db)
           _    (d/transact conn {:tx-data [{:name "Sergey"

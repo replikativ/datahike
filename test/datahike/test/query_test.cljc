@@ -383,10 +383,10 @@
                    :args [db]})
              #{[2] [3]}))
       (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?age\} not bound"
-                       (d/q {:query '{:find [?e]
-                                      :where [[(= ?age 37)]
-                                              [?e :age ?age]]}
-                             :args [db]}))))))
+                            (d/q {:query '{:find [?e]
+                                           :where [[(= ?age 37)]
+                                                   [?e :age ?age]]}
+                                  :args [db]}))))))
 
 (deftest test-zeros-in-pattern
   (let [cfg {:store {:backend :mem

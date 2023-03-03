@@ -86,4 +86,4 @@
     (is (nil? (d/entity db [:name "Petr"])))
     (is (= 777 (:db/id (d/entity db 777))))
     (is (thrown-with-msg? Throwable #"Lookup ref attribute should be marked as :db/unique:"
-                     (d/entity db [:not-an-attr 777])))))
+                          (d/entity db [:not-an-attr 777])))))
