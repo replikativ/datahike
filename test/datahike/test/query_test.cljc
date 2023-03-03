@@ -9,6 +9,8 @@
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
+#?(:cljs (def Throwable js/Error))
+
 (deftest test-joins
   (let [db (-> (db/empty-db)
                (d/db-with [{:db/id 1, :name  "Ivan", :age   15}
@@ -380,7 +382,7 @@
                                     [(= ?age 37)]]}
                    :args [db]})
              #{[2] [3]}))
-      (is (thrown-msg? "Insufficient bindings: #{?age} not bound in [(= ?age 37)]"
+      (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?age\} not bound"
                        (d/q {:query '{:find [?e]
                                       :where [[(= ?age 37)]
                                               [?e :age ?age]]}

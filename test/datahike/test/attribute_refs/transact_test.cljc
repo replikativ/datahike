@@ -1,11 +1,13 @@
 (ns datahike.test.attribute-refs.transact-test
   (:require
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
-      :clj  [clojure.test :as t :refer        [is deftest testing use-fixtures]])
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
    [datahike.test.attribute-refs.utils :refer [ref-db ref-e0
                                                setup-new-connection
                                                wrap-direct-datoms]]))
+
+#?(:cljs (def Throwable js/Error))
 
 (deftest test-with
   (let [datoms  [[1 :name "Ivan"]
@@ -127,7 +129,8 @@
     (is (= (:weight (d/entity @conn (+ e0 1))) 300))
     (d/transact conn [[:db/cas (+ e0 1) weight-ref 300 400]])
     (is (= (:weight (d/entity @conn (+ e0 1))) 400))
-    (is (thrown-msg? (str ":db.fn/cas failed on datom [" (+ ref-e0 1) " " weight-ref " 400], expected 200")
+    (is (thrown-with-msg? Throwable 
+                          (re-pattern (str ":db\\.fn/cas failed on datom \\[" (+ ref-e0 1) " " weight-ref " 400\\], expected 200"))
                      (d/transact conn [[:db.fn/cas (+ ref-e0 1) weight-ref 200 210]]))))
 
   (let [conn (setup-new-connection)
@@ -137,8 +140,9 @@
     (d/transact conn [[:db/add (+ e0 1) label-ref :y]])
     (d/transact conn [[:db.fn/cas (+ e0 1) label-ref :y :z]])
     (is (= (:label (d/entity @conn (+ e0 1))) #{:x :y :z}))
-    (is (thrown-msg? (str ":db.fn/cas failed on datom [" (+ ref-e0 1) " " label-ref " (:x :y :z)], expected :s")
-                     (d/transact conn [[:db.fn/cas (+ ref-e0 1) label-ref :s :t]]))))
+    (is (thrown-with-msg? Throwable 
+                          (re-pattern (str ":db\\.fn/cas failed on datom \\[" (+ ref-e0 1) " " label-ref " \\(:x :y :z\\)\\], expected :s"))
+                     (d/transact conn [[:db.fn/cas (+ ref-e0 1) label-ref :s :t]])))) 
 
   (let [conn (setup-new-connection)
         e0 (:max-eid @conn)
@@ -148,7 +152,7 @@
     (d/transact conn [[:db/add (+ e0 1) name-ref "Ivan"]])
     (d/transact conn [[:db.fn/cas (+ e0 1) age-ref nil 42]])
     (is (= (:age (d/entity @conn (+ e0 1))) 42))
-    (is (thrown-msg? (str ":db.fn/cas failed on datom [" (+ ref-e0 1) " " age-ref " 42], expected nil")
+    (is (thrown-with-msg? Throwable (re-pattern (str ":db\\.fn/cas failed on datom \\[" (+ ref-e0 1) " " age-ref " 42\\], expected nil"))
                      (d/transact conn [[:db.fn/cas (+ ref-e0 1) age-ref nil 4711]])))))
 
 (deftest test-db-fn
@@ -175,7 +179,7 @@
     (is (= (d/q '[:find ?v
                   :where [?e :aka ?v]] @conn)
            #{["Devil"] ["Tupen"]}))
-    (is (thrown-msg? "No entity with name: Bob"
+    (is (thrown-with-msg? Throwable #"No entity with name: Bob"
                      (d/transact conn [[:db.fn/call inc-age "Bob"]])))
     (let [{:keys [db-after]} (d/transact conn [[:db.fn/call inc-age "Petr"]])
           e (d/entity db-after (+ e0 1))]

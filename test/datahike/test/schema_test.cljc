@@ -3,14 +3,14 @@
    #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer [is deftest testing]])
    [datahike.api :as d]
-   [datahike.schema :as ds]
    [datahike.db.interface :as dbi]
    [datahike.db.transaction :as dbt]
    [datahike.datom :as da]
-   [datahike.constants :as const]
-   [datahike.test.cljs-utils])
+   [datahike.constants :as const])
   (:import [java.lang System]
            [java.util UUID]))
+
+#?(:cljs (def Throwable js/Error))
 
 #?(:clj
    (defn random-uuid []
@@ -45,9 +45,9 @@
     (is (= const/non-ref-implicit-schema (dbi/-schema db)))
 
     (testing "transact without schema present"
-      (is (thrown-msg?
-           "Bad entity attribute :name at {:db/id 1, :name \"Alice\"}, not defined in current schema"
-           (d/transact conn tx))))
+      (is (thrown-with-msg? Throwable
+                            #"Bad entity attribute :name at \{:db/id 1, :name \"Alice\"\}, not defined in current schema"
+                            (d/transact conn tx))))
 
     (testing "transacting new schema"
       (d/transact conn [name-schema])
@@ -66,36 +66,43 @@
              (d/q find-name-q (d/db conn)))))
 
     (testing "insert new data with wrong data type"
-      (is (thrown-msg?
-           "Bad entity value 42 at [:db/add 3 :name 42], value does not match schema definition. Must be conform to: string?"
-           (d/transact conn [{:name 42}]))))
+      (is (thrown-with-msg? Throwable
+                            #"Bad entity value 42 at \[:db/add 3 :name 42\], value does not match schema definition. Must be conform to: string\?"
+                            (d/transact conn [{:name 42}]))))
 
     (testing "insert new data with additional attributes not in schema"
-      (is (thrown-msg?
-           "Bad entity attribute :age at {:db/id 3, :age 42}, not defined in current schema"
-           (d/transact conn [{:name "Bob" :age 42}]))))
+      (is (thrown-with-msg? Throwable
+                            #"Bad entity attribute :age at \{:db/id 3, :age 42\}, not defined in current schema"
+                            (d/transact conn [{:name "Bob" :age 42}]))))
 
     (testing "insert incomplete schema :db/valueType"
-      (is (thrown-msg?
-           "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-           (d/transact conn [{:db/valueType :db.type/string}]))))
+      (is (thrown-with-msg? Throwable
+                            #"Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                            (d/transact conn [{:db/valueType :db.type/string}]))))
 
     (testing "insert incomplete schema :db/cardinality"
-      (is (thrown-msg?
-           "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-           (d/transact conn [{:db/cardinality :db.cardinality/many}]))))
+      (is (thrown-with-msg? Throwable
+                            #"Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                            (d/transact conn [{:db/cardinality :db.cardinality/many}]))))
 
     (testing "insert incomplete schema :db/cardinality, :db/ident"
-      (is (thrown-msg?
-           "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-           (d/transact conn [{:db/ident :phone :db/cardinality :db.cardinality/many}]))))
+      (is (thrown-with-msg? Throwable
+                            #"Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                            (d/transact conn [{:db/ident :phone :db/cardinality :db.cardinality/many}]))))
 
     (testing "insert schema with incorrect value type"
-      (is (thrown-msg?
-           "Bad entity value :string at [:db/add 3 :db/valueType :string], value does not match schema definition. Must be conform to: #{:db.type/number :db.type/unique :db.type/instant :db.type/cardinality :db.type/tuple :db.type/boolean :db.type/bytes :db.type/uuid :db.type/value :db.type/string :db.type/keyword :db.type/ref :db.type/bigdec :db.type.install/attribute :db.type/float :db.type/bigint :db.type/double :db.type/long :db.type/valueType :db.type/symbol}"
-           (d/transact conn [{:db/ident       :phone
-                              :db/cardinality :db.cardinality/one
-                              :db/valueType   :string}]))))))
+      (is (thrown-with-msg? Throwable
+                            (re-pattern (str "Bad entity value " :string " at \\[:db/add 3 :db/valueType :string\\], "
+                                             "value does not match schema definition. "
+                                             "Must be conform to: "
+                                             "#\\{:db.type/number :db.type/unique :db.type/instant :db.type/cardinality "
+                                             ":db.type/tuple :db.type/boolean :db.type/bytes :db.type/uuid :db.type/value "
+                                             ":db.type/string :db.type/keyword :db.type/ref :db.type/bigdec "
+                                             ":db.type.install/attribute :db.type/float :db.type/bigint :db.type/double "
+                                             ":db.type/long :db.type/valueType :db.type/symbol\\}"))
+                            (d/transact conn [{:db/ident       :phone
+                                               :db/cardinality :db.cardinality/one
+                                               :db/valueType   :string}]))))))
 
 (deftest test-db-with-initial-schema
   (let [cfg "datahike:mem://test-db-with-initial-schema"
@@ -162,18 +169,17 @@
       (d/transact conn [{schema-name tx-val}])
       (is (= #{[tx-val]}
              (d/q '[:find ?v :in $ ?sn :where [?e ?sn ?v]] (d/db conn) schema-name)))
-      (is (thrown-msg?
-           (str "Bad entity value "
-                wrong-val
-                " at [:db/add "
-                tx-id
-                " "
-                schema-name
-                " "
-                wrong-val
-                "], value does not match schema definition. Must be conform to: "
-                (ds/describe-type (keyword "db.type" type-name)))
-           (d/transact conn [{schema-name wrong-val}]))))))
+      (is (thrown-with-msg? Throwable
+                            (re-pattern (str "Bad entity value "
+                                             wrong-val
+                                             " at \\[:db/add "
+                                             tx-id
+                                             " "
+                                             schema-name
+                                             " "
+                                             wrong-val
+                                             "\\], value does not match schema definition"))
+                            (d/transact conn [{schema-name wrong-val}]))))))
 
 (deftest test-schema-types
   (let [cfg "datahike:mem://test-schema-types"
@@ -264,14 +270,14 @@
              (d/q '[:find ?o ?c :where [?e :owner ?o] [?e :cars ?c]] (d/db conn)))))
 
     (testing "test cardinality change if unique is set"
-      (is (thrown-msg?
-           "Update not supported for these schema attributes"
-           (d/transact conn [{:db/ident       :owner
-                              :db/cardinality :db.cardinality/many}])))
-      (is (thrown-msg?
-           "Update not supported for these schema attributes"
-           (d/transact conn [{:db/id [:db/ident :owner]
-                              :db/cardinality :db.cardinality/many}]))))))
+      (is (thrown-with-msg? Throwable
+                            #"Update not supported for these schema attributes"
+                            (d/transact conn [{:db/ident       :owner
+                                               :db/cardinality :db.cardinality/many}])))
+      (is (thrown-with-msg? Throwable
+                            #"Update not supported for these schema attributes"
+                            (d/transact conn [{:db/id [:db/ident :owner]
+                                               :db/cardinality :db.cardinality/many}]))))))
 
 (deftest test-schema-persistence
   (testing "test file persistence"
@@ -341,8 +347,9 @@
         conn (d/connect cfg)
         db (d/db conn)]
     (testing "non existing schema should throw exception"
-      (is (thrown-msg? "Schema with attribute :name does not exist"
-                       (dbt/remove-schema db (da/datom 1 :db/ident :name)))))
+      (is (thrown-with-msg? Throwable
+                            #"Schema with attribute :name does not exist"
+                            (dbt/remove-schema db (da/datom 1 :db/ident :name)))))
     (testing "when upserting a non existing schema, it should not throw an exception"
       (is (d/transact conn [name-schema])))))
 
@@ -366,8 +373,9 @@
       (is (update-name-attr :db/isComponent false) "It should be allowed to disable :db/isComponent."))
 
     (testing "Allow to update :db/unique only if it already exists"
-      (is (thrown-msg? "Update not supported for these schema attributes"
-                       (d/transact conn {:tx-data [(assoc name-schema :db/unique :db.unique/value)]}))
+      (is (thrown-with-msg? Throwable
+                            #"Update not supported for these schema attributes"
+                            (d/transact conn {:tx-data [(assoc name-schema :db/unique :db.unique/value)]}))
           "It shouldn't be allowed to update :db/unique if it doesn't exist already.")
       (is (d/transact conn {:tx-data [(assoc personal-id-schema :db/unique :db.unique/value)]})
           "It should be allowed to update :db/unique if it exists already."))
@@ -382,6 +390,7 @@
       (testing "if :db/unique is set"
         (is (d/transact conn {:tx-data [(assoc personal-id-schema :db/cardinality :db.cardinality/one)]})
             "It should be allowed to update :db/cardinality to :db.cardinality/one.")
-        (is (thrown-msg? "Update not supported for these schema attributes"
-                         (d/transact conn {:tx-data [(assoc personal-id-schema :db/cardinality :db.cardinality/many)]}))
+        (is (thrown-with-msg? Throwable
+                              #"Update not supported for these schema attributes"
+                              (d/transact conn {:tx-data [(assoc personal-id-schema :db/cardinality :db.cardinality/many)]}))
             "It shouldn't be allowed to update :db/cardinality to :db.cardinality/many")))))

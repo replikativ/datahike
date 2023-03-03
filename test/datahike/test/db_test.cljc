@@ -6,9 +6,10 @@
    [datahike.api :as d]
    [datahike.constants :as const]
    [datahike.test.core-test]
-   [datahike.test.cljs-utils]
    [datahike.db :as db #?@(:cljs [:refer-macros [defrecord-updatable]]
                            :clj  [:refer [defrecord-updatable]])]))
+
+#?(:cljs (def Throwable js/Error))
 
 ;; verify that defrecord-updatable works with compiler/core macro configuration
 ;; define dummy class which redefines hash, could produce either
@@ -36,9 +37,9 @@
 
 (deftest empty-db-with-schema
   (testing "Test old write schema"
-    (is (thrown-msg?
-         "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
-         (db/empty-db {:name {:db/cardinality :db.cardinality/many}} {:schema-flexibility :write})))
+    (is (thrown-with-msg? Throwable
+                          #"Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
+                          (db/empty-db {:name {:db/cardinality :db.cardinality/many}} {:schema-flexibility :write})))
     (is (= (merge const/non-ref-implicit-schema
                   {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}})
            (:schema (db/empty-db {:name {:db/cardinality :db.cardinality/one
