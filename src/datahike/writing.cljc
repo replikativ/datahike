@@ -1,6 +1,7 @@
 (ns datahike.writing
   "Manage all state changes and access to state of durable store."
   (:require [datahike.db :as db]
+            [datahike.db.utils :as dbu]
             [datahike.index :as di]
             [datahike.store :as ds]
             [datahike.tools :as dt]
@@ -23,7 +24,7 @@
 (defn db->stored
   "Maps memory db to storage layout and flushes dirty indices."
   [db flush?]
-  (when-not (db/db? db)
+  (when-not (dbu/db? db)
     (dt/raise "Argument is not a database."
               {:type     :argument-is-not-a-db
                :argument db}))

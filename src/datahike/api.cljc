@@ -1,6 +1,7 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
   (:require [datahike.connector :as dc]
+            [datahike.config :as config]
             [clojure.spec.alpha :as s]
             [datahike.writer :as dw]
             [datahike.tools :as dt]
@@ -15,9 +16,7 @@
             [datahike.db :as db #?@(:cljs [:refer [HistoricalDB AsOfDB SinceDB FilteredDB]])]
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
-            [datahike.db.utils :as dbu]
-            [datahike.impl.entity :as de]
-            [taoensso.timbre :as log])
+            [datahike.impl.entity :as de])
   #?(:clj
      (:import [clojure.lang Keyword PersistentArrayMap]
               [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
