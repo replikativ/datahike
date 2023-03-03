@@ -5,8 +5,7 @@
                                  {:id          :clj-hht
                                   :ns-patterns ["datahike.test."]
                                   :bindings {datahike.config/*default-index* :datahike.index/hitchhiker-tree}}
-                                 { ;; TODO: integrate in pipeline - run 'clj -M:test -m kaocha.runner --focus specs --plugin kaocha.plugin/orchestra'
-                                  :id          :specs
+                                 {:id          :specs
                                   :skip-meta   [:no-spec]
                                   :ns-patterns ["datahike.test."]}
                                  #_{:id          :cljs
