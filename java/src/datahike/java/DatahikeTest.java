@@ -129,7 +129,7 @@ public class DatahikeTest {
 
         Set<APersistentVector> res = (Set<APersistentVector>)Datahike.q((String) query, Datahike.history(deref(conn)));
         Object[] names = res.stream().map(pv -> pv.get(0)).toArray();
-        assertEquals(new String[] {"Alice", "Bob"}, names);
+        assertArrayEquals(new String[] {"Alice", "Bob"}, names);
     }
 
     @Test
