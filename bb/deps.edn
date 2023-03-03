@@ -2,7 +2,7 @@
  :deps {org.babashka/spec.alpha {:git/url "https://github.com/babashka/spec.alpha"
                                  :git/sha "951b49b8c173244e66443b8188e3ff928a0a71e7"}
         ;; https://github.com/babashka/tools.bbuild
-        io.github.babashka/tools.bbuild {:git/sha "a3c0723b6250756eaeed532ade5d6474df24e80a"}
+        io.github.babashka/tools.bbuild {:git/sha "0a4959d2b1147f79e9fb37e0243727390b8ba2b3"}
         ;; https://github.com/borkdude/gh-release-artifact
         io.github.borkdude/gh-release-artifact {:git/sha "db5e79559fdbfa009ed4a0921079e20e1e76b269"}
         selmer/selmer {:mvn/version "1.12.55"}}}

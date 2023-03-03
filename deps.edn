@@ -82,4 +82,6 @@
                     :main-opts ["-m" "cljfmt.main" "check"]}
 
            :outdated {:extra-deps {com.github.liquidz/antq {:mvn/version "2.2.992"}}
-                      :main-opts ["-m" "antq.core" "--exclude=com.github.liquidz/antq@2.2.999"]}}}
+                      :main-opts ["-m" "antq.core"
+                                  "--exclude=com.github.liquidz/antq@2.2.999"
+                                  "--exclude=io.github.babashka/tools.bbuild"]}}}
