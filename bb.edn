@@ -81,7 +81,7 @@
          release {:doc "Build and release jar to GitHub"
                   :depends [jar]
                   :task (let [jar (build/jar-path config (-> config :build :clj))]
-                          (release/gh-release jar repo-config))}
+                          (release/gh-release jar config))}
          
          ;; native image
          
