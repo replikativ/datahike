@@ -130,7 +130,7 @@
     @(apply dw/delete-database args)))
 
 (s/fdef
-    transact!
+  transact!
   :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
   :ret #(s/valid? spec/STransactionReport @%))
 (def ^{:arglists '([conn tx-data tx-meta])
