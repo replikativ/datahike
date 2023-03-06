@@ -8,6 +8,8 @@
    [datahike.index :as di]
    [datahike.index.hitchhiker-tree :as dih]))
 
+#?(:cljs (def Throwable js/Error))
+
 (deftest int-from-env-test
   (is (= 1000
          (c/int-from-env :foo 1000))))
@@ -72,14 +74,14 @@
 
 (deftest core-config-test
   (testing "Schema on write in core empty database"
-    (is (thrown-msg?
-         "Bad entity attribute :name at {:db/id 1, :name \"Ivan\"}, not defined in current schema"
-         (d/db-with (db/empty-db nil {:schema-flexibility :write})
-                    [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
-                     {:db/id 2 :name "Petr" :age 37 :huh? false}])))
-    (is (thrown-msg?
-         "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
-         (db/empty-db {:name {:db/cardinality :db.cardinality/one}} {:schema-flexibility :write})))
+    (is (thrown-with-msg? Throwable
+                          #"Bad entity attribute :name at \{:db/id 1, :name \"Ivan\"\}, not defined in current schema"
+                          (d/db-with (db/empty-db nil {:schema-flexibility :write})
+                                     [{:db/id 1 :name "Ivan" :aka ["IV" "Terrible"]}
+                                      {:db/id 2 :name "Petr" :age 37 :huh? false}])))
+    (is (thrown-with-msg? Throwable
+                          #"Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
+                          (db/empty-db {:name {:db/cardinality :db.cardinality/one}} {:schema-flexibility :write})))
     (is (= #{["Alice"]}
            (let [db (-> (db/empty-db {:name {:db/cardinality :db.cardinality/one :db/valueType :db.type/string}} {:schema-flexibility :write})
                         (d/db-with  [{:name "Alice"}]))]

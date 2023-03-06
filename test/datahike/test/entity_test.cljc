@@ -9,6 +9,8 @@
    [datahike.impl.entity :as de]
    [datahike.test.core-test :as tdc]))
 
+#?(:cljs (def Throwable js/Error))
+
 (t/use-fixtures :once tdc/no-namespace-maps)
 
 (deftest test-entity
@@ -88,8 +90,8 @@
     (is (nil? (d/entity db :keyword)))
     (is (nil? (d/entity db [:name "Petr"])))
     (is (= 777 (:db/id (d/entity db 777))))
-    (is (thrown-msg? "Lookup ref attribute should be marked as :db/unique: [:not-an-attr 777]"
-                     (d/entity db [:not-an-attr 777])))))
+    (is (thrown-with-msg? Throwable #"Lookup ref attribute should be marked as :db/unique: \[:not-an-attr 777\]"
+                          (d/entity db [:not-an-attr 777])))))
 
 (deftest test-entity-walk
   (let [ivan {:name "Ivan", :age 19, :aka #{"X" "Y"}}

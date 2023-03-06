@@ -11,9 +11,6 @@
    [datahike.db :as db]
    [datahike.api :as d]))
 
-#?(:cljs
-   (def Throwable js/Error))
-
 (defn upsert-helper
   [t k]
   (ha/<?? (msg/enqueue t [(htu/new-UpsertOp k 0 [0 1])])))

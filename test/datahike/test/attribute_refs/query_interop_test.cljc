@@ -6,6 +6,8 @@
                                                wrap-direct-datoms]]
    [datahike.api :as d]))
 
+#?(:cljs (def Exception js/Error))
+
 (def test-db
   (d/db-with ref-db
              (wrap-direct-datoms ref-db ref-e0 :db/add [[1 :name "Vlad"]

@@ -14,10 +14,12 @@
    (def Throwable js/Error))
 
 (deftest test-components
-  (is (thrown-msg? "Bad attribute specification for :profile: {:db/isComponent true} should also have {:db/valueType :db.type/ref}"
-                   (db/empty-db {:profile {:db/isComponent true}})))
-  (is (thrown-msg? "Bad attribute specification for {:profile {:db/isComponent \"aaa\"}}, expected one of #{true false}"
-                   (db/empty-db {:profile {:db/isComponent "aaa" :db/valueType :db.type/ref}})))
+  (is (thrown-with-msg? Throwable
+                        #"Bad attribute specification for :profile: \{:db/isComponent true\} should also have \{:db/valueType :db.type/ref\}"
+                        (db/empty-db {:profile {:db/isComponent true}})))
+  (is (thrown-with-msg? Throwable
+                        #"Bad attribute specification for \{:profile \{:db/isComponent \"aaa\"\}\}, expected one of #\{true false\}"
+                        (db/empty-db {:profile {:db/isComponent "aaa" :db/valueType :db.type/ref}})))
 
   (let [db (d/db-with
             (db/empty-db {:profile {:db/valueType   :db.type/ref
