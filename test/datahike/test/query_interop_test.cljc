@@ -1,9 +1,11 @@
 (ns datahike.test.query-interop-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest]]
+      :clj  [clojure.test :as t :refer        [is are deftest]])
    [datahike.api :as d]
    [datahike.db :as db]))
+
+#?(:cljs (def Exception js/Error))
 
 (def test-db
   (d/db-with

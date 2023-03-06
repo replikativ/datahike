@@ -5,6 +5,8 @@
    [datahike.api :as d]
    [datahike.db :as db]))
 
+#?(:cljs (def Throwable js/Error))
+
 (deftest test-rules
   (let [db [[5 :follow 3]
             [1 :follow 2] [2 :follow 3] [3 :follow 4] [4 :follow 6]
@@ -235,10 +237,11 @@
                            (parent-info ?child "Alice" ?age)]}
                  :args [@conn "Charlie" rules]})))
 
-    (is (thrown-msg? "Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
-                     (d/q {:query '{:find [?age]
-                                    :in [$ ?n %]
-                                    :where
-                                    [[?child :name ?n]
-                                     (parent-info ?child ["Alice"] ?age)]}
-                           :args [@conn "Charlie" rules]})))))
+    (is (thrown-with-msg? Throwable
+                          #"Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
+                          (d/q {:query '{:find [?age]
+                                         :in [$ ?n %]
+                                         :where
+                                         [[?child :name ?n]
+                                          (parent-info ?child ["Alice"] ?age)]}
+                                :args [@conn "Charlie" rules]})))))

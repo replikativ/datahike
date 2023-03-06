@@ -1,6 +1,6 @@
 (ns datahike.test.attribute-refs.temporal-search
   (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
+   #?(:cljs [cljs.test :as t :refer-macros [is deftest]]
       :clj [clojure.test :refer [is deftest]])
    [datahike.api :as d]))
 
