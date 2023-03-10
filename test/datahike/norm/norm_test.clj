@@ -3,13 +3,14 @@
             [clojure.string :as string]
             [clojure.java.io :as io]
             [datahike.api :as d]
-            [datahike.norm.norm :as sut]
+            [datahike.norm.norm :as sut :refer [verify-checksums]]
             [datahike.test.utils :as tu]))
 
 (def ensure-norms #'sut/ensure-norms)
 
 (deftest simple-test
   (let [conn (tu/setup-db {} true)
+        _ (verify-checksums (io/file "test/datahike/norm/resources/simple-test"))
         _ (ensure-norms conn (io/file "test/datahike/norm/resources/simple-test"))
         schema (d/schema (d/db conn))]
     (is (= #:db{:valueType :db.type/string, :cardinality :db.cardinality/one, :doc "Place of occupation", :ident :character/place-of-occupation}
@@ -33,9 +34,11 @@
 
 (deftest tx-fn-test
   (let [conn (tu/setup-db {} true)
+        _ (verify-checksums (io/file "test/datahike/norm/resources/tx-fn-test/first"))
         _ (ensure-norms conn (io/file "test/datahike/norm/resources/tx-fn-test/first"))
         _ (d/transact conn {:tx-data [{:character/place-of-occupation "SPRINGFIELD ELEMENTARY SCHOOL"}
                                       {:character/place-of-occupation "SPRINGFIELD NUCLEAR POWER PLANT"}]})
+        _ (verify-checksums (io/file "test/datahike/norm/resources/tx-fn-test/second"))
         _ (ensure-norms conn (io/file "test/datahike/norm/resources/tx-fn-test/second"))]
     (is (= #{["springfield elementary school"] ["springfield nuclear power plant"]}
            (d/q '[:find ?v
@@ -60,12 +63,14 @@
 
 (deftest tx-data-and-tx-fn-test
   (let [conn (tu/setup-db {} true)
+        _ (verify-checksums (io/file "test/datahike/norm/resources/tx-data-and-tx-fn-test/first"))
         _ (ensure-norms conn (io/file "test/datahike/norm/resources/tx-data-and-tx-fn-test/first"))
         _ (d/transact conn {:tx-data [{:character/name "Homer Simpson"}
                                       {:character/name "Marge Simpson"}
                                       {:character/name "Bart Simpson"}
                                       {:character/name "Lisa Simpson"}
                                       {:character/name "Maggie Simpson"}]})
+        _ (verify-checksums (io/file "test/datahike/norm/resources/tx-data-and-tx-fn-test/second"))
         _ (ensure-norms conn (io/file "test/datahike/norm/resources/tx-data-and-tx-fn-test/second"))
         margehomer (d/q '[:find [?e ...]
                           :where
@@ -100,6 +105,7 @@
 
 (deftest naming-and-sorting-test
   (let [conn (tu/setup-db {} true)
+        _ (verify-checksums (io/file "test/datahike/norm/resources/naming-and-sorting-test"))
         _ (sut/ensure-norms! conn (io/file "test/datahike/norm/resources/naming-and-sorting-test"))
         lisabart (d/q '[:find [?e ...]
                         :where

@@ -128,12 +128,6 @@
                             hp/hash->str)))
                {})))
 
-(defn- verify-checksums [checksums checksums-edn file-or-resource]
-  (let [edn-content (-> (read-edn-file checksums-edn file-or-resource) first)
-        diff (data/diff checksums edn-content)]
-    (when-not (every? nil? (butlast diff))
-      (dt/raise "Deviation of the checksums found. Migration aborted." {:diff diff}))))
-
 (s/def ::tx-data vector?)
 (s/def ::tx-fn symbol?)
 (s/def ::norm-map (s/keys :opt-un [::tx-data ::tx-fn]))
@@ -162,6 +156,36 @@
                                                      ((var-get (requiring-resolve tx-fn)) conn)))})
              (log/info "Done"))))))
 
+(defn- diff-checksums [checksums edn-content]
+  (let [diff (data/diff checksums edn-content)]
+    (when-not (every? nil? (butlast diff))
+      (dt/raise "Deviation of the checksums found. Migration aborted." {:diff diff}))))
+
+(defmulti verify-checksums
+  (fn [file-or-resource] (type file-or-resource)))
+
+(defmethod verify-checksums File [file]
+  (let [norm-list (-> (retrieve-file-list file)
+                      filter-file-list
+                      (read-norm-files file))
+        edn-content (-> (io/file (io/file file) checksums-file)
+                        (read-edn-file file)
+                        first)]
+    (diff-checksums (compute-checksums norm-list)
+                    edn-content)))
+
+(defmethod verify-checksums URL [resource]
+  (let [file-list (retrieve-file-list resource)
+        norm-list (-> (filter-file-list file-list)
+                      (read-norm-files resource))
+        edn-content (-> (->> file-list
+                             (filter #(-> (.getName %) (string/ends-with? checksums-file)))
+                             first)
+                        (read-edn-file resource)
+                        first)]
+    (diff-checksums (compute-checksums norm-list)
+                    edn-content)))
+
 (defmulti ^:private ensure-norms
   (fn [_conn file-or-resource] (type file-or-resource)))
 
@@ -169,20 +193,12 @@
   (let [norm-list (-> (retrieve-file-list file)
                       filter-file-list
                       (read-norm-files file))]
-    (verify-checksums (compute-checksums norm-list)
-                      (io/file (io/file file) checksums-file)
-                      file)
     (transact-norms conn norm-list)))
 
 (defmethod ^:private ensure-norms URL [conn resource]
   (let [file-list (retrieve-file-list resource)
         norm-list (-> (filter-file-list file-list)
                       (read-norm-files resource))]
-    (verify-checksums (compute-checksums norm-list)
-                      (->> file-list
-                           (filter #(-> (.getName %) (string/ends-with? checksums-file)))
-                           first)
-                      resource)
     (transact-norms conn norm-list)))
 
 (defn ensure-norms!
