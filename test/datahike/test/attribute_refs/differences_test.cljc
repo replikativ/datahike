@@ -10,6 +10,8 @@
    [datahike.test.core-test])
   #?(:clj (:import [datahike.datom Datom])))
 
+#?(:cljs (def Throwable js/Error))
+
 (def no-ref-cfg
   {:store {:backend :mem :id "attr-no-refs-test.differences"}
    :keep-history? true
@@ -259,15 +261,21 @@
   (testing "Keyword transaction in reference DB"
     (let [conn (setup-db ref-cfg)
           next-eid (inc (:max-eid @conn))]
-      (is (thrown-msg? (str "Bad entity attribute " :db/ident " at " [:db/add next-eid :db/ident :name] ", expected reference number") ;; TODO: ensure to have error thrown
-                       (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
+      (is (thrown-with-msg? Throwable
+                            (re-pattern (str "Bad entity attribute :db/ident"
+                                             " at \\[:db/add " next-eid " :db/ident :name\\],"
+                                             " expected reference number"))
+                            (d/transact conn [[:db/add next-eid :db/ident :name]]))))))
 
 (deftest test-transact-data-with-reference-attr
   (testing "Reference transaction in keyword DB"
     (let [conn (setup-db no-ref-cfg)
           next-eid (inc (:max-eid @conn))]
-      (is (thrown-msg? (str "Bad entity attribute " 1 " at " [:db/add next-eid 1 :name] ", expected keyword or string")
-                       (d/transact conn [[:db/add next-eid 1 :name]])))))
+      (is (thrown-with-msg? Throwable
+                            (re-pattern (str "Bad entity attribute 1"
+                                             " at \\[:db/add " next-eid " 1 :name\\],"
+                                             " expected keyword or string"))
+                            (d/transact conn [[:db/add next-eid 1 :name]])))))
 
   (testing "Reference transaction in reference DB"
     (let [conn (setup-db ref-cfg)
@@ -277,36 +285,42 @@
 (deftest test-system-schema-protection
   (let [conn (setup-db ref-cfg)]
     (testing "Transact sequential system schema update"
-      (is (thrown-msg? "System schema entity cannot be changed"
-                       (d/transact conn [[:db/add 1 1 :name]]))))
+      (is (thrown-with-msg? Throwable
+                            #"System schema entity cannot be changed"
+                            (d/transact conn [[:db/add 1 1 :name]]))))
 
     (testing "Transact system schema update as map"
-      (is (thrown-msg? "Entity with ID 1 is a system attribute :db/ident and cannot be changed"
-                       (d/transact conn [{:db/id 1 :db/ident :name}]))))))
+      (is (thrown-with-msg? Throwable
+                            #"Entity with ID 1 is a system attribute :db/ident and cannot be changed"
+                            (d/transact conn [{:db/id 1 :db/ident :name}]))))))
 
 (deftest test-system-attribute-protection
   (testing "Use system keyword for schema in keyword DB"
     (let [conn (setup-db no-ref-cfg)]
-      (is (thrown-msg? "Using namespace 'db' for attribute identifiers is not allowed"
-                       (d/transact conn [{:db/ident :db/unique}])))))
+      (is (thrown-with-msg? Throwable
+                            #"Using namespace 'db' for attribute identifiers is not allowed"
+                            (d/transact conn [{:db/ident :db/unique}])))))
 
   (testing "Use system keyword for schema in keyword DB"
     (let [conn (setup-db ref-cfg)]
-      (is (thrown-msg? "Using namespace 'db' for attribute identifiers is not allowed"
-                       (d/transact conn [{:db/ident :db/unique}]))))))
+      (is (thrown-with-msg? Throwable
+                            #"Using namespace 'db' for attribute identifiers is not allowed"
+                            (d/transact conn [{:db/ident :db/unique}]))))))
 
 (deftest test-system-enum-protection
   (testing "Use system keyword for schema in keyword DB"
     (let [conn (setup-db no-ref-cfg)]
-      (is (thrown-msg? "Using namespace 'db' for attribute identifiers is not allowed"
-                       (d/transact conn [{:db/ident :db.cardinality/many}])))))
+      (is (thrown-with-msg? Throwable
+                            #"Using namespace 'db' for attribute identifiers is not allowed"
+                            (d/transact conn [{:db/ident :db.cardinality/many}])))))
 
   (testing "Use system keyword for schema in keyword DB"
     (let [conn (setup-db ref-cfg)]
-      (is (thrown-msg? "Using namespace 'db' for attribute identifiers is not allowed"
-                       (d/transact conn [{:db/ident :db.cardinality/many}]))))))
+      (is (thrown-with-msg? Throwable
+                            #"Using namespace 'db' for attribute identifiers is not allowed"
+                            (d/transact conn [{:db/ident :db.cardinality/many}]))))))
 
-(deftest test-read-schema                                   ;; thrown-msg not working? intended behavior?
+(deftest test-read-schema
   (testing "No error in combination with schema-flexibility read for keyword DB"
     (let [read-no-ref-cfg (assoc no-ref-cfg :schema-flexibility :read)]
       (db/empty-db nil read-no-ref-cfg)
@@ -314,10 +328,12 @@
 
   (testing "Error in combination with schema-flexibility read for reference DB"
     (let [read-ref-cfg (assoc ref-cfg :schema-flexibility :read)]
-      (is (thrown-msg? "Attribute references cannot be used with schema-flexibility ':read'."
-                       (db/empty-db nil read-ref-cfg)))
-      (is (thrown-msg? "Attribute references cannot be used with schema-flexibility ':read'."
-                       (db/init-db [] nil read-ref-cfg))))))
+      (is (thrown-with-msg? Throwable
+                            #"Attribute references cannot be used with schema-flexibility ':read'."
+                            (db/empty-db nil read-ref-cfg)))
+      (is (thrown-with-msg? Throwable
+                            #"Attribute references cannot be used with schema-flexibility ':read'."
+                            (db/init-db [] nil read-ref-cfg))))))
 
 (deftest test-query
   (testing "Query keyword translation keyword db"

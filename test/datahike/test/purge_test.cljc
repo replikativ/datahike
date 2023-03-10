@@ -5,6 +5,8 @@
    [datahike.api :as d]
    [datahike.test.utils :as tu]))
 
+#?(:cljs (def Throwable js/Error))
+
 (def schema-tx [{:db/ident       :name
                  :db/valueType   :db.type/string
                  :db/unique      :db.unique/identity
@@ -95,17 +97,16 @@
           (is (= #{} (find-entities @conn)))
           (is (= #{} (find-entities (d/history @conn)))))))
     (testing "purge something that is not present in the database"
-      (is (thrown-msg?
-           "Can't find entity with ID [:name \"Alice\"] to be purged"
-           (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
+      (is (thrown-with-msg? Throwable
+                            #"Can't find entity with ID \[:name \"Alice\"\] to be purged"
+                            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
 
 (deftest test-purge-non-temporal-database
   (let [conn (tu/setup-db (-> (assoc-in cfg-template [:store :id] "purge-non-temporal")
                               (assoc :keep-history? false)))]
     (testing "purge data in non temporal database"
-      (is (thrown-msg?
-           "Purge entity is only available in temporal databases."
-           (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
+      (is (thrown-with-msg? Throwable #"Purge entity is only available in temporal databases\."
+                            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
 
 (defn find-ages [db name]
   (d/q '[:find ?a ?op

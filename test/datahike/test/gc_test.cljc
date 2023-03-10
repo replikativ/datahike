@@ -13,6 +13,8 @@
    [datahike.test.core-test])
   (:import [java.util Date]))
 
+#?(:cljs (def Throwable js/Error))
+
 (defn- count-store [db]
   (count (k/keys (:store db) {:sync? true})))
 
@@ -51,11 +53,11 @@
       (is (= (+ num-roots 1) (count (<?? S (gc! @conn (Date.))))))
       (is (= (+ history-count fresh-count) (count-store @conn))))
     (testing "Try to run on dirty index and fail."
-      (is (thrown-msg? "Index needs to be properly flushed before marking."
-                       (-mark (:eavt
-                               (:db-after
-                                (d/with @conn [{:db/id 100
-                                                :age   5}])))))))
+      (is (thrown-with-msg? Throwable #"Index needs to be properly flushed before marking."
+                            (-mark (:eavt
+                                    (:db-after
+                                     (d/with @conn [{:db/id 100
+                                                     :age   5}])))))))
 
     (testing "Check that we can still read the data."
       (d/transact conn txs)
@@ -88,8 +90,8 @@
       (<?? S (gc! @conn (Date.)))
       (is (nil? (d/q count-query @(d/connect cfg))))
       (is (= 1000 (d/q count-query @(d/connect cfg1))))
-      (is (thrown-msg? "Database does not exist."
-                       (d/q count-query @(d/connect cfg2)))))))
+      (is (thrown-with-msg? Throwable #"Database does not exist."
+                            (d/q count-query @(d/connect cfg2)))))))
 
 (deftest datahike-gc-range-test
   (let [cfg           (assoc-in cfg [:store :path] "/tmp/dh-gc-range-test")

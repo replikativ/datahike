@@ -132,6 +132,19 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+  spec-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run unittests for hitchhiker-tree index
+          command: bb test specs
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
   native-image-test:
     executor: tools/clojurecli
     steps:
