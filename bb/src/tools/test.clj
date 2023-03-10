@@ -9,7 +9,7 @@
 
 (defn kaocha [& args]
   (apply clj {:extra-env {"TIMBRE_LEVEL" ":warn"}}
-         "-M:test" "-m" "kaocha.runner" args))
+         "-M:test:cljs" "-m" "kaocha.runner" args))
 
 (defn back-compat [config]
   (println "Testing backwards compatibility")

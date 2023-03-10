@@ -1,12 +1,10 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.11.1"}
-        org.clojure/clojurescript                   {:mvn/version "1.11.4"}
         io.replikativ/hasch                         {:mvn/version "0.3.7"}
         io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"}
         io.replikativ/incognito                     {:mvn/version "0.3.66"}
         io.replikativ/konserve                      {:mvn/version "0.7.285"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.2.1"}
         environ/environ                             {:mvn/version "1.2.0"}
-        cheshire/cheshire                           {:mvn/version "5.11.0"}
         com.taoensso/timbre                         {:mvn/version "5.2.1"}
         io.replikativ/superv.async                  {:mvn/version "0.3.43"}
         io.replikativ/datalog-parser                {:mvn/version "0.2.25"}
@@ -14,7 +12,10 @@
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"} 
         metosin/spec-tools                          {:mvn/version "0.10.5"}
-        mvxcvi/clj-cbor                             {:mvn/version "1.1.0"}}
+        mvxcvi/clj-cbor                             {:mvn/version "1.1.0"}
+        ;; datahike cli
+        org.clojure/data.json                       {:mvn/version "0.2.6"} 
+        cheshire/cheshire                           {:mvn/version "5.11.0"}}
 
  :paths ["src" "target/classes"]
 
@@ -23,6 +24,8 @@
                  :fn jcompile}
 
  :aliases {;; Development
+           
+           :cljs {:extra-deps {org.clojure/clojurescript  {:mvn/version "1.11.4"}}}
 
            :1.9 {:override-deps {org.clojure/clojure {:mvn/version "1.9.0"}}}
 
@@ -50,7 +53,7 @@
                   :main-opts ["-m" "cljfmt.main" "fix"]}
 
            ;; Build
-
+           
            :build {:replace-paths []
                    :replace-deps {datahike.bb {:local/root "bb"}}
                    :ns-default tools.build}
@@ -71,7 +74,7 @@
                           :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}
 
            ;; Checks
-
+           
            :benchmark {:extra-paths ["benchmark/src"]
                        :extra-deps {clj-http/clj-http {:mvn/version "3.12.3"}
                                     org.clojure/tools.cli {:mvn/version "1.0.206"}
