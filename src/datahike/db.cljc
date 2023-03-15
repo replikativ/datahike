@@ -725,6 +725,7 @@
    {:pre [(or (nil? schema) (map? schema) (coll? schema))]}
    (let [complete-config (merge (dc/storeless-config) user-config)
          _ (dc/validate-config complete-config)
+         complete-config (dc/remove-nils complete-config)
          {:keys [keep-history? index schema-flexibility attribute-refs?]} complete-config
          on-read? (= :read schema-flexibility)
          schema (to-old-schema schema)

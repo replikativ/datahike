@@ -2,7 +2,7 @@
   (:require [clojure.test :refer :all]
             [datahike.integration-test :as it]))
 
-(def config {})
+(def config {:store {:backend :mem :id "config-record-test"}})
 
 (defn config-record-test-fixture [f]
   (it/integration-test-fixture config)

@@ -2,10 +2,12 @@
   (:require [clojure.test :refer [deftest is use-fixtures]]
             [datahike.api :as d]))
 
+(def config {:store {:backend :mem :id "return-map-test"}})
+
 (defn return-map-test-fixture [f]
-  (d/delete-database)
-  (d/create-database)
-  (def conn (d/connect))
+  (d/delete-database config)
+  (d/create-database config)
+  (def conn (d/connect config))
   ;; the first transaction will be the schema we are using
   (d/transact conn [{:db/ident :name
                      :db/valueType :db.type/string

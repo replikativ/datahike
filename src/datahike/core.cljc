@@ -190,25 +190,6 @@
           :cljs (satisfies? cljs.core/IDeref conn))
        (dbu/db? @conn)))
 
-(defn conn-from-db
-  "Creates a mutable reference to a given immutable database. See [[create-conn]]."
-  [db]
-  (atom db :meta {:listeners (atom {})}))
-
-(defn conn-from-datoms
-  "Creates an empty DB and a mutable reference to it. See [[create-conn]]."
-  ([datoms] (conn-from-db (init-db datoms)))
-  ([datoms schema] (conn-from-db (init-db datoms schema))))
-
-(defn create-conn
-  "Creates a mutable reference (a “connection”) to an empty immutable database.
-
-   Connections are lightweight in-memory structures (~atoms) with direct support of transaction listeners ([[listen!]], [[unlisten!]]) and other handy DataScript APIs ([[transact!]], [[reset-conn!]], [[db]]).
-
-   To access underlying immutable DB value, deref: `@conn`."
-  ([] (conn-from-db (empty-db)))
-  ([schema] (conn-from-db (empty-db schema))))
-
 (defn ^:no-doc -transact! [conn tx-data tx-meta]
   {:pre [(conn? conn)]}
   (let [report (atom nil)]

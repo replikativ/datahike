@@ -118,9 +118,9 @@
     (d/transact conn-branch1 [{:age 42}])
     ;; merge back
     _ (merge! conn #{:branch1} [])
-    _ (delete-branch! conn :branch1)
     (let [db-history       (<?? S (branch-history conn))
           branch1-history  (<?? S (branch-history conn-branch1))
+          _ (delete-branch! conn :branch1)
           _ (testing "Check branch counts"
               (is (= 9 (count db-history)))
               (is (= 5 (count branch1-history)))

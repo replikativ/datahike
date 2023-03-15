@@ -117,9 +117,9 @@
         (let [cfg (merge base-config
                          {:keep-history? hist
                           :attribute-refs? attr-ref})
-              old-cfg (assoc-in cfg [:store :path] old-path)
+              old-cfg (assoc-in cfg [:store :path] (str old-path (utils/get-time)))
               old-conn (utils/setup-db old-cfg)
-              new-cfg (assoc-in cfg [:store :path] new-path)
+              new-cfg (assoc-in cfg [:store :path] (str new-path (utils/get-time)))
               new-conn (utils/setup-db new-cfg)]
           (d/transact old-conn schema)
           (d/transact old-conn tx-data)
@@ -134,11 +134,11 @@
 
     (testing "Export history database, import non-history database"
       (let [old-cfg (-> base-config
-                        (assoc-in [:store :path] old-path)
+                        (assoc-in [:store :path] (str old-path (utils/get-time)))
                         (assoc :keep-history? true))
             old-conn (utils/setup-db old-cfg)
             new-cfg (-> base-config
-                        (assoc-in [:store :path] new-path)
+                        (assoc-in [:store :path] (str new-path (utils/get-time)))
                         (assoc :keep-history? false))
             new-conn (utils/setup-db new-cfg)]
         (d/transact old-conn schema)
@@ -152,11 +152,11 @@
 
     (testing "Export non-history database, import history database"
       (let [old-cfg (-> base-config
-                        (assoc-in [:store :path] old-path)
+                        (assoc-in [:store :path] (str old-path (utils/get-time)))
                         (assoc :keep-history? false))
             old-conn (utils/setup-db old-cfg)
             new-cfg (-> base-config
-                        (assoc-in [:store :path] new-path)
+                        (assoc-in [:store :path] (str new-path (utils/get-time)))
                         (assoc :keep-history? true))
             new-conn (utils/setup-db new-cfg)]
         (d/transact old-conn schema)
@@ -175,7 +175,7 @@
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
           cfg           {:store         {:backend :mem
-                                         :id      "load-entities-test-no-attr-refs"}
+                                         :id      "load-entities-test-no-attr-refs1"}
                          :keep-history? true
                          :attribute-refs false}
           conn (utils/setup-db cfg)]
@@ -187,7 +187,7 @@
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
           cfg           {:store         {:backend :mem
-                                         :id      "load-entities-test-no-attr-refs"}
+                                         :id      "load-entities-test-no-attr-refs2"}
                          :keep-history? true
                          :attribute-refs? true
                          :schema-flexibility :write}

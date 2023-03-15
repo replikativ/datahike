@@ -1,9 +1,10 @@
 (ns ^:no-doc datahike.config
   (:require [clojure.edn :as edn]
+            [clojure.walk :refer [postwalk]]
+            [clojure.string :as str]
             [clojure.spec.alpha :as s]
-            [zufall.core :as z]
             [environ.core :refer [env]]
-            [datahike.tools :as tools]
+            [datahike.tools :as dt]
             [datahike.store :as ds]
             [datahike.index :as di])
   (:import [java.net URI]))
@@ -26,9 +27,11 @@
 (s/def ::search-cache-size nat-int?)
 (s/def ::store-cache-size pos-int?)
 (s/def ::crypto-hash? boolean?)
+(s/def ::writer map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
-(s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?)))
+(s/def ::initial-tx (s/nilable (s/or :data (s/coll-of ::entity) :path string?
+                                     :was-added? boolean?)))
 (s/def ::name string?)
 
 (s/def ::index-config map?)
@@ -50,12 +53,15 @@
                                          ::initial-tx
                                          ::name
                                          ::branch
+                                         ::writer
                                          ::middleware]))
 
 (s/def :deprecated/schema-on-read boolean?)
 (s/def :deprecated/temporal-index boolean?)
 (s/def :deprecated/config (s/keys :req-un [:datahike/store]
                                   :opt-un [:deprecated/temporal-index :deprecated/schema-on-read]))
+
+(def self-writer {:backend :self})
 
 (defn from-deprecated
   [{:keys [backend username password path host port] :as _backend-cfg}
@@ -82,6 +88,7 @@
    :initial-tx initial-tx
    :schema-flexibility (if (true? schema-on-read) :read :write)
    :branch *default-db-branch*
+   :writer self-writer
    :crypto-hash? *default-crypto-hash?*
    :search-cache-size *default-search-cache-size*
    :store-cache-size *default-store-cache-size*})
@@ -119,13 +126,13 @@
   {:store nil
    :keep-history? false
    :schema-flexibility :read
-   :name (or *default-db-name* (z/rand-german-mammal))
    :attribute-refs? false
    :index *default-index*
    :search-cache-size *default-search-cache-size*
    :store-cache-size *default-store-cache-size*
    :crypto-hash? *default-crypto-hash?*
    :branch *default-db-branch*
+   :writer self-writer
    :index-config (di/default-index-config *default-index*)})
 
 (defn remove-nils
@@ -136,7 +143,7 @@
               (let [kvs (filter (comp not nil? second) x)]
                 (if (empty? kvs) nil (into {} kvs)))
               x))]
-    (clojure.walk/postwalk f m)))
+    (postwalk f m)))
 
 (defn load-config
   "Load and validate configuration with defaults from the store."
@@ -158,17 +165,17 @@
                  :initial-tx (:datahike-intial-tx env)
                  :keep-history? (bool-from-env :datahike-keep-history *default-keep-history?*)
                  :attribute-refs? (bool-from-env :datahike-attribute-refs *default-attribute-refs?*)
-                 :name (:datahike-name env (or *default-db-name* (z/rand-german-mammal)))
                  :schema-flexibility (keyword (:datahike-schema-flexibility env *default-schema-flexibility*))
                  :index index
                  :branch *default-db-branch*
                  :crypto-hash? *default-crypto-hash?*
+                 :writer self-writer
                  :search-cache-size (int-from-env :datahike-search-cache-size *default-search-cache-size*)
                  :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
                                  index-config
                                  (di/default-index-config index))}
-         merged-config ((comp remove-nils tools/deep-merge) config config-as-arg)
+         merged-config ((comp remove-nils dt/deep-merge) config config-as-arg)
          {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config
          config-spec (ds/config-spec store)]
      (when config-spec
@@ -201,7 +208,7 @@
         sub-uri (URI. (.getSchemeSpecificPart base-uri))
         backend (keyword (.getScheme sub-uri))
         [username password] (when-let [user-info (.getUserInfo sub-uri)]
-                              (clojure.string/split user-info #":"))
+                              (str/split user-info #":"))
         credentials (when-not (and (nil? username) (nil? password))
                       {:username username
                        :password password})
