@@ -2,7 +2,7 @@
 
 Schema migration with Datahike is the evolution of your current schema into a future schema.
 
-## Why using the schema-migration tool?
+## Why using the schema migration tool?
 You could use the `transact`-fn of the api-ns to apply your schema, but with our
 `norm`-ns you can define your migrations centrally and they will be applied once and only
 once to your database.

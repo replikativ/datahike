@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-
-set -o errexit
-set -o pipefail
-
-TIMBRE_LEVEL=':fatal' bin/kaocha --focus :norm "$@"
