@@ -147,13 +147,13 @@
       (uuid (mapv (comp vec seq) (.keys node))))
     (uuid)))
 
-(defrecord CachedStorage [store config cache stats]
+(defrecord CachedStorage [store config cache stats pending-writes]
   IStorage
   (store [_ node]
     (swap! stats update :writes inc)
     (let [address (gen-address node (:crypto-hash? config))
           _ (trace "writing storage: " address " crypto: " (:crypto-hash? config))]
-      (k/assoc store address node {:sync? true})
+      (swap! pending-writes conj (k/assoc store address node {:sync? false}))
       (wrapped/miss cache address node)
       address))
   (accessed [_ address]
@@ -176,7 +176,8 @@
 (defn create-storage [store config]
   (CachedStorage. store config
                   (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config)))
-                  (atom init-stats)))
+                  (atom init-stats)
+                  (atom [])))
 
 (def ^:const BRANCHING_FACTOR 512)
 

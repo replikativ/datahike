@@ -1,5 +1,5 @@
 (ns ^:no-doc datahike.writer
-  (:require [superv.async :refer [S thread-try]]
+  (:require [superv.async :refer [S thread-try <?-]]
             [taoensso.timbre :as log]
             [datahike.core]
             [datahike.writing :as w]
@@ -33,7 +33,7 @@
        (do
          (let [op-fn (write-fn-map op)
                res   (try
-                       (apply op-fn connection args)
+                       (<?- (apply op-fn connection args))
                        ;; Only catch ExceptionInfo here (intentionally rejected transactions).
                        ;; Any other exceptions should crash the writer and signal the supervisor.
                        (catch Exception e

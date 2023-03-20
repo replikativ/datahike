@@ -10,7 +10,8 @@
             [datahike.config :as dc]
             [konserve.core :as k]
             [taoensso.timbre :as log]
-            [hasch.core :refer [uuid]]))
+            [hasch.core :refer [uuid]]
+            [superv.async :refer [go-try- <?-]]))
 
 ;; mapping to storage
 
@@ -103,36 +104,43 @@
       (uuid))))
 
 (defn commit! [store config db parents]
-  (let [parents (or parents #{(get config :branch)})
-        parents (branch-heads-as-commits store parents)
-        cid (create-commit-id db)
-        db (-> db
-               (assoc-in [:meta :datahike/commit-id] cid)
-               (assoc-in [:meta :datahike/parents] parents))
-        db-to-store (db->stored db true)]
-    (k/assoc store cid db-to-store {:sync? true})
-    (k/assoc store (:branch config) db-to-store {:sync? true})
-    db))
+  (go-try-
+    (let [parents     (or parents #{(get config :branch)})
+          parents     (branch-heads-as-commits store parents)
+          cid         (create-commit-id db)
+          db          (-> db
+                (assoc-in [:meta :datahike/commit-id] cid)
+                (assoc-in [:meta :datahike/parents] parents))
+          db-to-store (db->stored db true)
+          commit-log-op (k/assoc store cid db-to-store {:sync? false})
+          branch-op (k/assoc store (:branch config) db-to-store {:sync? false})]
+      (<?- commit-log-op)
+      (<?- branch-op)
+      db)))
 
 (defn update-and-flush-db
   ([connection tx-data tx-meta update-fn]
    (update-and-flush-db connection tx-data tx-meta update-fn nil))
   ([connection tx-data tx-meta update-fn parents]
-   (let [{:keys [db/noCommit]} tx-meta
-         {:keys [db-after]
-          {:keys [db/txInstant]}
-          :tx-meta
-          :as   tx-report}     @(update-fn connection tx-data tx-meta)
-         {:keys [config meta]} db-after
-         meta                  (assoc meta :datahike/updated-at txInstant)
-         db                    (assoc db-after :meta meta)
-         store                 (:store @(:wrapped-atom connection))
-         db                    (if noCommit db (commit! store config db parents))]
-     (reset! connection db)
-     (if noCommit
-       tx-report
-       (assoc-in tx-report [:tx-meta :db/commitId]
-                 (get-in db [:meta :datahike/commit-id]))))))
+   (go-try-
+     (let [{:keys [db/noCommit]} tx-meta
+           {:keys [db-after]
+            {:keys [db/txInstant]}
+            :tx-meta
+            :as   tx-report}     @(update-fn connection tx-data tx-meta)
+           {:keys [config meta]} db-after
+           meta                  (assoc meta :datahike/updated-at txInstant)
+           db                    (assoc db-after :meta meta)
+           store                 (:store @(:wrapped-atom connection))
+           _                     (loop [[f & r] @(:pending-writes (:storage store))]
+                                   (when f (<?- f) (recur r)))
+           _                     (reset! (:pending-writes (:storage store)) [])
+           db                    (if noCommit db (<?- (commit! store config db parents)))]
+       (reset! connection db)
+       (if noCommit
+         tx-report
+         (assoc-in tx-report [:tx-meta :db/commitId]
+                   (get-in db [:meta :datahike/commit-id])))))))
 
 (defprotocol PDatabaseManager
   (-create-database [config opts])
