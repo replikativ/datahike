@@ -1,4 +1,5 @@
 (ns datahike.query-stats
+  (:refer-clojure :exclude [abs])
   (:require [clojure.set :as set]
             [datahike.tools :as dt]))
 
@@ -6,6 +7,11 @@
   #?(:clj (with-precision precision x)
      :cljs (let [y (Math/pow 10 precision)]
              (/ (.round js/Math (* y x)) y))))
+
+(defn abs
+  "Only available since Clojure 1.11 and ClojureScript 1.11.10 in core namespaces."
+  [x]
+  (Math/abs x))
 
 (defn get-stats [context]
   {:rels (mapv (fn [rel] {:rows (count (:tuples rel))
