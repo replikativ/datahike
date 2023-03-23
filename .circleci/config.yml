@@ -138,8 +138,34 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: Run unittests for hitchhiker-tree index
+          name: Run unittests with specs activated
           command: bb test specs
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+  clj-1.10-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run unittests with clojure 1.10.0
+          command: bb test clj :1.10
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+  clj-1.9-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run unittests with clojure 1.9.0
+          command: bb test clj :1.9
           no_output_timeout: 5m
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
