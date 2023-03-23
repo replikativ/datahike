@@ -269,7 +269,7 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
-      - specs-test:
+      - spec-test:
           context: dockerhub-deploy
           requires:
             - build
@@ -306,7 +306,7 @@ workflows:
             - format
             - persistent-set-test
             - hitchhiker-tree-test
-            - specs-test
+            - spec-test
             - clj-1-10-test
             - clj-1-9-test
             - backward-compatibility-test
