@@ -145,7 +145,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
-  clj-1.10-test:
+  clj-1-10-test:
     executor: tools/clojurecli
     steps:
       - attach_workspace:
@@ -158,7 +158,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
-  clj-1.9-test:
+  clj-1-9-test:
     executor: tools/clojurecli
     steps:
       - attach_workspace:
@@ -269,6 +269,18 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
+      - specs-test:
+          context: dockerhub-deploy
+          requires:
+            - build
+      - clj-1-10-test:
+          context: dockerhub-deploy
+          requires:
+            - build
+      - clj-1-9-test:
+          context: dockerhub-deploy
+          requires:
+            - build
       - native-image-test:
           context: dockerhub-deploy
           requires:
@@ -294,6 +306,9 @@ workflows:
             - format
             - persistent-set-test
             - hitchhiker-tree-test
+            - specs-test
+            - clj-1-10-test
+            - clj-1-9-test
             - backward-compatibility-test
             - native-image-test
             - integration-test
