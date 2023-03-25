@@ -432,7 +432,7 @@
       (d/release conn)))
   (testing "manual txInstant is the same as auto-generated"
     (let [conn (du/setup-db)
-          date (tools/get-time)
+          date (tools/get-date)
           _    (d/transact conn {:tx-data [{:name "Sergey"
                                             :age  5}]
                                  :tx-meta {:db/txInstant date}})]

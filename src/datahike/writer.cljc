@@ -3,8 +3,8 @@
             [taoensso.timbre :as log]
             [datahike.core]
             [datahike.writing :as w]
-            [datahike.tools :as dt :refer [throwable-promise get-time]]
-            [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll!]])
+            [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
+            [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer]])
   (:import [clojure.lang ExceptionInfo]))
 
 (defprotocol PWriter
@@ -12,39 +12,47 @@
   (-shutdown [_] "Returns a channel that resolves when the writer has shut down.")
   (-streaming? [_] "Returns whether the transactor is streaming updates directly into the connection, so it does not need to fetch from store on read."))
 
-(defrecord LocalWriter [queue thread streaming? queue-size]
+(defrecord LocalWriter [thread streaming? transaction-queue-size commit-queue-size
+                        transaction-queue commit-queue]
   PWriter
   (-dispatch! [_ arg-map]
     (let [p (promise-chan)]
-      (put! queue (assoc arg-map :callback p))
+      (put! transaction-queue (assoc arg-map :callback p))
       p))
   (-shutdown [_]
-    (close! queue)
+    (close! transaction-queue)
     thread)
   (-streaming? [_] streaming?))
 
-(def ^:const default-queue-size 100000)
+(def ^:const default-queue-size 200000)
 
 (defn create-thread
   "Creates new transaction thread"
-  [connection queue write-fn-map queue-size]
-  (thread-try
-   S
-    (let [pending-txs-ch (chan queue-size)
-          store (:store @(:wrapped-atom connection))]
-      ;; processing loop
-      (go-loop []
-        (if-let [{:keys [op args callback] :as invocation} (<! queue)]
-          (do
-            (let [op-fn (write-fn-map op)
-                  res   (try
-                          (apply op-fn connection args)
-                          ;; Only catch ExceptionInfo here (intentionally rejected transactions).
-                          ;; Any other exceptions should crash the writer and signal the supervisor.
-                          (catch Exception e
-                            (log/errorf "Error during invocation" invocation e args)
-                            ;; take a guess that a NPE was triggered by an invalid connection
-                            (when (some? callback)
+  [connection write-fn-map transaction-queue-size commit-queue-size]
+  (let [transaction-queue-buffer       (buffer transaction-queue-size)
+        transaction-queue              (chan transaction-queue-buffer)
+        commit-queue-buffer            (buffer commit-queue-size)
+        commit-queue                (chan commit-queue-buffer)]
+    [transaction-queue commit-queue
+     (thread-try
+      S
+      (let [store (:store @(:wrapped-atom connection))]
+        ;; processing loop
+        (go-loop []
+          (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
+            (do
+              (when (> (count transaction-queue-buffer) (/ transaction-queue-size 2))
+                (log/warn "Transaction queue buffer more than 50% full, "
+                          (count transaction-queue-buffer) "of" transaction-queue-size  " filled."
+                          "Reduce transaction frequency."))
+              (let [op-fn (write-fn-map op)
+                    res   (try
+                            (apply op-fn connection args)
+                            ;; Only catch ExceptionInfo here (intentionally rejected transactions).
+                            ;; Any other exceptions should crash the writer and signal the supervisor.
+                            (catch Exception e
+                              (log/errorf "Error during invocation" invocation e args)
+                              ;; take a guess that a NPE was triggered by an invalid connection
                               ;; short circuit on errors
                               (put! callback
                                     (if (= (type e) NullPointerException)
@@ -54,39 +62,44 @@
                                                 :connection connection
                                                 :error      e})
                                       e))
-                              :error)))]
-              (when-not (= res :error)
-                (>! pending-txs-ch [res callback])))
-            (recur))
-          (do
-            (close! pending-txs-ch)
-            (log/debug "Writer thread gracefully closed"))))
-      ;; commit loop
-      (go-loop [tx (<! pending-txs-ch)]
-        (when tx
-          (let [txs (atom [tx])]
-            ;; empty channel of pending transactions
-            (loop [tx (poll! pending-txs-ch)]
-              (when tx
-                (swap! txs conj tx)
-                (recur (poll! pending-txs-ch))))
-            (log/trace "Batched transaction count: " (count @txs))
-            ;; commit latest tx to disk
-            (let [db       (:db-after (first (last @txs)))]
-              (try
-                (let [start-ts  (.getTime (get-time))
-                      {{:keys [datahike/commit-id]} :meta
-                       :as _commit-db} (<?- (w/commit! store (:config db) db nil))]
-                  (log/trace "Commit time (ms): " (- (.getTime (get-time)) start-ts))
-                  ;; notify all processes that transaction is complete
-                  (doseq [[res callback] @txs]
-                    (put! callback (assoc-in res [:tx-meta :db/commitId] commit-id))))
-                (catch Exception e
-                  (doseq [[_ callback] @txs]
-                    (put! callback e))
-                  (log/error "Writer thread shutting down because of commit error " e)
-                  (close! pending-txs-ch)))
-              (recur (<! pending-txs-ch)))))))))
+                              :error))]
+                (when-not (= res :error)
+                  (put! commit-queue [res callback])
+                  (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
+                    (log/warn "Commit queue buffer more than 50% full, "
+                              (count commit-queue-buffer) "of" commit-queue-size  " filled."
+                              "Reduce transaction frequency."))))
+              (recur))
+            (do
+              (close! commit-queue)
+              (log/debug "Writer thread gracefully closed"))))
+        ;; commit loop
+        (go-loop [tx (<?- commit-queue)]
+          (when tx
+            (let [txs (atom [tx])]
+              ;; empty channel of pending transactions
+              (loop [tx (poll! commit-queue)]
+                (when tx
+                  (swap! txs conj tx)
+                  (recur (poll! commit-queue))))
+              (log/trace "Batched transaction count: " (count @txs))
+              ;; commit latest tx to disk
+              (let [db (:db-after (first (last @txs)))]
+                (try
+                  (let [start-ts                                  (get-time-ms)
+                        {{:keys [datahike/commit-id]} :meta
+                         :as                          _commit-db} (<?- (w/commit! store (:config db) db nil false))]
+                    (log/trace "Commit time (ms): " (- (get-time-ms) start-ts))
+                    ;; notify all processes that transaction is complete
+                    (doseq [[res callback] @txs]
+                      (put! callback (assoc-in res [:tx-meta :db/commitId] commit-id))))
+                  (catch Exception e
+                    (doseq [[_ callback] @txs]
+                      (put! callback e))
+                    (log/error "Writer thread shutting down because of commit error " e)
+                    (close! commit-queue)
+                    (close! transaction-queue)))
+                (recur (<! commit-queue))))))))]))
 
 ;; public API
 
@@ -99,18 +112,21 @@
   (fn [writer-config _]
     (:backend writer-config)))
 
-
 (defmethod create-writer :self
-  [{:keys [queue-size write-fn-map]} connection]
-  (let [queue-size (or queue-size default-queue-size)
-        queue (chan queue-size)
-        thread (create-thread connection queue
-                              (merge default-write-fn-map
-                                     write-fn-map)
-                              queue-size)]
+  [{:keys [transaction-queue-size commit-queue-size write-fn-map]} connection]
+  (let [transaction-queue-size (or transaction-queue-size default-queue-size)
+        commit-queue-size (or commit-queue-size default-queue-size)
+        [transaction-queue commit-queue thread]
+        (create-thread connection
+                       (merge default-write-fn-map
+                              write-fn-map)
+                       transaction-queue-size
+                       commit-queue-size)]
     (map->LocalWriter
-     {:queue  queue
-      :queue-size queue-size
+     {:transaction-queue transaction-queue
+      :transaction-queue-size transaction-queue-size
+      :commit-queu commit-queue
+      :commit-queue-size commit-queue-size
       :thread thread
       :streaming? true})))
 

@@ -24,9 +24,13 @@
    (defmacro case-tree [qs vs]
      (-case-tree qs vs)))
 
-(defn ^:dynamic get-time []
-  #?(:clj (java.util.Date.)
+(defn ^:dynamic get-date []
+  #?(:clj (Date.)
      :cljs (js/Date.)))
+
+(defn ^:dynamic get-time-ms []
+  #?(:clj (.getTime (Date.))
+     :cljs (.getTime (js/Date.))))
 
 (defmacro raise
   "Logging an error and throwing an exception with message and structured data.
