@@ -26,7 +26,7 @@
   connect
   :args (s/alt :config (s/cat :config spec/SConfig)
                :nil (s/cat))
-  :ret spec/SConnectionAtom)
+  :ret spec/SConnection)
 (def
   ^{:arglists '([] [config])
     :doc "Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
@@ -70,7 +70,7 @@
                               :temporal-index (s/? (s/cat :k (s/? (s/and #(= % :temporal-index))) :v boolean?))
                               :schema-on-read (s/? (s/cat :k (s/? (s/and #(= % :schema-on-read))) :v boolean?)))
                :nil (s/cat))
-  :ret spec/SConfig)
+  :ret #(s/valid? spec/SConfig [%]))
 
 (declare transact release)
 
@@ -132,7 +132,7 @@
 
 (s/fdef
   transact!
-  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
+  :args (s/cat :conn spec/SConnection :txs spec/STransactions)
   :ret #(s/valid? spec/STransactionReport @%))
 (def ^{:arglists '([conn tx-data tx-meta])
        :no-doc   true}
@@ -141,7 +141,7 @@
 
 (s/fdef
   transact
-  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
+  :args (s/cat :conn spec/SConnection :txs spec/STransactions)
   :ret spec/STransactionReport)
 (def ^{:arglists '([conn arg-map])
        :doc      "Applies transaction to the underlying database value and atomically updates the connection reference to point to the result of that transaction, the new db value.
@@ -246,7 +246,7 @@
 
 (s/fdef
   load-entities
-  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
+  :args (s/cat :conn spec/SConnection :txs spec/STransactions)
   :ret #(s/valid? spec/STransactionReport @%)) ; This returns a throwable promise, so we have to dereference it..
 (def ^{:arglists '([conn tx-data])
        :doc "Load entities directly"}
@@ -255,7 +255,7 @@
 
 (s/fdef
   release
-  :args (s/cat :conn spec/SConnectionAtom)
+  :args (s/cat :conn spec/SConnection)
   :ret nil?)
 (def ^{:arglists '([conn] [conn release-all?])
        :doc      "Releases a database connection. You need to release a connection as many times as you connected to it for it to be completely released. Set release-all? to true to force its release."}
@@ -706,7 +706,7 @@
 
 (s/fdef
   db
-  :args (s/cat :conn spec/SConnectionAtom)
+  :args (s/cat :conn spec/SConnection)
   :ret spec/SDB)
 (defn db
   "Returns the underlying immutable database value from a connection.
@@ -886,8 +886,8 @@
 
 (s/fdef
   listen
-  :args (s/alt :no-key (s/cat :conn spec/SConnectionAtom :callback fn?)
-               :with-key (s/cat :conn spec/SConnectionAtom :key any? :callback fn?))
+  :args (s/alt :no-key (s/cat :conn spec/SConnection :callback fn?)
+               :with-key (s/cat :conn spec/SConnection :key any? :callback fn?))
   :ret any?
   :fn #(if (= :with-key (-> % :args first))
          (= (:ret %) (-> % :args second :key))
@@ -904,7 +904,7 @@
 
 (s/fdef
   unlisten
-  :args (s/cat :conn spec/SConnectionAtom :key any?)
+  :args (s/cat :conn spec/SConnection :key any?)
   :ret map?)
 (def ^{:arglists '([conn key])
        :doc "Removes registered listener from connection. See also [[listen]]."}

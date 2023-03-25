@@ -37,6 +37,9 @@
   IMeta
   (meta [_] (meta wrapped-atom)))
 
+(defn connection? [x]
+  (instance? Connection x))
+
 #?(:clj
    (defmethod print-method Connection
      [^Connection conn ^java.io.Writer w]
@@ -62,7 +65,7 @@
   (Connection. (atom db :meta {:listeners (atom {})})))
 
 (s/def ::connection #(and (instance? Connection %)
-                          (not= @(:wrapped-atom %) :deleted)))
+                          (not= @(:wrapped-atom %) :released)))
 
 (defn version-check [{:keys [meta config] :as db}]
   (let [{dh-stored :datahike/version
