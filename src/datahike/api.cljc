@@ -70,7 +70,7 @@
                               :temporal-index (s/? (s/cat :k (s/? (s/and #(= % :temporal-index))) :v boolean?))
                               :schema-on-read (s/? (s/cat :k (s/? (s/and #(= % :schema-on-read))) :v boolean?)))
                :nil (s/cat))
-  :ret nil?)
+  :ret spec/SConfig)
 
 (declare transact release)
 
