@@ -7,7 +7,9 @@
             [datahike.tools :as dt]
             [konserve.cache :as kc]
             [clojure.core.cache :as cache]
-            [taoensso.timbre :refer [info]]))
+            [taoensso.timbre :refer [info]]
+            [zufall.core :refer [rand-german-mammal]])
+  #?(:clj (:import [java.nio.file Paths])))
 
 (defn add-cache-and-handlers [raw-store config]
   (cond->> (kc/ensure-cache
@@ -94,7 +96,7 @@
 
 (defmethod default-config :mem [config]
   (merge
-   {:id (:datahike-store-id env "default")}
+   {:id (:datahike-store-id env (rand-german-mammal))}
    config))
 
 (s/def :datahike.store.mem/backend #{:mem})
@@ -118,9 +120,12 @@
 (defmethod connect-store :file [{:keys [path config]}]
   (fs/connect-fs-store path :opts {:sync? true} :config config))
 
+(defn- get-working-dir []
+  (.toString (.toAbsolutePath (Paths/get "" (into-array String [])))))
+
 (defmethod default-config :file [config]
   (merge
-   {:path (:datahike-store-path env "datahike-db")
+   {:path (:datahike-store-path env (str (get-working-dir) "/datahike-db-" (rand-german-mammal)))
     :scope (dt/get-hostname)}
    config))
 

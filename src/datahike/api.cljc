@@ -115,7 +115,8 @@
       (when-let [txs (:initial-tx config)]
         (let [conn (connect config)]
           (transact conn txs)
-          (release conn))))))
+          (release conn)))
+      config)))
 
 (s/fdef
   delete-database
@@ -256,8 +257,8 @@
   release
   :args (s/cat :conn spec/SConnectionAtom)
   :ret nil?)
-(def ^{:arglists '([conn])
-       :doc      "Releases a database connection"}
+(def ^{:arglists '([conn] [conn release-all?])
+       :doc      "Releases a database connection. You need to release a connection as many times as you connected to it for it to be completely released. Set release-all? to true to force its release."}
   release dc/release)
 
 (s/fdef

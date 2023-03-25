@@ -44,6 +44,9 @@
 
 (defn deref-conn [^Connection conn]
   (let [wrapped-atom (.-wrapped-atom conn)]
+    (when (= @wrapped-atom :released)
+      (throw (ex-info "Connection has been released."
+                      {:type :connection-has-been-released})))
     (if (not (w/streaming? (get @wrapped-atom :writer)))
       (let [store  (:store @wrapped-atom)
             stored (k/get store (:branch (:config @wrapped-atom)) nil {:sync? true})]
@@ -70,7 +73,7 @@
   (swap! connections assoc conn-id {:conn conn :count 1}))
 
 (defn delete-connection! [conn-id]
-  (reset! (get-connection conn-id) :deleted)
+  (reset! (get-connection conn-id) :released)
   (swap! connections dissoc conn-id))
 
 (defn version-check [{:keys [meta config] :as db}]
@@ -189,14 +192,17 @@
   ([config]
    (-connect config)))
 
-(defn release [connection]
-  (let [db      @(:wrapped-atom connection)
-        conn-id [(ds/store-identity (get-in db [:config :store]))
-                 (get-in db [:config :branch])]]
-    (if-not (get @connections conn-id)
-      (log/info "Connection already released." conn-id)
-      (let [new-conns (swap! connections update-in [conn-id :count] dec)]
-        (when (zero? (get-in new-conns [conn-id :count]))
-          (delete-connection! conn-id)
-          (w/shutdown (:writer db))
-          nil)))))
+(defn release
+  ([connection] (release connection false))
+  ([connection release-all?]
+   (when-not (= @(:wrapped-atom connection) :released)
+     (let [db      @(:wrapped-atom connection)
+           conn-id [(ds/store-identity (get-in db [:config :store]))
+                    (get-in db [:config :branch])]]
+       (if-not (get @connections conn-id)
+         (log/info "Connection already released." conn-id)
+         (let [new-conns (swap! connections update-in [conn-id :count] dec)]
+           (when (or release-all? (zero? (get-in new-conns [conn-id :count])))
+             (delete-connection! conn-id)
+             (w/shutdown (:writer db))
+             nil)))))))

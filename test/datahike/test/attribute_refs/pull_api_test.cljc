@@ -298,7 +298,8 @@
                    :part {:db/id (+ test-e0 3),
                           :part {:db/id (+ test-e0 1),
                                  :spec {:db/id (+ test-e0 2)},
-                                 :part {:db/id (+ test-e0 2)}}}}}))))
+                                 :part {:db/id (+ test-e0 2)}}}}}))
+    (d/release conn)))
 
 (deftest test-deep-recursion
   (let [start 100

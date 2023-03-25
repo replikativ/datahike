@@ -67,8 +67,8 @@
     (k/update store :branches #(conj % new-branch) {:sync? true})))
 
 (defn delete-branch!
-  "Removes this branch from set of known branches. The branch will still be
-  accessible until the next gc."
+  "Removes this branch from set of known branches. All of its connections need to
+  be released. The branch will still be accessible until the next gc."
   [conn branch]
   (when (= branch :db)
     (dt/raise "Cannot delete main :db branch. Delete database instead."
@@ -78,7 +78,6 @@
     (when-not (branches branch)
       (dt/raise "Branch does not exist." {:type :branch-does-not-exist
                                           :branch branch}))
-    (delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
     (k/update store :branches #(disj % branch) {:sync? true})))
 
 (defn force-branch!

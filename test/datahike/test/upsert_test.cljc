@@ -217,7 +217,8 @@
     (testing "changing the datom value increases the history with 2 datoms: the retraction datom and the new value."
       (d/transact conn {:tx-data [{:db/id [:name "Alice"]
                                    :age 26}]})
-      (is (= 3 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :age)))))))
+      (is (= 3 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :age)))))
+    (d/release conn)))
 
 (deftest temporal-history-mem
   (let [config {:store {:backend :mem :id "temp-hist-hht"}
@@ -325,27 +326,36 @@
       (testing "File upsert"
         (init-data file-conn)
         (let [cached-db @file-conn
-              fresh-db @(d/connect file-cfg)
+              fresh-conn (d/connect file-cfg)
+              fresh-db @fresh-conn
               actual-count (- initial-active-count inactive-count)
               cached-count (active-count cached-db)
               fresh-count (active-count fresh-db)]
           (is (= actual-count cached-count))
-          (is (= cached-count fresh-count))))
+          (is (= cached-count fresh-count))
+          (d/release fresh-conn)))
       (testing "File pss upsert"
         (init-data file-pss-conn)
         (let [cached-db    @file-pss-conn
-              fresh-db     @(d/connect file-pss-cfg)
+              fresh-conn   (d/connect file-pss-cfg)
+              fresh-db     @fresh-conn
               actual-count (- initial-active-count inactive-count)
               cached-count (active-count cached-db)
               fresh-count  (active-count fresh-db)]
           (is (= actual-count cached-count))
-          (is (= cached-count fresh-count))))
+          (is (= cached-count fresh-count))
+          (d/release fresh-conn)))
       (testing "Mem upsert"
         (init-data mem-conn)
         (let [cached-db @mem-conn
-              fresh-db @(d/connect mem-cfg)
+              fresh-conn (d/connect mem-cfg)
+              fresh-db @fresh-conn
               actual-count (- initial-active-count inactive-count)
               cached-count (active-count cached-db)
               fresh-count (active-count fresh-db)]
           (is (= actual-count cached-count))
-          (is (= cached-count fresh-count)))))))
+          (is (= cached-count fresh-count))
+          (d/release fresh-conn))))
+    (d/release file-conn)
+    (d/release file-pss-conn)
+    (d/release mem-conn)))

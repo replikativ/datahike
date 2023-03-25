@@ -23,7 +23,8 @@
       (is (re-find #":args" out-str))
       (is (re-find #"DB" out-str))
       (is (re-find #"[:find ?e :where [?e :name \"Anna\"]]" out-str))
-      (is (re-find #":t" out-str)))))
+      (is (re-find #":t" out-str)))
+    (d/release conn)))
 
 (deftest invalid-middleware-should-be-caught-on-connection
   (let [cfg {:store {:backend :mem
@@ -50,7 +51,8 @@
       (is (re-find #":args" out-str))
       (is (re-find #"AsOfDB" out-str))
       (is (re-find #"[:find ?e :where [?e :name \"Anna\"]]" out-str))
-      (is (re-find #":t" out-str)))))
+      (is (re-find #":t" out-str)))
+    (d/release conn)))
 
 (deftest middleware-should-work-with-since
   (let [cfg {:store {:backend :mem
@@ -69,7 +71,8 @@
       (is (re-find #":args" out-str))
       (is (re-find #"SinceDB" out-str))
       (is (re-find #"[:find ?e :where [?e :name \"Anna\"]]" out-str))
-      (is (re-find #":t" out-str)))))
+      (is (re-find #":t" out-str)))
+    (d/release conn)))
 
 (deftest middleware-should-work-with-history
   (let [cfg {:store {:backend :mem
@@ -87,4 +90,5 @@
       (is (re-find #":args" out-str))
       (is (re-find #"HistoricalDB" out-str))
       (is (re-find #"[:find ?e :where [?e :name \"Anna\"]]" out-str))
-      (is (re-find #":t" out-str)))))
+      (is (re-find #":t" out-str)))
+    (d/release conn)))

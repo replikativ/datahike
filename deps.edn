@@ -10,7 +10,7 @@
         com.taoensso/timbre                         {:mvn/version "5.2.1"}
         io.replikativ/superv.async                  {:mvn/version "0.3.43"}
         io.replikativ/datalog-parser                {:mvn/version "0.2.25"}
-        io.replikativ/zufall                        {:mvn/version "0.1.0"}
+        io.replikativ/zufall                        {:mvn/version "0.2.9"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"} 
         metosin/spec-tools                          {:mvn/version "0.10.5"}

@@ -131,7 +131,8 @@
     (is (= (:weight (d/entity @conn (+ e0 1))) 400))
     (is (thrown-with-msg? Throwable
                           (re-pattern (str ":db\\.fn/cas failed on datom \\[" (+ ref-e0 1) " " weight-ref " 400\\], expected 200"))
-                          (d/transact conn [[:db.fn/cas (+ ref-e0 1) weight-ref 200 210]]))))
+                          (d/transact conn [[:db.fn/cas (+ ref-e0 1) weight-ref 200 210]])))
+    (d/release conn))
 
   (let [conn (setup-new-connection)
         e0 (:max-eid @conn)
@@ -142,7 +143,8 @@
     (is (= (:label (d/entity @conn (+ e0 1))) #{:x :y :z}))
     (is (thrown-with-msg? Throwable
                           (re-pattern (str ":db\\.fn/cas failed on datom \\[" (+ ref-e0 1) " " label-ref " \\(:x :y :z\\)\\], expected :s"))
-                          (d/transact conn [[:db.fn/cas (+ ref-e0 1) label-ref :s :t]]))))
+                          (d/transact conn [[:db.fn/cas (+ ref-e0 1) label-ref :s :t]])))
+    (d/release conn))
 
   (let [conn (setup-new-connection)
         e0 (:max-eid @conn)
@@ -153,7 +155,8 @@
     (d/transact conn [[:db.fn/cas (+ e0 1) age-ref nil 42]])
     (is (= (:age (d/entity @conn (+ e0 1))) 42))
     (is (thrown-with-msg? Throwable (re-pattern (str ":db\\.fn/cas failed on datom \\[" (+ ref-e0 1) " " age-ref " 42\\], expected nil"))
-                          (d/transact conn [[:db.fn/cas (+ ref-e0 1) age-ref nil 4711]])))))
+                          (d/transact conn [[:db.fn/cas (+ ref-e0 1) age-ref nil 4711]])))
+    (d/release conn)))
 
 (deftest test-db-fn
   (let [conn (setup-new-connection)
@@ -184,4 +187,5 @@
     (let [{:keys [db-after]} (d/transact conn [[:db.fn/call inc-age "Petr"]])
           e (d/entity db-after (+ e0 1))]
       (is (= (:age e) 32))
-      (is (:had-birthday e)))))
+      (is (:had-birthday e)))
+    (d/release conn)))

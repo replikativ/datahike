@@ -97,8 +97,10 @@
   (testing "IndexNode"
     (let [txs  (vec (for [i (range 1000)]
                       {:name (str "Peter" i)
-                       :age  i}))]
-      (is (d/transact (connect) txs))))
+                       :age  i}))
+          conn (connect)]
+      (is (d/transact conn txs))
+      (d/release conn)))
 
   (testing "simple upsert and history"
     (let [txs  [[:db/add 199 :name "Peter"]
@@ -106,7 +108,8 @@
           conn (connect)]
       (is (d/transact conn txs))
       (is (not (d/datoms @conn :eavt 199 :name "Peter"))) ;; no history
-      (is (d/datoms (d/history @conn) :eavt 199 :name "Peter"))))
+      (is (d/datoms (d/history @conn) :eavt 199 :name "Peter"))
+      (d/release conn)))
 
   (testing "transacting the same datoms twice should work with :avet"
     (let [dvec #(vector (:e %) (:a %) (:v %))
@@ -157,7 +160,8 @@
                [10 (+ const/tx0 3) true]
                [10 (+ const/tx0 4) false]
                [1 (+ const/tx0 4) true]}
-             (d/q query (d/history @conn)))))
+             (d/q query (d/history @conn))))
+      (d/release conn))
     (testing "when only one transaction"
       (let [conn (setup-db cfg)]
         (d/transact conn [[:db/add [:name "Alice"] :age 20]
@@ -171,7 +175,8 @@
                  [10 (+ const/tx0 2) true]
                  [10 (+ const/tx0 2) false]
                  [1 (+ const/tx0 2) true]}
-               (d/q query (d/history @conn))))))))
+               (d/q query (d/history @conn))))
+        (d/release conn)))))
 
 (deftest upsert-read-handlers
   (let [config {:store {:backend :file :path "/tmp/upsert-read-handlers"}
@@ -194,6 +199,7 @@
 
     (let [conn (d/connect config)]
       ;; Would fail if upsert read handlers are not present
-      (is (d/datoms @conn :eavt)))
+      (is (d/datoms @conn :eavt))
+      (d/release conn))
 
     (d/delete-database config)))

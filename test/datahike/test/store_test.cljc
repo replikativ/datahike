@@ -45,7 +45,8 @@
                (-> @conn :eavt type))))
       (testing "upsert"
         (d/transact conn [{:db/id 1, :name "Paula"}])
-        (is (= "Paula" (:name (d/entity @conn 1))))))))
+        (is (= "Paula" (:name (d/entity @conn 1)))))
+      (d/release conn))))
 
 (deftest test-binary-support
   (let [config {:store {:backend :mem
@@ -64,4 +65,5 @@
                     [?e :payload ?arr]
                     [?e :name ?n]]
                   @conn
-                  (byte-array [0 2 3])))))))
+                  (byte-array [0 2 3]))))
+      (d/release conn))))
