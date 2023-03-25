@@ -3,8 +3,8 @@
             [taoensso.timbre :as log]
             [datahike.core]
             [datahike.writing :as w]
-            [datahike.tools :as dt :refer [throwable-promise]]
-            [clojure.core.async :refer [chan close! promise-chan put! go go-loop <!]])
+            [datahike.tools :as dt :refer [throwable-promise get-time]]
+            [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll!]])
   (:import [clojure.lang ExceptionInfo]))
 
 (defprotocol PWriter
@@ -12,7 +12,7 @@
   (-shutdown [_] "Returns a channel that resolves when the writer has shut down.")
   (-streaming? [_] "Returns whether the transactor is streaming updates directly into the connection, so it does not need to fetch from store on read."))
 
-(defrecord LocalWriter [queue thread streaming?]
+(defrecord LocalWriter [queue thread streaming? queue-size]
   PWriter
   (-dispatch! [_ arg-map]
     (let [p (promise-chan)]
@@ -23,33 +23,70 @@
     thread)
   (-streaming? [_] streaming?))
 
+(def ^:const default-queue-size 100000)
+
 (defn create-thread
   "Creates new transaction thread"
-  [connection queue write-fn-map]
+  [connection queue write-fn-map queue-size]
   (thread-try
    S
-   (go-loop []
-     (if-let [{:keys [op args callback] :as invocation} (<! queue)]
-       (do
-         (let [op-fn (write-fn-map op)
-               res   (try
-                       (<?- (apply op-fn connection args))
-                       ;; Only catch ExceptionInfo here (intentionally rejected transactions).
-                       ;; Any other exceptions should crash the writer and signal the supervisor.
-                       (catch Exception e
-                         (log/errorf "Error during invocation" invocation e)
-                         ;; take a guess that a NPE was triggered by an invalid connection
-                         (if (= (type e) NullPointerException)
-                           (ex-info "Null pointer encountered in invocation. Connection may have been invalidated, e.g. through db deletion, and needs to be released everywhere."
-                                    {:type       :writer-error-during-invocation
-                                     :invocation invocation
-                                     :connection connection
-                                     :error      e})
-                           e)))]
-           (when (some? callback)
-             (put! callback res)))
-         (recur))
-       (log/debug "Writer thread gracefully closed")))))
+    (let [pending-txs-ch (chan queue-size)
+          store (:store @(:wrapped-atom connection))]
+      ;; processing loop
+      (go-loop []
+        (if-let [{:keys [op args callback] :as invocation} (<! queue)]
+          (do
+            (let [op-fn (write-fn-map op)
+                  res   (try
+                          (apply op-fn connection args)
+                          ;; Only catch ExceptionInfo here (intentionally rejected transactions).
+                          ;; Any other exceptions should crash the writer and signal the supervisor.
+                          (catch Exception e
+                            (log/errorf "Error during invocation" invocation e args)
+                            ;; take a guess that a NPE was triggered by an invalid connection
+                            (when (some? callback)
+                              ;; short circuit on errors
+                              (put! callback
+                                    (if (= (type e) NullPointerException)
+                                      (ex-info "Null pointer encountered in invocation. Connection may have been invalidated, e.g. through db deletion, and needs to be released everywhere."
+                                               {:type       :writer-error-during-invocation
+                                                :invocation invocation
+                                                :connection connection
+                                                :error      e})
+                                      e))
+                              :error)))]
+              (when-not (= res :error)
+                (>! pending-txs-ch [res callback])))
+            (recur))
+          (do
+            (close! pending-txs-ch)
+            (log/debug "Writer thread gracefully closed"))))
+      ;; commit loop
+      (go-loop [tx (<! pending-txs-ch)]
+        (when tx
+          (let [txs (atom [tx])]
+            ;; empty channel of pending transactions
+            (loop [tx (poll! pending-txs-ch)]
+              (when tx
+                (swap! txs conj tx)
+                (recur (poll! pending-txs-ch))))
+            (log/trace "Batched transaction count: " (count @txs))
+            ;; commit latest tx to disk
+            (let [db       (:db-after (first (last @txs)))]
+              (try
+                (let [start-ts  (.getTime (get-time))
+                      {{:keys [datahike/commit-id]} :meta
+                       :as _commit-db} (<?- (w/commit! store (:config db) db nil))]
+                  (log/trace "Commit time (ms): " (- (.getTime (get-time)) start-ts))
+                  ;; notify all processes that transaction is complete
+                  (doseq [[res callback] @txs]
+                    (put! callback (assoc-in res [:tx-meta :db/commitId] commit-id))))
+                (catch Exception e
+                  (doseq [[_ callback] @txs]
+                    (put! callback e))
+                  (log/error "Writer thread shutting down because of commit error " e)
+                  (close! pending-txs-ch)))
+              (recur (<! pending-txs-ch)))))))))
 
 ;; public API
 
@@ -62,14 +99,18 @@
   (fn [writer-config _]
     (:backend writer-config)))
 
+
 (defmethod create-writer :self
-  [{:keys [buffer-size write-fn-map]} connection]
-  (let [queue (chan buffer-size)
+  [{:keys [queue-size write-fn-map]} connection]
+  (let [queue-size (or queue-size default-queue-size)
+        queue (chan queue-size)
         thread (create-thread connection queue
                               (merge default-write-fn-map
-                                     write-fn-map))]
+                                     write-fn-map)
+                              queue-size)]
     (map->LocalWriter
      {:queue  queue
+      :queue-size queue-size
       :thread thread
       :streaming? true})))
 
