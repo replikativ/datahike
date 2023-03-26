@@ -5,7 +5,8 @@
             [datahike.core :refer [transact]]
             [datahike.store :refer [store-identity]]
             [datahike.writing :refer [stored->db db->stored stored-db?
-                                      update-and-flush-db create-commit-id]]
+                                      update-and-flush-db create-commit-id
+                                      flush-pending-writes]]
             [superv.async :refer [<? S go-loop-try]]
             [datahike.db.utils :refer [db?]]
             [datahike.tools :as dt]))
@@ -99,6 +100,7 @@
                            (assoc-in [:meta :datahike/parents] parents)
                            (assoc-in [:meta :datahike/commit-id] cid))
                        true)]
+    (flush-pending-writes store true)
     (k/update store :branches #(conj % branch) {:sync? true})
     (k/assoc store cid db {:sync? true})
     (k/assoc store branch db {:sync? true})))

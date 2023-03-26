@@ -12,6 +12,7 @@
             [taoensso.timbre :as log]
             [hasch.core :refer [uuid]]
             [superv.async :refer [go-try- <?-]]
+            [clojure.core.async :refer [poll!]]
             [konserve.utils :refer [async+sync *default-sync-translation*]]))
 
 ;; mapping to storage
@@ -23,6 +24,25 @@
                        :max-tx :max-eid :op-count :hash :meta]]
     (= (count (select-keys obj keys-to-check))
        (count keys-to-check))))
+
+(defn flush-pending-writes [store sync?]
+  (if sync?
+    (when-let [pending-futures (:pending-writes (:storage store))]
+      ;; spin lock
+      (loop [pfs @pending-futures]
+        (let [f (first pfs)]
+          (when f
+            (let [fv (poll! f)]
+              (if fv
+                (recur (rest pfs))
+                (do (Thread/sleep 1)
+                    (recur pfs)))))))
+      (reset! (:pending-writes (:storage store)) []))
+    (go-try-
+     (when-let [pending-futures (:pending-writes (:storage store))]
+       (loop [[f & r] @pending-futures]
+         (when f (<?- f) (recur r)))
+       (reset! (:pending-writes (:storage store)) [])))))
 
 (defn db->stored
   "Maps memory db to storage layout and flushes dirty indices."
@@ -117,10 +137,7 @@
                                         (assoc-in [:meta :datahike/commit-id] cid)
                                         (assoc-in [:meta :datahike/parents] parents))
                       db-to-store   (db->stored db true)
-                      _             (when-let [pending-futures (:pending-writes (:storage store))]
-                                      (loop [[f & r] @pending-futures]
-                                        (when f (<?- f) (recur r)))
-                                      (reset! (:pending-writes (:storage store)) []))
+                      _             (<?- (flush-pending-writes store sync?))
                       commit-log-op (k/assoc store cid db-to-store {:sync? sync?})
                       branch-op     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
                   (<?- commit-log-op)
