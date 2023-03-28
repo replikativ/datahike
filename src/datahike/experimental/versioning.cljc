@@ -141,4 +141,5 @@
   ([conn parents tx-data tx-meta]
    (parent-check parents)
    (update-and-flush-db conn tx-data tx-meta transact
-                        (conj parents (get-in @conn [:config :branch])))))
+                        (conj parents (get-in @conn [:config :branch]))
+                        true)))

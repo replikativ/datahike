@@ -4,7 +4,7 @@
             [datahike.core]
             [datahike.writing :as w]
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
-            [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer]])
+            [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]])
   (:import [clojure.lang ExceptionInfo]))
 
 (defprotocol PWriter
@@ -24,14 +24,14 @@
     thread)
   (-streaming? [_] streaming?))
 
-(def ^:const default-queue-size 200000)
+(def ^:const default-queue-size 20000)
 
 (defn create-thread
   "Creates new transaction thread"
   [connection write-fn-map transaction-queue-size commit-queue-size]
-  (let [transaction-queue-buffer       (buffer transaction-queue-size)
-        transaction-queue              (chan transaction-queue-buffer)
-        commit-queue-buffer            (buffer commit-queue-size)
+  (let [transaction-queue-buffer    (buffer transaction-queue-size)
+        transaction-queue           (chan transaction-queue-buffer)
+        commit-queue-buffer         (buffer commit-queue-size)
         commit-queue                (chan commit-queue-buffer)]
     [transaction-queue commit-queue
      (thread-try
@@ -41,8 +41,8 @@
         (go-loop []
           (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
             (do
-              (when (> (count transaction-queue-buffer) (/ transaction-queue-size 2))
-                (log/warn "Transaction queue buffer more than 50% full, "
+              (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
+                (log/warn "Transaction queue buffer more than 90% full, "
                           (count transaction-queue-buffer) "of" transaction-queue-size  " filled."
                           "Reduce transaction frequency."))
               (let [op-fn (write-fn-map op)
@@ -64,11 +64,12 @@
                                       e))
                               :error))]
                 (when-not (= res :error)
-                  (put! commit-queue [res callback])
                   (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
                     (log/warn "Commit queue buffer more than 50% full, "
                               (count commit-queue-buffer) "of" commit-queue-size  " filled."
-                              "Reduce transaction frequency."))))
+                              "Throttling transaction processing. Reduce transaction frequency.")
+                    (<! (timeout 50)))
+                  (put! commit-queue [res callback])))
               (recur))
             (do
               (close! commit-queue)
@@ -86,13 +87,17 @@
               ;; commit latest tx to disk
               (let [db (:db-after (first (last @txs)))]
                 (try
-                  (let [start-ts                                  (get-time-ms)
+                  (let [start-ts (get-time-ms)
                         {{:keys [datahike/commit-id]} :meta
-                         :as                          _commit-db} (<?- (w/commit! store (:config db) db nil false))]
-                    (log/trace "Commit time (ms): " (- (get-time-ms) start-ts))
+                         :as                          _commit-db} (<?- (w/commit! store (:config db) db nil false))
+                        commit-time (- (get-time-ms) start-ts)]
+                    (log/trace "Commit time (ms): " commit-time)
                     ;; notify all processes that transaction is complete
                     (doseq [[res callback] @txs]
-                      (put! callback (assoc-in res [:tx-meta :db/commitId] commit-id))))
+                      (put! callback
+                            (-> res
+                                (assoc-in [:tx-meta :db/commitId] commit-id)
+                                (assoc-in [:db-after :meta :datahike/commit-id] commit-id)))))
                   (catch Exception e
                     (doseq [[_ callback] @txs]
                       (put! callback e))

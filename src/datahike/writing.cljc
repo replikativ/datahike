@@ -158,7 +158,11 @@
          meta                  (assoc meta :datahike/updated-at txInstant)
          db                    (assoc db-after :meta meta)
          store                 (:store @(:wrapped-atom connection))
-         db                    (if commit? (commit! store config db parents false) db)]
+         db                    (if commit? (commit! store config db parents true) db)
+         parents               (or parents #{(get config :branch)})
+         parents               (branch-heads-as-commits store parents)
+         db                    (assoc-in db [:meta :datahike/parents] parents)
+         tx-report             (assoc tx-report :db-after db)]
      (reset! connection db)
      tx-report
      (if commit?
