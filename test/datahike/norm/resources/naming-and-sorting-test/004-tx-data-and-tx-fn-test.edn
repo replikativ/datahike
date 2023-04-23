@@ -1,0 +1,5 @@
+{:tx-data [{:db/doc         "Simpsons children reference"
+            :db/ident       :character/children
+            :db/valueType   :db.type/ref
+            :db/cardinality :db.cardinality/many}]
+ :tx-fn datahike.norm.norm-test/tx-data-and-tx-fn-test-fn}
