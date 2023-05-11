@@ -406,7 +406,8 @@
     (is (= 1
            (count (d/q '[:find ?t :in $ :where
                          [?t :version/id 0]]
-                       @conn))))))
+                       @conn))))
+    (d/release conn)))
 
 ;; https://github.com/replikativ/datahike/issues/471
 (deftest keyword-keys-test
@@ -454,7 +455,8 @@
                keyword-result)))
       (testing "keyword equals symbol keys"
         (is (= symbol-result
-               keyword-result))))))
+               keyword-result))))
+    (d/release conn)))
 
 (deftest test-normalize-q-input
   (testing "query as vector"

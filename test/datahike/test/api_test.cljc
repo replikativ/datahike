@@ -119,7 +119,8 @@
     (is (thrown? clojure.lang.ExceptionInfo (d/transact conn nil)))
     (is (thrown? clojure.lang.ExceptionInfo (d/transact conn :foo)))
     (is (thrown? clojure.lang.ExceptionInfo (d/transact conn 1)))
-    (is (thrown? clojure.lang.ExceptionInfo (d/transact conn {:foo "bar"})))))
+    (is (thrown? clojure.lang.ExceptionInfo (d/transact conn {:foo "bar"})))
+    (d/release conn)))
 
 (deftest test-transact!-docs
   (let [cfg {:store {:backend :mem
@@ -128,7 +129,8 @@
              :schema-flexibility :read}
         conn (utils/setup-db cfg)]
     ;; add a single datom to an existing entity (1)
-    (is (d/transact! conn [[:db/add 1 :name "Ivan"]]))))
+    (is (d/transact! conn [[:db/add 1 :name "Ivan"]]))
+    (d/release conn)))
 
     ;; retract a single datom
 
@@ -160,7 +162,8 @@
             :name    "Ivan"
             :likes   [:pizza]
             :friends [{:db/id 2, :name "Oleg"}]}
-           (d/pull @conn '[:db/id :name :likes {:friends [:db/id :name]}] 1)))))
+           (d/pull @conn '[:db/id :name :likes {:friends [:db/id :name]}] 1)))
+    (d/release conn)))
 
 (deftest test-pull-many-docs
   (let [cfg {:store {:backend :mem
@@ -172,7 +175,8 @@
         conn (utils/setup-db cfg)]
     (is (= (d/pull-many @conn [:db/id :name] [1 2])
            [{:db/id 1, :name "Ivan"}
-            {:db/id 2, :name "Oleg"}]))))
+            {:db/id 2, :name "Oleg"}]))
+    (d/release conn)))
 
 (deftest test-q-docs
   (let [cfg {:store {:backend :mem
@@ -250,7 +254,8 @@
     (is (= [{:db/id 1, :friend 296, :likes "pizza", :name "Ivan"}]
            (d/q '[:find [(pull ?e [*]) ...]
                   :where [?e ?a ?v]]
-                @conn)))))
+                @conn)))
+    (d/release conn)))
 
 (deftest test-with-docs
   (let [cfg {:store {:backend :mem
@@ -270,7 +275,8 @@
       (is (= {:foo :bar}
              (dissoc (:tx-meta res) :db/txInstant)))
       (is (= '([1 :name "Ivan"])
-             (map dvec (:tx-data res)))))))
+             (map dvec (:tx-data res)))))
+    (d/release conn)))
 
 ;; TODO testing properly on what?
 (deftest test-db-docs
@@ -282,7 +288,8 @@
     (is (= datahike.db.DB
            (type (d/db conn))))
     (is (= datahike.db.DB
-           (type @conn)))))
+           (type @conn)))
+    (d/release conn)))
 
 (deftest test-history-docs
   (let [cfg {:store {:backend :mem
@@ -313,7 +320,8 @@
 
     (is (= #{["Alice" 25] ["Alice" 35] ["Bob" 30]}
            (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                 :args [(d/history (d/db conn))]})))))
+                 :args [(d/history (d/db conn))]})))
+    (d/release conn)))
 
 (deftest test-as-of-docs
   (let [cfg {:store {:backend :mem
@@ -344,7 +352,8 @@
 
     (is (= #{["Alice" 35] ["Bob" 30]}
            (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                 :args [(d/db conn)]})))))
+                 :args [(d/db conn)]})))
+    (d/release conn)))
 
 (deftest test-since-docs
   (let [cfg {:store {:backend :mem
@@ -381,7 +390,8 @@
 
     (is (= #{["Alice" 30] ["Bob" 30]}
            (d/q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-                 :args [(d/db conn)]})))))
+                 :args [(d/db conn)]})))
+    (d/release conn)))
 
 (deftest test-datoms-docs
   (let [cfg {:store {:backend :mem
@@ -521,7 +531,8 @@
     #_(is (= "fail"
              (->> (d/datoms @db {:index :avet :components [:name]})
                   (reverse)
-                  (take 2))))))
+                  (take 2))))
+    (d/release db)))
 
 (deftest test-seek-datoms-doc
   (let [cfg {:store {:backend :mem
@@ -572,7 +583,8 @@
 
     (is (= '([5 :likes "pie"]
              [5 :likes "pizza"])
-           (map dvec (d/seek-datoms @db {:index :eavt :components [5 :likes "fish"]}))))))
+           (map dvec (d/seek-datoms @db {:index :eavt :components [5 :likes "fish"]}))))
+    (d/release db)))
 
 (deftest test-index-range-doc
   (let [cfg {:store {:backend :mem
@@ -603,7 +615,8 @@
            (map dvec (d/index-range @db {:attrid :likes :start "a" :end "zzzzzzzzz"}))))
 
     (is (= '([5 :likes "fries"] [9 :likes "pie"])
-           (map dvec (d/index-range @db {:attrid :likes :start "egg" :end "pineapple"}))))))
+           (map dvec (d/index-range @db {:attrid :likes :start "egg" :end "pineapple"}))))
+    (d/release db)))
 
 (deftest test-database-hash
   (testing "Hashing without history"
@@ -625,7 +638,8 @@
             (let [_ (d/transact conn [[:db/retractEntity 1]])
                   hash-2 (hash @conn)]
               (is (not= hash-2 hash-1))
-              (is (= hash-0 hash-2))))))))
+              (is (= hash-0 hash-2))))))
+      (d/release conn)))
   (testing "Hashing with history"
     (let [cfg {:store {:backend :mem
                        :id "hashing-with-history"}
@@ -645,7 +659,8 @@
             (let [_ (d/transact conn [[:db/retractEntity 1]])
                   hash-2 (hash @conn)]
               (is (not= hash-1 hash-2))
-              (is (not= hash-0 hash-2)))))))))
+              (is (not= hash-0 hash-2))))))
+      (d/release conn))))
 
 (deftest test-database-schema
   (letfn [(test-schema [cfg]
@@ -697,7 +712,8 @@
                       :related-to related-to-schema}
                      (coerced-schema @conn)))
               (is (= related-to-reverse-schema
-                     (d/reverse-schema @conn)))))]
+                     (d/reverse-schema @conn)))
+              (d/release conn)))]
     (let [base-cfg {:store              {:backend :mem
                                          :id      "api-db-schema-test"}
                     :keep-history?      false
@@ -711,7 +727,8 @@
           (is (= {}
                  (d/schema @conn)))
           (is (= {}
-                 (d/reverse-schema @conn)))))
+                 (d/reverse-schema @conn)))
+          (d/release conn)))
       (testing "Empty database with write flexibility and no attribute refs"
         (test-schema base-cfg))
       (testing "Empty database with write flexibility and attribute refs"
@@ -727,7 +744,8 @@
              :schema-flexibility :write}
         conn (utils/setup-db cfg)]
     (is (= #{:datahike/version :datahike/id :datahike/created-at :konserve/version :hitchhiker.tree/version :persistent.set/version :datahike/commit-id}
-           (-> @conn :meta keys set)))))
+           (-> @conn :meta keys set)))
+    (d/release conn)))
 
 (def ^:private metrics-base-cfg {:store              {:backend :mem}
                                  :index              :datahike.index/persistent-set
@@ -837,7 +855,8 @@
                            :avet-count          0}
                     schema-on-write?  update-for-schema-on-write
                     (dbi/-keep-history? @conn) (update-for-history schema-on-write? attribute-refs?)
-                    (:attribute-refs? (.-config @conn)) update-for-attr-refs))))
+                    (:attribute-refs? (.-config @conn)) update-for-attr-refs))
+    (d/release conn)))
 
 (deftest test-metrics-hht
   (test-metrics (assoc metrics-base-cfg :index :datahike.index/hitchhiker-tree

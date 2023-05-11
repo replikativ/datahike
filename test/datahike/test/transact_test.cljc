@@ -193,7 +193,8 @@
            #{["Petr"]}))
     (is (= (d/q '[:find ?v
                   :where [1 :aka ?v]] @conn)
-           #{["Devil"] ["Tupen"]}))))
+           #{["Devil"] ["Tupen"]}))
+    (d/release conn)))
 
 (deftest test-db-fn-cas
   (let [conn (du/setup-db)]
@@ -205,7 +206,8 @@
     (d/transact conn {:tx-data [[:db/cas 1 :weight 300 400]]})
     (is (= (:weight (d/entity @conn 1)) 400))
     (is (thrown-with-msg? Throwable #":db.fn/cas failed on datom \[1 :weight 400\], expected 200"
-                          (d/transact conn {:tx-data [[:db.fn/cas 1 :weight 200 210]]}))))
+                          (d/transact conn {:tx-data [[:db.fn/cas 1 :weight 200 210]]})))
+    (d/release conn))
 
   (let [conn  (du/setup-db {:initial-tx [{:db/ident :label :db/cardinality :db.cardinality/many}]})]
     (d/transact conn {:tx-data [[:db/add 1 :label :x]]})
@@ -213,19 +215,22 @@
     (d/transact conn {:tx-data [[:db.fn/cas 1 :label :y :z]]})
     (is (= (:label (d/entity @conn 1)) #{:x :y :z}))
     (is (thrown-with-msg? Throwable #":db.fn/cas failed on datom \[1 :label \(:x :y :z\)\], expected :s"
-                          (d/transact conn {:tx-data [[:db.fn/cas 1 :label :s :t]]}))))
+                          (d/transact conn {:tx-data [[:db.fn/cas 1 :label :s :t]]})))
+    (d/release conn))
 
   (let [conn (du/setup-db)]
     (d/transact conn {:tx-data [[:db/add 1 :name "Ivan"]]})
     (d/transact conn {:tx-data [[:db.fn/cas 1 :age nil 42]]})
     (is (= (:age (d/entity @conn 1)) 42))
     (is (thrown-with-msg? Throwable #":db.fn/cas failed on datom \[1 :age 42\], expected nil"
-                          (d/transact conn {:tx-data [[:db.fn/cas 1 :age nil 4711]]}))))
+                          (d/transact conn {:tx-data [[:db.fn/cas 1 :age nil 4711]]})))
+    (d/release conn))
 
   (let [conn (du/setup-db)]
     (is (thrown-with-msg? Throwable #"Can't use tempid in '\[:db.fn/cas -1 :attr nil :val\]'. Tempids are allowed in :db/add only"
                           (d/transact conn {:tx-data [[:db/add    -1 :name "Ivan"]
-                                                      [:db.fn/cas -1 :attr nil :val]]})))))
+                                                      [:db.fn/cas -1 :attr nil :val]]})))
+    (d/release conn)))
 
 (deftest test-db-fn
   (let [conn (du/setup-db {:initial-tx [{:db/ident :aka :db/cardinality :db.cardinality/many}]})
@@ -253,7 +258,8 @@
     (let [{:keys [db-after]} (d/transact conn {:tx-data [[:db.fn/call inc-age "Petr"]]})
           e (d/entity db-after 1)]
       (is (= (:age e) 32))
-      (is (:had-birthday e)))))
+      (is (:had-birthday e)))
+    (d/release conn)))
 
 #_(deftest test-db-ident-fn ;; TODO: check for :db/ident support within hhtree
     (let [conn    (du/setup-db {:initial-tx [{:name {:db/unique :db.unique/identity}}]})
@@ -295,7 +301,8 @@
              [3 "Sergey" 30 (+ const/tx0 2)]}
            (d/q '[:find  ?e ?n ?a ?t
                   :where [?e :name ?n ?t]
-                  [?e :age ?a]] @conn)))))
+                  [?e :age ?a]] @conn)))
+    (d/release conn)))
 
 (deftest test-resolve-eid-refs
   (let [conn (du/setup-db {:initial-tx [{:db/ident :friend
@@ -317,46 +324,55 @@
     (is (= (:tempids tx) {-1 3, -2 4, "B" 5, -3 6, :db/current-tx (+ const/tx0 2)}))
     (is (= (d/q {:query q :args [@conn "Sergey"]}) #{["Ivan"] ["Petr"]}))
     (is (= (d/q {:query q :args [@conn "Boris"]}) #{["Oleg"]}))
-    (is (= (d/q {:query q :args [@conn "Oleg"]}) #{["Boris"]})))
+    (is (= (d/q {:query q :args [@conn "Oleg"]}) #{["Boris"]}))
+    (d/release conn))
 
   (testing "Resolve eid for unique attributes with temporary reference value"
-    (let [conn (fn [] (du/setup-db {:initial-tx [{:db/ident       :foo/match
-                                                  :db/valueType   :db.type/ref
-                                                  :db/cardinality :db.cardinality/one
-                                                  :db/unique      :db.unique/identity}]}))
+    (let [cfg {:initial-tx [{:db/ident       :foo/match
+                             :db/valueType   :db.type/ref
+                             :db/cardinality :db.cardinality/one
+                             :db/unique      :db.unique/identity}]}
           query '[:find ?e ?a ?v
                   :where [?e ?a ?v]
                   [(= ?a :foo/match)]]]
       (testing "with maps"
         (testing "temp-eid first"
-          (let [report (d/transact (conn) [{:db/id 16
-                                            :foo/match -1000001}
-                                           {:db/id -1000001
-                                            :foo/match 16}])
+          (let [conn (du/setup-db cfg)
+                report (d/transact conn [{:db/id 16
+                                          :foo/match -1000001}
+                                         {:db/id -1000001
+                                          :foo/match 16}])
                 id (get-in report [:tempids -1000001])]
             (is (= (d/q query (:db-after report))
-                   #{[16 :foo/match id] [id :foo/match 16]}))))
+                   #{[16 :foo/match id] [id :foo/match 16]}))
+            (d/release conn)))
         (testing "temp-vid first"
-          (let [report (d/transact (conn) [{:db/id -1000001
-                                            :foo/match 16}
-                                           {:db/id 16
-                                            :foo/match -1000001}])
+          (let [conn (du/setup-db cfg)
+                report (d/transact conn [{:db/id -1000001
+                                          :foo/match 16}
+                                         {:db/id 16
+                                          :foo/match -1000001}])
                 id (get-in report [:tempids -1000001])]
             (is (= (d/q query (:db-after report))
-                   #{[16 :foo/match id] [id :foo/match 16]})))))
+                   #{[16 :foo/match id] [id :foo/match 16]}))
+            (d/release conn))))
       (testing "with vectors"
         (testing "temp-eid first"
-          (let [report (d/transact (conn) [[:db/add 16 :foo/match -1000001]
-                                           [:db/add -1000001 :foo/match 16]])
+          (let [conn (du/setup-db cfg)
+                report (d/transact conn [[:db/add 16 :foo/match -1000001]
+                                         [:db/add -1000001 :foo/match 16]])
                 id (get-in report [:tempids -1000001])]
             (is (= (d/q query (:db-after report))
-                   #{[16 :foo/match id] [id :foo/match 16]}))))
+                   #{[16 :foo/match id] [id :foo/match 16]}))
+            (d/release conn)))
         (testing "temp-vid first"
-          (let [report (d/transact (conn) [[:db/add -1000001 :foo/match 16]
-                                           [:db/add 16 :foo/match -1000001]])
+          (let [conn (du/setup-db cfg)
+                report (d/transact conn [[:db/add -1000001 :foo/match 16]
+                                         [:db/add 16 :foo/match -1000001]])
                 id (get-in report [:tempids -1000001])]
             (is (= (d/q query (:db-after report))
-                   #{[16 :foo/match id] [id :foo/match 16]}))))))))
+                   #{[16 :foo/match id] [id :foo/match 16]}))
+            (d/release conn)))))))
 
 (deftest test-resolve-current-tx
   (doseq [tx-tempid [:db/current-tx "datomic.tx" "datahike.tx"]]
@@ -388,7 +404,8 @@
               tx-id (get-in tx3 [:tempids tx-tempid])]
           (is (= tx-id (+ const/tx0 3)))
           (is (= (into {} (d/entity @conn tx-id))
-                 {:prop4 "prop4"})))))))
+                 {:prop4 "prop4"})))
+        (d/release conn)))))
 
 (deftest test-tx-meta
   (testing "simple test"
@@ -397,7 +414,8 @@
                                             :age  5}]
                                  :tx-meta {:foo "bar"}})]
       (is (= (dissoc (:tx-meta tx) :db/txInstant :db/commitId)
-             {:foo "bar"}))))
+             {:foo "bar"}))
+      (d/release conn)))
   (testing "generative test"
     (let [conn (du/setup-db)
           Metadata (s/map-of keyword? (s/or :int int?
@@ -410,7 +428,8 @@
                                                  :age  5}]
                                       :tx-meta generated})]
       (is (= (dissoc (:tx-meta tx-report) :db/txInstant :db/commitId)
-             generated))))
+             generated))
+      (d/release conn)))
   (testing "manual txInstant is the same as auto-generated"
     (let [conn (du/setup-db)
           date (tools/get-time)
@@ -425,7 +444,8 @@
                536870913
                true]]
              (mapv (comp #(into [] %) seq)
-                   (d/datoms @conn :eavt))))))
+                   (d/datoms @conn :eavt))))
+      (d/release conn)))
   (testing "missing schema definition"
     (let [schema [{:db/ident       :name
                    :db/cardinality :db.cardinality/one
@@ -440,7 +460,8 @@
       (is (thrown-with-msg? Throwable #"Bad entity attribute :foo at \[:db/add 536870914 :foo :bar 536870914\], not defined in current schema"
                             (d/transact conn {:tx-data [{:name "Sergey"
                                                          :age  5}]
-                                              :tx-meta {:foo :bar}})))))
+                                              :tx-meta {:foo :bar}})))
+      (d/release conn)))
   (testing "meta-data is available on the indices"
     (let [conn (du/setup-db)
           _    (d/transact conn {:tx-data [{:name "Sergey"
@@ -449,7 +470,8 @@
       (is (= #{[536870913 :bar]}
              (d/q '[:find ?e ?v
                     :where [?e :foo ?v]]
-                  @conn)))))
+                  @conn)))
+      (d/release conn)))
   (testing "retracting metadata"
     (let [conn (du/setup-db)
           _    (d/transact conn {:tx-data [{:name "Sergey"
@@ -459,7 +481,8 @@
       (is (= #{}
              (d/q '[:find ?e ?v
                     :where [?e :foo ?v]]
-                  @conn)))))
+                  @conn)))
+      (d/release conn)))
   (testing "overwrite metadata"
     (let [conn (du/setup-db)
           _    (d/transact conn {:tx-data [{:name "Sergey"
@@ -469,7 +492,8 @@
       (is (= #{[536870913 :baz]}
              (d/q '[:find ?e ?v
                     :where [?e :foo ?v]]
-                  @conn)))))
+                  @conn)))
+      (d/release conn)))
   (testing "metadata has txInstant"
     (let [conn (du/setup-db)
           {:keys [tempids]} (d/transact conn {:tx-data [{:name "Sergey"
@@ -479,4 +503,5 @@
                       '[:db/txInstant]
                       (:db/current-tx tempids))
               :db/txInstant
-              inst?)))))
+              inst?))
+      (d/release conn))))

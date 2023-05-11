@@ -82,8 +82,8 @@
 (defn streaming? [writer]
   (-streaming? writer))
 
-(defn backend-dispatch [config & _args]
-  (get-in config [:writer :backend] :self))
+(defn backend-dispatch [& args]
+  (get-in (first args) [:writer :backend] :self))
 
 (defmulti create-database backend-dispatch)
 

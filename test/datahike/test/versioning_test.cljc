@@ -33,7 +33,8 @@
         (let [foo-conn (d/connect (assoc cfg :branch :foo))]
           (d/transact foo-conn [{:age 42}])
           ;; extracted data from foo and decide to merge it into :db
-          (merge! conn #{:foo} [{:age 42}]))
+          (merge! conn #{:foo} [{:age 42}])
+          (d/release foo-conn))
         (is (= 4 (count (<?? S (branch-history conn)))))
         (is (= 2 (count (parent-commit-ids @conn)))))
       (testing "Force branch."
@@ -44,8 +45,11 @@
                (branch-as-db store :db)
                @conn)))
       (testing "Check branch history."
-        (is (= 4 (count (<?? S (branch-history (d/connect (assoc cfg :branch :foo2))))))))
+        (let [conn-foo2 (d/connect (assoc cfg :branch :foo2))]
+          (is (= 4 (count (<?? S (branch-history conn-foo2)))))
+          (d/release conn-foo2)))
       (testing "Delete branch."
         (delete-branch! conn :foo)
         (is (= (k/get store :branches nil {:sync? true})
-               #{:db :foo2}))))))
+               #{:db :foo2})))
+      (d/release conn))))

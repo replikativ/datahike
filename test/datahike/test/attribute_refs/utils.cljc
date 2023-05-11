@@ -3,7 +3,7 @@
             [datahike.db.interface :as dbi]
             [datahike.test.utils :refer [get-time]]))
 
-(def ref-config {:store {:backend :mem}
+(def ref-config {:store {:backend :mem :id "ref-config"}
                  :writer {:backend :self}
                  :attribute-refs? true
                  :keep-history? false

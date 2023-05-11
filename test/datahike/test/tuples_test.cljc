@@ -46,7 +46,8 @@
                                 (d/transact conn [{:prices ["a" "b" "fdsfdsf"]}])))))
       (testing "of more than 8 values"
         (is (thrown-with-msg? ExceptionInfo #".*Cannot store more than 8 values .*"
-                              (d/transact conn [{:prices [1 2 3 4 5 6 7 8 9]}]))))))
+                              (d/transact conn [{:prices [1 2 3 4 5 6 7 8 9]}]))))
+      (d/release conn)))
 
   (testing "heterogeneous tuple"
     (let [conn (connect)]
@@ -60,7 +61,8 @@
                               (d/transact conn [{:coord [100 :coord/west 9]}]))))
       (testing "with type mismatch"
         (is (thrown-with-msg? ExceptionInfo #".*Cannot store heterogeneous tuple: there is a mismatch between values.* and their types.*"
-                              (d/transact conn [{:coord [100 9]}]))))))
+                              (d/transact conn [{:coord [100 9]}]))))
+      (d/release conn)))
 
   (testing "composite tuple"
     (let [conn (connect)
@@ -80,7 +82,8 @@
                              :db/cardinality :db.cardinality/one}]))
       (is (d/transact conn [{:reg/course   "BIO-101"
                              :reg/semester "2018-fall"
-                             :reg/student  "johndoe@university.edu"}])))))
+                             :reg/student  "johndoe@university.edu"}]))
+      (d/release conn))))
 
 (deftest test-transact-and-query-non-composite
   (testing "heterogeneous"
@@ -93,7 +96,8 @@
       (is (= #{[[100 :coord/west]]}
              (d/q '[:find ?v
                     :where [_ :coord ?v]]
-                  @conn)))))
+                  @conn)))
+      (d/release conn)))
   (testing "homogeneous"
     (let [conn (connect)]
       (d/transact conn [{:db/ident       :coord
@@ -104,7 +108,8 @@
       (is (= #{[[100 200 300]]}
              (d/q '[:find ?v
                     :where [_ :coord ?v]]
-                  @conn))))))
+                  @conn)))
+      (d/release conn))))
 
 (deftest test-transact-and-query-composite
   (let [conn (connect)]
@@ -127,7 +132,8 @@
     (is (= #{[[123 nil nil]]}
            (d/q '[:find ?v
                   :where [100 :a+b+c ?v]]
-                @conn)))))
+                @conn)))
+    (d/release conn)))
 
 (defn some-datoms
   [db es]
@@ -215,7 +221,8 @@
         [e :a+c+d [nil "C" "D"]]})
 
     (is (thrown-with-msg? ExceptionInfo #"Can’t modify tuple attrs directly:.*"
-                          (d/transact conn [{:db/id 100 :a+b ["A" "B"]}])))))
+                          (d/transact conn [{:db/id 100 :a+b ["A" "B"]}])))
+    (d/release conn)))
 
 (deftest test-queries
   (let [conn (connect)]
@@ -253,7 +260,8 @@
     (is (= #{["A" "B"] ["A" "b"] ["a" "B"] ["a" "b"]}
            (d/q '[:find ?a ?b
                   :where [?e :a+b ?a+b]
-                  [(untuple ?a+b) [?a ?b]]] @conn)))))
+                  [(untuple ?a+b) [?a ?b]]] @conn)))
+    (d/release conn)))
 
 (deftest test-lookup-refs
   (let [conn (connect)]
@@ -322,7 +330,8 @@
             :b     "b"
             :a+b   ["a" "b"]
             :c     "c"}
-           (d/pull (d/db conn) '[*] [:a+b ["a" "b"]])))))
+           (d/pull (d/db conn) '[*] [:a+b ["a" "b"]])))
+    (d/release conn)))
 
 (deftest test-unique
   (let [conn (connect)]
@@ -375,7 +384,8 @@
       ;; adding entity with two tuple components in a single operation
       (d/transact conn [{:db/id 4 :a "a" :b "c"}])
       (is (= {:db/id 4 :a "a" :b "c" :a+b ["a" "c"]}
-             (d/pull (d/db conn) '[*] 4))))))
+             (d/pull (d/db conn) '[*] 4))))
+    (d/release conn)))
 
 (deftest test-validation
   (let [db (db/empty-db {:a+b {:db/valueType :db.type/tuple

@@ -38,4 +38,5 @@
                   (d/since @conn tx1))))
       (is (= #{["Maria"]}
              (d/q '[:find  ?v :where [?e :name ?v]]
-                  (d/since @conn tx2)))))))
+                  (d/since @conn tx2)))))
+    (d/release conn)))

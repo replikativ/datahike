@@ -1,5 +1,7 @@
 (ns ^:no-doc datahike.connector
-  (:require [datahike.store :as ds]
+  (:require [datahike.connections :refer [get-connection add-connection! delete-connection!
+                                          connections]]
+            [datahike.store :as ds]
             [datahike.writing :as dsi]
             [datahike.config :as dc]
             [datahike.tools :as dt]
@@ -35,6 +37,9 @@
   IMeta
   (meta [_] (meta wrapped-atom)))
 
+(defn connection? [x]
+  (instance? Connection x))
+
 #?(:clj
    (defmethod print-method Connection
      [^Connection conn ^java.io.Writer w]
@@ -44,6 +49,9 @@
 
 (defn deref-conn [^Connection conn]
   (let [wrapped-atom (.-wrapped-atom conn)]
+    (when (= @wrapped-atom :released)
+      (throw (ex-info "Connection has been released."
+                      {:type :connection-has-been-released})))
     (if (not (w/streaming? (get @wrapped-atom :writer)))
       (let [store  (:store @wrapped-atom)
             stored (k/get store (:branch (:config @wrapped-atom)) nil {:sync? true})]
@@ -57,21 +65,7 @@
   (Connection. (atom db :meta {:listeners (atom {})})))
 
 (s/def ::connection #(and (instance? Connection %)
-                          (not= @(:wrapped-atom %) :deleted)))
-
-(def connections (atom {}))
-
-(defn get-connection [conn-id]
-  (when-let [conn (get-in @connections [conn-id :conn])]
-    (swap! connections update-in [conn-id :count] inc)
-    conn))
-
-(defn add-connection! [conn-id conn]
-  (swap! connections assoc conn-id {:conn conn :count 1}))
-
-(defn delete-connection! [conn-id]
-  (reset! (get-connection conn-id) :deleted)
-  (swap! connections dissoc conn-id))
+                          (not= @(:wrapped-atom %) :released)))
 
 (defn version-check [{:keys [meta config] :as db}]
   (let [{dh-stored :datahike/version
@@ -189,14 +183,17 @@
   ([config]
    (-connect config)))
 
-(defn release [connection]
-  (let [db      @(:wrapped-atom connection)
-        conn-id [(ds/store-identity (get-in db [:config :store]))
-                 (get-in db [:config :branch])]]
-    (if-not (get @connections conn-id)
-      (log/info "Connection already released." conn-id)
-      (let [new-conns (swap! connections update-in [conn-id :count] dec)]
-        (when (zero? (get-in new-conns [conn-id :count]))
-          (delete-connection! conn-id)
-          (w/shutdown (:writer db))
-          nil)))))
+(defn release
+  ([connection] (release connection false))
+  ([connection release-all?]
+   (when-not (= @(:wrapped-atom connection) :released)
+     (let [db      @(:wrapped-atom connection)
+           conn-id [(ds/store-identity (get-in db [:config :store]))
+                    (get-in db [:config :branch])]]
+       (if-not (get @connections conn-id)
+         (log/info "Connection already released." conn-id)
+         (let [new-conns (swap! connections update-in [conn-id :count] dec)]
+           (when (or release-all? (zero? (get-in new-conns [conn-id :count])))
+             (delete-connection! conn-id)
+             (w/shutdown (:writer db))
+             nil)))))))

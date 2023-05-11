@@ -66,7 +66,8 @@
                     [?e :age ?a ?t ?op]
                     [?t :db/txInstant ?d]]
                   (d/history @conn)
-                  [:name "Alice"]))))))
+                  [:name "Alice"]))))
+    (d/release conn)))
 
 (deftest test-historical-queries
   (let [cfg (assoc-in cfg-template [:store :id] "test-historical-queries")
@@ -74,9 +75,11 @@
 
     (testing "get all values before specific time"
       (let [_ (d/transact conn [{:db/id [:name "Alice"] :age 30}])
-            _ (sleep 100)
+            ;; sleep to make sure that transact thread has older timestamp
+            _ (sleep 10)
             date (now)
-            _ (sleep 100)
+            ;; sleep to make sure that transact thread has newer timestamp
+            _ (sleep 10)
             _ (d/transact conn [{:db/id [:name "Alice"] :age 35}])
             history-db (d/history @conn)
             current-db @conn
@@ -101,12 +104,15 @@
                (d/q query-with-< history-db [:name "Alice"] date)))))
     (testing "print DB"
       (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:max-tx 536870915 :max-eid 4}}"
-             (pr-str (d/history @conn)))))))
+             (pr-str (d/history @conn)))))
+    (d/release conn)))
 
 (deftest test-as-of-db
   (let [cfg (assoc-in cfg-template [:store :id] "test-as-of-db")
         conn (setup-db cfg)
         first-date (now)
+        ;; sleep to make sure that transact thread has newer timestamp
+        _ (sleep 10)
         tx-id 536870914
         query '[:find ?a :in $ ?e :where [?e :age ?a ?tx]]]
     (testing "get values at specific time"
@@ -131,12 +137,15 @@
         (d/transact conn [[:db/retractEntity [:name "Alice"]]])
         (testing "after"
           (is (= #{}
-                 (d/q find-alices-age (d/as-of @conn tx-id) "Alice"))))))))
+                 (d/q find-alices-age (d/as-of @conn tx-id) "Alice"))))))
+    (d/release conn)))
 
 (deftest test-since-db
   (let [cfg (assoc-in cfg-template [:store :id] "test-since-db")
         conn (setup-db cfg)
         first-date (now)
+        ;; sleep to make sure that transact thread has newer timestamp
+        _ (sleep 10)
         tx-id 536870914
         query '[:find ?a :where [?e :age ?a]]]
     (testing "empty after first insertion"
@@ -151,7 +160,8 @@
                (d/q query (d/since @conn tx-id))))))
     (testing "print DB"
       (is (= "#datahike/SinceDB {:origin #datahike/DB {:max-tx 536870914 :max-eid 4} :time-point 536870914}"
-             (pr-str (d/since @conn tx-id)))))))
+             (pr-str (d/since @conn tx-id)))))
+    (d/release conn)))
 
 (deftest test-no-history
   (let [initial-tx [{:db/ident :name
@@ -178,7 +188,8 @@
              (d/q query (d/history @conn)))))
     (testing "all other attributes are present in history"
       (is (= #{["Alice"] ["Bob"]}
-             (d/q '[:find ?n :where [?e :name ?n]] (d/history @conn)))))))
+             (d/q '[:find ?n :where [?e :name ?n]] (d/history @conn)))))
+    (d/release conn)))
 
 (deftest upsert-history
   (let [cfg {:store {:backend :mem
@@ -354,7 +365,8 @@
     (testing "since db attributes"
       (is (= db (:origin-db (d/since db current-tx))))
       (is (= current-tx (:time-point (d/since db current-tx))))
-      (is (= (:eavt db) (-> db (d/since current-tx) :origin-db :eavt))))))
+      (is (= (:eavt db) (-> db (d/since current-tx) :origin-db :eavt))))
+    (d/release conn)))
 
 (deftest test-filter-current-values-of-same-transaction
   (let [keyword-cfg                                {:store              {:backend :mem}
@@ -382,7 +394,8 @@
         (is (= {:aka "Devil"}
                (d/pull as-of-db [:aka] michal)))
         (is (= nil
-               (d/pull @conn [:aka] michal)))))
+               (d/pull @conn [:aka] michal)))
+        (d/release conn)))
     (testing "cardinality many"
       (testing "keyword attributes"
         (let [schema [name-schema
@@ -401,7 +414,8 @@
           (is (= {:aka ["Devil"]}
                  (d/pull as-of-db [:aka] michal)))
           (is (= nil
-                 (d/pull @conn [:aka] michal)))))
+                 (d/pull @conn [:aka] michal)))
+          (d/release conn)))
 
       (testing "reference attributes show all options"
         (let [schema [name-schema
@@ -415,11 +429,13 @@
               michal (:e (first (filter #(= "Michal" (:v %)) tx-data)))
               as-of-db (d/as-of @conn current-tx)]
           (is (= {:aka ["Devil" "Tupen"]}
-                 (d/pull as-of-db [:aka] michal))))))))
+                 (d/pull as-of-db [:aka] michal)))
+          (d/release conn))))))
 
 ;; https://github.com/replikativ/datahike/issues/572
 (deftest as-of-should-fail-on-invalid-time-points
   (let [cfg (assoc-in cfg-template [:store :id] "as-of-invalid-time-points")
         conn (setup-db cfg)]
     (is (thrown-with-msg? Throwable #"Invalid transaction ID. Must be bigger than 536870912."
-                          (d/as-of @conn 42)))))
+                          (d/as-of @conn 42)))
+    (d/release conn)))
