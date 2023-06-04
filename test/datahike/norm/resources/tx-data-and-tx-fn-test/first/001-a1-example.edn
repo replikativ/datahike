@@ -1,0 +1,5 @@
+{:tx-data [{:db/doc         "Place of occupation"
+            :db/ident       :character/place-of-occupation
+            :db/valueType   :db.type/string
+            :db/cardinality :db.cardinality/one}]
+ :tx-fn   datahike.norm.norm/neutral-fn}

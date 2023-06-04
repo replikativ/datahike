@@ -75,9 +75,11 @@
 
     (testing "get all values before specific time"
       (let [_ (d/transact conn [{:db/id [:name "Alice"] :age 30}])
-            _ (sleep 100)
+            ;; sleep to make sure that transact thread has older timestamp
+            _ (sleep 10)
             date (now)
-            _ (sleep 100)
+            ;; sleep to make sure that transact thread has newer timestamp
+            _ (sleep 10)
             _ (d/transact conn [{:db/id [:name "Alice"] :age 35}])
             history-db (d/history @conn)
             current-db @conn
@@ -109,6 +111,7 @@
   (let [cfg (assoc-in cfg-template [:store :id] "test-as-of-db")
         conn (setup-db cfg)
         first-date (now)
+        ;; sleep to make sure that transact thread has newer timestamp
         _ (sleep 10)
         tx-id 536870914
         query '[:find ?a :in $ ?e :where [?e :age ?a ?tx]]]
@@ -141,6 +144,7 @@
   (let [cfg (assoc-in cfg-template [:store :id] "test-since-db")
         conn (setup-db cfg)
         first-date (now)
+        ;; sleep to make sure that transact thread has newer timestamp
         _ (sleep 10)
         tx-id 536870914
         query '[:find ?a :where [?e :age ?a]]]
