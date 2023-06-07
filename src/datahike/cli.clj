@@ -6,6 +6,7 @@
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [datahike.api :as d]
+            [datahike.pod :refer [run-pod]]
             [clojure.edn :as edn]
             [cheshire.core :as ch]
             [clj-cbor.core :as cbor]
@@ -76,8 +77,12 @@
   should exit (with a error message, and optional ok status), or a map
   indicating the action the program should take and the options provided."
   [args]
-  (let [{:keys [options arguments errors summary]} (parse-opts args cli-options)]
+  (let [{:keys [options arguments errors summary]} (parse-opts args cli-options)
+        pod? (= "true" (System/getenv "BABASHKA_POD"))]
     (cond
+      pod?
+      {:action :pod :options options}
+
       (:help options) ; help => exit OK with usage summary
       {:exit-message (usage summary) :ok? true :options options}
 
@@ -156,6 +161,9 @@
     (if exit-message
       (exit (if ok? 0 1) exit-message)
       (case action
+        :pod
+        (run-pod args)
+
         :create-database
         (report (:format options)
                 (d/create-database (read-string (slurp (first arguments)))))
@@ -245,4 +253,14 @@
         (let [out (d/metrics (load-input (first arguments)))]
           (report (:format options) out))))))
 
-
+(comment
+  (spit "myconfig.edn" {:store {:backend :file,
+                                :path "/tmp/dh-shared-db",
+                                :config {:in-place? true}},
+                        :keep-history? true,
+                        :schema-flexibility :read})
+  (-main "create-database" "myconfig.edn")
+  (-main "transact" "conn:myconfig.edn" "[[:db/add -1 :name \"Linus\"]]")
+  (-main "query" "[:find ?n . :where [?e :name ?n]]" "db:myconfig.edn")
+  (-main "pull" "db:myconfig.edn" "[*]" "1")
+  (-main "delete-database" "myconfig.edn"))
