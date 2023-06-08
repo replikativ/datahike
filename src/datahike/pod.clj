@@ -14,7 +14,7 @@
 (def stdout System/out)
 (def stderr System/err)
 
-(def debug? true)
+(def debug? false)
 
 (defn debug [& strs]
   (when debug?
@@ -48,7 +48,6 @@
     :json)))
 
 (defn write-transit [v]
-  (write-err (str "VVVVVVVVVV: " v))
   (let [baos (java.io.ByteArrayOutputStream.)]
     (transit/write (transit/writer baos :json) v)
     (.toString baos "utf-8")))
@@ -236,12 +235,7 @@
                          read-string)
               id (or id "unknown")]
           (case op
-            :describe (do (write-err {"format" "transit+json"
-                                      "namespaces" [{"name" "datahike.pod"
-                                                     "vars" describe-map}]
-                                      "id" id
-                                      "ops" {"shutdown" {}}})
-                          (write {"format" "transit+json"
+            :describe (do (write {"format" "transit+json"
                                   "namespaces" [{"name" "datahike.pod"
                                                  "vars" describe-map}]
                                   "id" id
@@ -263,7 +257,6 @@
                                         reply {"value" value
                                                "id" id
                                                "status" ["done"]}]
-                                    (write-err reply)
                                     (write stdout reply)))
                               (throw (ex-info (str "Var not found: " var) {}))))
                           (catch Throwable e
@@ -274,7 +267,6 @@
                                                            :type (str (class e))))
                                          "id" id
                                          "status" ["done" "error"]}]
-                              (write-err reply)
                               (write stdout reply))))
                         (recur))
             :shutdown (System/exit 0)
@@ -283,7 +275,6 @@
                            "ex-data" (pr-str {:op op})
                            "id" id
                            "status" ["done" "error"]}]
-                (write-err reply)
                 (write stdout reply))
               (recur))))))))
 
