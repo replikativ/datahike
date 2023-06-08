@@ -70,9 +70,10 @@
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
                           :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
                          com.cognitect/transit-clj {:mvn/version "1.0.333"}
-                         nrepl/bencode {:mvn/version "1.1.0"}
-                         babashka/pods {:git/url "https://github.com/babashka/pods"
-                                        :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
+                         nrepl/bencode             {:mvn/version "1.1.0"}
+                         babashka/pods             {:git/url "https://github.com/babashka/pods"
+                                                    :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
+                         org.clojure/data.json     {:mvn/version "2.4.0"}}}
 
            ;; Checks
 
