@@ -12,7 +12,7 @@
         io.replikativ/datalog-parser                {:mvn/version "0.2.28"}
         io.replikativ/zufall                        {:mvn/version "0.2.9"}
         junit/junit                                 {:mvn/version "4.13.2"}
-        medley/medley                               {:mvn/version "1.4.0"} 
+        medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.5"}
         mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}}
 
@@ -35,7 +35,7 @@
                               org.clojure/tools.cli       {:mvn/version "1.0.219"}
                               incanter/incanter-core      {:mvn/version "1.9.3"}
                               incanter/incanter-charts    {:mvn/version "1.9.3"}
-                              hashp/hashp                 {:mvn/version "0.2.2"} 
+                              hashp/hashp                 {:mvn/version "0.2.2"}
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
            :test {:extra-paths ["test" "bechmark/src" "benchmark/test"]
@@ -68,7 +68,8 @@
                         :extra-deps
                         {clj.native-image/clj.native-image
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
-                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}}}
+                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
+                         org.clojure/data.json {:mvn/version "2.4.0"}}}
 
            ;; Checks
 
