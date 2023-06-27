@@ -1,12 +1,10 @@
-(ns datahike.pod
+(ns ^:no-doc datahike.pod
   (:refer-clojure :exclude [read read-string])
   (:require [bencode.core :as bencode]
             [clojure.java.io :as io]
             [cognitect.transit :as transit]
             [datahike.api :as d])
-  (:import [java.io PushbackInputStream]
-           [java.util Date])
-  (:gen-class))
+  (:import [java.io PushbackInputStream]))
 
 (set! *warn-on-reflection* true)
 
@@ -68,6 +66,46 @@
   ([] (d/database-exists?))
   ([config] (d/database-exists? config)))
 
+(defn connect
+  ([] (connect {}))
+  ([config]
+   (let [conn-hash (hash config)
+         conn-id (str "conn:" conn-hash)]
+     (swap! conns assoc conn-id (d/connect config))
+     conn-id)))
+
+(defn db [conn-id]
+  (let [conn (get @conns conn-id)
+        {:keys [max-eid max-tx] :as db} (d/db conn)
+        db-id (str "db:" max-tx max-eid)]
+    (swap! dbs assoc db-id db)
+    db-id))
+
+(defn db-with [db tx-data]
+  (let [db (get @dbs db)
+        {:keys [max-eid max-tx] :as with} (d/db-with db tx-data)
+        db-id (str "with:" max-tx max-eid)]
+    (swap! dbs assoc db-id with)
+    db-id))
+
+(defn as-of [db time-point]
+  (let [ddb (get @dbs db)
+        db-id (str "asof:" (hash [db time-point]))]
+    (swap! dbs assoc db-id (d/as-of ddb time-point))
+    db-id))
+
+(defn since [db time-point]
+  (let [ddb (get @dbs db)
+        db-id (str "since:" (hash [db time-point]))]
+    (swap! dbs assoc db-id (d/since ddb time-point))
+    db-id))
+
+(defn history [db]
+  (let [db (get @dbs db)
+        db-id (str "historical:" (hash db))]
+    (swap! dbs assoc db-id (d/history db))
+    db-id))
+
 (defn pull
   ([db arg-map]
    (let [db (get @dbs db)]
@@ -85,7 +123,7 @@
            (->> (re-find #"^(\S+?):" arg)
                 second
                 keyword
-                (#{:db :asof :historical :since})))
+                (#{:db :asof :historical :since :with})))
     (get @dbs arg)
     arg))
 
@@ -100,60 +138,37 @@
                      args)]
      (d/q query args))))
 
-(defn db [conn-id]
-  (let [conn (get @conns conn-id)
-        {:keys [max-eid max-tx] :as db} (d/db conn)
-        db-id (str "db:" max-tx max-eid)]
-    (swap! dbs assoc db-id db)
-    db-id))
+(defn datoms
+  ([db arg-map]
+   (let [db (get @dbs db)]
+     (->> (d/datoms db arg-map)
+          (map seq))))
+  ([db index & components]
+   (let [db (get @dbs db)]
+     (->> (d/datoms db {:index index :components components})
+          (map seq)))))
 
-(defn connect
-  ([] (connect {}))
-  ([config]
-   (let [conn-hash (hash config)
-         conn-id (str "conn:" conn-hash)]
-     (swap! conns assoc conn-id (d/connect config))
-     conn-id)))
+(defn entity [db eid]
+  (let [db (get @dbs db)]
+    (write (str "OFOOOOOOOO: : " db " " eid))
+    (d/entity db eid)))
 
 (defn transact [conn arg-map]
   (let [c (get @conns conn)
-        {:keys [db-before db-after tx-meta tempids]} (d/transact c arg-map)]
+        {:keys [db-before db-after tx-meta tx-data tempids]} (d/transact c arg-map)]
     (-> {:tempids tempids}
         (assoc :db-before (select-keys db-before [:max-tx :max-eid]))
         (assoc :db-after (select-keys db-after [:max-tx :max-eid]))
-        (assoc :tx-meta (select-keys tx-meta [:db/txInstant :db/commitId]))
-        (update-in [:tx-meta :db/txInstant] str)
-        (update-in [:tx-meta :db/commitId] str))))
+        (assoc :tx-meta tx-meta)
+        (assoc :tx-data (map seq tx-data)))))
 
 (defn metrics [db]
   (let [db (get @dbs db)]
     (d/metrics db)))
 
-(defn as-of [db {:keys [millis tx-id] :as time-point}]
-  (let [ddb (get @dbs db)
-        db-id (str "asof:" (hash [db time-point]))]
-    (if tx-id
-      (swap! dbs assoc db-id (d/as-of ddb tx-id))
-      (->> (Date. millis)
-           (d/as-of ddb)
-           (swap! dbs assoc db-id)))
-    db-id))
-
-(defn since [db {:keys [millis tx-id] :as time-point}]
-  (let [ddb (get @dbs db)
-        db-id (str "since:" (hash [db time-point]))]
-    (if tx-id
-      (swap! dbs assoc db-id (d/since ddb tx-id))
-      (->> (Date. millis)
-           (d/since ddb)
-           (swap! dbs assoc db-id)))
-    db-id))
-
-(defn history [db]
-  (let [db (get @dbs db)
-        db-id (str "historical:" (hash db))]
-    (swap! dbs assoc db-id (d/history db))
-    db-id))
+(defn schema [db]
+  (let [db (get @dbs db)]
+    (d/schema db)))
 
 (comment
   (def myconf {:keep-history? true,
@@ -175,9 +190,10 @@
                     {:name  "Charlie", :age   40}
                     {:age 15}])
   (def mytimestamp (System/currentTimeMillis))
-  (def myteimestamp (Date.))
+  (java.util.Date.)
+  (as-of (db myconn) (java.util.Date. mytimestamp))
   (transact myconn {:tx-data [{:db/id 3 :age 25}]})
-  (transact myconn [{:name "FOO"  :age "BAR"}])
+  (d/transact (get @conns myconn) [{:name "FOO"  :age "BAR"}])
   (q {:query '{:find [?e ?n ?a]
                :where
                [[?e :name ?n]
@@ -195,11 +211,23 @@
        :where
        [?e :name ?n]
        [?e :age ?a]]
-     (as-of (db myconn) {:tx-id 536870916})
-     #_(as-of (db myconn) {:millis mytimestamp})
+     #_(as-of (db myconn) {:tx-id 536870916})
+     (as-of (db myconn) {:millis mytimestamp})
      #_(since (db myconn) {:tx-id 536870914})
-     #_(since (db myconn) {:millis mytimestamp})
-     #_(history (db myconn))))
+     (since (db myconn) {:millis mytimestamp})
+     #_(history (db myconn)))
+  (datoms (db myconn) {:index :eavt :components [2]})
+  (datoms (as-of (db myconn) {:tx-id 536870916})
+          {:index :eavt :components [2]})
+  (transact myconn {:tx-data [{:db/ident :name :db/valueType :db.type/string :db/unique :db.unique/identity :db/index true :db/cardinality :db.cardinality/one}
+                              {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]})
+  (schema (db myconn))
+  (let [with-db (db-with (db myconn) [{:name "FOO"  :age "13"}])]
+    (q '[:find (pull ?e [*])
+         :where
+         [?e :name _]]
+       with-db))
+  (entity (db myconn) 5))
 
 (def publics
   {'as-of as-of
@@ -207,12 +235,17 @@
    'create-database create-database
    'database-exists? database-exists?
    'db db
+   'db-with db-with
    'delete-database delete-database
+   'history history
    'metrics metrics
    'pull pull
    'pull-many pull-many
    'q q
+   'datoms datoms
+   'entity entity
    'since since
+   'schema schema
    'transact transact})
 
 (defn lookup [var]
