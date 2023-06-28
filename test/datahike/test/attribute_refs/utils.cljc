@@ -1,9 +1,10 @@
 (ns datahike.test.attribute-refs.utils
   (:require [datahike.api :as d]
-            [datahike.db.interface :as dbi]))
+            [datahike.db.interface :as dbi]
+            [datahike.test.utils :refer [get-time]]))
 
-(def ref-config {:store {:backend :mem
-                         :id "attr-refs-test.util"}
+(def ref-config {:store {:backend :mem :id "ref-config"}
+                 :writer {:backend :self}
                  :attribute-refs? true
                  :keep-history? false
                  :schema-flexibility :write})
@@ -83,11 +84,12 @@
     :db/valueType   :db.type/ref}])
 
 (defn setup-new-connection []
-  (d/delete-database ref-config)
-  (d/create-database ref-config)
-  (let [conn (d/connect ref-config)]
-    (d/transact conn test-schema)
-    conn))
+  (let [ref-config (assoc-in ref-config [:store :id] (str (get-time)))]
+    (d/delete-database ref-config)
+    (d/create-database ref-config)
+    (let [conn (d/connect ref-config)]
+      (d/transact conn test-schema)
+      conn)))
 
 (def test-setup
   (let [conn (setup-new-connection)

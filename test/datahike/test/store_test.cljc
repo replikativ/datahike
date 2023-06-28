@@ -8,7 +8,8 @@
 (defn test-store [cfg]
   (let [_ (d/delete-database cfg)]
     (is (not (d/database-exists? cfg)))
-    (let [_ (d/create-database (merge cfg {:schema-flexibility :read}))
+    (let [cfg (merge cfg {:schema-flexibility :read})
+          _ (d/create-database cfg)
           conn (d/connect cfg)]
       (d/transact conn [{:db/id 1, :name  "Ivan", :age   15}
                         {:db/id 2, :name  "Petr", :age   37}
@@ -44,7 +45,8 @@
                (-> @conn :eavt type))))
       (testing "upsert"
         (d/transact conn [{:db/id 1, :name "Paula"}])
-        (is (= "Paula" (:name (d/entity @conn 1))))))))
+        (is (= "Paula" (:name (d/entity @conn 1)))))
+      (d/release conn))))
 
 (deftest test-binary-support
   (let [config {:store {:backend :mem
@@ -63,4 +65,5 @@
                     [?e :payload ?arr]
                     [?e :name ?n]]
                   @conn
-                  (byte-array [0 2 3])))))))
+                  (byte-array [0 2 3]))))
+      (d/release conn))))

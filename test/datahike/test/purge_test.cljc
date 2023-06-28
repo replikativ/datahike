@@ -55,7 +55,8 @@
         (d/transact conn [[:db/purge [:name name] :age 25]])
         (are [x y] (= x y)
           nil (find-age @conn name)
-          nil (find-age (d/history @conn) name))))))
+          nil (find-age (d/history @conn) name))))
+    (d/release conn)))
 
 (deftest test-purge-attribute
   (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] "test-purge-attribute"))]
@@ -77,7 +78,8 @@
           (d/transact conn [[:db.purge/entity [:name name] :age]])
           (are [x y] (= x y)
             true (nil? (find-age @conn name))
-            true (nil? (find-age (d/history @conn) name))))))))
+            true (nil? (find-age (d/history @conn) name))))))
+    (d/release conn)))
 
 (deftest test-purge-entity
   (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] "test-purge-entity"))]
@@ -99,14 +101,16 @@
     (testing "purge something that is not present in the database"
       (is (thrown-with-msg? Throwable
                             #"Can't find entity with ID \[:name \"Alice\"\] to be purged"
-                            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
+                            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))
+    (d/release conn)))
 
 (deftest test-purge-non-temporal-database
   (let [conn (tu/setup-db (-> (assoc-in cfg-template [:store :id] "purge-non-temporal")
                               (assoc :keep-history? false)))]
     (testing "purge data in non temporal database"
       (is (thrown-with-msg? Throwable #"Purge entity is only available in temporal databases\."
-                            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))))
+                            (d/transact conn [[:db.purge/entity [:name "Alice"]]]))))
+    (d/release conn)))
 
 (defn find-ages [db name]
   (d/q '[:find ?a ?op
@@ -136,4 +140,5 @@
                (find-ages (d/history @conn) name)))
         (d/transact conn [[:db.history.purge/before (java.util.Date.)]])
         (is (= #{[30 true]}
-               (find-ages (d/history @conn) name)))))))
+               (find-ages (d/history @conn) name)))))
+    (d/release conn)))

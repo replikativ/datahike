@@ -22,8 +22,6 @@ import org.junit.runner.notification.Failure;
 
 public class DatahikeTest {
 
-    private Object conn;
-
     private Object schema = Clojure.read(" [{:db/ident :name\n" +
             "                 :db/valueType :db.type/string\n" +
             "                 :db/unique :db.unique/identity\n" +
@@ -33,43 +31,32 @@ public class DatahikeTest {
             "                 :db/valueType :db.type/long\n" +
             "                 :db/cardinality :db.cardinality/one}]");
 
-    private APersistentMap config = map(kwd(":store"), map(kwd(":backend"), kwd(":mem")),
-                                        kwd(":name"), "test-empty-db-java",
-                                        kwd(":initial-tx"), this.schema);
+    private APersistentMap config() {
+        String connId = ((Long)(new Date()).getTime()).toString();
+        return map(kwd(":store"), map(kwd(":backend"), kwd(":mem"),
+                                      kwd(":id"), connId),
+                   kwd(":initial-tx"), this.schema);
+    }
 
     private Date firstDate;
     private String query;
 
-    @org.junit.Before
-    public void setUp() throws Exception {
-        Datahike.deleteDatabase(config);
-    }
-
-    @org.junit.After
-    public void tearDown() throws Exception {
-        Datahike.deleteDatabase(config);
-    }
-
-    private void transactOnce() {
+    private Object transactOnce() {
+        APersistentMap config = config();
         Datahike.createDatabase(config);
 
-        conn = Datahike.connect(config);
+        Object conn = Datahike.connect(config);
         query = "[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]";
 
         Datahike.transact(conn, vec(
                 map(kwd(":name"), "Alice", kwd(":age"), 25L),
                 map(kwd(":name"), "Bob", kwd(":age"), 30L)));
+        return conn;
     }
-
-    // @org.junit.Test
-    /* public void db() {
-        Datahike.createDatabase(config);
-        conn = Datahike.connect(config);
-        assertEquals(Datahike.db(conn), deref(conn));
-        } */
 
     @org.junit.Test
     public void databaseExists() {
+        APersistentMap config = config();
         Datahike.createDatabase(config);
         assertTrue(Datahike.databaseExists(config));
         APersistentMap configNotExisting = (APersistentMap)ednFromString("{:store {:backend :mem :id \"it-does-not-exist\"}}");
@@ -78,7 +65,7 @@ public class DatahikeTest {
 
     @org.junit.Test
     public void queryWithDBAndInput() {
-        transactOnce();
+        Object conn = transactOnce();
         query = "[:find ?n ?a :in $ [?n] :where [?e :name ?n] [?e :age ?a]]";
         Set<APersistentVector> res = (Set<APersistentVector>)Datahike.q(query, deref(conn), Clojure.read("[\"Alice\"]"));
         Object[] names = res.stream().map(vec -> vec.get(0)).toArray();
@@ -87,7 +74,7 @@ public class DatahikeTest {
 
     @org.junit.Test
     public void queryWithJavaArrayInput() {
-        transactOnce();
+        Object conn = transactOnce();
         query = "[:find ?n ?a :in $ [?n] :where [?e :name ?n] [?e :age ?a]]";
         Set<APersistentVector> res = (Set<APersistentVector>)Datahike.q(query, deref(conn), new String[] {"Alice"});
         Object[] names = res.stream().map(vec -> vec.get(0)).toArray();
@@ -103,8 +90,9 @@ public class DatahikeTest {
 
     @org.junit.Test
     public void queryWithDB() {
+        APersistentMap config = config();
         Datahike.createDatabase(config);
-        conn = Datahike.connect(config);
+        Object conn = Datahike.connect(config);
 
         // Transacting new schema
         Datahike.transact(conn, vec(map(kwd(":db/ident"), kwd(":name"),
@@ -125,7 +113,7 @@ public class DatahikeTest {
 
     @org.junit.Test
     public void history() {
-        transactOnce();
+        Object conn = transactOnce();
 
         Set<APersistentVector> res = (Set<APersistentVector>)Datahike.q((String) query, Datahike.history(deref(conn)));
         Object[] names = res.stream().map(pv -> pv.get(0)).toArray();
@@ -134,7 +122,7 @@ public class DatahikeTest {
 
     @Test
     public void asOfAndSince() {
-        transactOnce();
+        Object conn = transactOnce();
 
         // Make sure transaction has older timestamp than firstDate
         try {
@@ -157,7 +145,7 @@ public class DatahikeTest {
 
     @Test
     public void pullAndPullMany() {
-        transactOnce();
+        Object conn = transactOnce();
 
         Datahike.transact(conn, vec(map(kwd(":db/id"), 10,
                                         kwd(":name"), "Joe",
@@ -174,15 +162,17 @@ public class DatahikeTest {
 
     @Test
     public void release() {
+        APersistentMap config = config();
         Datahike.createDatabase(config);
-        conn = Datahike.connect(config);
+        Object conn = Datahike.connect(config);
         Datahike.release(conn);
     }
 
     @Test
     public void seekDatoms() {
+        APersistentMap config = config();
         Datahike.createDatabase(config);
-        conn = Datahike.connect(config);
+        Object conn = Datahike.connect(config);
 
         Datahike.transact(conn, (APersistentVector)Clojure.read("[{:db/id 10 :name \"Petr\" :age 44} {:db/id 20 :name \"Ivan\" :age 25} {:db/id 30 :name \"Sergey\" :age 11}]"));
         List<APersistentVector> res = Datahike.seekdatoms(deref( conn), kwd(":eavt"), 10);
@@ -215,7 +205,7 @@ public class DatahikeTest {
 
     @Test
     public void entity() {
-        transactOnce();
+        Object conn = transactOnce();
         Datahike.transact(conn, vec(map(kwd(":db/id"), 10,
                 kwd(":name"), "Joe",
                 kwd(":age"), 50L)));
@@ -227,7 +217,7 @@ public class DatahikeTest {
 
     @Test
     public void entityDb() {
-        transactOnce();
+        Object conn = transactOnce();
         Datahike.transact(conn, vec(map(kwd(":db/id"), 10,
                 kwd(":name"), "Joe",
                 kwd(":age"), 50L)));
@@ -239,8 +229,9 @@ public class DatahikeTest {
 
     @Test
     public void filterAndIsFiltered() {
+        APersistentMap config = config();
         Datahike.createDatabase(config);
-        conn = Datahike.connect(config);
+        Object conn = Datahike.connect(config);
         assertFalse(Datahike.isFiltered(deref(conn)));
 
         Datahike.transact(conn, (APersistentVector)Clojure.read("[{:db/id 10 :name \"Petr\" :age 44} {:db/id 20 :name \"Ivan\" :age 25} {:db/id 30 :name \"Sergey\" :age 11}]"));
@@ -250,8 +241,9 @@ public class DatahikeTest {
 
     @Test
     public void dbWith() {
+        APersistentMap config = config();
         Datahike.createDatabase(config);
-        conn = Datahike.connect(config);
+        Object conn = Datahike.connect(config);
         APersistentVector txData = (APersistentVector)Clojure.read("[{:db/id 10 :name \"Petr\" :age 44} {:db/id 20 :name \"Ivan\" :age 25} {:db/id 30 :name \"Sergey\" :age 11}]");
         Object dbAfter = Datahike.dbWith(deref(conn), txData);
         query = "[:find ?a :in $ :where [?e :age ?a]]";

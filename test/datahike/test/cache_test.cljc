@@ -33,5 +33,6 @@
            (d/q {:query '[:find ?n ?op
                           :where
                           [?e :name ?n _ ?op]]
-                 :args  [(d/history @conn)]})))))
+                 :args  [(d/history @conn)]})))
+    (d/release conn)))
 

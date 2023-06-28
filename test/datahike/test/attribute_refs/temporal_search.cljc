@@ -18,4 +18,5 @@
     (is (= (d/q query @conn)
            (d/q query (d/history @conn))))
     (is (< 1
-           (count (d/q query (d/history @conn)))))))
+           (count (d/q query (d/history @conn)))))
+    (d/release conn)))

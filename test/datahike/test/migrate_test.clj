@@ -117,9 +117,9 @@
         (let [cfg (merge base-config
                          {:keep-history? hist
                           :attribute-refs? attr-ref})
-              old-cfg (assoc-in cfg [:store :path] old-path)
+              old-cfg (assoc-in cfg [:store :path] (str old-path (utils/get-time)))
               old-conn (utils/setup-db old-cfg)
-              new-cfg (assoc-in cfg [:store :path] new-path)
+              new-cfg (assoc-in cfg [:store :path] (str new-path (utils/get-time)))
               new-conn (utils/setup-db new-cfg)]
           (d/transact old-conn schema)
           (d/transact old-conn tx-data)
@@ -129,16 +129,18 @@
           (is (= (d/datoms (if (:keep-history? cfg) (d/history @old-conn) @old-conn) :eavt)
                  (filter #(< (:e %) (:max-tx @new-conn))
                          (d/datoms (if (:keep-history? cfg) (d/history @new-conn) @new-conn) :eavt))))
+          (d/release old-conn)
+          (d/release new-conn)
           (d/delete-database old-cfg)
           (d/delete-database new-cfg))))
 
     (testing "Export history database, import non-history database"
       (let [old-cfg (-> base-config
-                        (assoc-in [:store :path] old-path)
+                        (assoc-in [:store :path] (str old-path (utils/get-time)))
                         (assoc :keep-history? true))
             old-conn (utils/setup-db old-cfg)
             new-cfg (-> base-config
-                        (assoc-in [:store :path] new-path)
+                        (assoc-in [:store :path] (str new-path (utils/get-time)))
                         (assoc :keep-history? false))
             new-conn (utils/setup-db new-cfg)]
         (d/transact old-conn schema)
@@ -147,16 +149,18 @@
         (m/import-db new-conn export-path)
         (is (= (d/datoms @old-conn :eavt)
                (d/datoms @new-conn :eavt)))
+        (d/release old-conn)
+        (d/release new-conn)
         (d/delete-database old-cfg)
         (d/delete-database new-cfg)))
 
     (testing "Export non-history database, import history database"
       (let [old-cfg (-> base-config
-                        (assoc-in [:store :path] old-path)
+                        (assoc-in [:store :path] (str old-path (utils/get-time)))
                         (assoc :keep-history? false))
             old-conn (utils/setup-db old-cfg)
             new-cfg (-> base-config
-                        (assoc-in [:store :path] new-path)
+                        (assoc-in [:store :path] (str new-path (utils/get-time)))
                         (assoc :keep-history? true))
             new-conn (utils/setup-db new-cfg)]
         (d/transact old-conn schema)
@@ -166,6 +170,8 @@
         (is (= (d/datoms @old-conn :eavt)
                (filter #(< (:e %) (:max-tx @new-conn))
                        (d/datoms @new-conn :eavt))))
+        (d/release old-conn)
+        (d/release new-conn)
         (d/delete-database old-cfg)
         (d/delete-database new-cfg)))))
 
@@ -175,19 +181,20 @@
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
           cfg           {:store         {:backend :mem
-                                         :id      "load-entities-test-no-attr-refs"}
+                                         :id      "load-entities-test-no-attr-refs1"}
                          :keep-history? true
                          :attribute-refs false}
           conn (utils/setup-db cfg)]
       @(d/load-entities conn source-datoms)
       (is (= (into #{} source-datoms)
-             (d/q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))))
+             (d/q '[:find ?e ?a ?v ?t ?op :where [?e ?a ?v ?t ?op]] @conn)))
+      (d/release conn)))
   (testing "Test migrate simple datoms with attribute refs"
     (let [source-datoms (->> tx-data
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
           cfg           {:store         {:backend :mem
-                                         :id      "load-entities-test-no-attr-refs"}
+                                         :id      "load-entities-test-no-attr-refs2"}
                          :keep-history? true
                          :attribute-refs? true
                          :schema-flexibility :write}
@@ -199,7 +206,8 @@
              (d/q '[:find ?a ?v ?t ?op
                     :where
                     [?e ?attr ?v ?t ?op]
-                    [?attr :db/ident ?a]] @conn))))))
+                    [?attr :db/ident ?a]] @conn)))
+      (d/release conn))))
 
 (deftest load-entities-history-test
   (testing "Migrate predefined set with historical data"
@@ -244,7 +252,9 @@
       (is (= (current-q source-conn)
              (current-q target-conn)))
       (is (= (history-q source-conn)
-             (history-q target-conn))))))
+             (history-q target-conn)))
+      (d/release source-conn)
+      (d/release target-conn))))
 
 (deftest test-binary-support
   (let [config {:store {:backend :mem
@@ -261,4 +271,6 @@
     (is (utils/all-true? (map #(or (= %1 %2) (utils/all-eq? (nth %1 2) (nth %2 2)))
                               (d/datoms @conn :eavt)
                               (filter #(< (datom/datom-tx %) (:max-tx @import-conn))
-                                      (d/datoms @import-conn :eavt)))))))
+                                      (d/datoms @import-conn :eavt)))))
+    (d/release conn)
+    (d/release import-conn)))

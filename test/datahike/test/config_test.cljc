@@ -43,6 +43,7 @@
                          :schema-flexibility :write
                          :crypto-hash? false
                          :branch :db
+                         :writer c/self-writer
                          :search-cache-size c/*default-search-cache-size*
                          :store-cache-size c/*default-store-cache-size*}]
     (is (= (merge default-new-cfg
@@ -56,19 +57,19 @@
 (deftest load-config-test
   (testing "configuration defaults"
     (let [config (c/load-config)]
-      (is (= (merge {:store {:backend :mem
-                             :id "default"}
+      (is (= (merge {:store {:backend :mem}
                      :attribute-refs? c/*default-attribute-refs?*
                      :keep-history? c/*default-keep-history?*
                      :schema-flexibility c/*default-schema-flexibility*
                      :index c/*default-index*
                      :crypto-hash? c/*default-crypto-hash?*
                      :branch c/*default-db-branch*
+                     :writer c/self-writer
                      :search-cache-size c/*default-search-cache-size*
                      :store-cache-size c/*default-store-cache-size*}
                     (when (seq (di/default-index-config c/*default-index*))
                       {:index-config (di/default-index-config c/*default-index*)}))
-             (-> config (dissoc :name)))))))
+             (update config :store dissoc :id))))))
 
 (deftest core-config-test
   (testing "Schema on write in core empty database"

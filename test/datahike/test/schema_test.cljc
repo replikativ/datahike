@@ -102,7 +102,8 @@
                                              ":db.type/long :db.type/valueType :db.type/symbol\\}"))
                             (d/transact conn [{:db/ident       :phone
                                                :db/cardinality :db.cardinality/one
-                                               :db/valueType   :string}]))))))
+                                               :db/valueType   :string}]))))
+    (d/release conn)))
 
 (deftest test-db-with-initial-schema
   (let [cfg "datahike:mem://test-db-with-initial-schema"
@@ -161,7 +162,8 @@
                        3         :age})
                (dbi/-schema db)))
         (is (= #{[:name :db.type/string :db.cardinality/many] [:age :db.type/long :db.cardinality/one]}
-               (d/q find-schema-q db)))))))
+               (d/q find-schema-q db)))))
+    (d/release conn)))
 
 (defn testing-type [conn type-name tx-val tx-id wrong-val]
   (testing type-name
@@ -230,7 +232,8 @@
     (testing-type conn "long" (long 2) 20 :2)
     (testing-type conn "string" "one" 21 :one)
     (testing-type conn "symbol" 'one 22 :one)
-    (testing-type conn "uuid" (random-uuid) 23 1)))
+    (testing-type conn "uuid" (random-uuid) 23 1)
+    (d/release conn)))
 
 (deftest test-schema-cardinality
   (let [cfg "datahike:mem://test-schema-cardinality"
@@ -277,7 +280,8 @@
       (is (thrown-with-msg? Throwable
                             #"Update not supported for these schema attributes"
                             (d/transact conn [{:db/id [:db/ident :owner]
-                                               :db/cardinality :db.cardinality/many}]))))))
+                                               :db/cardinality :db.cardinality/many}]))))
+    (d/release conn)))
 
 (deftest test-schema-persistence
   (testing "test file persistence"
@@ -295,7 +299,9 @@
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db conn)))))
       (testing "reconnect with db"
         (let [new-conn (d/connect cfg)]
-          (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db new-conn))))))
+          (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db new-conn))))
+          (d/release new-conn)))
+      (d/release conn)
       (d/delete-database cfg)))
   (testing "test mem persistence"
     (let [cfg "datahike:mem://test-schema-persistence"
@@ -306,20 +312,24 @@
       (testing "reconnect with db"
         (let [new-conn (d/connect cfg)]
           (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db new-conn))))))
+      (d/release conn)
       (d/delete-database cfg))))
 
 (deftest test-schema-on-read-db
   (testing "test database creation with schema-on-read"
-    (let [cfg "datahike:mem://test-schemaless-db"
+    (let [cfg {:store {:backend :mem
+                       :id "test-schemaless-db"}
+               :schema-flexibility :read}
           _ (d/delete-database cfg)
-          _ (d/create-database cfg :schema-on-read true)
+          _ (d/create-database cfg)
           conn (d/connect cfg)]
       (testing "insert any data"
         (d/transact conn [{:name "Alice" :age 26} {:age "12" :car :bmw}])
         (is (= #{[1 "Alice" 26]}
                (d/q '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]] (d/db conn))))
         (is (= #{[2 "12" :bmw]}
-               (d/q '[:find ?e ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn))))))))
+               (d/q '[:find ?e ?a ?c :where [?e :age ?a] [?e :car ?c]] (d/db conn)))))
+      (d/release conn))))
 
 (deftest test-ident
   (testing "use db/ident as enum"
@@ -338,7 +348,8 @@
       (testing "insert data with enums"
         (d/transact conn [{:message "important" :tag :important} {:message "archive" :tag [:important :archive]}])
         (is (= #{["important" :important] ["archive" :important] ["archive" :archive]}
-               (d/q '[:find ?m ?t :where [?e :message ?m] [?e :tag ?te] [?te :db/ident ?t]] (d/db conn))))))))
+               (d/q '[:find ?m ?t :where [?e :message ?m] [?e :tag ?te] [?te :db/ident ?t]] (d/db conn))))
+        (d/release conn)))))
 
 (deftest test-remove-schema
   (let [cfg "datahike:mem://test-remove-schema"
@@ -351,7 +362,8 @@
                             #"Schema with attribute :name does not exist"
                             (dbt/remove-schema db (da/datom 1 :db/ident :name)))))
     (testing "when upserting a non existing schema, it should not throw an exception"
-      (is (d/transact conn [name-schema])))))
+      (is (d/transact conn [name-schema])))
+    (d/release conn)))
 
 (deftest test-update-schema
   (let [cfg "datahike:mem://test-update-schema"
@@ -393,4 +405,5 @@
         (is (thrown-with-msg? Throwable
                               #"Update not supported for these schema attributes"
                               (d/transact conn {:tx-data [(assoc personal-id-schema :db/cardinality :db.cardinality/many)]}))
-            "It shouldn't be allowed to update :db/cardinality to :db.cardinality/many")))))
+            "It shouldn't be allowed to update :db/cardinality to :db.cardinality/many")))
+    (d/release conn)))

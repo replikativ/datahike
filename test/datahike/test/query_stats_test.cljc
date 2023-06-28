@@ -7,7 +7,7 @@
             [datahike.query :refer [query-stats]]
             [datahike.test.utils :refer [with-db]]))
 
-(def config (d/load-config))
+(def config {:store {:type :mem :id "query-stats-test"}})
 
 (def test-schema [{:db/ident :name
                    :db/valueType :db.type/string

@@ -4,9 +4,12 @@
             [konserve.memory :as mem]
             [environ.core :refer [env]]
             [datahike.index :as di]
+            [datahike.tools :as dt]
             [konserve.cache :as kc]
             [clojure.core.cache :as cache]
-            [taoensso.timbre :refer [info]]))
+            [taoensso.timbre :refer [info]]
+            [zufall.core :refer [rand-german-mammal]])
+  #?(:clj (:import [java.nio.file Paths])))
 
 (defn add-cache-and-handlers [raw-store config]
   (cond->> (kc/ensure-cache
@@ -14,6 +17,11 @@
             (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config))))
     (not= :mem (get-in config [:backend :store]))
     (di/add-konserve-handlers config)))
+
+(defmulti store-identity
+  "Value that identifies the underlying store."
+  {:arglist '([config])}
+  :backend)
 
 (defmulti empty-store
   "Creates an empty store"
@@ -69,6 +77,10 @@
 
 (def memory (atom {}))
 
+(defmethod store-identity :mem
+  [config]
+  [:mem (:id config)])
+
 (defmethod empty-store :mem [{:keys [id]}]
   (if-let [store (get @memory id)]
     store
@@ -84,7 +96,7 @@
 
 (defmethod default-config :mem [config]
   (merge
-   {:id (:datahike-store-id env "default")}
+   {:id (:datahike-store-id env (rand-german-mammal))}
    config))
 
 (s/def :datahike.store.mem/backend #{:mem})
@@ -96,8 +108,11 @@
 
 ;; file
 
-(defmethod empty-store :file [{:keys [path]}]
-  (fs/connect-fs-store path :opts {:sync? true}))
+(defmethod store-identity :file [config]
+  [:file (:scope config) (:path config)])
+
+(defmethod empty-store :file [{:keys [path config]}]
+  (fs/connect-fs-store path :opts {:sync? true} :config config))
 
 (defmethod delete-store :file [{:keys [path]}]
   (fs/delete-store path))
@@ -105,14 +120,20 @@
 (defmethod connect-store :file [{:keys [path config]}]
   (fs/connect-fs-store path :opts {:sync? true} :config config))
 
+(defn- get-working-dir []
+  (.toString (.toAbsolutePath (Paths/get "" (into-array String [])))))
+
 (defmethod default-config :file [config]
   (merge
-   {:path (:datahike-store-path env "datahike-db")}
+   {:path (:datahike-store-path env (str (get-working-dir) "/datahike-db-" (rand-german-mammal)))
+    :scope (dt/get-hostname)}
    config))
 
 (s/def :datahike.store.file/path string?)
 (s/def :datahike.store.file/backend #{:file})
-(s/def ::file (s/keys :req-un {:datahike.store.file/backend
-                               :datahike.store.file/path}))
+(s/def :datahike.store.file/scope string?)
+(s/def ::file (s/keys :req-un [:datahike.store.file/backend
+                               :datahike.store.file/path
+                               :datahike.store.file/scope]))
 
 (defmethod config-spec :file [_] ::file)

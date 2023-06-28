@@ -37,4 +37,5 @@
             (dd/datom 4 :name "Evgeny" (+ const/tx0 3) false)]
            (rest (:tx-data (second @reports)))))
     (is (= (dissoc (:tx-meta (second @reports)) :db/txInstant)
-           {}))))
+           {}))
+    (d/release conn)))

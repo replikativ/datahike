@@ -3,7 +3,8 @@
    [superv.async :refer [throw-if-exception-]]
    #?(:clj [clojure.java.io :as io])
    [taoensso.timbre :as log])
-  #?(:clj (:import [java.util Properties UUID Date])))
+  #?(:clj (:import [java.util Properties UUID Date]
+                   [java.net InetAddress])))
 
 (defn combine-hashes [x y]
   #?(:clj  (clojure.lang.Util/hashCombine x y)
@@ -91,11 +92,19 @@
      :cljs
      "JavaScript"))
 
+(def datahike-version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT"))
+
+(def hitchhiker-tree-version (get-version 'io.replikativ/hitchhiker-tree))
+
+(def persistent-set-version (get-version 'persistent-sorted-set/persistent-sorted-set))
+
+(def konserve-version (get-version 'io.replikativ/konserve))
+
 (defn meta-data []
-  {:datahike/version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT")
-   :konserve/version (get-version 'io.replikativ/konserve)
-   :hitchhiker.tree/version (get-version 'io.replikativ/hitchhiker-tree)
-   :persistent.set/version (get-version 'persistent-sorted-set/persistent-sorted-set)
+  {:datahike/version datahike-version
+   :konserve/version konserve-version
+   :hitchhiker.tree/version hitchhiker-tree-version
+   :persistent.set/version persistent-set-version
    :datahike/id (UUID/randomUUID)
    :datahike/created-at (Date.)})
 
@@ -134,3 +143,7 @@
              1000000.0)]
     {:res result
      :t t}))
+
+(defn get-hostname []
+  #?(:clj (.getHostAddress (InetAddress/getLocalHost))
+     :cljs (raise "Not supported yet." {:type :hostname-not-supported-yet})))

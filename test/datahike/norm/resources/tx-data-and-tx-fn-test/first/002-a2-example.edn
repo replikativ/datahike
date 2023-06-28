@@ -1,0 +1,5 @@
+{:tx-data [{:db/doc         "Simpsons character name"
+            :db/ident       :character/name
+            :db/unique      :db.unique/identity
+            :db/valueType   :db.type/string
+            :db/cardinality :db.cardinality/one}]}

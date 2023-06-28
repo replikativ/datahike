@@ -244,4 +244,5 @@
                                          :where
                                          [[?child :name ?n]
                                           (parent-info ?child ["Alice"] ?age)]}
-                                :args [@conn "Charlie" rules]})))))
+                                :args [@conn "Charlie" rules]})))
+    (d/release conn)))

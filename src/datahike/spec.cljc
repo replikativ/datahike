@@ -1,5 +1,6 @@
 (ns datahike.spec
-  (:require [datahike.datom :refer [datom?]]
+  (:require [datahike.connector :refer [connection?]]
+            [datahike.datom :refer [datom?]]
             [datahike.db.utils :as dbu]
             [spec-tools.data-spec :as ds]
             [clojure.spec.alpha :as s])
@@ -21,11 +22,7 @@
                     :deprecated/map :deprecated/config
                     :deprecated/uri string?))
 
-(def SConnectionAtom
-  (fn [x]
-    (and
-     (instance? IAtom x)
-     (s/valid? SDB @x))))
+(def SConnection connection?)
 
 (def SEId (s/or :number number? :coll sequential? :keyword keyword?))
 

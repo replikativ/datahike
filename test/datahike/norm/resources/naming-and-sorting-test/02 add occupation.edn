@@ -1,0 +1,5 @@
+{:tx-data [{:db/doc         "Occupation"
+            :db/ident       :character/occupation
+            :db/valueType   :db.type/keyword
+            :db/cardinality :db.cardinality/one}]
+ :tx-fn datahike.norm.norm-test/naming-and-sorting-test-fn}

@@ -76,22 +76,23 @@
     (testing "changing the datom value just add the new datom to history"
       (d/transact conn {:tx-data [{:db/id [:name "Alice"]
                                    :email "al@eco.com"}]})
-      (is (= 2 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :email)))))))
+      (is (= 2 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :email)))))
+    (d/release conn)))
 
 (deftest insert-history-mem
-  (let [config {:store {:backend :mem :id "temp-hist"}
+  (let [config {:store {:backend :mem :id "insert-hist"}
                 :schema-flexibility :write
                 :keep-history? true}]
     (insert-history-test config)))
 
 (deftest insert-history-file
-  (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
+  (let [config {:store {:backend :file :path "/tmp/insert-hist-hht"}
                 :schema-flexibility :write
                 :keep-history? true}]
     (insert-history-test config)))
 
 (deftest insert-history-file-with-attr-refs
-  (let [config {:store {:backend :file :path "/tmp/temp-hist-attr-refs"}
+  (let [config {:store {:backend :file :path "/tmp/insert-hist-attr-refs"}
                 :schema-flexibility :write
                 :keep-history? true
                 :attribute-refs? true}]
@@ -108,6 +109,7 @@
                  :db/valueType   :db.type/ref
                  :db/index       true
                  :db/cardinality :db.cardinality/many}]
+        _      (d/delete-database config)
         _      (d/create-database config)
         conn   (d/connect config)]
     (d/transact conn schema)
@@ -117,6 +119,7 @@
 
     (let [conn (d/connect config)]
       ;; Would fail if insert read handlers are not present
-      (is (d/datoms @conn :eavt)))
+      (is (d/datoms @conn :eavt))
+      (d/release conn))
 
     (d/delete-database config)))

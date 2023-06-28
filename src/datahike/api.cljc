@@ -1,8 +1,10 @@
 (ns datahike.api
   (:refer-clojure :exclude [filter])
-  (:require [datahike.config :as config]
+  (:require [datahike.connector :as dc]
+            [datahike.config :as config]
             [clojure.spec.alpha :as s]
-            [datahike.connector :as dc]
+            [datahike.writer :as dw]
+            [datahike.writing :as writing]
             [datahike.constants :as const]
             [datahike.core :as dcore]
             [datahike.spec :as spec]
@@ -23,7 +25,7 @@
   connect
   :args (s/alt :config (s/cat :config spec/SConfig)
                :nil (s/cat))
-  :ret spec/SConnectionAtom)
+  :ret spec/SConnection)
 (def
   ^{:arglists '([] [config])
     :doc "Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
@@ -58,7 +60,7 @@
           Usage:
 
               (database-exists? {:store {:backend :mem :id \"example\"}})"}
-  database-exists? dc/database-exists?)
+  database-exists? writing/database-exists?)
 
 (s/fdef
   create-database
@@ -67,7 +69,10 @@
                               :temporal-index (s/? (s/cat :k (s/? (s/and #(= % :temporal-index))) :v boolean?))
                               :schema-on-read (s/? (s/cat :k (s/? (s/and #(= % :schema-on-read))) :v boolean?)))
                :nil (s/cat))
-  :ret nil?)
+  :ret #(s/valid? spec/SConfig [%]))
+
+(declare transact release)
+
 (def
   ^{:arglists '([] [config & deprecated-opts])
     :doc "Creates a database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
@@ -82,7 +87,7 @@
             - `:read` validates the data when your read data from the database, `:write` validates the data when you transact new data.
           - `:index` defines the data type of the index. Available are `:datahike.index/hitchhiker-tree`, `:datahike.index/persistent-set` (only available with in-memory storage)
           - `:name` defines your database name optionally, if not set, a random name is created
-          - `:transactor` optionally configures a transactor as a hash map. If not set, the default local transactor is used.
+          - `:writer` optionally configures a writer as a hash map. If not set, the default local writer is used.
 
           Default configuration has in-memory store, keeps history with write schema flexibility, and has no initial transaction:
           {:store {:backend :mem :id \"default\"} :keep-history? true :schema-flexibility :write}
@@ -96,7 +101,7 @@
               ;; You may influence this behaviour using the `:schema-flexibility` attribute:
               (create-database {:store {:backend :mem :id \"example\"} :schema-flexibility :read})
 
-              ;; By storing historical data in a separate index, datahike has the capability of querying data from any point in time.
+              ;; By writing historical data in a separate index, datahike has the capability of querying data from any point in time.
               ;; You may control this feature using the `:keep-history?` attribute:
               (create-database {:store {:backend :mem :id \"example\"} :keep-history? false})
 
@@ -104,7 +109,13 @@
               (create-database {:store {:backend :mem :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"}
 
   create-database
-  dc/create-database)
+  (fn [& args]
+    (let [config @(apply dw/create-database args)]
+      (when-let [txs (:initial-tx config)]
+        (let [conn (connect config)]
+          (transact conn txs)
+          (release conn)))
+      config)))
 
 (s/fdef
   delete-database
@@ -115,16 +126,26 @@
        :doc      "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
                   For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"}
   delete-database
-  dc/delete-database)
+  (fn [& args]
+    @(apply dw/delete-database args)))
+
+(s/fdef
+  transact!
+  :args (s/cat :conn spec/SConnection :txs spec/STransactions)
+  :ret #(s/valid? spec/STransactionReport @%))
+(def ^{:arglists '([conn tx-data tx-meta])
+       :no-doc   true}
+  transact!
+  dw/transact!)
 
 (s/fdef
   transact
-  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
+  :args (s/cat :conn spec/SConnection :txs spec/STransactions)
   :ret spec/STransactionReport)
 (def ^{:arglists '([conn arg-map])
        :doc      "Applies transaction to the underlying database value and atomically updates the connection reference to point to the result of that transaction, the new db value.
 
-                  Accepts the connection and a map or a vector as argument, specifying the transaction data.
+                  Accepts the connection and a map, vector or sequence as argument, specifying the transaction data.
 
                   Returns transaction report, a map:
 
@@ -208,32 +229,35 @@
                       (transact conn [[:db/add  -1 :name   \"Oleg\"]
                                       {:db/add 296 :friend -1]])"}
   transact
-  dc/transact)
-
-(s/fdef
-  transact!
-  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
-  :ret #(s/valid? spec/STransactionReport @%))
-(def ^{:arglists '([conn tx-data tx-meta])
-       :no-doc    true}
-  transact!
-  dc/transact!)
+  (fn [connection arg-map]
+    (let [arg (cond
+                (map? arg-map)        (if (contains? arg-map :tx-data)
+                                        arg-map
+                                        (dt/raise "Bad argument to transact, map missing key :tx-data."
+                                                  {:error :transact/syntax
+                                                   :argument-keys (keys arg-map)}))
+                (or (vector? arg-map)
+                    (seq? arg-map))   {:tx-data arg-map}
+                :else                 (dt/raise "Bad argument to transact, expected map, vector or sequence."
+                                                {:error :transact/syntax
+                                                 :argument-type (type arg-map)}))]
+      (deref (transact! connection arg)))))
 
 (s/fdef
   load-entities
-  :args (s/cat :conn spec/SConnectionAtom :txs spec/STransactions)
+  :args (s/cat :conn spec/SConnection :txs spec/STransactions)
   :ret #(s/valid? spec/STransactionReport @%)) ; This returns a throwable promise, so we have to dereference it..
 (def ^{:arglists '([conn tx-data])
        :doc "Load entities directly"}
   load-entities
-  dc/load-entities)
+  dw/load-entities)
 
 (s/fdef
   release
-  :args (s/cat :conn spec/SConnectionAtom)
+  :args (s/cat :conn spec/SConnection)
   :ret nil?)
-(def ^{:arglists '([conn])
-       :doc      "Releases a database connection"}
+(def ^{:arglists '([conn] [conn release-all?])
+       :doc      "Releases a database connection. You need to release a connection as many times as you connected to it for it to be completely released. Set release-all? to true to force its release."}
   release dc/release)
 
 (s/fdef
@@ -681,7 +705,7 @@
 
 (s/fdef
   db
-  :args (s/cat :conn spec/SConnectionAtom)
+  :args (s/cat :conn spec/SConnection)
   :ret spec/SDB)
 (defn db
   "Returns the underlying immutable database value from a connection.
@@ -861,8 +885,8 @@
 
 (s/fdef
   listen
-  :args (s/alt :no-key (s/cat :conn spec/SConnectionAtom :callback fn?)
-               :with-key (s/cat :conn spec/SConnectionAtom :key any? :callback fn?))
+  :args (s/alt :no-key (s/cat :conn spec/SConnection :callback fn?)
+               :with-key (s/cat :conn spec/SConnection :key any? :callback fn?))
   :ret any?
   :fn #(if (= :with-key (-> % :args first))
          (= (:ret %) (-> % :args second :key))
@@ -879,7 +903,7 @@
 
 (s/fdef
   unlisten
-  :args (s/cat :conn spec/SConnectionAtom :key any?)
+  :args (s/cat :conn spec/SConnection :key any?)
   :ret map?)
 (def ^{:arglists '([conn key])
        :doc "Removes registered listener from connection. See also [[listen]]."}

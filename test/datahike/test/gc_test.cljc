@@ -60,9 +60,12 @@
                                                      :age   5}])))))))
 
     (testing "Check that we can still read the data."
-      (d/transact conn txs)
-      (<?? S (gc! @conn (Date.)))
-      (is (= 1000 (d/q count-query @(d/connect cfg)))))))
+      (let [new-conn (d/connect cfg)]
+        (d/transact conn txs)
+        (<?? S (gc! @conn (Date.)))
+        (is (= 1000 (d/q count-query @new-conn)))
+        (d/release new-conn)))
+    (d/release conn)))
 
 (deftest datahike-gc-versioning-test
   (let [cfg          (assoc-in cfg [:store :path] "/tmp/dh-gc-versioning-test")
@@ -78,20 +81,33 @@
         _            (branch! conn :db :branch2)
         cfg2         (assoc cfg :branch :branch2)
         conn-branch2 (d/connect cfg2)]
-    (testing "Do gc & check."
+    (testing "Check branches."
       (d/transact conn-branch1 txs)
       (d/transact conn-branch2 txs)
       (<?? S (gc! @conn (Date.)))
-      (is (nil? (d/q count-query @(d/connect cfg))))
-      (is (= 1000 (d/q count-query @(d/connect cfg1))))
-      (is (= 1000 (d/q count-query @(d/connect cfg2)))))
-    (testing "Remove branch and do gc & check."
+      (is (nil? (d/q count-query @conn)))
+      (is (= 1000 (d/q count-query @conn-branch1)))
+      (is (= 1000 (d/q count-query @conn-branch2)))
       (delete-branch! conn :branch2)
-      (<?? S (gc! @conn (Date.)))
-      (is (nil? (d/q count-query @(d/connect cfg))))
-      (is (= 1000 (d/q count-query @(d/connect cfg1))))
-      (is (thrown-with-msg? Throwable #"Database does not exist."
-                            (d/q count-query @(d/connect cfg2)))))))
+      (<?? S (gc! @conn (Date.))))
+
+    (d/release conn)
+    (d/release conn-branch1)
+    (d/release conn-branch2)
+
+    (testing "Removed branch and after gc check."
+      (let [cfg          (assoc-in cfg [:store :path] "/tmp/dh-gc-versioning-test")
+            conn         (d/connect cfg)
+            ;; create two more branches
+            cfg1         (assoc cfg :branch :branch1)
+            conn-branch1 (d/connect cfg1)
+            cfg2         (assoc cfg :branch :branch2)]
+        (is (nil? (d/q count-query @conn)))
+        (is (= 1000 (d/q count-query @conn-branch1)))
+        (is (thrown-with-msg? Throwable #"Database does not exist."
+                              (d/connect cfg2)))
+        (d/release conn)
+        (d/release conn-branch1)))))
 
 (deftest datahike-gc-range-test
   (let [cfg           (assoc-in cfg [:store :path] "/tmp/dh-gc-range-test")
@@ -117,10 +133,10 @@
     (d/transact conn [{:age 42}])
     (d/transact conn-branch1 [{:age 42}])
     ;; merge back
-    _ (merge! conn #{:branch1} [])
-    _ (delete-branch! conn :branch1)
+    (merge! conn #{:branch1} [])
     (let [db-history       (<?? S (branch-history conn))
           branch1-history  (<?? S (branch-history conn-branch1))
+          _ (delete-branch! conn :branch1)
           _ (testing "Check branch counts"
               (is (= 9 (count db-history)))
               (is (= 5 (count branch1-history)))
@@ -137,4 +153,6 @@
       (testing "Check that newer db roots are still there and counts after gc."
         (is (set/subset? new-history history-after-gc))
         (is (= 5 (count new-history)))
-        (is (= 7 (count history-after-gc)))))))
+        (is (= 7 (count history-after-gc)))))
+    (d/release conn)
+    (d/release conn-branch1)))

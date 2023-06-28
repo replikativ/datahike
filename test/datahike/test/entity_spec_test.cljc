@@ -51,7 +51,8 @@
           (testing "assert empty entity"
             (is (thrown-with-msg? Throwable
                                   #"Entity 5 missing attributes #\{:account/balance :account/email\} of spec :account/guard"
-                                  (tx-with-ensure conn empty-account))))))
+                                  (tx-with-ensure conn empty-account))))
+          (d/release conn)))
       (testing "with read schema flexibility"
         (let [cfg (-> cfg-template
                       (assoc :schema-flexibility :read)
@@ -68,7 +69,8 @@
           (testing "assert empty entity"
             (is (thrown-with-msg? Throwable
                                   #"Entity 5 missing attributes #\{:account/balance :account/email\} of spec :account/guard"
-                                  (tx-with-ensure conn empty-account)))))))))
+                                  (tx-with-ensure conn empty-account))))
+          (d/release conn))))))
 
 (defn is-email? [db eid]
   ;; email could not exist
@@ -113,7 +115,8 @@
       (testing "assert empty account"
         (is (thrown-with-msg? Throwable
                               #"Entity 5 failed predicates #\{datahike.test.entity-spec-test/positive-balance\? datahike.test.entity-spec-test/is-email\?\} of spec :account/guard"
-                              (tx-with-ensure empty-account)))))))
+                              (tx-with-ensure empty-account)))))
+    (d/release conn)))
 
 (deftest test-attribute-and-predicate-assertion
   (let [schema (conj schema-template
@@ -152,4 +155,5 @@
       (testing "assert empty account with required attributes precidenting over predicates"
         (is (thrown-with-msg? Throwable
                               #"Entity 5 missing attributes #\{:account/balance :account/email\} of spec :account/guard"
-                              (tx-with-ensure empty-account)))))))
+                              (tx-with-ensure empty-account)))))
+    (d/release conn)))
