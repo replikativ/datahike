@@ -134,13 +134,6 @@
           (is (= {:age "BAR" :name "FOO"}
                  (d/entity (d/db conn) 5))))))))
 
-(comment
-  (d/delete-database config)
-  (d/create-database config)
-  (def conn (d/connect config))
-  (def timestamp (Date.)))
-
-
 (defn -main [& _args]
   (run-tests))
 

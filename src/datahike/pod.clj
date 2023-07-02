@@ -172,72 +172,6 @@
   (let [db (get @dbs db)]
     (d/schema db)))
 
-(comment
-  (def myconf {:keep-history? true,
-               :search-cache-size 10000,
-               :index :datahike.index/persistent-set,
-               :store {:id "inexpensive-red-fox", :backend :mem},
-               :store-cache-size 1000,
-               :attribute-refs? false,
-               :writer {:backend :self},
-               :crypto-hash? false,
-               :schema-flexibility :read,
-               :branch :db})
-  (delete-database myconf)
-  (create-database myconf)
-  (database-exists? myconf)
-  (def myconn (connect myconf))
-  (transact myconn [{:name  "Alice", :age   20}
-                    {:name  "Bob", :age   30}
-                    {:name  "Charlie", :age   40}
-                    {:age 15}])
-  (def mytimestamp (System/currentTimeMillis))
-  (java.util.Date.)
-  (as-of (db myconn) (java.util.Date. mytimestamp))
-  (transact myconn {:tx-data [{:db/id 3 :age 25}]})
-  (d/transact (get @conns myconn) [{:name "FOO"  :age "BAR"}])
-  (q {:query '{:find [?e ?n ?a]
-               :where
-               [[?e :name ?n]
-                [?e :age ?a]]}
-      :args [(db myconn)]})
-  (q '[:find ?e ?n ?a
-       :where
-       [?e :name ?n]
-       [?e :age ?a]]
-     (db myconn))
-  (pull (db myconn) '[*] 1)
-  (pull-many (db myconn) '[*] [1 2 3])
-  (metrics (db myconn))
-  (q '[:find ?e ?n ?a
-       :where
-       [?e :name ?n]
-       [?e :age ?a]]
-     #_(as-of (db myconn) {:tx-id 536870916})
-     (as-of (db myconn) {:millis mytimestamp})
-     #_(since (db myconn) {:tx-id 536870914})
-     (since (db myconn) {:millis mytimestamp})
-     #_(history (db myconn)))
-  (datoms (db myconn) {:index :eavt :components [2]})
-  (datoms (as-of (db myconn) {:tx-id 536870916})
-          {:index :eavt :components [2]})
-  (transact myconn {:tx-data [{:db/ident :name :db/valueType :db.type/string :db/unique :db.unique/identity :db/index true :db/cardinality :db.cardinality/one}
-                              {:db/ident :age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]})
-  (schema (db myconn))
-  (let [with-db (db-with (db myconn) [{:name "FOO"  :age "13"}])]
-    (q '[:find (pull ?e [*])
-         :where
-         [?e :name _]]
-       with-db))
-  (d/schema (get @dbs "db:5368709146"))
-  (d/datoms (get @dbs "db:5368709146") {:index :eavt})
-  (d/entity (get @dbs "db:5368709146") 4)
-  (entity (db myconn) 4)
-
-  (require '[portal.api :as p])
-  (p/open)
-  (add-tap #'p/submit)) ; Add portal as a tap> target))
-
 (def publics
   {'as-of as-of
    'connect connect
@@ -319,9 +253,3 @@
                            "status" ["done" "error"]}]
                 (write stdout reply))
               (recur))))))))
-
-(comment
-  (def id "foo")
-
-  (require '[babashka.pods :as pods])
-  (pods/load-pod "./dhi"))

@@ -250,15 +250,3 @@
         :metrics
         (let [out (d/metrics (load-input (first arguments)))]
           (report (:format options) out))))))
-
-(comment
-  (spit "myconfig.edn" {:store {:backend :file,
-                                :path "/tmp/dh-shared-db",
-                                :config {:in-place? true}},
-                        :keep-history? true,
-                        :schema-flexibility :read})
-  (-main "create-database" "myconfig.edn")
-  (-main "transact" "conn:myconfig.edn" "[[:db/add -1 :name \"Linus\"]]")
-  (-main "query" "[:find ?n . :where [?e :name ?n]]" "db:myconfig.edn")
-  (-main "pull" "db:myconfig.edn" "[*]" "1")
-  (-main "delete-database" "myconfig.edn"))
