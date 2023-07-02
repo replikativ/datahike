@@ -4,7 +4,8 @@
             [clojure.java.io :as io]
             [cognitect.transit :as transit]
             [datahike.api :as d])
-  (:import [java.io PushbackInputStream]))
+  (:import [java.io PushbackInputStream]
+           [datahike.java IEntity]))
 
 (set! *warn-on-reflection* true)
 
@@ -150,8 +151,9 @@
 
 (defn entity [db eid]
   (let [db (get @dbs db)]
-    (write (str "OFOOOOOOOO: : " db " " eid))
-    (d/entity db eid)))
+    (reduce-kv #(assoc %1 %2 %3)
+               {}
+               ^IEntity (d/entity db eid))))
 
 (defn transact [conn arg-map]
   (let [c (get @conns conn)
@@ -227,7 +229,15 @@
          :where
          [?e :name _]]
        with-db))
-  (entity (db myconn) 5))
+  (d/schema (get @dbs "db:5368709146"))
+  (d/datoms (get @dbs "db:5368709146") {:index :eavt})
+  (d/entity (get @dbs "db:5368709146") 4)
+  (entity (db myconn) 4)
+
+
+  (require '[portal.api :as p])
+  (p/open)
+  (add-tap #'p/submit)) ; Add portal as a tap> target))
 
 (def publics
   {'as-of as-of
