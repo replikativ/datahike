@@ -6,10 +6,9 @@
         io.replikativ/konserve                      {:mvn/version "0.7.311"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.2.3"}
         environ/environ                             {:mvn/version "1.2.0"}
-        cheshire/cheshire                           {:mvn/version "5.11.0"}
-        com.taoensso/timbre                         {:mvn/version "6.1.0"}
-        io.replikativ/superv.async                  {:mvn/version "0.3.46"}
-        io.replikativ/datalog-parser                {:mvn/version "0.2.28"}
+        com.taoensso/timbre                         {:mvn/version "5.2.1"}
+        io.replikativ/superv.async                  {:mvn/version "0.3.43"}
+        io.replikativ/datalog-parser                {:mvn/version "0.2.25"}
         io.replikativ/zufall                        {:mvn/version "0.2.9"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
@@ -73,7 +72,7 @@
                          nrepl/bencode             {:mvn/version "1.1.0"}
                          babashka/pods             {:git/url "https://github.com/babashka/pods"
                                                     :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
-                         org.clojure/data.json     {:mvn/version "2.4.0"}}}
+                         cheshire/cheshire         {:mvn/version "5.11.0"}}}
 
            ;; Checks
 

@@ -1,7 +1,6 @@
 (ns datahike.cli
   (:gen-class)
-  (:require [clojure.data.json :as json]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.pprint :refer [pprint]]
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
@@ -138,8 +137,8 @@
 
 (defn report [format out]
   (case format
-    :json        (println (json/json-str out))
-    :pretty-json (json/pprint out)
+    :json        (println (ch/generate-string out))
+    :pretty-json (println (ch/generate-string out {:pretty true}))
     :edn         (println (pr-str out))
     :pprint      (pprint out)
     :cbor        (.write System/out ^bytes (cbor/encode out))))
@@ -189,8 +188,7 @@
                                     :pprint (edn/read-string s)
                                     :json (ch/parse-string s keyword)
                                     :pretty-json (ch/parse-string s keyword)
-                                    :cbor (cbor/decode s) ;; does this really make sense?
-                                    )
+                                    :cbor (cbor/decode s)) ;; does this really make sense?
                                   (case (:input-format options)
                                     :edn (edn/read)
                                     :pprint (edn/read)
