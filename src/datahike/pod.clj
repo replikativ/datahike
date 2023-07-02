@@ -234,7 +234,6 @@
   (d/entity (get @dbs "db:5368709146") 4)
   (entity (db myconn) 4)
 
-
   (require '[portal.api :as p])
   (p/open)
   (add-tap #'p/submit)) ; Add portal as a tap> target))
