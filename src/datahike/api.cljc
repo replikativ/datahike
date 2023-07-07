@@ -4,6 +4,7 @@
             [datahike.config :as config]
             [clojure.spec.alpha :as s]
             [datahike.writer :as dw]
+            [datahike.tools :as dt]
             [datahike.writing :as writing]
             [datahike.constants :as const]
             [datahike.core :as dcore]
