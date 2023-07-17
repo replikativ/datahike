@@ -82,6 +82,49 @@
     (swap! dbs assoc db-id db)
     db-id))
 
+(defn release-db
+  "Deletes the cached Datahike immutable database value.
+
+   Takes the db-id that was returned from either db, as-of or since."
+  [db-id]
+  (reset! dbs (dissoc @dbs db-id)))
+
+(defmacro with-db [bindings & body]
+  (cond
+    (= (count bindings) 0) `(do ~@body)
+    (symbol? (bindings 0)) `(let ~(subvec bindings 0 2)
+                              (try
+                                (with-db ~(subvec bindings 2) ~@body)
+                                (finally
+                                  (release-db ~(bindings 0)))))
+    :else (throw (IllegalArgumentException.
+                   "with-db only allows Symbols in bindings"))))
+
+(comment
+  (def config {:keep-history? true,
+               :search-cache-size 10000,
+               :index :datahike.index/persistent-set,
+               :store {:id "inexpensive-red-fox", :backend :mem},
+               :store-cache-size 1000,
+               :attribute-refs? false,
+               :writer {:backend :self},
+               :crypto-hash? false,
+               :schema-flexibility :read,
+               :branch :db})
+  (create-database config)
+  (def conn (connect config))
+  (transact conn [{:name  "Alice", :age   20}
+                  {:name  "Bob", :age   30}
+                  {:name  "Charlie", :age   40}
+                  {:age 15}])
+  (macroexpand '(with-db [db (db conn)]
+                  (q {:query '{:find [?e ?a ?v]
+                               :where
+                               [[?e ?a ?v]]}}
+                     db)))
+  *e
+  @dbs)
+
 (defn db-with [db tx-data]
   (let [db (get @dbs db)
         {:keys [max-eid max-tx] :as with} (d/db-with db tx-data)
@@ -119,7 +162,7 @@
   (let [db (get @dbs db)]
     (d/pull-many db selector eids)))
 
-(defn resolve-arg [arg]
+(defn- resolve-arg [arg]
   (if (and (string? arg)
            (->> (re-find #"^(\S+?):" arg)
                 second
@@ -177,19 +220,21 @@
    'connect connect
    'create-database create-database
    'database-exists? database-exists?
+   'datoms datoms
    'db db
    'db-with db-with
    'delete-database delete-database
+   'entity entity
    'history history
    'metrics metrics
    'pull pull
    'pull-many pull-many
    'q q
-   'datoms datoms
-   'entity entity
+   'release-db release-db
    'since since
    'schema schema
-   'transact transact})
+   'transact transact
+   'with-db with-db})
 
 (defn lookup [var]
   (get publics (symbol (name var))))
@@ -253,3 +298,22 @@
                            "status" ["done" "error"]}]
                 (write stdout reply))
               (recur))))))))
+
+(comment
+  (def config {:keep-history? true,
+               :search-cache-size 10000,
+               :index :datahike.index/persistent-set,
+               :store {:id "inexpensive-red-fox", :backend :mem},
+               :store-cache-size 1000,
+               :attribute-refs? false,
+               :writer {:backend :self},
+               :crypto-hash? false,
+               :schema-flexibility :read,
+               :branch :db})
+
+  (create-database config)
+  (def conn (connect config))
+  (with-db [db (db conn)]
+    (q '[:find ?e ?a ?v
+         :where
+         [?e ?a ?v]])))

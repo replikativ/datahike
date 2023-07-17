@@ -1,8 +1,6 @@
 #!/usr/bin/env bb
 
 (require '[babashka.pods :as pods]
-         '[clojure.java.io :as io]
-         '[clojure.string :as s]
          '[clojure.test :refer [run-tests deftest testing is]])
 (import '[java.util Date])
 
@@ -54,6 +52,20 @@
                                      {:name  "Bob", :age   30}
                                      {:name  "Charlie", :age   40}
                                      {:age 15}])))))
+    (testing "with-db"
+      (d/with-db [db (d/db conn)]
+        (d/q {:query '{:find [?e ?n ?a]
+                       :where
+                       [[?e :name ?n]
+                        [?e :age ?a]]}
+              :args [(d/db conn)]}))
+      (is (= {}
+             (deref d/dbs))))
+    (testing "release-db"
+      (let [db (d/db conn)]
+        (d/release-db db)
+        (is (= {}
+               (deref d/dbs)))))
     (testing "q"
       (is (= #{[2 "Bob" 30] [1 "Alice" 20] [3 "Charlie" 40]}
              (d/q {:query '{:find [?e ?n ?a]
