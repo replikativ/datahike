@@ -53,19 +53,17 @@
                                      {:name  "Charlie", :age   40}
                                      {:age 15}])))))
     (testing "with-db"
-      (d/with-db [db (d/db conn)]
-        (d/q {:query '{:find [?e ?n ?a]
-                       :where
-                       [[?e :name ?n]
-                        [?e :age ?a]]}
-              :args [(d/db conn)]}))
-      (is (= {}
-             (deref d/dbs))))
+      (is (= #{[2 "Bob" 30] [1 "Alice" 20] [3 "Charlie" 40]}
+             (d/with-db [db (d/db conn)]
+               (d/q {:query '{:find [?e ?n ?a]
+                              :where
+                              [[?e :name ?n]
+                               [?e :age ?a]]}
+                     :args [(d/db conn)]})))))
     (testing "release-db"
       (let [db (d/db conn)]
-        (d/release-db db)
         (is (= {}
-               (deref d/dbs)))))
+               (d/release-db db)))))
     (testing "q"
       (is (= #{[2 "Bob" 30] [1 "Alice" 20] [3 "Charlie" 40]}
              (d/q {:query '{:find [?e ?n ?a]

@@ -51,9 +51,9 @@
     (transit/write (transit/writer baos :json) v)
     (.toString baos "utf-8")))
 
-(defonce conns (atom {}))
+(def conns (atom {}))
 
-(defonce dbs (atom {}))
+(def dbs (atom {}))
 
 (defn create-database
   ([] (d/create-database))
@@ -88,42 +88,6 @@
    Takes the db-id that was returned from either db, as-of or since."
   [db-id]
   (reset! dbs (dissoc @dbs db-id)))
-
-(defmacro with-db [bindings & body]
-  (cond
-    (= (count bindings) 0) `(do ~@body)
-    (symbol? (bindings 0)) `(let ~(subvec bindings 0 2)
-                              (try
-                                (with-db ~(subvec bindings 2) ~@body)
-                                (finally
-                                  (release-db ~(bindings 0)))))
-    :else (throw (IllegalArgumentException.
-                   "with-db only allows Symbols in bindings"))))
-
-(comment
-  (def config {:keep-history? true,
-               :search-cache-size 10000,
-               :index :datahike.index/persistent-set,
-               :store {:id "inexpensive-red-fox", :backend :mem},
-               :store-cache-size 1000,
-               :attribute-refs? false,
-               :writer {:backend :self},
-               :crypto-hash? false,
-               :schema-flexibility :read,
-               :branch :db})
-  (create-database config)
-  (def conn (connect config))
-  (transact conn [{:name  "Alice", :age   20}
-                  {:name  "Bob", :age   30}
-                  {:name  "Charlie", :age   40}
-                  {:age 15}])
-  (macroexpand '(with-db [db (db conn)]
-                  (q {:query '{:find [?e ?a ?v]
-                               :where
-                               [[?e ?a ?v]]}}
-                     db)))
-  *e
-  @dbs)
 
 (defn db-with [db tx-data]
   (let [db (get @dbs db)
@@ -233,15 +197,25 @@
    'release-db release-db
    'since since
    'schema schema
-   'transact transact
-   'with-db with-db})
+   'transact transact})
 
 (defn lookup [var]
   (get publics (symbol (name var))))
 
 (def describe-map
-  (mapv (fn [k] {"name" (name k)})
-        (keys publics)))
+  (-> (mapv (fn [k] {"name" (name k)})
+            (keys publics))
+      (conj {"name" "with-db" "code"
+             "(defmacro with-db [bindings & body]
+                (cond
+                  (= (count bindings) 0) `(do ~@body)
+                  (symbol? (bindings 0)) `(let ~(subvec bindings 0 2)
+                                            (try
+                                              (with-db ~(subvec bindings 2) ~@body)
+                                              (finally
+                                                (release-db ~(bindings 0)))))
+                  :else (throw (IllegalArgumentException.
+                                 \"with-db only allows Symbols in bindings\"))))"})))
 
 (defn run-pod [_args]
   (loop []
@@ -298,22 +272,3 @@
                            "status" ["done" "error"]}]
                 (write stdout reply))
               (recur))))))))
-
-(comment
-  (def config {:keep-history? true,
-               :search-cache-size 10000,
-               :index :datahike.index/persistent-set,
-               :store {:id "inexpensive-red-fox", :backend :mem},
-               :store-cache-size 1000,
-               :attribute-refs? false,
-               :writer {:backend :self},
-               :crypto-hash? false,
-               :schema-flexibility :read,
-               :branch :db})
-
-  (create-database config)
-  (def conn (connect config))
-  (with-db [db (db conn)]
-    (q '[:find ?e ?a ?v
-         :where
-         [?e ?a ?v]])))
