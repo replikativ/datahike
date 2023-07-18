@@ -2,14 +2,11 @@
   (:refer-clojure :exclude [test])
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
+            [clojure.string :as str]
             [tools.build :as build]))
 
 (defn clj [opts & args] (apply p/shell opts "clojure" args))
 (defn git [opts & args] (apply p/shell opts "git" args))
-
-(defn kaocha [& args]
-  (apply clj {:extra-env {"TIMBRE_LEVEL" ":warn"}}
-         "-M:test" "-m" "kaocha.runner" args))
 
 (defn back-compat [config]
   (println "Testing backwards compatibility")
@@ -49,12 +46,27 @@
     (p/shell "./bb/resources/native-image-tests/run-native-image-tests")
     (println "Native image cli missing. Please run 'bb ni-cli' and try again.")))
 
+(defn kaocha-with-aliases [aliases & args]
+  (apply clj {:extra-env {"TIMBRE_LEVEL" ":warn"}} 
+         (str "-M:test" (str/join (map #(str ":" (name %)) aliases)))
+         "-m" "kaocha.runner" args))
+
+(defn kaocha [& args]
+  (apply kaocha-with-aliases [] args))
+
 (defn specs []
   (kaocha "--focus" "specs" "--plugin" "kaocha.plugin/orchestra"))
+
+(defn clj-back-compat 
+  "version-alias must be defined in deps.edn"
+  [version-alias & args] 
+  (apply kaocha-with-aliases [version-alias] args))
 
 (defn all [config]
   (kaocha "--skip" "specs")
   (specs)
+  (clj-back-compat :1.10)
+  (clj-back-compat :1.9)
   (back-compat config)
   (native-image))
 
@@ -63,6 +75,7 @@
     (case (first args)
       "native-image" (native-image)
       "back-compat" (back-compat config)
+      "clj" (apply clj-back-compat (rest args))
       "specs" (specs)
       (apply kaocha "--focus" args))
     (all config)))
