@@ -49,6 +49,11 @@
     (p/shell "./bb/resources/native-image-tests/run-native-image-tests")
     (println "Native image cli missing. Please run 'bb ni-cli' and try again.")))
 
+(defn bb-pod []
+  (if (fs/exists? "./dhi")
+    (p/shell "./bb/resources/native-image-tests/run-bb-pod-tests.clj")
+    (println "Native image cli missing. Please run 'bb ni-cli' and try again.")))
+
 (defn specs []
   (kaocha "--focus" "specs" "--plugin" "kaocha.plugin/orchestra"))
 
@@ -56,7 +61,8 @@
   (kaocha "--skip" "specs")
   (specs)
   (back-compat config)
-  (native-image))
+  (native-image)
+  (bb-pod))
 
 (defn -main [config & args]
   (if (seq args)
