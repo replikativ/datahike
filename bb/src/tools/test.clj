@@ -68,6 +68,7 @@
   (if (seq args)
     (case (first args)
       "native-image" (native-image)
+      "bb-pod" (bb-pod)
       "back-compat" (back-compat config)
       "specs" (specs)
       (apply kaocha "--focus" args))
