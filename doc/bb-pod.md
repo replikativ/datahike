@@ -28,9 +28,11 @@ This feature is not used in production so far. Please try it and [open issues on
 - pull
 - pull-many
 - q
+- release-db (release the DB-object to free memory)
 - since
 - schema
 - transact (returns the transaction-report as map)
+- with-db (a macro that avoids storing the DB-object)
 
 ## Example usage
 
@@ -58,11 +60,21 @@ This feature is not used in production so far. Please try it and [open issues on
                   {:name  "Charlie", :age   40}
                   {:age 15}])
 
+(def db (d/db conn))
+
 (d/q '[:find ?e ?n ?a
        :where
        [?e :name ?n]
        [?e :age ?a]]
-     (d/db conn))
+     db)
+
+(release-db db)
 
 (d/pull (d/db conn) '[*] 3)
+
+(with-db [db (db conn)]
+  (q {:query '{:find [?e ?a ?v]
+      :where
+      [[?e ?a ?v]]}}
+     db))
 ```
