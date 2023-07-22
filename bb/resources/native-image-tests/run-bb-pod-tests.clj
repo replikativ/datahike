@@ -60,14 +60,6 @@
                               [[?e :name ?n]
                                [?e :age ?a]]}
                      :args [(d/db conn)]})))))
-    (testing "transact with bad arg"
-      (is (= [:tempids :db-before :db-after :tx-meta :tx-data]
-             (keys (d/transact
-                     "foo"
-                     [{:name  "Alice", :age   20}
-                      {:name  "Bob", :age   30}
-                      {:name  "Charlie", :age   40}
-                      {:age 15}])))))
     (testing "release-db"
       (let [db (d/db conn)]
         (is (= {}

@@ -13,7 +13,7 @@
 (def stdout System/out)
 (def stderr System/err)
 
-(def debug? true)
+(def debug? false)
 
 (defn debug [& strs]
   (when debug?
