@@ -13,7 +13,7 @@
 (def stdout System/out)
 (def stderr System/err)
 
-(def debug? false)
+(def debug? true)
 
 (defn debug [& strs]
   (when debug?
@@ -258,8 +258,9 @@
                             (debug e)
                             (let [reply {"ex-message" (ex-message e)
                                          "ex-data" (write-transit
-                                                    (assoc (ex-data e)
-                                                           :type (str (class e))))
+                                                     (-> (ex-data e)
+                                                         (update :argument-type str)
+                                                         (assoc :type (str (class e)))))
                                          "id" id
                                          "status" ["done" "error"]}]
                               (write stdout reply))))
