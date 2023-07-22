@@ -259,6 +259,11 @@ workflows:
           requires:
             - build
             - native-image
+      - bb-pod-test:
+          context: dockerhub-deploy
+          requires:
+            - build
+            - native-image
       - backward-compatibility-test:
           context: dockerhub-deploy
           requires:
