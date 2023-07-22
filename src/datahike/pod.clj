@@ -258,9 +258,9 @@
                             (debug e)
                             (let [reply {"ex-message" (ex-message e)
                                          "ex-data" (write-transit
-                                                     (-> (ex-data e)
-                                                         (update :argument-type str)
-                                                         (assoc :type (str (class e)))))
+                                                    (-> (ex-data e)
+                                                        (update :argument-type str)
+                                                        (assoc :type (str (class e)))))
                                          "id" id
                                          "status" ["done" "error"]}]
                               (write stdout reply))))
