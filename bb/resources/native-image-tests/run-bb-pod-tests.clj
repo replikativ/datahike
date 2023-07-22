@@ -4,7 +4,7 @@
          '[clojure.test :refer [run-tests deftest testing is]])
 (import '[java.util Date])
 
-(pods/load-pod "./dhi")
+(pods/load-pod ["clojure" "-M:pod" "-m" "datahike.cli"])
 
 (require '[datahike.pod :as d])
 

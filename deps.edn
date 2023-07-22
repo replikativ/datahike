@@ -74,6 +74,12 @@
                                                     :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
                          cheshire/cheshire         {:mvn/version "5.11.0"}}}
 
+           :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
+                              nrepl/bencode             {:mvn/version "1.1.0"}
+                              babashka/pods             {:git/url "https://github.com/babashka/pods"
+                                                         :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
+                              cheshire/cheshire         {:mvn/version "5.11.0"}}}
+
            ;; Checks
 
            :benchmark {:extra-paths ["benchmark/src"]
