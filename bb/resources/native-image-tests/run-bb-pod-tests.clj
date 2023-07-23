@@ -153,7 +153,9 @@
                  (d/entity (d/db conn) 5))))))))
 
 (defn -main [& _args]
-  (run-tests))
+  (let [{:keys [fail error]} (run-tests)]
+    (when (and fail error (pos? (+ fail error)))
+      (System/exit 1))))
 
 (when (= *file* (System/getProperty "babashka.file"))
   (apply -main *command-line-args*))
