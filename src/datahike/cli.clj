@@ -1,11 +1,11 @@
 (ns datahike.cli
   (:gen-class)
-  (:require [clojure.data.json :as json]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.pprint :refer [pprint]]
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [datahike.api :as d]
+            [datahike.pod :refer [run-pod]]
             [clojure.edn :as edn]
             [cheshire.core :as ch]
             [clj-cbor.core :as cbor]
@@ -76,8 +76,12 @@
   should exit (with a error message, and optional ok status), or a map
   indicating the action the program should take and the options provided."
   [args]
-  (let [{:keys [options arguments errors summary]} (parse-opts args cli-options)]
+  (let [{:keys [options arguments errors summary]} (parse-opts args cli-options)
+        pod? (= "true" (System/getenv "BABASHKA_POD"))]
     (cond
+      pod?
+      {:action :pod :options options}
+
       (:help options) ; help => exit OK with usage summary
       {:exit-message (usage summary) :ok? true :options options}
 
@@ -133,8 +137,8 @@
 
 (defn report [format out]
   (case format
-    :json        (println (json/json-str out))
-    :pretty-json (json/pprint out)
+    :json        (println (ch/generate-string out))
+    :pretty-json (println (ch/generate-string out {:pretty true}))
     :edn         (println (pr-str out))
     :pprint      (pprint out)
     :cbor        (.write System/out ^bytes (cbor/encode out))))
@@ -156,6 +160,9 @@
     (if exit-message
       (exit (if ok? 0 1) exit-message)
       (case action
+        :pod
+        (run-pod args)
+
         :create-database
         (report (:format options)
                 (d/create-database (read-string (slurp (first arguments)))))
@@ -181,8 +188,7 @@
                                     :pprint (edn/read-string s)
                                     :json (ch/parse-string s keyword)
                                     :pretty-json (ch/parse-string s keyword)
-                                    :cbor (cbor/decode s) ;; does this really make sense?
-                                    )
+                                    :cbor (cbor/decode s)) ;; does this really make sense?
                                   (case (:input-format options)
                                     :edn (edn/read)
                                     :pprint (edn/read)
@@ -244,5 +250,3 @@
         :metrics
         (let [out (d/metrics (load-input (first arguments)))]
           (report (:format options) out))))))
-
-
