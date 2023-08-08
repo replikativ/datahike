@@ -151,10 +151,10 @@
       (validate-norm norm-map)
       (when-not (norm-installed? db norm)
         (log/info "Running migration")
-        (->> (d/transact conn {:tx-data (vec (concat [{:tx/norm norm}]
-                                                     tx-data
-                                                     ((var-get (requiring-resolve tx-fn)) conn)))})
-             (log/info "Done"))))))
+        (d/transact conn {:tx-data (vec (concat [{:tx/norm norm}]
+                                                tx-data
+                                                ((var-get (requiring-resolve tx-fn)) conn)))})
+        (log/info "Done")))))
 
 (defn- diff-checksums [checksums edn-content]
   (let [diff (data/diff checksums edn-content)]

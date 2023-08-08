@@ -14,18 +14,18 @@
          :init (do (def config-file "config.edn")
                    (def config (edn/read-string (slurp config-file)))
                    (def deps (edn/read-string (slurp "deps.edn"))))
-         
+
          ; tools
-         
+
          bench {:doc "Run benchmarks"
-                :task (clojure "-M:benchmark" "measure")} 
-         
-         ffix {:doc "Format source files" 
+                :task (clojure "-M:benchmark" "measure")}
+
+         ffix {:doc "Format source files"
                :task (clojure "-M:ffix")}
 
 
          ; checks
-         
+
          format {:doc "Test formatting"
                  :task (clojure "-M:format")}
 
@@ -39,29 +39,29 @@
 
          kaocha {:doc "Run kaocha with arbitrary arguments"
                  :task (apply test/kaocha *command-line-args*)}
-         
+
          outdated {:doc "Find outdated libraries"
                    :task (clojure "-M:outdated")}
 
          check {:doc "Run all checks"
                 :depends [test format lint outdated]}
-         
+
 
          ; build and release
-         
-         inc {:doc "Increment the project version: [major|minor] <version>" 
+
+         inc {:doc "Increment the project version: [major|minor] <version>"
               :task (apply version/inc config-file *command-line-args*)}
 
          tag {:doc "Return current version as a tag"
               :task (println (version/as-tag config))}
 
-         clean {:doc "Remove build files" 
+         clean {:doc "Remove build files"
                 :task (build/clean (-> config :build :clj))}
 
          jcompile {:doc "Compile java classes"
                    :depends [clean]
                    :task (build/compile-java (-> config :build :clj))}
-         
+
          ccompile {:doc "Compile clojure namespaces"
                    :task (build/compile-clojure (-> config :build :clj))}
 
@@ -70,7 +70,7 @@
 
          jar {:doc "Build jar"
               :depends [jcompile pom]
-              :task (build/jar config (-> config :build :clj))} 
+              :task (build/jar config (-> config :build :clj))}
 
          install {:doc "Install jar locally"
                   :task (deploy/local config (-> config :build :clj))}
@@ -82,36 +82,36 @@
                   :depends [jar]
                   :task (let [jar (build/jar-path config (-> config :build :clj))]
                           (release/gh-release jar config))}
-         
-         ;; native image
-         
 
-         
+         ;; native image
+
+
+
          ni-check {:doc "Check for 'native-image' program"
-                  :task (try (shell "which" "native-image")
-                          (println "Program native-image found!")
-                          (catch Exception _
-                            (println "PATH does not contain native-image! Make sure to add your GraalVM to it.")
-                            (System/exit 1)))}
-         
+                   :task (try (shell "which" "native-image")
+                           (println "Program native-image found!")
+                           (catch Exception _
+                             (println "PATH does not contain native-image! Make sure to add your GraalVM to it.")
+                             (System/exit 1)))}
+
          ni-cli {:doc "Build native image cli"
-                 :depends [jcompile ni-check] 
-                 :task (clojure "-M:native-cli" "--no-fallback" "-J-Xmx4g")} 
-         
+                 :depends [jcompile ni-check]
+                 :task (clojure "-M:native-cli" "--no-fallback" "-J-Xmx4g")}
+
          ni-ccompile {:doc "Create native cpp library"
                       :task (build/compile-clojure (-> config :build :native))}
-         
+
          ni-uber {:doc "Build native image uber jar"
                   :depends [jcompile ccompile ni-ccompile]
                   :task (build/uber config (-> config :build :native))}
-         
-         ni-compile {:doc "Create native cpp library" 
+
+         ni-compile {:doc "Create native cpp library"
                      :depends [ni-uber]
                      :task (build/native-compile config (-> config :build :native))}
-         
-         ni-release {:doc "Build and release native assets to GitHub" 
+
+         ni-release {:doc "Build and release native assets to GitHub"
                      :depends [ni-compile]
                      :task (let [{:keys [artifact target-dir]} (-> config :build :native)]
-                             (fs/zip artifact [target-dir]) 
+                             (fs/zip artifact [target-dir])
                              (release/gh-release artifact config)
                              (fs/delete artifact))}}}
