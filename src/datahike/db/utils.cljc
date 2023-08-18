@@ -94,40 +94,49 @@
        (satisfies? dbi/IIndexAccess x)
        (satisfies? dbi/IDB x)))
 
-(defn entid [db eid]
-  {:pre [(db? db)]}
-  (cond
-    (and (number? eid) (pos? eid))
-    eid
+(defn numeric-entid? [x]
+  (and (number? x) (pos? x)))
 
-    (sequential? eid)
-    (let [[attr value] eid]
-      (cond
-        (not= (count eid) 2)
-        (raise "Lookup ref should contain 2 elements: " eid
-               {:error :lookup-ref/syntax, :entity-id eid})
-        (not (is-attr? db attr :db/unique))
-        (raise "Lookup ref attribute should be marked as :db/unique: " eid
-               {:error :lookup-ref/unique, :entity-id eid})
-        (nil? value)
-        nil
-        :else
-        (-> (dbi/-datoms db :avet eid) first :e)))
+(defn entid
+  ([db eid] (entid db eid nil))
+  ([db eid error-code]
+   {:pre [(db? db)]}
+   (cond
+     (numeric-entid? eid) eid
+     (sequential? eid)
+     (let [[attr value] eid]
+       (cond
+         (not= (count eid) 2)
+         (or error-code
+             (raise "Lookup ref should contain 2 elements: " eid
+                    {:error :lookup-ref/syntax, :entity-id eid}))
+         (not (is-attr? db attr :db/unique))
+         (or error-code
+             (raise "Lookup ref attribute should be marked as :db/unique: " eid
+                    {:error :lookup-ref/unique, :entity-id eid}))
+         (nil? value)
+         nil
+         :else
+         (-> (dbi/-datoms db :avet eid) first :e)))
 
-    #?@(:cljs [(array? eid) (recur db (array-seq eid))])
+     #?@(:cljs [(array? eid) (recur db (array-seq eid))])
 
-    (keyword? eid)
-    (-> (dbi/-datoms db :avet [:db/ident eid]) first :e)
+     (keyword? eid)
+     (-> (dbi/-datoms db :avet [:db/ident eid]) first :e)
 
-    :else
-    (raise "Expected number or lookup ref for entity id, got " eid
-           {:error :entity-id/syntax, :entity-id eid})))
+     :else
+     (or error-code
+         (raise "Expected number or lookup ref for entity id, got " eid
+                {:error :entity-id/syntax, :entity-id eid})))))
 
-(defn entid-strict [db eid]
-  (or (entid db eid)
-      (raise "Nothing found for entity id " eid
-             {:error :entity-id/missing
-              :entity-id eid})))
+(defn entid-strict
+  ([db eid] (entid-strict db eid nil))
+  ([db eid error-code]
+   (or (entid db eid error-code)
+       error-code
+       (raise "Nothing found for entity id " eid
+              {:error :entity-id/missing
+               :entity-id eid}))))
 
 (defn entid-some [db eid]
   (when eid

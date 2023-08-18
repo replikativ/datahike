@@ -228,6 +228,15 @@
            #{[[:name "Ivan"] [:name "Petr"]]
              [[:name "Petr"] [:name "Oleg"]]}))
 
+      ;;;;;;; What should happen in this case?
+      ;;;;;;; ... and what should happen if we wrap "A" in a  collection
+      ;;;;;;;     with one element? Maybe it should not throw an error.
+    #_(is (= (d/q '[:find ?e
+                    :in $ ?e
+                    :where [?e :friend 3]]
+                  db "A")
+             #{}))
+
     (is (= (d/q '[:find ?e
                   :in $ [?e ...]
                   :where [?e :friend 3]]

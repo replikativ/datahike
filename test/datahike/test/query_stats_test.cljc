@@ -26,12 +26,13 @@
 (use-fixtures :once (partial with-db config (into test-schema test-data)))
 
 (defn unify-stats [stats]
-  (cw/postwalk
-   #(cond
-      (and (map? %) (contains? % :t))                  (assoc % :t :measurement)
-      (and (symbol? %) (re-find #"__auto__" (name %))) (symbol (str/replace (name %) #"__auto__\d*" "_tmp"))
-      :else                                            %)
-   stats))
+  (dissoc (cw/postwalk
+           #(cond
+              (and (map? %) (contains? % :t))                  (assoc % :t :measurement)
+              (and (symbol? %) (re-find #"__auto__" (name %))) (symbol (str/replace (name %) #"__auto__\d*" "_tmp"))
+              :else                                            %)
+           stats)
+          :settings))
 
 (deftest test-not
   (is (= {:consts {}

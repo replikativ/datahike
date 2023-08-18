@@ -39,8 +39,8 @@
 
 ;; Records
 
-(defrecord Context [rels sources rules consts])
-(defrecord StatContext [rels sources rules consts stats])
+(defrecord Context [rels sources rules consts settings])
+(defrecord StatContext [rels sources rules consts stats settings])
 
 ;; attrs:
 ;;    {?e 0, ?v 1} or {?e2 "a", ?age "v"}
@@ -65,11 +65,12 @@
                      (log/warn (str "Query-map '" query "' already defines query input."
                                     " Additional arguments to q will be ignored!")))
                    (:args query-input))
-               arg-inputs)]
-    (cond-> {:query (dissoc query :offset :limit :stats?)
+               arg-inputs)
+        extra-ks [:offset :limit :stats? :settings]]
+    (cond-> {:query (apply dissoc query extra-ks)
              :args args}
       (map? query-input)
-      (merge (select-keys query-input [:offset :limit :stats?])))))
+      (merge (select-keys query-input extra-ks)))))
 
 (defn q [query & inputs]
   (let [{:keys [args] :as query-map} (normalize-q-input query inputs)]
@@ -86,6 +87,15 @@
       q))
 
 ;; Utilities
+
+(defn distinct-tuples [tuples]
+  (first (reduce (fn [[dst seen] tuple]
+                   (let [key (vec tuple)]
+                     (if (seen key)
+                       [dst seen]
+                       [(conj dst tuple) (conj seen key)])))
+                 [[] #{}]
+                 tuples)))
 
 (defn seqable?
   #?@(:clj [^Boolean [x]]
@@ -146,6 +156,12 @@
 (defn lookup-ref? [form]
   (looks-like? [attr? '_] form))
 
+(defn entid? [x]  ;; See `dbu/entid for all forms that are accepted
+  (or (attr? x)
+      (lookup-ref? x)
+      (dbu/numeric-entid? x)
+      (keyword? x)))
+
 ;; Relation algebra
 (defn join-tuples [t1 #?(:cljs idxs1
                          :clj ^{:tag "[[Ljava.lang.Object;"} idxs1)
@@ -191,6 +207,9 @@
         (-> (Relation. all-attrs [])
             (sum-rel a)
             (sum-rel b))))))
+
+(defn simplify-rel [rel]
+  (Relation. (:attrs rel) (distinct-tuples (:tuples rel))))
 
 (defn prod-rel
   ([] (Relation. {} [(da/make-array 0)]))
@@ -910,27 +929,39 @@
           stats? (assoc :tmp-stats {:type :rule
                                     :branches tmp-stats}))))))
 
+
+(defn resolve-pattern-lookup-entity-id [source e error-code]
+  (cond
+    (or (lookup-ref? e) (attr? e)) (dbu/entid-strict source e error-code)
+    (entid? e) e
+    (symbol? e) e
+    :else (or error-code (dt/raise "Invalid entid" {:error :entity-id/syntax :entity-id e}))))
+
 (defn resolve-pattern-lookup-refs
   "Translate pattern entries before using pattern for database search"
+  ([source pattern] (resolve-pattern-lookup-refs source pattern nil))
+  ([source pattern error-code]
+   (if (dbu/db? source)
+     (dt/with-elements-of pattern
+       e (resolve-pattern-lookup-entity-id source e error-code)
+       a (if (and (:attribute-refs? (dbi/-config source)) (keyword? a))
+           (dbi/-ref-for source a)
+           a)
+       v (if (and v (attr? a) (dbu/ref? source a) (or (lookup-ref? v) (attr? v)))
+           (dbu/entid-strict source v error-code)
+           v)
+       tx (if (lookup-ref? tx)
+            (dbu/entid-strict source tx error-code)
+            tx)
+       added added)
+     pattern)))
+
+(defn resolve-pattern-lookup-refs-or-nil
+  "This function works just like `resolve-pattern-lookup-refs` but if there is an error it returns `nil` instead of throwing an exception. This is used to reject patterns with variables substituted for invalid values."
   [source pattern]
-  (if (dbu/db? source)
-    (let [[e a v tx added] pattern]
-      (->
-       [(if (or (lookup-ref? e) (attr? e))
-          (dbu/entid-strict source e)
-          e)
-        (if (and (:attribute-refs? (dbi/-config source)) (keyword? a))
-          (dbi/-ref-for source a)
-          a)
-        (if (and v (attr? a) (dbu/ref? source a) (or (lookup-ref? v) (attr? v)))
-          (dbu/entid-strict source v)
-          v)
-        (if (lookup-ref? tx)
-          (dbu/entid-strict source tx)
-          tx)
-        added]
-       (subvec 0 (count pattern))))
-    pattern))
+  (let [result (resolve-pattern-lookup-refs source pattern ::error)]
+    (when (not-any? #(= % ::error) result)
+      result)))
 
 (defn dynamic-lookup-attrs [source pattern]
   (let [[e a v tx] pattern]
@@ -971,6 +1002,122 @@
 
 (defn resolve-context [context clauses]
   (reduce resolve-clause context clauses))
+
+(defn tuple-var-mapper [rel]
+  (let [attrs (:attrs rel)
+        key-fn-pairs (into [] (map (juxt identity (partial getter-fn attrs))) (keys attrs))]
+    (fn [tuple]
+      (into {}
+            (map (fn [[k f]] [k (f tuple)]))
+            key-fn-pairs))))
+
+(defn resolve-pattern-vars-for-relation [source pattern rel]
+  (let [mapper (tuple-var-mapper rel)]
+    (keep #(resolve-pattern-lookup-refs-or-nil
+            source
+            (replace (mapper %) pattern))
+          (:tuples rel))))
+
+(def rel-product-unit (Relation. {} [[]]))
+
+(defn expansion-rel-data [rels vars]
+  (for [{:keys [attrs tuples] :as rel} rels
+        :let [mentioned-vars (filter attrs vars)]
+        :when (seq mentioned-vars)]
+    {:rel rel
+     :vars mentioned-vars
+     :tuple-count (count tuples)
+     :key mentioned-vars}))
+
+;; A *relprod* is a state in the process of
+;; selecting what relations to use when expanding
+;; the pattern. The world "relprod" is an abbreviation for
+;; "relation product".
+;;
+;; A *strategy* is a function that takes a relprod
+;; as input and returns a new relprod as output.
+;; The simplest strategy is `identity` meaning that
+;; not pattern expansion will happen.
+(defn init-relprod [rel-data vars]
+  {:product rel-product-unit
+   :include []
+   :exclude rel-data
+   :vars vars})
+
+(defn relprod-exclude-keys [{:keys [exclude]}]
+  (map :key exclude))
+
+(defn relprod-vars [relprod & ks]
+  (into #{}
+        (comp (mapcat #(get relprod %))
+              (mapcat :vars))
+        ks))
+
+(defn relprod-filter [{:keys [product include exclude vars]} predf]
+  {:pre [product include exclude]}
+  (let [picked (into [] (filter predf) exclude)]
+    {:product (reduce hash-join product (map :rel picked))
+     :include (into include picked)
+     :exclude (remove predf exclude)
+     :vars vars}))
+
+(defn relprod-select-keys [relprod & ks]
+  {:pre [(every? (set (relprod-exclude-keys relprod)) ks)]}
+  (relprod-filter relprod (comp (set ks) :key)))
+
+(defn relprod-select-all
+  "This is a relprod strategy that will result in all 
+possible combinations of relations substituted in the pattern.
+ It may be faster or slower than no strategy at all depending 
+on the data."
+  [relprod]
+  (relprod-filter relprod (constantly true)))
+
+(defn relprod-select-simple
+  "This is a relprod strategy that will perform at least as 
+well as no strategy at all because it will never result in 
+more expanded patterns but only more specific patterns."
+  [relprod]
+  (relprod-filter relprod #(<= (:tuple-count %) 1)))
+
+(defn relprod-expand-once [relprod]
+  (let [relprod (relprod-select-simple relprod)
+        [r & _] (sort-by :tuple-count (:exclude relprod))]
+    (if r
+      (relprod-select-keys relprod (:key r))
+      relprod)))
+
+(defn expand-constrained-patterns [source context pattern]
+  (let [vars (collect-vars pattern)
+        rel-data (expansion-rel-data (:rels context) vars)
+        strategy (-> context :settings :relprod-strategy)
+        product (-> (init-relprod rel-data vars)
+                    strategy
+                    :product)]
+    (resolve-pattern-vars-for-relation source pattern product)))
+
+(defn lookup-patterns [context
+                       clause
+                       pattern-before-expansion
+                       patterns-after-expansion]
+  (let [source *implicit-source*
+        base-rel (Relation. (var-mapping clause (range)) [])
+        raw-relation (transduce (map (fn [pattern]
+                                       (lookup-pattern context
+                                                       source
+                                                       pattern
+                                                       clause)))
+                                (completing sum-rel)
+                                base-rel
+                                patterns-after-expansion)
+        relation (simplify-rel raw-relation)]
+    (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
+                               (dynamic-lookup-attrs source pattern-before-expansion)
+                               *lookup-attrs*)]
+      
+      (cond-> (update context :rels collapse-rels relation)
+        (:stats context) (assoc :tmp-stats {:type :lookup})))))
+
 
 (defn -resolve-clause*
   ([context clause]
@@ -1068,15 +1215,11 @@
 
      '[*]                                                 ;; pattern
      (let [source *implicit-source*
-           pattern (->> clause
-                        (replace (:consts context))
-                        (resolve-pattern-lookup-refs source))
-           relation (lookup-pattern context source pattern clause)]
-       (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
-                                  (dynamic-lookup-attrs source pattern)
-                                  *lookup-attrs*)]
-         (cond-> (update context :rels collapse-rels relation)
-           (:stats context) (assoc :tmp-stats {:type :lookup})))))))
+           pattern0 (replace (:consts context) clause)
+           pattern1 (resolve-pattern-lookup-refs source pattern0)
+           constrained-patterns (expand-constrained-patterns source context pattern1)
+           context-constrained (lookup-patterns context clause pattern1 constrained-patterns)]
+       context-constrained))))
 
 (defn -resolve-clause
   ([context clause]
@@ -1220,14 +1363,17 @@
   (->> (-collect context symbols)
        (map vec)))
 
-(defn raw-q [{:keys [query args offset limit stats?] :as _query-map}]
-  (let [{:keys [qfind
+(def default-settings {:relprod-strategy relprod-select-simple})
+
+(defn raw-q [{:keys [query args offset limit stats? settings] :as _query-map}]
+  (let [settings (merge default-settings settings)
+        {:keys [qfind
                 qwith
                 qreturnmaps
                 qin]} (memoized-parse-query query)
         context-in    (-> (if stats?
-                            (StatContext. [] {} {} {} [])
-                            (Context. [] {} {} {}))
+                            (StatContext. [] {} {} {} [] settings)
+                            (Context. [] {} {} {} settings))
                           (resolve-ins qin args))
         ;; TODO utilize parser
         all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))

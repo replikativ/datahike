@@ -508,3 +508,57 @@
                                   :where '[[?e :name ?value]]
                                   :offset 0
                                   :limit 100} [])))))
+
+(deftest test-distinct-tuples
+  (is (= [[3 4]] (dq/distinct-tuples [[3 4]])))
+  (is (= [[3 4]] (dq/distinct-tuples [[3 4] [3 4]])))
+  (is (= [[3 4]] (dq/distinct-tuples [[3 4]
+                                      (long-array [3 4])])))
+  (is (= [[3 4] [9 7]] (dq/distinct-tuples [[3 4] [9 7] [3 4]]))))
+
+
+(defn simple-rel
+  ([v values] (simple-rel v values {}))
+  ([v values extra]
+   (dq/->Relation (merge {v 0} extra) (map vector values))))
+
+(deftest test-relprod
+  (let [x (simple-rel '?x [1 2 3 4])
+        y (simple-rel '?y [90] {'?w 1})
+        z (simple-rel '?z [10 11 12])
+        rels [x y z]
+        xy-vars ['?x '?y]
+        rel-data (dq/expansion-rel-data rels xy-vars)
+        relprod (dq/init-relprod rel-data xy-vars)
+        relprod-x (dq/relprod-select-keys relprod ['?x])
+        relprod-xy (dq/relprod-select-keys relprod ['?x] ['?y])
+        relprod-xy2 (dq/relprod-select-all relprod)
+        relprod-y (dq/relprod-select-simple relprod)
+        prodks (comp set keys :attrs :product)]
+    (is (= #{} (dq/relprod-vars relprod-x)))
+    (is (= #{'?x} (dq/relprod-vars relprod-x :include)))
+    (is (= #{'?y} (dq/relprod-vars relprod-x :exclude)))
+    (is (= #{'?x '?y} (dq/relprod-vars relprod-x :include :exclude)))
+    (is (= 2 (count rel-data)))
+    (is (= [{:rel x
+             :tuple-count 4
+             :vars ['?x]
+             :key ['?x]}
+            {:rel y
+             :tuple-count 1
+             :vars ['?y]
+             :key ['?y]}]
+           rel-data))
+    (is (sequential? (:exclude relprod)))
+    (is (= 2 (count (:exclude relprod))))
+    (is (= 1 (count (:exclude relprod-x))))
+    (is (= 0 (count (:exclude relprod-xy))))
+    (is (= #{'?x} (prodks relprod-x)))
+    (is (= #{'?x '?y '?w} (prodks relprod-xy)))
+    (is (= #{'?x '?y '?w} (prodks relprod-xy2)))
+    (is (= #{'?y '?w} (prodks relprod-y)))
+    
+    (doseq [{:keys [include exclude vars]} [relprod relprod-x relprod-xy relprod-xy2 relprod-y]]
+      (is (= 2 (+ (count include)
+                  (count exclude))))
+      (is (= xy-vars vars)))))

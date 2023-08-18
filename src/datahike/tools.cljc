@@ -152,4 +152,27 @@
   #?(:clj (.getHostAddress (InetAddress/getLocalHost))
      :cljs (raise "Not supported yet." {:type :hostname-not-supported-yet})))
 
-(def datahike-logo (slurp (io/resource "datahike-logo.txt")))
+(def datahike-logo (slurp "resources/datahike-logo.txt"))
+
+(defmacro with-elements-of [v & var-expr-pairs]
+  {:pre [(even? (count var-expr-pairs))]}
+  (let [pairs (partition 2 var-expr-pairs)
+        vars (mapv first pairs)
+        vsym (gensym)
+        nsym (gensym)
+        generate (fn generate [acc pairs]
+                   (let [i (count acc)]
+                     `(if (<= ~nsym ~i)
+                        ~acc
+                        ~(if (empty? pairs)
+                           `(throw (ex-info "Pattern mismatch"
+                                            {:input ~vsym
+                                             :pattern (quote ~var-expr-pairs)}))
+                           (let [[[_ expr] & pairs] pairs
+                                 g (gensym)]
+                             `(let [~g ~expr]
+                                ~(generate (conj acc g) pairs)))))))]
+    `(let [~vsym ~v
+           ~nsym (count ~vsym)
+           ~vars ~vsym]
+       ~(generate [] pairs))))

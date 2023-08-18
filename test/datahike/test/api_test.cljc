@@ -5,6 +5,7 @@
    [datahike.test.utils :as utils]
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.query :as dq]
    [datahike.db.interface :as dbi]
    [datahike.index.interface :as di]
    [datahike.constants :refer [tx0]]))
@@ -873,3 +874,31 @@
 
 (deftest test-metrics-attr-refs
   (test-metrics (assoc metrics-base-cfg :attribute-refs? true)))
+
+(deftest test-strategies
+  (let [state (atom [])
+        pushing (fn [x] (fn [relprod] (swap! state conj x) relprod))]
+    ;; We should get the same results no matter the choice of strategy. They
+    ;; only have different performance characteristics.
+    (doseq [strategy [(pushing :identity)
+                      (comp (pushing :simple) dq/relprod-select-simple)
+                      (comp (pushing :all) dq/relprod-select-all)
+                      (comp (pushing :once) dq/relprod-expand-once)]]
+      (let [cfg {:store {:backend :mem
+                         :id "q"}
+                 :initial-tx [[:db/add -1 :name "Ivan"]
+                              [:db/add -1 :likes "fries"]
+                              [:db/add -1 :likes "pizza"]
+                              [:db/add -1 :friend 296]]
+                 :keep-history? false
+                 :schema-flexibility :read}
+            conn (utils/setup-db cfg)]
+        (is (= #{["fries"] ["candy"] ["pie"] ["pizza"]}
+               (d/q {:query '[:find ?value :where [_ :likes ?value]]
+                     :settings {:relprod-strategy strategy}
+                     :args [#{[1 :likes "fries"]
+                              [2 :likes "candy"]
+                              [3 :likes "pie"]
+                              [4 :likes "pizza"]}]})))))
+    (is (= [:identity :simple :all :once]
+           (-> state deref dedupe)))))
