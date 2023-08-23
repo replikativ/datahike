@@ -18,8 +18,8 @@
  :paths ["src" "target/classes"]
 
  :deps/prep-lib {:ensure "target/classes"
-                 :alias :build
-                 :fn jcompile}
+                 :alias :prep-lib-build
+                 :fn bb-trigger}
 
  :aliases {;; Development
 
@@ -49,7 +49,7 @@
                   :main-opts ["-m" "cljfmt.main" "fix"]}
 
            ;; Build
-
+           :prep-lib-build {:ns-dfault build}
            :build {:replace-paths []
                    :replace-deps {datahike.bb {:local/root "bb"}}
                    :ns-default tools.build}
