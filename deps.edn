@@ -19,7 +19,7 @@
 
  :deps/prep-lib {:ensure "target/classes"
                  :alias :build
-                 :fn jcompile}
+                 :fn bb-trigger}
 
  :aliases {;; Development
 
@@ -50,9 +50,7 @@
 
            ;; Build
 
-           :build {:replace-paths []
-                   :replace-deps {datahike.bb {:local/root "bb"}}
-                   :ns-default tools.build}
+           :build {:ns-default build}
 
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
 
