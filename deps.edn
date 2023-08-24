@@ -21,7 +21,7 @@
 
  :deps/prep-lib {:ensure "target/classes"
                  :alias :build
-                 :fn bb-trigger}
+                 :fn compile-java}
 
  :aliases {;; Development
 

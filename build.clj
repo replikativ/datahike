@@ -3,12 +3,13 @@
   (:require [clojure.edn :as edn]
             [clojure.tools.build.api :as b]))
 
-(defn compile [_]
-  (let [{:build/keys [deps-file class-dir java-src-dirs]}
-        (edn/read-string (slurp "config.edn"))]
-    (print (str "Compiling Java classes saving them to '" class-dir "'..."))
-    (b/javac {:src-dirs java-src-dirs
-              :class-dir class-dir
-              :basis (b/create-basis {:project deps-file})
-              :javac-opts ["--release" "8"]})
-    (println "Done.")))
+(def class-dir "target/classes")
+(def basis (b/create-basis {:project "deps.edn"}))
+
+(defn compile-java
+  [_]
+  (b/javac {:src-dirs ["java"]
+            :class-dir class-dir
+            :basis basis
+            :javac-opts ["--release" "8"
+                         "-Xlint:deprecation"]}))
