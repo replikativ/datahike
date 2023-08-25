@@ -22,7 +22,7 @@
 (deftest pod-workflow
 
   (testing "delete-database"
-    (is (= {}
+    (is (= nil
            (d/delete-database config))))
 
   (testing "create-database"
