@@ -569,7 +569,7 @@
      (defn pr-db [db, ^Writer w]
        (.write w (str "#datahike/DB {"))
        (.write w (str ":store-id ["
-                      (store/store-identity (:store (dbi/-config db)) )
+                      (store/store-identity (:store (dbi/-config db)))
                       " " (:branch (dbi/-config db))  "] "))
        (.write w (str ":max-tx " (dbi/-max-tx db) " "))
        (.write w (str ":max-eid " (dbi/-max-eid db)))
