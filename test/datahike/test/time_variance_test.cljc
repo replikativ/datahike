@@ -103,8 +103,8 @@
         (is (= #{[25] [30]}
                (d/q query-with-< history-db [:name "Alice"] date)))))
     (testing "print DB"
-      (is (= "#datahike/HistoricalDB {:store-id :derandomized :origin #datahike/DB {:max-tx 536870915 :max-eid 4}}"
-             (pr-str (assoc (d/history @conn) :store-id :derandomized)))))
+      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:max-tx 536870915 :max-eid 4}}"
+             (pr-str (d/history @conn)))))
     (d/release conn)))
 
 (deftest test-as-of-db
@@ -122,11 +122,11 @@
       (is (= #{[25]}
              (d/q query (d/as-of @conn tx-id) [:name "Alice"]))))
     (testing "print DB"
-      (let [as-of-str (pr-str (assoc (d/as-of @conn tx-id) :stored-id :derandomized))
-            origin-str (pr-str (assoc (dbi/-origin (d/as-of @conn tx-id)) :store-id :derandomized))]
-        (is (= "#datahike/AsOfDB {:store-id :derandomized :origin #datahike/DB {:max-tx 536870913 :max-eid 4} :time-point 536870914}"
+      (let [as-of-str (pr-str (d/as-of @conn tx-id))
+            origin-str (pr-str (dbi/-origin (d/as-of @conn tx-id)))]
+        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:max-tx 536870913 :max-eid 4} :time-point 536870914}"
                as-of-str))
-        (is (= "#datahike/DB {:store-id :derandomized :max-tx 536870913 :max-eid 4}"
+        (is (= "#datahike/DB {:max-tx 536870913 :max-eid 4}"
                origin-str))
         (is (not= as-of-str origin-str))))
     (testing "retraction"
@@ -159,8 +159,8 @@
         (is (= #{[new-age]}
                (d/q query (d/since @conn tx-id))))))
     (testing "print DB"
-      (is (= "#datahike/SinceDB {:store-id :derandomized :origin #datahike/DB {:max-tx 536870914 :max-eid 4} :time-point 536870914}"
-             (pr-str (assoc (d/since @conn tx-id) :store-id :derandomized)))))
+      (is (= "#datahike/SinceDB {:origin #datahike/DB {:max-tx 536870914 :max-eid 4} :time-point 536870914}"
+             (pr-str (d/since @conn tx-id)))))
     (d/release conn)))
 
 (deftest test-no-history

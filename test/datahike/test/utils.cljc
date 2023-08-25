@@ -15,7 +15,7 @@
   ([]
    (setup-db {}))
   ([cfg]
-   (setup-db cfg true))
+   (setup-db cfg (get-in cfg [:store :id])))
   ([cfg gen-uuid?]
    (let [cfg (cond-> (tools/deep-merge (cfg-template) cfg)
                gen-uuid? (assoc-in [:store :id] (str (UUID/randomUUID))))]
