@@ -89,7 +89,8 @@
       store)))
 
 (defmethod delete-store :mem [{:keys [id]}]
-  (swap! memory dissoc id))
+  (swap! memory dissoc id)
+  nil)
 
 (defmethod connect-store :mem [{:keys [id]}]
   (@memory id))

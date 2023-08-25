@@ -500,7 +500,7 @@
     (dbi/-datoms db index components)))
 
 (s/fdef
-  seek-atoms
+  seek-datoms
   :args (s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
                :key (s/cat :db spec/SDB :index keyword? :components (s/* any?)))
   :ret (s/nilable spec/SDatoms))

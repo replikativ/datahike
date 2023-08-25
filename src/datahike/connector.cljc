@@ -10,7 +10,7 @@
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.data :refer [diff]])
-  (:import [clojure.lang IDeref IAtom IMeta ILookup]))
+  (:import [clojure.lang IDeref IAtom IMeta ILookup IRef]))
 
 ;; connection
 
@@ -35,7 +35,11 @@
   (reset [_ newval] (reset! wrapped-atom newval))
 
   IMeta
-  (meta [_] (meta wrapped-atom)))
+  (meta [_] (meta wrapped-atom))
+
+  IRef
+  (addWatch [_ key f] (add-watch wrapped-atom key f))
+  (removeWatch [_ key] (remove-watch wrapped-atom key)))
 
 (defn connection? [x]
   (instance? Connection x))

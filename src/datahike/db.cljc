@@ -11,6 +11,7 @@
    [datahike.db.utils :as dbu]
    [datahike.index :as di]
    [datahike.schema :as ds]
+   [datahike.store :as store]
    [datahike.tools :as tools :refer [raise]]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
    [medley.core :as m]
@@ -567,6 +568,9 @@
    (do
      (defn pr-db [db, ^Writer w]
        (.write w (str "#datahike/DB {"))
+       (.write w (str ":store-id ["
+                      (store/store-identity (:store (dbi/-config db)) )
+                      " " (:branch (dbi/-config db))  "] "))
        (.write w (str ":max-tx " (dbi/-max-tx db) " "))
        (.write w (str ":max-eid " (dbi/-max-eid db)))
        (.write w "}"))
@@ -831,8 +835,10 @@
                         :temporal-aevt (di/empty-index index store :aevt index-config)
                         :temporal-avet (di/empty-index index store :avet index-config)}))))))
 
-(defn db-from-reader [{:keys [schema datoms]}]
-  (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema))
+(defn db-from-reader [{:keys [schema datoms store-id]}]
+  (if store-id
+    @(datahike.connections/get-connection store-id)
+    (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema)))
 
 (defn metrics [^DB db]
   (let [update-count-in (fn [m ks] (update-in m ks #(if % (inc %) 1)))
