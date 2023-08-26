@@ -279,7 +279,7 @@ workflows:
             - github-token
           filters:
             branches:
-              only: main
+              only: feat/native-image-builds
           requires:
             - format
             - persistent-set-test
@@ -293,6 +293,6 @@ workflows:
             - github-token
           filters:
             branches:
-              only: main
+              only: feat/native-image-builds
           requires:
             - deploy
