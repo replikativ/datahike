@@ -1,13 +1,13 @@
-{:org "replikativ"
+{:org "timokramer"
  :lib "datahike"
  :version {:major 0
            :minor 6}
- :git-url "git@github.com:replikativ/datahike.git"
+ :git-url "git@github.com:timokramer/datahike.git"
 
  :pom-template "./bb/resources/template/pom.xml"
- :scm {:connection "scm:git:git@github.com:replikativ/datahike.git"
-       :developerConnection "scm:git:git@github.com:replikativ/datahike.git"
-       :url "https://github.com/replikativ/datahike"}
+ :scm {:connection "scm:git:git@github.com:timokramer/datahike.git"
+       :developerConnection "scm:git:git@github.com:timokramer/datahike.git"
+       :url "https://github.com/timokramer/datahike"}
 
  :build {:clj {;; jvm build
                :src-dirs ["src"]
@@ -15,11 +15,11 @@
                :target-dir "target"
                :class-dir "target/classes"
                :deps-file "deps.edn"
-               :jar-pattern "{{repo.lib}}-{{version-str}}.jar" 
-               :lib io.replikativ/datahike}
-         
+               :jar-pattern "{{repo.lib}}-{{version-str}}.jar"
+               :lib io.timokramer/datahike}
+
          :native {;; jvm build
-                  :src-dirs ["src" "libdatahike/src"] 
+                  :src-dirs ["src" "libdatahike/src"]
                   :java-src-dirs ["java"]
                   :target-dir "target"
                   :class-dir "target/classes"
@@ -29,7 +29,7 @@
                   :main datahike.cli
                   ;; native build
                   :artifact "libdatahike.zip"
-                  :project-target-dir "libdatahike/target" 
+                  :project-target-dir "libdatahike/target"
                   :project-name "libdatahike"
                   :class-path "libdatahike/src"
                   :java-interface "libdatahike/src/datahike/impl/LibDatahike.java"}}}
