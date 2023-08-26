@@ -69,8 +69,8 @@
                   [:name "Alice"]))))
     (d/release conn)))
 
-(defn remove-commit-id [s]
-  (clojure.string/replace s #" :commit-id #uuid \".+\"" ""))
+(defn replace-commit-id [s]
+  (clojure.string/replace s #"#uuid \".+\"" ":REPLACED"))
 
 (deftest test-historical-queries
   (let [cfg (assoc-in cfg-template [:store :id] "test-historical-queries")
@@ -106,8 +106,8 @@
         (is (= #{[25] [30]}
                (d/q query-with-< history-db [:name "Alice"] date)))))
     (testing "print DB"
-      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:store-id [[:mem \"test-historical-queries\"] :db] :max-tx 536870915 :max-eid 4}}"
-             (remove-commit-id (pr-str (d/history @conn))))))
+      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:store-id [[:mem \"test-historical-queries\"] :db] :commit-id :REPLACED :max-tx 536870915 :max-eid 4}}"
+             (replace-commit-id (pr-str (d/history @conn))))))
     (d/release conn)))
 
 (deftest test-as-of-db
@@ -127,10 +127,10 @@
     (testing "print DB"
       (let [as-of-str (pr-str (d/as-of @conn tx-id))
             origin-str (pr-str (dbi/-origin (d/as-of @conn tx-id)))]
-        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :max-tx 536870913 :max-eid 4} :time-point 536870914}"
-               (remove-commit-id as-of-str)))
-        (is (= "#datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :max-tx 536870913 :max-eid 4}"
-               (remove-commit-id origin-str)))
+        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :commit-id :REPLACED :max-tx 536870913 :max-eid 4} :time-point 536870914}"
+               (replace-commit-id as-of-str)))
+        (is (= "#datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :commit-id :REPLACED :max-tx 536870913 :max-eid 4}"
+               (replace-commit-id origin-str)))
         (is (not= as-of-str origin-str))))
     (testing "retraction"
       (let [find-alices-age '[:find ?a :in $ ?n :where [?e :name ?n] [?e :age ?a]]]
@@ -162,8 +162,8 @@
         (is (= #{[new-age]}
                (d/q query (d/since @conn tx-id))))))
     (testing "print DB"
-      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test-since-db\"] :db] :max-tx 536870914 :max-eid 4} :time-point 536870914}"
-             (remove-commit-id (pr-str (d/since @conn tx-id))))))
+      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test-since-db\"] :db] :commit-id :REPLACED :max-tx 536870914 :max-eid 4} :time-point 536870914}"
+             (replace-commit-id (pr-str (d/since @conn tx-id))))))
     (d/release conn)))
 
 (deftest test-no-history
