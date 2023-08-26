@@ -26,6 +26,7 @@
 
 (def cfg-template {:store {:backend :mem
                            :id "time-variance"}
+                   :crypto-hash? true
                    :keep-history? true
                    :schema-flexibility :write
                    :initial-tx schema})
