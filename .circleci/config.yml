@@ -272,21 +272,21 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
-      - deploy:
-          context:
-            - dockerhub-deploy
-            - clojars-deploy
-            - github-token
-          filters:
-            branches:
-              only: feat/native-image-builds
-          requires:
-            - format
-            - persistent-set-test
-            - hitchhiker-tree-test
-              #          - backward-compatibility-test
-            - native-image-test
-            - integration-test
+              #- deploy:
+              #    context:
+              #      - dockerhub-deploy
+              #      - clojars-deploy
+              #      - github-token
+              #    filters:
+              #      branches:
+              #        only: feat/native-image-builds
+              #    requires:
+              #      - format
+              #      - persistent-set-test
+              #      - hitchhiker-tree-test
+              #        #          - backward-compatibility-test
+              #      - native-image-test
+              #      - integration-test
       - release:
           context:
             - dockerhub-deploy
@@ -295,4 +295,9 @@ workflows:
             branches:
               only: feat/native-image-builds
           requires:
-            - deploy
+            - format
+            - persistent-set-test
+            - hitchhiker-tree-test
+              #- backward-compatibility-test
+            - native-image-test
+            - integration-test
