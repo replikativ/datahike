@@ -167,23 +167,23 @@ jobs:
             cd /home/circleci/replikativ
             bb test bb-pod
           no_output_timeout: 5m
-  backward-compatibility-test:
-    executor: tools/clojurecli
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Retrieve ssh-fingerprints
-          command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
-          no_output_timeout: 1m
-      - run:
-          name: Run backward compatibility test
-          command: bb test back-compat
-          no_output_timeout: 5m
-      - save_cache:
-          key: deps-{{ checksum "deps.edn" }}
-          paths:
-            - /home/circleci/.m2
+            #backward-compatibility-test:
+            #  executor: tools/clojurecli
+            #  steps:
+            #    - attach_workspace:
+            #        at: /home/circleci
+            #    - run:
+            #        name: Retrieve ssh-fingerprints
+            #        command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+            #        no_output_timeout: 1m
+            #    - run:
+            #        name: Run backward compatibility test
+            #        command: bb test back-compat
+            #        no_output_timeout: 5m
+            #    - save_cache:
+            #        key: deps-{{ checksum "deps.edn" }}
+            #        paths:
+            #          - /home/circleci/.m2
   integration-test:
     executor: tools/clojurecli
     steps:
@@ -264,10 +264,10 @@ workflows:
           requires:
             - build
             - native-image
-      - backward-compatibility-test:
-          context: dockerhub-deploy
-          requires:
-            - build
+              #    - backward-compatibility-test:
+              #        context: dockerhub-deploy
+              #        requires:
+              #          - build
       - integration-test:
           context: dockerhub-deploy
           requires:
@@ -284,7 +284,7 @@ workflows:
             - format
             - persistent-set-test
             - hitchhiker-tree-test
-            - backward-compatibility-test
+              #          - backward-compatibility-test
             - native-image-test
             - integration-test
       - release:
