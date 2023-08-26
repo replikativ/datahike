@@ -26,7 +26,6 @@
 
 (def cfg-template {:store {:backend :mem
                            :id "time-variance"}
-                   :crypto-hash? true
                    :keep-history? true
                    :schema-flexibility :write
                    :initial-tx schema})
@@ -105,7 +104,7 @@
                (d/q query-with-< history-db [:name "Alice"] date)))))
     (testing "print DB"
       (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:store-id [[:mem \"test-historical-queries\"] :db] :max-tx 536870915 :max-eid 4}}"
-             (pr-str (d/history @conn)))))
+             (pr-str (assoc-in (d/history @conn)  [:origin-db :meta :datahike/commit-id] :replaced)))))
     (d/release conn)))
 
 (deftest test-as-of-db
@@ -123,11 +122,11 @@
       (is (= #{[25]}
              (d/q query (d/as-of @conn tx-id) [:name "Alice"]))))
     (testing "print DB"
-      (let [as-of-str (pr-str (d/as-of @conn tx-id))
-            origin-str (pr-str (dbi/-origin (d/as-of @conn tx-id)))]
-        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :max-tx 536870913 :max-eid 4} :time-point 536870914}"
+      (let [as-of-str (pr-str (assoc-in (d/as-of @conn tx-id) [:origin-db :meta :datahike/commit-id] :replaced))
+            origin-str (pr-str (assoc-in (dbi/-origin (d/as-of @conn tx-id)  [:meta :datahike/commit-id] :replaced)))]
+        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :commit-id :replaced :max-tx 536870913 :max-eid 4} :time-point 536870914}"
                as-of-str))
-        (is (= "#datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :max-tx 536870913 :max-eid 4}"
+        (is (= "#datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :commit-id :replaced :max-tx 536870913 :max-eid 4}"
                origin-str))
         (is (not= as-of-str origin-str))))
     (testing "retraction"
@@ -160,8 +159,8 @@
         (is (= #{[new-age]}
                (d/q query (d/since @conn tx-id))))))
     (testing "print DB"
-      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test-since-db\"] :db] :max-tx 536870914 :max-eid 4} :time-point 536870914}"
-             (pr-str (d/since @conn tx-id)))))
+      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test-since-db\"] :db] :commit-id :replaced :max-tx 536870914 :max-eid 4} :time-point 536870914}"
+             (pr-str (assoc-in (d/since @conn tx-id)  [:origin-db :meta :datahike/commit-id] :replaced)))))
     (d/release conn)))
 
 (deftest test-no-history
