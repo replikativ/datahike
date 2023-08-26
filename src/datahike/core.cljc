@@ -273,20 +273,6 @@
      :db/current-tx
      x)))
 
-;; Data Readers
-
-(def ^{:doc "Data readers for EDN readers. In CLJS they’re registered automatically. In CLJ, if `data_readers.clj` do not work, you can always do
-
-             ```
-             (clojure.edn/read-string {:readers data-readers} \"...\")
-             ```"}
-  data-readers {'datahike/Datom dd/datom-from-reader
-                'db/id          tempid
-                'datahike/DB    db/db-from-reader})
-
-#?(:cljs
-   (doseq [[tag cb] data-readers] (cljs.reader/register-tag-parser! tag cb)))
-
 (defn resolve-tempid
   "Does a lookup in tempids map, returning an entity id that tempid was resolved to.
    

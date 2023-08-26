@@ -571,6 +571,7 @@
        (.write w (str ":store-id ["
                       (store/store-identity (:store (dbi/-config db)))
                       " " (:branch (dbi/-config db))  "] "))
+       (.write w (str ":commit-id " (pr-str (:datahike/commit-id (:meta db))) " "))
        (.write w (str ":max-tx " (dbi/-max-tx db) " "))
        (.write w (str ":max-eid " (dbi/-max-eid db)))
        (.write w "}"))
@@ -834,11 +835,6 @@
                        {:temporal-eavt (di/empty-index index store :eavt index-config)
                         :temporal-aevt (di/empty-index index store :aevt index-config)
                         :temporal-avet (di/empty-index index store :avet index-config)}))))))
-
-(defn db-from-reader [{:keys [schema datoms store-id]}]
-  (if store-id
-    @(datahike.connections/get-connection store-id)
-    (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema)))
 
 (defn metrics [^DB db]
   (let [update-count-in (fn [m ks] (update-in m ks #(if % (inc %) 1)))

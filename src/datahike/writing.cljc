@@ -127,7 +127,8 @@
          meta                  (assoc meta :datahike/updated-at txInstant)
          db                    (assoc db-after :meta meta)
          store                 (:store @(:wrapped-atom connection))
-         db                    (if noCommit db (commit! store config db parents))]
+         db                    (if noCommit db (commit! store config db parents))
+         tx-report             (assoc tx-report :db-after db)]
      (reset! connection db)
      (if noCommit
        tx-report

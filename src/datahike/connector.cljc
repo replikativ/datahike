@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.connector
   (:require [datahike.connections :refer [get-connection add-connection! delete-connection!
                                           connections]]
+            [datahike.readers]
             [datahike.store :as ds]
             [datahike.writing :as dsi]
             [datahike.config :as dc]
