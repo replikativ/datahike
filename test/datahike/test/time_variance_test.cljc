@@ -123,7 +123,7 @@
              (d/q query (d/as-of @conn tx-id) [:name "Alice"]))))
     (testing "print DB"
       (let [as-of-str (pr-str (assoc-in (d/as-of @conn tx-id) [:origin-db :meta :datahike/commit-id] :replaced))
-            origin-str (pr-str (assoc-in (dbi/-origin (d/as-of @conn tx-id)  [:meta :datahike/commit-id] :replaced)))]
+            origin-str (pr-str (assoc-in (dbi/-origin (d/as-of @conn tx-id))  [:meta :datahike/commit-id] :replaced))]
         (is (= "#datahike/AsOfDB {:origin #datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :commit-id :replaced :max-tx 536870913 :max-eid 4} :time-point 536870914}"
                as-of-str))
         (is (= "#datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :commit-id :replaced :max-tx 536870913 :max-eid 4}"
