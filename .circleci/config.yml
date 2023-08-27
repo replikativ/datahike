@@ -230,6 +230,9 @@ jobs:
       - run:
           name: Release cli on GitHub
           command: bb release native-cli
+          environment:
+            DHI_PLATFORM: linux
+            DHI_ARCH: x86_64
 
 workflows:
   build-test-and-deploy:
