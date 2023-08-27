@@ -5,7 +5,6 @@
    [borkdude.gh-release-artifact :as gh]
    [selmer.parser :refer [render]]
    [tools.version :as version]
-   [tools.utils :as utils]
    [tools.build :as build])
   (:import
    (clojure.lang ExceptionInfo)))
