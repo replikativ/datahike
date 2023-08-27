@@ -79,9 +79,7 @@
                   :task (deploy/remote config (-> config :build :clj))}
 
          release {:doc "Build and release jar to GitHub"
-                  :task (release/-main config *command-line-args*)
-                  #_(let [jar (build/jar-path config (-> config :build :clj))]
-                      (release/gh-release jar config))}
+                  :task (release/-main config *command-line-args*)}
 
          ;; native image
 

@@ -4,8 +4,8 @@
    [babashka.process :as p]
    [borkdude.gh-release-artifact :as gh]
    [selmer.parser :refer [render]]
-   [tools.version :as version]
-   [tools.build :as build])
+   [tools.build :as build]
+   [tools.version :as version])
   (:import
    (clojure.lang ExceptionInfo)))
 

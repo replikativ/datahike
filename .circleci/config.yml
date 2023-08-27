@@ -87,7 +87,7 @@ jobs:
             curl -O https://download.clojure.org/install/linux-install-1.11.1.1165.sh
             chmod +x linux-install-1.11.1.1165.sh
             ./linux-install-1.11.1.1165.sh --prefix /home/circleci/clojure
-      - run: 
+      - run:
           name: install babashka
           command: |
             cd /home/circleci
@@ -167,23 +167,23 @@ jobs:
             cd /home/circleci/replikativ
             bb test bb-pod
           no_output_timeout: 5m
-            #backward-compatibility-test:
-            #  executor: tools/clojurecli
-            #  steps:
-            #    - attach_workspace:
-            #        at: /home/circleci
-            #    - run:
-            #        name: Retrieve ssh-fingerprints
-            #        command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
-            #        no_output_timeout: 1m
-            #    - run:
-            #        name: Run backward compatibility test
-            #        command: bb test back-compat
-            #        no_output_timeout: 5m
-            #    - save_cache:
-            #        key: deps-{{ checksum "deps.edn" }}
-            #        paths:
-            #          - /home/circleci/.m2
+  backward-compatibility-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Retrieve ssh-fingerprints
+          command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+          no_output_timeout: 1m
+      - run:
+          name: Run backward compatibility test
+          command: bb test back-compat
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
   integration-test:
     executor: tools/clojurecli
     steps:
@@ -270,40 +270,40 @@ workflows:
           requires:
             - build
             - native-image
-              #    - backward-compatibility-test:
-              #        context: dockerhub-deploy
-              #        requires:
-              #          - build
+      - backward-compatibility-test:
+          context: dockerhub-deploy
+          requires:
+            - build
       - integration-test:
           context: dockerhub-deploy
           requires:
             - build
-              #- deploy:
-              #    context:
-              #      - dockerhub-deploy
-              #      - clojars-deploy
-              #      - github-token
-              #    filters:
-              #      branches:
-              #        only: feat/native-image-builds
-              #    requires:
-              #      - format
-              #      - persistent-set-test
-              #      - hitchhiker-tree-test
-              #        #          - backward-compatibility-test
-              #      - native-image-test
-              #      - integration-test
+      - deploy:
+          context:
+            - dockerhub-deploy
+            - clojars-deploy
+            - github-token
+          filters:
+            branches:
+              only: main
+          requires:
+            - format
+            - persistent-set-test
+            - hitchhiker-tree-test
+            - backward-compatibility-test
+            - native-image-test
+            - integration-test
       - release:
           context:
             - dockerhub-deploy
             - github-token
           filters:
             branches:
-              only: feat/native-image-builds
+              only: main
           requires:
             - format
             - persistent-set-test
             - hitchhiker-tree-test
-              #- backward-compatibility-test
+            - backward-compatibility-test
             - native-image-test
             - integration-test
