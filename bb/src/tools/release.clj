@@ -76,7 +76,7 @@
   (let [cmd (first args)
         version-string (version/string config)]
     (case cmd
-      "jar" (gh-release config (build/jar-path config (-> config :build :clj) version-string))
+      "jar" (gh-release config (build/jar-path config (-> config :build :clj)))
       "native-cli" (->> (zip-cli config :native-cli)
                         (gh-release config))
       (println "Command not found: " cmd))))
