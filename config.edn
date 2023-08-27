@@ -32,4 +32,8 @@
                   :project-target-dir "libdatahike/target"
                   :project-name "libdatahike"
                   :class-path "libdatahike/src"
-                  :java-interface "libdatahike/src/datahike/impl/LibDatahike.java"}}}
+                  :java-interface "libdatahike/src/datahike/impl/LibDatahike.java"}}
+
+ :release {:native-cli {:target-dir "."
+                        :zip-pattern "{{lib}}-{{version}}-{{platform}}-{{arch}}.zip"
+                        :binary-name "dhi"}}}
