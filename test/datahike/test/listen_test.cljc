@@ -11,6 +11,7 @@
 (deftest test-listen!
   (let [conn    (du/setup-db)
         reports (atom [])]
+    (prn "listeners" (:listeners (meta conn)))
     (d/transact conn {:tx-data [[:db/add -1 :name "Alex"]
                                 [:db/add -2 :name "Boris"]]})
     (d/listen conn :test #(swap! reports conj %))

@@ -54,6 +54,14 @@
 
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
 
+           :http {:extra-deps {org.babashka/http-client      {:mvn/version "0.3.11"}
+                               buddy/buddy-auth              {:mvn/version "3.0.323"}
+                               ring/ring-core                {:mvn/version "1.9.5"}
+                               ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
+                               metosin/reitit                {:mvn/version "0.5.18"}
+                               ring-cors/ring-cors           {:mvn/version "0.1.13"}}
+                  :main-opts ["-m" "datahike.http.server"]}
+
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
                          :extra-paths ["libdatahike/src"]}
 

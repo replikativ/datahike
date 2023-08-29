@@ -137,7 +137,7 @@
 
   clojure.lang.IPersistentMap
   (-connect [raw-config]
-    (let [config (dissoc (dc/load-config raw-config) :initial-tx)
+    (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer)
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))
           store-config (:store config)
           store-id (ds/store-identity store-config)

@@ -2,9 +2,6 @@
 
 (def connections (atom {}))
 
-(defn read-connection [conn-id]
-  (:conn (@connections conn-id)))
-
 (defn get-connection [conn-id]
   (when-let [conn (get-in @connections [conn-id :conn])]
     (swap! connections update-in [conn-id :count] inc)

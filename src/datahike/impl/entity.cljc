@@ -213,3 +213,6 @@
   e)
 
 #?(:cljs (goog/exportSymbol "datahike.impl.entity.Entity" Entity))
+
+(defn entity-db [^Entity entity]
+  (.-db entity))
