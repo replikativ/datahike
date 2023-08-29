@@ -276,7 +276,7 @@ Query passed as map needs vectors as values. Query can not be passed as list. Th
     {:args             (s/cat :conn spec/SConnection :txs spec/STransactions)
      :ret              #(s/valid? spec/STransactionReport @%)
      :doc "Load entities directly"
-     :impl datahike.writing/load-entities
+     :impl datahike.writer/load-entities
      :supports-remote? true}
 
     release
