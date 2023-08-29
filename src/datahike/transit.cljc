@@ -6,9 +6,9 @@
             [datahike.datom :as dd]
             [cognitect.transit :as transit])
   #?(:clj
-    (:import [datahike.datom Datom]
-             [datahike.impl.entity Entity]
-             [datahike.db HistoricalDB AsOfDB SinceDB])))
+     (:import [datahike.datom Datom]
+              [datahike.impl.entity Entity]
+              [datahike.db HistoricalDB AsOfDB SinceDB])))
 
 (def read-handlers
   {"datahike/Connection"

@@ -26,10 +26,10 @@
 (defn transact [connection arg-map]
   (let [arg (cond
               (map? arg-map)      (if (contains? arg-map :tx-data)
-                                      arg-map
-                                      (dt/raise "Bad argument to transact, map missing key :tx-data."
-                                                {:error         :transact/syntax
-                                                 :argument-keys (keys arg-map)}))
+                                    arg-map
+                                    (dt/raise "Bad argument to transact, map missing key :tx-data."
+                                              {:error         :transact/syntax
+                                               :argument-keys (keys arg-map)}))
               (or (vector? arg-map)
                   (seq? arg-map)) {:tx-data arg-map}
               :else               (dt/raise "Bad argument to transact, expected map, vector or sequence."

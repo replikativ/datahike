@@ -27,8 +27,8 @@
                                :authfn     (fn [_ token]
                                              (let [valid-token?  (not (nil? token))
                                                    correct-auth? (= (:token config) token)]
-                                           (when (and correct-auth? valid-token?)
-                                             "authenticated-user")))})))
+                                               (when (and correct-auth? valid-token?)
+                                                 "authenticated-user")))})))
 
 ;; TOOD map more errors
 (defn cause->status-code [cause]
@@ -63,10 +63,10 @@
             response (handler request)
             _        (prn response)
             ret      (try
-                  (if (not (instance? java.io.ByteArrayInputStream (:body response)))
-                    (update response :body #(encoder %))
-                    response)
-                  (catch Exception e
-                    (prn "oops" e)))]
+                       (if (not (instance? java.io.ByteArrayInputStream (:body response)))
+                         (update response :body #(encoder %))
+                         response)
+                       (catch Exception e
+                         (prn "oops" e)))]
         (prn "ret-response" ret)
         ret))))

@@ -11,7 +11,6 @@
             [taoensso.timbre :as log])
   (:import [java.io ByteArrayOutputStream]))
 
-
 (def MEGABYTE (* 1024 1024))
 
 (def MAX_OUTPUT_BUFFER_SIZE (* 4 MEGABYTE))
@@ -34,8 +33,7 @@
                   data (ex-data e)
                   new-data
                   (update data :body #(edn/read-string {:readers remote/edn-readers} %))]
-              (throw (ex-info msg new-data)))
-            ))
+              (throw (ex-info msg new-data)))))
         response            (:body response)]
     (log/trace "response" response)
     (edn/read-string {:readers remote/edn-readers} response)))

@@ -38,8 +38,6 @@ Usage:
     (database-exists? {:store {:backend :mem :id \"example\"}})"
      :impl             datahike.writing/database-exists?}
 
-
-
     create-database
     {:args             (s/alt :config
                               (s/cat :config spec/SConfig
@@ -84,8 +82,6 @@ Usage:
     (create-database {:store {:backend :mem :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"
      :impl             datahike.api.impl/create-database}
 
-
-
     delete-database
     {:args             (s/alt :config (s/cat :config spec/SConfig)
                               :nil (s/cat))
@@ -94,8 +90,6 @@ Usage:
      :doc "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
 For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"
      :impl datahike.api.impl/delete-database}
-
-
 
     connect
     {:args             (s/alt :config (s/cat :config spec/SConfig)
@@ -122,8 +116,6 @@ Connect to a database with persistent store:
 `(connect {:store {:backend :file :path \"/tmp/example\"}})`"
      :impl             datahike.connector/connect}
 
-
-
     db
     {:args             (s/cat :conn spec/SConnection)
      :ret              spec/SDB
@@ -133,15 +125,11 @@ Connect to a database with persistent store:
 Exists for Datomic API compatibility. Prefer using `@conn` directly if possible."
      :impl datahike.api.impl/db}
 
-
-
     transact!
     {:args (s/cat :conn spec/SConnection :txs spec/STransactions)
      :ret  #(s/valid? spec/STransactionReport @%)
      :doc  "Same as transact, but asynchronously returns a future."
      :impl datahike.writing/transact!}
-
-
 
     transact
     {:args             (s/cat :conn spec/SConnection :txs spec/STransactions)
@@ -233,10 +221,7 @@ Usage:
     ;; equivalent to
     (transact conn [[:db/add  -1 :name   \"Oleg\"]
                     [:db/add 296 :friend -1]])"
-     :impl datahike.api.impl/transact
-     }
-
-
+     :impl datahike.api.impl/transact}
 
     q
     {:args             (s/alt :argmap (s/cat :map spec/SQueryArgs)
@@ -287,8 +272,6 @@ Or query passed as string:
 Query passed as map needs vectors as values. Query can not be passed as list. The 1-arity function takes a map with the arguments :query and :args and optionally the additional keys :offset and :limit."
      :impl datahike.query/q}
 
-
-
     load-entities
     {:args             (s/cat :conn spec/SConnection :txs spec/STransactions)
      :ret              #(s/valid? spec/STransactionReport @%)
@@ -296,16 +279,12 @@ Query passed as map needs vectors as values. Query can not be passed as list. Th
      :impl datahike.writing/load-entities
      :supports-remote? true}
 
-
-
     release
     {:args             (s/cat :conn spec/SConnection)
      :ret              nil?
      :doc "Releases a database connection. You need to release a connection as many times as you connected to it for it to be completely released. Set release-all? to true to force its release."
      :impl datahike.connector/release
      :supports-remote? true}
-
-
 
     pull
     {:args             (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
@@ -327,8 +306,6 @@ The arity-2 version takes :selector and :eid in arg-map."
      :impl datahike.pull-api/pull
      :supports-remote? true}
 
-
-
     pull-many
     {:args             (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
                               :full (s/cat :db spec/SDB :selector coll? :eid spec/SEId))
@@ -343,8 +320,6 @@ Usage:
      :impl datahike.pull-api/pull-many
      :supports-remote? true}
 
-
-
     query-stats
     {:args             (s/alt :argmap (s/cat :map spec/SQueryArgs)
                               :with-params (s/cat :q (s/or :vec vector? :map map?) :args (s/* any?))) ;; TODO: the doc could show more examples with varargs
@@ -354,15 +329,13 @@ Usage:
 Uses the same arguments as q does."
      :impl datahike.query/query-stats}
 
-
-
     datoms
     {:args             (s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
                               :key (s/cat :db spec/SDB :index keyword? :components (s/alt :coll (s/* any?)
                                                                                           :nil nil?)))
      :ret              (s/nilable spec/SDatoms)
      :doc
-"Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components
+     "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components
 (e, a, v) match passed arguments. Datoms are sorted in index sort order. Possible `index` values
 are: `:eavt`, `:aevt`, `:avet`.
 
@@ -488,8 +461,6 @@ Gotchas:
      :supports-remote? true
      :impl datahike.api.impl/datoms}
 
-
-
     seek-datoms
     {:args             (s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
                               :key (s/cat :db spec/SDB :index keyword? :components (s/* any?)))
@@ -528,13 +499,11 @@ Gotchas:
      :supports-remote? true
      :impl datahike.api.impl/seek-datoms}
 
-
-
     index-range
     {:args (s/cat :db spec/SDB :args spec/SIndexRangeArgs)
      :ret spec/SDatoms
      :doc
-"Returns part of `:avet` index between `[_ attr start]` and `[_ attr end]` in AVET sort order.
+     "Returns part of `:avet` index between `[_ attr start]` and `[_ attr end]` in AVET sort order.
 
 Same properties as [[datoms]].
 
@@ -581,10 +550,7 @@ Useful patterns:
     ; find all entities with age in a specific range (inclusive)
     (->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))"
      :impl datahike.api.impl/index-range
-     :supports-remote? true
-     }
-
-
+     :supports-remote? true}
 
     tempid
     {:args             (s/alt :part any? :full (s/cat :part any? :x int?))
@@ -594,8 +560,6 @@ Useful patterns:
 Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
      :impl datahike.core/tempid
      :supports-remote? true}
-
-
 
     entity
     {:args             (s/cat :db spec/SDB :eid (s/alt :eid spec/SEId :div any?))
@@ -651,8 +615,6 @@ Entity gotchas:
      :impl datahike.impl.entity/entity
      :supports-remote? true}
 
-
-
     entity-db
     {:args             (s/cat :entity de/entity?)
      :ret              spec/SDB
@@ -660,15 +622,11 @@ Entity gotchas:
      :impl datahike.impl.entity/entity-db
      :supports-remote? true}
 
-
-
     is-filtered
     {:args (s/cat :db spec/SDB)
      :ret  boolean?
      :doc "Returns `true` if this database was filtered using [[filter]], `false` otherwise."
      :impl datahike.core/is-filtered}
-
-
 
     filter
     {:args (s/cat :db spec/SDB :pred any?)
@@ -683,8 +641,6 @@ Filtered DB gotchas:
 - Does not support hashing of DB.
 - Does not support [[with]] and [[db-with]]."
      :impl datahike.core/filter}
-
-
 
     with
     {:args (s/alt :with-map (s/cat :db spec/SDB :argmap spec/SWithArgs)
@@ -709,15 +665,11 @@ Filtered DB gotchas:
                                                      ;     :tx-meta {:foo :bar}}"
      :impl datahike.api.impl/with}
 
-
-
     db-with
     {:args (s/cat :db spec/SDB :tx-data spec/STransactions)
      :ret  spec/SDB
      :doc "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
      :impl datahike.api.impl/db-with}
-
-
 
     history
     {:args             (s/cat :db spec/SDB)
@@ -749,8 +701,6 @@ Filtered DB gotchas:
 (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
     :args [(history @conn)]}) ; => #{[\"Alice\" 25] [\"Bob\" 30]}"
      :impl datahike.api.impl/history}
-
-
 
     since
     {:args             (s/cat :db spec/SDB :time-point spec/time-point?)
@@ -787,8 +737,6 @@ Be aware: the database contains only the datoms that were added since the date.
      :impl datahike.api.impl/since
      :supports-remote? true}
 
-
-
     as-of
     {:args             (s/cat :db spec/SDB :time-point spec/time-point?)
      :ret              spec/SDB
@@ -817,15 +765,13 @@ Be aware: the database contains only the datoms that were added since the date.
      :impl datahike.api.impl/as-of
      :supports-remote? true}
 
-
-
     listen
     {:args (s/alt :no-key (s/cat :conn spec/SConnection :callback fn?)
                   :with-key (s/cat :conn spec/SConnection :key any? :callback fn?))
      :ret  any?
      :fn   #(if (= :with-key (-> % :args first))
-           (= (:ret %) (-> % :args second :key))
-           true)
+              (= (:ret %) (-> % :args second :key))
+              true)
      :doc
      "Listen for changes on the given connection. Whenever a transaction is applied to the database via
 [[transact]], the callback is called with the transaction report. `key` is any opaque unique value.
@@ -835,15 +781,11 @@ Idempotent. Calling [[listen]] with the same twice will override old callback wi
 Returns the key under which this listener is registered. See also [[unlisten]]."
      :impl datahike.core/listen!}
 
-
-
     unlisten
     {:args (s/cat :conn spec/SConnection :key any?)
      :ret  map?
      :doc "Removes registered listener from connection. See also [[listen]]."
      :impl datahike.core/unlisten!}
-
-
 
     schema
     {:args             (s/cat :db spec/SDB)
@@ -852,8 +794,6 @@ Returns the key under which this listener is registered. See also [[unlisten]]."
      :impl datahike.api.impl/schema
      :supports-remote? true}
 
-
-
     reverse-schema
     {:args             (s/cat :db spec/SDB)
      :ret              map?
@@ -861,15 +801,12 @@ Returns the key under which this listener is registered. See also [[unlisten]]."
      :impl datahike.api.impl/reverse-schema
      :supports-remote? true}
 
-
-
     metrics
     {:args             (s/cat :db spec/SDB)
      :ret              spec/SMetrics
      :doc  "Returns database metrics."
      :impl datahike.db/metrics
      :supports-remote? true}})
-
 
 (comment
   (map (fn [[k v]] [k (:impl v)]) api-specification))

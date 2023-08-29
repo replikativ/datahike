@@ -836,8 +836,6 @@
                         :temporal-aevt (di/empty-index index store :aevt index-config)
                         :temporal-avet (di/empty-index index store :avet index-config)}))))))
 
-
-
 (defn metrics [^DB db]
   (let [update-count-in (fn [m ks] (update-in m ks #(if % (inc %) 1)))
         counts-map (->> (di/-seq (.-eavt db))

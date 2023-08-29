@@ -48,7 +48,7 @@
         {:keys [writer] :as config} (first args)]
     ;; redirect call to remote-peer as writer config
     (deliver p (-> (post-transit "delete-database-writer"
-                                writer
-                                (vec (concat [(assoc config :remote-peer writer)] (rest args))))
+                                 writer
+                                 (vec (concat [(assoc config :remote-peer writer)] (rest args))))
                    (dissoc :remote-peer)))
     p))

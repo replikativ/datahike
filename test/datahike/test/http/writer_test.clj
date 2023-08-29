@@ -1,10 +1,9 @@
-(ns datahike.test.http.server-test
+(ns datahike.test.http.writer-test
   (:require
    [clojure.test :as t :refer [is deftest testing]]
    [datahike.http.server :refer [start-server stop-server]]
    [datahike.http.writer]
    [datahike.api :as d]))
-
 
 (deftest test-http-writer
   (testing "Testing distributed datahike.http.writer implementation."

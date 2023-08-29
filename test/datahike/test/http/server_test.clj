@@ -117,6 +117,6 @@
                                         :remote-peer        {:backend :datahike-server
                                                              :url    (str "http://localhost:" port)
                                                              :token  "wrong"
-                                                             :format :edn}})) )
+                                                             :format :edn}})))
         (finally
           (stop-server server))))))

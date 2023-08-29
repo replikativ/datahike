@@ -73,12 +73,12 @@
 (def muuntaja-with-opts
   (m/create
    (-> m/default-options
-      (assoc-in [:formats "application/edn" :decoder-opts]
-                {:readers edn-readers})
-      (assoc-in [:formats "application/transit+json" :decoder-opts]
-                {:handlers read-handlers})
-      (assoc-in [:formats "application/transit+json" :encoder-opts]
-                {:handlers write-handlers}))))
+       (assoc-in [:formats "application/edn" :decoder-opts]
+                 {:readers edn-readers})
+       (assoc-in [:formats "application/transit+json" :decoder-opts]
+                 {:handlers read-handlers})
+       (assoc-in [:formats "application/transit+json" :encoder-opts]
+                 {:handlers write-handlers}))))
 
 (def route-opts
   {;; :reitit.middleware/transform dev/print-request-diffs ;; pretty diffs
@@ -99,8 +99,8 @@
 
 (def internal-writer-routes
   [["/delete-database-writer"
-    {:post    {:parameters  {:body (st/spec{:spec any?
-                                            :name "delete-database-writer"})},
+    {:post    {:parameters  {:body (st/spec {:spec any?
+                                             :name "delete-database-writer"})},
                :summary     "Internal endpoint. DO NOT USE!"
                :handler     (fn [{{:keys [body]} :parameters}]
                               {:status 200
@@ -153,7 +153,6 @@
       (wrap-cors :access-control-allow-origin [#"http://localhost" #"http://localhost:8080"
                                                #"http://localhost:4000"]
                  :access-control-allow-methods [:get :put :post :delete])))
-
 
 (defn start-server [config]
   (run-jetty (app config) config))

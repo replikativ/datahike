@@ -4,8 +4,7 @@
   (:require [cognitect.transit :as transit]
             [datahike.datom :as dd])
   #?(:clj
-    (:import [clojure.lang IDeref])))
-
+     (:import [clojure.lang IDeref])))
 
 ;; Remote peer currently operated on. This is used to allow the tagged literal
 ;; readers to attach the remote again.
@@ -15,17 +14,17 @@
 
 (defrecord RemoteConnection [store-id remote-peer]
   #?@(:clj
-     [IDeref
-      (deref [conn] (remote-deref conn))]))
+      [IDeref
+       (deref [conn] (remote-deref conn))]))
 
 (defn remote-connection [store-id]
   (RemoteConnection. store-id *remote-peer*))
 
 #?(:clj
-  (defmethod print-method RemoteConnection
-    [^RemoteConnection conn ^java.io.Writer w]
-    (.write w "#datahike/RemoteConnection")
-    (.write w (pr-str (:store-id conn)))))
+   (defmethod print-method RemoteConnection
+     [^RemoteConnection conn ^java.io.Writer w]
+     (.write w "#datahike/RemoteConnection")
+     (.write w (pr-str (:store-id conn)))))
 
 (defrecord RemoteDB [store-id max-tx max-eid commit-id remote-peer])
 
@@ -33,10 +32,10 @@
   (assoc (map->RemoteDB m) :remote-peer *remote-peer*))
 
 #?(:clj
-  (defmethod print-method RemoteDB
-    [^RemoteDB db ^java.io.Writer w]
-    (.write w "#datahike/RemoteDB")
-    (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
+   (defmethod print-method RemoteDB
+     [^RemoteDB db ^java.io.Writer w]
+     (.write w "#datahike/RemoteDB")
+     (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
 
 (defrecord RemoteHistoricalDB [origin remote-peer])
 
@@ -44,10 +43,10 @@
   (assoc (map->RemoteHistoricalDB m) :remote-peer *remote-peer*))
 
 #?(:clj
-  (defmethod print-method RemoteHistoricalDB
-    [^RemoteDB db ^java.io.Writer w]
-    (.write w "#datahike/RemoteHistoricalDB")
-    (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
+   (defmethod print-method RemoteHistoricalDB
+     [^RemoteDB db ^java.io.Writer w]
+     (.write w "#datahike/RemoteHistoricalDB")
+     (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
 
 (defrecord RemoteSinceDB [origin time-point remote-peer])
 
@@ -55,10 +54,10 @@
   (assoc (map->RemoteSinceDB m) :remote-peer *remote-peer*))
 
 #?(:clj
-  (defmethod print-method RemoteSinceDB
-    [^RemoteDB db ^java.io.Writer w]
-    (.write w "#datahike/RemoteSinceDB")
-    (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
+   (defmethod print-method RemoteSinceDB
+     [^RemoteDB db ^java.io.Writer w]
+     (.write w "#datahike/RemoteSinceDB")
+     (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
 
 (defrecord RemoteAsOfDB [origin time-point remote-peer])
 
@@ -66,10 +65,10 @@
   (assoc (map->RemoteAsOfDB m) :remote-peer *remote-peer*))
 
 #?(:clj
-  (defmethod print-method RemoteAsOfDB
-    [^RemoteDB db ^java.io.Writer w]
-    (.write w "#datahike/RemoteAsOfDB")
-    (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
+   (defmethod print-method RemoteAsOfDB
+     [^RemoteDB db ^java.io.Writer w]
+     (.write w "#datahike/RemoteAsOfDB")
+     (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
 
 (defrecord RemoteEntity [db eid remote-peer])
 
@@ -77,10 +76,10 @@
   (assoc (map->RemoteEntity m) :remote-peer *remote-peer*))
 
 #?(:clj
-  (defmethod print-method RemoteEntity
-    [^RemoteEntity e ^java.io.Writer w]
-    (.write w "#datahike/RemoteEntity")
-    (.write w (pr-str (dissoc (into {} e) :remote-peer)))))
+   (defmethod print-method RemoteEntity
+     [^RemoteEntity e ^java.io.Writer w]
+     (.write w "#datahike/RemoteEntity")
+     (.write w (pr-str (dissoc (into {} e) :remote-peer)))))
 
 (defn edn-replace-remote-literals [s]
   (reduce (fn [^String s [from to]]

@@ -6,8 +6,8 @@
             [datahike.core :refer [init-db] :as dc]
             [konserve.core :as k])
   #?(:clj
-    (:import [datahike.datom Datom]
-             [datahike.db HistoricalDB AsOfDB SinceDB])))
+     (:import [datahike.datom Datom]
+              [datahike.db HistoricalDB AsOfDB SinceDB])))
 
 (def tempid dc/tempid)
 
@@ -18,13 +18,13 @@
     #?(:cljs (throw (ex-info "Reader not supported." {:type   :reader-not-supported
                                                       :raw-db db}))
        :clj
-      (if-let [conn (get-connection store-id)]
-        (let [store (:store @conn)]
-          (when-let [raw-db (k/get store commit-id nil {:sync? true})]
-            (dw/stored->db raw-db store)))
-        (throw (ex-info "Could not find active connection. Did you connect already?"
-                        {:type :no-connection-for-db
-                         :raw-db raw-db}))))
+       (if-let [conn (get-connection store-id)]
+         (let [store (:store @conn)]
+           (when-let [raw-db (k/get store commit-id nil {:sync? true})]
+             (dw/stored->db raw-db store)))
+         (throw (ex-info "Could not find active connection. Did you connect already?"
+                         {:type :no-connection-for-db
+                          :raw-db raw-db}))))
     (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema)))
 
 (defn history-from-reader [{:keys [origin]}]
