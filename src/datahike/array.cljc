@@ -11,7 +11,7 @@
 
 #?(:clj
   ;; meta data doesn't get expanded in macros :/
-  (defn array-compare [a b] (Arrays/compare ^bytes a ^bytes b)))
+   (defn array-compare [a b] (Arrays/compare ^bytes a ^bytes b)))
 
 #?(:clj
    (defmacro raw-array-compare [a b]
