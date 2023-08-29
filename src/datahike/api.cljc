@@ -1,4 +1,5 @@
 (ns datahike.api
+  "Public API for datahike. Expanded from api.specification."
   (:refer-clojure :exclude [filter])
   (:require [datahike.connector :as dc]
             [datahike.config :as config]

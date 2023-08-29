@@ -31,14 +31,17 @@
   (fn [request]
     (let [{{body :body} :parameters
            :keys [headers]} request
-          _ (prn "req-body" f body (= f #'api/create-database))
+          _ (log/trace "req-body" f body (= f #'api/create-database))
+          ;; TODO move this to client
           ret-body
-          (cond (or (= f #'api/create-database)
-                    (= f #'api/delete-database))
+          (cond (= f #'api/create-database)
                 ;; remove remote-peer and re-add
                 (assoc
                  (apply f (dissoc (first body) :remote-peer) (rest body))
                  :remote-peer (:remote-peer (first body)))
+
+                (= f #'api/delete-database)
+                (apply f (dissoc (first body) :remote-peer) (rest body))
 
                 :else
                 (apply f body))]
