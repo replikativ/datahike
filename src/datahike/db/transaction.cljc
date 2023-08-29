@@ -228,7 +228,7 @@
 (defn validate-datom-upsert [db ^Datom datom]
   (when (dbu/is-attr? db (.-a datom) :db/unique)
     (when-let [old (first (dbi/-datoms db :avet [(.-a datom) (.-v datom)]))]
-      (when-not (= (.-e datom) (.-e old))
+      (when-not (= (.-e datom) (.-e ^Datom old))
         (raise "Cannot add " datom " because of unique constraint: " old
                {:error     :transact/unique
                 :attribute (.-a datom)

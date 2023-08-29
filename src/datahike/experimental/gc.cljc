@@ -8,6 +8,10 @@
             [clojure.core.async  :as async])
   (:import [java.util Date]))
 
+;; meta-data does not get passed in macros
+(defn get-time [d]
+  (.getTime ^Date d))
+
 (defn- reachable-in-branch [store branch after-date config]
   (go-try S
           (let [head-cid (<? S (k/get-in store [branch :meta :datahike/commit-id]))]
@@ -23,8 +27,8 @@
                                  datahike/created-at
                                  datahike/updated-at]} :meta}
                         (<? S (k/get store to-check))
-                        in-range? (> (.getTime ^Date (or updated-at created-at))
-                                     (.getTime ^Date after-date))]
+                        in-range? (> (get-time (or updated-at created-at))
+                                     (get-time after-date))]
                     (recur (concat r (when in-range? parents))
                            (conj visited to-check)
                            (set/union reachable #{to-check}

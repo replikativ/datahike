@@ -6,6 +6,7 @@
             [clojure.tools.cli :refer [parse-opts]]
             [datahike.api :as d]
             [datahike.pod :refer [run-pod]]
+            [datahike.http.server :as server]
             [clojure.edn :as edn]
             [cheshire.core :as ch]
             [clj-cbor.core :as cbor]
@@ -38,6 +39,7 @@
         "  schema                  Fetch schema for a db."
         "  reverse-schema          Fetch reverse schema for a db."
         "  metrics                 Fetch metrics for a db."
+        "  server                  Expose API by running datahike.api.server. First argument must point to a config file."
         ""
         "Please refer to the manual page for more information."]
        (str/join \newline)))
@@ -47,7 +49,7 @@
        (str/join \newline errors)))
 
 (def actions #{"create-database" "delete-database" "database-exists" "transact" "query" "benchmark"
-               "pull" "pull-many" "entity" "datoms" "schema" "reverse-schema" "metrics"})
+               "pull" "pull-many" "entity" "datoms" "schema" "reverse-schema" "metrics" "server"})
 
 (def cli-options
   ;; An option with a required argument
@@ -249,4 +251,7 @@
 
         :metrics
         (let [out (d/metrics (load-input (first arguments)))]
-          (report (:format options) out))))))
+          (report (:format options) out))
+
+        :server
+        (apply server/-main (rest args))))))

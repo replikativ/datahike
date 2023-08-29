@@ -7,6 +7,7 @@
             [datahike.api.impl]
             [clojure.spec.alpha :as s]
             [datahike.writer :as dw]
+            [datahike.http.writer]
             [datahike.writing :as writing]
             [datahike.constants :as const]
             [datahike.core :as dcore]

@@ -10,6 +10,10 @@
          false))))
 
 #?(:clj
+  ;; meta data doesn't get expanded in macros :/
+  (defn array-compare [a b] (Arrays/compare ^bytes a ^bytes b)))
+
+#?(:clj
    (defmacro raw-array-compare [a b]
      (if (java8?)
        ;; slow fallback for Java 8, but has same semantics
@@ -30,7 +34,7 @@
                     (if (not (zero? ec#))
                       ec#
                       (recur (inc i#)))))))
-       `(Arrays/compare ~a ~b))))
+       `(array-compare ~a ~b))))
 
 #?(:clj (defn compare-arrays
           "Compare two arrays a and b element-wise in ascending order. If one array is a

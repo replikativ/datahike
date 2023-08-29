@@ -1,4 +1,5 @@
 (ns datahike.http.client
+  (:refer-clojure :exclude [filter])
   (:require [babashka.http-client :as http]
             [cognitect.transit :as transit]
             [datahike.api.specification :as api]
@@ -10,6 +11,7 @@
             [datahike.impl.entity :as de]
             [taoensso.timbre :as log])
   (:import [java.io ByteArrayOutputStream]))
+
 
 (def MEGABYTE (* 1024 1024))
 
@@ -33,7 +35,8 @@
                   data (ex-data e)
                   new-data
                   (update data :body #(edn/read-string {:readers remote/edn-readers} %))]
-              (throw (ex-info msg new-data)))))
+              (throw (ex-info msg new-data)))
+            ))
         response            (:body response)]
     (log/trace "response" response)
     (edn/read-string {:readers remote/edn-readers} response)))
@@ -81,12 +84,6 @@
                                                                        :args args}))
       (first remotes))))
 
-(declare db)
-
-(defmethod remote/remote-deref :datahike-server [conn] (db conn))
-
-;; This code expands and evals the HTTP client implementations given the
-;; API specification. 
 (doseq [[n {:keys [args doc supports-remote?]}] api/api-specification]
   (eval
    `(~'def
@@ -95,8 +92,9 @@
          :doc      doc})
      (fn [& ~'args]
        ~(if-not supports-remote?
-          `(throw (ex-info (str ~(str n) " is not supported for remote connections.") {:type     :remote-not-supported
-                                                                                       :function ~(str n)}))
+          `(throw (ex-info (str ~(str n) " is not supported for remote connections.")
+                           {:type     :remote-not-supported
+                            :function ~(str n)}))
           `(binding [remote/*remote-peer* (get-remote ~'args)]
              (let [~'url    (:url remote/*remote-peer*)
                    ~'format (:format remote/*remote-peer*)]
@@ -104,3 +102,4 @@
                   :edn     post-edn} (or ~'format :transit))
                 ~(api/->url n) remote/*remote-peer* (vec ~'args)))))))))
 
+(defmethod remote/remote-deref :datahike-server [conn] (db conn))

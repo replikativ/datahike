@@ -82,7 +82,7 @@
      (.write w (pr-str (dissoc (into {} e) :remote-peer)))))
 
 (defn edn-replace-remote-literals [s]
-  (reduce (fn [^String s [from to]]
+  (reduce (fn [^String s [^String from ^String to]]
             (.replace s from to))
           s
           [["#datahike/RemoteConnection" "#datahike/Connection"]
