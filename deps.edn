@@ -49,7 +49,7 @@
                                ring/ring-core                {:mvn/version "1.9.5"}
                                ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
                                metosin/reitit                {:mvn/version "0.5.18"}
-                               ring-cors/ring-cors           {:mvn/version "0.1.13"}}
+                               ring-cors/ring-cors           {:mvn/version "0.1.13"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
 
