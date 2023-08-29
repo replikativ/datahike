@@ -61,12 +61,7 @@
       (let [format   (:content-type request)
             encoder  (m/encoder muuntaja-with-opts format)
             response (handler request)
-            _        (prn response)
-            ret      (try
-                       (if (not (instance? java.io.ByteArrayInputStream (:body response)))
-                         (update response :body #(encoder %))
-                         response)
-                       (catch Exception e
-                         (prn "oops" e)))]
-        (prn "ret-response" ret)
+            ret      (if (not (instance? java.io.ByteArrayInputStream (:body response)))
+                       (update response :body #(encoder %))
+                       response)]
         ret))))
