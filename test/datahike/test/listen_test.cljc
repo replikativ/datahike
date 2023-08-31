@@ -11,7 +11,6 @@
 (deftest test-listen!
   (let [conn    (du/setup-db)
         reports (atom [])]
-    (prn "listeners" (:listeners (meta conn)))
     (d/transact conn {:tx-data [[:db/add -1 :name "Alex"]
                                 [:db/add -2 :name "Boris"]]})
     (d/listen conn :test #(swap! reports conj %))
@@ -32,11 +31,12 @@
             (dd/datom 4 :name "Evgeny" (+ const/tx0 2) true)]
            (rest (:tx-data (first @reports)))))
     (is (= {:some-metadata 1}
-           (dissoc (:tx-meta (first @reports)) :db/txInstant)))
+           (dissoc (:tx-meta (first @reports)) :db/txInstant :db/commitId)))
     (is (= [(dd/datom 5 :name "Fedor"  (+ const/tx0 3) true)
             (dd/datom 1 :name "Alex2"  (+ const/tx0 3) true)
             (dd/datom 4 :name "Evgeny" (+ const/tx0 3) false)]
            (rest (:tx-data (second @reports)))))
-    (is (= (dissoc (:tx-meta (second @reports)) :db/txInstant)
+    (is (= (dissoc (:tx-meta (second @reports)) :db/txInstant
+                   :db/commitId)
            {}))
     (d/release conn)))

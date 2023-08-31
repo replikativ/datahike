@@ -123,17 +123,20 @@
           {:keys [db/txInstant]}
           :tx-meta
           :as   tx-report}     (update-fn connection tx-data tx-meta)
-         {:keys [config meta]} db-after
-         meta                  (assoc meta :datahike/updated-at txInstant)
-         db                    (assoc db-after :meta meta)
+         {:keys [config]} db-after
+         new-meta              (assoc (:meta db-after) :datahike/updated-at txInstant)
+         db                    (assoc db-after :meta new-meta)
          store                 (:store @(:wrapped-atom connection))
          db                    (if noCommit db (commit! store config db parents))
-         tx-report             (assoc tx-report :db-after db)]
+         tx-report             (assoc tx-report :db-after db)
+         tx-report             (if noCommit
+                                 tx-report
+                                 (assoc-in tx-report [:tx-meta :db/commitId]
+                                           (get-in db [:meta :datahike/commit-id])))]
      (reset! connection db)
-     (if noCommit
-       tx-report
-       (assoc-in tx-report [:tx-meta :db/commitId]
-                 (get-in db [:meta :datahike/commit-id]))))))
+     (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
+       (callback tx-report))
+     tx-report)))
 
 (defprotocol PDatabaseManager
   (-create-database [config opts])
