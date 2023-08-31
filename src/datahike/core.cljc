@@ -190,48 +190,6 @@
           :cljs (satisfies? cljs.core/IDeref conn))
        (dbu/db? @conn)))
 
-(defn ^:no-doc -transact! [conn tx-data tx-meta]
-  {:pre [(conn? conn)]}
-  (let [report (atom nil)]
-    (swap! conn (fn [db]
-                  (let [r (with db tx-data tx-meta)]
-                    (reset! report r)
-                    (:db-after r))))
-    @report))
-
-(defn -load-entities! [conn entities tx-meta]
-  (let [report (atom nil)]
-    (swap! conn (fn [db]
-                  (let [r (load-entities-with db entities tx-meta)]
-                    (reset! report r)
-                    (:db-after r))))
-    @report))
-
-(defn transact!
-  ([conn tx-data] (transact! conn tx-data nil))
-  ([conn tx-data tx-meta]
-   {:pre [(conn? conn)]}
-   (let [report (-transact! conn tx-data tx-meta)]
-     (doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
-       (callback report))
-     report)))
-
-(defn reset-conn!
-  "Forces underlying `conn` value to become `db`. Will generate a tx-report that will remove everything from old value and insert everything from the new one."
-  ([conn db] (reset-conn! conn db nil))
-  ([conn db tx-meta]
-   (let [report (db/map->TxReport
-                 {:db-before @conn
-                  :db-after  db
-                  :tx-data   (concat
-                              (map #(assoc % :added false) (datoms @conn :eavt))
-                              (datoms db :eavt))
-                  :tx-meta   tx-meta})]
-     (reset! conn db)
-     (doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
-       (callback report))
-     db)))
-
 (defn- atom? [a]
   #?(:cljs (instance? Atom a)
      :clj  (instance? IAtom a)))
@@ -287,68 +245,6 @@
   [conn]
   {:pre [(conn? conn)]}
   @conn)
-
-(defn transact
-  "Same as [[transact!]], but returns an immediately realized future.
-  
-   Exists for Datomic API compatibility. Prefer using [[transact!]] if possible."
-  ([conn tx-data] (transact conn tx-data nil))
-  ([conn tx-data tx-meta]
-   {:pre [(conn? conn)]}
-   (let [res (transact! conn tx-data tx-meta)]
-     #?(:cljs
-        (reify
-          IDeref
-          (-deref [_] res)
-          IDerefWithTimeout
-          (-deref-with-timeout [_ _ _] res)
-          IPending
-          (-realized? [_] true))
-        :clj
-        (reify
-          IDeref
-          (deref [_] res)
-          IBlockingDeref
-          (deref [_ _ _] res)
-          IPending
-          (isRealized [_] true))))))
-
-(defn load-entities
-  ([conn entities]
-   (load-entities conn entities nil))
-  ([conn entities tx-meta]
-   {:pre [(conn? conn)]}
-   (let [res (-load-entities! conn entities tx-meta)]
-     (reify
-       IDeref
-       (deref [_] res)
-       IBlockingDeref
-       (deref [_ _ _] res)
-       IPending
-       (isRealized [_] true)))))
-
-;; ersatz future without proper blocking
-#?(:cljs
-   (defn- future-call [f]
-     (let [res (atom nil)
-           realized (atom false)]
-       (js/setTimeout #(do (reset! res (f)) (reset! realized true)) 0)
-       (reify
-         IDeref
-         (-deref [_] @res)
-         IDerefWithTimeout
-         (-deref-with-timeout [_ _ timeout-val] (if @realized @res timeout-val))
-         IPending
-         (-realized? [_] @realized)))))
-
-(defn transact-async
-  "In CLJ, calls [[transact!]] on a future thread pool, returning immediately.
-  
-   In CLJS, just calls [[transact!]] and returns a realized future."
-  ([conn tx-data] (transact-async conn tx-data nil))
-  ([conn tx-data tx-meta]
-   {:pre [(conn? conn)]}
-   (future-call #(transact! conn tx-data tx-meta))))
 
 (defn- rand-bits [pow]
   (rand-int (bit-shift-left 1 pow)))

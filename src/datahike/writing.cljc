@@ -122,7 +122,7 @@
          {:keys [db-after]
           {:keys [db/txInstant]}
           :tx-meta
-          :as   tx-report}     @(update-fn connection tx-data tx-meta)
+          :as   tx-report}     (update-fn connection tx-data tx-meta)
          {:keys [config meta]} db-after
          meta                  (assoc meta :datahike/updated-at txInstant)
          db                    (assoc db-after :meta meta)
@@ -242,8 +242,8 @@
 (defn transact! [connection {:keys [tx-data tx-meta]}]
   (log/debug "Transacting" (count tx-data) " objects with meta: " tx-meta)
   (log/trace "Transaction data" tx-data)
-  (update-and-flush-db connection tx-data tx-meta core/transact))
+  (update-and-flush-db connection tx-data tx-meta #(core/with @%1 %2 %3)))
 
 (defn load-entities [connection entities]
   (log/debug "Loading" (count entities) " entities.")
-  (update-and-flush-db connection entities nil core/load-entities))
+  (update-and-flush-db connection entities nil #(core/load-entities-with @%1 %2 %3)))
