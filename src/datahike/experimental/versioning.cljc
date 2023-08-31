@@ -2,7 +2,7 @@
   "Git-like versioning tools for Datahike."
   (:require [konserve.core :as k]
             [datahike.connections :refer [delete-connection!]]
-            [datahike.core :refer [transact]]
+            [datahike.core :refer [with]]
             [datahike.store :refer [store-identity]]
             [datahike.writing :refer [stored->db db->stored stored-db?
                                       update-and-flush-db create-commit-id]]
@@ -138,5 +138,5 @@
    (merge! conn parents tx-data nil))
   ([conn parents tx-data tx-meta]
    (parent-check parents)
-   (update-and-flush-db conn tx-data tx-meta transact
+   (update-and-flush-db conn tx-data tx-meta #(with @%1 %2 %3)
                         (conj parents (get-in @conn [:config :branch])))))
