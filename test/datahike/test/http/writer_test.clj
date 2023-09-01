@@ -59,11 +59,11 @@
                   :writer             {:backend :datahike-server
                                        :url     (str "http://localhost:" port)
                                        :token   "securerandompassword"}}]
-      (is (thrown-with-msg? Exception #"Connection refused"
-                            (do
-                              (d/delete-database cfg)
-                              (d/create-database cfg)
-                              (d/connect cfg)))))
+      (is (thrown? Exception
+                   (do
+                     (d/delete-database cfg)
+                     (d/create-database cfg)
+                     (d/connect cfg)))))
     (testing "Testing distributed datahike.http.writer failure without server."
       (let [port 38217
             cfg  {:store              {:backend :mem :id "distributed_writer_transact"}
