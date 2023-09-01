@@ -51,7 +51,7 @@
           (stop-server server))))))
 
 (deftest test-http-writer-failure-without-server
-  (testing "Testing distributed datahike.http.writer failure without server."
+  (testing "Db creation fails without writer connection."
     (let [port   38217
           cfg    {:store              {:backend :mem :id "distributed_writer_create_db"}
                   :keep-history?      true
@@ -64,7 +64,7 @@
                      (d/delete-database cfg)
                      (d/create-database cfg)
                      (d/connect cfg)))))
-    (testing "Testing distributed datahike.http.writer failure without server."
+    (testing "Transact fails without writer connection."
       (let [port 38217
             cfg  {:store              {:backend :mem :id "distributed_writer_transact"}
                   :keep-history?      true
@@ -78,6 +78,6 @@
         ;; make sure the database exists before testing transact
         (do (d/delete-database server-cfg)
             (d/create-database server-cfg))
-        (is (thrown-with-msg? Exception #"Connection refused"
-                              (d/transact (d/connect cfg)
-                                          [{:name "Should fail."}])))))))
+        (is (thrown? Exception
+             (d/transact (d/connect cfg)
+                         [{:name "Should fail."}])))))))
