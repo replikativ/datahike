@@ -79,5 +79,5 @@
         (do (d/delete-database server-cfg)
             (d/create-database server-cfg))
         (is (thrown? Exception
-             (d/transact (d/connect cfg)
-                         [{:name "Should fail."}])))))))
+                     (d/transact (d/connect cfg)
+                                 [{:name "Should fail."}])))))))
