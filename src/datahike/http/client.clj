@@ -74,7 +74,6 @@
          response (:body response)
          response (transit/read (transit/reader response :json {:handlers read-handlers}))]
      (log/trace  "response" response)
-     (prn "response" response)
      response)))
 
 (defn get-remote [args]
