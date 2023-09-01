@@ -67,11 +67,15 @@
              (let [msg  (ex-message e)
                    data (ex-data e)
                    new-data
-                   (update data :body #(transit/read (transit/reader % :json {:handlers read-handlers})))]
+                   (update data :body
+                           #(when (seq %)
+                              (transit/read (transit/reader % :json {:handlers read-handlers}))))]
                (throw (ex-info msg new-data)))))
-         response (:body response)]
+         response (:body response)
+         response (transit/read (transit/reader response :json {:handlers read-handlers}))]
      (log/trace  "response" response)
-     (transit/read (transit/reader response :json {:handlers read-handlers})))))
+     (prn "response" response)
+     response)))
 
 (defn get-remote [args]
   (let [remotes (disj

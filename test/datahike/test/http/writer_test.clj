@@ -13,21 +13,9 @@
                                 :dev-mode false
                                 :token    "securerandompassword"})]
       (try
-        (let [schema [{:db/ident       :name
-                       :db/cardinality :db.cardinality/one
-                       :db/index       true
-                       :db/unique      :db.unique/identity
-                       :db/valueType   :db.type/string}
-                      {:db/ident       :sibling
-                       :db/cardinality :db.cardinality/many
-                       :db/valueType   :db.type/ref}
-                      {:db/ident       :age
-                       :db/cardinality :db.cardinality/one
-                       :db/valueType   :db.type/long}]
-              cfg    {:store              {:backend :mem :id "distributed_writer"}
+        (let [cfg    {:store              {:backend :mem :id "distributed_writer"}
                       :keep-history?      true
-                      :schema-flexibility :write
-                      :attribute-refs?    true
+                      :schema-flexibility :read
                       :writer             {:backend :datahike-server
                                            :url     (str "http://localhost:" port)
                                            :token   "securerandompassword"}}
@@ -35,10 +23,9 @@
                        (d/delete-database cfg)
                        (d/create-database cfg)
                        (d/connect cfg))]
-          (d/transact conn schema)
+
           (d/transact conn [{:name "Alice"
                              :age  25}])
-
           (is (= #{[25 "Alice"]}
                  (d/q '[:find ?a ?v
                         :in $ ?a
@@ -47,6 +34,50 @@
                         [?e :age ?a]]
                       @conn
                       25)))
+
+          (d/transact conn [{:name "Peter"
+                             :age  18}])
+          (is (= #{[18 "Peter"]}
+                 (d/q '[:find ?a ?v
+                        :in $ ?a
+                        :where
+                        [?e :name ?v]
+                        [?e :age ?a]]
+                      @conn
+                      18)))
+
           (d/delete-database cfg))
         (finally
           (stop-server server))))))
+
+(deftest test-http-writer-failure-without-server
+  (testing "Testing distributed datahike.http.writer failure without server."
+    (let [port   38217
+          cfg    {:store              {:backend :mem :id "distributed_writer_create_db"}
+                  :keep-history?      true
+                  :schema-flexibility :read
+                  :writer             {:backend :datahike-server
+                                       :url     (str "http://localhost:" port)
+                                       :token   "securerandompassword"}}]
+      (is (thrown-with-msg? Exception #"Connection refused"
+                            (do
+                              (d/delete-database cfg)
+                              (d/create-database cfg)
+                              (d/connect cfg)))))
+    (testing "Testing distributed datahike.http.writer failure without server."
+      (let [port 38217
+            cfg  {:store              {:backend :mem :id "distributed_writer_transact"}
+                  :keep-history?      true
+                  :schema-flexibility :read
+                  :writer             {:backend :datahike-server
+                                       :url     (str "http://localhost:" port)
+                                       :token   "securerandompassword"}}
+            server-cfg {:store              {:backend :mem :id "distributed_writer_transact"}
+                        :keep-history?      true
+                        :schema-flexibility :read}]
+        ;; make sure the database exists before testing transact
+        (do (d/delete-database server-cfg)
+            (d/create-database server-cfg))
+        (is (thrown-with-msg? Exception #"Connection refused"
+                              (d/transact (d/connect cfg)
+                                          [{:name "Should fail."}])))))))

@@ -57,6 +57,7 @@
     (when (= @wrapped-atom :released)
       (throw (ex-info "Connection has been released."
                       {:type :connection-has-been-released})))
+    (prn "wrapped-atom" @wrapped-atom (get @wrapped-atom :writer))
     (if (not (w/streaming? (get @wrapped-atom :writer)))
       (let [store  (:store @wrapped-atom)
             stored (k/get store (:branch (:config @wrapped-atom)) nil {:sync? true})]

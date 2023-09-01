@@ -114,9 +114,9 @@
     (k/assoc store (:branch config) db-to-store {:sync? true})
     db))
 
-(defn update-and-flush-db
+(defn update-and-commit!
   ([connection tx-data tx-meta update-fn]
-   (update-and-flush-db connection tx-data tx-meta update-fn nil))
+   (update-and-commit! connection tx-data tx-meta update-fn nil))
   ([connection tx-data tx-meta update-fn parents]
    (let [{:keys [db/noCommit]} tx-meta
          {:keys [db-after]
@@ -124,15 +124,15 @@
           :tx-meta
           :as   tx-report}     (update-fn connection tx-data tx-meta)
          {:keys [config]} db-after
-         new-meta              (assoc (:meta db-after) :datahike/updated-at txInstant)
-         db                    (assoc db-after :meta new-meta)
-         store                 (:store @(:wrapped-atom connection))
-         db                    (if noCommit db (commit! store config db parents))
-         tx-report             (assoc tx-report :db-after db)
-         tx-report             (if noCommit
-                                 tx-report
-                                 (assoc-in tx-report [:tx-meta :db/commitId]
-                                           (get-in db [:meta :datahike/commit-id])))]
+         {:keys [store writer]} @(:wrapped-atom connection)
+         new-meta               (assoc (:meta db-after) :datahike/updated-at txInstant)
+         db                     (assoc db-after :meta new-meta :writer writer)
+         db                     (if noCommit db (commit! store config db parents))
+         tx-report              (assoc tx-report :db-after db)
+         tx-report              (if noCommit
+                                  tx-report
+                                  (assoc-in tx-report [:tx-meta :db/commitId]
+                                            (get-in db [:meta :datahike/commit-id])))]
      (reset! connection db)
      (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
        (callback tx-report))
@@ -245,8 +245,8 @@
 (defn transact! [connection {:keys [tx-data tx-meta]}]
   (log/debug "Transacting" (count tx-data) " objects with meta: " tx-meta)
   (log/trace "Transaction data" tx-data)
-  (update-and-flush-db connection tx-data tx-meta #(core/with @%1 %2 %3)))
+  (update-and-commit! connection tx-data tx-meta #(core/with @%1 %2 %3)))
 
 (defn load-entities [connection entities]
   (log/debug "Loading" (count entities) " entities.")
-  (update-and-flush-db connection entities nil #(core/load-entities-with @%1 %2 %3)))
+  (update-and-commit! connection entities nil #(core/load-entities-with @%1 %2 %3)))
