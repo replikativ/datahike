@@ -67,7 +67,7 @@
                                       ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
                                       metosin/reitit                {:mvn/version "0.5.18"}
                                       ring-cors/ring-cors           {:mvn/version "0.1.13"}}
-                  :main-opts ["-m" "datahike.http.server"]}
+                         :main-opts ["-m" "datahike.http.server"]}
 
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
                          :extra-paths ["libdatahike/src"]}
@@ -77,15 +77,14 @@
                                     "--initialize-at-build-time"
                                     "-H:Name=dhi"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
-                        :extra-deps
-                        {clj.native-image/clj.native-image
-                         {:git/url "https://github.com/taylorwood/clj.native-image.git"
-                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
-                         com.cognitect/transit-clj {:mvn/version "1.0.333"}
-                         nrepl/bencode             {:mvn/version "1.1.0"}
-                         babashka/pods             {:git/url "https://github.com/babashka/pods"
-                                                    :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
-                         cheshire/cheshire         {:mvn/version "5.11.0"}}
+                        :extra-deps {clj.native-image/clj.native-image
+                                     {:git/url "https://github.com/taylorwood/clj.native-image.git"
+                                      :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
+                                     com.cognitect/transit-clj {:mvn/version "1.0.333"}
+                                     nrepl/bencode             {:mvn/version "1.1.0"}
+                                     babashka/pods             {:git/url "https://github.com/babashka/pods"
+                                                                :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
+                                     cheshire/cheshire         {:mvn/version "5.11.0"}}
 
            :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
                               nrepl/bencode             {:mvn/version "1.1.0"}
@@ -106,4 +105,4 @@
                     :main-opts ["-m" "cljfmt.main" "check"]}
 
            :outdated {:extra-deps {com.github.liquidz/antq {:mvn/version "2.4.1070"}}
-                      :main-opts ["-m" "antq.core"]}}}
+                      :main-opts ["-m" "antq.core"]}}}}
