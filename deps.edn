@@ -38,7 +38,7 @@
                               hashp/hashp                 {:mvn/version "0.2.2"}
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
-           :test {:extra-paths ["test" "bechmark/src" "benchmark/test"]
+           :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.84.1335"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.5.154"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}
@@ -62,7 +62,8 @@
 
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
 
-           :http-server {:extra-deps {buddy/buddy-auth              {:mvn/version "3.0.323"}
+           :http-server {:extra-paths ["http-server"]
+                         :extra-deps {buddy/buddy-auth              {:mvn/version "3.0.323"}
                                       ring/ring-core                {:mvn/version "1.9.5"}
                                       ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
                                       metosin/reitit                {:mvn/version "0.5.18"}
