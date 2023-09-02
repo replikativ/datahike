@@ -44,8 +44,7 @@
                                org.clojure/test.check      {:mvn/version "1.1.1"}
                                orchestra/orchestra         {:mvn/version "2021.01.01-1"}
 
-                               ;; http
-                               org.babashka/http-client      {:mvn/version "0.3.11"}
+                               ;; http server
                                buddy/buddy-auth              {:mvn/version "3.0.323"}
                                ring/ring-core                {:mvn/version "1.9.5"}
                                ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
@@ -63,12 +62,11 @@
 
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
 
-           :http {:extra-deps {org.babashka/http-client      {:mvn/version "0.3.11"}
-                               buddy/buddy-auth              {:mvn/version "3.0.323"}
-                               ring/ring-core                {:mvn/version "1.9.5"}
-                               ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
-                               metosin/reitit                {:mvn/version "0.5.18"}
-                               ring-cors/ring-cors           {:mvn/version "0.1.13"}}
+           :http-server {:extra-deps {buddy/buddy-auth              {:mvn/version "3.0.323"}
+                                      ring/ring-core                {:mvn/version "1.9.5"}
+                                      ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
+                                      metosin/reitit                {:mvn/version "0.5.18"}
+                                      ring-cors/ring-cors           {:mvn/version "0.1.13"}}
                   :main-opts ["-m" "datahike.http.server"]}
 
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
@@ -87,14 +85,7 @@
                          nrepl/bencode             {:mvn/version "1.1.0"}
                          babashka/pods             {:git/url "https://github.com/babashka/pods"
                                                     :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
-                         cheshire/cheshire         {:mvn/version "5.11.0"}
-                         ;; http
-                         org.babashka/http-client      {:mvn/version "0.3.11"}
-                         buddy/buddy-auth              {:mvn/version "3.0.323"}
-                         ring/ring-core                {:mvn/version "1.9.5"}
-                         ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
-                         metosin/reitit                {:mvn/version "0.5.18"}
-                         ring-cors/ring-cors           {:mvn/version "0.1.13"}}}
+                         cheshire/cheshire         {:mvn/version "5.11.0"}}
 
            :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
                               nrepl/bencode             {:mvn/version "1.1.0"}
