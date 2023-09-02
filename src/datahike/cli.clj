@@ -6,7 +6,6 @@
             [clojure.tools.cli :refer [parse-opts]]
             [datahike.api :as d]
             [datahike.pod :refer [run-pod]]
-            [datahike.http.server :as server]
             [clojure.edn :as edn]
             [cheshire.core :as ch]
             [clj-cbor.core :as cbor]
