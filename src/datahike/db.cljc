@@ -554,6 +554,7 @@
 
 (defn- equiv-db [db other]
   (and (or (instance? DB other) (instance? FilteredDB other))
+       (or (not (instance? DB other)) (= (hash db) (hash other)))
        (= (dbi/-schema db) (dbi/-schema other))
        (equiv-db-index (dbi/-datoms db :eavt []) (dbi/-datoms other :eavt []))))
 

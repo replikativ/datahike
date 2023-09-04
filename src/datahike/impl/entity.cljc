@@ -159,7 +159,7 @@
 (defn- equiv-entity [^Entity this that]
   (and
    (instance? Entity that)
-   ;; (= db  (.-db ^Entity that))
+   (= (.-db ^Entity this)  (.-db ^Entity that))
    (= (.-eid this) (.-eid ^Entity that))))
 
 (defn- lookup-entity
