@@ -15,11 +15,20 @@
                :target-dir "target"
                :class-dir "target/classes"
                :deps-file "deps.edn"
-               :jar-pattern "{{repo.lib}}-{{version-str}}.jar" 
+               :jar-pattern "{{repo.lib}}-{{version-str}}.jar"
                :lib io.replikativ/datahike}
-         
+         :http-server-clj {;; jvm build
+                           :src-dirs      ["src" "http-server"]
+                           :java-src-dirs ["java"]
+                           :target-dir    "target-http-server"
+                           :class-dir     "target-http-server/classes"
+                           :deps-file     "deps.edn"
+                           :jar-pattern   "{{repo.lib}}-http-server-{{version-str}}.jar"
+                           :aliases       [:http-server]
+                           :main          datahike.http.server
+                           :lib           io.replikativ/datahike-http-server}
          :native {;; jvm build
-                  :src-dirs ["src" "libdatahike/src"] 
+                  :src-dirs ["src" "libdatahike/src"]
                   :java-src-dirs ["java"]
                   :target-dir "target"
                   :class-dir "target/classes"
@@ -29,7 +38,7 @@
                   :main datahike.cli
                   ;; native build
                   :artifact "libdatahike.zip"
-                  :project-target-dir "libdatahike/target" 
+                  :project-target-dir "libdatahike/target"
                   :project-name "libdatahike"
                   :class-path "libdatahike/src"
                   :java-interface "libdatahike/src/datahike/impl/LibDatahike.java"}}}

@@ -83,9 +83,36 @@
                   :task (let [jar (build/jar-path config (-> config :build :clj))]
                           (release/gh-release jar config))}
 
+
+         ;; http server build and release
+
+         http-server-clean {:doc  "Remove build files"
+                            :task (build/clean (-> config :build :http-server-clj))}
+
+         http-server-jcompile {:doc     "Compile java classes"
+                               :depends [http-server-clean]
+                               :task    (build/compile-java (-> config :build :http-server-clj))}
+
+         http-server-ccompile {:doc  "Compile clojure namespaces"
+                               :task (build/compile-clojure (-> config :build :http-server-clj))}
+
+         http-server-pom {:doc  "Create pom file"
+                          :task (build/pom config (-> config :build :http-server-clj))}
+
+         http-server-uber {:doc     "Build jar"
+                           :depends [http-server-jcompile http-server-pom http-server-ccompile]
+                           :task    (build/uber config (-> config :build :http-server-clj))}
+
+         http-server-install {:doc  "Install uber jar locally"
+                              :task (deploy/local config (-> config :build :http-server-clj))}
+
+         http-server-release {:doc     "Build and release jar to GitHub"
+                              :depends [http-server-uber]
+                              :task    (let [jar (build/jar-path config (-> config :build :http-server-clj))]
+                                         (release/gh-release jar config))}
+
+
          ;; native image
-
-
 
          ni-check {:doc "Check for 'native-image' program"
                    :task (try (shell "which" "native-image")
