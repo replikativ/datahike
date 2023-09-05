@@ -153,8 +153,8 @@
           :config {:validatorUrl     nil
                    :operationsSorter "alpha"}})
         (ring/create-default-handler)))
-     (wrap-cors :access-control-allow-origin (or (:access-control-allow-origin config)
-                                                 [#"http://localhost" #"http://localhost:8080"])
+      (wrap-cors :access-control-allow-origin (or (:access-control-allow-origin config)
+                                                  [#"http://localhost" #"http://localhost:8080"])
                  :access-control-allow-methods [:get :put :post :delete])))
 
 (defn start-server [config]

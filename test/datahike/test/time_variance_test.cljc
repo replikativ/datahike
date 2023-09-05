@@ -73,7 +73,9 @@
   (clojure.string/replace s #"#uuid \".+\"" ":REPLACED"))
 
 (deftest test-historical-queries
-  (let [cfg (assoc-in cfg-template [:store :id] "test-historical-queries")
+  (let [cfg (-> cfg-template
+                (assoc-in [:store :id] "test-historical-queries")
+                (assoc-in [:store :scope] "test.datahike.io"))
         conn (setup-db cfg)]
 
     (testing "get all values before specific time"
@@ -106,12 +108,14 @@
         (is (= #{[25] [30]}
                (d/q query-with-< history-db [:name "Alice"] date)))))
     (testing "print DB"
-      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:store-id [[:mem \"test-historical-queries\"] :db] :commit-id :REPLACED :max-tx 536870915 :max-eid 4}}"
+      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-historical-queries\"] :db] :commit-id :REPLACED :max-tx 536870915 :max-eid 4}}"
              (replace-commit-id (pr-str (d/history @conn))))))
     (d/release conn)))
 
 (deftest test-as-of-db
-  (let [cfg (assoc-in cfg-template [:store :id] "test-as-of-db")
+  (let [cfg (-> cfg-template
+                (assoc-in [:store :id] "test-as-of-db")
+                (assoc-in [:store :scope] "test.datahike.io"))
         conn (setup-db cfg)
         first-date (now)
         ;; sleep to make sure that transact thread has newer timestamp
@@ -127,9 +131,9 @@
     (testing "print DB"
       (let [as-of-str (pr-str (d/as-of @conn tx-id))
             origin-str (pr-str (dbi/-origin (d/as-of @conn tx-id)))]
-        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :commit-id :REPLACED :max-tx 536870913 :max-eid 4} :time-point 536870914}"
+        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-as-of-db\"] :db] :commit-id :REPLACED :max-tx 536870913 :max-eid 4} :time-point 536870914}"
                (replace-commit-id as-of-str)))
-        (is (= "#datahike/DB {:store-id [[:mem \"test-as-of-db\"] :db] :commit-id :REPLACED :max-tx 536870913 :max-eid 4}"
+        (is (= "#datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-as-of-db\"] :db] :commit-id :REPLACED :max-tx 536870913 :max-eid 4}"
                (replace-commit-id origin-str)))
         (is (not= as-of-str origin-str))))
     (testing "retraction"
@@ -144,7 +148,9 @@
     (d/release conn)))
 
 (deftest test-since-db
-  (let [cfg (assoc-in cfg-template [:store :id] "test-since-db")
+  (let [cfg (-> cfg-template
+                (assoc-in [:store :id] "test-since-db")
+                (assoc-in [:store :scope] "test.datahike.io"))
         conn (setup-db cfg)
         first-date (now)
         ;; sleep to make sure that transact thread has newer timestamp
@@ -162,7 +168,7 @@
         (is (= #{[new-age]}
                (d/q query (d/since @conn tx-id))))))
     (testing "print DB"
-      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test-since-db\"] :db] :commit-id :REPLACED :max-tx 536870914 :max-eid 4} :time-point 536870914}"
+      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-since-db\"] :db] :commit-id :REPLACED :max-tx 536870914 :max-eid 4} :time-point 536870914}"
              (replace-commit-id (pr-str (d/since @conn tx-id))))))
     (d/release conn)))
 
