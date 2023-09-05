@@ -69,7 +69,7 @@
                      :store-cache-size c/*default-store-cache-size*}
                     (when (seq (di/default-index-config c/*default-index*))
                       {:index-config (di/default-index-config c/*default-index*)}))
-             (update config :store dissoc :id))))))
+             (update config :store dissoc :id :scope))))))
 
 (deftest core-config-test
   (testing "Schema on write in core empty database"
