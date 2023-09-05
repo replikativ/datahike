@@ -83,7 +83,7 @@
        (assoc-in [:formats "application/transit+json" :encoder-opts]
                  {:handlers write-handlers}))))
 
-(def route-opts
+(defn default-route-opts [muuntaja-with-opts]
   {;; :reitit.middleware/transform dev/print-request-diffs ;; pretty diffs
    ;; :validate spec/validate ;; enable spec validation for route data
    ;; :reitit.spec/wrap spell/closed ;; strict top-level validation
@@ -132,7 +132,7 @@
                :operationId "transact"},
      :swagger {:tags ["Internal"]}}]])
 
-(defn app [config]
+(defn app [config route-opts]
   (-> (ring/ring-handler
        (ring/router
         (concat
@@ -153,19 +153,20 @@
           :config {:validatorUrl     nil
                    :operationsSorter "alpha"}})
         (ring/create-default-handler)))
-      (wrap-cors :access-control-allow-origin [#"http://localhost" #"http://localhost:8080"
-                                               #"http://localhost:4000"]
+     (wrap-cors :access-control-allow-origin (or (:access-control-allow-origin config)
+                                                 [#"http://localhost" #"http://localhost:8080"])
                  :access-control-allow-methods [:get :put :post :delete])))
 
 (defn start-server [config]
-  (run-jetty (app config) config))
+  (run-jetty (app config (default-route-opts muuntaja-with-opts)) config))
 
 (defn stop-server [^org.eclipse.jetty.server.Server server]
   (.stop server))
 
 (defn -main [& args]
-  (let [{:keys [level] :as config} (edn/read-string (slurp (first args)))]
+  (let [{:keys [level token] :as config} (edn/read-string (slurp (first args)))]
     (println "Starting datahike.http.server with config:")
-    (prn config)
+    (log/info "Config: " (if token (assoc config :token "REDACTED") config))
     (when level (log/set-level! level))
-    (start-server config)))
+    (start-server config)
+    (log/info "Server started.")))
