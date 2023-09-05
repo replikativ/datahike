@@ -79,7 +79,7 @@
 
 (defmethod store-identity :mem
   [config]
-  [:mem (:id config)])
+  [:mem (:scope config) (:id config)])
 
 (defmethod empty-store :mem [{:keys [id]}]
   (if-let [store (get @memory id)]
@@ -97,7 +97,8 @@
 
 (defmethod default-config :mem [config]
   (merge
-   {:id (:datahike-store-id env (rand-german-mammal))}
+   {:id (:datahike-store-id env (rand-german-mammal))
+    :scope (dt/get-hostname)}
    config))
 
 (s/def :datahike.store.mem/backend #{:mem})
