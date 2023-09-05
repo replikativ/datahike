@@ -165,7 +165,7 @@
 
 (defn -main [& args]
   (let [{:keys [level token] :as config} (edn/read-string (slurp (first args)))]
-    (println "Starting datahike.http.server with config:")
+    (log/info "Starting datahike.http.server with config:")
     (log/info "Config: " (if token (assoc config :token "REDACTED") config))
     (when level (log/set-level! level))
     (start-server config)
