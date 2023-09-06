@@ -77,6 +77,8 @@
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
                                     "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
+                                    "--no-fallback"
+                                    "-J-Xmx4g"
                                     "-H:Name=dhi"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps {clj.native-image/clj.native-image

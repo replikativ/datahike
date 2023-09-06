@@ -27,14 +27,12 @@
                           "-Xlint:deprecation"]})
    (println "Done.")))
 
-(defn compile-clojure
-    ([] (compile-clojure (read-edn-file "config.edn")))
-    ([{:keys [class-dir src-dirs] :as project-config}]
-     (print (str "Compiling Clojure namespaces saving them to '" class-dir "'..."))
-     (b/compile-clj {:src-dirs src-dirs
-                     :class-dir class-dir 
-                     :basis (basis project-config)})
-     (println "Done.")))
+(defn compile-clojure [{:keys [class-dir src-dirs] :as project-config}]
+  (print (str "Compiling Clojure namespaces saving them to '" class-dir "'..."))
+  (b/compile-clj {:src-dirs src-dirs
+                  :class-dir class-dir
+                  :basis (basis project-config)})
+  (println "Done."))
 
 (defn pom-path [{:keys [class-dir lib] :as _project-config}]
   (b/pom-path {:lib lib
