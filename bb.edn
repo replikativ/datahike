@@ -79,9 +79,7 @@
                   :task (deploy/remote config (-> config :build :clj))}
 
          release {:doc "Build and release jar to GitHub"
-                  :depends [jar]
-                  :task (let [jar (build/jar-path config (-> config :build :clj))]
-                          (release/gh-release jar config))}
+                  :task (release/-main config *command-line-args*)}
 
          ;; native image
 
@@ -96,7 +94,7 @@
 
          ni-cli {:doc "Build native image cli"
                  :depends [jcompile ni-check]
-                 :task (clojure "-M:native-cli" "--no-fallback" "-J-Xmx4g")}
+                 :task (clojure "-M:native-cli")}
 
          ni-ccompile {:doc "Create native cpp library"
                       :task (build/compile-clojure (-> config :build :native))}
