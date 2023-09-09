@@ -87,20 +87,20 @@
 
 (doseq [[n {:keys [args doc supports-remote?]}] api/api-specification]
   (eval
-   `(~'def
-     ~(with-meta n
-        {:arglists `(api/spec-args->argslist (quote ~args))
-         :doc      doc})
-     (fn [& args#]
-       ~(if-not supports-remote?
-          `(throw (ex-info (str ~(str n) " is not supported for remote connections.")
-                           {:type     :remote-not-supported
-                            :function ~(str n)}))
-          `(binding [remote/*remote-peer* (get-remote args#)]
-             (let [url#    (:url remote/*remote-peer*)
-                   format# (:format remote/*remote-peer*)]
-               (({:transit post-transit
-                  :edn     post-edn} (or format# :transit))
-                ~(api/->url n) remote/*remote-peer* (vec args#)))))))))
+   `(def
+      ~(with-meta n
+         {:arglists `(api/spec-args->argslist (quote ~args))
+          :doc      doc})
+      (fn [& ~'args]
+        ~(if-not supports-remote?
+           `(throw (ex-info (str ~(str n) " is not supported for remote connections.")
+                            {:type     :remote-not-supported
+                             :function ~(str n)}))
+           `(binding [remote/*remote-peer* (get-remote ~'args)]
+              (let [url#    (:url remote/*remote-peer*)
+                    format# (:format remote/*remote-peer*)]
+                (({:transit post-transit
+                   :edn     post-edn} (or ~'format :transit))
+                 ~(api/->url n) remote/*remote-peer* (vec ~'args)))))))))
 
 (defmethod remote/remote-deref :datahike-server [conn] (db conn))
