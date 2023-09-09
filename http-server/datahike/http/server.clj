@@ -27,7 +27,7 @@
    [spec-tools.core :as st])
   (:import [datahike.datom Datom]))
 
-(defn generic-handler [f edn-args edn-ret]
+(defn generic-handler [f]
   (fn [request]
     (let [{{body :body} :parameters
            :keys [headers]} request
@@ -62,8 +62,8 @@
 (eval
  `(defn ~'create-routes [~'config]
     ~(vec
-      (for [[n {:keys [args doc edn-args edn-ret supports-remote?]}] api-specification
-            :when                                                    supports-remote?]
+      (for [[n {:keys [args doc supports-remote?]}] api-specification
+            :when supports-remote?]
         `[~(str "/" (->url n))
           {:swagger {:tags ["API"]}
            :post    {:operationId ~(str n)
@@ -71,7 +71,7 @@
                      :description ~doc
                      :parameters  {:body (st/spec {:spec (s/spec ~args)
                                                    :name ~(str n)})}
-                     :handler     (generic-handler ~(resolve n) ~edn-args ~edn-ret)}}]))))
+                     :handler     (generic-handler ~(resolve n))}}]))))
 
 (def muuntaja-with-opts
   (m/create
