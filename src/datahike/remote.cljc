@@ -10,6 +10,9 @@
 ;; readers to attach the remote again.
 (def ^:dynamic *remote-peer* nil)
 
+;; https://github.com/thi-ng/color/issues/10
+(prefer-method clojure.pprint/simple-dispatch clojure.lang.IPersistentMap clojure.lang.IDeref)
+
 (defmulti remote-deref (fn [{:keys [remote-peer]}] (:backend remote-peer)))
 
 (defrecord RemoteConnection [store-id remote-peer]
