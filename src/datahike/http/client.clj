@@ -87,7 +87,7 @@
 
 (doseq [[n {:keys [args doc supports-remote?]}] api/api-specification]
   (eval
-   `(def
+   `(~'def
       ~(with-meta n
          {:arglists `(api/spec-args->argslist (quote ~args))
           :doc      doc})

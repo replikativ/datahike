@@ -6,12 +6,20 @@
   #?(:clj
      (:import [clojure.lang IDeref])))
 
+;; https://github.com/thi-ng/color/issues/10
+;; fixes lein repl / Cloure 1.10.0 
+(prefer-method print-method java.util.Map clojure.lang.IDeref)
+
+;; fixes lein repl / Clojure 1.10.1
+(prefer-method print-method clojure.lang.IPersistentMap clojure.lang.IDeref)
+
+;; fixes CIDER / Clojure 1.9.0 / 1.10.0 / 1.10.1
+(prefer-method clojure.pprint/simple-dispatch clojure.lang.IPersistentMap clojure.lang.IDeref)
+
+
 ;; Remote peer currently operated on. This is used to allow the tagged literal
 ;; readers to attach the remote again.
 (def ^:dynamic *remote-peer* nil)
-
-;; https://github.com/thi-ng/color/issues/10
-(prefer-method clojure.pprint/simple-dispatch clojure.lang.IPersistentMap clojure.lang.IDeref)
 
 (defmulti remote-deref (fn [{:keys [remote-peer]}] (:backend remote-peer)))
 
