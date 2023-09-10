@@ -63,7 +63,7 @@ Per default Datahike ships with `:mem` and `:file` backend.
 - `:writer` optionally configures a writer as a hash map. If not set, the default local writer is used.
 
 Default configuration has in-memory store, keeps history with write schema flexibility, and has no initial transaction:
-{:store {:backend :mem :id \"default\"} :keep-history? true :schema-flexibility :write}
+`{:store {:backend :mem :id \"default\"} :keep-history? true :schema-flexibility :write}`
 
 Usage:
 

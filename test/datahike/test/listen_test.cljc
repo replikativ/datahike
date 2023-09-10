@@ -36,7 +36,6 @@
             (dd/datom 1 :name "Alex2"  (+ const/tx0 3) true)
             (dd/datom 4 :name "Evgeny" (+ const/tx0 3) false)]
            (rest (:tx-data (second @reports)))))
-    (is (= (dissoc (:tx-meta (second @reports)) :db/txInstant
-                   :db/commitId)
+    (is (= (dissoc (:tx-meta (second @reports)) :db/txInstant :db/commitId)
            {}))
     (d/release conn)))

@@ -16,7 +16,6 @@
 ;; fixes CIDER / Clojure 1.9.0 / 1.10.0 / 1.10.1
 (prefer-method clojure.pprint/simple-dispatch clojure.lang.IPersistentMap clojure.lang.IDeref)
 
-
 ;; Remote peer currently operated on. This is used to allow the tagged literal
 ;; readers to attach the remote again.
 (def ^:dynamic *remote-peer* nil)

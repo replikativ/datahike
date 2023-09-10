@@ -29,8 +29,8 @@
   (eval
    `(s/fdef ~n :args ~args :ret ~ret ~@(when fn [:fn fn])))
   (eval
-   `(~'def
-     ~(with-meta n
-        {:arglists `(spec-args->argslist (quote ~args))
-         :doc      doc})
-     ~impl)))
+   `(def
+      ~(with-meta n
+         {:arglists `(spec-args->argslist (quote ~args))
+          :doc      doc})
+      ~impl)))

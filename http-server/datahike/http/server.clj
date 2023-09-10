@@ -1,4 +1,5 @@
 (ns datahike.http.server
+  "HTTP server implementation for Datahike."
   (:gen-class)
   (:refer-clojure :exclude [read-string filter])
   (:require
@@ -66,12 +67,12 @@
             :when supports-remote?]
         `[~(str "/" (->url n))
           {:swagger {:tags ["API"]}
-           :post    {:operationId ~(str n)
-                     :summary     ~(extract-first-sentence doc)
-                     :description ~doc
-                     :parameters  {:body (st/spec {:spec (s/spec ~args)
-                                                   :name ~(str n)})}
-                     :handler     (generic-handler ~(resolve n))}}]))))
+           :post {:operationId ~(str n)
+                  :summary     ~(extract-first-sentence doc)
+                  :description ~doc
+                  :parameters  {:body (st/spec {:spec (s/spec ~args)
+                                                :name ~(str n)})}
+                  :handler     (generic-handler ~(resolve n))}}]))))
 
 (def muuntaja-with-opts
   (m/create
@@ -105,6 +106,7 @@
     {:post    {:parameters  {:body (st/spec {:spec any?
                                              :name "delete-database-writer"})},
                :summary     "Internal endpoint. DO NOT USE!"
+               :no-doc      true
                :handler     (fn [{{:keys [body]} :parameters}]
                               {:status 200
                                :body   (apply datahike.writing/delete-database body)})
@@ -114,6 +116,7 @@
     {:post    {:parameters  {:body (st/spec {:spec any?
                                              :name "create-database-writer"})},
                :summary     "Internal endpoint. DO NOT USE!"
+               :no-doc      true
                :handler     (fn [{{:keys [body]} :parameters}]
                               {:status 200
                                :body   (apply datahike.writing/create-database
@@ -125,6 +128,7 @@
     {:post    {:parameters  {:body (st/spec {:spec any?
                                              :name "transact-writer"})},
                :summary     "Internal endpoint. DO NOT USE!"
+               :no-doc      true
                :handler     (fn [{{:keys [body]} :parameters}]
                               (let [res (apply datahike.writing/transact! body)]
                                 {:status 200

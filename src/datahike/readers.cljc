@@ -4,6 +4,7 @@
             [datahike.datom :refer [datom] :as dd]
             [datahike.impl.entity :as de]
             [datahike.core :refer [init-db] :as dc]
+            [datahike.tools :refer [raise]]
             [konserve.core :as k])
   #?(:clj
      (:import [datahike.datom Datom]
@@ -22,7 +23,7 @@
          (let [store (:store @conn)]
            (when-let [raw-db (k/get store commit-id nil {:sync? true})]
              (dw/stored->db raw-db store)))
-         (throw (ex-info "Could not find active connection. Did you connect already?"
+         (raise (ex-info "Could not find active connection. Did you connect already?"
                          {:type :no-connection-for-db
                           :raw-db raw-db}))))
     (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema)))

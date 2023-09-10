@@ -79,7 +79,7 @@
                          :url    (str "http://localhost:" port)
                          :token  "securerandompassword"
                          :format :transit})))
-  (testing "Test transit binding."
+  (testing "Test edn binding."
     (let [port 23190]
       (run-server-tests {:port     port
                          :join?    false
