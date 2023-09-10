@@ -87,7 +87,7 @@
 
 (doseq [[n {:keys [args doc supports-remote?]}] api/api-specification]
   (eval
-   `(~'def
+   `(def
       ~(with-meta n
          {:arglists `(api/spec-args->argslist (quote ~args))
           :doc      doc})
@@ -97,10 +97,9 @@
                             {:type     :remote-not-supported
                              :function ~(str n)}))
            `(binding [remote/*remote-peer* (get-remote ~'args)]
-              (let [url#    (:url remote/*remote-peer*)
-                    format# (:format remote/*remote-peer*)]
+              (let [format# (:format remote/*remote-peer*)]
                 (({:transit post-transit
-                   :edn     post-edn} (or ~'format :transit))
+                   :edn     post-edn} (or format# :transit))
                  ~(api/->url n) remote/*remote-peer* (vec ~'args)))))))))
 
 (defmethod remote/remote-deref :datahike-server [conn] (db conn))
