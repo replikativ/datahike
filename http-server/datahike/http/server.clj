@@ -63,16 +63,17 @@
 (eval
  `(defn ~'create-routes [~'config]
     ~(vec
-      (for [[n {:keys [args doc supports-remote?]}] api-specification
+      (for [[n {:keys [args doc supports-remote? pure?]}] api-specification
             :when supports-remote?]
         `[~(str "/" (->url n))
           {:swagger {:tags ["API"]}
-           :post {:operationId ~(str n)
-                  :summary     ~(extract-first-sentence doc)
-                  :description ~doc
-                  :parameters  {:body (st/spec {:spec (s/spec ~args)
-                                                :name ~(str n)})}
-                  :handler     (generic-handler ~(resolve n))}}]))))
+           ~(if pure? :get :post)
+           {:operationId ~(str n)
+            :summary     ~(extract-first-sentence doc)
+            :description ~doc
+            :parameters  {:body (st/spec {:spec (s/spec ~args)
+                                          :name ~(str n)})}
+            :handler     (generic-handler ~(resolve n))}}]))))
 
 (def muuntaja-with-opts
   (m/create
@@ -103,37 +104,37 @@
 
 (def internal-writer-routes
   [["/delete-database-writer"
-    {:post    {:parameters  {:body (st/spec {:spec any?
-                                             :name "delete-database-writer"})},
-               :summary     "Internal endpoint. DO NOT USE!"
-               :no-doc      true
-               :handler     (fn [{{:keys [body]} :parameters}]
-                              {:status 200
-                               :body   (apply datahike.writing/delete-database body)})
-               :operationId "delete-database"},
+    {:post {:parameters  {:body (st/spec {:spec any?
+                                          :name "delete-database-writer"})},
+            :summary     "Internal endpoint. DO NOT USE!"
+            :no-doc      true
+            :handler     (fn [{{:keys [body]} :parameters}]
+                           {:status 200
+                            :body   (apply datahike.writing/delete-database body)})
+            :operationId "delete-database"},
      :swagger {:tags ["Internal"]}}]
    ["/create-database-writer"
-    {:post    {:parameters  {:body (st/spec {:spec any?
-                                             :name "create-database-writer"})},
-               :summary     "Internal endpoint. DO NOT USE!"
-               :no-doc      true
-               :handler     (fn [{{:keys [body]} :parameters}]
-                              {:status 200
-                               :body   (apply datahike.writing/create-database
-                                              (dissoc (first body) :remote-peer)
-                                              (rest body))})
-               :operationId "create-database"},
+    {:post {:parameters  {:body (st/spec {:spec any?
+                                          :name "create-database-writer"})},
+            :summary     "Internal endpoint. DO NOT USE!"
+            :no-doc      true
+            :handler     (fn [{{:keys [body]} :parameters}]
+                           {:status 200
+                            :body   (apply datahike.writing/create-database
+                                           (dissoc (first body) :remote-peer)
+                                           (rest body))})
+            :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
    ["/transact-writer"
-    {:post    {:parameters  {:body (st/spec {:spec any?
-                                             :name "transact-writer"})},
-               :summary     "Internal endpoint. DO NOT USE!"
-               :no-doc      true
-               :handler     (fn [{{:keys [body]} :parameters}]
-                              (let [res (apply datahike.writing/transact! body)]
-                                {:status 200
-                                 :body   res}))
-               :operationId "transact"},
+    {:post {:parameters  {:body (st/spec {:spec any?
+                                          :name "transact-writer"})},
+            :summary     "Internal endpoint. DO NOT USE!"
+            :no-doc      true
+            :handler     (fn [{{:keys [body]} :parameters}]
+                           (let [res (apply datahike.writing/transact! body)]
+                             {:status 200
+                              :body   res}))
+            :operationId "transact"},
      :swagger {:tags ["Internal"]}}]])
 
 (defn app [config route-opts]
@@ -146,9 +147,10 @@
                                    :description "Transaction and query functions for Datahike.\n\nThe signatures match those of the Clojure API. All functions take their arguments passed as a vector/list in the POST request body."}}
                   :handler (swagger/create-swagger-handler)}}]]
          (map (fn [route]
-                (assoc-in route [1 :post :middleware]
-                          [(partial middleware/token-auth config)
-                           (partial middleware/auth config)]))
+                (let [method (if (:get (second route)) :get :post)]
+                  (assoc-in route [1 method :middleware]
+                            [(partial middleware/token-auth config)
+                             (partial middleware/auth config)])))
               (concat (create-routes config)
                       internal-writer-routes))) route-opts)
        (ring/routes

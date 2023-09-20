@@ -2,7 +2,7 @@
   "Remote writer implementation for datahike.http.server through datahike.http.client."
   (:require [datahike.writer :refer [PWriter create-writer create-database delete-database]]
             [datahike.transit :refer [read-handlers write-handlers]]
-            [datahike.http.client :refer [post-transit] :as client]
+            [datahike.http.client :refer [request-transit] :as client]
             [datahike.tools :as dt :refer [throwable-promise]]
             [taoensso.timbre :as log]
             [clojure.core.async :refer [promise-chan put!]])
@@ -17,8 +17,9 @@
       (log/trace "Arguments:" arg-map)
       (put! p
             (try
-              (post-transit (str op "-writer") remote-peer (vec (concat [conn] args))
-                            read-handlers write-handlers)
+              (request-transit :post
+                               (str op "-writer") remote-peer (vec (concat [conn] args))
+                               read-handlers write-handlers)
               (catch Exception e
                 e)))
       p))
@@ -36,9 +37,10 @@
         {:keys [writer] :as config} (first args)]
     ;; redirect call to remote-peer as writer config
     (deliver p (->
-                (post-transit "create-database-writer"
-                              writer
-                              (vec (concat [(assoc config :remote-peer writer)] (rest args))))
+                (request-transit :post
+                                 "create-database-writer"
+                                 writer
+                                 (vec (concat [(assoc config :remote-peer writer)] (rest args))))
                 (dissoc :remote-peer)))
     p))
 
@@ -47,8 +49,9 @@
   (let [p (throwable-promise)
         {:keys [writer] :as config} (first args)]
     ;; redirect call to remote-peer as writer config
-    (deliver p (-> (post-transit "delete-database-writer"
-                                 writer
-                                 (vec (concat [(assoc config :remote-peer writer)] (rest args))))
+    (deliver p (-> (request-transit :post
+                                    "delete-database-writer"
+                                    writer
+                                    (vec (concat [(assoc config :remote-peer writer)] (rest args))))
                    (dissoc :remote-peer)))
     p))

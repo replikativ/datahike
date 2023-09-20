@@ -31,6 +31,7 @@
                               :nil (s/cat))
      :ret              boolean?
      :supports-remote? true
+     :pure? true
      :doc
      "Checks if a database exists via configuration map.
 Usage:
@@ -47,6 +48,7 @@ Usage:
                               :nil (s/cat))
      :ret              #(s/valid? spec/SConfig [%])
      :supports-remote? true
+     :pure? false
      :doc
      "Creates a database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
 
@@ -87,6 +89,7 @@ Usage:
                               :nil (s/cat))
      :ret              any?
      :supports-remote? true
+     :pure? false
      :doc "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
 For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"
      :impl datahike.api.impl/delete-database}
@@ -96,6 +99,7 @@ For more information refer to the [docs](https://github.com/replikativ/datahike/
                               :nil (s/cat))
      :ret              spec/SConnection
      :supports-remote? true
+     :pure? true
      :doc "Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
 
 The configuration for a connection is a subset of the Datahike configuration with only the store necessary: `:store`.
@@ -120,6 +124,7 @@ Connect to a database with persistent store:
     {:args             (s/cat :conn spec/SConnection)
      :ret              spec/SDB
      :supports-remote? true
+     :pure? true
      :doc "Returns the underlying immutable database value from a connection.
 
 Exists for Datomic API compatibility. Prefer using `@conn` directly if possible."
@@ -129,12 +134,15 @@ Exists for Datomic API compatibility. Prefer using `@conn` directly if possible.
     {:args (s/cat :conn spec/SConnection :txs spec/STransactions)
      :ret  #(s/valid? spec/STransactionReport @%)
      :doc  "Same as transact, but asynchronously returns a future."
+     :supports-remote? false
+     :pure? false
      :impl datahike.writing/transact!}
 
     transact
     {:args             (s/cat :conn spec/SConnection :txs spec/STransactions)
      :ret              spec/STransactionReport
      :supports-remote? true
+     :pure? false
      :doc
      "Applies transaction to the underlying database value and atomically updates the connection reference to point to the result of that transaction, the new db value.
 
@@ -228,6 +236,7 @@ Usage:
                               :with-params (s/cat :q (s/or :vec vector? :map map?) :args (s/* any?)))
      :ret              any?
      :supports-remote? true
+     :pure? true
      :doc
      "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
 
@@ -277,14 +286,16 @@ Query passed as map needs vectors as values. Query can not be passed as list. Th
      :ret              #(s/valid? spec/STransactionReport @%)
      :doc "Load entities directly"
      :impl datahike.writer/load-entities
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? false}
 
     release
     {:args             (s/cat :conn spec/SConnection)
      :ret              nil?
      :doc "Releases a database connection. You need to release a connection as many times as you connected to it for it to be completely released. Set release-all? to true to force its release."
      :impl datahike.connector/release
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     pull
     {:args             (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
@@ -304,7 +315,8 @@ Usage:
 
 The arity-2 version takes :selector and :eid in arg-map."
      :impl datahike.pull-api/pull
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     pull-many
     {:args             (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
@@ -318,13 +330,15 @@ Usage:
     (pull-many db [:db/id :name] [1 2]) ; => [{:db/id 1, :name \"Ivan\"}
                                               {:db/id 2, :name \"Oleg\"}]"
      :impl datahike.pull-api/pull-many
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     query-stats
     {:args             (s/alt :argmap (s/cat :map spec/SQueryArgs)
                               :with-params (s/cat :q (s/or :vec vector? :map map?) :args (s/* any?))) ;; TODO: the doc could show more examples with varargs
      :ret              map?
      :supports-remote? true
+     :pure? true
      :doc "Executes a datalog query and returns the result as well as some execution details.
 Uses the same arguments as q does."
      :impl datahike.query/query-stats}
@@ -459,6 +473,7 @@ Gotchas:
   - `:eavt` and `:aevt` contain all datoms.
   - `:avet` only contains datoms for references, `:db/unique` and `:db/index` attributes."
      :supports-remote? true
+     :pure? true
      :impl datahike.api.impl/datoms}
 
     seek-datoms
@@ -497,6 +512,7 @@ Gotchas:
                                                    :components [2 :likes \"fish\"]}) ; => (#datahike/Datom [2 :likes \"pie\"]
                                                                                      ;     #datahike/Datom [2 :likes \"pizza\"])"
      :supports-remote? true
+     :pure? true
      :impl datahike.api.impl/seek-datoms}
 
     index-range
@@ -550,7 +566,8 @@ Useful patterns:
     ; find all entities with age in a specific range (inclusive)
     (->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))"
      :impl datahike.api.impl/index-range
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     tempid
     {:args             (s/alt :part any? :full (s/cat :part any? :x int?))
@@ -559,7 +576,8 @@ Useful patterns:
 
 Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
      :impl datahike.core/tempid
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     entity
     {:args             (s/cat :db spec/SDB :eid (s/alt :eid spec/SEId :div any?))
@@ -613,20 +631,24 @@ Entity gotchas:
 - Accessed entity attributes are cached on entity itself (except backward references).
 - When printing, only cached attributes (the ones you have accessed before) are printed. See [[touch]]."
      :impl datahike.impl.entity/entity
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     entity-db
     {:args             (s/cat :entity de/entity?)
      :ret              spec/SDB
      :doc "Returns a db that entity was created from."
      :impl datahike.impl.entity/entity-db
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     is-filtered
     {:args (s/cat :db spec/SDB)
      :ret  boolean?
      :doc "Returns `true` if this database was filtered using [[filter]], `false` otherwise."
-     :impl datahike.core/is-filtered}
+     :impl datahike.core/is-filtered
+     :supports-remote? false
+     :pure? true}
 
     filter
     {:args (s/cat :db spec/SDB :pred any?)
@@ -640,7 +662,9 @@ Filtered DB gotchas:
 - Supports entities, pull, queries, index access.
 - Does not support hashing of DB.
 - Does not support [[with]] and [[db-with]]."
-     :impl datahike.core/filter}
+     :impl datahike.core/filter
+     :supports-remote? false
+     :pure? true}
 
     with
     {:args (s/alt :with-map (s/cat :db spec/SDB :argmap spec/SWithArgs)
@@ -663,18 +687,23 @@ Filtered DB gotchas:
                                                      ;     :tx-data [#datahike/Datom [1 :name \"Ivan\" 536870913]],
                                                      ;     :tempids #:db{:current-tx 536870913},
                                                      ;     :tx-meta {:foo :bar}}"
-     :impl datahike.api.impl/with}
+     :impl datahike.api.impl/with
+     :supports-remote? false
+     :pure? true}
 
     db-with
     {:args (s/cat :db spec/SDB :tx-data spec/STransactions)
      :ret  spec/SDB
      :doc "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
-     :impl datahike.api.impl/db-with}
+     :impl datahike.api.impl/db-with
+     :supports-remote? false
+     :pure? true}
 
     history
     {:args             (s/cat :db spec/SDB)
      :ret              coll?
      :supports-remote? true
+     :pure? true
      :doc
      "Returns the full historical state of the database you may interact with.
 
@@ -735,7 +764,8 @@ Be aware: the database contains only the datoms that were added since the date.
 (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
     :args [@conn]}) ; => #{[\"Alice\" 30] [\"Bob\" 30]}"
      :impl datahike.api.impl/since
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     as-of
     {:args             (s/cat :db spec/SDB :time-point spec/time-point?)
@@ -763,7 +793,8 @@ Be aware: the database contains only the datoms that were added since the date.
 (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
     :args [@conn]}) ; => #{[\"Alice\" 35] [\"Bob\" 30]}"
      :impl datahike.api.impl/as-of
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     listen
     {:args (s/alt :no-key (s/cat :conn spec/SConnection :callback fn?)
@@ -779,34 +810,41 @@ Be aware: the database contains only the datoms that were added since the date.
 Idempotent. Calling [[listen]] with the same twice will override old callback with the new value.
 
 Returns the key under which this listener is registered. See also [[unlisten]]."
-     :impl datahike.core/listen!}
+     :impl datahike.core/listen!
+     :supports-remote? false
+     :pure? false}
 
     unlisten
     {:args (s/cat :conn spec/SConnection :key any?)
      :ret  map?
      :doc "Removes registered listener from connection. See also [[listen]]."
-     :impl datahike.core/unlisten!}
+     :impl datahike.core/unlisten!
+     :supports-remote? false
+     :pure? false}
 
     schema
     {:args             (s/cat :db spec/SDB)
      :ret              spec/SSchema
      :doc "Returns current schema definition."
      :impl datahike.api.impl/schema
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     reverse-schema
     {:args             (s/cat :db spec/SDB)
      :ret              map?
      :doc "Returns current reverse schema definition."
      :impl datahike.api.impl/reverse-schema
-     :supports-remote? true}
+     :supports-remote? true
+     :pure? true}
 
     metrics
     {:args             (s/cat :db spec/SDB)
      :ret              spec/SMetrics
      :doc  "Returns database metrics."
      :impl datahike.db/metrics
-     :supports-remote? true}})
+     :supports-remote? true
+     :pure? true}})
 
 (comment
   (map (fn [[k v]] [k (:impl v)]) api-specification))
