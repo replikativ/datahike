@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [filter])
   (:require [babashka.http-client :as http]
             [cognitect.transit :as transit]
+            [hasch.core :refer [uuid]]
             [datahike.api.specification :as api]
             [clojure.edn :as edn]
             [clojure.spec.alpha :as s]
@@ -24,13 +25,16 @@
         _                   (log/trace "request" url end-point token data body)
         response
         (try
-          (http/request {:uri url
-                         :method method
-                         :headers (merge {:content-type fmt
-                                          :accept       fmt}
-                                         (when token
-                                           {:authorization (str "token " token)}))
-                         :body    body})
+          (http/request (merge
+                         {:uri     url
+                          :method  method
+                          :headers (merge {:content-type fmt
+                                           :accept       fmt}
+                                          (when token
+                                            {:authorization (str "token " token)}))
+                          :body    body}
+                         (when (= method :get)
+                           {:query-params {"args-id" (uuid data)}})))
           (catch Exception e
             (let [msg  (ex-message e)
                   data (ex-data e)
@@ -57,15 +61,18 @@
          _        (log/trace "request" url end-point token data out)
          response
          (try
-           (http/request {:method method
-                          :uri url
-                          :headers
-                          (merge {:content-type fmt
-                                  :accept       fmt}
-                                 (when token
-                                   {:authorization (str "token " token)}))
-                          :as   :stream
-                          :body (.toByteArray out)})
+           (http/request (merge
+                          {:method method
+                           :uri    url
+                           :headers
+                           (merge {:content-type fmt
+                                   :accept       fmt}
+                                  (when token
+                                    {:authorization (str "token " token)}))
+                           :as     :stream
+                           :body   (.toByteArray out)}
+                          (when (= method :get)
+                            {:query-params {"args-id" (uuid data)}})))
            (catch Exception e
              ;; read exception
              (let [msg  (ex-message e)

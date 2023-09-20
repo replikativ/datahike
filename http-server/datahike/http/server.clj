@@ -28,10 +28,10 @@
    [spec-tools.core :as st])
   (:import [datahike.datom Datom]))
 
-(defn generic-handler [f]
+(defn generic-handler [config f]
   (fn [request]
     (let [{{body :body} :parameters
-           :keys [headers]} request
+           :keys [headers params method]} request
           _ (log/trace "req-body" f body (= f #'api/create-database))
           ;; TODO move this to client
           ret-body
@@ -47,10 +47,16 @@
                 :else
                 (apply f body))]
       (log/trace "ret-body" ret-body)
-      {:status 200
-       :body
-       (when-not (headers "no-return-value")
-         ret-body)})))
+      (merge
+       {:status 200
+        :body
+        (when-not (headers "no-return-value")
+          ret-body)}
+       (when (and (= method :get)
+                  (get params "args-id")
+                  (get-in config [:cache :get :max-age]))
+         {:headers {"Cache-Control" (str (when-not (:token config) "public, ")
+                                         "max-age=" (get-in config [:cache :get :max-age]))}})))))
 
 (declare create-routes)
 
@@ -73,7 +79,7 @@
             :description ~doc
             :parameters  {:body (st/spec {:spec (s/spec ~args)
                                           :name ~(str n)})}
-            :handler     (generic-handler ~(resolve n))}}]))))
+            :handler     (generic-handler ~'config ~(resolve n))}}]))))
 
 (def muuntaja-with-opts
   (m/create
