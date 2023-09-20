@@ -99,7 +99,7 @@ For more information refer to the [docs](https://github.com/replikativ/datahike/
                               :nil (s/cat))
      :ret              spec/SConnection
      :supports-remote? true
-     :pure? true
+     :pure? false
      :doc "Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
 
 The configuration for a connection is a subset of the Datahike configuration with only the store necessary: `:store`.
@@ -295,7 +295,7 @@ Query passed as map needs vectors as values. Query can not be passed as list. Th
      :doc "Releases a database connection. You need to release a connection as many times as you connected to it for it to be completely released. Set release-all? to true to force its release."
      :impl datahike.connector/release
      :supports-remote? true
-     :pure? true}
+     :pure? false}
 
     pull
     {:args             (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
