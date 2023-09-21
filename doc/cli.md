@@ -39,11 +39,11 @@ $ datahike query '[:find ?n . :where [?e :name ?n]]' db:myconfig.edn
 
 Note that the `conn:<file>` argument to `transact` comes before the transaction
 value(s), whereas the `db:<file>` argument to `query` comes after the query value,
-mirroring the Clojure API.
+mirroring the Clojure API. As an added benefit, this also allows passing
+multiple db configuration files prefixed with `db:` for joining over arbitrary
+many databases. Everything else is read in as `edn` and passed to the query
+engine as well.
 
-By prefixing the path with `db:` to the query engine you can pass multiple db
-configuration files and join over arbitrary many databases. Everything else is
-read in as `edn` and passed to the query engine as well.
 
 Provided the filestore is configured with `{:in-place? true}` you can even write
 to the same database without a dedicated daemon from different shells,
