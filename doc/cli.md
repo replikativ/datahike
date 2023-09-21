@@ -27,7 +27,7 @@ fact to the database (be careful to use single ' if you do not want your shell
 to substitute parts of your Datalog ;) ):
 
 ```bash
-$ datahike transact db:myconfig.edn '[[:db/add -1 :name "Linus"]]'
+$ datahike transact conn:myconfig.edn '[[:db/add -1 :name "Linus"]]'
  ```
 
 And retrieve it:
@@ -37,10 +37,13 @@ $ datahike query '[:find ?n . :where [?e :name ?n]]' db:myconfig.edn
 "Linus" # prints the name
 ```
 
+Note that the `conn:<file>` argument to `transact` comes before the transaction
+value(s), whereas the `db:<file>` argument to `query` comes after the query value,
+mirroring the Clojure API.
+
 By prefixing the path with `db:` to the query engine you can pass multiple db
 configuration files and join over arbitrary many databases. Everything else is
 read in as `edn` and passed to the query engine as well.
-
 
 Provided the filestore is configured with `{:in-place? true}` you can even write
 to the same database without a dedicated daemon from different shells,
