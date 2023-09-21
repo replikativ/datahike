@@ -2,6 +2,13 @@
 
 With the help of [the Datahike cli](doc/cli.md) we provide the possibility to run Datahike as a[babashka pod](https://book.babashka.org/#pods).
 
+## Why Datahike as a babashka pod?
+
+A babashka pod is a way to use Datahike in babashka without Datahike being built into the babashka binary. When you
+don't want to run a whole JVM for a little script you can use babashka and write your script in your preferred language.
+Babashka already has ways to persist data to other databases but Datahike adds the possibility to write to a durable
+datalog database.
+
 ## Compilation
 
 We plan to provide the native binaries of Datahike via GitHub-Releases in the future. Unfortunately you have to compile it yourself for now. To do that you need to clone the [Datahike repository](https://github.com/replikativ/datahike), have babashka and clojure as well as a JDK installed.
