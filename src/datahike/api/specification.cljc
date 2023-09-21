@@ -31,7 +31,7 @@
                               :nil (s/cat))
      :ret              boolean?
      :supports-remote? true
-     :referentially-transparent? true
+     :referentially-transparent? false
      :doc
      "Checks if a database exists via configuration map.
 Usage:
@@ -576,7 +576,7 @@ Useful patterns:
 
 Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
      :impl datahike.core/tempid
-     :supports-remote? true
+     :supports-remote? false
      :referentially-transparent? true}
 
     entity
