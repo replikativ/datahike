@@ -46,7 +46,7 @@ engine as well.
 
 
 Provided the filestore is configured with `{:in-place? true}` you can even write
-to the same database without a dedicated daemon from different shells,
+to the same database without a dedicated daemon from different shells:
 
 
 ```bash
@@ -59,7 +59,7 @@ Here we use a provided benchmark helper which transacts facts of the form `[eid
 the batch size for each transaction, so here we chunk the 50000 facts into 500
 transactions.
 
-In a second shell you can now simultaneously add facts in a different range
+In a second shell you can now simultaneously add facts in a different range:
 
 ```bash
 $ datahike benchmark db:myconfig.edn 50000 100000 100
