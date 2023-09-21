@@ -69,11 +69,11 @@
 (eval
  `(defn ~'create-routes [~'config]
     ~(vec
-      (for [[n {:keys [args doc supports-remote? pure?]}] api-specification
+      (for [[n {:keys [args doc supports-remote? referentially-transparent?]}] api-specification
             :when supports-remote?]
         `[~(str "/" (->url n))
           {:swagger {:tags ["API"]}
-           ~(if pure? :get :post)
+           ~(if referentially-transparent? :get :post)
            {:operationId ~(str n)
             :summary     ~(extract-first-sentence doc)
             :description ~doc

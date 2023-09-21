@@ -96,7 +96,7 @@
                                                                        :args args}))
       (first remotes))))
 
-(doseq [[n {:keys [args doc supports-remote? pure?]}] api/api-specification]
+(doseq [[n {:keys [args doc supports-remote? referentially-transparent?]}] api/api-specification]
   (eval
    `(def
       ~(with-meta n
@@ -111,7 +111,7 @@
               (let [format# (:format remote/*remote-peer*)]
                 (({:transit request-transit
                    :edn     request-edn} (or format# :transit))
-                 ~(if pure? :get :post)
+                 ~(if referentially-transparent? :get :post)
                  ~(api/->url n)
                  remote/*remote-peer* (vec ~'args)))))))))
 
