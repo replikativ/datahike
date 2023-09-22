@@ -105,7 +105,7 @@ jobs:
       - persist_to_workspace:
           root: /home/circleci/
           paths:
-            - replikativ/dhi
+            - replikativ/dthk
   persistent-set-test:
     executor: tools/clojurecli
     steps:
@@ -231,8 +231,8 @@ jobs:
           name: Release cli on GitHub
           command: bb release native-cli
           environment:
-            DHI_PLATFORM: linux
-            DHI_ARCH: x86_64
+            DTHK_PLATFORM: linux
+            DTHK_ARCH: x86_64
 
 workflows:
   build-test-and-deploy:

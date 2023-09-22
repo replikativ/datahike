@@ -17,6 +17,10 @@ a database that a 3rd party provides you access to, it is sufficient to have
 read access rights to the store, no setup of a server or additional steps are
 needed to join against the indices of this external database!
 
+Note: This allows you to *massively shard* databases. A good design pattern is
+to create a separate database for a set of facts that you need to consistently
+update together, e.g. one database per business client.
+
 ## Single writer
 
 If you want to provide distributed write access to databases you need to setup
