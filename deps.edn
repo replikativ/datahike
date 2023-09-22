@@ -14,13 +14,16 @@
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.5"}
         mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}
-        org.babashka/http-client                    {:mvn/version "0.3.11"}}
+        org.babashka/http-client                    {:mvn/version "0.3.11"}
+        nrepl/bencode                               {:mvn/version "1.1.0"}
+        cheshire/cheshire                           {:mvn/version "5.11.0"}}
+
 
  :paths ["src" "target/classes"]
 
  :deps/prep-lib {:ensure "target/classes"
                  :alias :build
-                 :fn bb-trigger}
+                 :fn compile-java}
 
  :aliases {;; Development
 
@@ -58,7 +61,8 @@
 
            ;; Build
 
-           :build {:ns-default build}
+           :build {:deps {io.github.clojure/tools.build {:mvn/version "0.9.5"}}
+                   :ns-default build}
 
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
 
@@ -81,20 +85,17 @@
                                     "-J-Xmx4g"
                                     "-H:Name=dhi"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
-                        :extra-deps {clj.native-image/clj.native-image
-                                     {:git/url "https://github.com/taylorwood/clj.native-image.git"
-                                      :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
-                                     com.cognitect/transit-clj {:mvn/version "1.0.333"}
-                                     nrepl/bencode             {:mvn/version "1.1.0"}
-                                     babashka/pods             {:git/url "https://github.com/babashka/pods"
-                                                                :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
-                                     cheshire/cheshire         {:mvn/version "5.11.0"}}}
+                        :extra-deps
+                        {clj.native-image/clj.native-image
+                         {:git/url "https://github.com/taylorwood/clj.native-image.git"
+                          :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
+                         com.cognitect/transit-clj {:mvn/version "1.0.333"}
+                         babashka/pods             {:git/url "https://github.com/babashka/pods"
+                                                    :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
 
            :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
-                              nrepl/bencode             {:mvn/version "1.1.0"}
                               babashka/pods             {:git/url "https://github.com/babashka/pods"
-                                                         :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
-                              cheshire/cheshire         {:mvn/version "5.11.0"}}}
+                                                         :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
 
            ;; Checks
 
