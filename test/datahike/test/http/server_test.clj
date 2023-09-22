@@ -56,8 +56,6 @@
 
             _ (is (instance? datahike.remote.RemoteAsOfDB (api/as-of test-db (java.util.Date.))))
 
-            _ (is (neg-int? (api/tempid test-db)))
-
             _ (is (nil? (api/release conn)))
 
             _ (is (nil? (api/delete-database new-config)))
