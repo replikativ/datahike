@@ -51,8 +51,9 @@ the server while all other calls are executed locally.
 
 An example setup to run Datahike distributed in AWS lambda without a server can
 be found [here](https://github.com/viesti/clj-lambda-datahike). It configures a
-singleton lambda for write operations while reader lambdas be run multiple times
-and scale out.
+singleton lambda for write operations while reader lambdas can be run multiple
+times and scale out. This setup can be upgraded later to use a dedicated server
+as an EC2 instance.
 
 # Distribution of compute
 
