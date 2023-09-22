@@ -1,13 +1,13 @@
 # Distribution
 
-Datahike supports two types of distributed access, either *distribution of data*
-or *distribution of computation*. Distribution of data means that you can access
+Datahike supports two types of distributed access, *distribution of data* or
+*distribution of computation*. Distribution of data means that you can access
 data sources in a distributed index space, while distribution of computation
 means that you send requests for things to be evaluated to another machine.
 
 # Distributed Index Space (DIS)
 
-Datahike has a similar memory model to [datomic](https://datomic.com) , which is
+Datahike has a similar memory model to [Datomic](https://datomic.com) , which is
 build on distributed persistent indices. But while Datomic requires active
 connections to the transactor, Datahike works with lightweight connections that
 do not require communication by default.
@@ -19,7 +19,7 @@ needed to join against the indices of this external database!
 
 ## Single writer
 
-If you want to provide distributed write access to databases you need to set up
+If you want to provide distributed write access to databases you need to setup
 a server as described in the section at the end. Datahike then centralizes all
 write operations and state changes to the database on this single machine, while
 all read operations still can happen in locally on as many machines as have
@@ -47,7 +47,8 @@ the server while all other calls are executed locally.
 Datahike supports sending all requests to a server. This has the benefit that
 the server will do all the computation and its caches will be shared between
 different clients. The disadvantage is that you cannot easily share information
-in process, e.g. call your own functions or closures.
+in process, e.g. call your own functions or closures in queries without
+deploying them to the server first.
 
 ## Remote procedure calls (RPCs)
 
@@ -65,8 +66,8 @@ supported. Given a server is setup (see below), you can interact with by adding
                       :token   "securerandompassword"}}
 ```
 
-The API will return lightweight remote pointer that follow the same semantics
-with the client API, but do not support any of datahike's local functionality,
+The API will return lightweight remote pointers that follow the same semantics
+as `datahike.api`, but do not support any of Datahike's local functionality,
 i.e. you can only use them with this API.
 
 # Combined distribution
@@ -92,25 +93,25 @@ The edn configuration file looks like:
 
 Port sets the `port` to run the HTTP server under, `level` sets the log-level.
 `dev-mode` deactivates authentication during development and if `token` is
-provided then you need to sent this token as the HTTP header "token" to
+provided then you need to send this token as the HTTP header "token" to
 authenticate.
 
 The server exports a swagger interface on the port and can serialize requests in
 `transit-json` and `edn` (JSON support is planned). The server exposes all
 referentially transparent calls (that don't change given their arguments) as GET
 requests and all requests that depend on input information as POST requests. All
-arguments in both cases are sent as a list in the request body.
+arguments in both cases are sent as a list *in the request body*.
 
 ### Extended configuration
 
-CORS headers can be set, e.g. with
+CORS headers can be set, e.g. with adding
 ```clojure
-{:access-control-allow-origin [#"http://localhost" #"http://localhost:8080"]}
+ :access-control-allow-origin [#"http://localhost" #"http://localhost:8080"]
 ```
 
-The server also experimentally supports HTTP caching for GET requests, e.g. by setting
+The server also experimentally supports HTTP caching for GET requests, e.g. by adding
 ```clojure
-{:cache {:get {:max-age 3600}}}
+ :cache {:get {:max-age 3600}}
 ```
 
 This should be beneficially in case your HTTP client or proxy supports efficient
