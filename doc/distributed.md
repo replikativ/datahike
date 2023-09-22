@@ -2,10 +2,11 @@
 
 Datahike supports two types of distributed access, *distribution of data* or
 *distribution of computation*. Distribution of data means that you can access
-data sources in a distributed index space, while distribution of computation
-means that you send requests for things to be evaluated to another machine.
+data sources in what we call a distributed index space (DIS), while distribution
+of computation means that you send requests for things to be evaluated to
+another machine.
 
-# Distributed Index Space (DIS)
+# Distributed index space (DIS)
 
 Datahike has a similar memory model to [Datomic](https://datomic.com) , which is
 build on distributed persistent indices. But while Datomic requires active
@@ -45,6 +46,13 @@ for your database, e.g.
 You can now use the normal `datahike.api` as usual and all operations changing a
 database, e.g. `create-database`, `delete-database` and `transact` are sent to
 the server while all other calls are executed locally.
+
+### AWS lambda
+
+An example setup to run Datahike distributed in AWS lambda without a server can
+be found [here](https://github.com/viesti/clj-lambda-datahike). It configures a
+singleton lambda for write operations while reader lambdas be run multiple times
+and scale out.
 
 # Distribution of compute
 
