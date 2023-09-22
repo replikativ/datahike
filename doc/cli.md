@@ -2,8 +2,8 @@
 
 *This is work in progress and subject to change.*
 
-We provide the `datahike` native executable to access Datahike databases from
-the command line. 
+We provide the `dthk` native executable to access Datahike databases from
+the command line.
 
 
 # Example usage
@@ -27,22 +27,22 @@ fact to the database (be careful to use single ' if you do not want your shell
 to substitute parts of your Datalog ;) ):
 
 ```bash
-$ datahike transact conn:myconfig.edn '[[:db/add -1 :name "Linus"]]'
+$ dthk transact conn:myconfig.edn '[[:db/add -1 :name "Linus"]]'
  ```
 
 And retrieve it:
 
-```bash 
-$ datahike query '[:find ?n . :where [?e :name ?n]]' db:myconfig.edn 
+```bash
+$ dthk query '[:find ?n . :where [?e :name ?n]]' db:myconfig.edn
 "Linus" # prints the name
 ```
 
 Note that the `conn:<file>` argument to `transact` comes before the transaction
-value(s), whereas the `db:<file>` argument to `query` comes after the query value,
-mirroring the Clojure API. As an added benefit, this also allows passing
+value(s), whereas the `db:<file>` argument to `query` comes after the query
+value, mirroring the Clojure API. As an added benefit, this also allows passing
 multiple db configuration files prefixed with `db:` for joining over arbitrary
-many databases. Everything else is read in as `edn` and passed to the query
-engine as well.
+many databases or data files with "edn:" or "json:". Everything non-prefixed is
+read in as `edn` and passed to the query engine as well.
 
 
 Provided the filestore is configured with `{:in-place? true}` you can even write
@@ -50,7 +50,7 @@ to the same database without a dedicated daemon from different shells:
 
 
 ```bash
-$ datahike benchmark db:myconfig.edn 0 50000 100
+$ dthk benchmark db:myconfig.edn 0 50000 100
 "Elapsed time: 116335.589411 msecs"
 ```
 
@@ -62,7 +62,7 @@ transactions.
 In a second shell you can now simultaneously add facts in a different range:
 
 ```bash
-$ datahike benchmark db:myconfig.edn 50000 100000 100
+$ dthk benchmark db:myconfig.edn 50000 100000 100
 ```
 
 
@@ -71,7 +71,7 @@ each other.
 
 
 ```bash
-$ datahike query '[:find (count ?e) . :in $ :where [?e :name ?n]]' db:myconfig.edn
+$ dthk query '[:find (count ?e) . :in $ :where [?e :name ?n]]' db:myconfig.edn
 100000 # check :)
 ```
 
@@ -108,7 +108,7 @@ Datalog itself. You can use a query like this to extract all new facts that are
 in `db1` but not in `db2` like this:
 
 ```bash
-datahike query '[:find ?e ?a ?v ?t :in $ $2 :where [$ ?e ?a ?v ?t] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn
+dthk query '[:find ?e ?a ?v ?t :in $ $2 :where [$ ?e ?a ?v ?t] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn
 ```
 
 Since we cannot update transaction metadata, we should filter out
@@ -117,7 +117,7 @@ the results, yielding valid transactions that we can then feed into `db2`.
 
 
 ```bash
-datahike query '[:find ?db-add ?e ?a ?v ?t :in $ $2 ?db-add :where [$ ?e ?a ?v ?t] [(not= :db/txInstant ?a)] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn ":db/add" | transact db:config2.edn
+dthk query '[:find ?db-add ?e ?a ?v ?t :in $ $2 ?db-add :where [$ ?e ?a ?v ?t] [(not= :db/txInstant ?a)] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn ":db/add" | transact db:config2.edn
 ```
 
 Note that this very simple strategy assumes that the entity ids that have been
