@@ -25,6 +25,10 @@
 (defprotocol PRemotePeer
   (-remote-peer [_] "Retrieve remote peer."))
 
+(extend-protocol PRemotePeer
+  Object
+  (-remote-peer [_] nil))
+
 (defn remote-peer [obj] (-remote-peer obj))
 
 (defrecord RemoteConnection [store-id remote-peer]
