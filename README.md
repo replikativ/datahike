@@ -197,7 +197,7 @@ plan to recover this functionality.
 
 ## ClojureScript Support
 
-ClojureScript support is planned and work in progress. Please see [Roadmap](https://github.com/replikativ/datahike#roadmap).
+ClojureScript support is planned and work in progress. Please see [Discussions](https://github.com/replikativ/datahike/discussions/categories/ideas).
 
 ## Migration & Backup
 
