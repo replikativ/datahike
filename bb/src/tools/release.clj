@@ -50,10 +50,10 @@
       (println (:url ret)))))
 
 (defn zip-path [lib version target-dir zip-pattern]
-  (let [platform (System/getenv "DHI_PLATFORM")
-        arch (System/getenv "DHI_ARCH")]
+  (let [platform (System/getenv "DHTK_PLATFORM")
+        arch (System/getenv "DHTK_ARCH")]
     (if-not (and platform arch)
-      (do (println "ERROR: Environment variables DHI_PLATFORM and DHI_ARCH need to be set")
+      (do (println "ERROR: Environment variables DHTK_PLATFORM and DHTK_ARCH need to be set")
           (System/exit 1))
       (str target-dir "/" (render zip-pattern {:platform platform
                                                :arch arch

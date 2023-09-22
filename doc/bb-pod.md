@@ -47,7 +47,7 @@ This feature is not used in production so far. Please try it and [open issues on
 (ns pod
   (:require [babashka.pods :as pods]))
 
-(pods/load-pod "./dhi")
+(pods/load-pod "./dthk")
 
 (require '[datahike.pod :as d])
 

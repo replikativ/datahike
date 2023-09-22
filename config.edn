@@ -44,5 +44,5 @@
                   :java-interface "libdatahike/src/datahike/impl/LibDatahike.java"}}
 
  :release {:native-cli {:target-dir "."
-                        :binary-name "dhi"
+                        :binary-name "dthk"
                         :zip-pattern "{{lib}}-{{version}}-{{platform}}-{{arch}}.zip"}}}
