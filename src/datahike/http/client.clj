@@ -89,7 +89,14 @@
 
 (defn get-remote [args]
   (let [remotes (disj
-                 (into #{} (map :remote-peer args))
+                 (into
+                  ;; first arguments can be config maps, e.g. for
+                  ;; create-database; this code could be made explicit by
+                  ;; explicitly dispatching on when the first argument is a
+                  ;; config map
+                  #{(:remote-peer (first args))}
+                  ;; other arguments to API follow hygiene
+                  (map remote/remote-peer (rest args)))
                  nil)]
     (if (> (count remotes) 1)
       (throw (ex-info "Arguments refer to more than one remote-peer." {:remotes remotes

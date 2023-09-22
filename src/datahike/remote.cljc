@@ -22,10 +22,17 @@
 
 (defmulti remote-deref (fn [{:keys [remote-peer]}] (:backend remote-peer)))
 
+(defprotocol PRemotePeer
+  (-remote-peer [_] "Retrieve remote peer."))
+
+(defn remote-peer [obj] (-remote-peer obj))
+
 (defrecord RemoteConnection [store-id remote-peer]
   #?@(:clj
       [IDeref
-       (deref [conn] (remote-deref conn))]))
+       (deref [conn] (remote-deref conn))
+       PRemotePeer
+       (-remote-peer [_] remote-peer)]))
 
 (defn remote-connection [store-id]
   (RemoteConnection. store-id *remote-peer*))
@@ -36,7 +43,9 @@
      (.write w "#datahike/RemoteConnection")
      (.write w (pr-str (:store-id conn)))))
 
-(defrecord RemoteDB [store-id max-tx max-eid commit-id remote-peer])
+(defrecord RemoteDB [store-id max-tx max-eid commit-id remote-peer]
+  PRemotePeer
+  (-remote-peer [_] remote-peer))
 
 (defn remote-db [m]
   (assoc (map->RemoteDB m) :remote-peer *remote-peer*))
@@ -47,7 +56,9 @@
      (.write w "#datahike/RemoteDB")
      (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
 
-(defrecord RemoteHistoricalDB [origin remote-peer])
+(defrecord RemoteHistoricalDB [origin remote-peer]
+  PRemotePeer
+  (-remote-peer [_] remote-peer))
 
 (defn remote-historical-db [m]
   (assoc (map->RemoteHistoricalDB m) :remote-peer *remote-peer*))
@@ -58,7 +69,9 @@
      (.write w "#datahike/RemoteHistoricalDB")
      (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
 
-(defrecord RemoteSinceDB [origin time-point remote-peer])
+(defrecord RemoteSinceDB [origin time-point remote-peer]
+  PRemotePeer
+  (-remote-peer [_] remote-peer))
 
 (defn remote-since-db [m]
   (assoc (map->RemoteSinceDB m) :remote-peer *remote-peer*))
@@ -69,7 +82,9 @@
      (.write w "#datahike/RemoteSinceDB")
      (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
 
-(defrecord RemoteAsOfDB [origin time-point remote-peer])
+(defrecord RemoteAsOfDB [origin time-point remote-peer]
+  PRemotePeer
+  (-remote-peer [_] remote-peer))
 
 (defn remote-as-of-db [m]
   (assoc (map->RemoteAsOfDB m) :remote-peer *remote-peer*))
@@ -80,7 +95,9 @@
      (.write w "#datahike/RemoteAsOfDB")
      (.write w (pr-str  (into {} (dissoc db :remote-peer))))))
 
-(defrecord RemoteEntity [db eid remote-peer])
+(defrecord RemoteEntity [db eid remote-peer]
+  PRemotePeer
+  (-remote-peer [_] remote-peer))
 
 (defn remote-entity [m]
   (assoc (map->RemoteEntity m) :remote-peer *remote-peer*))
