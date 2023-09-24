@@ -1,10 +1,10 @@
 /target
+!target/classes/java/*
 /bench/target
 /classes
 /checkouts
 pom.xml.asc
 replikativ-datahike.jar
-*.class
 /.lein-*
 /.nrepl-port
 /.repl*
