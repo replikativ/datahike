@@ -103,7 +103,7 @@
    ; :exception pretty/exception
    :data      {:coercion   reitit.coercion.spec/coercion
                :muuntaja   muuntaja-with-opts
-               :middleware [swagger/swagger-feature
+               :middleware [
                             (middleware/encode-plain-value muuntaja-with-opts)
                             parameters/parameters-middleware
                             muuntaja/format-middleware
@@ -112,7 +112,10 @@
                             middleware/wrap-server-exception
                             coercion/coerce-response-middleware
                             coercion/coerce-request-middleware
-                            multipart/multipart-middleware]}})
+                            multipart/multipart-middleware
+                            middleware/patch-swagger-json
+                            swagger/swagger-feature
+                            ]}})
 
 (def internal-writer-routes
   [["/delete-database-writer"

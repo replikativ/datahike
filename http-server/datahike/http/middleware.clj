@@ -67,6 +67,15 @@
                        response)]
         ret))))
 
+(defn patch-swagger-json [handler]
+  (fn [request]
+    (let [response (handler request)]
+      (if (get-in response [:body :swagger])
+        (clojure.walk/postwalk (fn [n]
+                                 (if (set? n) (vec n) n))
+                               response)
+        response))))
+
 (defn support-embedded-edn-in-json [handler]
   (fn [request]
     (let [{:keys [content-type body-params uri]} request]

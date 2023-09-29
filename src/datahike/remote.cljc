@@ -176,42 +176,42 @@
                      (merge
                       json-base-handlers
                       {datahike.remote.RemoteConnection
-                       {:tag    "datahike/Connection"
+                       {:tag    "!datahike/Connection"
                         :encode (write-to-generator :store-id)
                         :decode remote-connection}
 
                        datahike.datom.Datom
-                       {:tag    "datahike/Datom"
+                       {:tag    "!datahike/Datom"
                         :encode (write-to-generator datom-as-vec)
                         :decode datom-from-vec}
 
                        datahike.db.TxReport
-                       {:tag    "datahike/TxReport"
+                       {:tag    "!datahike/TxReport"
                         :encode (write-to-generator #(into {} %))
                         :decode datahike.db/map->TxReport}
 
                        datahike.remote.RemoteDB
-                       {:tag    "datahike/DB"
+                       {:tag    "!datahike/DB"
                         :encode (write-to-generator map-without-remote)
                         :decode remote-db}
 
                        datahike.remote.RemoteHistoricalDB
-                       {:tag    "datahike/HistoricalDB"
+                       {:tag    "!datahike/HistoricalDB"
                         :encode (write-to-generator map-without-remote)
                         :decode remote-historical-db}
 
                        datahike.remote.RemoteSinceDB
-                       {:tag    "datahike/SinceDB"
+                       {:tag    "!datahike/SinceDB"
                         :encode (write-to-generator map-without-remote)
                         :decode remote-since-db}
 
                        datahike.remote.RemoteAsOfDB
-                       {:tag    "datahike/AsOfDB"
+                       {:tag    "!datahike/AsOfDB"
                         :encode (write-to-generator map-without-remote)
                         :decode remote-as-of-db}
 
                        datahike.remote.RemoteEntity
-                       {:tag    "datahike/Entity"
+                       {:tag    "!datahike/Entity"
                         :encode (write-to-generator #(into {} %))
                         :decode remote-entity}})})]})
 

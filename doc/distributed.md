@@ -24,12 +24,13 @@ update together, e.g. one database per business client.
 
 ## Single writer
 
-If you want to provide distributed write access to databases you need to setup
-a server as described in the section at the end. Datahike then centralizes all
+If you want to provide distributed write access to databases you need to setup a
+server as described in the section at the end. Datahike then centralizes all
 write operations and state changes to the database on this single machine, while
 all read operations still can happen in locally on as many machines as have
 access to the store. The benefit of the single writer is that it provides strong
-linearization guarantees for transactions, i.e. strong consistency.
+linearization guarantees for transactions, i.e. strong consistency. This memory
+model is also supported by the CLI, babashka and libdatahike clients.
 
 The client setup is simple, you just add a `:writer` entry in the configuration
 for your database, e.g.
@@ -83,13 +84,15 @@ The API will return lightweight remote pointers that follow the same semantics
 as `datahike.api`, but do not support any of Datahike's local functionality,
 i.e. you can only use them with this API.
 
+
+
 # Combined distribution
 
 Note that you can combine both data accesses, i.e. run a set of servers sharing
 a single writer among themselves, while they all serve a large set of outside
 clients through RPCs.
 
-## Setup datahike.http.server
+# Setup datahike.http.server
 
 To build it locally you only need to clone the repository and run `bb
 http-server-uber` to create the jar. The server can then be run with `java -jar
@@ -110,10 +113,12 @@ provided then you need to send this token as the HTTP header "token" to
 authenticate.
 
 The server exports a swagger interface on the port and can serialize requests in
-`transit-json` and `edn` (JSON support is planned). The server exposes all
-referentially transparent calls (that don't change given their arguments) as GET
-requests and all requests that depend on input information as POST requests. All
-arguments in both cases are sent as a list *in the request body*.
+`transit-json`, `edn` and `JSON` with
+[jsonista](https://github.com/metosin/jsonista) tagged literals. The server
+exposes all referentially transparent calls (that don't change given their
+arguments) as GET requests and all requests that depend on input information as
+POST requests. All arguments in both cases are sent as a list *in the request
+body*.
 
 ### Extended configuration
 
@@ -129,4 +134,257 @@ The server also experimentally supports HTTP caching for GET requests, e.g. by a
 
 This should be beneficially in case your HTTP client or proxy supports efficient
 caching and you often run the same queries many times on different queries (e.g.
-to retrieve a daily context in an app.)
+to retrieve a daily context in an app against a database only changes with low
+frequency.)
+
+# JSON support
+
+The remote API supports JSON with embedded [tagged
+literals](https://github.com/metosin/jsonista#tagged-json). There are two
+extensions for convenience provided (please provide feedback or explore better
+options if you have ideas!).
+
+Provided you are sending HTTP requests to a datahike-server you can put the
+following JSON argument arrays into each method body. You have to provide
+the "token" in the header if you use authentication.
+
+POST to "/create-database"
+```json
+["{:schema-flexibility :read}"]
+```
+Note that here you can pass the configuration as an `edn` string, which is more concise. If you want to speak JSON directly you would pass
+```
+[{"schema-flexibility": ["!kw", "read"]}]
+```
+
+"!kw" annotates a tagged literal here and encodes that "read" is an `edn`
+keyword.
+
+The resulting configuration will look like (with random DB name):
+```json
+cfg = {
+  "keep-history?": true,
+  "search-cache-size": 10000,
+  "index": [
+    "!kw",
+    "datahike.index/persistent-set"
+  ],
+  "store": {
+    "id": "wiggly-field-vole",
+    "scope": "127.0.1.1",
+    "backend": [
+      "!kw",
+      "mem"
+    ]
+  },
+  "store-cache-size": 1000,
+  "attribute-refs?": false,
+  "writer": {
+    "backend": [
+      "!kw",
+      "self"
+    ]
+  },
+  "crypto-hash?": false,
+  "remote-peer": null,
+  "schema-flexibility": [
+    "!kw",
+    "read"
+  ],
+  "branch": [
+    "!kw",
+    "db"
+  ]
+}
+```
+
+You can now use this cfg to connect to this database:
+
+POST to "/connect"
+```json
+[cfg]
+```
+
+The result will look like:
+
+```json
+conn = ["!datahike/Connection",[[["!kw","mem"],"127.0.1.1","wiggly-field-vole"],["!kw","db"]]]
+```
+
+Finally let's add some data to the database:
+
+POST to "/transact"
+```json
+[conn, [{"name": "Peter", "age": 42}]]
+```
+
+The result is a comprehensive transaction record (no need to parse in detail):
+
+```json
+[
+  "!datahike/TxReport",
+  {
+    "db-before": [
+      "!datahike/DB",
+      {
+        "store-id": [
+          [
+            [
+              "!kw",
+              "mem"
+            ],
+            "127.0.1.1",
+            "wiggly-field-vole"
+          ],
+          [
+            "!kw",
+            "db"
+          ]
+        ],
+        "commit-id": [
+          "!uuid",
+          "2c8f71f9-a3c6-4189-ba0c-e183cc29c672"
+        ],
+        "max-eid": 1,
+        "max-tx": 536870913
+      }
+    ],
+    "db-after": [
+      "!datahike/DB",
+      {
+        "store-id": [
+          [
+            [
+              "!kw",
+              "mem"
+            ],
+            "127.0.1.1",
+            "wiggly-field-vole"
+          ],
+          [
+            "!kw",
+            "db"
+          ]
+        ],
+        "commit-id": [
+          "!uuid",
+          "6ebf8979-cdf0-41f4-b615-30ff81830b0c"
+        ],
+        "max-eid": 2,
+        "max-tx": 536870914
+      }
+    ],
+    "tx-data": [
+      [
+        "!datahike/Datom",
+        [
+          536870914,
+          [
+            "!kw",
+            "db/txInstant"
+          ],
+          [
+            "!date",
+            "1695952443102"
+          ],
+          536870914,
+          true
+        ]
+      ],
+      [
+        "!datahike/Datom",
+        [
+          2,
+          [
+            "!kw",
+            "age"
+          ],
+          42,
+          536870914,
+          true
+        ]
+      ],
+      [
+        "!datahike/Datom",
+        [
+          2,
+          [
+            "!kw",
+            "name"
+          ],
+          "Peter",
+          536870914,
+          true
+        ]
+      ]
+    ],
+    "tempids": {
+      "db/current-tx": 536870914
+    },
+    "tx-meta": {
+      "db/txInstant": [
+        "!date",
+        "1695952443102"
+      ],
+      "db/commitId": [
+        "!uuid",
+        "6ebf8979-cdf0-41f4-b615-30ff81830b0c"
+      ]
+    }
+  }
+]
+```
+
+Note that you can extract the snapshots of the database `before` and `after` the commit as well as the facts added to the database.
+
+To retrieve the current database for your connection use
+
+POST to "/db"
+```json
+[conn]
+```
+
+The result looks like:
+
+```json
+db = [
+  "!datahike/DB",
+  {
+    "store-id": [
+      [
+        [
+          "!kw",
+          "mem"
+        ],
+        "127.0.1.1",
+        "wiggly-field-vole"
+      ],
+      [
+        "!kw",
+        "db"
+      ]
+    ],
+    "commit-id": [
+      "!uuid",
+      "6ebf8979-cdf0-41f4-b615-30ff81830b0c"
+    ],
+    "max-eid": 2,
+    "max-tx": 536870914
+  }
+]
+```
+
+You can query this database with the query endpoint. We recommend again using a string to denote the query DSL instead of direct JSON encoding unless you want to manipulate the queries in JSON programmatically.
+
+GET to "/q"
+```json
+["[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]", db]
+```
+
+The result set is
+
+```json
+["!set",[["Peter",42]]]
+```
+
+You can also pass strings for pull expressions and to pass configurations to `delete-database` and `database-exists`.
