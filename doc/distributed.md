@@ -6,7 +6,7 @@ Datahike supports two types of distributed access, *distribution of data* or
 distribution of computation means that clients send requests to be evaluated to
 be processed by a server on a remote runtime.
 
-![Network topology](doc/assets/network_topology.svg)
+![Network topology](assets/network_topology.svg)
 
 # Distributed index space (DIS)
 
