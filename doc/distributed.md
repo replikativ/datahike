@@ -220,7 +220,7 @@ POST to "/transact"
 [conn, [{"name": "Peter", "age": 42}]]
 ```
 
-The result is a comprehensive transaction record (no need to parse in detail):
+The result is a comprehensive transaction record (feel free to ignore the details):
 
 ```javascript
 [
@@ -337,7 +337,7 @@ The result is a comprehensive transaction record (no need to parse in detail):
 ]
 ```
 
-Note that you can extract the snapshots of the database `before` and `after` the commit as well as the facts added to the database.
+Note that you can extract the snapshots of the database `db-before` and `db-after` the commit as well as the facts added to the database as `tx-data`.
 
 To retrieve the current database for your connection use
 
