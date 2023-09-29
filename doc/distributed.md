@@ -1,10 +1,12 @@
 # Distribution
 
 Datahike supports two types of distributed access, *distribution of data* or
-*distribution of computation*. Distribution of data means that you can access
-data sources in what we call a distributed index space (DIS), while distribution
-of computation means that you send requests for things to be evaluated to
-another machine.
+*distribution of computation*. Distribution of data means that each Datahike
+`runtime` can access data sources in the `distributed index space` (DIS), while
+distribution of computation means that clients send requests to be evaluated to
+be processed by a server on a remote runtime.
+
+![Network topology](doc/assets/network_topology.svg)
 
 # Distributed index space (DIS)
 
