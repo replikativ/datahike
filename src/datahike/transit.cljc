@@ -13,6 +13,8 @@
 (def read-handlers
   {"datahike/Connection"
    (transit/read-handler datahike.readers/connection-from-reader)
+   "datahike/Datom"
+   (transit/read-handler datahike.readers/datom-from-reader)
    "datahike/DB"
    (transit/read-handler datahike.readers/db-from-reader)
    "datahike/HistoricalDB"

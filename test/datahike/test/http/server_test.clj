@@ -86,11 +86,21 @@
                         {:backend :datahike-server
                          :url    (str "http://localhost:" port)
                          :token  "securerandompassword"
-                         :format :edn}))))
+                         :format :edn})))
+  (testing "Test JSON binding."
+    (let [port 23191]
+      (run-server-tests {:port     port
+                         :join?    false
+                         :dev-mode false
+                         :token    "securerandompassword"}
+                        {:backend :datahike-server
+                         :url     (str "http://localhost:" port)
+                         :token   "securerandompassword"
+                         :format  :json}))))
 
 (deftest test-authentication
   (testing "Password tokens must match."
-    (let [port   23191
+    (let [port   23194
           server (start-server {:port     port
                                 :join?    false
                                 :dev-mode false
@@ -105,7 +115,7 @@
         (finally
           (stop-server server)))))
   (testing "Dev-mode overrides password authentication."
-    (let [port   23192
+    (let [port   23195
           server (start-server {:port     port
                                 :join?    false
                                 :dev-mode true
@@ -116,5 +126,32 @@
                                                              :url    (str "http://localhost:" port)
                                                              :token  "wrong"
                                                              :format :edn}})))
+        (finally
+          (stop-server server))))))
+
+(deftest test-json-interface
+  (testing "Direct JSON interaction"
+    (let [port   23196
+          server (start-server {:port     port
+                                :join?    false
+                                :dev-mode true
+                                :token    "securerandompassword"})
+          remote {:backend :datahike-server
+                  :url     (str "http://localhost:" port)
+                  :token   "securerandompassword"
+                  :format  :json}]
+      (try
+        (let [raw-cfg  (api/request-json-raw :post "create-database" remote
+                                             "[\"{:schema-flexibility :read}\"]")
+              raw-conn (api/request-json-raw :post "connect" remote
+                                             (str "[" raw-cfg "]"))
+              _        (api/request-json-raw :post "transact" remote
+                                             (str "[" raw-conn ", [{\"name\": \"Peter\", \"age\": 42}]]"))
+              raw-db   (api/request-json-raw :post "db" remote
+                                             (str "[" raw-conn "]"))]
+          (is (= (api/request-json-raw :get "q" remote
+                                       (str "[\"[:find ?n ?a :in $1 :where [$1 ?e :age ?a] [$1 ?e :name ?n]]\","
+                                            raw-db "]"))
+                 "[\"!set\",[[\"Peter\",42]]]")))
         (finally
           (stop-server server))))))

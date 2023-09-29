@@ -3,8 +3,9 @@
    [buddy.auth :refer [authenticated?]]
    [buddy.auth.backends :as buddy-auth-backends]
    [buddy.auth.middleware :as buddy-auth-middleware]
-   [taoensso.timbre :refer [info]]
-   [muuntaja.core :as m])
+   [taoensso.timbre :refer [info trace]]
+   [muuntaja.core :as m]
+   [datahike.json :as json])
   (:import
    [clojure.lang ExceptionInfo]))
 
@@ -65,3 +66,19 @@
                        (update response :body #(encoder %))
                        response)]
         ret))))
+
+(defn support-embedded-edn-in-json [handler]
+  (fn [request]
+    (let [{:keys [content-type body-params uri]} request]
+      (if (= content-type "application/json")
+        (if (.endsWith ^String uri "transact")
+          (let [[conn tx-data] body-params
+                new-body-params [conn (json/xf-data-for-tx tx-data @conn)]]
+            (trace "transact transformation" new-body-params)
+            (handler (assoc request :body-params new-body-params)))
+          (let [[f & r]         body-params
+                new-body-params (vec (concat [(if (string? f) (read-string f) f)] r))]
+            (trace "old-body-params" body-params)
+            (trace "new-body-params" new-body-params)
+            (handler (assoc request :body-params new-body-params))))
+        (handler request)))))

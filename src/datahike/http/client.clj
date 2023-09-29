@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [filter])
   (:require [babashka.http-client :as http]
             [cognitect.transit :as transit]
+            [jsonista.core :as j]
             [hasch.core :refer [uuid]]
             [datahike.api.specification :as api]
             [clojure.edn :as edn]
@@ -79,13 +80,73 @@
                    data (ex-data e)
                    new-data
                    (update data :body
-                           #(when (seq %)
+                           #(when %
                               (transit/read (transit/reader % :json {:handlers read-handlers}))))]
                (throw (ex-info msg new-data)))))
          response (:body response)
          response (transit/read (transit/reader response :json {:handlers read-handlers}))]
      (log/trace  "response" response)
      response)))
+
+(defn request-json [method end-point remote-peer data]
+  (let [{:keys [url token]}
+        remote-peer
+        fmt      "application/json"
+        url      (str url "/" end-point)
+        out      (j/write-value-as-bytes data remote/json-mapper)
+        _        (log/trace "request" url end-point token data out)
+        response
+        (try
+          (http/request (merge
+                         {:method method
+                          :uri    url
+                          :headers
+                          (merge {:content-type fmt
+                                  :accept       fmt}
+                                 (when token
+                                   {:authorization (str "token " token)}))
+                          :as     :stream
+                          :body   out}
+                         (when (= method :get)
+                           {:query-params {"args-id" (uuid data)}})))
+          (catch Exception e
+             ;; read exception
+            (let [msg  (ex-message e)
+                  data (ex-data e)
+                  _ (prn msg data)
+                  new-data
+                  (update data :body
+                          #(when %
+                             (j/read-value % remote/json-mapper)))]
+              (throw (ex-info msg new-data)))))
+        response (:body response)
+        response (j/read-value response remote/json-mapper)]
+    (log/trace  "response" response)
+    response))
+
+(defn request-json-raw [method end-point remote-peer data]
+  (let [{:keys [url token]}
+        remote-peer
+        fmt      "application/json"
+        url      (str url "/" end-point)
+        out      data
+        _        (log/trace "request" url end-point token data out)
+        response
+        (http/request (merge
+                       {:method method
+                        :uri    url
+                        :headers
+                        (merge {:content-type fmt
+                                :accept       fmt}
+                               (when token
+                                 {:authorization (str "token " token)}))
+                        :as     :stream
+                        :body   out}
+                       (when (= method :get)
+                         {:query-params {"args-id" (uuid data)}})))
+        response (slurp (:body response))]
+    (log/trace  "response" response)
+    response))
 
 (defn get-remote [args]
   (let [remotes (disj
@@ -117,7 +178,8 @@
            `(binding [remote/*remote-peer* (get-remote ~'args)]
               (let [format# (:format remote/*remote-peer*)]
                 (({:transit request-transit
-                   :edn     request-edn} (or format# :transit))
+                   :edn     request-edn
+                   :json    request-json} (or format# :transit))
                  ~(if referentially-transparent? :get :post)
                  ~(api/->url n)
                  remote/*remote-peer* (vec ~'args)))))))))

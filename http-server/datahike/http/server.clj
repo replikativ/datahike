@@ -8,7 +8,8 @@
    [datahike.api.specification :refer [api-specification ->url]]
    [datahike.http.middleware :as middleware]
    [datahike.readers :refer [edn-readers]]
-   [datahike.transit :refer [read-handlers write-handlers]]
+   [datahike.transit :as transit]
+   [datahike.json :as json]
    [datahike.api :refer :all :as api]
    [reitit.ring :as ring]
    [reitit.coercion.spec]
@@ -86,10 +87,14 @@
    (-> m/default-options
        (assoc-in [:formats "application/edn" :decoder-opts]
                  {:readers edn-readers})
+       (assoc-in [:formats "application/json" :decoder-opts]
+                 json/mapper-opts)
+       (assoc-in [:formats "application/json" :encoder-opts]
+                 json/mapper-opts)
        (assoc-in [:formats "application/transit+json" :decoder-opts]
-                 {:handlers read-handlers})
+                 {:handlers transit/read-handlers})
        (assoc-in [:formats "application/transit+json" :encoder-opts]
-                 {:handlers write-handlers}))))
+                 {:handlers transit/write-handlers}))))
 
 (defn default-route-opts [muuntaja-with-opts]
   {;; :reitit.middleware/transform dev/print-request-diffs ;; pretty diffs
@@ -102,6 +107,7 @@
                             (middleware/encode-plain-value muuntaja-with-opts)
                             parameters/parameters-middleware
                             muuntaja/format-middleware
+                            middleware/support-embedded-edn-in-json
                             middleware/wrap-fallback-exception
                             middleware/wrap-server-exception
                             coercion/coerce-response-middleware
