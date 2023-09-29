@@ -150,7 +150,7 @@ Provided you are sending HTTP requests to a datahike-server you can put the
 following JSON argument arrays into each method body. You have to provide
 the "token" in the header if you use authentication.
 
-POST to "/create-database"
+`POST` to "/create-database"
 ```javascript
 ["{:schema-flexibility :read}"]
 ```
@@ -202,7 +202,7 @@ cfg = {
 
 You can now use this cfg to connect to this database:
 
-POST to "/connect"
+`POST` to "/connect"
 ```javascript
 [cfg]
 ```
@@ -215,7 +215,7 @@ conn = ["!datahike/Connection",[[["!kw","mem"],"127.0.1.1","wiggly-field-vole"],
 
 Finally let's add some data to the database:
 
-POST to "/transact"
+`POST` to "/transact"
 ```javascript
 [conn, [{"name": "Peter", "age": 42}]]
 ```
@@ -341,7 +341,7 @@ Note that you can extract the snapshots of the database `db-before` and `db-afte
 
 To retrieve the current database for your connection use
 
-POST to "/db"
+`POST` to "/db"
 ```javascript
 [conn]
 ```
@@ -378,7 +378,7 @@ db = [
 
 You can query this database with the query endpoint. We recommend again using a string to denote the query DSL instead of direct JSON encoding unless you want to manipulate the queries in JSON programmatically.
 
-GET to "/q"
+`GET` from "/q"
 ```javascript
 ["[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]", db]
 ```
