@@ -2,9 +2,9 @@
 <!-- Created with Inkscape (http://www.inkscape.org/) -->
 
 <svg
-   width="1748.8702"
-   height="1029.6948"
-   viewBox="0 0 1748.8702 1029.6948"
+   width="1785.1448"
+   height="1051.217"
+   viewBox="0 0 1785.1447 1051.217"
    version="1.1"
    id="svg5"
    inkscape:version="1.1.2 (0a00cf5339, 2022-02-04)"
@@ -25,8 +25,8 @@
      showgrid="false"
      inkscape:snap-global="false"
      inkscape:zoom="0.45254834"
-     inkscape:cx="1010.9417"
-     inkscape:cy="512.65242"
+     inkscape:cx="1037.4582"
+     inkscape:cy="528.12038"
      inkscape:window-width="1920"
      inkscape:window-height="1043"
      inkscape:window-x="0"
@@ -205,15 +205,15 @@
      inkscape:label="Layer 1"
      inkscape:groupmode="layer"
      id="layer1"
-     transform="translate(-118.20865,25.787968)">
+     transform="translate(-96.612206,39.909386)">
     <rect
-       style="opacity:1;fill:#ffffff;fill-opacity:1;stroke:none;stroke-width:5;stroke-dasharray:5, 5"
+       style="opacity:1;fill:#ffffff;fill-opacity:1;stroke:none;stroke-width:5.11092;stroke-dasharray:5.11092, 5.11092"
        id="rect919"
-       width="1746.4036"
-       height="1028.4036"
-       x="118.61434"
-       y="-25.787968"
-       ry="9.7835398" />
+       width="1785.1448"
+       height="1051.217"
+       x="96.612206"
+       y="-39.909386"
+       ry="10.000572" />
     <path
        style="opacity:0.5;fill:#aaffaa;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1"
        d="m 236.78658,327.72497 c 7.52865,-23.55336 18.72916,-59.31898 40.34688,-87.92636 21.61772,-28.60738 53.65094,-50.05486 89.24815,-56.74209 35.59721,-6.68722 74.75528,1.38553 104.8674,15.53324 30.11212,14.14771 51.17681,34.36866 59.73868,53.59008 8.56187,19.22142 4.62184,37.44241 -12.09561,53.59572 -16.71745,16.15331 -46.21164,30.23897 -1.90289,95.59229 44.30876,65.35333 162.41342,181.96585 108.54911,225.39989 -53.8643,43.43404 -279.69118,13.68524 -375.68856,-40.64772 -95.99738,-54.33296 -62.15239,-133.24386 -43.30045,-178.37231 18.85195,-45.12845 22.70864,-56.46937 30.23729,-80.02274 z"
