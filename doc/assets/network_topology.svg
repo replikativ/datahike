@@ -25,8 +25,8 @@
      showgrid="false"
      inkscape:snap-global="false"
      inkscape:zoom="0.45254834"
-     inkscape:cx="871.73008"
-     inkscape:cy="428.68349"
+     inkscape:cx="1010.9417"
+     inkscape:cy="512.65242"
      inkscape:window-width="1920"
      inkscape:window-height="1043"
      inkscape:window-x="0"
@@ -610,5 +610,15 @@
          y="144.83203"
          id="tspan24823-5"
          style="text-align:center;text-anchor:middle;fill:#0000ff">clients</tspan></text>
+    <text
+       xml:space="preserve"
+       style="font-size:48px;line-height:1.25;font-family:serif;-inkscape-font-specification:serif;letter-spacing:0px;word-spacing:0px;fill:#4d4d4d"
+       x="513.32758"
+       y="25.452038"
+       id="text3430"><tspan
+         sodipodi:role="line"
+         id="tspan3428"
+         x="513.32758"
+         y="25.452038">distributed index space</tspan></text>
   </g>
 </svg>
