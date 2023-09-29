@@ -2,9 +2,9 @@
 
 Datahike supports two types of distributed access, *distribution of data* or
 *distribution of computation*. Distribution of data means that each Datahike
-`runtime` can access data sources in the `distributed index space` (DIS), while
-distribution of computation means that clients send requests to be evaluated to
-be processed by a server on a remote runtime.
+`runtime` can access `store`s in the `distributed index space` (DIS), while
+distribution of computation means that `client`s send requests to be evaluated to
+be processed by a `server` on a remote runtime.
 
 ![Network topology](assets/network_topology.svg)
 
@@ -151,7 +151,7 @@ following JSON argument arrays into each method body. You have to provide
 the "token" in the header if you use authentication.
 
 POST to "/create-database"
-```json
+```javascript
 ["{:schema-flexibility :read}"]
 ```
 Note that here you can pass the configuration as an `edn` string, which is more concise. If you want to speak JSON directly you would pass
@@ -163,7 +163,7 @@ Note that here you can pass the configuration as an `edn` string, which is more 
 keyword.
 
 The resulting configuration will look like (with random DB name):
-```json
+```javascript
 cfg = {
   "keep-history?": true,
   "search-cache-size": 10000,
@@ -203,26 +203,26 @@ cfg = {
 You can now use this cfg to connect to this database:
 
 POST to "/connect"
-```json
+```javascript
 [cfg]
 ```
 
 The result will look like:
 
-```json
+```javascript
 conn = ["!datahike/Connection",[[["!kw","mem"],"127.0.1.1","wiggly-field-vole"],["!kw","db"]]]
 ```
 
 Finally let's add some data to the database:
 
 POST to "/transact"
-```json
+```javascript
 [conn, [{"name": "Peter", "age": 42}]]
 ```
 
 The result is a comprehensive transaction record (no need to parse in detail):
 
-```json
+```javascript
 [
   "!datahike/TxReport",
   {
@@ -342,13 +342,13 @@ Note that you can extract the snapshots of the database `before` and `after` the
 To retrieve the current database for your connection use
 
 POST to "/db"
-```json
+```javascript
 [conn]
 ```
 
 The result looks like:
 
-```json
+```javascript
 db = [
   "!datahike/DB",
   {
@@ -379,13 +379,13 @@ db = [
 You can query this database with the query endpoint. We recommend again using a string to denote the query DSL instead of direct JSON encoding unless you want to manipulate the queries in JSON programmatically.
 
 GET to "/q"
-```json
+```javascript
 ["[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]", db]
 ```
 
 The result set is
 
-```json
+```javascript
 ["!set",[["Peter",42]]]
 ```
 
