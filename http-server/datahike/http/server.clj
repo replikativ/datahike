@@ -23,6 +23,7 @@
    [muuntaja.core :as m]
    [clojure.spec.alpha :as s]
    [datahike.spec :as spec]
+   [datahike.tools :refer [datahike-version datahike-logo]]
    [datahike.impl.entity :as de]
    [taoensso.timbre :as log]
    [ring.adapter.jetty :refer [run-jetty]]
@@ -103,8 +104,7 @@
    ; :exception pretty/exception
    :data      {:coercion   reitit.coercion.spec/coercion
                :muuntaja   muuntaja-with-opts
-               :middleware [
-                            (middleware/encode-plain-value muuntaja-with-opts)
+               :middleware [(middleware/encode-plain-value muuntaja-with-opts)
                             parameters/parameters-middleware
                             muuntaja/format-middleware
                             middleware/support-embedded-edn-in-json
@@ -114,8 +114,7 @@
                             coercion/coerce-request-middleware
                             multipart/multipart-middleware
                             middleware/patch-swagger-json
-                            swagger/swagger-feature
-                            ]}})
+                            swagger/swagger-feature]}})
 
 (def internal-writer-routes
   [["/delete-database-writer"
@@ -186,8 +185,17 @@
 
 (defn -main [& args]
   (let [{:keys [level token] :as config} (edn/read-string (slurp (first args)))]
-    (log/info "Starting datahike.http.server with config:")
-    (log/info "Config: " (if token (assoc config :token "REDACTED") config))
     (when level (log/set-level! level))
+    (when (#{:trace :debug :info nil} level)
+      (println)
+      (println "Welcome to datahike.http.server!")
+      (println "For more information visit https://datahike.io,")
+      (println "or if you encounter any problem feel free to open an issue at https://github.com/replikativ/datahike.")
+      (println (str "\n" datahike-logo))
+      (println)
+      (println "Config:" (if token (assoc config :token "REDACTED") config))
+      (println "Datahike version:" datahike-version)
+      (println)
+      (println))
     (start-server config)
     (log/info "Server started.")))
