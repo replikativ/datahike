@@ -15,6 +15,7 @@
         metosin/spec-tools                          {:mvn/version "0.10.5"}
         mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}
         org.babashka/http-client                    {:mvn/version "0.3.11"}
+        metosin/jsonista                            {:mvn/version "0.3.7"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
         cheshire/cheshire                           {:mvn/version "5.11.0"}}
 
@@ -72,7 +73,6 @@
                                       ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
                                       metosin/reitit                {:mvn/version "0.5.18"}
                                       ring-cors/ring-cors           {:mvn/version "0.1.13"}
-                                      metosin/jsonista              {:mvn/version "0.3.7"}
                                       nrepl/bencode                 {:mvn/version "1.1.0"}}
                          :main-opts ["-m" "datahike.http.server"]}
 
@@ -91,12 +91,10 @@
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
                           :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
                          com.cognitect/transit-clj {:mvn/version "1.0.333"}
-                         metosin/jsonista          {:mvn/version "0.3.7"}
                          babashka/pods             {:git/url "https://github.com/babashka/pods"
                                                     :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
 
            :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
-                              metosin/jsonista          {:mvn/version "0.3.7"}
                               babashka/pods             {:git/url "https://github.com/babashka/pods"
                                                          :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
 
