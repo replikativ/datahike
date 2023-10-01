@@ -9,7 +9,7 @@
                                                                   org.clojure/clojurescript]}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.3.0"}
         environ/environ                             {:mvn/version "1.2.0"}
-        cheshire/cheshire                           {:mvn/version "5.12.0"}
+        cheshire/cheshire                           {:mvn/version "5.11.0"}
         com.taoensso/timbre                         {:mvn/version "6.3.1"}
         io.replikativ/superv.async                  {:mvn/version "0.3.46"
                                                      :exclusions [org.clojure/clojurescript]}
