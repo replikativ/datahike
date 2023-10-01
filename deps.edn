@@ -7,17 +7,17 @@
         io.replikativ/konserve                      {:mvn/version "0.7.311"
                                                      :exclusions [io.replikativ/incognito
                                                                   org.clojure/clojurescript]}
-        persistent-sorted-set/persistent-sorted-set {:mvn/version "0.2.3"}
+        persistent-sorted-set/persistent-sorted-set {:mvn/version "0.3.0"}
         environ/environ                             {:mvn/version "1.2.0"}
-        cheshire/cheshire                           {:mvn/version "5.11.0"}
-        com.taoensso/timbre                         {:mvn/version "6.1.0"}
+        cheshire/cheshire                           {:mvn/version "5.12.0"}
+        com.taoensso/timbre                         {:mvn/version "6.3.1"}
         io.replikativ/superv.async                  {:mvn/version "0.3.46"
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/datalog-parser                {:mvn/version "0.2.28"}
         io.replikativ/zufall                        {:mvn/version "0.2.9"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
-        metosin/spec-tools                          {:mvn/version "0.10.5"}
+        metosin/spec-tools                          {:mvn/version "0.10.6"}
         mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}}
 
  :paths ["src" "target/classes"]
@@ -32,7 +32,7 @@
 
            :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
 
-           :cljs {:extra-deps {org.clojure/clojurescript {:mvn/version "1.11.60"}}}
+           :cljs {:extra-deps {org.clojure/clojurescript {:mvn/version "1.11.121"}}}
 
            :dev {:extra-paths ["dev" "benchmark/src"]
                  :extra-deps {org.clojure/tools.namespace {:mvn/version "1.4.4"}
@@ -45,7 +45,7 @@
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
            :test {:extra-paths ["test" "bechmark/src" "benchmark/test"]
-                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.84.1335"}
+                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.87.1366"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.5.154"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}
                                orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
@@ -89,5 +89,5 @@
            :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
                     :main-opts ["-m" "cljfmt.main" "check"]}
 
-           :outdated {:extra-deps {com.github.liquidz/antq {:mvn/version "2.4.1070"}}
+           :outdated {:extra-deps {com.github.liquidz/antq {:mvn/version "2.6.1121"}}
                       :main-opts ["-m" "antq.core"]}}}
