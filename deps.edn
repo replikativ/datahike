@@ -32,6 +32,8 @@
 
            :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
 
+           :cljs {:extra-deps {org.clojure/clojurescript {:mvn/version "1.11.60"}}}
+
            :dev {:extra-paths ["dev" "benchmark/src"]
                  :extra-deps {org.clojure/tools.namespace {:mvn/version "1.4.4"}
                               clj-http/clj-http           {:mvn/version "3.12.3"}
