@@ -87,7 +87,7 @@ jobs:
             curl -O https://download.clojure.org/install/linux-install-1.11.1.1165.sh
             chmod +x linux-install-1.11.1.1165.sh
             ./linux-install-1.11.1.1165.sh --prefix /home/circleci/clojure
-      - run: 
+      - run:
           name: install babashka
           command: |
             cd /home/circleci
@@ -156,6 +156,17 @@ jobs:
             cd /home/circleci/replikativ
             bb test native-image
           no_output_timeout: 5m
+  bb-pod-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run bb-pod test
+          command: |
+            cd /home/circleci/replikativ
+            bb test bb-pod
+          no_output_timeout: 5m
   backward-compatibility-test:
     executor: tools/clojurecli
     steps:
@@ -214,8 +225,14 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: Release on GitHub
-          command: bb release
+          name: Release jar on GitHub
+          command: bb release jar
+      - run:
+          name: Release cli on GitHub
+          command: bb release native-cli
+          environment:
+            DHI_PLATFORM: linux
+            DHI_ARCH: x86_64
 
 workflows:
   build-test-and-deploy:
@@ -244,6 +261,11 @@ workflows:
           requires:
             - build
       - native-image-test:
+          context: dockerhub-deploy
+          requires:
+            - build
+            - native-image
+      - bb-pod-test:
           context: dockerhub-deploy
           requires:
             - build
@@ -279,4 +301,9 @@ workflows:
             branches:
               only: main
           requires:
-            - deploy
+            - format
+            - persistent-set-test
+            - hitchhiker-tree-test
+            - backward-compatibility-test
+            - native-image-test
+            - integration-test

@@ -12,6 +12,7 @@
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.2.3"}
         environ/environ                             {:mvn/version "1.2.0"}
         cheshire/cheshire                           {:mvn/version "5.11.0"}
+        nrepl/bencode                               {:mvn/version "1.1.0"}
         com.taoensso/timbre                         {:mvn/version "6.3.1"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
@@ -22,7 +23,7 @@
 
  :deps/prep-lib {:ensure "target/classes"
                  :alias :build
-                 :fn jcompile}
+                 :fn compile-java}
 
  :aliases {;; Development
 
@@ -55,9 +56,8 @@
 
            ;; Build
 
-           :build {:replace-paths []
-                   :replace-deps {datahike.bb {:local/root "bb"}}
-                   :ns-default tools.build}
+           :build {:deps {io.github.clojure/tools.build {:mvn/version "0.9.5"}}
+                   :ns-default build}
 
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
 
@@ -67,13 +67,21 @@
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
                                     "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
+                                    "--no-fallback"
+                                    "-J-Xmx4g"
                                     "-H:Name=dhi"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
                         {clj.native-image/clj.native-image
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
                           :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
-                         org.clojure/data.json {:mvn/version "2.4.0"}}}
+                         com.cognitect/transit-clj {:mvn/version "1.0.333"}
+                         babashka/pods             {:git/url "https://github.com/babashka/pods"
+                                                    :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
+
+           :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
+                              babashka/pods             {:git/url "https://github.com/babashka/pods"
+                                                         :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
 
            ;; Checks
 

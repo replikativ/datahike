@@ -23,18 +23,16 @@
    (b/javac {:src-dirs java-src-dirs
              :class-dir class-dir
              :basis (basis project-config)
-             :javac-opts ["-source" "8" "-target" "8"
+             :javac-opts ["--release" "8"
                           "-Xlint:deprecation"]})
    (println "Done.")))
 
-(defn compile-clojure
-    ([] (compile-clojure (read-edn-file "config.edn")))
-    ([{:keys [class-dir src-dirs] :as project-config}]
-     (print (str "Compiling Clojure namespaces saving them to '" class-dir "'..."))
-     (b/compile-clj {:src-dirs src-dirs
-                     :class-dir class-dir 
-                     :basis (basis project-config)})
-     (println "Done.")))
+(defn compile-clojure [{:keys [class-dir src-dirs] :as project-config}]
+  (print (str "Compiling Clojure namespaces saving them to '" class-dir "'..."))
+  (b/compile-clj {:src-dirs src-dirs
+                  :class-dir class-dir
+                  :basis (basis project-config)})
+  (println "Done."))
 
 (defn pom-path [{:keys [class-dir lib] :as _project-config}]
   (b/pom-path {:lib lib
@@ -53,7 +51,7 @@
   (println "Done." "Saved to" (pom-path project-config)))
 
 (defn jar-path [repo-config {:keys [target-dir jar-pattern] :as project-config}]
-  (str target-dir "/" (render jar-pattern {:project project-config 
+  (str target-dir "/" (render jar-pattern {:project project-config
                                            :repo repo-config
                                            :version-str (version/string repo-config)})))
 
