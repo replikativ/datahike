@@ -23,7 +23,6 @@
          ffix {:doc "Format source files"
                :task (clojure "-M:ffix")}
 
-
          ; checks
 
          format {:doc "Test formatting"
@@ -82,8 +81,6 @@
                   :task (release/-main config *command-line-args*)}
 
          ;; native image
-
-
 
          ni-check {:doc "Check for 'native-image' program"
                    :task (try (shell "which" "native-image")
