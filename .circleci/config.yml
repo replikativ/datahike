@@ -75,10 +75,10 @@ jobs:
           name: install graalvm
           command: |
             cd /home/circleci
-            wget https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.3.3.1/graalvm-community-jdk-21.3.3.1_linux-x64_bin.tar.gz
-            tar -xzf graalvm-community-jdk-21.3.3.1_linux-x64_bin.tar.gz
-            export PATH=/home/circleci/graalvm-community-openjdk-21.3.3.1+9.1/bin:$PATH
-            export JAVA_HOME=/home/circleci/graalvm-community-openjdk-21.3.3.1+9.1
+            wget https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.0/graalvm-community-jdk-21.0.0_linux-x64_bin.tar.gz
+            tar -xzf graalvm-community-jdk-21.0.0_linux-x64_bin.tar.gz
+            export PATH=/home/circleci/graalvm-community-openjdk-21+35.1/bin:$PATH
+            export JAVA_HOME=/home/circleci/graalvm-community-openjdk-21+35.1
             gu install native-image
       - run:
           name: install clojure
@@ -99,8 +99,8 @@ jobs:
           name: build native-image
           command: |
             cd /home/circleci/replikativ
-            export PATH=/home/circleci/graalvm-community-openjdk-21.3.3.1+9.1/bin:/home/circleci/clojure/bin:$PATH
-            export JAVA_HOME=/home/circleci/graalvm-community-openjdk-21.3.3.1+9.1
+            export PATH=/home/circleci/graalvm-community-openjdk-21+35.1/bin:/home/circleci/clojure/bin:$PATH
+            export JAVA_HOME=/home/circleci/graalvm-community-openjdk-21+35.1
             bb ni-cli
       - persist_to_workspace:
           root: /home/circleci/
