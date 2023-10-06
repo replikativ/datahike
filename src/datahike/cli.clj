@@ -8,7 +8,8 @@
             [datahike.pod :refer [run-pod]]
             [datahike.tools :refer [datahike-logo]]
             [clojure.edn :as edn]
-            [cheshire.core :as ch]
+            [jsonista.core :as j]
+            [datahike.json :as json]
             [clj-cbor.core :as cbor]
             [taoensso.timbre :as log])
   (:import [java.util Date]))
@@ -53,7 +54,7 @@
 
 (def cli-options
   ;; An option with a required argument
-  (let [formats #{:json :edn :pretty-json :pprint :cbor}]
+  (let [formats #{:json :edn :pprint :cbor}]
     [["-f" "--format FORMAT" "Output format for the result."
       :default :edn
       :parse-fn keyword
@@ -123,7 +124,7 @@
                                 (Date. ^Long (edn/read-string %1)))
    #"cbor:(.+)"       #(cbor/decode (io/input-stream %))
    #"edn:(.+)"        (comp edn/read-string slurp)
-   #"json:(.+)"       (comp #(ch/parse-string % keyword) slurp)})
+   #"json:(.+)"       (comp #(j/read-value % json/mapper) slurp)})
 
 (defn load-input [s]
   (if-let [res
@@ -139,8 +140,7 @@
 
 (defn report [format out]
   (case format
-    :json        (println (ch/generate-string out))
-    :pretty-json (println (ch/generate-string out {:pretty true}))
+    :json        (println (j/write-value-as-string out))
     :edn         (println (pr-str out))
     :pprint      (pprint out)
     :cbor        (.write System/out ^bytes (cbor/encode out))))
@@ -188,14 +188,12 @@
                                   (case (:input-format options)
                                     :edn (edn/read-string s)
                                     :pprint (edn/read-string s)
-                                    :json (ch/parse-string s keyword)
-                                    :pretty-json (ch/parse-string s keyword)
+                                    :json (j/read-value s json/mapper)
                                     :cbor (cbor/decode s)) ;; does this really make sense?
                                   (case (:input-format options)
                                     :edn (edn/read)
                                     :pprint (edn/read)
-                                    :json (ch/decode-stream *in* keyword)
-                                    :pretty-json :json (ch/decode-stream *in*)
+                                    :json (j/read-value *in* json/mapper)
                                     :cbor (cbor/decode *in*))))))))
 
         :benchmark
