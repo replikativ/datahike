@@ -79,7 +79,6 @@ jobs:
             tar -xzf graalvm-community-jdk-21.0.0_linux-x64_bin.tar.gz
             export PATH=/home/circleci/graalvm-community-openjdk-21+35.1/bin:$PATH
             export JAVA_HOME=/home/circleci/graalvm-community-openjdk-21+35.1
-            gu install native-image
       - run:
           name: install clojure
           command: |
