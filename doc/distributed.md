@@ -29,16 +29,17 @@ update together, e.g. one database per business client.
 If you want to provide distributed write access to databases you need to setup a
 server as described in the section at the end. Datahike then centralizes all
 write operations and state changes to the database on this single machine, while
-all read operations still can happen in locally on as many machines as have
-access to the store. The benefit of the single writer is that it provides strong
-linearization guarantees for transactions, i.e. strong consistency. This memory
-model is also supported by the CLI, babashka and libdatahike clients.
+all read operations still can happen locally on as many machines as have access
+to the distributed konserve store (e.g. shared filesystem, JDBC, S3). The
+benefit of the single writer is that it provides strong linearization guarantees
+for transactions, i.e. strong consistency. This memory model is also supported
+by the CLI, babashka and libdatahike clients.
 
 The client setup is simple, you just add a `:writer` entry in the configuration
 for your database, e.g.
 
 ```clojure
-{:store  {:backend :mem :id "distributed-datahike"}
+{:store  {:backend :file :scope "your.domain.com" :path "/shared/filesystem/store"}
  :keep-history?      true
  :schema-flexibility :read
  :writer             {:backend :datahike-server
@@ -85,8 +86,6 @@ supported. Given a server is setup (see below), you can interact with by adding
 The API will return lightweight remote pointers that follow the same semantics
 as `datahike.api`, but do not support any of Datahike's local functionality,
 i.e. you can only use them with this API.
-
-
 
 # Combined distribution
 
