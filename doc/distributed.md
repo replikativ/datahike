@@ -10,9 +10,9 @@ be processed by a `server` on a remote runtime.
 
 # Distributed index space (DIS)
 
-Datahike has a similar memory model to [Datomic](https://datomic.com) , which is
-build on distributed persistent indices. But while Datomic requires active
-connections to the transactor, Datahike works with lightweight connections that
+Datahike has a similar memory model to [Datomic](https://datomic.com), which is
+built on distributed persistent indices. But while Datomic requires active
+connections to its transactor, Datahike works with lightweight connections that
 do not require communication by default.
 
 In case where you do not need to write to a database, only *read* from it, e.g.
@@ -30,7 +30,7 @@ If you want to provide distributed write access to databases you need to setup a
 server as described in the section at the end. Datahike then centralizes all
 write operations and state changes to the database on this single machine, while
 all read operations still can happen locally on as many machines as have access
-to the distributed konserve store (e.g. shared filesystem, JDBC, S3). The
+to the distributed konserve store (e.g. shared filesystem, JDBC, S3, etc.). The
 benefit of the single writer is that it provides strong linearization guarantees
 for transactions, i.e. strong consistency. This memory model is also supported
 by the CLI, babashka and libdatahike clients.
@@ -56,8 +56,8 @@ the server while all other calls are executed locally.
 An example setup to run Datahike distributed in AWS lambda without a server can
 be found [here](https://github.com/viesti/clj-lambda-datahike). It configures a
 singleton lambda for write operations while reader lambdas can be run multiple
-times and scale out. This setup can be upgraded later to use a dedicated server
-as an EC2 instance.
+times and scale out. This setup can be upgraded later to use dedicated servers
+through EC2 instances.
 
 # Distribution of compute
 
@@ -71,8 +71,8 @@ deploying them to the server first.
 
 The remote API has the same call signatures as `datahike.api` and is located in
 `datahike.api.client`. Except for listening and `with` all functionality is
-supported. Given a server is setup (see below), you can interact with by adding
-`:remote-peer` to the config you would otherwise with `datahike.api`:
+supported. Given a server is setup (see below), you can interact with it by
+adding `:remote-peer` to the config you would otherwise with `datahike.api`:
 
 ```clojure
 {:store  {:backend :mem :id "distributed-datahike"}
