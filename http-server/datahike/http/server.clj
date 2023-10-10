@@ -11,12 +11,14 @@
    [datahike.transit :as transit]
    [datahike.json :as json]
    [datahike.api :refer :all :as api]
+   [datahike.writing :as datahike.writing]
    [reitit.ring :as ring]
    [reitit.coercion.spec]
    [reitit.swagger :as swagger]
    [reitit.swagger-ui :as swagger-ui]
    [reitit.ring.coercion :as coercion]
    [reitit.ring.middleware.muuntaja :as muuntaja]
+   [reitit.ring.middleware.exception :as exception]
    [reitit.ring.middleware.multipart :as multipart]
    [reitit.ring.middleware.parameters :as parameters]
    [ring.middleware.cors :refer [wrap-cors]]
@@ -101,20 +103,21 @@
   {;; :reitit.middleware/transform dev/print-request-diffs ;; pretty diffs
    ;; :validate spec/validate ;; enable spec validation for route data
    ;; :reitit.spec/wrap spell/closed ;; strict top-level validation
-   ; :exception pretty/exception
+   ;; :exception pretty/exception
    :data      {:coercion   reitit.coercion.spec/coercion
                :muuntaja   muuntaja-with-opts
-               :middleware [(middleware/encode-plain-value muuntaja-with-opts)
+               :middleware [swagger/swagger-feature
                             parameters/parameters-middleware
-                            muuntaja/format-middleware
+                            muuntaja/format-negotiate-middleware
+                            muuntaja/format-response-middleware
+                            exception/exception-middleware
+                            muuntaja/format-request-middleware
+                            (middleware/encode-plain-value muuntaja-with-opts)
                             middleware/support-embedded-edn-in-json
-                            middleware/wrap-fallback-exception
-                            middleware/wrap-server-exception
                             coercion/coerce-response-middleware
                             coercion/coerce-request-middleware
                             multipart/multipart-middleware
-                            middleware/patch-swagger-json
-                            swagger/swagger-feature]}})
+                            middleware/patch-swagger-json]}})
 
 (def internal-writer-routes
   [["/delete-database-writer"
