@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.connector
   (:require [datahike.connections :refer [get-connection add-connection! delete-connection!
                                           connections]]
+            [datahike.readers]
             [datahike.store :as ds]
             [datahike.writing :as dsi]
             [datahike.config :as dc]
@@ -10,7 +11,7 @@
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.data :refer [diff]])
-  (:import [clojure.lang IDeref IAtom IMeta ILookup]))
+  (:import [clojure.lang IDeref IAtom IMeta ILookup IRef]))
 
 ;; connection
 
@@ -35,7 +36,11 @@
   (reset [_ newval] (reset! wrapped-atom newval))
 
   IMeta
-  (meta [_] (meta wrapped-atom)))
+  (meta [_] (meta wrapped-atom))
+
+  IRef
+  (addWatch [_ key f] (add-watch wrapped-atom key f))
+  (removeWatch [_ key] (remove-watch wrapped-atom key)))
 
 (defn connection? [x]
   (instance? Connection x))
@@ -132,7 +137,7 @@
 
   clojure.lang.IPersistentMap
   (-connect [raw-config]
-    (let [config (dissoc (dc/load-config raw-config) :initial-tx)
+    (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer)
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))
           store-config (:store config)
           store-id (ds/store-identity store-config)

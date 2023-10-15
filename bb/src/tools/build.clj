@@ -6,7 +6,6 @@
             [selmer.parser :refer [render]]
             [tools.version :as version :refer [read-edn-file]]))
 
-
 (defn clean [{:keys [target-dir] :as _project-config}]
   (print (str "Cleaning up target directory '" target-dir "'..."))
   (fs/delete-tree target-dir)
@@ -14,7 +13,7 @@
 
 (defn basis [{:keys [deps-file aliases] :as _project-config}]
   (b/create-basis (cond-> {:project deps-file}
-                          aliases (assoc :aliases aliases))))
+                    aliases (assoc :aliases aliases))))
 
 (defn compile-java
   ([] (compile-java (read-edn-file "config.edn")))

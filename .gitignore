@@ -1,5 +1,7 @@
 /target
 /bench/target
+/libdatahike/target
+/target-http-server
 /classes
 /checkouts
 pom.xml.asc
@@ -29,7 +31,6 @@ out/
 .cache
 /datahike
 tests.user.edn
-/libdatahike/target
 libdatahike.zip
 dhi
 dhi.build_artifacts.txt

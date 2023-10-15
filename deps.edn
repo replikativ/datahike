@@ -11,13 +11,14 @@
         io.replikativ/zufall                        {:mvn/version "0.2.9"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.2.3"}
         environ/environ                             {:mvn/version "1.2.0"}
-        cheshire/cheshire                           {:mvn/version "5.11.0"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
         com.taoensso/timbre                         {:mvn/version "6.3.1"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.6"}
-        mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}}
+        mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}
+        org.babashka/http-client                    {:mvn/version "0.3.11"}
+        metosin/jsonista                            {:mvn/version "0.3.7"}}
 
  :paths ["src" "target/classes"]
 
@@ -43,11 +44,18 @@
                               hashp/hashp                 {:mvn/version "0.2.2"}
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
-           :test {:extra-paths ["test" "bechmark/src" "benchmark/test"]
+           :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.87.1366"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.5.154"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}
-                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
+                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}
+
+                               ;; http server
+                               buddy/buddy-auth              {:mvn/version "3.0.323"}
+                               ring/ring-core                {:mvn/version "1.9.5"}
+                               ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
+                               metosin/reitit                {:mvn/version "0.5.18"}
+                               ring-cors/ring-cors           {:mvn/version "0.1.13"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
 
@@ -61,6 +69,16 @@
 
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
 
+           :http-server {:extra-paths ["http-server"]
+                         :extra-deps {buddy/buddy-auth        {:mvn/version "3.0.323"}
+                                      ring/ring-core          {:mvn/version "1.9.5"}
+                                      ring/ring-jetty-adapter {:mvn/version "1.9.5"}
+                                      metosin/reitit          {:mvn/version "0.5.18"}
+                                      ring-cors/ring-cors     {:mvn/version "0.1.13"}
+                                      nrepl/bencode           {:mvn/version "1.1.0"}
+                                      org.slf4j/slf4j-simple  {:mvn/version "2.0.9"}}
+                         :main-opts ["-m" "datahike.http.server"]}
+
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
                          :extra-paths ["libdatahike/src"]}
 
@@ -69,7 +87,7 @@
                                     "--initialize-at-build-time"
                                     "--no-fallback"
                                     "-J-Xmx4g"
-                                    "-H:Name=dhi"]
+                                    "-H:Name=dthk"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
                         {clj.native-image/clj.native-image

@@ -1,7 +1,7 @@
 {:min-bb-version "0.8.0"
  :pods {;since babashka 0.8.0, can only be declared in bb.edn
-        org.babashka/tools-deps-native {:version "0.0.5"}
-        clj-kondo/clj-kondo {:version "2022.10.05"}}
+        org.babashka/tools-deps-native {:version "0.1.1"}
+        clj-kondo/clj-kondo {:version "2023.07.13"}}
  :deps {datahike/bb {:local/root "bb"}}
  :tasks {:requires [[babashka.fs :as fs]
                     [clojure.edn :as edn]
@@ -79,6 +79,35 @@
 
          release {:doc "Build and release jar to GitHub"
                   :task (release/-main config *command-line-args*)}
+
+
+         ;; http server build and release
+
+         http-server-clean {:doc  "Remove build files"
+                            :task (build/clean (-> config :build :http-server-clj))}
+
+         http-server-jcompile {:doc     "Compile java classes"
+                               :depends [http-server-clean]
+                               :task    (build/compile-java (-> config :build :http-server-clj))}
+
+         http-server-ccompile {:doc  "Compile clojure namespaces"
+                               :task (build/compile-clojure (-> config :build :http-server-clj))}
+
+         http-server-pom {:doc  "Create pom file"
+                          :task (build/pom config (-> config :build :http-server-clj))}
+
+         http-server-uber {:doc     "Build jar"
+                           :depends [http-server-jcompile http-server-pom http-server-ccompile]
+                           :task    (build/uber config (-> config :build :http-server-clj))}
+
+         http-server-install {:doc  "Install uber jar locally"
+                              :task (deploy/local config (-> config :build :http-server-clj))}
+
+         http-server-release {:doc     "Build and release jar to GitHub"
+                              :depends [http-server-uber]
+                              :task    (let [jar (build/jar-path config (-> config :build :http-server-clj))]
+                                         (release/gh-release jar config))}
+
 
          ;; native image
 

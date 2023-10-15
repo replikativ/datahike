@@ -1,0 +1,4 @@
+{:port     4444
+ :level    :debug
+ :dev-mode true
+ :token    "securerandompassword"}

@@ -1,2 +1,2 @@
 ((clojure-mode . ((cider-preferred-build-tool . clojure-cli)
-                  (cider-clojure-cli-aliases . ":dev:test:libdatahike"))))
+                  (cider-clojure-cli-aliases . ":dev:test:libdatahike:http"))))
