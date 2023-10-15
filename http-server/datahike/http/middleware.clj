@@ -36,27 +36,6 @@
 (defn cause->status-code [cause]
   400)
 
-(defn wrap-server-exception [handler]
-  (fn [request]
-    (try
-      (handler request)
-      (catch ExceptionInfo e
-        (let [cause (:cause (.getData e))]
-          (info "Server error:" e (.printStackTrace e))
-          {:status (cause->status-code cause)
-           :body   {:message (.getMessage e)}})))))
-
-(defn wrap-fallback-exception
-  [handler]
-  (fn [request]
-    (try
-      (handler request)
-      (catch Exception e
-        (info "Fallback exception:" e (.printStackTrace e))
-        {:status 500
-         :body   {:message "Unexpected internal server error."}}))))
-
-;; TODO why do we need to do this?
 (defn encode-plain-value [muuntaja-with-opts]
   (fn [handler]
     (fn [request]
