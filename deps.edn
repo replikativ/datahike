@@ -11,7 +11,6 @@
         io.replikativ/zufall                        {:mvn/version "0.2.9"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.2.3"}
         environ/environ                             {:mvn/version "1.2.0"}
-        cheshire/cheshire                           {:mvn/version "5.11.0"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
         com.taoensso/timbre                         {:mvn/version "6.3.1"}
         junit/junit                                 {:mvn/version "4.13.2"}
@@ -71,12 +70,13 @@
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
 
            :http-server {:extra-paths ["http-server"]
-                         :extra-deps {buddy/buddy-auth              {:mvn/version "3.0.323"}
-                                      ring/ring-core                {:mvn/version "1.9.5"}
-                                      ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
-                                      metosin/reitit                {:mvn/version "0.5.18"}
-                                      ring-cors/ring-cors           {:mvn/version "0.1.13"}
-                                      nrepl/bencode                 {:mvn/version "1.1.0"}}
+                         :extra-deps {buddy/buddy-auth        {:mvn/version "3.0.323"}
+                                      ring/ring-core          {:mvn/version "1.9.5"}
+                                      ring/ring-jetty-adapter {:mvn/version "1.9.5"}
+                                      metosin/reitit          {:mvn/version "0.5.18"}
+                                      ring-cors/ring-cors     {:mvn/version "0.1.13"}
+                                      nrepl/bencode           {:mvn/version "1.1.0"}
+                                      org.slf4j/slf4j-simple  {:mvn/version "2.0.9"}}
                          :main-opts ["-m" "datahike.http.server"]}
 
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]

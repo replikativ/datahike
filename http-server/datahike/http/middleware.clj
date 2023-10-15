@@ -3,9 +3,10 @@
    [buddy.auth :refer [authenticated?]]
    [buddy.auth.backends :as buddy-auth-backends]
    [buddy.auth.middleware :as buddy-auth-middleware]
-   [taoensso.timbre :refer [info trace]]
+   [clojure.walk :as cw]
+   [datahike.json :as json]
    [muuntaja.core :as m]
-   [datahike.json :as json])
+   [taoensso.timbre :refer [info trace]])
   (:import
    [clojure.lang ExceptionInfo]))
 
@@ -71,9 +72,9 @@
   (fn [request]
     (let [response (handler request)]
       (if (get-in response [:body :swagger])
-        (clojure.walk/postwalk (fn [n]
-                                 (if (set? n) (vec n) n))
-                               response)
+        (cw/postwalk (fn [n]
+                       (if (set? n) (vec n) n))
+                     response)
         response))))
 
 (defn support-embedded-edn-in-json [handler]

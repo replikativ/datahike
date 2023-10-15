@@ -60,8 +60,30 @@
 
             _ (is (nil? (api/delete-database new-config)))
 
-            _ (is (false? (api/database-exists? new-config)))]
+            _ (is (false? (api/database-exists? new-config)))
 
+            new-config (api/create-database {:schema-flexibility :write
+                                             :remote-peer        client-config})
+
+            conn (api/connect new-config)
+
+            schema [{:db/ident :name
+                     :db/valueType :db.type/string
+                     :db/cardinality :db.cardinality/one}
+                    {:db/ident :age
+                     :db/valueType :db.type/number
+                     :db/cardinality :db.cardinality/one}]
+
+            _ (api/transact conn schema)
+
+            _ (api/transact conn [{:name "Peter" :age 42}])
+
+            test-db @conn
+            _ (is (= (api/q query test-db)
+                     #{["Peter" 42]}))]
+
+        (is (nil? (api/release conn)))
+        (is (nil? (api/delete-database new-config)))
         (stop-server server))
       (finally
         (stop-server server)))))
