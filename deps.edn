@@ -20,7 +20,7 @@
         org.babashka/http-client                    {:mvn/version "0.3.11"}
         metosin/jsonista                            {:mvn/version "0.3.7"}}
 
- :paths ["src" "target/classes"]
+ :paths ["src" "target/classes" "resources"]
 
  :deps/prep-lib {:ensure "target/classes"
                  :alias :build
