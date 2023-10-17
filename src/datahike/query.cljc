@@ -1390,7 +1390,6 @@ more expanded patterns but only more specific patterns."
       true                                          (-post-process qfind)
       qreturnmaps                                   (convert-to-return-maps qreturnmaps)
       stats?                                        (#(-> context-out
-                                                          (update :settings dissoc :relprod-strategy) ;; <-- Don't return non-serializable data.
-                                                          (dissoc :rels :sources)
+                                                          (dissoc :rels :sources :settings)
                                                           (assoc :ret %
                                                                  :query query))))))
