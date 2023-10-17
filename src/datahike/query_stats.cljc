@@ -7,6 +7,10 @@
      :cljs (let [y (Math/pow 10 precision)]
              (/ (.round js/Math (* y x)) y))))
 
+(defn compatible-abs [n]
+  #?(:clj  (Math/abs n)
+     :cljs (js/Math.abs n)))
+
 (defn get-stats [context]
   {:rels (mapv (fn [rel] {:rows (count (:tuples rel))
                           :bound (set (keys (:attrs rel)))})
@@ -30,7 +34,7 @@
   "Adds summarized row counts, bindings and clause time for convenience"
   [{:keys [branches rels] :as stat}]
   (assoc stat
-         :id (subs (str (abs (hash stat))) 0 6)
+         :id (subs (str (compatible-abs (hash stat))) 0 6)
          :t-branches (reduce #(+ %1 (:t %2)) 0.0 branches)
          :rel-count (count rels)
          :rows (reduce #(+ %1 (:rows %2)) 0 rels)
