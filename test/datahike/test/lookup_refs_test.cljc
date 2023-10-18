@@ -228,20 +228,25 @@
            #{[[:name "Ivan"] [:name "Petr"]]
              [[:name "Petr"] [:name "Oleg"]]}))
 
-      ;;;;;;; What should happen in this case?
-      ;;;;;;; ... and what should happen if we wrap "A" in a  collection
-      ;;;;;;;     with one element? Maybe it should not throw an error.
-    #_(is (= (d/q '[:find ?e
-                    :in $ ?e
-                    :where [?e :friend 3]]
-                  db "A")
-             #{}))
-
     (is (= (d/q '[:find ?e
                   :in $ [?e ...]
                   :where [?e :friend 3]]
                 db [1 2 3 "A"])
            #{[2]}))
+
+    (is (= (d/q '[:find ?e
+                  :in $ [?e ...]
+                  :where [?e :friend 3]]
+                db ["A"])
+           #{}))
+
+    ;; Because the previous test with `[?e ...]` being `["A"]` passes,
+    ;; this test must pass too.
+    #_(is (= (d/q '[:find ?e
+                  :in $ ?e
+                  :where [?e :friend 3]]
+                db "A")
+           #{}))
 
     (let [db2 (d/db-with (db/empty-db schema)
                          [{:db/id 3 :name "Ivan" :id 3}
