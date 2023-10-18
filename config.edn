@@ -11,6 +11,7 @@
 
  :build {:clj {;; jvm build
                :src-dirs ["src"]
+               :resource-dir "resources"
                :java-src-dirs ["java"]
                :target-dir "target"
                :class-dir "target/classes"
