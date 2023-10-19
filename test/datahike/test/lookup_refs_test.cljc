@@ -234,23 +234,6 @@
                 db [1 2 3 "A"])
            #{[2]}))
 
-    (is (= (d/q '[:find ?e
-                  :in $ [?e ...]
-                  :where [?e :friend 3]]
-                db ["A"])
-           #{}))
-
-    ;; Because the previous test with `[?e ...]` being `["A"]` passes,
-    ;; wouldn't it be consistent if this test with `?e` being `"A"`
-    ;; passes too? This is currently not the case. A first step
-    ;; to make it work would be to remove the branch in `resolve-in`
-    ;; where the `:consts` is accumulated.
-    #_(is (= (d/q '[:find ?e
-                    :in $ ?e
-                    :where [?e :friend 3]]
-                  db "A")
-             #{}))
-
     (let [db2 (d/db-with (db/empty-db schema)
                          [{:db/id 3 :name "Ivan" :id 3}
                           {:db/id 1 :name "Petr" :id 1}
