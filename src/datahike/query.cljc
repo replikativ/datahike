@@ -1031,13 +1031,13 @@
 
 ;; A *relprod* is a state in the process of
 ;; selecting what relations to use when expanding
-;; the pattern. The world "relprod" is an abbreviation for
+;; the pattern. The word "relprod" is an abbreviation for
 ;; "relation product".
 ;;
 ;; A *strategy* is a function that takes a relprod
 ;; as input and returns a new relprod as output.
 ;; The simplest strategy is `identity` meaning that
-;; not pattern expansion will happen.
+;; no pattern expansion will happen.
 (defn init-relprod [rel-data vars]
   {:product rel-product-unit
    :include []
@@ -1056,7 +1056,7 @@
 (defn relprod-filter [{:keys [product include exclude vars]} predf]
   {:pre [product include exclude]}
   (let [picked (into [] (filter predf) exclude)]
-    {:product (reduce hash-join product (map :rel picked))
+    {:product (reduce ((map :rel) hash-join) product picked)
      :include (into include picked)
      :exclude (remove predf exclude)
      :vars vars}))
@@ -1069,18 +1069,28 @@
   "This is a relprod strategy that will result in all 
 possible combinations of relations substituted in the pattern.
  It may be faster or slower than no strategy at all depending 
-on the data."
+on the data. 
+
+This might be the strategy used by Datomic,
+which can be seen if we request 'Query stats' from Datomic:
+
+https://docs.datomic.com/pro/api/query-stats.html"
   [relprod]
   (relprod-filter relprod (constantly true)))
 
 (defn relprod-select-simple
   "This is a relprod strategy that will perform at least as 
-well as no strategy at all because it will never result in 
-more expanded patterns but only more specific patterns."
+well as no strategy at all because it will result in at most 
+one expanded pattern (or none) that is possibly more specific."
   [relprod]
   (relprod-filter relprod #(<= (:tuple-count %) 1)))
 
-(defn relprod-expand-once [relprod]
+(defn relprod-expand-once
+  "This strategy first performs `relprod-select-simple` and 
+then does one more expansion with the smallest `:tuple-count`. Just 
+like `relprod-select-all`, it is not necessarily always faster
+than doing no expansion at all."
+  [relprod]
   (let [relprod (relprod-select-simple relprod)
         [r & _] (sort-by :tuple-count (:exclude relprod))]
     (if r
