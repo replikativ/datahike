@@ -163,11 +163,12 @@
     nil)
   (restore [_ address]
     (trace "reading: " address)
-    ;; persistent sorted set accesses the restored node immediately again (above)
-    ;; so we avoid double counting
-    #_(wrapped/miss cache address node)
-    (swap! stats update :reads inc)
-    (k/get store address nil {:sync? true})))
+    (if-let [cached (wrapped/lookup cache address)]
+      cached
+      (let [node (k/get store address nil {:sync? true})]
+        (swap! stats update :reads inc)
+        (wrapped/miss cache address node)
+        node))))
 
 (def init-stats {:writes   0
                  :reads    0
