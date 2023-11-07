@@ -876,29 +876,33 @@
   (test-metrics (assoc metrics-base-cfg :attribute-refs? true)))
 
 (deftest test-strategies
-  (let [state (atom [])
-        pushing (fn [x] (fn [relprod] (swap! state conj x) relprod))]
-    ;; We should get the same results no matter the choice of strategy. They
-    ;; only have different performance characteristics.
-    (doseq [strategy [(pushing :identity)
-                      (comp (pushing :simple) dq/relprod-select-simple)
-                      (comp (pushing :all) dq/relprod-select-all)
-                      (comp (pushing :once) dq/relprod-expand-once)]]
-      (let [cfg {:store {:backend :mem
-                         :id "q"}
-                 :initial-tx [[:db/add -1 :name "Ivan"]
-                              [:db/add -1 :likes "fries"]
-                              [:db/add -1 :likes "pizza"]
-                              [:db/add -1 :friend 296]]
-                 :keep-history? false
-                 :schema-flexibility :read}
-            conn (utils/setup-db cfg)]
-        (is (= #{["fries"] ["candy"] ["pie"] ["pizza"]}
-               (d/q {:query '[:find ?value :where [_ :likes ?value]]
-                     :settings {:relprod-strategy strategy}
-                     :args [#{[1 :likes "fries"]
-                              [2 :likes "candy"]
-                              [3 :likes "pie"]
-                              [4 :likes "pizza"]}]})))))
-    (is (= [:identity :simple :all :once]
-           (-> state deref dedupe)))))
+  ;; The main purpose of this test is to check that
+  ;; the `:relprod-strategy` parameter is not ignored
+  ;; and that the strategy is actually called. Furthermore,
+  ;; it checks that the result of a simple query is
+  ;; correct no matter the choice of strategy.
+  (doseq [inner-strategy [identity
+                          dq/relprod-select-simple
+                          dq/relprod-select-all
+                          dq/relprod-expand-once]]
+    (let [strategy-was-called (atom false)
+          strategy (fn [relprod]
+                     (reset! strategy-was-called true)
+                     (inner-strategy relprod))
+          cfg {:store {:backend :mem
+                       :id "q"}
+               :initial-tx [[:db/add -1 :name "Ivan"]
+                            [:db/add -1 :likes "fries"]
+                            [:db/add -1 :likes "pizza"]
+                            [:db/add -1 :friend 296]]
+               :keep-history? false
+               :schema-flexibility :read}
+          _conn (utils/setup-db cfg)]
+      (is (= #{["fries"] ["candy"] ["pie"] ["pizza"]}
+             (d/q {:query '[:find ?value :where [_ :likes ?value]]
+                   :settings {:relprod-strategy strategy}
+                   :args [#{[1 :likes "fries"]
+                            [2 :likes "candy"]
+                            [3 :likes "pie"]
+                            [4 :likes "pizza"]}]})))
+      (is (deref strategy-was-called)))))
