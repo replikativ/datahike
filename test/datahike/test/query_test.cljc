@@ -511,6 +511,14 @@
 
 (deftest test-distinct-tuples
   (is (= [[3 4]] (dq/distinct-tuples [[3 4]])))
+  (let [arrays [(object-array [:a]) (object-array [:a])]
+        result (dq/distinct-tuples arrays)
+        object-array-type (type (object-array []))]
+    (is (every? #(= object-array-type (type %)) result))
+    (is (= [[:a]] (map vec result)))
+
+    ;; This is just to highlight the difference w.r.t. `distinct`:
+    (is (= [[:a] [:a]] (map vec (distinct arrays)))))
   (is (= [[3 4]] (dq/distinct-tuples [[3 4] [3 4]])))
   (is (= [[3 4]] (dq/distinct-tuples [[3 4]
                                       (long-array [3 4])])))

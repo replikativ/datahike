@@ -88,7 +88,9 @@
 
 ;; Utilities
 
-(defn distinct-tuples [tuples]
+(defn distinct-tuples
+  "Remove duplicates just like `distinct` but with the difference that it only works on values on which `vec` can be applied and two different objects are considered equal if and only if their results after `vec` has been applied are equal. This means that two different Java arrays are considered equal if and only if their elements are equal."
+  [tuples]
   (first (reduce (fn [[dst seen] tuple]
                    (let [key (vec tuple)]
                      (if (seen key)
