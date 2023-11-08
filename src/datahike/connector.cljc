@@ -122,7 +122,10 @@
         [config stored-config] (if-not (= dc/self-writer config)
                                  [(dissoc config :writer)
                                   (dissoc stored-config :writer)]
-                                 [config stored-config])]
+                                 [config stored-config])
+        ;; replace store config with its identity                              
+        config (update config :store ds/store-identity)
+        stored-config (update stored-config :store ds/store-identity)]
     (when-not (= config stored-config)
       (dt/raise "Configuration does not match stored configuration."
                 {:type          :config-does-not-match-stored-db

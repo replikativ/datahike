@@ -6,7 +6,8 @@
    [datahike.db :as db]
    [datahike.api :as d]
    [datahike.index :as di]
-   [datahike.index.hitchhiker-tree :as dih]))
+   [datahike.index.hitchhiker-tree :as dih]
+   [datahike.connector :as conn]))
 
 #?(:cljs (def Throwable js/Error))
 
@@ -90,3 +91,39 @@
                                      {:schema-flexibility :write})
                         (d/db-with  [{:name "Alice"}]))]
              (d/q '[:find ?n :where [_ :name ?n]] db))))))
+
+(deftest store-identity-test
+  (testing "different configs but equal identities"
+    (let [mem-start  {:store {:backend :mem
+                              :id "store-identity-test"}}
+          mem-other  {:store {:backend :mem
+                              :id "another-store-identity-test"}}
+          file-start {:store {:backend :file
+                              :path "/tmp/store-identity-test"}}
+          file-index {:index :datahike.index/hitchhiker-tree
+                      :store {:backend :file
+                              :path "/tmp/store-identity-test"}}
+          mem-named  {:name "has-name"
+                      :store {:backend :mem
+                              :id "store-identity-test"}}
+          mem-same   {:store {:backend :mem
+                              :id "store-identity-test"
+                              :irrelevant-property true}}]
+      (is (thrown-with-msg? Throwable
+                            #"Configuration does not match stored configuration."
+                            (conn/ensure-stored-config-consistency mem-start mem-other)))
+      (is (not= mem-start mem-other))
+      (is (thrown-with-msg? Throwable
+                            #"Configuration does not match stored configuration."
+                            (conn/ensure-stored-config-consistency file-start file-index)))
+      (is (not= file-start file-index))
+      (is (thrown-with-msg? Throwable
+                            #"Configuration does not match stored configuration."
+                            (conn/ensure-stored-config-consistency mem-start file-start)))
+      (is (not= mem-start file-start))
+      (is (nil? (conn/ensure-stored-config-consistency mem-start mem-named)))
+      (is (not= mem-start mem-named))
+      (is (nil? (conn/ensure-stored-config-consistency mem-start mem-same)))
+      (is (not= mem-start mem-same))
+      (is (nil? (conn/ensure-stored-config-consistency mem-named mem-same)))
+      (is (not= mem-named mem-same)))))
