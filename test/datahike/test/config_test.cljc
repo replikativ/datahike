@@ -92,8 +92,8 @@
                         (d/db-with  [{:name "Alice"}]))]
              (d/q '[:find ?n :where [_ :name ?n]] db))))))
 
-(deftest store-identity-test
-  (testing "different configs but equal identities"
+(deftest store-identity-config-test
+  (testing "different configs with equal identities"
     (let [mem-start  {:store {:backend :mem
                               :id "store-identity-test"}}
           mem-other  {:store {:backend :mem
@@ -127,3 +127,29 @@
       (is (not= mem-start mem-same))
       (is (nil? (conn/ensure-stored-config-consistency mem-named mem-same)))
       (is (not= mem-named mem-same)))))
+
+(deftest store-identity-connection-test
+  (testing "different connections with equal identities"
+    (let [mem-start  {:store {:backend :mem
+                              :id "store-connection-test"}}
+          mem-other  {:store {:backend :mem
+                              :id "another-store-connection-test"}}
+          file-start {:store {:backend :file
+                              :path "/tmp/store-connection-test"}}
+          file-index {:index :datahike.index/hitchhiker-tree
+                      :store {:backend :file
+                              :path "/tmp/store-connection-test"}}
+          mem-named  {:name "has-name"
+                      :store {:backend :mem
+                              :id "store-connection-test"}}
+          mem-same   {:store {:backend :mem
+                              :id "store-connection-test"
+                              :irrelevant-property true}}
+          _ (doall (map d/delete-database [mem-start mem-other file-start file-index mem-named mem-same]))]
+      (d/create-database mem-start)
+      (is (= (d/connect mem-start) (d/connect mem-named) (d/connect mem-same)))
+      (d/create-database file-start)
+      (d/connect file-start)
+      (is (thrown-with-msg? Throwable
+                            #"Configuration does not match existing connections."
+                            (d/connect file-index))))))
