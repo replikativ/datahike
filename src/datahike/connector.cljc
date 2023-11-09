@@ -122,7 +122,10 @@
         [config stored-config] (if-not (= dc/self-writer config)
                                  [(dissoc config :writer)
                                   (dissoc stored-config :writer)]
-                                 [config stored-config])]
+                                 [config stored-config])
+        ;; replace store config with its identity                              
+        config (update config :store ds/store-identity)
+        stored-config (update stored-config :store ds/store-identity)]
     (when-not (= config stored-config)
       (dt/raise "Configuration does not match stored configuration."
                 {:type          :config-does-not-match-stored-db
@@ -137,19 +140,22 @@
 
   clojure.lang.IPersistentMap
   (-connect [raw-config]
-    (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer)
+    (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))
           store-config (:store config)
           store-id (ds/store-identity store-config)
           conn-id [store-id (:branch config)]]
       (if-let [conn (get-connection conn-id)]
-        (let [conn-config (:config @(:wrapped-atom conn))]
-          (when-not (= config conn-config)
+        (let [conn-config (:config @(:wrapped-atom conn))
+              ;; replace store config with its identity                              
+              cfg (update config :store ds/store-identity)
+              conn-cfg (update conn-config :store ds/store-identity)]
+          (when-not (= cfg conn-cfg)
             (dt/raise "Configuration does not match existing connections."
                       {:type :config-does-not-match-existing-connections
-                       :config config
-                       :existing-connections-config conn-config
-                       :diff (diff config conn-config)}))
+                       :config cfg
+                       :existing-connections-config conn-cfg
+                       :diff (diff cfg conn-cfg)}))
           conn)
         (let [raw-store (ds/connect-store store-config)
               _         (when-not raw-store
