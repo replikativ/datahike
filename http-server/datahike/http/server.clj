@@ -148,7 +148,7 @@
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           (let [res (apply datahike.writing/transact! body)]
+                           (let [res @(apply datahike.writing/transact!  body)]
                              {:status 200
                               :body   res}))
             :operationId "transact"},
