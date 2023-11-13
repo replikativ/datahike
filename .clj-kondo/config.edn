@@ -3,7 +3,9 @@
            datahike.lru/defcache clojure.core/deftype
            datalog.parser.type/deftrecord clojure.core/defrecord}
  :linters {;; For some reason not detected as resolved
-           :unresolved-var {:exclude [babashka.fs]}
+           :unresolved-var {:exclude [babashka.fs
+                                      datahike.http.client
+                                      datahike.api]}
            ;; Used by bb.edn, but not detected as used 
            :clojure-lsp/unused-public-var {:exclude [tools.build/clean
                                                      tools.build/compile-clojure

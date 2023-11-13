@@ -1,31 +1,38 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.11.1"}
-        org.clojure/clojurescript                   {:mvn/version "1.11.60"}
-        io.replikativ/hasch                         {:mvn/version "0.3.94"}
-        io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"}
-        io.replikativ/incognito                     {:mvn/version "0.3.66"}
-        io.replikativ/konserve                      {:mvn/version "0.7.311"}
+        io.replikativ/hasch                         {:mvn/version "0.3.94"
+                                                     :exclusions [org.clojure/clojurescript]}
+        io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"
+                                                     :exclusions [org.clojure/clojurescript]}
+        io.replikativ/konserve                      {:mvn/version "0.7.311"
+                                                     :exclusions [org.clojure/clojurescript]}
+        io.replikativ/superv.async                  {:mvn/version "0.3.46"
+                                                     :exclusions [org.clojure/clojurescript]}
+        io.replikativ/datalog-parser                {:mvn/version "0.2.28"}
+        io.replikativ/zufall                        {:mvn/version "0.2.9"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.2.3"}
         environ/environ                             {:mvn/version "1.2.0"}
-        com.taoensso/timbre                         {:mvn/version "5.2.1"}
-        io.replikativ/superv.async                  {:mvn/version "0.3.43"}
-        io.replikativ/datalog-parser                {:mvn/version "0.2.25"}
-        io.replikativ/zufall                        {:mvn/version "0.2.9"}
+        nrepl/bencode                               {:mvn/version "1.1.0"}
+        com.taoensso/timbre                         {:mvn/version "6.3.1"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
-        metosin/spec-tools                          {:mvn/version "0.10.5"}
-        mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}}
+        metosin/spec-tools                          {:mvn/version "0.10.6"}
+        mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}
+        org.babashka/http-client                    {:mvn/version "0.3.11"}
+        metosin/jsonista                            {:mvn/version "0.3.7"}}
 
- :paths ["src" "target/classes"]
+ :paths ["src" "target/classes" "resources"]
 
  :deps/prep-lib {:ensure "target/classes"
                  :alias :build
-                 :fn jcompile}
+                 :fn compile-java}
 
  :aliases {;; Development
 
            :1.9 {:override-deps {org.clojure/clojure {:mvn/version "1.9.0"}}}
 
            :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
+
+           :cljs {:extra-deps {org.clojure/clojurescript {:mvn/version "1.11.121"}}}
 
            :dev {:extra-paths ["dev" "benchmark/src"]
                  :extra-deps {org.clojure/tools.namespace {:mvn/version "1.4.4"}
@@ -37,11 +44,18 @@
                               hashp/hashp                 {:mvn/version "0.2.2"}
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
-           :test {:extra-paths ["test" "bechmark/src" "benchmark/test"]
-                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.84.1335"}
+           :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server"]
+                  :extra-deps {lambdaisland/kaocha         {:mvn/version "1.87.1366"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.5.154"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}
-                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
+                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}
+
+                               ;; http server
+                               buddy/buddy-auth              {:mvn/version "3.0.323"}
+                               ring/ring-core                {:mvn/version "1.9.5"}
+                               ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
+                               metosin/reitit                {:mvn/version "0.5.18"}
+                               ring-cors/ring-cors           {:mvn/version "0.1.13"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
 
@@ -50,11 +64,20 @@
 
            ;; Build
 
-           :build {:replace-paths []
-                   :replace-deps {datahike.bb {:local/root "bb"}}
-                   :ns-default tools.build}
+           :build {:deps {io.github.clojure/tools.build {:mvn/version "0.9.5"}}
+                   :ns-default build}
 
            :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
+
+           :http-server {:extra-paths ["http-server"]
+                         :extra-deps {buddy/buddy-auth        {:mvn/version "3.0.323"}
+                                      ring/ring-core          {:mvn/version "1.9.5"}
+                                      ring/ring-jetty-adapter {:mvn/version "1.9.5"}
+                                      metosin/reitit          {:mvn/version "0.5.18"}
+                                      ring-cors/ring-cors     {:mvn/version "0.1.13"}
+                                      nrepl/bencode           {:mvn/version "1.1.0"}
+                                      org.slf4j/slf4j-simple  {:mvn/version "2.0.9"}}
+                         :main-opts ["-m" "datahike.http.server"]}
 
            :libdatahike {:main-opts ["-e" "(set! *warn-on-reflection* true)"]
                          :extra-paths ["libdatahike/src"]}
@@ -62,23 +85,21 @@
            :native-cli {:main-opts ["-e" "(set! *warn-on-reflection* true)"
                                     "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
-                                    "-H:Name=dhi"]
+                                    "--no-fallback"
+                                    "-J-Xmx4g"
+                                    "-H:Name=dthk"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
                         {clj.native-image/clj.native-image
                          {:git/url "https://github.com/taylorwood/clj.native-image.git"
                           :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
                          com.cognitect/transit-clj {:mvn/version "1.0.333"}
-                         nrepl/bencode             {:mvn/version "1.1.0"}
                          babashka/pods             {:git/url "https://github.com/babashka/pods"
-                                                    :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
-                         cheshire/cheshire         {:mvn/version "5.11.0"}}}
+                                                    :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
 
            :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
-                              nrepl/bencode             {:mvn/version "1.1.0"}
                               babashka/pods             {:git/url "https://github.com/babashka/pods"
-                                                         :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}
-                              cheshire/cheshire         {:mvn/version "5.11.0"}}}
+                                                         :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
 
            ;; Checks
 
@@ -92,5 +113,5 @@
            :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
                     :main-opts ["-m" "cljfmt.main" "check"]}
 
-           :outdated {:extra-deps {com.github.liquidz/antq {:mvn/version "2.4.1070"}}
+           :outdated {:extra-deps {com.github.liquidz/antq {:mvn/version "2.6.1121"}}
                       :main-opts ["-m" "antq.core"]}}}

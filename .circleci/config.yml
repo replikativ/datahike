@@ -75,11 +75,10 @@ jobs:
           name: install graalvm
           command: |
             cd /home/circleci
-            wget https://github.com/graalvm/graalvm-ce-builds/releases/download/vm-22.2.0/graalvm-ce-java17-linux-amd64-22.2.0.tar.gz
-            tar -xzf graalvm-ce-java17-linux-amd64-22.2.0.tar.gz
-            export PATH=/home/circleci/graalvm-ce-java17-22.2.0/bin:$PATH
-            export JAVA_HOME=/home/circleci/graalvm-ce-java17-22.2.0/
-            gu install native-image
+            wget https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.0/graalvm-community-jdk-21.0.0_linux-x64_bin.tar.gz
+            tar -xzf graalvm-community-jdk-21.0.0_linux-x64_bin.tar.gz
+            export PATH=/home/circleci/graalvm-community-openjdk-21+35.1/bin:$PATH
+            export JAVA_HOME=/home/circleci/graalvm-community-openjdk-21+35.1
       - run:
           name: install clojure
           command: |
@@ -87,7 +86,7 @@ jobs:
             curl -O https://download.clojure.org/install/linux-install-1.11.1.1165.sh
             chmod +x linux-install-1.11.1.1165.sh
             ./linux-install-1.11.1.1165.sh --prefix /home/circleci/clojure
-      - run: 
+      - run:
           name: install babashka
           command: |
             cd /home/circleci
@@ -99,13 +98,13 @@ jobs:
           name: build native-image
           command: |
             cd /home/circleci/replikativ
-            export PATH=/home/circleci/graalvm-ce-java17-22.2.0/bin:/home/circleci/clojure/bin:$PATH
-            export JAVA_HOME=/home/circleci/graalvm-ce-java17-22.2.0/
+            export PATH=/home/circleci/graalvm-community-openjdk-21+35.1/bin:/home/circleci/clojure/bin:$PATH
+            export JAVA_HOME=/home/circleci/graalvm-community-openjdk-21+35.1
             bb ni-cli
       - persist_to_workspace:
           root: /home/circleci/
           paths:
-            - replikativ/dhi
+            - replikativ/dthk
   persistent-set-test:
     executor: tools/clojurecli
     steps:
@@ -225,8 +224,14 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: Release on GitHub
-          command: bb release
+          name: Release jar on GitHub
+          command: bb release jar
+      - run:
+          name: Release cli on GitHub
+          command: bb release native-cli
+          environment:
+            DTHK_PLATFORM: linux
+            DTHK_ARCH: x86_64
 
 workflows:
   build-test-and-deploy:
@@ -295,4 +300,9 @@ workflows:
             branches:
               only: main
           requires:
-            - deploy
+            - format
+            - persistent-set-test
+            - hitchhiker-tree-test
+            - backward-compatibility-test
+            - native-image-test
+            - integration-test

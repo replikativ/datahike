@@ -11,7 +11,7 @@
 (def config {:keep-history? true,
              :search-cache-size 10000,
              :index :datahike.index/persistent-set,
-             :store {:id "inexpensive-red-fox", :backend :mem},
+             :store {:id "inexpensive-red-fox", :backend :mem :scope "test.datahike.io"},
              :store-cache-size 1000,
              :attribute-refs? false,
              :writer {:backend :self},
@@ -22,14 +22,14 @@
 (deftest pod-workflow
 
   (testing "delete-database"
-    (is (= {}
+    (is (= nil
            (d/delete-database config))))
 
   (testing "create-database"
     (is (= {:keep-history? true
             :search-cache-size 10000
             :index :datahike.index/persistent-set
-            :store {:id "inexpensive-red-fox", :backend :mem}
+            :store {:id "inexpensive-red-fox", :backend :mem :scope "test.datahike.io"}
             :store-cache-size 1000
             :attribute-refs? false
             :writer {:backend :self}
@@ -44,7 +44,7 @@
 
   (let [conn (d/connect config)]
     (testing "connect"
-      (is (= "conn:-1033483489"
+      (is (= "conn:2061701040"
              conn)))
     (testing "transact"
       (is (= [:tempids :db-before :db-after :tx-meta :tx-data]
@@ -55,11 +55,11 @@
     (testing "transact with bad arg"
       (is (thrown? clojure.lang.ExceptionInfo
                    (keys (d/transact
-                           "foo"
-                           [{:name  "Alice", :age   20}
-                            {:name  "Bob", :age   30}
-                            {:name  "Charlie", :age   40}
-                            {:age 15}])))))
+                          "foo"
+                          [{:name  "Alice", :age   20}
+                           {:name  "Bob", :age   30}
+                           {:name  "Charlie", :age   40}
+                           {:age 15}])))))
     (testing "with-db"
       (is (= #{[2 "Bob" 30] [1 "Alice" 20] [3 "Charlie" 40]}
              (d/with-db [db (d/db conn)]
@@ -78,12 +78,12 @@
                             :where
                             [[?e :name ?n]
                              [?e :age ?a]]}
-                          :args [(d/db conn)]})
+                   :args [(d/db conn)]})
              (d/q '[:find ?e ?n ?a
                     :where
                     [?e :name ?n]
                     [?e :age ?a]]
-                (d/db conn)))))
+                  (d/db conn)))))
     (let [timestamp (Date.)]
       (d/transact conn {:tx-data [{:db/id 3 :age 25}]})
       (d/transact conn [{:name "FOO"  :age "BAR"}])
@@ -117,17 +117,17 @@
       (testing "since tx-id"
         (is (= #{[5 "FOO" "BAR"]}
                (d/q '[:find ?e ?n ?a
-                       :where
-                       [?e :name ?n]
-                       [?e :age ?a]]
+                      :where
+                      [?e :name ?n]
+                      [?e :age ?a]]
                     (d/since (d/db conn) 536870914)))))
       (testing "since timestamp"
         (is (= #{[5 "FOO" "BAR"]}
                (d/q '[:find ?e ?n ?a
-                       :where
-                       [?e :name ?n]
+                      :where
+                      [?e :name ?n]
                       [?e :age ?a]]
-                     (d/since (d/db conn) timestamp)))))
+                    (d/since (d/db conn) timestamp)))))
       (testing "history"
         (is (= #{[3 "Charlie" 25] [2 "Bob" 30] [5 "FOO" "BAR"] [1 "Alice" 20] [3 "Charlie" 40]}
                (d/q '[:find ?e ?n ?a

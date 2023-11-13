@@ -162,14 +162,13 @@
     p))
 
 (defn transact!
-  [connection {:keys [tx-data tx-meta]}]
+  [connection arg-map]
   (let [p (throwable-promise)
         writer (:writer @(:wrapped-atom connection))]
     (go
       (let [tx-report (<! (dispatch! writer
                                      {:op 'transact
-                                      :args [{:tx-data tx-data
-                                              :tx-meta tx-meta}]}))]
+                                      :args [arg-map]}))]
         (deliver p tx-report)))
     p))
 
