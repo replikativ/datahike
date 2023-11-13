@@ -276,7 +276,7 @@
 (defn transact! [connection {:keys [tx-data tx-meta]}]
   (log/debug "Transacting" (count tx-data) " objects with meta: " tx-meta)
   (log/trace "Transaction data" tx-data)
-  (update-and-commit! connection tx-data tx-meta #(core/with @%1 %2 %3)))
+  (update-and-commit! connection tx-data tx-meta #(core/with @%1 %2 %3) true))
 
 (defn load-entities [connection entities]
   (log/debug "Loading" (count entities) " entities.")
