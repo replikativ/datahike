@@ -216,7 +216,7 @@
    ))
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
   ;; deal with circular reference between storage and store
-  (let [settings ^Settings (map->settings {:branching-factor DEFAULT_BRANCHING_FACTOR})
+  (let [settings (map->settings {:branching-factor DEFAULT_BRANCHING_FACTOR})
         storage (atom nil)
         store
         (assoc store
@@ -234,7 +234,7 @@
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
                                                        (let [{:keys [keys level]} (.readObject reader)]
-                                                         (Leaf. keys settings))))
+                                                         (Leaf. ^List keys settings))))
                                                    "datahike.index.PersistentSortedSet.Branch"
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
