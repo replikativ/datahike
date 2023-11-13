@@ -183,7 +183,7 @@
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
-  (let [^PersistentSortedSet pset (psset/sorted-set* {:cmp (index-type->cmp-quick index-type false)
+  (let [^PersistentSortedSet pset (psset/sorted-set* {:cmp (index-type->cmp-quick index-type false) 
                                                       :storage (:storage store)
                                                       :branching-factor DEFAULT_BRANCHING_FACTOR})]
     #_(set! (.-_storage pset) (:storage store))
@@ -200,8 +200,8 @@
                 (not (arrays/array? datoms))
                 (arrays/into-array)))
         _ (arrays/asort arr (index-type->cmp-quick index-type false))
-        ^PersistentSortedSet pset (psset/from-sorted-array (index-type->cmp-quick index-type false)
-                                                           arr
+        ^PersistentSortedSet pset (psset/from-sorted-array (index-type->cmp-quick index-type false) 
+                                                           arr 
                                                            (alength arr)
                                                            {:branching-factor DEFAULT_BRANCHING_FACTOR})]
     (set! (.-_storage pset) (:storage store))
@@ -211,12 +211,14 @@
 ;; temporary import from psset until public
 (defn- map->settings ^Settings [m]
   (Settings.
-   (int (or (:branching-factor m) 0))
-   nil ;; weak ref default
+    (int (or (:branching-factor m) 0))
+    nil ;; weak ref default
    ))
+
+
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
   ;; deal with circular reference between storage and store
-  (let [settings (map->settings {:branching-factor DEFAULT_BRANCHING_FACTOR})
+  (let [settings ^Settings (map->settings {:branching-factor DEFAULT_BRANCHING_FACTOR})
         storage (atom nil)
         store
         (assoc store
