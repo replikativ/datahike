@@ -141,5 +141,6 @@
   ([conn parents tx-data tx-meta]
    (parent-check parents)
    (update-and-commit! conn tx-data tx-meta #(with @%1 %2 %3)
-                       (conj parents (get-in @conn [:config :branch])))
+                       (conj parents (get-in @conn [:config :branch]))
+                       true)
    true))
