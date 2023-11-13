@@ -12,7 +12,7 @@
             [taoensso.timbre :refer [trace]])
   #?(:clj (:import [datahike.datom Datom]
                    [org.fressian.handlers WriteHandler ReadHandler]
-                   [me.tonsky.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode]
+                   [me.tonsky.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode Settings]
                    [java.util UUID List])))
 
 (defn index-type->cmp
@@ -180,17 +180,18 @@
                   (atom init-stats)
                   (atom [])))
 
-(def ^:const BRANCHING_FACTOR 512)
+(def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
-  (psset/set-branching-factor! BRANCHING_FACTOR)
-  (let [^PersistentSortedSet pset (psset/sorted-set-by (index-type->cmp-quick index-type false))]
-    (set! (.-_storage pset) (:storage store))
+  (let [^PersistentSortedSet pset (psset/sorted-set* {:cmp (index-type->cmp-quick index-type false) 
+                                                      :storage (:storage store)
+                                                      :branching-factor DEFAULT_BRANCHING_FACTOR})]
+    #_(set! (.-_storage pset) (:storage store))
     (with-meta pset
       {:index-type index-type})))
 
 (defmethod di/init-index :datahike.index/persistent-set [_index-name store datoms index-type _ {:keys [indexed]}]
-  (psset/set-branching-factor! BRANCHING_FACTOR)
+  #_(psset/set-branching-factor! BRANCHING_FACTOR)
   (let [arr (if (= index-type :avet)
               (->> datoms
                    (filter #(contains? indexed (.-a ^Datom %)))
@@ -199,14 +200,26 @@
                 (not (arrays/array? datoms))
                 (arrays/into-array)))
         _ (arrays/asort arr (index-type->cmp-quick index-type false))
-        ^PersistentSortedSet pset (psset/from-sorted-array (index-type->cmp-quick index-type false) arr)]
+        ^PersistentSortedSet pset (psset/from-sorted-array (index-type->cmp-quick index-type false) 
+                                                           arr 
+                                                           (alength arr)
+                                                           {:branching-factor DEFAULT_BRANCHING_FACTOR})]
     (set! (.-_storage pset) (:storage store))
     (with-meta pset
       {:index-type index-type})))
 
+;; temporary import from psset until public
+(defn- map->settings ^Settings [m]
+  (Settings.
+    (int (or (:branching-factor m) 0))
+    nil ;; weak ref default
+   ))
+
+
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
   ;; deal with circular reference between storage and store
-  (let [storage (atom nil)
+  (let [settings (map->settings {:branching-factor DEFAULT_BRANCHING_FACTOR})
+        storage (atom nil)
         store
         (assoc store
                :serializers {:FressianSerializer (fressian-serializer
@@ -218,17 +231,17 @@
                                                          ;; The following fields are reset as they cannot be accessed from outside:
                                                          ;; - 'edit' is set to false, i.e. the set is assumed to be persistent, not transient
                                                          ;; - 'version' is set back to 0
-                                                         (PersistentSortedSet. meta cmp address @storage nil count nil 0))))
+                                                         (PersistentSortedSet. meta cmp address @storage nil count settings 0))))
                                                    "datahike.index.PersistentSortedSet.Leaf"
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
                                                        (let [{:keys [keys level]} (.readObject reader)]
-                                                         (Leaf. keys))))
+                                                         (Leaf. keys settings))))
                                                    "datahike.index.PersistentSortedSet.Branch"
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
                                                        (let [{:keys [keys level addresses]} (.readObject reader)]
-                                                         (Branch. (int level) ^List keys ^List (seq addresses)))))
+                                                         (Branch. (int level) ^List keys ^List (seq addresses) settings))))
                                                    "datahike.datom.Datom"
                                                    (reify ReadHandler
                                                      (read [_ reader _tag _component-count]
