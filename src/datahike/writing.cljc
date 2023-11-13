@@ -148,7 +148,7 @@
   ([connection tx-data tx-meta update-fn]
    (update-and-commit! connection tx-data tx-meta update-fn nil))
   ([connection tx-data tx-meta update-fn parents]
-   (update-and-commit! connection tx-data tx-meta update-fn parents (not (:datahike/noCommit tx-meta))))
+   (update-and-commit! connection tx-data tx-meta update-fn parents false))
   ([connection tx-data tx-meta update-fn parents commit?]
    (let [{:keys [db-after]
           {:keys [db/txInstant]}

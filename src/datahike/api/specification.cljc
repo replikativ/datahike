@@ -136,7 +136,7 @@ Exists for Datomic API compatibility. Prefer using `@conn` directly if possible.
      :doc  "Same as transact, but asynchronously returns a future."
      :supports-remote? false
      :referentially-transparent? false
-     :impl datahike.writing/transact!}
+     :impl datahike.writer/transact!}
 
     transact
     {:args             (s/cat :conn spec/SConnection :txs spec/STransactions)

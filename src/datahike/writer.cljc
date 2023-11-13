@@ -24,7 +24,7 @@
     thread)
   (-streaming? [_] streaming?))
 
-(def ^:const default-queue-size 20000)
+(def ^:const default-queue-size 100000)
 
 (defn create-thread
   "Creates new transaction thread"
