@@ -5,8 +5,7 @@
             [datahike.http.client :refer [request-transit] :as client]
             [datahike.tools :as dt :refer [throwable-promise]]
             [taoensso.timbre :as log]
-            [clojure.core.async :refer [promise-chan put!]])
-  (:import [java.io ByteArrayOutputStream]))
+            [clojure.core.async :refer [promise-chan put!]]))
 
 (defrecord DatahikeServerWriter [remote-peer conn]
   PWriter
@@ -40,7 +39,9 @@
                 (request-transit :post
                                  "create-database-writer"
                                  writer
-                                 (vec (concat [(assoc config :remote-peer writer)] (rest args))))
+                                 (vec (concat [(-> config
+                                                   (assoc :remote-peer writer)
+                                                   (dissoc :writer))] (rest args))))
                 (dissoc :remote-peer)))
     p))
 

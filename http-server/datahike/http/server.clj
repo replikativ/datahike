@@ -11,7 +11,8 @@
    [datahike.transit :as transit]
    [datahike.json :as json]
    [datahike.api :refer :all :as api]
-   [datahike.writing :as datahike.writing]
+   [datahike.writing]
+   [datahike.writer]
    [reitit.ring :as ring]
    [reitit.coercion.spec]
    [reitit.swagger :as swagger]
@@ -36,7 +37,7 @@
   (fn [request]
     (let [{{body :body} :parameters
            :keys [headers params method]} request
-          _ (log/trace "req-body" f body (= f #'api/create-database))
+          _ (log/trace "request body" f body)
           ;; TODO move this to client
           ret-body
           (cond (= f #'api/create-database)
@@ -50,7 +51,7 @@
 
                 :else
                 (apply f body))]
-      (log/trace "ret-body" ret-body)
+      (log/trace "return body" ret-body)
       (merge
        {:status 200
         :body
@@ -100,11 +101,7 @@
                  {:handlers transit/write-handlers}))))
 
 (defn default-route-opts [muuntaja-with-opts]
-  {;; :reitit.middleware/transform dev/print-request-diffs ;; pretty diffs
-   ;; :validate spec/validate ;; enable spec validation for route data
-   ;; :reitit.spec/wrap spell/closed ;; strict top-level validation
-   ;; :exception pretty/exception
-   :data      {:coercion   reitit.coercion.spec/coercion
+  {:data      {:coercion   reitit.coercion.spec/coercion
                :muuntaja   muuntaja-with-opts
                :middleware [swagger/swagger-feature
                             parameters/parameters-middleware
@@ -138,7 +135,7 @@
             :handler     (fn [{{:keys [body]} :parameters}]
                            {:status 200
                             :body   (apply datahike.writing/create-database
-                                           (dissoc (first body) :remote-peer)
+                                           (dissoc (first body) :remote-peer :writer)
                                            (rest body))})
             :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
@@ -148,7 +145,7 @@
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           (let [res (apply datahike.writing/transact!  body)]
+                           (let [res @(apply datahike.writer/transact! body)]
                              {:status 200
                               :body   res}))
             :operationId "transact"},

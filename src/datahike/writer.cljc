@@ -108,9 +108,7 @@
 
 ;; public API
 
-(declare transact load-entities)
-
-(def default-write-fn-map {'transact      w/transact!
+(def default-write-fn-map {'transact!     w/transact!
                            'load-entities w/load-entities})
 
 (defmulti create-writer
@@ -167,7 +165,7 @@
         writer (:writer @(:wrapped-atom connection))]
     (go
       (let [tx-report (<! (dispatch! writer
-                                     {:op 'transact
+                                     {:op 'transact!
                                       :args [arg-map]}))]
         (deliver p tx-report)))
     p))

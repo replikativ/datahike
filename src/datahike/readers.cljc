@@ -17,7 +17,7 @@
 (defn db-from-reader [{:keys [schema datoms store-id commit-id] :as raw-db}]
   (if (and store-id commit-id)
     #?(:cljs (throw (ex-info "Reader not supported." {:type   :reader-not-supported
-                                                      :raw-db db}))
+                                                      :raw-db raw-db}))
        :clj
        (if-let [conn (get-connection store-id)]
          (let [store (:store @conn)]
