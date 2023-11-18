@@ -133,6 +133,11 @@
                  :stored-config stored-config
                  :diff          (diff config stored-config)}))))
 
+(defn- normalize-config [cfg] 
+  (-> cfg 
+      (update :store ds/store-identity) 
+      (dissoc :writer)))
+
 (extend-protocol PConnector
   String
   (-connect [uri]
@@ -148,8 +153,8 @@
       (if-let [conn (get-connection conn-id)]
         (let [conn-config (:config @(:wrapped-atom conn))
               ;; replace store config with its identity                              
-              cfg (update config :store ds/store-identity)
-              conn-cfg (update conn-config :store ds/store-identity)]
+              cfg (normalize-config config)
+              conn-cfg (normalize-config conn-config)]
           (when-not (= cfg conn-cfg)
             (dt/raise "Configuration does not match existing connections."
                       {:type :config-does-not-match-existing-connections

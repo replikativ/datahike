@@ -51,7 +51,7 @@
                             ;; Only catch ExceptionInfo here (intentionally rejected transactions).
                             ;; Any other exceptions should crash the writer and signal the supervisor.
                             (catch Exception e
-                              (log/errorf "Error during invocation" invocation e args)
+                              (log/error "Error during invocation" invocation e args)
                               ;; take a guess that a NPE was triggered by an invalid connection
                               ;; short circuit on errors
                               (put! callback
