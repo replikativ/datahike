@@ -92,7 +92,7 @@
                          :as                          commit-db} (<?- (w/commit! store (:config db) db nil false))
                         commit-time (- (get-time-ms) start-ts)]
                     (log/trace "Commit time (ms): " commit-time)
-                    (reset! connection commit-db)
+                    (swap! connection assoc-in [:meta :datahike/commit-id] commit-id)
                     ;; notify all processes that transaction is complete
                     (doseq [[res callback] @txs]
                       (put! callback
