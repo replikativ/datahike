@@ -5,6 +5,7 @@
   (:require
    [clojure.string :as str]
    [clojure.edn :as edn]
+   [datahike.connections :refer [*connections*]]
    [datahike.api.specification :refer [api-specification ->url]]
    [datahike.http.middleware :as middleware]
    [datahike.readers :refer [edn-readers]]
@@ -116,7 +117,8 @@
                             multipart/multipart-middleware
                             middleware/patch-swagger-json]}})
 
-(def internal-writer-routes
+
+(defn internal-writer-routes [server-connections]
   [["/delete-database-writer"
     {:post {:parameters  {:body (st/spec {:spec any?
                                           :name "delete-database-writer"})},
@@ -139,19 +141,21 @@
                                            (rest body))})
             :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
-   ["/transact-writer"
+   ["/transact!-writer"
     {:post {:parameters  {:body (st/spec {:spec any?
                                           :name "transact-writer"})},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           (let [res @(apply datahike.writer/transact! body)]
-                             {:status 200
-                              :body   res}))
+                           (binding [*connections* server-connections]
+                             (let [conn (api/connect (dissoc (first body) :remote-peer :writer)) ;; TODO maybe release?
+                                   res @(apply datahike.writer/transact! conn (rest body))]
+                               {:status 200
+                                :body   res})))
             :operationId "transact"},
      :swagger {:tags ["Internal"]}}]])
 
-(defn app [config route-opts]
+(defn app [config route-opts server-connections]
   (-> (ring/ring-handler
        (ring/router
         (concat
@@ -166,7 +170,7 @@
                             [(partial middleware/token-auth config)
                              (partial middleware/auth config)])))
               (concat (create-routes config)
-                      internal-writer-routes))) route-opts)
+                      (internal-writer-routes server-connections)))) route-opts)
        (ring/routes
         (swagger-ui/create-swagger-ui-handler
          {:path   "/"
@@ -178,7 +182,7 @@
                  :access-control-allow-methods [:get :put :post :delete])))
 
 (defn start-server [config]
-  (run-jetty (app config (default-route-opts muuntaja-with-opts)) config))
+  (run-jetty (app config (default-route-opts muuntaja-with-opts) (atom {})) config))
 
 (defn stop-server [^org.eclipse.jetty.server.Server server]
   (.stop server))

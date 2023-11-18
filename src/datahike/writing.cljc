@@ -1,6 +1,6 @@
 (ns datahike.writing
   "Manage all state changes and access to state of durable store."
-  (:require [datahike.connections :refer [delete-connection! connections]]
+  (:require [datahike.connections :refer [delete-connection! *connections*]]
             [datahike.db :as db]
             [datahike.db.utils :as dbu]
             [datahike.index :as di]
@@ -244,7 +244,7 @@
           config-store-id (ds/store-identity (:store config))
           active-conns (filter (fn [[store-id _branch]]
                                  (= store-id config-store-id))
-                               (keys @connections))]
+                               (keys @*connections*))]
       (doseq [conn active-conns]
         (log/warn "Deleting database without releasing all connections first: " conn "."
                   "All connections will be released now, but this cannot be ensured for remote readers.")

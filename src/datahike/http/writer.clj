@@ -11,13 +11,14 @@
   PWriter
   (-dispatch! [_ arg-map]
     (let [{:keys [op args]} arg-map
-          p (promise-chan)]
+          p (promise-chan)
+          config (:config @(:wrapped-atom conn))]
       (log/debug "Sending operation to datahike-server:" op)
       (log/trace "Arguments:" arg-map)
       (put! p
             (try
               (request-transit :post
-                               (str op "-writer") remote-peer (vec (concat [conn] args))
+                               (str op "-writer") remote-peer (vec (concat [config] args))
                                read-handlers write-handlers)
               (catch Exception e
                 e)))
