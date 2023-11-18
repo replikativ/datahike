@@ -165,9 +165,9 @@
                                   (assoc-in tx-report [:tx-meta :db/commitId]
                                             (get-in db [:meta :datahike/commit-id])))]
      (when commit?
-       (reset! connection db)
-       (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
-         (callback tx-report)))
+       (reset! connection db))
+     (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
+       (callback tx-report))
      tx-report)))
 
 (defprotocol PDatabaseManager
