@@ -26,23 +26,22 @@
        (count keys-to-check))))
 
 (defn flush-pending-writes [store sync?]
-  (if sync?
-    (when-let [pending-futures (:pending-writes (:storage store))]
-      ;; spin lock
-      (loop [pfs @pending-futures]
-        (let [f (first pfs)]
-          (when f
-            (let [fv (poll! f)]
-              (if fv
-                (recur (rest pfs))
-                (do (Thread/sleep 1)
-                    (recur pfs)))))))
-      (reset! (:pending-writes (:storage store)) []))
-    (go-try-
-     (when-let [pending-futures (:pending-writes (:storage store))]
-       (loop [[f & r] @pending-futures]
-         (when f (<?- f) (recur r)))
-       (reset! (:pending-writes (:storage store)) [])))))
+  (when-let [pending-futures (:pending-writes (:storage store))]
+    (let [current-futures (atom nil)] 
+      ;; atomic extraction and reset
+      (swap! pending-futures (fn [old] (reset! current-futures old) []))
+      (if sync?
+        (loop [pfs @current-futures]
+          (let [f (first pfs)]
+            (when f
+              (let [fv (poll! f)]
+                (if fv
+                  (recur (rest pfs))
+                  (do (Thread/sleep 1)
+                      (recur pfs)))))))
+        (go-try-
+         (loop [[f & r] @current-futures]
+           (when f (<?- f) (recur r))))))))
 
 (defn db->stored
   "Maps memory db to storage layout and flushes dirty indices."
