@@ -117,7 +117,6 @@
                             multipart/multipart-middleware
                             middleware/patch-swagger-json]}})
 
-
 (defn internal-writer-routes [server-connections]
   [["/delete-database-writer"
     {:post {:parameters  {:body (st/spec {:spec any?

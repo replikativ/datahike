@@ -5,7 +5,6 @@
    [datahike.http.writer]
    [datahike.api :as d]))
 
-
 (deftest test-http-writer
   (testing "Testing distributed datahike.http.writer implementation."
     (let [port  31283
