@@ -133,9 +133,9 @@
                  :stored-config stored-config
                  :diff          (diff config stored-config)}))))
 
-(defn- normalize-config [cfg] 
-  (-> cfg 
-      (update :store ds/store-identity) 
+(defn- normalize-config [cfg]
+  (-> cfg
+      (update :store ds/store-identity)
       (dissoc :writer)))
 
 (extend-protocol PConnector
