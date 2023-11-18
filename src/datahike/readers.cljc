@@ -1,5 +1,5 @@
 (ns datahike.readers
-  (:require [datahike.connections :refer [get-connection connections]]
+  (:require [datahike.connections :refer [get-connection *connections*]]
             [datahike.writing :as dw]
             [datahike.datom :refer [datom] :as dd]
             [datahike.impl.entity :as de]
@@ -38,7 +38,7 @@
   (SinceDB. origin time-point))
 
 (defn connection-from-reader [conn-id]
-  (:conn (@connections conn-id)))
+  (:conn (@*connections* conn-id)))
 
 (defn entity-from-reader [{:keys [db eid]}]
   (de/entity db eid))

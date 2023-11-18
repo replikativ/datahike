@@ -5,15 +5,16 @@
    [datahike.http.writer]
    [datahike.api :as d]))
 
+
 (deftest test-http-writer
   (testing "Testing distributed datahike.http.writer implementation."
-    (let [port 31283
+    (let [port  31283
           server (start-server {:port     port
                                 :join?    false
                                 :dev-mode false
                                 :token    "securerandompassword"})]
       (try
-        (let [cfg    {:store              {:backend :mem :id "distributed_writer"}
+        (let [cfg    {:store              {:backend :file :path  "/tmp/distributed_writer"}
                       :keep-history?      true
                       :schema-flexibility :read
                       :writer             {:backend :datahike-server

@@ -1,6 +1,6 @@
 (ns ^:no-doc datahike.connector
   (:require [datahike.connections :refer [get-connection add-connection! delete-connection!
-                                          connections]]
+                                          *connections*]]
             [datahike.readers]
             [datahike.store :as ds]
             [datahike.writing :as dsi]
@@ -201,9 +201,9 @@
      (let [db      @(:wrapped-atom connection)
            conn-id [(ds/store-identity (get-in db [:config :store]))
                     (get-in db [:config :branch])]]
-       (if-not (get @connections conn-id)
+       (if-not (get @*connections* conn-id)
          (log/info "Connection already released." conn-id)
-         (let [new-conns (swap! connections update-in [conn-id :count] dec)]
+         (let [new-conns (swap! *connections* update-in [conn-id :count] dec)]
            (when (or release-all? (zero? (get-in new-conns [conn-id :count])))
              (delete-connection! conn-id)
              (w/shutdown (:writer db))
