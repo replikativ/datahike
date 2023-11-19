@@ -141,6 +141,6 @@
   ([conn parents tx-data tx-meta]
    (parent-check parents)
    (let [db (:db-after (update-connection! conn tx-data tx-meta #(with %1 %2 %3)))
-         {:keys [config store]} @(:wrapped-atom conn)]
-     (commit! store config db parents true))
-   true))
+         {:keys [store]} @(:wrapped-atom conn)]
+     (commit! store (:config db) db parents)
+     true)))
