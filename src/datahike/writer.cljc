@@ -92,7 +92,7 @@
                          :as                          _commit-db} (<?- (w/commit! store (:config db) db nil false))
                         commit-time (- (get-time-ms) start-ts)]
                     (log/trace "Commit time (ms): " commit-time)
-                    (swap! connection #(-> % 
+                    (swap! connection #(-> %
                                            (assoc-in [:meta :datahike/commit-id] commit-id)
                                            (assoc-in [:meta :datahike/parents] parents)))
                     ;; notify all processes that transaction is complete
@@ -100,7 +100,8 @@
                       (put! callback
                             (-> res
                                 (assoc-in [:tx-meta :db/commitId] commit-id)
-                                (assoc-in [:db-after :meta :datahike/commit-id] commit-id)))))
+                                (assoc-in [:db-after :meta :datahike/commit-id] commit-id)
+                                (assoc-in [:db-after :meta :datahike/parents] parents)))))
                   (catch Exception e
                     (doseq [[_ callback] @txs]
                       (put! callback e))
