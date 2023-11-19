@@ -144,30 +144,21 @@
                   (<?- branch-op)
                   db)))))
 
-(defn update-and-commit!
-  ([connection tx-data tx-meta update-fn]
-   (update-and-commit! connection tx-data tx-meta update-fn nil))
-  ([connection tx-data tx-meta update-fn parents]
-   (update-and-commit! connection tx-data tx-meta update-fn parents false))
-  ([connection tx-data tx-meta update-fn parents commit?]
-   (let [{:keys [db-after]
-          {:keys [db/txInstant]}
-          :tx-meta
-          :as   tx-report}     (update-fn connection tx-data tx-meta)
-         {:keys [config]} db-after
-         {:keys [store writer]} @(:wrapped-atom connection)
-         new-meta               (assoc (:meta db-after) :datahike/updated-at txInstant)
-         db                     (assoc db-after :meta new-meta :writer writer)
-         db                     (if (not commit?) db (commit! store config db parents))
-         tx-report              (assoc tx-report :db-after db)
-         tx-report              (if (not commit?)
-                                  tx-report
-                                  (assoc-in tx-report [:tx-meta :db/commitId]
-                                            (get-in db [:meta :datahike/commit-id])))]
-     (reset! connection db)
-     (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
-       (callback tx-report))
-     tx-report)))
+(defn update-connection! [connection tx-data tx-meta update-fn]
+  (let [ret-atom (atom nil)]
+    (swap! connection
+           (fn [old]
+             (let [{:keys [writer]} old
+                   {:keys [db-after]
+                    {:keys [db/txInstant]}
+                    :tx-meta
+                    :as   tx-report} (update-fn old tx-data tx-meta)
+                   new-meta               (assoc (:meta db-after) :datahike/updated-at txInstant)
+                   db                     (assoc db-after :meta new-meta :writer writer)
+                   tx-report              (assoc tx-report :db-after db)]
+               (reset! ret-atom tx-report)
+               db)))
+    @ret-atom))
 
 (defprotocol PDatabaseManager
   (-create-database [config opts])
@@ -276,8 +267,8 @@
 (defn transact! [connection {:keys [tx-data tx-meta]}]
   (log/debug "Transacting" (count tx-data) " objects with meta: " tx-meta)
   (log/trace "Transaction data" tx-data)
-  (update-and-commit! connection tx-data tx-meta #(core/with @%1 %2 %3)))
+  (update-connection! connection tx-data tx-meta #(core/with %1 %2 %3)))
 
 (defn load-entities [connection entities]
   (log/debug "Loading" (count entities) " entities.")
-  (update-and-commit! connection entities nil #(core/load-entities-with @%1 %2 %3)))
+  (update-connection! connection entities nil #(core/load-entities-with %1 %2 %3)))

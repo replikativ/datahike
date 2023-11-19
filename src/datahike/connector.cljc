@@ -38,7 +38,7 @@
   IMeta
   (meta [_] (meta wrapped-atom))
 
-  IRef
+  IRef ;; TODO This is unoffically supported, it triggers watches on each update, not on commits. For proper listeners use the API.
   (addWatch [_ key f] (add-watch wrapped-atom key f))
   (removeWatch [_ key] (remove-watch wrapped-atom key)))
 

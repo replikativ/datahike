@@ -168,6 +168,8 @@
       (let [tx-report (<! (dispatch! writer
                                      {:op 'transact!
                                       :args [arg-map]}))]
+        (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
+          (callback tx-report))
         (deliver p tx-report)))
     p))
 
