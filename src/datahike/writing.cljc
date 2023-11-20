@@ -121,11 +121,8 @@
                             commit-id)))))))
 
 (defn create-commit-id [db]
-  (let [{:keys [hash max-tx max-eid config]
-         {:keys [parents]} :meta} db]
-    (if (:crypto-hash? config)
-      (uuid [hash max-tx max-eid parents])
-      (uuid))))
+  (let [{:keys [hash max-tx max-eid meta]} db]
+    (uuid [hash max-tx max-eid meta])))
 
 (defn commit!
   ([db parents]

@@ -28,7 +28,7 @@
 
 ;; minimum wait time between commits in ms
 ;; this reduces write pressure on the storage
-(def ^:const DEFAULT_COMMIT_WAIT_TIME 10) ;; in ms
+(def ^:const DEFAULT_COMMIT_WAIT_TIME 0) ;; in ms
 
 (defn create-thread
   "Creates new transaction thread"
