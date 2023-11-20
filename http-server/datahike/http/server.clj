@@ -129,13 +129,18 @@
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           (try
-                             {:status 200
-                              :body   (apply datahike.writing/delete-database body)}
-                             (catch Exception e
-                               {:status 500
-                                :body   {:msg (ex-message e)
-                                         :ex-data (ex-data e)}})))
+                           (let [cfg (dissoc (first body) :remote-peer :writer)]
+                             (try
+                             ;; force release to avoid throwing the release warning
+                               (try
+                                 (api/release (api/connect cfg) true)
+                                 (catch Exception _))
+                               {:status 200
+                                :body   (apply datahike.writing/delete-database cfg (rest body))}
+                               (catch Exception e
+                                 {:status 500
+                                  :body   {:msg (ex-message e)
+                                           :ex-data (ex-data e)}}))))
             :operationId "delete-database"},
      :swagger {:tags ["Internal"]}}]
    ["/create-database-writer"
@@ -144,15 +149,16 @@
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           (try
-                             {:status 200
-                              :body   (apply datahike.writing/create-database
-                                             (dissoc (first body) :remote-peer :writer)
-                                             (rest body))}
-                             (catch Exception e
-                               {:status 500
-                                :body   {:msg (ex-message e)
-                                         :ex-data (ex-data e)}})))
+                           (let [cfg (dissoc (first body) :remote-peer :writer)]
+                             (try
+                               {:status 200
+                                :body   (apply datahike.writing/create-database
+                                               cfg
+                                               (rest body))}
+                               (catch Exception e
+                                 {:status 500
+                                  :body   {:msg (ex-message e)
+                                           :ex-data (ex-data e)}}))))
             :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
    ["/transact!-writer"

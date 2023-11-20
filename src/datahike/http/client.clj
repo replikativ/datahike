@@ -111,13 +111,14 @@
                            {:query-params {"args-id" (uuid data)}})))
           (catch Exception e
              ;; read exception
-            (let [msg  (ex-message e)
+            (let [msg  (if-let [m (ex-message e)] m "Nothing returned. Is the server reachable?")
                   data (ex-data e)
                   new-data
                   (update data :body
                           #(when %
                              (j/read-value % remote/json-mapper)))]
-              (throw (ex-info msg new-data)))))
+              (throw (ex-info (or (:msg (:body new-data)) msg)
+                              (or (:ex-data (:body new-data)) new-data))))))
         response (:body response)
         response (j/read-value response remote/json-mapper)]
     (log/trace  "response" response)
