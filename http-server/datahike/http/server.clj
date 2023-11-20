@@ -129,18 +129,18 @@
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           (let [cfg (dissoc (first body) :remote-peer :writer)]
-                             (try
-                             ;; force release to avoid throwing the release warning
+                           (binding [*connections* server-connections]
+                             (let [cfg (dissoc (first body) :remote-peer :writer)]
                                (try
-                                 (api/release (api/connect cfg) true)
-                                 (catch Exception _))
-                               {:status 200
-                                :body   (apply datahike.writing/delete-database cfg (rest body))}
-                               (catch Exception e
-                                 {:status 500
-                                  :body   {:msg (ex-message e)
-                                           :ex-data (ex-data e)}}))))
+                                 (try
+                                   (api/release (api/connect cfg) true)
+                                   (catch Exception _))
+                                 {:status 200
+                                  :body   (apply datahike.writing/delete-database cfg (rest body))}
+                                 (catch Exception e
+                                   {:status 500
+                                    :body   {:msg (ex-message e)
+                                             :ex-data (ex-data e)}})))))
             :operationId "delete-database"},
      :swagger {:tags ["Internal"]}}]
    ["/create-database-writer"
