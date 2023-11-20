@@ -89,7 +89,7 @@
                 (try
                   (let [start-ts (get-time-ms)
                         {{:keys [datahike/commit-id datahike/parents]} :meta
-                         :as commit-db} (<?- (w/commit! store (:config db) db nil false))
+                         :as commit-db} (<?- (w/commit! db nil false))
                         commit-time (- (get-time-ms) start-ts)]
                     (log/trace "Commit time (ms): " commit-time)
                     (w/add-commit-meta! connection commit-db)

@@ -125,9 +125,9 @@
       (uuid))))
 
 (defn commit!
-  ([store config db parents]
-   (commit! store config db parents true))
-  ([store config db parents sync?]
+  ([db parents]
+   (commit! db parents true))
+  ([db parents sync?]
    (async+sync sync? *default-sync-translation*
                (go-try-
                 (let [{:keys [store config]} db

@@ -140,7 +140,6 @@
    (merge! conn parents tx-data nil))
   ([conn parents tx-data tx-meta]
    (parent-check parents)
-   (let [db (:db-after (update-connection! conn tx-data tx-meta #(with %1 %2 %3)))
-         {:keys [store]} @(:wrapped-atom conn)]
-     (add-commit-meta! conn (commit! store (:config db) db parents))
+   (let [db (:db-after (update-connection! conn tx-data tx-meta #(with %1 %2 %3)))]
+     (add-commit-meta! conn (commit! db parents))
      true)))
