@@ -36,33 +36,38 @@
 
 (defn generic-handler [config f]
   (fn [request]
-    (let [{{body :body} :parameters
-           :keys [headers params method]} request
-          _ (log/trace "request body" f body)
+    (try
+      (let [{{body :body} :parameters
+             :keys [headers params method]} request
+            _ (log/trace "request body" f body)
           ;; TODO move this to client
-          ret-body
-          (cond (= f #'api/create-database)
+            ret-body
+            (cond (= f #'api/create-database)
                 ;; remove remote-peer and re-add
-                (assoc
-                 (apply f (dissoc (first body) :remote-peer) (rest body))
-                 :remote-peer (:remote-peer (first body)))
+                  (assoc
+                   (apply f (dissoc (first body) :remote-peer) (rest body))
+                   :remote-peer (:remote-peer (first body)))
 
-                (= f #'api/delete-database)
-                (apply f (dissoc (first body) :remote-peer) (rest body))
+                  (= f #'api/delete-database)
+                  (apply f (dissoc (first body) :remote-peer) (rest body))
 
-                :else
-                (apply f body))]
-      (log/trace "return body" ret-body)
-      (merge
-       {:status 200
-        :body
-        (when-not (headers "no-return-value")
-          ret-body)}
-       (when (and (= method :get)
-                  (get params "args-id")
-                  (get-in config [:cache :get :max-age]))
-         {:headers {"Cache-Control" (str (when-not (:token config) "public, ")
-                                         "max-age=" (get-in config [:cache :get :max-age]))}})))))
+                  :else
+                  (apply f body))]
+        (log/trace "return body" ret-body)
+        (merge
+         {:status 200
+          :body
+          (when-not (headers "no-return-value")
+            ret-body)}
+         (when (and (= method :get)
+                    (get params "args-id")
+                    (get-in config [:cache :get :max-age]))
+           {:headers {"Cache-Control" (str (when-not (:token config) "public, ")
+                                           "max-age=" (get-in config [:cache :get :max-age]))}})))
+      (catch Exception e
+        {:status 500
+         :body   {:msg (ex-message e)
+                  :ex-data (ex-data e)}})))))
 
 (declare create-routes)
 
@@ -124,8 +129,13 @@
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           {:status 200
-                            :body   (apply datahike.writing/delete-database body)})
+                           (try
+                             {:status 200
+                              :body   (apply datahike.writing/delete-database body)}
+                             (catch Exception e
+                               {:status 500
+                                :body   {:msg (ex-message e)
+                                         :ex-data (ex-data e)}})))
             :operationId "delete-database"},
      :swagger {:tags ["Internal"]}}]
    ["/create-database-writer"
@@ -134,10 +144,15 @@
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           {:status 200
-                            :body   (apply datahike.writing/create-database
-                                           (dissoc (first body) :remote-peer :writer)
-                                           (rest body))})
+                           (try
+                             {:status 200
+                              :body   (apply datahike.writing/create-database
+                                             (dissoc (first body) :remote-peer :writer)
+                                             (rest body))}
+                             (catch Exception e
+                               {:status 500
+                                :body   {:msg (ex-message e)
+                                         :ex-data (ex-data e)}})))
             :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
    ["/transact!-writer"
@@ -147,10 +162,15 @@
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
                            (binding [*connections* server-connections]
-                             (let [conn (api/connect (dissoc (first body) :remote-peer :writer)) ;; TODO maybe release?
-                                   res @(apply datahike.writer/transact! conn (rest body))]
-                               {:status 200
-                                :body   res})))
+                             (try
+                               (let [conn (api/connect (dissoc (first body) :remote-peer :writer)) ;; TODO maybe release?
+                                     res @(apply datahike.writer/transact! conn (rest body))]
+                                 {:status 200
+                                  :body   res})
+                               (catch Exception e
+                                 {:status 500
+                                  :body   {:msg (ex-message e)
+                                           :ex-data (ex-data e)}}))))
             :operationId "transact"},
      :swagger {:tags ["Internal"]}}]])
 

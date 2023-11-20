@@ -24,11 +24,15 @@
     thread)
   (-streaming? [_] streaming?))
 
-(def ^:const default-queue-size 100000)
+(def ^:const DEFAULT_QUEUE_SIZE 100000)
+
+;; minimum wait time between commits in ms
+;; this reduces write pressure on the storage
+(def ^:const DEFAULT_COMMIT_WAIT_TIME 10) ;; in ms
 
 (defn create-thread
   "Creates new transaction thread"
-  [connection write-fn-map transaction-queue-size commit-queue-size]
+  [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time]
   (let [transaction-queue-buffer    (buffer transaction-queue-size)
         transaction-queue           (chan transaction-queue-buffer)
         commit-queue-buffer         (buffer commit-queue-size)
@@ -105,6 +109,7 @@
                     (log/error "Writer thread shutting down because of commit error " e)
                     (close! commit-queue)
                     (close! transaction-queue)))
+                (<! (timeout commit-wait-time))
                 (recur (<?- commit-queue))))))))]))
 
 ;; public API
@@ -117,15 +122,17 @@
     (:backend writer-config)))
 
 (defmethod create-writer :self
-  [{:keys [transaction-queue-size commit-queue-size write-fn-map]} connection]
-  (let [transaction-queue-size (or transaction-queue-size default-queue-size)
-        commit-queue-size (or commit-queue-size default-queue-size)
+  [{:keys [transaction-queue-size commit-queue-size write-fn-map commit-wait-time]} connection]
+  (let [transaction-queue-size (or transaction-queue-size DEFAULT_QUEUE_SIZE)
+        commit-queue-size (or commit-queue-size DEFAULT_QUEUE_SIZE)
+        commit-wait-time (or commit-wait-time DEFAULT_COMMIT_WAIT_TIME)
         [transaction-queue commit-queue thread]
         (create-thread connection
                        (merge default-write-fn-map
                               write-fn-map)
                        transaction-queue-size
-                       commit-queue-size)]
+                       commit-queue-size
+                       commit-wait-time)]
     (map->LocalWriter
      {:transaction-queue transaction-queue
       :transaction-queue-size transaction-queue-size
@@ -168,8 +175,9 @@
       (let [tx-report (<! (dispatch! writer
                                      {:op 'transact!
                                       :args [arg-map]}))]
-        (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
-          (callback tx-report))
+        (when (map? tx-report) ;; not error
+          (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
+            (callback tx-report)))
         (deliver p tx-report)))
     p))
 

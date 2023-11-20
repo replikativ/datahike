@@ -113,7 +113,6 @@
              ;; read exception
             (let [msg  (ex-message e)
                   data (ex-data e)
-                  _ (prn msg data)
                   new-data
                   (update data :body
                           #(when %
