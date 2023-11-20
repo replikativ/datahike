@@ -144,6 +144,12 @@
                   (<?- branch-op)
                   db)))))
 
+(defn add-commit-meta! [connection commit-db]
+  (let [{:keys [datahike/commit-id datahike/parents]} commit-db]
+    (swap! connection #(-> %
+                           (assoc-in [:meta :datahike/parents] parents)
+                           (assoc-in [:meta :datahike/commit-id] commit-id)))))
+
 (defn update-connection! [connection tx-data tx-meta update-fn]
   (let [ret-atom (atom nil)]
     (swap! connection

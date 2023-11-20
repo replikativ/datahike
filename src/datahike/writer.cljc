@@ -89,12 +89,10 @@
                 (try
                   (let [start-ts (get-time-ms)
                         {{:keys [datahike/commit-id datahike/parents]} :meta
-                         :as                          _commit-db} (<?- (w/commit! store (:config db) db nil false))
+                         :as commit-db} (<?- (w/commit! store (:config db) db nil false))
                         commit-time (- (get-time-ms) start-ts)]
                     (log/trace "Commit time (ms): " commit-time)
-                    (swap! connection #(-> %
-                                           (assoc-in [:meta :datahike/commit-id] commit-id)
-                                           (assoc-in [:meta :datahike/parents] parents)))
+                    (w/add-commit-meta! connection commit-db)
                     ;; notify all processes that transaction is complete
                     (doseq [[res callback] @txs]
                       (put! callback
