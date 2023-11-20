@@ -67,7 +67,7 @@
                   (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
                     (log/warn "Commit queue buffer more than 50% full, "
                               (count commit-queue-buffer) "of" commit-queue-size  " filled."
-                              "Throttling transaction processing. Reduce transaction frequency.")
+                              "Throttling transaction processing. Reduce transaction frequency and check your storage throughput.")
                     (<! (timeout 50)))
                   (put! commit-queue [res callback])))
               (recur))

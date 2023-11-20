@@ -108,14 +108,16 @@
 
 (defn branch-heads-as-commits [store parents]
   (set (doall (for [p parents]
-                (if-not (keyword? p) p
-                        (let [{{:keys [datahike/commit-id]} :meta :as old-db}
-                              (k/get store p nil {:sync? true})]
-                          (when-not old-db
-                            (dt/raise "Parent does not exist in store."
-                                      {:type   :parent-does-not-exist-in-store
-                                       :parent p}))
-                          commit-id))))))
+                (do
+                  (assert (not (nil? p)) "Parent cannot be nil.")
+                  (if-not (keyword? p) p
+                          (let [{{:keys [datahike/commit-id]} :meta :as old-db}
+                                (k/get store p nil {:sync? true})]
+                            (when-not old-db
+                              (dt/raise "Parent does not exist in store."
+                                        {:type   :parent-does-not-exist-in-store
+                                         :parent p}))
+                            commit-id)))))))
 
 (defn create-commit-id [db]
   (let [{:keys [hash max-tx max-eid config]

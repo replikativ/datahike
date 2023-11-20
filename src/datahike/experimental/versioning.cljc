@@ -140,6 +140,7 @@
    (merge! conn parents tx-data nil))
   ([conn parents tx-data tx-meta]
    (parent-check parents)
-   (let [db (:db-after (update-connection! conn tx-data tx-meta #(with %1 %2 %3)))]
+   (let [db (:db-after (update-connection! conn tx-data tx-meta #(with %1 %2 %3)))
+         parents (conj parents (get-in @conn [:config :branch]))]
      (add-commit-meta! conn (commit! db parents))
      true)))
