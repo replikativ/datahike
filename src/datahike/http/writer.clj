@@ -17,8 +17,8 @@
       (put! p
             (try
               (request-json :post
-                            (str op "-writer") 
-                            remote-peer 
+                            (str op "-writer")
+                            remote-peer
                             (vec (concat [config] args)))
               (catch Exception e
                 e)))
