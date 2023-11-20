@@ -67,7 +67,7 @@
       (catch Exception e
         {:status 500
          :body   {:msg (ex-message e)
-                  :ex-data (ex-data e)}})))))
+                  :ex-data (ex-data e)}}))))
 
 (declare create-routes)
 
