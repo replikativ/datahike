@@ -141,7 +141,9 @@
   ([conn parents tx-data tx-meta]
    (parent-check parents)
    (let [db (:db-after (update-connection! conn tx-data tx-meta #(with %1 %2 %3)))
-         {:keys [store]} @(:wrapped-atom conn)]
-     (commit! store (:config db) db parents)
-     (swap! conn assoc-in [:meta :datahike/parents] parents)
+         {:keys [store]} @(:wrapped-atom conn)
+         {{:keys [datahike/commit-id]} :meta} (commit! store (:config db) db parents)]
+     (swap! conn #(-> % 
+                      (assoc-in [:meta :datahike/parents] parents)
+                      (assoc-in [:meta :datahike/commit-id] commit-id)))
      true)))
