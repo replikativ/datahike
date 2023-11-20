@@ -98,8 +98,7 @@
                       (put! callback
                             (-> res
                                 (assoc-in [:tx-meta :db/commitId] commit-id)
-                                (assoc-in [:db-after :meta :datahike/commit-id] commit-id)
-                                (assoc-in [:db-after :meta :datahike/parents] parents)))))
+                                (assoc :db-after commit-db)))))
                   (catch Exception e
                     (doseq [[_ callback] @txs]
                       (put! callback e))

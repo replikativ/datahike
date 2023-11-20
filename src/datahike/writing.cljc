@@ -26,13 +26,14 @@
        (count keys-to-check))))
 
 (defn flush-pending-writes [store sync?]
-  (let [pending-futures (:pending-writes (:storage store))
-        current-futures (atom nil)]
+  (let [pending-writes (:pending-writes (:storage store))
+        current-writes (atom nil)]
       ;; atomic extraction and reset
-    (when pending-futures
-      (swap! pending-futures (fn [old] (reset! current-futures old) [])))
+    (when pending-writes
+      ;; at least as new as the current commit, maybe some more writes are included
+      (swap! pending-writes (fn [old] (reset! current-writes old) [])))
     (if sync?
-      (loop [pfs @current-futures]
+      (loop [pfs @current-writes]
         (let [f (first pfs)]
           (when f
             (let [fv (poll! f)]
@@ -41,7 +42,7 @@
                 (do (Thread/sleep 1)
                     (recur pfs)))))))
       (go-try-
-       (loop [[f & r] @current-futures]
+       (loop [[f & r] @current-writes]
          (when f (<?- f) (recur r)))))))
 
 (defn db->stored
