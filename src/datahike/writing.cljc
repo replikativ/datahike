@@ -130,7 +130,8 @@
   ([store config db parents sync?]
    (async+sync sync? *default-sync-translation*
                (go-try-
-                (let [parents       (or parents #{(get config :branch)})
+                (let [{:keys [store config]} db
+                      parents       (or parents #{(get config :branch)})
                       parents       (branch-heads-as-commits store parents)
                       cid           (create-commit-id db)
                       db            (-> db
