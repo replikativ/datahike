@@ -106,7 +106,7 @@
                     (log/error "Writer thread shutting down because of commit error " e)
                     (close! commit-queue)
                     (close! transaction-queue)))
-                (recur (<! commit-queue))))))))]))
+                (recur (<?- commit-queue))))))))]))
 
 ;; public API
 

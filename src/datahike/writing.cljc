@@ -145,7 +145,7 @@
                   db)))))
 
 (defn add-commit-meta! [connection commit-db]
-  (let [{:keys [datahike/commit-id datahike/parents]} commit-db]
+  (let [{{:keys [datahike/commit-id datahike/parents]} :meta} commit-db]
     (swap! connection #(-> %
                            (assoc-in [:meta :datahike/parents] parents)
                            (assoc-in [:meta :datahike/commit-id] commit-id)))))
