@@ -5,7 +5,7 @@
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/konserve                      {;:mvn/version "0.7.311"
                                                      :git/url "https://github.com/replikativ/konserve"
-                                                     :git/sha "127545aadb1adfb44b8df1cc5e0558b9a6987b49"
+                                                     :git/sha "c9642bd5ed07d8391cb8d61354eb9cbbababc788"
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/superv.async                  {:mvn/version "0.3.46"
                                                      :exclusions [org.clojure/clojurescript]}
