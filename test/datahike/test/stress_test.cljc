@@ -3,7 +3,7 @@
             #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
                :clj  [clojure.test :as t :refer        [is deftest testing]])))
 
-(deftest stress-test
+(deftest ^:no-spec stress-test
   (testing "Test lots of parallel reads and writes."
     (let [avet?      true
           num-writes 10000
@@ -34,12 +34,14 @@
 
           _ (d/transact conn schema)
 
+          ;; write in parallel and force the transactor to keep flusing
           last-transact
           (last
            (for [i (shuffle (range num-writes))]
              (do #_(prn "write")
               (d/transact! conn {:tx-data [[:db/add (inc i) :age i]]}))))]
 
+      ;; read while we are writing
       (dotimes [_ num-reads]
         #_(prn "read")
         (d/q '[:find ?e :where [?e :age ?a]]
@@ -50,4 +52,5 @@
              (d/q '[:find (count ?e) .
                     :where
                     [?e :age ?a]]
-                  @conn))))))
+                  @conn)))
+      (d/release conn true))))
