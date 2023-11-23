@@ -3,7 +3,6 @@
             #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
                :clj  [clojure.test :as t :refer        [is deftest testing]])))
 
-
 (deftest stress-test
   (testing "Test lots of parallel reads and writes."
     (let [avet?      true
@@ -39,7 +38,7 @@
           (last
            (for [i (shuffle (range num-writes))]
              (do #_(prn "write")
-                 (d/transact! conn {:tx-data [[:db/add (inc i) :age i]]}))))]
+              (d/transact! conn {:tx-data [[:db/add (inc i) :age i]]}))))]
 
       (dotimes [_ num-reads]
         #_(prn "read")
