@@ -24,7 +24,7 @@
     thread)
   (-streaming? [_] streaming?))
 
-(def ^:const DEFAULT_QUEUE_SIZE 100000)
+(def ^:const DEFAULT_QUEUE_SIZE 120000)
 
 ;; minimum wait time between commits in ms
 ;; this reduces write pressure on the storage
@@ -99,10 +99,10 @@
                     (w/add-commit-meta! connection commit-db)
                     ;; notify all processes that transaction is complete
                     (doseq [[res callback] @txs]
-                      (put! callback
-                            (-> res
-                                (assoc-in [:tx-meta :db/commitId] commit-id)
-                                (assoc :db-after commit-db)))))
+                      (let [res (-> res
+                                    (assoc-in [:tx-meta :db/commitId] commit-id)
+                                    (assoc :db-after commit-db))]
+                        (put! callback res))))
                   (catch Exception e
                     (doseq [[_ callback] @txs]
                       (put! callback e))
@@ -136,7 +136,7 @@
     (map->LocalWriter
      {:transaction-queue transaction-queue
       :transaction-queue-size transaction-queue-size
-      :commit-queu commit-queue
+      :commit-queue commit-queue
       :commit-queue-size commit-queue-size
       :thread thread
       :streaming? true})))

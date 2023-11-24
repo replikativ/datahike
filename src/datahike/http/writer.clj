@@ -2,6 +2,7 @@
   "Remote writer implementation for datahike.http.server through datahike.http.client."
   (:require [datahike.writer :refer [PWriter create-writer create-database delete-database]]
             [datahike.http.client :refer [request-json] :as client]
+            [datahike.json :as json]
             [datahike.tools :as dt :refer [throwable-promise]]
             [taoensso.timbre :as log]
             [clojure.core.async :refer [promise-chan put!]]))
@@ -19,7 +20,8 @@
               (request-json :post
                             (str op "-writer")
                             remote-peer
-                            (vec (concat [config] args)))
+                            (vec (concat [config] args))
+                            json/mapper)
               (catch Exception e
                 e)))
       p))
