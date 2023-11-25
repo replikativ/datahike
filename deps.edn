@@ -3,9 +3,7 @@
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"
                                                      :exclusions [org.clojure/clojurescript]}
-        io.replikativ/konserve                      {:mvn/version "0.7.311"
-                                                     ;:git/url "https://github.com/replikativ/konserve"
-                                                     ;:git/sha "8d9253895f7952c056d9a44ac84cb32e3ed404be"
+        io.replikativ/konserve                      {:mvn/version "0.7.314"
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/superv.async                  {:mvn/version "0.3.46"
                                                      :exclusions [org.clojure/clojurescript]}

@@ -187,12 +187,10 @@
   (let [^PersistentSortedSet pset (psset/sorted-set* {:cmp (index-type->cmp-quick index-type false)
                                                       :storage (:storage store)
                                                       :branching-factor DEFAULT_BRANCHING_FACTOR})]
-    #_(set! (.-_storage pset) (:storage store))
     (with-meta pset
       {:index-type index-type})))
 
 (defmethod di/init-index :datahike.index/persistent-set [_index-name store datoms index-type _ {:keys [indexed]}]
-  #_(psset/set-branching-factor! BRANCHING_FACTOR)
   (let [arr (if (= index-type :avet)
               (->> datoms
                    (filter #(contains? indexed (.-a ^Datom %)))
