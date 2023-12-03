@@ -166,7 +166,7 @@
     (if-let [cached (wrapped/lookup cache address)]
       cached
       (let [node (k/get store address nil {:sync? true})]
-        (when (not (nil? node))
+        (when (nil? node)
           (throw (ex-info  "Node not found in storage." {:type :node-not-found
                                                          :address address
                                                          :store store})))
