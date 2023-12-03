@@ -166,7 +166,10 @@
     (if-let [cached (wrapped/lookup cache address)]
       cached
       (let [node (k/get store address nil {:sync? true})]
-        (assert (not (nil? node)) "Node not found in storage.")
+        (when (not (nil? node))
+          (throw (ex-info  "Node not found in storage." {:type :node-not-found
+                                                         :address address
+                                                         :store store})))
         (swap! stats update :reads inc)
         (wrapped/miss cache address node)
         node))))

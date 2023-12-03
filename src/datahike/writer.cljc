@@ -89,7 +89,7 @@
                   (recur (poll! commit-queue))))
               (log/trace "Batched transaction count: " (count @txs))
               ;; commit latest tx to disk
-              (let [db (:db-after (first (last @txs)))]
+              (let [db (:db-after (first (peek @txs)))]
                 (try
                   (let [start-ts (get-time-ms)
                         {{:keys [datahike/commit-id datahike/parents]} :meta
