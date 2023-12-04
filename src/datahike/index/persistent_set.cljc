@@ -6,6 +6,7 @@
             [datahike.datom :as dd]
             [datahike.constants :refer [tx0 txmax]]
             [datahike.index.interface :as di :refer [IIndex]]
+            [datahike.tools :as dt]
             [konserve.core :as k]
             [konserve.serializers :refer [fressian-serializer]]
             [hasch.core :refer [uuid]]
@@ -167,9 +168,9 @@
       cached
       (let [node (k/get store address nil {:sync? true})]
         (when (nil? node)
-          (throw (ex-info  "Node not found in storage." {:type :node-not-found
-                                                         :address address
-                                                         :store store})))
+          (dt/raise "Node not found in storage." {:type :node-not-found
+                                                  :address address
+                                                  :store store}))
         (swap! stats update :reads inc)
         (wrapped/miss cache address node)
         node))))
@@ -250,8 +251,9 @@
                                                    {"datahike.index.PersistentSortedSet"
                                                     (reify WriteHandler
                                                       (write [_ writer  pset]
-                                                        (assert (not (nil? (.-_address  ^PersistentSortedSet pset)))
-                                                                "Must be flushed.")
+                                                        (when (nil? (.-_address  ^PersistentSortedSet pset))
+                                                          (dt/raise "Must be flushed." {:type :must-be-flushed
+                                                                                        :pset pset}))
                                                         (.writeTag writer "datahike.index.PersistentSortedSet" 1)
                                                         (.writeObject writer {:meta    (meta pset)
                                                                               :address (.-_address  ^PersistentSortedSet pset)

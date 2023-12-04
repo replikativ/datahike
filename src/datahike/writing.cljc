@@ -110,7 +110,9 @@
 (defn branch-heads-as-commits [store parents]
   (set (doall (for [p parents]
                 (do
-                  (assert (not (nil? p)) "Parent cannot be nil.")
+                  (when (nil? p)
+                    (dt/raise "Parent cannot be nil." {:type :parent-cannot-be-nil
+                                                       :parent p}))
                   (if-not (keyword? p) p
                           (let [{{:keys [datahike/commit-id]} :meta :as old-db}
                                 (k/get store p nil {:sync? true})]
