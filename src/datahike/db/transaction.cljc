@@ -9,7 +9,7 @@
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
    [datahike.constants :refer [tx0]]
-   [datahike.tools :refer [get-time raise]]
+   [datahike.tools :refer [get-date raise]]
    [datahike.schema :as ds]
    [me.tonsky.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]
@@ -488,7 +488,7 @@
 (defn flush-tx-meta
   "Generates add-operations for transaction meta data."
   [{:keys [tx-meta db-before] :as report}]
-  (let [;; tx-meta (merge {:db/txInstant (get-time)} tx-meta)
+  (let [;; tx-meta (merge {:db/txInstant (get-date)} tx-meta)
         tid (current-tx report)
         {:keys [attribute-refs?]} (dbi/-config db-before)]
     (reduce-kv
@@ -749,7 +749,7 @@
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)
         initial-report (update initial-report :tx-meta
-                               #(merge {:db/txInstant (get-time)} %))
+                               #(merge {:db/txInstant (get-date)} %))
         meta-entities (flush-tx-meta initial-report)]
     (loop [report (update initial-report :db-after transient)
            es (if (dbi/-keep-history? db-before)

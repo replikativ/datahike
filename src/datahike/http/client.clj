@@ -88,41 +88,44 @@
      (log/trace  "response" response)
      response)))
 
-(defn request-json [method end-point remote-peer data]
-  (let [{:keys [url token]}
-        remote-peer
-        fmt      "application/json"
-        url      (str url "/" end-point)
-        out      (j/write-value-as-bytes data remote/json-mapper)
-        _        (log/trace "request" url end-point token data out)
-        response
-        (try
-          (http/request (merge
-                         {:method method
-                          :uri    url
-                          :headers
-                          (merge {:content-type fmt
-                                  :accept       fmt}
-                                 (when token
-                                   {:authorization (str "token " token)}))
-                          :as     :stream
-                          :body   out}
-                         (when (= method :get)
-                           {:query-params {"args-id" (uuid data)}})))
-          (catch Exception e
+(defn request-json
+  ([method end-point remote-peer data]
+   (request-json method end-point remote-peer data remote/json-mapper))
+  ([method end-point remote-peer data mapper]
+   (let [{:keys [url token]}
+         remote-peer
+         fmt      "application/json"
+         url      (str url "/" end-point)
+         out      (j/write-value-as-bytes data mapper)
+         _        (log/trace "request" url end-point token data out)
+         response
+         (try
+           (http/request (merge
+                          {:method method
+                           :uri    url
+                           :headers
+                           (merge {:content-type fmt
+                                   :accept       fmt}
+                                  (when token
+                                    {:authorization (str "token " token)}))
+                           :as     :stream
+                           :body   out}
+                          (when (= method :get)
+                            {:query-params {"args-id" (uuid data)}})))
+           (catch Exception e
              ;; read exception
-            (let [msg  (ex-message e)
-                  data (ex-data e)
-                  _ (prn msg data)
-                  new-data
-                  (update data :body
-                          #(when %
-                             (j/read-value % remote/json-mapper)))]
-              (throw (ex-info msg new-data)))))
-        response (:body response)
-        response (j/read-value response remote/json-mapper)]
-    (log/trace  "response" response)
-    response))
+             (let [msg  (if-let [m (ex-message e)] m "Nothing returned. Is the server reachable?")
+                   data (ex-data e)
+                   new-data
+                   (update data :body
+                           #(when %
+                              (j/read-value % mapper)))]
+               (throw (ex-info (or (:msg (:body new-data)) msg)
+                               (or (:ex-data (:body new-data)) new-data))))))
+         response (:body response)
+         response (j/read-value response mapper)]
+     (log/trace  "response" response)
+     response)))
 
 (defn request-json-raw [method end-point remote-peer data]
   (let [{:keys [url token]}

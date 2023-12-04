@@ -1,5 +1,5 @@
 (ns datahike.readers
-  (:require [datahike.connections :refer [get-connection connections]]
+  (:require [datahike.connections :refer [get-connection *connections*]]
             [datahike.writing :as dw]
             [datahike.datom :refer [datom] :as dd]
             [datahike.impl.entity :as de]
@@ -17,7 +17,7 @@
 (defn db-from-reader [{:keys [schema datoms store-id commit-id] :as raw-db}]
   (if (and store-id commit-id)
     #?(:cljs (throw (ex-info "Reader not supported." {:type   :reader-not-supported
-                                                      :raw-db db}))
+                                                      :raw-db raw-db}))
        :clj
        (if-let [conn (get-connection store-id)]
          (let [store (:store @conn)]
@@ -38,7 +38,7 @@
   (SinceDB. origin time-point))
 
 (defn connection-from-reader [conn-id]
-  (:conn (@connections conn-id)))
+  (:conn (@*connections* conn-id)))
 
 (defn entity-from-reader [{:keys [db eid]}]
   (de/entity db eid))

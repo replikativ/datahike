@@ -21,7 +21,8 @@
                (dissoc :db/id))))
     (is (= #:db{:ident :tx/norm, :valueType :db.type/keyword, :cardinality :db.cardinality/one}
            (-> (schema :tx/norm)
-               (dissoc :db/id))))))
+               (dissoc :db/id))))
+    (d/release conn)))
 
 (defn tx-fn-test-fn [conn]
   (-> (for [[eid value] (d/q '[:find ?e ?v
@@ -44,7 +45,8 @@
            (d/q '[:find ?v
                   :where
                   [_ :character/place-of-occupation ?v]]
-                (d/db conn))))))
+                (d/db conn))))
+    (d/release conn)))
 
 (defn tx-data-and-tx-fn-test-fn [conn]
   (-> (for [[eid]
@@ -89,7 +91,8 @@
                         [#:character{:name "Bart Simpson"}
                          #:character{:name "Lisa Simpson"}
                          #:character{:name "Maggie Simpson"}]}]
-           (d/pull-many (d/db conn) '[:character/name {:character/children [:character/name]}] margehomer)))))
+           (d/pull-many (d/db conn) '[:character/name {:character/children [:character/name]}] margehomer)))
+    (d/release conn)))
 
 (defn naming-and-sorting-test-fn [conn]
   (-> (for [[eid] (d/q '[:find ?e
@@ -117,4 +120,5 @@
             {:db/id 11,
              :character/name "Lisa Simpson",
              :character/occupation :student}]
-           (d/pull-many (d/db conn) '[*] lisabart)))))
+           (d/pull-many (d/db conn) '[*] lisabart)))
+    (d/release conn)))

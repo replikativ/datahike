@@ -7,13 +7,13 @@
 
 (deftest test-http-writer
   (testing "Testing distributed datahike.http.writer implementation."
-    (let [port 31283
+    (let [port  31283
           server (start-server {:port     port
                                 :join?    false
                                 :dev-mode false
                                 :token    "securerandompassword"})]
       (try
-        (let [cfg    {:store              {:backend :mem :id "distributed_writer"}
+        (let [cfg    {:store              {:backend :file :path  "/tmp/distributed_writer"}
                       :keep-history?      true
                       :schema-flexibility :read
                       :writer             {:backend :datahike-server
@@ -63,21 +63,21 @@
                    (do
                      (d/delete-database cfg)
                      (d/create-database cfg)
-                     (d/connect cfg)))))
-    (testing "Transact fails without writer connection."
-      (let [port 38217
-            cfg  {:store              {:backend :mem :id "distributed_writer_transact"}
-                  :keep-history?      true
-                  :schema-flexibility :read
-                  :writer             {:backend :datahike-server
-                                       :url     (str "http://localhost:" port)
-                                       :token   "securerandompassword"}}
-            server-cfg {:store              {:backend :mem :id "distributed_writer_transact"}
-                        :keep-history?      true
-                        :schema-flexibility :read}]
+                     (d/connect cfg))))))
+  (testing "Transact fails without writer connection."
+    (let [port 38217
+          cfg  {:store              {:backend :mem :id "distributed_writer_transact"}
+                :keep-history?      true
+                :schema-flexibility :read
+                :writer             {:backend :datahike-server
+                                     :url     (str "http://localhost:" port)
+                                     :token   "securerandompassword"}}
+          server-cfg {:store              {:backend :mem :id "distributed_writer_transact"}
+                      :keep-history?      true
+                      :schema-flexibility :read}]
         ;; make sure the database exists before testing transact
-        (do (d/delete-database server-cfg)
-            (d/create-database server-cfg))
-        (is (thrown? Exception
-                     (d/transact (d/connect cfg)
-                                 [{:name "Should fail."}])))))))
+      (do (d/delete-database server-cfg)
+          (d/create-database server-cfg))
+      (is (thrown? Exception
+                   (d/transact (d/connect cfg)
+                               [{:name "Should fail."}]))))))

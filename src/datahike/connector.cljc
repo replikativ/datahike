@@ -1,6 +1,6 @@
 (ns ^:no-doc datahike.connector
   (:require [datahike.connections :refer [get-connection add-connection! delete-connection!
-                                          connections]]
+                                          *connections*]]
             [datahike.readers]
             [datahike.store :as ds]
             [datahike.writing :as dsi]
@@ -38,7 +38,7 @@
   IMeta
   (meta [_] (meta wrapped-atom))
 
-  IRef
+  IRef ;; TODO This is unoffically supported, it triggers watches on each update, not on commits. For proper listeners use the API.
   (addWatch [_ key f] (add-watch wrapped-atom key f))
   (removeWatch [_ key] (remove-watch wrapped-atom key)))
 
@@ -133,6 +133,11 @@
                  :stored-config stored-config
                  :diff          (diff config stored-config)}))))
 
+(defn- normalize-config [cfg]
+  (-> cfg
+      (update :store ds/store-identity)
+      (dissoc :writer)))
+
 (extend-protocol PConnector
   String
   (-connect [uri]
@@ -148,8 +153,8 @@
       (if-let [conn (get-connection conn-id)]
         (let [conn-config (:config @(:wrapped-atom conn))
               ;; replace store config with its identity                              
-              cfg (update config :store ds/store-identity)
-              conn-cfg (update conn-config :store ds/store-identity)]
+              cfg (normalize-config config)
+              conn-cfg (normalize-config conn-config)]
           (when-not (= cfg conn-cfg)
             (dt/raise "Configuration does not match existing connections."
                       {:type :config-does-not-match-existing-connections
@@ -201,9 +206,9 @@
      (let [db      @(:wrapped-atom connection)
            conn-id [(ds/store-identity (get-in db [:config :store]))
                     (get-in db [:config :branch])]]
-       (if-not (get @connections conn-id)
+       (if-not (get @*connections* conn-id)
          (log/info "Connection already released." conn-id)
-         (let [new-conns (swap! connections update-in [conn-id :count] dec)]
+         (let [new-conns (swap! *connections* update-in [conn-id :count] dec)]
            (when (or release-all? (zero? (get-in new-conns [conn-id :count])))
              (delete-connection! conn-id)
              (w/shutdown (:writer db))

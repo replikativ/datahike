@@ -5,13 +5,15 @@
   (:require
    [clojure.string :as str]
    [clojure.edn :as edn]
+   [datahike.connections :refer [*connections*]]
    [datahike.api.specification :refer [api-specification ->url]]
    [datahike.http.middleware :as middleware]
    [datahike.readers :refer [edn-readers]]
    [datahike.transit :as transit]
    [datahike.json :as json]
    [datahike.api :refer :all :as api]
-   [datahike.writing :as datahike.writing]
+   [datahike.writing]
+   [datahike.writer]
    [reitit.ring :as ring]
    [reitit.coercion.spec]
    [reitit.swagger :as swagger]
@@ -34,33 +36,38 @@
 
 (defn generic-handler [config f]
   (fn [request]
-    (let [{{body :body} :parameters
-           :keys [headers params method]} request
-          _ (log/trace "req-body" f body (= f #'api/create-database))
+    (try
+      (let [{{body :body} :parameters
+             :keys [headers params method]} request
+            _ (log/trace "request body" f body)
           ;; TODO move this to client
-          ret-body
-          (cond (= f #'api/create-database)
+            ret-body
+            (cond (= f #'api/create-database)
                 ;; remove remote-peer and re-add
-                (assoc
-                 (apply f (dissoc (first body) :remote-peer) (rest body))
-                 :remote-peer (:remote-peer (first body)))
+                  (assoc
+                   (apply f (dissoc (first body) :remote-peer) (rest body))
+                   :remote-peer (:remote-peer (first body)))
 
-                (= f #'api/delete-database)
-                (apply f (dissoc (first body) :remote-peer) (rest body))
+                  (= f #'api/delete-database)
+                  (apply f (dissoc (first body) :remote-peer) (rest body))
 
-                :else
-                (apply f body))]
-      (log/trace "ret-body" ret-body)
-      (merge
-       {:status 200
-        :body
-        (when-not (headers "no-return-value")
-          ret-body)}
-       (when (and (= method :get)
-                  (get params "args-id")
-                  (get-in config [:cache :get :max-age]))
-         {:headers {"Cache-Control" (str (when-not (:token config) "public, ")
-                                         "max-age=" (get-in config [:cache :get :max-age]))}})))))
+                  :else
+                  (apply f body))]
+        (log/trace "return body" ret-body)
+        (merge
+         {:status 200
+          :body
+          (when-not (headers "no-return-value")
+            ret-body)}
+         (when (and (= method :get)
+                    (get params "args-id")
+                    (get-in config [:cache :get :max-age]))
+           {:headers {"Cache-Control" (str (when-not (:token config) "public, ")
+                                           "max-age=" (get-in config [:cache :get :max-age]))}})))
+      (catch Exception e
+        {:status 500
+         :body   {:msg (ex-message e)
+                  :ex-data (ex-data e)}}))))
 
 (declare create-routes)
 
@@ -100,11 +107,7 @@
                  {:handlers transit/write-handlers}))))
 
 (defn default-route-opts [muuntaja-with-opts]
-  {;; :reitit.middleware/transform dev/print-request-diffs ;; pretty diffs
-   ;; :validate spec/validate ;; enable spec validation for route data
-   ;; :reitit.spec/wrap spell/closed ;; strict top-level validation
-   ;; :exception pretty/exception
-   :data      {:coercion   reitit.coercion.spec/coercion
+  {:data      {:coercion   reitit.coercion.spec/coercion
                :muuntaja   muuntaja-with-opts
                :middleware [swagger/swagger-feature
                             parameters/parameters-middleware
@@ -119,15 +122,25 @@
                             multipart/multipart-middleware
                             middleware/patch-swagger-json]}})
 
-(def internal-writer-routes
+(defn internal-writer-routes [server-connections]
   [["/delete-database-writer"
     {:post {:parameters  {:body (st/spec {:spec any?
                                           :name "delete-database-writer"})},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           {:status 200
-                            :body   (apply datahike.writing/delete-database body)})
+                           (binding [*connections* server-connections]
+                             (let [cfg (dissoc (first body) :remote-peer :writer)]
+                               (try
+                                 (try
+                                   (api/release (api/connect cfg) true)
+                                   (catch Exception _))
+                                 {:status 200
+                                  :body   (apply datahike.writing/delete-database cfg (rest body))}
+                                 (catch Exception e
+                                   {:status 500
+                                    :body   {:msg (ex-message e)
+                                             :ex-data (ex-data e)}})))))
             :operationId "delete-database"},
      :swagger {:tags ["Internal"]}}]
    ["/create-database-writer"
@@ -136,25 +149,38 @@
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           {:status 200
-                            :body   (apply datahike.writing/create-database
-                                           (dissoc (first body) :remote-peer)
-                                           (rest body))})
+                           (let [cfg (dissoc (first body) :remote-peer :writer)]
+                             (try
+                               {:status 200
+                                :body   (apply datahike.writing/create-database
+                                               cfg
+                                               (rest body))}
+                               (catch Exception e
+                                 {:status 500
+                                  :body   {:msg (ex-message e)
+                                           :ex-data (ex-data e)}}))))
             :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
-   ["/transact-writer"
+   ["/transact!-writer"
     {:post {:parameters  {:body (st/spec {:spec any?
                                           :name "transact-writer"})},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
-                           (let [res (apply datahike.writing/transact! body)]
-                             {:status 200
-                              :body   res}))
+                           (binding [*connections* server-connections]
+                             (try
+                               (let [conn (api/connect (dissoc (first body) :remote-peer :writer)) ;; TODO maybe release?
+                                     res @(apply datahike.writer/transact! conn (rest body))]
+                                 {:status 200
+                                  :body   res})
+                               (catch Exception e
+                                 {:status 500
+                                  :body   {:msg (ex-message e)
+                                           :ex-data (ex-data e)}}))))
             :operationId "transact"},
      :swagger {:tags ["Internal"]}}]])
 
-(defn app [config route-opts]
+(defn app [config route-opts server-connections]
   (-> (ring/ring-handler
        (ring/router
         (concat
@@ -169,7 +195,7 @@
                             [(partial middleware/token-auth config)
                              (partial middleware/auth config)])))
               (concat (create-routes config)
-                      internal-writer-routes))) route-opts)
+                      (internal-writer-routes server-connections)))) route-opts)
        (ring/routes
         (swagger-ui/create-swagger-ui-handler
          {:path   "/"
@@ -181,7 +207,7 @@
                  :access-control-allow-methods [:get :put :post :delete])))
 
 (defn start-server [config]
-  (run-jetty (app config (default-route-opts muuntaja-with-opts)) config))
+  (run-jetty (app config (default-route-opts muuntaja-with-opts) (atom {})) config))
 
 (defn stop-server [^org.eclipse.jetty.server.Server server]
   (.stop server))
