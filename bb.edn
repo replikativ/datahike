@@ -1,7 +1,7 @@
 {:min-bb-version "0.8.0"
  :pods {;since babashka 0.8.0, can only be declared in bb.edn
-        org.babashka/tools-deps-native {:version "0.1.1"}
-        clj-kondo/clj-kondo {:version "2023.07.13"}}
+        org.babashka/tools-deps-native {:version "0.1.2"}
+        clj-kondo/clj-kondo {:version "2023.10.20"}}
  :deps {datahike/bb {:local/root "bb"}}
  :tasks {:requires [[babashka.fs :as fs]
                     [clojure.edn :as edn]

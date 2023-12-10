@@ -1,0 +1,50 @@
+macos_instance:
+  image: ghcr.io/cirruslabs/macos-monterey-base:latest
+
+task:
+  only_if: $CIRRUS_BRANCH == 'main'
+  env:
+    DTHK_PLATFORM: macos
+    DTHK_ARCH: aarch64
+    INSTALL_DIR: ${HOME}
+    GRAALVM_VERSION: 21.0.1
+    GRAALVM_HOME: ${HOME}/graalvm-community-openjdk-${GRAALVM_VERSION}+12.1/Contents/Home/
+    GITHUB_TOKEN: ENCRYPTED[0ea782cbbd99c2486b0f55b8eefcf91606a0805faaa3f35e55ecb75268b0046b874c856753f528ba689a9cdaa11e47c2]
+  script: |
+    set -euo pipefail
+
+    # install babashka
+    curl -sLO https://raw.githubusercontent.com/babashka/babashka/master/install
+    chmod +x install
+    ./install --dir ${HOME}/.local/bin
+    export PATH=${HOME}/.local/bin:$PATH
+
+    # install clojure
+    curl -L -O https://github.com/clojure/brew-install/releases/latest/download/posix-install.sh
+    chmod +x posix-install.sh
+    sudo ./posix-install.sh
+
+    # install graalvm
+    pushd "$INSTALL_DIR" >/dev/null
+    curl -L -O https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
+    sudo xattr -r -d com.apple.quarantine graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
+    tar -xzf graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
+    popd >/dev/null
+
+    # prepare
+    export PATH=${GRAALVM_HOME}/bin:${PATH}
+    export JAVA_HOME=$GRAALVM_HOME
+    sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+    java -version
+
+    # compile
+    bb ni-cli
+
+    # test
+    bb test native-image
+    bb test pod
+
+    # upload artifact
+    bb release native-cli
+  binaries_artifacts:
+    path: "dist/*"
