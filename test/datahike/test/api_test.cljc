@@ -888,16 +888,7 @@
     (let [strategy-was-called (atom false)
           strategy (fn [relprod]
                      (reset! strategy-was-called true)
-                     (inner-strategy relprod))
-          cfg {:store {:backend :mem
-                       :id "q"}
-               :initial-tx [[:db/add -1 :name "Ivan"]
-                            [:db/add -1 :likes "fries"]
-                            [:db/add -1 :likes "pizza"]
-                            [:db/add -1 :friend 296]]
-               :keep-history? false
-               :schema-flexibility :read}
-          _conn (utils/setup-db cfg)]
+                     (inner-strategy relprod))]
       (is (= #{["fries"] ["candy"] ["pie"] ["pizza"]}
              (d/q {:query '[:find ?value :where [_ :likes ?value]]
                    :settings {:relprod-strategy strategy}
