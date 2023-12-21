@@ -959,7 +959,34 @@
      pattern)))
 
 (defn resolve-pattern-lookup-refs-or-nil
-  "This function works just like `resolve-pattern-lookup-refs` but if there is an error it returns `nil` instead of throwing an exception. This is used to reject patterns with variables substituted for invalid values."
+  "This function works just like `resolve-pattern-lookup-refs` but if there is an error it returns `nil` instead of throwing an exception. This is used to reject patterns with variables substituted for invalid values.
+
+For instance, take the query
+
+(d/q '[:find ?e
+      :in $ [?e ...]
+      :where [?e :friend 3]]
+     db [1 2 3 \"A\"])
+
+in the test `datahike.test.lookup-refs-test/test-lookup-refs-query`.
+
+According to this query, the variable `?e` can be either `1`, `2`, `3` or `\"A\"`
+but \"A\" is not a valid entity.
+
+The query engine will evaluate the pattern `[?e :friend 3]`. For the strategies
+`identity` and `select-simple`, no substitution will be performed in this pattern.
+Instead, they will ask for all tuples from the database and then filter them, so
+the fact that `?e` can be bound to an impossible entity id `\"A\"` is not a problem.
+
+But with the strategy `select-all`, the substituted pattern will become 
+
+[\"A\" :friend 3]
+
+and consequently, the `result` below will take the value `[::error :friend 3]`.
+The unit test is currently written to simply ignore illegal illegal entity ids
+such as \"A\" and therefore, we handle that by letting this function return nil
+in those cases.
+"
   [source pattern]
   (let [result (resolve-pattern-lookup-refs source pattern ::error)]
     (when (not-any? #(= % ::error) result)
