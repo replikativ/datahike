@@ -540,8 +540,8 @@
         relprod (dq/init-relprod rel-data xy-vars)
         relprod-x (dq/relprod-select-keys relprod #{['?x]})
         relprod-xy (dq/relprod-select-keys relprod #{['?x] ['?y]})
-        relprod-xy2 (dq/relprod-select-all relprod)
-        relprod-y (dq/relprod-select-simple relprod)
+        relprod-xy2 (dq/select-all relprod)
+        relprod-y (dq/select-simple relprod)
         prodks (comp set keys :attrs :product)]
     (is (= #{} (dq/relprod-vars relprod-x)))
     (is (= #{'?x} (dq/relprod-vars relprod-x :include)))

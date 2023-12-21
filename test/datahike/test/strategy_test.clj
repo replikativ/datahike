@@ -87,9 +87,9 @@
                                      {:result result
                                       :elapsed-ns (- end start)})]))
         [[:identity identity]
-         [:select-simple dq/relprod-select-simple]
-         [:select-all dq/relprod-select-all]
-         [:expand-once dq/relprod-expand-once]]))
+         [:select-simple dq/select-simple]
+         [:select-all dq/select-all]
+         [:expand-once dq/expand-once]]))
 
 (defn print-strategy-times [result-map]
   (doseq [[k v] (sort-by (comp :elapsed-ns val) result-map)]

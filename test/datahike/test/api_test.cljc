@@ -882,9 +882,9 @@
   ;; it checks that the result of a simple query is
   ;; correct no matter the choice of strategy.
   (doseq [inner-strategy [identity
-                          dq/relprod-select-simple
-                          dq/relprod-select-all
-                          dq/relprod-expand-once]]
+                          dq/select-simple
+                          dq/select-all
+                          dq/expand-once]]
     (let [strategy-was-called (atom false)
           strategy (fn [relprod]
                      (reset! strategy-was-called true)

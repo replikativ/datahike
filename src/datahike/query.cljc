@@ -1082,10 +1082,14 @@ Each map is returned by "
    :exclude rel-data
    :vars vars})
 
+(defn relprod? [x]
+  (and (map? x) (contains? x :product)))
+
 (defn relprod-exclude-keys [{:keys [exclude]}]
   (map rel-data-key exclude))
 
 (defn relprod-vars [relprod & ks]
+  {:pre [(relprod? relprod)]}
   (into #{}
         (comp (mapcat #(get relprod %))
               (mapcat :vars))
@@ -1100,11 +1104,12 @@ Each map is returned by "
      :vars vars}))
 
 (defn relprod-select-keys [relprod key-set]
-  {:pre [(set? key-set)
+  {:pre [(relprod? relprod)
+         (set? key-set)
          (every? (set (relprod-exclude-keys relprod)) key-set)]}
   (relprod-filter relprod (comp key-set rel-data-key)))
 
-(defn relprod-select-all
+(defn select-all
   "This is a relprod strategy that will result in all 
 possible combinations of relations substituted in the pattern.
  It may be faster or slower than no strategy at all depending 
@@ -1115,22 +1120,25 @@ which can be seen if we request 'Query stats' from Datomic:
 
 https://docs.datomic.com/pro/api/query-stats.html"
   [relprod]
+  {:pre [(relprod? relprod)]}  
   (relprod-filter relprod (constantly true)))
 
-(defn relprod-select-simple
+(defn select-simple
   "This is a relprod strategy that will perform at least as 
 well as no strategy at all because it will result in at most 
 one expanded pattern (or none) that is possibly more specific."
   [relprod]
+  {:pre [(relprod? relprod)]}
   (relprod-filter relprod #(<= (:tuple-count %) 1)))
 
-(defn relprod-expand-once
+(defn expand-once
   "This strategy first performs `relprod-select-simple` and 
 then does one more expansion with the smallest `:tuple-count`. Just 
 like `relprod-select-all`, it is not necessarily always faster
 than doing no expansion at all."
   [relprod]
-  (let [relprod (relprod-select-simple relprod)
+  {:pre [(relprod? relprod)]}
+  (let [relprod (select-simple relprod)
         [r & _] (sort-by :tuple-count (:exclude relprod))]
     (if r
       (relprod-select-keys relprod #{(rel-data-key r)})
@@ -1412,7 +1420,7 @@ than doing no expansion at all."
   (->> (-collect context symbols)
        (map vec)))
 
-(def default-settings {:relprod-strategy relprod-select-all})
+(def default-settings {:relprod-strategy select-all})
 
 (defn raw-q [{:keys [query args offset limit stats? settings] :as _query-map}]
   (let [settings (merge default-settings settings)
