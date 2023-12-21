@@ -538,8 +538,8 @@
         xy-vars ['?x '?y]
         rel-data (dq/expansion-rel-data rels xy-vars)
         relprod (dq/init-relprod rel-data xy-vars)
-        relprod-x (dq/relprod-select-keys relprod ['?x])
-        relprod-xy (dq/relprod-select-keys relprod ['?x] ['?y])
+        relprod-x (dq/relprod-select-keys relprod #{['?x]})
+        relprod-xy (dq/relprod-select-keys relprod #{['?x] ['?y]})
         relprod-xy2 (dq/relprod-select-all relprod)
         relprod-y (dq/relprod-select-simple relprod)
         prodks (comp set keys :attrs :product)]
@@ -550,12 +550,10 @@
     (is (= 2 (count rel-data)))
     (is (= [{:rel x
              :tuple-count 4
-             :vars ['?x]
-             :key ['?x]}
+             :vars ['?x]}
             {:rel y
              :tuple-count 1
-             :vars ['?y]
-             :key ['?y]}]
+             :vars ['?y]}]
            rel-data))
     (is (sequential? (:exclude relprod)))
     (is (= 2 (count (:exclude relprod))))

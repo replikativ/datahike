@@ -1022,14 +1022,23 @@
 
 (def rel-product-unit (Relation. {} [[]]))
 
-(defn expansion-rel-data [rels vars]
+(defn rel-data-key [rel-data]
+  {:pre [(contains? rel-data :vars)]}
+  (:vars rel-data))
+
+(defn expansion-rel-data
+  "Given all the relations `rels` from a context and the `vars` found in a pattern, 
+return a sequence of maps where each map has a relation and the subset of `vars`
+mentioned in that relation. Relations that don't mention any vars are omitted.
+
+Each map is returned by "
+  [rels vars]
   (for [{:keys [attrs tuples] :as rel} rels
         :let [mentioned-vars (filter attrs vars)]
         :when (seq mentioned-vars)]
     {:rel rel
      :vars mentioned-vars
-     :tuple-count (count tuples)
-     :key mentioned-vars}))
+     :tuple-count (count tuples)}))
 
 ;; A *relprod* is a state in the process of
 ;; selecting what relations to use when expanding
@@ -1047,7 +1056,7 @@
    :vars vars})
 
 (defn relprod-exclude-keys [{:keys [exclude]}]
-  (map :key exclude))
+  (map rel-data-key exclude))
 
 (defn relprod-vars [relprod & ks]
   (into #{}
@@ -1063,9 +1072,10 @@
      :exclude (remove predf exclude)
      :vars vars}))
 
-(defn relprod-select-keys [relprod & ks]
-  {:pre [(every? (set (relprod-exclude-keys relprod)) ks)]}
-  (relprod-filter relprod (comp (set ks) :key)))
+(defn relprod-select-keys [relprod key-set]
+  {:pre [(set? key-set)
+         (every? (set (relprod-exclude-keys relprod)) key-set)]}
+  (relprod-filter relprod (comp key-set rel-data-key)))
 
 (defn relprod-select-all
   "This is a relprod strategy that will result in all 
@@ -1096,7 +1106,7 @@ than doing no expansion at all."
   (let [relprod (relprod-select-simple relprod)
         [r & _] (sort-by :tuple-count (:exclude relprod))]
     (if r
-      (relprod-select-keys relprod (:key r))
+      (relprod-select-keys relprod #{(rel-data-key r)})
       relprod)))
 
 (defn expand-constrained-patterns [source context pattern]
