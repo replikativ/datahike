@@ -26,36 +26,37 @@
   `[5 'ssyk-level-1' 3 'ssyk-level-2']` means that we will construct 5 trees
   of root node type 'ssyk-level-1' and each one of them will have 3 children
   of node type 'ssyk-level-2'."
-  [[root-count & tree-spec]]
-  {:pre [(number? root-count)]}
-  (loop [[tos & stack] (repeat root-count [nil tree-spec])
-         tx-data []
-         counter 0
-         concept-map {}]
-    (if (nil? tos)
-      {:tx-data tx-data
-       :concept-map concept-map}
-      (let [[parent-id [this-type child-count & remaining-pairs]] tos
-            concept-id (concept-id counter)
-            tid (temp-id concept-id)
-            parent-tid (temp-id parent-id)]
-        (assert (or (nil? parent-id) (string? parent-id)))
-        (recur (into stack
-                     (when (seq remaining-pairs)
-                       (repeat child-count [concept-id remaining-pairs])))
-               (into tx-data
-                     cat
-                     [[[:db/add tid :concept/id concept-id]
-                       [:db/add tid :concept/type this-type]]
-                      (when parent-id
-                        [[:db/add tid :concept/broader parent-tid]])])
-               (inc counter)
-               (cond-> concept-map
-                 true (update concept-id
-                              merge {:parent-id parent-id
-                                     :type this-type
-                                     :id concept-id})
-                 parent-id (update-in [parent-id :child-ids] #(conj (or % []) concept-id))))))))
+  ([tree-spec] (make-forest tree-spec 0))
+  ([[root-count & tree-spec] init-counter]
+   {:pre [(number? root-count)]}
+   (loop [[tos & stack] (repeat root-count [nil tree-spec])
+          tx-data []
+          counter init-counter
+          concept-map {}]
+     (if (nil? tos)
+       {:tx-data tx-data
+        :concept-map concept-map}
+       (let [[parent-id [this-type child-count & remaining-pairs]] tos
+             concept-id (concept-id counter)
+             tid (temp-id concept-id)
+             parent-tid (temp-id parent-id)]
+         (assert (or (nil? parent-id) (string? parent-id)))
+         (recur (into stack
+                      (when (seq remaining-pairs)
+                        (repeat child-count [concept-id remaining-pairs])))
+                (into tx-data
+                      cat
+                      [[[:db/add tid :concept/id concept-id]
+                        [:db/add tid :concept/type this-type]]
+                       (when parent-id
+                         [[:db/add tid :concept/broader parent-tid]])])
+                (inc counter)
+                (cond-> concept-map
+                  true (update concept-id
+                               merge {:parent-id parent-id
+                                      :type this-type
+                                      :id concept-id})
+                  parent-id (update-in [parent-id :child-ids] #(conj (or % []) concept-id)))))))))
 
 (def schema [#:db{:ident :concept/id,
                   :valueType :db.type/string,
@@ -261,6 +262,13 @@ identity, perform better than that."
         ssyk-data (make-forest [200 "ssyk-level-1" 1 "ssyk-level-2"])
         ssyk-concept-map (:concept-map ssyk-data)
         _ (d/transact conn {:tx-data (:tx-data ssyk-data)})
+
+        ;; Adding some extra data here also makes `expand-once` perform better than
+        ;; `identity` and `select-simple`. If we remove these two lines, then
+        ;; `expand-once`, `identity` and `select-simple` will perform roughly the same.
+        extra-data (make-forest [100 "skill-headline" 100 "skill"] (count ssyk-concept-map))
+        _ (d/transact conn {:tx-data (:tx-data extra-data)})
+        
         _concepts-per-type (group-concepts-by-type ssyk-concept-map)]
     (testing "Query (parent,child) pairs from a *large* set of possible combinations in a labour market taxonomy."
       (let [result-map (evaluate-strategy-times
@@ -286,4 +294,7 @@ identity, perform better than that."
           (is (-> v :result set (= expected-result))))
         (log/info "Find all edges between concept types:")
         (print-strategy-times result-map)
-        (is (faster-strategy? result-map :expand-once :select-all))))))
+        (is (faster-strategy? result-map :expand-once :select-simple))
+        (is (faster-strategy? result-map :expand-once :identity))
+        (is (faster-strategy? result-map :select-simple :select-all))
+        (is (faster-strategy? result-map :identity :select-all))))))
