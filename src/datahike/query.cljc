@@ -1385,7 +1385,7 @@ than doing no expansion at all."
   (->> (-collect context symbols)
        (map vec)))
 
-(def default-settings {:relprod-strategy relprod-select-simple})
+(def default-settings {:relprod-strategy relprod-select-all})
 
 (defn raw-q [{:keys [query args offset limit stats? settings] :as _query-map}]
   (let [settings (merge default-settings settings)
