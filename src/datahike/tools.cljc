@@ -154,7 +154,7 @@
 
 (def datahike-logo (slurp (io/resource "datahike-logo.txt")))
 
-(defmacro with-elements-of [v & var-expr-pairs]
+(defmacro with-destructured-vector [v & var-expr-pairs]
   {:pre [(even? (count var-expr-pairs))]}
   (let [pairs (partition 2 var-expr-pairs)
         vars (mapv first pairs)
