@@ -148,9 +148,11 @@
       (uuid (mapv (comp vec seq) (.keys node))))
     (uuid)))
 
-(defrecord CachedStorage [store config cache stats pending-writes]
+
+(defrecord CachedStorage [store config cache stats pending-writes cost-center-fn]
   IStorage
   (store [_ node]
+    (@cost-center-fn :store)
     (swap! stats update :writes inc)
     (let [address (gen-address node (:crypto-hash? config))
           _ (trace "writing storage: " address " crypto: " (:crypto-hash? config))]
@@ -158,11 +160,13 @@
       (wrapped/miss cache address node)
       address))
   (accessed [_ address]
+    (@cost-center-fn :accessed)
     (trace "accessing storage: " address)
     (swap! stats update :accessed inc)
     (wrapped/hit cache address)
     nil)
   (restore [_ address]
+    (@cost-center-fn :restore)
     (trace "reading: " address)
     (if-let [cached (wrapped/lookup cache address)]
       cached
@@ -183,7 +187,8 @@
   (CachedStorage. store config
                   (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config)))
                   (atom init-stats)
-                  (atom [])))
+                  (atom [])
+                  (atom (fn [_] nil))))
 
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
@@ -217,6 +222,7 @@
    (int (or (:branching-factor m) 0))
    nil ;; weak ref default
    ))
+
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
   ;; deal with circular reference between storage and store
   (let [settings (map->settings {:branching-factor DEFAULT_BRANCHING_FACTOR})
