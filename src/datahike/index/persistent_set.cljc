@@ -148,7 +148,6 @@
       (uuid (mapv (comp vec seq) (.keys node))))
     (uuid)))
 
-
 (defrecord CachedStorage [store config cache stats pending-writes cost-center-fn]
   IStorage
   (store [_ node]

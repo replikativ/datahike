@@ -129,7 +129,7 @@
           (is (= (d/datoms (if (:keep-history? cfg) (d/history @old-conn) @old-conn) :eavt)
                  (d/datoms (if (:keep-history? cfg) (d/history @new-conn) @new-conn) :eavt)
                  #_(filter #(< (:e %) (:max-tx @new-conn))
-                         (d/datoms (if (:keep-history? cfg) (d/history @new-conn) @new-conn) :eavt))))
+                           (d/datoms (if (:keep-history? cfg) (d/history @new-conn) @new-conn) :eavt))))
           (d/release old-conn)
           (d/release new-conn)
           (d/delete-database old-cfg)

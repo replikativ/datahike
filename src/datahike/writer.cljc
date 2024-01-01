@@ -42,47 +42,47 @@
       S
       (do
         ;; processing loop
-       (go
+        (go
          ;; delay processing until the writer we are part of in connection is set
-         (<! (timeout 10))
-         (loop [old @connection]
-           (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
-             (do
-               (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
-                 (log/warn "Transaction queue buffer more than 90% full, "
-                           (count transaction-queue-buffer) "of" transaction-queue-size  " filled."
-                           "Reduce transaction frequency."))
-               (let [op-fn (write-fn-map op)
-                     res   (try
-                             (apply op-fn old args)
+          (<! (timeout 10))
+          (loop [old @connection]
+            (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
+              (do
+                (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
+                  (log/warn "Transaction queue buffer more than 90% full, "
+                            (count transaction-queue-buffer) "of" transaction-queue-size  " filled."
+                            "Reduce transaction frequency."))
+                (let [op-fn (write-fn-map op)
+                      res   (try
+                              (apply op-fn old args)
                             ;; Only catch ExceptionInfo here (intentionally rejected transactions).
                             ;; Any other exceptions should crash the writer and signal the supervisor.
-                             (catch Exception e
-                               (log/error "Error during invocation" invocation e args)
+                              (catch Exception e
+                                (log/error "Error during invocation" invocation e args)
                               ;; take a guess that a NPE was triggered by an invalid connection
                               ;; short circuit on errors
-                               (put! callback
-                                     (if (= (type e) NullPointerException)
-                                       (ex-info "Null pointer encountered in invocation. Connection may have been invalidated, e.g. through db deletion, and needs to be released everywhere."
-                                                {:type       :writer-error-during-invocation
-                                                 :invocation invocation
-                                                 :connection connection
-                                                 :error      e})
-                                       e))
-                               :error))]
-                 (if-not (= res :error)
-                   (do
-                     (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
-                       (log/warn "Commit queue buffer more than 50% full, "
-                                 (count commit-queue-buffer) "of" commit-queue-size  " filled."
-                                 "Throttling transaction processing. Reduce transaction frequency and check your storage throughput.")
-                       (<! (timeout 50)))
-                     (put! commit-queue [res callback])
-                     (recur (:db-after res)))
-                   (recur old))))
-             (do
-               (close! commit-queue)
-               (log/debug "Writer thread gracefully closed")))))
+                                (put! callback
+                                      (if (= (type e) NullPointerException)
+                                        (ex-info "Null pointer encountered in invocation. Connection may have been invalidated, e.g. through db deletion, and needs to be released everywhere."
+                                                 {:type       :writer-error-during-invocation
+                                                  :invocation invocation
+                                                  :connection connection
+                                                  :error      e})
+                                        e))
+                                :error))]
+                  (if-not (= res :error)
+                    (do
+                      (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
+                        (log/warn "Commit queue buffer more than 50% full, "
+                                  (count commit-queue-buffer) "of" commit-queue-size  " filled."
+                                  "Throttling transaction processing. Reduce transaction frequency and check your storage throughput.")
+                        (<! (timeout 50)))
+                      (put! commit-queue [res callback])
+                      (recur (:db-after res)))
+                    (recur old))))
+              (do
+                (close! commit-queue)
+                (log/debug "Writer thread gracefully closed")))))
         ;; commit loop
         (go-loop [tx (<?- commit-queue)]
           (when tx
