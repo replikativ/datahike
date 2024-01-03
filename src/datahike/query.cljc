@@ -1056,9 +1056,7 @@ in those cases.
 (defn expansion-rel-data
   "Given all the relations `rels` from a context and the `vars` found in a pattern, 
 return a sequence of maps where each map has a relation and the subset of `vars`
-mentioned in that relation. Relations that don't mention any vars are omitted.
-
-Each map is returned by "
+mentioned in that relation. Relations that don't mention any vars are omitted."
   [rels vars]
   (for [{:keys [attrs tuples] :as rel} rels
         :let [mentioned-vars (filter attrs vars)]
@@ -1153,27 +1151,38 @@ than doing no expansion at all."
                     :product)]
     (resolve-pattern-vars-for-relation source pattern product)))
 
+(defn lookup-and-sum-pattern-rels [context source patterns clause collect-stats]
+  (loop [rel (Relation. (var-mapping clause (range)) [])
+         patterns patterns
+         lookup-stats []]
+    (if (empty? patterns)
+      {:relation (simplify-rel rel)
+       :lookup-stats lookup-stats}
+      (let [pattern (first patterns)
+            added (lookup-pattern context source pattern clause)]
+        (recur (sum-rel rel added)
+               (rest patterns)
+               (when collect-stats
+                 (conj lookup-stats {:pattern pattern :tuple-count (count (:tuples added))})))))))
+
 (defn lookup-patterns [context
                        clause
                        pattern-before-expansion
                        patterns-after-expansion]
   (let [source *implicit-source*
-        base-rel (Relation. (var-mapping clause (range)) [])
-        raw-relation (transduce (map (fn [pattern]
-                                       (lookup-pattern context
-                                                       source
-                                                       pattern
-                                                       clause)))
-                                (completing sum-rel)
-                                base-rel
-                                patterns-after-expansion)
-        relation (simplify-rel raw-relation)]
+        {:keys [relation lookup-stats]}
+        (lookup-and-sum-pattern-rels context
+                                     source
+                                     patterns-after-expansion
+                                     clause
+                                     (:stats context))]
     (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
                                (dynamic-lookup-attrs source pattern-before-expansion)
                                *lookup-attrs*)]
       
       (cond-> (update context :rels collapse-rels relation)
-        (:stats context) (assoc :tmp-stats {:type :lookup})))))
+        (:stats context) (assoc :tmp-stats {:type :lookup
+                                            :lookup-stats lookup-stats})))))
 
 
 (defn -resolve-clause*
