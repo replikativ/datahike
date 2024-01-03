@@ -80,12 +80,23 @@
     (d/transact conn {:tx-data schema})
     conn))
 
+(defn compute-lookup-cost [lookup]
+  ;; * The call to the db backend is 1 operation.
+  ;; * Processing each returned tuple is 1 operation.
+  (+ 1 (:tuple-count lookup)))
+
 (defn evaluate-strategy-times [f]
   (into {}
         (map (fn [[k strategy]] [k (let [start (System/nanoTime)
-                                         result (f strategy)
+                                         {:keys [ret stats]} (f strategy)
                                          end (System/nanoTime)]
-                                     {:result result
+                                     (assert ret)
+                                     (assert stats)
+                                     {:result ret
+                                      :operation-cost (transduce (comp (mapcat :lookup-stats)
+                                                                       (map compute-lookup-cost))
+                                                                 +
+                                                                 stats)
                                       :elapsed-ns (- end start)})]))
         [[:identity identity]
          [:select-simple dq/select-simple]
@@ -97,8 +108,8 @@
     (log/info (format "%16s: %.6f" (name k) (* 1.0e-9 (:elapsed-ns v))))))
 
 (defn faster-strategy? [strategy-times key-a key-b]
-  (< (get-in strategy-times [key-a :elapsed-ns])
-     (get-in strategy-times [key-b :elapsed-ns])))
+  (< (get-in strategy-times [key-a :operation-cost])
+     (get-in strategy-times [key-b :operation-cost])))
 
 (defn group-concepts-by-type [concept-map]
   (let [groups (update-vals (group-by (comp :type val)
@@ -159,7 +170,8 @@ we only had one one input id. Therefore, it will perform about as bad as identit
                           (fn [strategy]
                             (d/q {:query related-query
                                   :settings {:relprod-strategy strategy}
-                                  :args [(d/db conn) #{input-concept-id}]})))]
+                                  :args [(d/db conn) #{input-concept-id}]
+                                  :stats? true})))]
           (doseq [[_ {:keys [result]}] result-map]
             (is (= (expected-result-fn [input-concept-id])
                    (set result))))
@@ -174,7 +186,8 @@ we only had one one input id. Therefore, it will perform about as bad as identit
                           (fn [strategy]
                             (d/q {:query related-query
                                   :settings {:relprod-strategy strategy}
-                                  :args [(d/db conn) input-ids]})))]
+                                  :args [(d/db conn) input-ids]
+                                  :stats? true})))]
           (doseq [[_ {:keys [result]}] result-map]
             (is (= (expected-result-fn input-ids)
                    (set result))))
@@ -233,7 +246,8 @@ to be filtered."
                                 :settings {:relprod-strategy strategy}
                                 :args [(d/db conn)
                                        parent-ids
-                                       child-ids]})))
+                                       child-ids]
+                                :stats? true})))
             expected-result (into #{}
                                   (map (fn [child-id] {:parent_id parent-id :child_id child-id}))
                                   child-ids)]
@@ -283,7 +297,8 @@ identity, perform better than that."
                                            [?pc :concept/id ?parent-id]
                                            [?cc :concept/id ?child-id]]}
                                 :settings {:relprod-strategy strategy}
-                                :args [(d/db conn)]})))
+                                :args [(d/db conn)]
+                                :stats? true})))
             expected-result (into #{}
                                   (keep (fn [[child-id {:keys [parent-id]}]]
                                           (when parent-id
