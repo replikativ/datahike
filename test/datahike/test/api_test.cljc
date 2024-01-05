@@ -5,6 +5,7 @@
    [datahike.test.utils :as utils]
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.query :as dq]
    [datahike.db.interface :as dbi]
    [datahike.index.interface :as di]
    [datahike.constants :refer [tx0]]))
@@ -873,3 +874,26 @@
 
 (deftest test-metrics-attr-refs
   (test-metrics (assoc metrics-base-cfg :attribute-refs? true)))
+
+(deftest test-strategies
+  ;; The main purpose of this test is to check that
+  ;; the `:relprod-strategy` parameter is not ignored
+  ;; and that the strategy is actually called. Furthermore,
+  ;; it checks that the result of a simple query is
+  ;; correct no matter the choice of strategy.
+  (doseq [inner-strategy [identity
+                          dq/select-simple
+                          dq/select-all
+                          dq/expand-once]]
+    (let [strategy-was-called (atom false)
+          strategy (fn [relprod]
+                     (reset! strategy-was-called true)
+                     (inner-strategy relprod))]
+      (is (= #{["fries"] ["candy"] ["pie"] ["pizza"]}
+             (d/q {:query '[:find ?value :where [_ :likes ?value]]
+                   :settings {:relprod-strategy strategy}
+                   :args [#{[1 :likes "fries"]
+                            [2 :likes "candy"]
+                            [3 :likes "pie"]
+                            [4 :likes "pizza"]}]})))
+      (is (deref strategy-was-called)))))
