@@ -26,7 +26,7 @@
    :working_directory "/home/circleci/replikativ"
    :environment {:GRAALVM_VERSION graalvm-version
                  :PATH "/bin:/home/circleci/graalvm/bin:/home/circleci/clojure/bin:/home/circleci/bin"
-                 :JAVA_HOME "/home/circleci/graalvm"}
+                 :JAVA_HOME "/home/circleci/graalvm/bin/java"}
    :steps
    [:checkout
     (run "Install GraalVM"
