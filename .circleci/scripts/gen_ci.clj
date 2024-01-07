@@ -33,8 +33,7 @@
          "cd /home/circleci
   /bin/wget -O graalvm.tar.gz https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.1/graalvm-community-jdk-21.0.1_linux-x64_bin.tar.gz
   /bin/mkdir graalvm
-  /bin/tar -xzf graalvm.tar.gz --directory graalvm --strip-components 1
-  /bin/ls -lahrt graalvm")
+  /bin/tar -xzf graalvm.tar.gz --directory graalvm --strip-components 1")
     (run "Install Clojure"
          "cd /home/circleci
   /bin/curl -sLO https://download.clojure.org/install/linux-install-1.11.1.1165.sh
@@ -47,7 +46,9 @@
   ./install --dir /home/circleci/bin")
     (run "Foo"
          "native-image --version
-  java -version")
+  java -version
+  env
+  /home/circleci/graalvm/bin/java -version")
     (run "Build native image"
          "cd /home/circleci/replikativ
   bb ni-cli")
