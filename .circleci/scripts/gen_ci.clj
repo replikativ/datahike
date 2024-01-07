@@ -46,7 +46,7 @@
   /bin/chmod +x install
   ./install --dir /home/circleci/bin")
     (run "Foo"
-         "native-image --version)])
+         "native-image --version
   java -version")
     (run "Build native image"
          "cd /home/circleci/replikativ
