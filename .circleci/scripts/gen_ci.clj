@@ -51,11 +51,9 @@
   /home/circleci/graalvm/bin/java -version")
     (run "Build native image"
          "cd /home/circleci/replikativ
-  sudo update-java-alternatives --set $JAVA_HOME
   bb ni-cli")
     (run "Test native image"
          "cd /home/circleci/replikativ
-  sudo update-java-alternatives --set $JAVA_HOME
   bb test native-image")
     {:persist_to_workspace
      {:root "/home/circleci/"
