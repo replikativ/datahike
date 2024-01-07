@@ -45,6 +45,9 @@
   /bin/curl -sLO https://raw.githubusercontent.com/babashka/babashka/master/install
   /bin/chmod +x install
   ./install --dir /home/circleci/bin")
+    (run "Foo"
+         "native-image --version)])
+  java -version")
     (run "Build native image"
          "cd /home/circleci/replikativ
   bb ni-cli")
