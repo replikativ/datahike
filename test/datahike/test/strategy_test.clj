@@ -117,10 +117,9 @@
                             (fn [kv-pairs]
                               (mapv first kv-pairs)))]
     (doseq [[k v] (sort-by val (update-vals groups count))]
-      (log/info k v))    
+      (log/info k v))
     (log/info "Total count:" (count concept-map))
     groups))
-
 
 (deftest synthetic-ssyk-tree-test
 
@@ -135,7 +134,7 @@ identity to perform well because there will always be some substitutions to be m
 In the second query, we provide two input ids. This means that the select-simple
 strategy will not perform the substitution that it performed in the first case where
 we only had one one input id. Therefore, it will perform about as bad as identity."
-  
+
   (testing "Given some concepts, query concepts that are broader."
     (let [conn (initialize-test-db0)
           ssyk-data (make-forest
@@ -220,7 +219,7 @@ of those rows will be discarded. So it will be slower.
 Finally, the select-simple and identity strategies will both run the query
 `[?cc :concept/broader ?pc]` without any substitutions which will return 8000 rows
 to be filtered."
-  
+
   (let [conn (initialize-test-db0)
         ssyk-data (make-forest [4 "ssyk-level-1" 2000 "ssyk-level-2"])
         ssyk-concept-map (:concept-map ssyk-data)
@@ -234,15 +233,15 @@ to be filtered."
             _ (is (= 3 (count child-ids)))
             result-map (evaluate-strategy-times
                         (fn [strategy]
-                          (d/q {:query ' {:find [?parent-id ?child-id]
-                                          :keys [parent_id child_id]
-                                          :in [$
-                                               [?parent-id ...]
-                                               [?child-id ...]],
-                                          :where
-                                          [[?pc :concept/id ?parent-id]
-                                           [?cc :concept/id ?child-id]
-                                           [?cc :concept/broader ?pc]]}
+                          (d/q {:query '{:find [?parent-id ?child-id]
+                                         :keys [parent_id child_id]
+                                         :in [$
+                                              [?parent-id ...]
+                                              [?child-id ...]],
+                                         :where
+                                         [[?pc :concept/id ?parent-id]
+                                          [?cc :concept/id ?child-id]
+                                          [?cc :concept/broader ?pc]]}
                                 :settings {:relprod-strategy strategy}
                                 :args [(d/db conn)
                                        parent-ids
@@ -271,7 +270,7 @@ it will perform 40000 = 200*200 substitutions for all possible combinations of
 `?cc` and `?pc`. Out of those 40000 combinations, only 200 will be valid. That means
 39800 database backend queries that return nothing. All the other strategies, even 
 identity, perform better than that."
-  
+
   (let [conn (initialize-test-db0)
         ssyk-data (make-forest [200 "ssyk-level-1" 1 "ssyk-level-2"])
         ssyk-concept-map (:concept-map ssyk-data)
@@ -282,20 +281,20 @@ identity, perform better than that."
         ;; `expand-once`, `identity` and `select-simple` will perform roughly the same.
         extra-data (make-forest [100 "skill-headline" 100 "skill"] (count ssyk-concept-map))
         _ (d/transact conn {:tx-data (:tx-data extra-data)})
-        
+
         _concepts-per-type (group-concepts-by-type ssyk-concept-map)]
     (testing "Query (parent,child) pairs from a *large* set of possible combinations in a labour market taxonomy."
       (let [result-map (evaluate-strategy-times
                         (fn [strategy]
-                          (d/q {:query ' {:find [?parent-id ?child-id]
-                                          :keys [parent_id child_id]
-                                          :in [$ %],
-                                          :where
-                                          [[?pc :concept/type "ssyk-level-1"]
-                                           [?cc :concept/type "ssyk-level-2"]
-                                           [?cc :concept/broader ?pc]
-                                           [?pc :concept/id ?parent-id]
-                                           [?cc :concept/id ?child-id]]}
+                          (d/q {:query '{:find [?parent-id ?child-id]
+                                         :keys [parent_id child_id]
+                                         :in [$ %],
+                                         :where
+                                         [[?pc :concept/type "ssyk-level-1"]
+                                          [?cc :concept/type "ssyk-level-2"]
+                                          [?cc :concept/broader ?pc]
+                                          [?pc :concept/id ?parent-id]
+                                          [?cc :concept/id ?child-id]]}
                                 :settings {:relprod-strategy strategy}
                                 :args [(d/db conn)]
                                 :stats? true})))

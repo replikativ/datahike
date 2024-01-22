@@ -524,7 +524,6 @@
                                       (long-array [3 4])])))
   (is (= [[3 4] [9 7]] (dq/distinct-tuples [[3 4] [9 7] [3 4]]))))
 
-
 (defn simple-rel
   ([v values] (simple-rel v values {}))
   ([v values extra]
@@ -563,7 +562,7 @@
     (is (= #{'?x '?y '?w} (prodks relprod-xy)))
     (is (= #{'?x '?y '?w} (prodks relprod-xy2)))
     (is (= #{'?y '?w} (prodks relprod-y)))
-    
+
     (doseq [{:keys [include exclude vars]} [relprod relprod-x relprod-xy relprod-xy2 relprod-y]]
       (is (= 2 (+ (count include)
                   (count exclude))))
