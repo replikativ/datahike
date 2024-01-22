@@ -931,7 +931,6 @@
           stats? (assoc :tmp-stats {:type :rule
                                     :branches tmp-stats}))))))
 
-
 (defn resolve-pattern-lookup-entity-id [source e error-code]
   (cond
     (or (lookup-ref? e) (attr? e)) (dbu/entid-strict source e error-code)
@@ -1118,7 +1117,7 @@ which can be seen if we request 'Query stats' from Datomic:
 
 https://docs.datomic.com/pro/api/query-stats.html"
   [relprod]
-  {:pre [(relprod? relprod)]}  
+  {:pre [(relprod? relprod)]}
   (relprod-filter relprod (constantly true)))
 
 (defn select-simple
@@ -1179,11 +1178,10 @@ than doing no expansion at all."
     (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
                                (dynamic-lookup-attrs source pattern-before-expansion)
                                *lookup-attrs*)]
-      
+
       (cond-> (update context :rels collapse-rels relation)
         (:stats context) (assoc :tmp-stats {:type :lookup
                                             :lookup-stats lookup-stats})))))
-
 
 (defn -resolve-clause*
   ([context clause]
