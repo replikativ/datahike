@@ -21,7 +21,7 @@
   []
   (ordered-map
    :machine
-   {:image "ubuntu-2004:202010-01"
+   {:image "ubuntu-2204:2023.10.1"
     :resource_class "large"}
    :working_directory "/home/circleci/replikativ"
    :environment {:GRAALVM_VERSION graalvm-version
@@ -31,30 +31,34 @@
    [:checkout
     (run "Install GraalVM"
          "cd /home/circleci
-  /bin/wget -O graalvm.tar.gz https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.1/graalvm-community-jdk-21.0.1_linux-x64_bin.tar.gz
-  /bin/mkdir graalvm
-  /bin/tar -xzf graalvm.tar.gz --directory graalvm --strip-components 1")
+/bin/wget -O graalvm.tar.gz https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.1/graalvm-community-jdk-21.0.1_linux-x64_bin.tar.gz
+/bin/mkdir graalvm
+/bin/tar -xzf graalvm.tar.gz --directory graalvm --strip-components 1)]))
+sudo update-alternatives --install /usr/bin/java java /home/circleci/graalvm/bin/java 0)]))
+sudo update-alternatives --install /usr/bin/javac javac /home/circleci/graalvm/bin/javac 0
+sudo update-alternatives --set java /home/circleci/graalvm/bin/java
+sudo update-alternatives --set javac /home/circleci/graalvm/bin/javac")
     (run "Install Clojure"
          "cd /home/circleci
-  /bin/curl -sLO https://download.clojure.org/install/linux-install-1.11.1.1165.sh
-  /bin/chmod +x linux-install-1.11.1.1165.sh
-  ./linux-install-1.11.1.1165.sh --prefix /home/circleci/clojure")
+/bin/curl -sLO https://download.clojure.org/install/linux-install-1.11.1.1165.sh
+/bin/chmod +x linux-install-1.11.1.1165.sh
+./linux-install-1.11.1.1165.sh --prefix /home/circleci/clojure")
     (run "Install Babashka"
          "cd /home/circleci
-  /bin/curl -sLO https://raw.githubusercontent.com/babashka/babashka/master/install
-  /bin/chmod +x install
-  ./install --dir /home/circleci/bin")
+/bin/curl -sLO https://raw.githubusercontent.com/babashka/babashka/master/install
+/bin/chmod +x install
+./install --dir /home/circleci/bin")
     (run "Foo"
          "native-image --version
-  java -version
-  env
-  /home/circleci/graalvm/bin/java -version")
+java -version
+env
+/home/circleci/graalvm/bin/java -version")
     (run "Build native image"
          "cd /home/circleci/replikativ
-  bb ni-cli")
+bb ni-cli")
     (run "Test native image"
          "cd /home/circleci/replikativ
-  bb test native-image")
+bb test native-image")
     {:persist_to_workspace
      {:root "/home/circleci/"
       :paths ["replikativ/dthk"]}}]))
