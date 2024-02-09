@@ -32,7 +32,9 @@
 
            :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.0"}}}
 
-           :cljs {:extra-deps {org.clojure/clojurescript {:mvn/version "1.11.121"}}}
+           :cljs {:extra-deps {org.clojure/clojurescript {:mvn/version "1.11.132"}
+                               thheller/shadow-cljs {:mvn/version "2.27.2"}
+                               binaryage/devtools   {:mvn/version "1.0.7"}}}
 
            :dev {:extra-paths ["dev" "benchmark/src"]
                  :extra-deps {org.clojure/tools.namespace {:mvn/version "1.4.4"}

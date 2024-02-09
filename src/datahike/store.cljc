@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.store
   (:require [clojure.spec.alpha :as s]
-            [konserve.filestore :as fs]
+            [#?(:clj konserve.filestore
+                :cljs konserve.node-filestore) :as fs]
             [konserve.memory :as mem]
             [environ.core :refer [env]]
             [datahike.index :as di]
