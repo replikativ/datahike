@@ -19,7 +19,7 @@
                :jar-pattern "{{repo.lib}}-{{version-str}}.jar"
                :lib timokramer/datahike}
          :http-server-clj {;; jvm build
-                           :src-dirs      ["src" "http-server"]
+                           :src-dirs      ["src" "http-server" "resources"]
                            :java-src-dirs ["java"]
                            :target-dir    "target-http-server"
                            :class-dir     "target-http-server/classes"
