@@ -183,6 +183,7 @@
       :friends [:name "Petr"] [:name "Oleg"]
       [[1 :friends 2] [1 :friends 3] [2 :friends 3]])))
 
+
 (deftest test-lookup-refs-query
   (let [schema {:name   {:db/unique :db.unique/identity}
                 :friend {:db/valueType :db.type/ref}}

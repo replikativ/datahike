@@ -14,6 +14,7 @@
 (def -temporal-upsert di/-temporal-upsert)
 (def -remove di/-remove)
 (def -slice di/-slice)
+(def -slicer di/-slicer)
 (def -flush di/-flush)
 (def -transient di/-transient)
 (def -persistent! di/-persistent!)

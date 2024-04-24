@@ -11,7 +11,7 @@
             [datahike.datom :as dd]
             [datahike.constants :refer [e0 tx0 emax txmax]]
             [clojure.spec.alpha :as s]
-            [datahike.index.interface :as di :refer [IIndex]])
+            [datahike.index.interface :as di :refer [IIndex -slice]])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [hitchhiker.tree DataNode IndexNode]
                    [datahike.datom Datom])))
@@ -140,6 +140,9 @@
     (remove-datom tree datom index-type op-count))
   (-slice [tree from to index-type]
     (slice tree from to index-type))
+  (-slicer [tree index-type]
+    (fn [from to]
+      (-slice tree from to index-type)))
   (-flush [tree backend]
     (flush-tree tree backend))
   (-transient [tree]
@@ -169,6 +172,9 @@
     (remove-datom tree datom index-type op-count))
   (-slice [tree from to index-type]
     (slice tree from to index-type))
+  (-slicer [tree index-type]
+    (fn [from to]
+      (-slice tree from to index-type)))
   (-flush [tree backend]
     (flush-tree tree backend))
   (-transient [tree]

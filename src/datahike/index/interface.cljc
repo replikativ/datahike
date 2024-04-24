@@ -10,6 +10,7 @@
   (-upsert [index datom index-type op-count old-datom] "Inserts or updates a datom into the index")
   (-temporal-upsert [index datom index-type op-count old-datom] "Inserts or updates a datom in a history index")
   (-remove [index datom index-type op-count] "Removes a datom from the index")
+  (-slicer [index index-type] "Returns a function that slices")
   (-slice [index from to index-type] "Returns a slice of the index")
   (-flush [index backend] "Saves the changes to the index to the given konserve backend")
   (-transient [index] "Returns a transient version of the index")
