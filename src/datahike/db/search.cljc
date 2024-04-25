@@ -187,7 +187,6 @@
        (boolean indexed?)))))
 
 (defn current-search-strategy [db pattern]
-  ;; TODO: Handle empty!!!
   (let [[_ a _ _] pattern]
     (when-let [[index-key strategy-vec strategy-fn backend-fn]
                (get-search-strategy pattern
@@ -196,7 +195,6 @@
       [(get db index-key) strategy-vec strategy-fn backend-fn])))
 
 (defn temporal-search-strategy [db pattern]
-  ;; TODO: Handle empty!!!
   (let [[_ a _ _ _] pattern]
     (when-let [[index-key strategy-vec strategy-fn backend-fn] (get-search-strategy
                                                          pattern
@@ -209,7 +207,6 @@
          nil) strategy-vec strategy-fn backend-fn])))
 
 (defn search-current-indices
-  ;; TODO: Handle empty!!!
   ([db pattern]
    (memoize-for
     db [:search pattern]
@@ -219,7 +216,6 @@
 
   ;; For batches
   ([db pattern batch-fn]
-   ;; TODO: Handle empty!!!
    (if-let [[db-index strategy-vec _ backend-fn] (current-search-strategy db pattern)]
      (batch-fn strategy-vec (backend-fn db-index))
      [])))
