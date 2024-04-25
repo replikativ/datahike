@@ -1459,13 +1459,11 @@ in those cases.
           filt-predicate (datom-filter-predicate search-context filt-inds)
           filt-predicate (extend-predicate-for-pattern-constants
                           filt-predicate search-context)
-          result (into
-                  []
-                  (comp
-                   unpack6
-                   subst-xform
-                   (backend-xform backend-fn)
-                   (filter-from-predicate filt-predicate))
+          result (into []
+                       (comp unpack6
+                             subst-xform
+                             (backend-xform backend-fn)
+                             (filter-from-predicate filt-predicate))
                   init-coll)]
       result)))
 
