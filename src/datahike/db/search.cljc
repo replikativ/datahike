@@ -3,7 +3,7 @@
    [clojure.core.cache.wrapped :as cw]
    [datahike.array :refer [a=]]
    [datahike.constants :refer [e0 tx0 emax txmax]]
-   [datahike.datom :refer [datom datom-tx datom-added]]
+   [datahike.datom :refer [datom datom-tx datom-added type-hint-datom]]
    [datahike.db.utils :as dbu]
    [datahike.index :as di]
    [datahike.lru :refer [lru-datom-cache-factory]]
@@ -112,7 +112,7 @@
                              `(di/-all ~index-expr))
 
         ;; Symbol type-hinted as Datom.
-        dexpr (vary-meta (gensym) assoc :tag `Datom)
+        dexpr (type-hint-datom (gensym))
 
         ;; Equalities used for filtering (in conjunction)
         equalities (remove nil? [(when (= :filter v-strat)
@@ -172,8 +172,6 @@
    [])
   ([_db-index [_e _a _v _tx] _batch-fn]
    []))
-
-(def empty-strategy [nil [nil nil nil nil] empty-lookup-fn empty-lookup-fn])
 
 (defn- get-search-strategy [pattern indexed? temporal-db?]
   (validate-pattern pattern true)
