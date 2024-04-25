@@ -36,10 +36,6 @@
 
 (set! *warn-on-reflection* true)
 
-(defn ordered? [coll]
-  (= coll (sort coll)))
-
-
 ;; ----------------------------------------------------------------------------
 
 (def ^:const lru-cache-size 100)
