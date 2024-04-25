@@ -1,8 +1,7 @@
 (ns ^:no-doc datahike.tools
   (:require
    [superv.async :refer [throw-if-exception-]]
-   #?(:clj
-      [clojure.java.io :as io])
+   #?(:clj [clojure.java.io :as io])
    [taoensso.timbre :as log])
   #?(:clj (:import [java.util Properties UUID Date]
                    [java.net InetAddress])))
