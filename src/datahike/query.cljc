@@ -509,9 +509,6 @@
 (defn resolve-ins [context bindings values]
   (reduce resolve-in context (zipmap bindings values)))
 
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; TODO: WHAT ABOUT THIS????
 (def ^{:dynamic true
        :doc "List of symbols in current pattern that might potentially be resolved to refs"}
   *lookup-attrs* nil)
@@ -534,12 +531,12 @@
         (#?(:cljs da/aget :clj get) tuple idx)))))
 
 (defn tuple-key-fn [getters]
-    (if (== (count getters) 1)
-      (first getters)
-      (let [getters (to-array getters)]
-        (fn [tuple]
-          (list* #?(:cljs (.map getters #(% tuple))
-                    :clj (to-array (map #(% tuple) getters))))))))
+  (if (== (count getters) 1)
+    (first getters)
+    (let [getters (to-array getters)]
+      (fn [tuple]
+        (list* #?(:cljs (.map getters #(% tuple))
+                  :clj (to-array (map #(% tuple) getters))))))))
 
 (defn hash-attrs [key-fn tuples]
   ;; Equivalent to group-by except that it uses a list instead of a vector.
