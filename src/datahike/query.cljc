@@ -643,15 +643,6 @@
                               (object-array [e a v tx added?]))
                             datoms)))))
 
-(defn lookup-pattern-db [context db pattern orig-pattern]
-  ;; TODO optimize with bound attrs min/max values here
-  (let [ ;; Replace all unknowns by nil.
-        search-pattern (replace-symbols-by-nil pattern)
-        datoms (if-let [search-pattern (resolve-pattern-eid db search-pattern)]
-                 (dbi/-search db search-pattern)
-                 [])]
-    (relation-from-datoms context orig-pattern datoms)))
-
 (defn matches-pattern? [pattern tuple]
   (loop [tuple tuple
          pattern pattern]
@@ -667,13 +658,6 @@
   (let [attr->idx (var-mapping orig-pattern (range))
         data (filter #(matches-pattern? pattern %) coll)]
     (Relation. attr->idx (mapv to-array data))))            ;; FIXME to-array
-
-(defn lookup-pattern [context source pattern orig-pattern]
-  (cond
-    (dbu/db? source)
-    (lookup-pattern-db context source pattern orig-pattern)
-    :else
-    (lookup-pattern-coll source pattern orig-pattern)))
 
 (defn collapse-rels [rels new-rel]
   (loop [rels rels
