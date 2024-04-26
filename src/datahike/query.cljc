@@ -1077,8 +1077,6 @@ in those cases.
 
 (def rel-product-unit (Relation. {} [[]]))
 
-(defn log-example [_example])
-
 (defn bound-symbol-map [rels]
   (into {} (for [[rel-index rel] (map-indexed vector rels)
                  [sym tup-index] (:attrs rel)]
