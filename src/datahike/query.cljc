@@ -638,10 +638,10 @@
 
 (defn relation-from-datoms [context orig-pattern datoms]
   (or (map-consts context orig-pattern datoms)
-      (let [vm (var-mapping
-                orig-pattern
-                ["e" "a" "v" "tx" "added"])]
-        (Relation. vm datoms))))
+      (let [vm (var-mapping orig-pattern (range))]
+        (Relation. vm (mapv (fn [[e a v tx added?]]
+                              (object-array [e a v tx added?]))
+                            datoms)))))
 
 (defn lookup-pattern-db [context db pattern orig-pattern]
   ;; TODO optimize with bound attrs min/max values here
@@ -1476,10 +1476,8 @@ in those cases.
                                  (dbi/-batch-search source clean-pattern
                                                     (search-batch-fn search-context))
                                  [])
-                        new-rel (relation-from-datoms context orig-pattern datoms)
-                        base-rel (Relation. (var-mapping orig-pattern (range)) [])
-                        full-rel (simplify-rel (sum-rel base-rel new-rel))]
-                    full-rel)
+                        new-rel (relation-from-datoms context orig-pattern datoms)]
+                    new-rel)
                   (lookup-pattern-coll source pattern1 orig-pattern))]
 
     ;; This binding is needed for `collapse-rels` to work, and more specifically,
