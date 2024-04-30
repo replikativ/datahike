@@ -215,17 +215,23 @@
   ;; For batches
   ([db pattern batch-fn]
    (if-let [[db-index strategy-vec _ backend-fn] (current-search-strategy db pattern)]
-     (batch-fn strategy-vec (backend-fn db-index))
+     (batch-fn strategy-vec (backend-fn db-index) identity)
      [])))
 
 (defn added? [[_ _ _ _ added]]
   added)
 
-(defn filter-by-added [pattern result]
-  (case (added? pattern)
-    true (filter datom-added result)
-    false (remove datom-added result)
-    nil result))
+(defn filter-by-added
+  ([pattern]
+   (case (added? pattern)
+     true (filter datom-added)
+     false (remove datom-added)
+     nil identity))
+  ([pattern result]
+   (case (added? pattern)
+     true (filter datom-added result)
+     false (remove datom-added result)
+     nil result)))
 
 (defn search-temporal-indices
   ([db pattern]
@@ -236,8 +242,10 @@
                    [])))
   ([db pattern batch-fn]
    (if-let [[db-index strategy-vec _ backend-fn] (temporal-search-strategy db pattern)]
-     (let [result (batch-fn strategy-vec (backend-fn db-index))]
+     #_(let [result (batch-fn strategy-vec (backend-fn db-index))]
        (filter-by-added pattern result))
+     (batch-fn strategy-vec (backend-fn db-index)
+               (filter-by-added pattern))
      [])))
 
 (defn temporal-search

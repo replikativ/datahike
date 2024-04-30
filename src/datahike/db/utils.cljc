@@ -185,22 +185,43 @@
     :aevt (resolve-datom db c1 c0 c2 c3 default-e default-tx)
     :avet (resolve-datom db c2 c0 c1 c3 default-e default-tx)))
 
-(defn distinct-datoms [db current-datoms history-datoms]
-  (if  (dbi/-keep-history? db)
-    (concat (filter #(or (no-history? db (:a %))
-                         (multival? db (:a %)))
-                    current-datoms)
-            history-datoms)
-    current-datoms))
+(defn distinct-datoms
+  ([db current-datoms history-datoms]
+   (if (dbi/-keep-history? db)
+     (into (into []
+                 (filter #(or (no-history? db (:a %))
+                              (multival? db (:a %))))
+                 current-datoms)
+           history-datoms)
+     current-datoms))
+  ([step dst db current-datoms history-datoms]
+   (if (dbi/-keep-history? db)
+     (reduce step (reduce ((filter #(or (no-history? db (:a %))
+                                        (multival? db (:a %)))) step)
+                          dst
+                          current-datoms)
+             history-datoms)
+     current-datoms)))
 
-(defn temporal-datoms [db index-type cs]
-  (let [index (get db index-type)
-        temporal-index (get db (keyword (str "temporal-" (name index-type))))
-        from (components->pattern db index-type cs e0 tx0)
-        to (components->pattern db index-type cs emax txmax)]
-    (distinct-datoms db
-                     (di/-slice index from to index-type)
-                     (di/-slice temporal-index from to index-type))))
+(defn temporal-datoms
+  ([step dst db index-type cs]
+   (let [index (get db index-type)
+         temporal-index (get db (keyword (str "temporal-" (name index-type))))
+         from (components->pattern db index-type cs e0 tx0)
+         to (components->pattern db index-type cs emax txmax)]
+     (distinct-datoms step
+                      dst
+                      db
+                      (di/-slice index from to index-type)
+                      (di/-slice temporal-index from to index-type))))
+  ([db index-type cs]
+   (let [index (get db index-type)
+         temporal-index (get db (keyword (str "temporal-" (name index-type))))
+         from (components->pattern db index-type cs e0 tx0)
+         to (components->pattern db index-type cs emax txmax)]
+     (distinct-datoms db
+                      (di/-slice index from to index-type)
+                      (di/-slice temporal-index from to index-type)))))
 
 (defn filter-txInstant [datoms pred db]
   (let [txInstant (if (:attribute-refs? (dbi/-config db))
@@ -210,7 +231,11 @@
           (comp
            (map datom-tx)
            (distinct)
-           (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
+           (fn [step]
+             (fn
+               ([dst] (step dst))
+               ([dst tx]
+                (temporal-datoms step dst db :eavt [tx]))))
            (keep (fn [^Datom d]
                    (when (and (= txInstant (.-a d)) (pred d))
                      (.-e d)))))

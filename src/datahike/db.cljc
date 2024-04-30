@@ -192,8 +192,8 @@
   dbi/ISearch
   (-search [db pattern]
     (dbs/search-current-indices db pattern))
-  (-batch-search [db pattern-mask batch-fn]
-    (dbs/search-current-indices db pattern-mask batch-fn))
+  (-batch-search [db pattern-mask batch-fn final-xform]
+    (into [] final-xform (dbs/search-current-indices db pattern-mask batch-fn)))
 
   dbi/IIndexAccess
   (-datoms [db index-type cs]
@@ -287,8 +287,10 @@
   dbi/ISearch
   (-search [db pattern]
     (filter (.-pred db) (dbi/-search unfiltered-db pattern)))
-  (-batch-search [db pattern-mask batch-fn]
-    (filter (.-pred db) (dbi/-batch-search unfiltered-db pattern-mask batch-fn)))
+  (-batch-search [db pattern-mask batch-fn final-xform]
+    (dbi/-batch-search unfiltered-db pattern-mask batch-fn
+                       (comp (filter (.-pred db))
+                             final-xform)))
 
   dbi/IIndexAccess
   (-datoms [db index cs]
@@ -353,8 +355,8 @@
   dbi/ISearch
   (-search [db pattern]
     (dbs/temporal-search origin-db pattern))
-  (-batch-search [db pattern-mask batch-fn]
-    (dbs/temporal-search origin-db pattern-mask batch-fn))
+  (-batch-search [db pattern-mask batch-fn final-xform]
+    (into [] final-xform (dbs/temporal-search origin-db pattern-mask batch-fn)))
 
   dbi/IIndexAccess
   (-datoms [db index-type cs] (dbu/temporal-datoms origin-db index-type cs))
@@ -371,38 +373,41 @@
   #?(:cljs (instance? js/Date d)
      :clj (instance? Date d)))
 
-(defn get-current-values [db history-datoms]
-  (->> history-datoms
-       (group-by (fn [^Datom datom] [(.-e datom) (.-a datom)]))
-       (mapcat
-        (fn [[[_ a] datoms]]
-          (if (dbu/multival? db a)
-            (->> datoms
-                 (sort-by datom-tx)
-                 (reduce (fn [current-datoms ^Datom datom]
-                           (if (datom-added datom)
-                             (assoc current-datoms (.-v datom) datom)
-                             (dissoc current-datoms (.-v datom))))
-                         {})
-                 vals)
-            (let [last-ea-tx (apply max (map datom-tx datoms))
-                  current-ea-datom (first (filter #(and (datom-added %) (= last-ea-tx (datom-tx %)))
-                                                  datoms))]
-              (if current-ea-datom
-                [current-ea-datom]
-                [])))))))
+(defn filter-as-of-datoms
+  ([datoms time-point db] (filter-as-of-datoms datoms time-point db identity))
+  ([datoms time-point db final-xform]
+   (let [as-of-pred (fn [^Datom d]
+                      (if (date? time-point)
+                        (.before ^Date (.-v d) ^Date time-point)
+                        (<= (dd/datom-tx d) time-point)))
 
-(defn filter-as-of-datoms [datoms time-point db]
-  (let [as-of-pred (fn [^Datom d]
-                     (if (date? time-point)
-                       (.before ^Date (.-v d) ^Date time-point)
-                       (<= (dd/datom-tx d) time-point)))
-
-        filtered-tx-ids (dbu/filter-txInstant datoms as-of-pred db)
-        filtered-datoms (->> datoms
-                             (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
-                             (get-current-values db))]
-    filtered-datoms))
+         filtered-tx-ids (dbu/filter-txInstant datoms as-of-pred db)
+         filtered-datoms (->> datoms
+                              (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
+                              (group-by (fn [^Datom datom] [(.-e datom) (.-a datom)]))
+                              (into []
+                                    (comp (mapcat
+                                           (fn [[[_ a] datoms]]
+                                             (if (dbu/multival? db a)
+                                               (->> datoms
+                                                    (sort-by datom-tx)
+                                                    (reduce (fn [current-datoms ^Datom datom]
+                                                              (if (datom-added datom)
+                                                                (assoc current-datoms (.-v datom) datom)
+                                                                (dissoc current-datoms (.-v datom))))
+                                                            {})
+                                                    vals)
+                                               (let [last-ea-tx (apply max (map datom-tx datoms))
+                                                     current-ea-datom (first
+                                                                       (filter #(and (datom-added %)
+                                                                                     (= last-ea-tx
+                                                                                        (datom-tx %)))
+                                                                               datoms))]
+                                                 (if current-ea-datom
+                                                   [current-ea-datom]
+                                                   [])))))
+                                          final-xform)))]
+     filtered-datoms)))
 
 (defrecord-updatable AsOfDB [origin-db time-point]
   #?@(:cljs
@@ -453,9 +458,9 @@
   (-search [db pattern]
     (-> (dbs/temporal-search origin-db pattern)
         (filter-as-of-datoms time-point origin-db)))
-  (-batch-search [db pattern batch-fn]
+  (-batch-search [db pattern batch-fn final-xform]
     (-> (dbs/temporal-search origin-db pattern batch-fn)
-        (filter-as-of-datoms time-point origin-db)))
+        (filter-as-of-datoms time-point origin-db final-xform)))
 
   dbi/IIndexAccess
   (-datoms [db index-type cs]
@@ -476,15 +481,19 @@
 
 ;; SinceDB
 
-(defn- filter-since [datoms time-point db]
-  (let [since-pred (fn [^Datom d]
-                     (if (date? time-point)
-                       (.after ^Date (.-v d) ^Date time-point)
-                       (>= (.-tx d) time-point)))
-        filtered-tx-ids (dbu/filter-txInstant datoms since-pred db)]
-    (->> datoms
-         (filter datom-added)
-         (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d)))))))
+(defn- filter-since
+  ([datoms time-point db] (filter-since datoms time-point db identity))
+  ([datoms time-point db final-xform]
+   (let [since-pred (fn [^Datom d]
+                      (if (date? time-point)
+                        (.after ^Date (.-v d) ^Date time-point)
+                        (>= (.-tx d) time-point)))
+         filtered-tx-ids (dbu/filter-txInstant datoms since-pred db)]
+     (into []
+           (comp (filter datom-added)
+                 (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
+                 final-xform)
+           datoms))))
 
 (defrecord-updatable SinceDB [origin-db time-point]
   #?@(:cljs
@@ -535,9 +544,9 @@
   (-search [db pattern]
     (-> (dbs/temporal-search origin-db pattern)
         (filter-since time-point origin-db)))
-  (-batch-search [db pattern batch-fn]
+  (-batch-search [db pattern batch-fn final-xform]
     (-> (dbs/temporal-search origin-db pattern batch-fn)
-        (filter-since time-point origin-db)))
+        (filter-since time-point origin-db final-xform)))
 
   dbi/IIndexAccess
   (dbi/-datoms [db index-type cs]

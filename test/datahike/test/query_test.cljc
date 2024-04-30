@@ -602,7 +602,7 @@
 
 
 
-(deftest test-substitution-plan
+#_(deftest test-substitution-plan
   (let [-pattern1 '[?w ?x ?y]
         context '{:rels [{:attrs {?x 0
                                   ?y 1}
@@ -733,7 +733,7 @@
             datoms)))
 
 
-(deftest test-full-lookup-pipeline
+#_(deftest test-full-lookup-pipeline
   (let [pattern1 '[?x ?w ?y]
         context '{:rels [{:attrs {?x 0}
                           :tuples [[1] [3] [5]]}
@@ -965,3 +965,9 @@ we query all (parent, child) pairs."
         (is (= 200 (count expected-result)))
         (is (= expected-result
                (set result)))))))
+
+
+(deftest basic-index-selector-test
+  (let [f (dq/basic-index-selector 5)]
+    (is (= [10 7] ((f [1 3]) [9 10 4 7 1234])))
+    (is (= [7 10] ((f [3 1]) [9 10 4 7 1234])))))

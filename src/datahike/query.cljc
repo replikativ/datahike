@@ -19,12 +19,15 @@
    [datalog.parser.impl :as dpi]
    [datalog.parser.impl.proto :as dpip]
    [datalog.parser.pull :as dpp]
+   [datahike.tools :refer [timeacc-root]]
+   [timeacc.core :refer [measure unsafe-acc def-unsafe-acc] :as timeacc]
    #?(:cljs [datalog.parser.type :refer [Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                                          FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                                          RulesVar SrcVar Variable]])
    [me.tonsky.persistent-sorted-set.arrays :as da]
    [taoensso.timbre :as log])
   (:refer-clojure :exclude [seqable?])
+  
 
   #?(:clj (:import [clojure.lang Reflector Seqable PersistentVector]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
@@ -33,6 +36,15 @@
                    [java.lang.reflect Method]
                    [java.util Date Map HashSet ArrayList HashMap AbstractMap$SimpleEntry
                     Iterator])))
+
+(def wip-acc (unsafe-acc timeacc-root :wip-acc))
+
+(def verbose false)
+
+(defmacro debug-println [& args]
+  (when verbose
+    `(println ~@args)))
+
 
 (set! *warn-on-reflection* true)
 
@@ -95,9 +107,11 @@
 
 (defn distinct-tuples
   "Remove duplicates just like `distinct` but with the difference that it only works on values on which `vec` can be applied and two different objects are considered equal if and only if their results after `vec` has been applied are equal. This means that two different Java arrays are considered equal if and only if their elements are equal."
-  [tuples]
-  (let [seen (HashSet.)]
-    (into [] (filter #(.add ^HashSet seen (vec %))) tuples)))
+  ([tuples]
+   (into [] (distinct-tuples) tuples))
+  ([]
+   (let [seen (HashSet.)]
+     (filter #(.add ^HashSet seen (vec %))))))
 
 (defn seqable?
   #?@(:clj [^Boolean [x]]
@@ -181,39 +195,42 @@
       (aset res (+ l1 i) (#?(:cljs da/aget :clj get) t2 (aget idxs2 i)))) ;; FIXME aget
     res))
 
+(def sum-rel-acc (unsafe-acc timeacc-root :sum-rel-acc))
+
 (defn sum-rel
   ([a] a)
   ([a b]
-   (let [{attrs-a :attrs, tuples-a :tuples} a
-         {attrs-b :attrs, tuples-b :tuples} b]
-     (cond
-       (= attrs-a attrs-b)
-       (Relation. attrs-a (into (vec tuples-a) tuples-b))
+   (measure sum-rel-acc
+     (let [{attrs-a :attrs, tuples-a :tuples} a
+           {attrs-b :attrs, tuples-b :tuples} b]
+       (cond
+         (= attrs-a attrs-b)
+         (Relation. attrs-a (into (vec tuples-a) tuples-b))
 
-       (not (same-keys? attrs-a attrs-b))
-       (dt/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
-                 {:error :query/where})
+         (not (same-keys? attrs-a attrs-b))
+         (dt/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
+                   {:error :query/where})
 
-       (every? number? (vals attrs-a)) ;; can’t conj into BTSetIter
-       (let [idxb->idxa (vec (for [[sym idx-b] attrs-b]
-                               [idx-b (attrs-a sym)]))
-             tlen (->> (vals attrs-a) (reduce max) (inc))
-             tuples' (persistent!
-                      (reduce
-                       (fn [acc tuple-b]
-                         (let [tuple' (da/make-array tlen)]
-                           (doseq [[idx-b idx-a] idxb->idxa]
-                             (aset tuple' idx-a (#?(:cljs da/aget :clj get) tuple-b idx-b)))
-                           (conj! acc tuple')))
-                       (transient (vec tuples-a))
-                       tuples-b))]
-         (Relation. attrs-a tuples'))
+         (every? number? (vals attrs-a)) ;; can’t conj into BTSetIter
+         (let [idxb->idxa (vec (for [[sym idx-b] attrs-b]
+                                 [idx-b (attrs-a sym)]))
+               tlen (->> (vals attrs-a) (reduce max) (inc))
+               tuples' (persistent!
+                        (reduce
+                         (fn [acc tuple-b]
+                           (let [tuple' (da/make-array tlen)]
+                             (doseq [[idx-b idx-a] idxb->idxa]
+                               (aset tuple' idx-a (#?(:cljs da/aget :clj get) tuple-b idx-b)))
+                             (conj! acc tuple')))
+                         (transient (vec tuples-a))
+                         tuples-b))]
+           (Relation. attrs-a tuples'))
 
-       :else
-       (let [all-attrs (zipmap (keys (merge attrs-a attrs-b)) (range))]
-         (-> (Relation. all-attrs [])
-             (sum-rel a)
-             (sum-rel b)))))))
+         :else
+         (let [all-attrs (zipmap (keys (merge attrs-a attrs-b)) (range))]
+           (-> (Relation. all-attrs [])
+               (sum-rel a)
+               (sum-rel b))))))))
 
 (defn simplify-rel [rel]
   (Relation. (:attrs rel) (distinct-tuples (:tuples rel))))
@@ -246,25 +263,31 @@
   (let [l (count xs)]
     (not= (take (/ l 2) xs) (drop (/ l 2) xs))))
 
+(def get-else-acc (unsafe-acc timeacc-root :get-else-acc))
+
 (defn- -get-else
   [db e a else-val]
-  (when (nil? else-val)
-    (dt/raise "get-else: nil default value is not supported" {:error :query/where}))
-  (if-some [datom (first (dbi/-search db [e (translate-for db a)]))]
-    (:v datom)
-    else-val))
+  (measure get-else-acc
+    (when (nil? else-val)
+      (dt/raise "get-else: nil default value is not supported" {:error :query/where}))
+    (if-some [datom (first (dbi/-search db [e (translate-for db a)]))]
+      (:v datom)
+      else-val)))
+
+(def get-some-acc (unsafe-acc timeacc-root :get-some-acc))
 
 (defn- -get-some
   [db e & as]
-  (reduce
-   (fn [_ a]
-     (when-some [datom (first (dbi/-search db [e (translate-for db a)]))]
-       (let [a-ident (if (keyword? (:a datom))
-                       (:a datom)
-                       (dbi/-ident-for db (:a datom)))]
-         (reduced [a-ident (:v datom)]))))
-   nil
-   as))
+  (measure get-some-acc
+    (reduce
+     (fn [_ a]
+       (when-some [datom (first (dbi/-search db [e (translate-for db a)]))]
+         (let [a-ident (if (keyword? (:a datom))
+                         (:a datom)
+                         (dbi/-ident-for db (:a datom)))]
+           (reduced [a-ident (:v datom)]))))
+     nil
+     as)))
 
 (defn- -missing?
   [db e a]
@@ -544,47 +567,50 @@
                (assoc! hash-table key (conj (get hash-table key '()) tuple))))
       (persistent! hash-table))))
 
+(def hash-join-acc (unsafe-acc timeacc-root :hash-join-acc))
+
 (defn hash-join [rel1 rel2]
-  (let [tuples1      (:tuples rel1)
-        tuples2      (:tuples rel2)
-        attrs1       (:attrs rel1)
-        attrs2       (:attrs rel2)
-        common-attrs (vec (intersect-keys (:attrs rel1) (:attrs rel2)))
-        common-gtrs1 (map #(getter-fn attrs1 %) common-attrs)
-        common-gtrs2 (map #(getter-fn attrs2 %) common-attrs)
-        keep-attrs1  (keys attrs1)
-        keep-attrs2  (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
-        keep-idxs1   (to-array (map attrs1 keep-attrs1))
-        keep-idxs2   (to-array (map attrs2 keep-attrs2))
-        key-fn1      (tuple-key-fn common-gtrs1)
-        key-fn2      (tuple-key-fn common-gtrs2)]
-    (if (< (count tuples1) (count tuples2))
-      (let [hash       (hash-attrs key-fn1 tuples1)
-            new-tuples (->>
-                        (reduce (fn [acc tuple2]
-                                  (let [key (key-fn2 tuple2)]
-                                    (if-some [tuples1 (get hash key)]
-                                      (reduce (fn [acc tuple1]
-                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc tuples1)
-                                      acc)))
-                                (transient []) tuples2)
-                        (persistent!))]
-        (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
-                   new-tuples))
-      (let [hash       (hash-attrs key-fn2 tuples2)
-            new-tuples (->>
-                        (reduce (fn [acc tuple1]
-                                  (let [key (key-fn1 tuple1)]
-                                    (if-some [tuples2 (get hash key)]
-                                      (reduce (fn [acc tuple2]
-                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc tuples2)
-                                      acc)))
-                                (transient []) tuples1)
-                        (persistent!))]
-        (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
-                   new-tuples)))))
+  (measure hash-join-acc
+    (let [tuples1      (:tuples rel1)
+          tuples2      (:tuples rel2)
+          attrs1       (:attrs rel1)
+          attrs2       (:attrs rel2)
+          common-attrs (vec (intersect-keys (:attrs rel1) (:attrs rel2)))
+          common-gtrs1 (map #(getter-fn attrs1 %) common-attrs)
+          common-gtrs2 (map #(getter-fn attrs2 %) common-attrs)
+          keep-attrs1  (keys attrs1)
+          keep-attrs2  (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
+          keep-idxs1   (to-array (map attrs1 keep-attrs1))
+          keep-idxs2   (to-array (map attrs2 keep-attrs2))
+          key-fn1      (tuple-key-fn common-gtrs1)
+          key-fn2      (tuple-key-fn common-gtrs2)]
+      (if (< (count tuples1) (count tuples2))
+        (let [hash       (hash-attrs key-fn1 tuples1)
+              new-tuples (->>
+                          (reduce (fn [acc tuple2]
+                                    (let [key (key-fn2 tuple2)]
+                                      (if-some [tuples1 (get hash key)]
+                                        (reduce (fn [acc tuple1]
+                                                  (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
+                                                acc tuples1)
+                                        acc)))
+                                  (transient []) tuples2)
+                          (persistent!))]
+          (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
+                     new-tuples))
+        (let [hash       (hash-attrs key-fn2 tuples2)
+              new-tuples (->>
+                          (reduce (fn [acc tuple1]
+                                    (let [key (key-fn1 tuple1)]
+                                      (if-some [tuples2 (get hash key)]
+                                        (reduce (fn [acc tuple2]
+                                                  (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
+                                                acc tuples2)
+                                        acc)))
+                                  (transient []) tuples1)
+                          (persistent!))]
+          (Relation. (zipmap (concat keep-attrs1 keep-attrs2) (range))
+                     new-tuples))))))
 
 (defn subtract-rel [a b]
   (let [{attrs-a :attrs, tuples-a :tuples} a
@@ -636,13 +662,18 @@
         (assoc search-pattern 0 eid))
       search-pattern)))
 
+(defn relation-from-datoms-xform []
+  (comp (map (fn [[e a v tx added?]]
+               [e a v tx added?]))
+        (distinct-tuples)))
+
 (defn relation-from-datoms [context orig-pattern datoms]
   (or (map-consts context orig-pattern datoms)
       (let [vm (var-mapping orig-pattern (range))]
-        (Relation. vm (mapv (fn [[e a v tx added?]]
-                              (object-array [e a v tx added?]))
-                            datoms)))))
-
+        (Relation. vm datoms
+                   #_(into []
+                         relation-from-datoms-xform
+                         datoms)))))
 (defn matches-pattern? [pattern tuple]
   (loop [tuple tuple
          pattern pattern]
@@ -659,15 +690,18 @@
         data (filter #(matches-pattern? pattern %) coll)]
     (Relation. attr->idx (mapv to-array data))))            ;; FIXME to-array
 
+(def collapse-rels-acc (unsafe-acc timeacc-root :collapse-rels-acc))
+
 (defn collapse-rels [rels new-rel]
-  (loop [rels rels
-         new-rel new-rel
-         acc []]
-    (if-some [rel (first rels)]
-      (if (not-empty (intersect-keys (:attrs new-rel) (:attrs rel)))
-        (recur (next rels) (hash-join rel new-rel) acc)
-        (recur (next rels) new-rel (conj acc rel)))
-      (conj acc new-rel))))
+  (measure collapse-rels-acc
+    (loop [rels rels
+           new-rel new-rel
+           acc []]
+      (if-some [rel (first rels)]
+        (if (not-empty (intersect-keys (:attrs new-rel) (:attrs rel)))
+          (recur (next rels) (hash-join rel new-rel) acc)
+          (recur (next rels) new-rel (conj acc rel)))
+        (conj acc new-rel)))))
 
 (defn- rel-with-attr [context sym]
   (some #(when (contains? (:attrs %) sym) %) (:rels context)))
@@ -787,13 +821,13 @@
                   (prod-rel (assoc production :tuples []) (empty-rel binding)))
         idx->const (reduce-kv (fn [m k v]
                                 (if-let [c (k (:consts context))]
-                                  (assoc m v c)     ;; different value at v for each tuple
+                                  (assoc m v c) ;; different value at v for each tuple
                                   m))
                               {}
                               (:attrs new-rel))]
     (if (empty? (:tuples new-rel))
       (update context :rels collapse-rels new-rel)
-      (-> context                                        ;; filter output binding
+      (-> context ;; filter output binding
           (update :rels collapse-rels
                   (update new-rel :tuples #(filter (fn [tuple]
                                                      (every? (fn [[ind c]]
@@ -947,7 +981,9 @@
 (defn resolve-pattern-lookup-entity-id [source e error-code]
   (cond
     (or (lookup-ref? e) (attr? e)) (dbu/entid-strict source e error-code)
-    (entid? e) e
+    ;(entid? e) e
+    (dbu/numeric-entid? e) e
+    (keyword? e) e
     (symbol? e) e
     :else (or error-code (dt/raise "Invalid entid" {:error :entity-id/syntax :entity-id e}))))
 
@@ -1103,6 +1139,8 @@ in those cases.
         (search-index-mapping context :filter)))
 
 (defn select-inds [src inds]
+  (def the-src src)
+  (def the-inds inds)
   (mapv #(nth src %) inds))
 
 (defn index-feature-extractor
@@ -1130,6 +1168,18 @@ in those cases.
            (rest inds)
            (rest vals))))
 
+(defn extend-predicate1 [predicate feature-extractor ref-feature]
+  (if (nil? feature-extractor)
+    predicate
+    (if predicate
+      (fn [datom]
+        (let [feature (feature-extractor datom)]
+          (if (= ref-feature feature)
+            (predicate datom)
+            false)))
+      (fn [datom]
+        (= ref-feature (feature-extractor datom))))))
+
 (defn extend-predicate [predicate feature-extractor features]
   {:pre [(or (set? features)
              (instance? HashSet features))]}
@@ -1151,31 +1201,31 @@ in those cases.
 (defn resolve-pattern-lookup-ref-at-index
   [source clean-attribute pattern-index pattern-value error-code]
   (let [a clean-attribute]
-    (if (dbu/db? source)
-      (case (int pattern-index)
-        0 (resolve-pattern-lookup-entity-id source pattern-value error-code)
-        1 (if (and (:attribute-refs? (dbi/-config source)) (keyword? pattern-value))
-            (dbi/-ref-for source pattern-value)
-            pattern-value)
-        2 (if (and pattern-value
-                   (attr? a)
-                   (dbu/ref? source a)
-                   (or (lookup-ref? pattern-value) (attr? pattern-value)))
-            (dbu/entid-strict source pattern-value error-code)
-            pattern-value)
-        3 (if (lookup-ref? pattern-value)
-            (dbu/entid-strict source pattern-value error-code)
-            pattern-value)
-        4 pattern-value)
-      pattern-value)))
+    (case (int pattern-index)
+      0 (resolve-pattern-lookup-entity-id source pattern-value error-code)
+      1 (if (and (:attribute-refs? (dbi/-config source)) (keyword? pattern-value))
+          (dbi/-ref-for source pattern-value)
+          pattern-value)
+      2 (if (and pattern-value
+                 (attr? a)
+                 (dbu/ref? source a)
+                 (or (lookup-ref? pattern-value) (attr? pattern-value)))
+          (dbu/entid-strict source pattern-value error-code)
+          pattern-value)
+      3 (if (lookup-ref? pattern-value)
+          (dbu/entid-strict source pattern-value error-code)
+          pattern-value)
+      4 pattern-value)))
 
 (defn lookup-ref-replacer
   ([context] (lookup-ref-replacer context ::error))
   ([{:keys [source clean-pattern]} error-value]
    (let [[_ a _ _] clean-pattern]
      (if source
-       (fn [i x]
-         (resolve-pattern-lookup-ref-at-index source a i x error-value))
+       (if (dbu/db? source)
+         (fn [i x]
+           (resolve-pattern-lookup-ref-at-index source a i x error-value))
+         (fn [_i x] x))
        (fn [_ x] x)))))
 
 
@@ -1210,7 +1260,9 @@ in those cases.
                              ~subst-filt-map)))))]
          `(if (nil? ~filt-extractor)
             ~(branch-expr datom-pred)
-            ~(branch-expr `(extend-predicate ~datom-pred ~filt-extractor ~filt))))))))
+            ~(branch-expr `(extend-predicate1 ~datom-pred ~filt-extractor ~filt))))))))
+
+(def substitution-xform-acc (unsafe-acc timeacc-root :substitution-xform-acc))
 
 (defn instantiate-substitution-xform [substitution-pattern-element-inds
                                       filt-extractor
@@ -1250,60 +1302,69 @@ in those cases.
 
 (def vec-lookup-ref-replacer (make-vec-lookup-ref-replacer 5))
 
-(defn single-substitution-xform [search-context relation-index subst-map filt-map]
-  (let [ ;; Everything from here ....
-        lrr (lookup-ref-replacer search-context)
-        tuples (:tuples (nth (:rels search-context) relation-index))
-        subst (subst-map relation-index)
-        filt (filt-map relation-index)
-        pattern-substitution-inds (map :tuple-element-index subst)
-        pattern-filter-inds (map :tuple-element-index filt)
-        feature-extractor (index-feature-extractor pattern-filter-inds
-                                                   true
-                                                   lrr)
-        ;; ..... to here is fast!!!!
-        ;; Roughly 0.0632 seconds
-        subst-filt-map (let [dst (HashMap.)]
-                         (doseq [tuple tuples
-                                 :let [feature (feature-extractor tuple)]
-                                 :when (good-lookup-refs? feature)]
-                           (let [k (select-inds tuple pattern-substitution-inds)
-                                 ^HashSet v (get dst k)]
-                             (if (nil? v)
-                               (.put dst k (doto (HashSet.)
-                                             (.add feature)))
-                               (.add v feature))))
-                         dst)
+(def-unsafe-acc single-substitution-xform-acc timeacc-root)
 
-        substitution-pattern-element-inds (map :pattern-element-index subst)
-
-        lrr-ex (lookup-ref-replacer search-context nil)
-        vrepl (vec-lookup-ref-replacer lrr-ex substitution-pattern-element-inds)
+(defmacro basic-index-selector [max-length]
+  (let [inds (gensym)
         
-        ;; Replace the lookup refs
-        subst-filt-map (let [dst (ArrayList.)
-                             ^Iterator iter (-> subst-filt-map
-                                                .entrySet
-                                                .iterator)]
-                         (loop []
-                           (when (.hasNext iter)
-                             (let [kv (.next iter)
-                                   k2 (vrepl (key kv))]
-                               (when k2
-                                 (.add dst (AbstractMap$SimpleEntry. k2 (val kv))))
-                               (recur))))
-                         dst)
+        obj (gensym)]
+    `(fn [~inds]
+       (case (count ~inds)
+         ~@(mapcat (fn [length]
+                     (let [index-symbols (vec (repeatedly length gensym))]
+                       [length `(let [~index-symbols ~inds]
+                                  (fn [~obj]
+                                    ~(mapv
+                                      (fn [sym] `(nth ~obj ~sym))
+                                      index-symbols)))]))
+                   (range (inc max-length)))))))
 
+(def make-basic-index-selector (basic-index-selector 5))
 
-        ;; Neglible time
-        filt-extractor (index-feature-extractor
-                        (map :pattern-element-index filt)
-                        false
-                        lrr)]
-    ;; Neglible time
-    (instantiate-substitution-xform substitution-pattern-element-inds
-                                    filt-extractor
-                                    subst-filt-map)))
+(defn single-substitution-xform [search-context relation-index subst-map filt-map]
+  (measure single-substitution-xform-acc
+    (let [ ;; Everything from here ....
+          lrr (lookup-ref-replacer search-context)
+          tuples (:tuples (nth (:rels search-context) relation-index))
+          subst (subst-map relation-index)
+          filt (filt-map relation-index)
+          pattern-substitution-inds (map :tuple-element-index subst)
+          pattern-filter-inds (map :tuple-element-index filt)
+          feature-extractor (index-feature-extractor pattern-filter-inds
+                                                     true
+                                                     lrr)
+          
+          substitution-pattern-element-inds (map :pattern-element-index subst)
+          lrr-ex (lookup-ref-replacer search-context nil)
+          vrepl (vec-lookup-ref-replacer lrr-ex substitution-pattern-element-inds)
+
+          select-pattern-substitution-inds (make-basic-index-selector
+                                            pattern-substitution-inds)
+          
+          ;; ..... to here is fast!!!!
+          ;; Roughly 0.0632 seconds
+          subst-filt-map (let [dst (ArrayList.)]
+                           (doseq [tuple tuples
+                                   :let [feature (feature-extractor tuple)]
+                                   :when (good-lookup-refs? feature)
+                                   :let [k (-> tuple
+                                               select-pattern-substitution-inds
+                                               vrepl)]
+                                   :when k]
+                             (.add dst (AbstractMap$SimpleEntry.
+                                        (vrepl k)
+                                        feature)))
+                           dst)
+
+          ;; Neglible time
+          filt-extractor (index-feature-extractor
+                          (map :pattern-element-index filt)
+                          false
+                          lrr)]
+      ;; Neglible time
+      (instantiate-substitution-xform substitution-pattern-element-inds
+                                      filt-extractor
+                                      subst-filt-map))))
 
 (defn search-context? [x]
   (assert (map? x))
@@ -1337,17 +1398,19 @@ in those cases.
 (defn substitution-xform [search-context rel-inds]
   {:pre [(map? search-context)
          (set? rel-inds)]}
-  (let [subst-map (compute-per-rel-map search-context rel-inds :substitute)
-        filt-map (compute-per-rel-map search-context rel-inds :filter)
-        subst-xforms (for [rel-index rel-inds]
-                       (single-substitution-xform
-                        search-context rel-index
-                        subst-map
-                        filt-map))
-        init-coll [[(clean-pattern-before-substitution
-                     (:clean-pattern search-context) subst-map)
-                    nil]]]
-    [init-coll (apply comp subst-xforms)]))
+  (measure substitution-xform-acc
+    (let [subst-map (compute-per-rel-map search-context rel-inds :substitute)
+          filt-map (compute-per-rel-map search-context rel-inds :filter)
+          subst-xforms (into []
+                             (map #(single-substitution-xform
+                                    search-context %
+                                    subst-map
+                                    filt-map))
+                             rel-inds)
+          init-coll [[(clean-pattern-before-substitution
+                       (:clean-pattern search-context) subst-map)
+                      nil]]]
+      [init-coll (apply comp subst-xforms)])))
 
 (defn datom-filter-predicate [search-context rel-inds]
   (let [filt-map (compute-per-rel-map search-context rel-inds :filter)
@@ -1374,6 +1437,8 @@ in those cases.
     (filter pred)
     identity))
 
+(def backend-fn-acc (unsafe-acc timeacc-root :backend-fn-acc))
+
 (defn backend-xform [backend-fn]
   (fn [step]
     (fn
@@ -1387,7 +1452,7 @@ in those cases.
                               dst))
                           step)
              datoms (try
-                      (backend-fn e a v tx added?)
+                      (measure backend-fn-acc (backend-fn e a v tx added?))
                       (catch Exception e
                         (throw e)))]
          (reduce inner-step
@@ -1425,51 +1490,89 @@ in those cases.
     ([dst e a v tx added? filt]
      (step dst [[e a v tx added?] filt]))))
 
+(def search-batch-fn-acc (unsafe-acc timeacc-root :search-batch-fn-acc))
+
+(defn datom->array [[e a v tx added?]]
+  (doto (object-array 5)
+    (aset 0 e)
+    (aset 1 a)
+    (aset 2 v)
+    (aset 3 tx)
+    (aset 4 added?)))
+
+(def xform-acc (unsafe-acc timeacc-root :xform-acc))
+
+(def search-batch-prep-acc (unsafe-acc timeacc-root :search-batch-prep-acc))
+
 (defn search-batch-fn [search-context]
-  (fn [strategy-vec backend-fn]
-    (let [search-context (merge search-context {:strategy-vec strategy-vec
-                                                :backend-fn backend-fn})
-          subst-inds (substitution-relation-indices search-context)
-          filt-inds (filtering-relation-indices search-context subst-inds)
-          search-context (merge search-context {:subst-inds subst-inds
-                                                :filt-inds filt-inds})
-          [init-coll subst-xform] (substitution-xform search-context subst-inds)
-          filt-predicate (datom-filter-predicate search-context filt-inds)
-          filt-predicate (extend-predicate-for-pattern-constants
-                          filt-predicate search-context)
-          result (into []
-                       (comp unpack6
-                             subst-xform
-                             (backend-xform backend-fn)
-                             (filter-from-predicate filt-predicate))
-                  init-coll)]
-      result)))
+  (fn [strategy-vec backend-fn datom-xform]
+    (measure search-batch-fn-acc
+      (let [start-ns (System/nanoTime)
+            search-context (merge search-context {:strategy-vec strategy-vec
+                                                  :backend-fn backend-fn})
+            subst-inds (substitution-relation-indices search-context)
+            filt-inds (filtering-relation-indices search-context subst-inds)
+            search-context (merge search-context {:subst-inds subst-inds
+                                                  :filt-inds filt-inds})
+            
+            [init-coll subst-xform] (substitution-xform search-context subst-inds)
+            filt-predicate (datom-filter-predicate search-context filt-inds)
+            filt-predicate (extend-predicate-for-pattern-constants
+                            filt-predicate search-context)
+            _ (timeacc/accumulate-nano-seconds-since search-batch-prep-acc start-ns)
+            
+            result (measure xform-acc
+                     (into []
+                           (comp unpack6
+                                 subst-xform
+                                 (backend-xform backend-fn)
+                                 (filter-from-predicate filt-predicate)
+                                 datom-xform
+                                 ;;(map datom->array)
+                                 )
+                           init-coll))]
+        result))))
+
+(def lookup-new-batch-search-acc (unsafe-acc timeacc-root :lookup-new-batch-search-acc))
+
+(def lookup-new-batch-search-inner-acc (unsafe-acc timeacc-root :lookup-new-batch-search-inner-acc))
 
 (defn lookup-batch-search [source context orig-pattern pattern1]
-  (let [new-rel (if (dbu/db? source)
-                  (let [rels (vec (:rels context))
-                        bsm (bound-symbol-map rels)
-                        clean-pattern (->> pattern1
-                                           (replace-unbound-symbols-by-nil bsm)
-                                           (resolve-pattern-eid source))
-                        search-context {:source source
-                                        :bsm bsm
-                                        :clean-pattern clean-pattern
-                                        :rels rels}
-                        datoms (if clean-pattern
-                                 (dbi/-batch-search source clean-pattern
-                                                    (search-batch-fn search-context))
-                                 [])
-                        new-rel (relation-from-datoms context orig-pattern datoms)]
-                    new-rel)
-                  (lookup-pattern-coll source pattern1 orig-pattern))]
+  (measure lookup-new-batch-search-acc
+    (let [new-rel (if (dbu/db? source)
+                    (let [rels (vec (:rels context))
+                          bsm (bound-symbol-map rels)
+                          clean-pattern (->> pattern1
+                                             (replace-unbound-symbols-by-nil bsm)
+                                             (resolve-pattern-eid source))
+                          search-context {:source source
+                                          :bsm bsm
+                                          :clean-pattern clean-pattern
+                                          :rels rels}
+                          datoms (measure lookup-new-batch-search-inner-acc
+                                   (if clean-pattern
+                                     (dbi/-batch-search
+                                      source clean-pattern
+                                      (search-batch-fn search-context)
+                                      (relation-from-datoms-xform))
+                                     []))
+                          
+                          new-rel (measure wip-acc
+                                    (relation-from-datoms
+                                     context orig-pattern datoms))
+                          ]
+                      new-rel)
+                    (lookup-pattern-coll source pattern1 orig-pattern))]
+      
+      ;; This binding is needed for `collapse-rels` to work, and more specifically,
+      ;; `hash-join` to work, that in turn depends on `getter-fn`.
+      (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
+                                 (dynamic-lookup-attrs source pattern1)
+                                 *lookup-attrs*)]
+        (update context :rels collapse-rels new-rel)))))
 
-    ;; This binding is needed for `collapse-rels` to work, and more specifically,
-    ;; `hash-join` to work, that in turn depends on `getter-fn`.
-    (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
-                               (dynamic-lookup-attrs source pattern1)
-                               *lookup-attrs*)]
-      (update context :rels collapse-rels new-rel))))
+(def general-pattern-acc (unsafe-acc timeacc-root :general-pattern-acc))
+
 
 
 (defn -resolve-clause*
@@ -1477,22 +1580,22 @@ in those cases.
    (-resolve-clause* context clause clause))
   ([context clause orig-clause]
    (condp looks-like? clause
-     [[symbol? '*]]                                       ;; predicate [(pred ?a ?b ?c)]
+     [[symbol? '*]] ;; predicate [(pred ?a ?b ?c)]
      (do (check-all-bound context (identity (filter free-var? (first clause))) orig-clause)
          (filter-by-pred context clause))
 
-     [[symbol? '*] '_]                                    ;; function [(fn ?a ?b) ?res]
+     [[symbol? '*] '_] ;; function [(fn ?a ?b) ?res]
      (bind-by-fn context clause)
 
-     [source? '*]                                         ;; source + anything
+     [source? '*] ;; source + anything
      (let [[source-sym & rest] clause]
        (binding [*implicit-source* (get (:sources context) source-sym)]
          (-resolve-clause context rest clause)))
 
-     '[or *]                                              ;; (or ...)
+     '[or *] ;; (or ...)
      (let [[_ & branches] clause
            context' (assoc context :stats [])
-           contexts (map #(resolve-clause context' %) branches)
+           contexts (mapv #(resolve-clause context' %) branches)
            sum-rel (->> contexts
                         (map #(reduce hash-join (:rels %)))
                         (reduce sum-rel))]
@@ -1500,13 +1603,13 @@ in those cases.
          (:stats context) (assoc :tmp-stats {:type :or
                                              :branches (mapv :stats contexts)})))
 
-     '[or-join [[*] *] *]                                 ;; (or-join [[req-vars] vars] ...)
+     '[or-join [[*] *] *] ;; (or-join [[req-vars] vars] ...)
      (let [[_ [req-vars & vars] & branches] clause]
        (check-all-bound context req-vars orig-clause)
        (recur context (list* 'or-join (concat req-vars vars) branches) clause))
 
-     '[or-join [*] *]                                     ;; (or-join [vars] ...)
-       ;; TODO required vars
+     '[or-join [*] *] ;; (or-join [vars] ...)
+     ;; TODO required vars
      (let [[_ vars & branches] clause
            vars (set vars)
            join-context (-> context
@@ -1523,7 +1626,7 @@ in those cases.
          (:stats context) (assoc :tmp-stats {:type :or-join
                                              :branches (mapv #(-> % :stats first) contexts)})))
 
-     '[and *]                                             ;; (and ...)
+     '[and *] ;; (and ...)
      (let [[_ & clauses] clause]
        (if (:stats context)
          (let [and-context (-> context
@@ -1535,7 +1638,7 @@ in those cases.
                   :stats (:stats context)))
          (resolve-context context clauses)))
 
-     '[not *]                                             ;; (not ...)
+     '[not *] ;; (not ...)
      (let [[_ & clauses] clause
            negation-vars (collect-vars clauses)
            _ (check-some-bound context negation-vars orig-clause)
@@ -1550,7 +1653,7 @@ in those cases.
          (:stats context) (assoc :tmp-stats {:type :not
                                              :branches (:stats negation-context)})))
 
-     '[not-join [*] *]                                    ;; (not-join [vars] ...)
+     '[not-join [*] *] ;; (not-join [vars] ...)
      (let [[_ vars & clauses] clause
            _ (check-all-bound context vars orig-clause)
            join-rel (reduce hash-join (:rels context))
@@ -1566,18 +1669,26 @@ in those cases.
          (:stats context) (assoc :tmp-stats {:type :not
                                              :branches (:stats negation-context)})))
 
-     '[*]                                                 ;; pattern
-     (let [source *implicit-source*
-           pattern0 (replace (:consts context) clause)
-           pattern1 (resolve-pattern-lookup-refs source pattern0)]
-       (lookup-batch-search source context clause pattern1)))))
+     '[*] ;; pattern
+     (do (debug-println "     Clause" clause)
+         (measure general-pattern-acc
+           (let [source *implicit-source*
+                 pattern0 (replace (:consts context) clause)
+                 pattern1 (resolve-pattern-lookup-refs source pattern0)]
+             (lookup-batch-search source context clause pattern1)))))))
+
+(def resolve-clause-acc (unsafe-acc timeacc-root :resolve-clause-acc))
+
+
 
 (defn -resolve-clause
   ([context clause]
    (-resolve-clause context clause clause))
   ([context clause orig-clause]
    (dqs/update-ctx-with-stats context orig-clause
-                              (fn [context] (-resolve-clause* context clause orig-clause)))))
+                              (fn [context]
+                                (measure resolve-clause-acc
+                                  (-resolve-clause* context clause orig-clause))))))
 
 (defn resolve-clause [context clause]
   (if (rule? context clause)
@@ -1588,9 +1699,12 @@ in those cases.
                                  (fn [context] (solve-rule context clause))))
     (-resolve-clause context clause)))
 
+(def inner-q-acc (unsafe-acc timeacc-root :inner-q-acc))
+
 (defn -q [context clauses]
-  (binding [*implicit-source* (get (:sources context) '$)]
-    (reduce resolve-clause context clauses)))
+  (measure inner-q-acc
+    (binding [*implicit-source* (get (:sources context) '$)]
+      (reduce resolve-clause context clauses))))
 
 (defn -collect
   ([context symbols]
@@ -1663,13 +1777,21 @@ in those cases.
 
 (extend-protocol IPostProcess
   FindRel
-  (-post-process [_ tuples] (if (seq? tuples) (vec tuples) tuples))
+  (-post-process [_ tuples]
+    (debug-println "rel" (count tuples))
+    (if (seq? tuples) (vec tuples) tuples))
   FindColl
-  (-post-process [_ tuples] (into [] (map first) tuples))
+  (-post-process [_ tuples]
+    (debug-println "coll")
+    (into [] (map first) tuples))
   FindScalar
-  (-post-process [_ tuples] (ffirst tuples))
+  (-post-process [_ tuples]
+    (debug-println "scalar")
+    (ffirst tuples))
   FindTuple
-  (-post-process [_ tuples] (first tuples)))
+  (-post-process [_ tuples]
+    (debug-println "tuple")
+    (first tuples)))
 
 (defn- pull [find-elements context resultset]
   (let [resolved (for [find find-elements]
@@ -1716,31 +1838,49 @@ in those cases.
 
 (def default-settings {})
 
+(def raw-q-acc (unsafe-acc timeacc-root :raw-q-acc))
+
+
+(defmacro ->measure [expr x]
+  {:pre [(seq? expr)]}
+  (let [full-expr (seq (conj (vec expr) x))]
+    (if verbose
+      `(let [start# (System/nanoTime)
+             y# ~full-expr]
+         (println ~(str expr) (* 1.0e-9 (- (System/nanoTime) start#)))
+         y#)
+      full-expr)))
+
+(def final-acc (unsafe-acc timeacc-root :final-acc))
+
 (defn raw-q [{:keys [query args offset limit stats? settings] :as _query-map}]
-  (let [settings (merge default-settings settings)
-        {:keys [qfind
-                qwith
-                qreturnmaps
-                qin]} (memoized-parse-query query)
-        context-in    (-> (if stats?
-                            (StatContext. [] {} {} {} [] settings)
-                            (Context. [] {} {} {} settings))
-                          (resolve-ins qin args))
-        ;; TODO utilize parser
-        all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))
-        context-out   (-q context-in (:where query))
-        resultset     (collect context-out all-vars)
-        find-elements (dpip/find-elements qfind)
-        result-arity  (count find-elements)]
-    (cond->> resultset
-      (or offset limit)                             (paginate offset limit)
-      true                                          set
-      (:with query)                                 (mapv #(subvec % 0 result-arity))
-      (some #(instance? Aggregate %) find-elements) (aggregate find-elements context-in)
-      (some #(instance? Pull %) find-elements)      (pull find-elements context-in)
-      true                                          (-post-process qfind)
-      qreturnmaps                                   (convert-to-return-maps qreturnmaps)
-      stats?                                        (#(-> context-out
-                                                          (dissoc :rels :sources :settings)
-                                                          (assoc :ret %
-                                                                 :query query))))))
+  (measure raw-q-acc
+    (let [settings (merge default-settings settings)
+          {:keys [qfind
+                  qwith
+                  qreturnmaps
+                  qin]} (memoized-parse-query query)
+          context-in    (-> (if stats?
+                              (StatContext. [] {} {} {} [] settings)
+                              (Context. [] {} {} {} settings))
+                            (resolve-ins qin args))
+          ;; TODO utilize parser
+
+          all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))
+          context-out   (-q context-in (:where query))
+          resultset     (collect context-out all-vars)
+          find-elements (dpip/find-elements qfind)
+          result-arity  (count find-elements)]
+      (measure final-acc
+        (cond->> resultset
+          (or offset limit)                             (->measure (paginate offset limit)) 
+          true                                          (->measure (set))
+          (:with query)                                 (->measure (mapv #(subvec % 0 result-arity)))
+          (some #(instance? Aggregate %) find-elements) (->measure (aggregate find-elements context-in))
+          (some #(instance? Pull %) find-elements)      (->measure (pull find-elements context-in))
+          true                                          (->measure (-post-process qfind))
+          qreturnmaps                                   (->measure (convert-to-return-maps qreturnmaps))
+          stats?                                        (->measure (#(-> context-out
+                                                                         (dissoc :rels :sources :settings)
+                                                                         (assoc :ret %
+                                                                                :query query)))))))))

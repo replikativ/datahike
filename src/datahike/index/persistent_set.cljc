@@ -64,20 +64,21 @@
          ~(cb acc)
          ~(from-to-tree from-sym to-sym index-spec (conj acc findex) cb)))))
 
-(defn cmp-for-kwseq-sub [datom0 datom1 kwseq]
+(defn cmp-for-kwseq-sub [old datom0 datom1 kwseq]
   (let [result (gensym)]
     (if (empty? kwseq)
       0
       (let [[k & kwseq] kwseq]
         `(let [~result ~(dd/cmp-val-expr k datom0 datom1)]
-           (if (zero? ~result)
-             ~(cmp-for-kwseq-sub datom0 datom1 kwseq)
-             ~result))))))
+           (cond
+             (nil? ~result) ~old
+             (zero? ~result) ~(cmp-for-kwseq-sub old datom0 datom1 kwseq)
+             :else ~result))))))
 
 (defn cmp-for-kwseq [kwseq]
   (let [datom0 (dd/type-hint-datom (gensym))
         datom1 (dd/type-hint-datom (gensym))]
-    `(fn [~datom0 ~datom1] ~(cmp-for-kwseq-sub datom0 datom1 kwseq))))
+    `(fn [~datom0 ~datom1] ~(cmp-for-kwseq-sub 0 datom0 datom1 kwseq))))
 
 (defmacro make-cmp-lookup []
   (let [index-sym (gensym)
@@ -161,10 +162,14 @@
     (psset/walk-addresses pset (fn [address] (swap! addresses conj address)))
     @addresses))
 
+(defn slice-sub [pset from to index-type]
+  (let [cmp ((cmp-lookup index-type) from to)]
+    (psset/slice pset from to cmp)))
+
 (extend-type PersistentSortedSet
   IIndex
   (-slice [^PersistentSortedSet pset from to index-type]
-    (slice pset from to index-type))
+    (slice-sub pset from to index-type))
   (-slicer [^PersistentSortedSet pset index-type]
     (let [lu (cmp-lookup index-type)]
       (fn [from to]
