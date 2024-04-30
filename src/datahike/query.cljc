@@ -1713,19 +1713,15 @@ in those cases.
 (extend-protocol IPostProcess
   FindRel
   (-post-process [_ tuples]
-    (debug-println "rel" (count tuples))
     (if (seq? tuples) (vec tuples) tuples))
   FindColl
   (-post-process [_ tuples]
-    (debug-println "coll")
     (into [] (map first) tuples))
   FindScalar
   (-post-process [_ tuples]
-    (debug-println "scalar")
     (ffirst tuples))
   FindTuple
   (-post-process [_ tuples]
-    (debug-println "tuple")
     (first tuples)))
 
 (defn- pull [find-elements context resultset]
