@@ -1793,8 +1793,8 @@ in those cases.
         find-elements (dpip/find-elements qfind)
         result-arity  (count find-elements)]
     (cond->> resultset
-      (or offset limit)                             (paginate offset limit) 
-      true                                          (set)
+      true #_(or offset limit)                      (paginate offset limit) 
+      ;;true                                          (set)
       (:with query)                                 (mapv #(subvec % 0 result-arity))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context-in)
       (some #(instance? Pull %) find-elements)      (pull find-elements context-in)
