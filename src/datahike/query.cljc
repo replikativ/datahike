@@ -1154,23 +1154,31 @@ in those cases.
       (fn [datom]
         (= ref-feature (feature-extractor datom))))))
 
+(defn predicate-from-set [s]
+  (case (count s)
+    0 (fn [_] false)
+    1 (let [y (first s)]
+        (fn [x] (= x y)))
+    (fn [x] (contains? s x))))
+
 (defn extend-predicate [predicate feature-extractor features]
   {:pre [(or (set? features)
              (instance? HashSet features))]}
-  (if (nil? feature-extractor)
-    predicate
-    (if predicate
-      (fn
-        ([] (conj (predicate) [(feature-extractor) features]))
-        ([datom]
-         (let [feature (feature-extractor datom)]
-           (if (contains? features feature)
-             (predicate datom)
-             false))))
-      (fn
-        ([] [(feature-extractor) features])
-        ([datom]
-         (contains? features (feature-extractor datom)))))))
+  (let [this-pred (predicate-from-set features)]
+    (if (nil? feature-extractor)
+      predicate
+      (if predicate
+        (fn
+          ([] (conj (predicate) [(feature-extractor) features]))
+          ([datom]
+           (let [feature (feature-extractor datom)]
+             (if (this-pred feature)
+               (predicate datom)
+               false))))
+        (fn
+          ([] [(feature-extractor) features])
+          ([datom]
+           (this-pred (feature-extractor datom))))))))
 
 (defn resolve-pattern-lookup-ref-at-index
   [source clean-attribute pattern-index pattern-value error-code]
