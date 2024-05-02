@@ -954,9 +954,9 @@
 
 (defn resolve-pattern-lookup-entity-id [source e error-code]
   (cond
+    (dbu/numeric-entid? e) e
     (or (lookup-ref? e) (attr? e)) (dbu/entid-strict source e error-code)
     ;(entid? e) e
-    (dbu/numeric-entid? e) e
     (keyword? e) e
     (symbol? e) e
     :else (or error-code (dt/raise "Invalid entid" {:error :entity-id/syntax :entity-id e}))))
@@ -1261,10 +1261,10 @@ in those cases.
   (let [inds (gensym)
         replacer (gensym)
         tuple (gensym)]
-    `(fn [~replacer ~inds]
+    `(fn tree-fn# [~replacer ~inds]
        ~(dt/range-subset-tree
          range-length inds
-         (fn [pinds _mask]
+         (fn replacer-fn# [pinds _mask]
            `(fn [~tuple]
               (try
                 ~(mapv (fn [index i] `(~replacer ~index (nth ~tuple ~i)))
