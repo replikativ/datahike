@@ -1748,17 +1748,6 @@ in those cases.
       (vswap! query-cache assoc q qp)
       qp)))
 
-(defn paginate [offset limit resultset]
-  (into #{}
-        (comp (distinct)
-              (if offset
-                (drop offset)
-                identity)
-              (if (or (nil? limit) (neg? limit))
-                identity
-                (take limit)))
-        resultset))
-
 (defn convert-to-return-maps [{:keys [mapping-type mapping-keys]} resultset]
   (let [mapping-keys (map #(get % :mapping-key) mapping-keys)
         convert-fn (fn [mkeys]
@@ -1792,9 +1781,15 @@ in those cases.
         resultset     (collect context-out all-vars)
         find-elements (dpip/find-elements qfind)
         result-arity  (count find-elements)]
-    (cond->> resultset
-      true #_(or offset limit)                      (paginate offset limit) 
-      ;;true                                          (set)
+    (cond->> (into #{}
+                   (comp (distinct)
+                         (if offset
+                           (drop offset)
+                           identity)
+                         (if (or (nil? limit) (neg? limit))
+                           identity
+                           (take limit)))
+                   resultset)
       (:with query)                                 (mapv #(subvec % 0 result-arity))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context-in)
       (some #(instance? Pull %) find-elements)      (pull find-elements context-in)
