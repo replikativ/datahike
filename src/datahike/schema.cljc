@@ -52,7 +52,8 @@
 ;; only for old datomic compliance, will be part of partioning in the future
 (s/def :db.type.install/_attribute #{:db.part/tx :db.part/db :db.part/user})
 
-(s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleAttrs  :db/tupleType :db/tupleTypes})
+(def schema-attribute-set #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleAttrs  :db/tupleType :db/tupleTypes})
+(s/def ::schema-attribute schema-attribute-set)
 
 (s/def ::entity-spec-attribute #{:db/ensure :db.entity/attrs :db.entity/preds})
 (s/def ::meta-attribute #{:db/txInstant :db/retracted :db/noCommit})
@@ -149,7 +150,8 @@
   (s/valid? ::meta-attribute a-ident))
 
 (defn schema-attr? [a-ident]
-  (s/valid? ::schema-attribute a-ident))
+  (contains? schema-attribute-set a-ident)
+  #_(s/valid? ::schema-attribute a-ident))
 
 (defn sys-ident? [a-ident]
   (s/valid? ::sys-idents a-ident))
