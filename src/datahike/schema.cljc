@@ -56,7 +56,8 @@
 (s/def ::schema-attribute schema-attribute-set)
 
 (s/def ::entity-spec-attribute #{:db/ensure :db.entity/attrs :db.entity/preds})
-(s/def ::meta-attribute #{:db/txInstant :db/retracted :db/noCommit})
+(def meta-attribute-set #{:db/txInstant :db/retracted :db/noCommit})
+(s/def ::meta-attribute meta-attribute-set)
 
 (s/def ::schema (s/keys :req [:db/ident :db/valueType :db/cardinality]
                         :opt [:db/id :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory :db/tupleType :db/tupleTypes]))
@@ -147,7 +148,8 @@
   (s/explain-data ::old-schema schema))
 
 (defn meta-attr? [a-ident]
-  (s/valid? ::meta-attribute a-ident))
+  (contains? meta-attribute-set a-ident)
+  #_(s/valid? ::meta-attribute a-ident))
 
 (defn schema-attr? [a-ident]
   (contains? schema-attribute-set a-ident)
