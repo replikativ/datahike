@@ -24,7 +24,7 @@
                     IHashEq Associative IKeywordLookup ILookup]
                    [datahike.datom Datom]
                    [java.io Writer]
-                   [java.util Date])))
+                   [java.util Date HashMap ArrayList])))
 
 (declare equiv-db empty-db)
 #?(:cljs (declare pr-db))
@@ -373,6 +373,19 @@
   #?(:cljs (instance? js/Date d)
      :clj (instance? Date d)))
 
+(defn dirty-group-by-with-pred [f pred coll]
+  (let [dst (HashMap.)]
+    (doseq [x coll
+            :when (pred x)]
+      (let [k (f x)]
+        (.add ^ArrayList (if-let [^ArrayList acc (get dst k)]
+                           acc
+                           (let [acc (ArrayList.)]
+                             (.put dst k acc)
+                             acc))
+              x)))
+    dst))
+
 (defn filter-as-of-datoms
   ([datoms time-point db] (filter-as-of-datoms datoms time-point db identity))
   ([datoms time-point db final-xform]
@@ -383,8 +396,10 @@
 
          filtered-tx-ids (dbu/filter-txInstant datoms as-of-pred db)
          filtered-datoms (->> datoms
-                              (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
-                              (group-by (fn [^Datom datom] [(.-e datom) (.-a datom)]))
+                              ;;(filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
+                              ;;(group-by (fn [^Datom datom] [(.-e datom) (.-a datom)]))
+                              (dirty-group-by-with-pred (fn [^Datom datom] [(.-e datom) (.-a datom)])
+                                                        (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
                               (into []
                                     (comp (mapcat
                                            (fn [[[_ a] datoms]]
