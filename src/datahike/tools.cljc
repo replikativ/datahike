@@ -237,3 +237,20 @@
                               (inc at)
                               acc-inds
                               mask))))))
+
+(defmacro membership-predicate-factory [max-size]
+  (let [coll-sym (gensym)
+        x (gensym)]
+    `(fn [~coll-sym]
+       (case (count ~coll-sym)
+         ~@(mapcat (fn [n]
+                     (let [elements (repeatedly n gensym)]
+                       [n `(let [~(vec elements) (vec ~coll-sym)]
+                             (fn [~x]
+                               (or ~@(map (fn [e] `(= ~e ~x)) elements))))]))
+                   (range (inc max-size)))
+         (fn [~x]
+           (contains? ~coll-sym ~x))))))
+
+;; Not tuned
+(def membership-predicate (membership-predicate-factory 8))

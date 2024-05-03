@@ -69,3 +69,11 @@
          (wrap-range-tree [1])))
   (is (= [:inds [0 2] :mask [0 nil 1]]
          (wrap-range-tree [0 2]))))
+
+(deftest test-membership-predicate
+  (let [n 20]
+    (dotimes [i n]
+      (let [p (dt/membership-predicate (set (range i)))]
+        (dotimes [j n]
+          (is (= (boolean (p j))
+                 (< j i))))))))

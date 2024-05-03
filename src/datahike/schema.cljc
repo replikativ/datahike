@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.schema
   (:require [clojure.spec.alpha :as s]
-            [datahike.datom])
+            [datahike.datom]
+            [datahike.tools :as dt])
   (:import [datahike.datom Datom]))
 
 (s/def :db.type/id #(or (= (class %) java.lang.Long) string?))
@@ -147,13 +148,8 @@
 (defn explain-old-schema [schema]
   (s/explain-data ::old-schema schema))
 
-(defn meta-attr? [a-ident]
-  (contains? meta-attribute-set a-ident)
-  #_(s/valid? ::meta-attribute a-ident))
-
-(defn schema-attr? [a-ident]
-  (contains? schema-attribute-set a-ident)
-  #_(s/valid? ::schema-attribute a-ident))
+(def meta-attr? (dt/membership-predicate meta-attribute-set))
+(def schema-attr? (dt/membership-predicate schema-attribute-set))
 
 (defn sys-ident? [a-ident]
   (s/valid? ::sys-idents a-ident))
