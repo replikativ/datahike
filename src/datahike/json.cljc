@@ -136,11 +136,6 @@
 
 (def keyword-valued-schema-attrs (filter-kw-attrs s/implicit-schema-spec))
 
-(defn- int-obj-to-long [i]
-  (if (some? i)
-    (.longValue (java.lang.Integer. i))
-    (throw (ex-info "Cannot store nil as a value" {:type :cannot-store-nil-as-value}))))
-
 (defn- xf-val [f v]
   (if (vector? v) (map f v) (f v)))
 
@@ -154,14 +149,14 @@
 (defn keywordize-string [s]
   (if (string? s) (keyword s) s))
 
-(defn ident-for [db a]
+(defn ident-for [^datahike.db.DB db a]
   (if (and (number? a) (some? db)) (.-ident-for db a) a))
 
 (defn cond-xf-val
   [a-ident v {:keys [ref-attrs long-attrs keyword-attrs symbol-attrs] :as valtype-attrs-map} db]
   (cond
     (contains? ref-attrs a-ident) (xf-ref-val v valtype-attrs-map db)
-    (contains? long-attrs a-ident) (xf-val int-obj-to-long v)
+    (contains? long-attrs a-ident) (xf-val long v)
     (contains? keyword-attrs a-ident) (xf-val keyword v)
     (contains? symbol-attrs a-ident) (xf-val symbol v)
     :else v))
