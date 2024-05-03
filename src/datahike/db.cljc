@@ -412,12 +412,16 @@
                                                                 (dissoc current-datoms (.-v datom))))
                                                             {})
                                                     vals)
-                                               (let [last-ea-tx (apply max (map datom-tx datoms))
-                                                     current-ea-datom (first
-                                                                       (filter #(and (datom-added %)
-                                                                                     (= last-ea-tx
-                                                                                        (datom-tx %)))
-                                                                               datoms))]
+                                               (let [last-ea-tx (transduce (map datom-tx)
+                                                                           max
+                                                                           (datom-tx (first datoms))
+                                                                           (rest datoms))
+                                                     current-ea-datom (reduce (fn [_ x]
+                                                                                (when (and (datom-added x)
+                                                                                           (= last-ea-tx (datom-tx x)))
+                                                                                  (reduced x)))
+                                                                              nil
+                                                                              datoms)]
                                                  (if current-ea-datom
                                                    [current-ea-datom]
                                                    [])))))
