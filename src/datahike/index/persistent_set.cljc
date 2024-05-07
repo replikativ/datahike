@@ -56,7 +56,7 @@
 
 (defn cmp-for-kwseq-sub
   "This function generates the actual body of the comparator"
-  [old datom0 datom1 kwseq]
+  [datom0 datom1 kwseq]
   (let [result (gensym)]
     (if (empty? kwseq)
       0
@@ -65,10 +65,10 @@
                ~result ~(dd/cmp-val-expr k datom0 datom1)]
            (cond
              ;; If it is nil, typically return 0 (`old` is logically always bound to 0)
-             (nil? ~result) ~old
+             (nil? ~result) 0
 
              ;; If it is zero, we need to proceed with the next datom element to compare.
-             (zero? ~result) ~(cmp-for-kwseq-sub old datom0 datom1 kwseq)
+             (zero? ~result) ~(cmp-for-kwseq-sub datom0 datom1 kwseq)
 
              ;; If it is non-zero, it means that this is the result of the comparison.
              :else ~result))))))
@@ -78,7 +78,7 @@
   [kwseq]
   (let [datom0 (dd/type-hint-datom (gensym))
         datom1 (dd/type-hint-datom (gensym))]
-    `(fn [~datom0 ~datom1] ~(cmp-for-kwseq-sub 0 datom0 datom1 kwseq))))
+    `(fn [~datom0 ~datom1] ~(cmp-for-kwseq-sub datom0 datom1 kwseq))))
 
 (defmacro generate-slice-comparator-constructor []
   (let [index-sym (gensym)
