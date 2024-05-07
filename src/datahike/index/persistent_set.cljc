@@ -64,7 +64,7 @@
         `(let [;; Compare the datoms at the element with key `k`
                ~result ~(dd/cmp-val-expr k datom0 datom1)]
            (cond
-             ;; If it is nil, typically return 0 (`old` is logically always bound to 0)
+             ;; If it is nil, typically return 0
              (nil? ~result) 0
 
              ;; If it is zero, we need to proceed with the next datom element to compare.
