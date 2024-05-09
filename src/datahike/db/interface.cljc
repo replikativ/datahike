@@ -70,10 +70,18 @@
 
 (defprotocol ISearch
   (-search-context [data])
-  (-search [data pattern context]))
+  (-search [data pattern context])
+  (-batch-search [data pattern-mask batch-fn context]))
 
 (defn search [data pattern]
   (-search data pattern (-search-context data)))
+
+(defn batch-search [data pattern-mask batch-fn final-xform]
+  (-batch-search data
+                 pattern-mask
+                 batch-fn
+                 (context-with-xform-after (-search-context data)
+                                           final-xform)))
 
 (defprotocol IIndexAccess
   (-datoms [db index components context])
