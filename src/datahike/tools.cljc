@@ -176,3 +176,26 @@
            ~nsym (count ~vsym)
            ~vars ~vsym]
        ~(generate [] pairs))))
+(defn- reduce-clauses
+  [resolver context clauses]
+  (loop [context context
+         clauses clauses
+         failed-clauses []]
+    (if (empty? clauses)
+      [context failed-clauses]
+      (let [[clause & clauses] clauses]
+        (if-let [next-context (resolver context clause)]
+          (recur next-context clauses failed-clauses)
+          (recur context clauses (conj failed-clauses clause)))))))
+
+(defn resolve-clauses [resolver context clauses]
+  (if (empty? clauses)
+    context
+    (let [[context failed-clauses] (reduce-clauses resolver
+                                                   context
+                                                   clauses)]
+      (if (= (count failed-clauses)
+             (count clauses))
+        (raise "Cannot resolve any more clauses"
+               {:clauses clauses})
+        (recur resolver context failed-clauses)))))
