@@ -234,6 +234,11 @@
     :db.cardinality/many [:db.cardinality/many]
     :db.type/ref [:db.type/ref :db/index]
     :db.type/tuple [:db.type/tuple]
+
+    :db.type/valueType [:db/systemAttribRef]
+    :db.type/cardinality [:db/systemAttribRef]
+    :db.type/unique [:db/systemAttribRef]
+    
     (if (= k :db/ident)
       [:db/ident]
       (when (true? v)

@@ -216,6 +216,24 @@
                #{:name}))
         (d/release conn)))))
 
+(deftest test-store-db-id-as-keyword
+  (doseq [cfg (init-cfgs)]
+    (testing "Do not resolve enums in keyword DB"
+      (let [conn (setup-db cfg)]
+        (d/transact conn [{:db/ident :attribute-to-use
+                           :db/cardinality :db.cardinality/one
+                           :db/valueType :db.type/keyword}])
+        (d/transact conn [{:attribute-to-use :the-location}
+                          {:attribute-to-use :db/id}])
+        (is (= #{[:the-location]
+                 [:db/id]}
+               (d/q '[:find ?v
+                      :in $ ?a
+                      :where
+                      [_ :attribute-to-use ?v]]
+                    @conn)))
+        (d/release conn)))))
+
 (deftest test-indexing
   (let [[no-ref-cfg ref-cfg] (init-cfgs)
         schema [{:db/ident :name
