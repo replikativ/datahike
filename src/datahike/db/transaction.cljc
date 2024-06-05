@@ -21,7 +21,7 @@
 (defn validate-datom [db ^Datom datom]
   (when (and (datom-added datom)
              (dbu/is-attr? db (.-a datom) :db/unique))
-    (when-let [found (not-empty (dbi/-datoms db :avet [(.-a datom) (.-v datom)]))]
+    (when-let [found (not-empty (dbi/datoms db :avet [(.-a datom) (.-v datom)]))]
       (raise "Cannot add " datom " because of unique constraint: " found
              {:error :transact/unique :attribute (.-a datom) :datom datom}))))
 
@@ -171,7 +171,7 @@
                     update-rschema)
         true (update :op-count inc))
 
-      (if-some [removing ^Datom (first (dbi/-search db [(.-e datom) (.-a datom) (.-v datom)]))]
+      (if-some [removing ^Datom (first (dbi/search db [(.-e datom) (.-a datom) (.-v datom)]))]
         (cond-> db
           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
@@ -192,7 +192,7 @@
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom))
         indexing? (dbu/indexing? db a-ident)
         schema? (ds/schema-attr? a-ident)
-        current-datom ^Datom (first (dbi/-search db [(.-e datom) (.-a datom) (.-v datom)]))
+        current-datom ^Datom (first (dbi/search db [(.-e datom) (.-a datom) (.-v datom)]))
         history-datom ^Datom (first (dbs/search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
         current? (not (nil? current-datom))
         history? (not (nil? history-datom))
@@ -210,7 +210,7 @@
 
 (defn- queue-tuple [queue tuple idx db e v]
   (let [tuple-value  (or (get queue tuple)
-                         (:v (first (dbi/-datoms db :eavt [e tuple])))
+                         (:v (first (dbi/datoms db :eavt [e tuple])))
                          (vec (repeat (-> db (dbi/-schema) (get tuple) :db/tupleAttrs count) nil)))
         tuple-value' (assoc tuple-value idx v)]
     (assoc queue tuple tuple-value')))
@@ -227,7 +227,7 @@
 
 (defn validate-datom-upsert [db ^Datom datom]
   (when (dbu/is-attr? db (.-a datom) :db/unique)
-    (when-let [old (first (dbi/-datoms db :avet [(.-a datom) (.-v datom)]))]
+    (when-let [old (first (dbi/datoms db :avet [(.-a datom) (.-v datom)]))]
       (when-not (= (.-e datom) (.-e ^Datom old))
         (raise "Cannot add " datom " because of unique constraint: " old
                {:error     :transact/unique
@@ -315,7 +315,7 @@
                     v-original)]
             (if-some [e (when v
                           (validate-val v [nil nil a v nil] db)
-                          (:e (first (dbi/-datoms db :avet [a v]))))]
+                          (:e (first (dbi/datoms db :avet [a v]))))]
               (cond
                 (nil? acc) [e a v]                    ;; first upsert
                 (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
@@ -474,7 +474,7 @@
        (reduce-kv
         (fn [entities tuple value]
           (let [value   (if (every? nil? value) nil value)
-                current (:v (first (dbi/-datoms db :eavt [eid tuple])))]
+                current (:v (first (dbi/datoms db :eavt [eid tuple])))]
             (cond
               (= value current) entities
                 ;; adds ::internal to meta-data to mean that these datoms were generated internally.
@@ -555,7 +555,7 @@
         e (dbu/entid-strict db e)
         _ (dbu/validate-attr a op-vec db)
         nv (if (dbu/ref? db a) (dbu/entid-strict db nv) nv)
-        datoms (dbi/-search db [e a])]
+        datoms (dbi/search db [e a])]
     (if (nil? ov)
       (if (empty? datoms)
         [(transact-add report [:db/add e a nv]) []]
@@ -577,10 +577,10 @@
 (defn retract-entity [db report op-vec]
   (let [[_ e] op-vec]
     (if-let [e (dbu/entid db e)]
-      (let [e-datoms (vec (dbi/-search db [e]))
+      (let [e-datoms (vec (dbi/search db [e]))
             v-datoms (->> (dbi/-attrs-by db :db.type/ref)
                           (map (partial dbi/-ident-for db))
-                          (mapcat (fn [a] (dbi/-search db [nil a e])))
+                          (mapcat (fn [a] (dbi/search db [nil a e])))
                           vec)]
         [(reduce transact-retract-datom report (concat e-datoms v-datoms))
          (retract-components db e-datoms)])
@@ -636,13 +636,13 @@
                                     (let [v (if (dbu/ref? db a) (dbu/entid-strict db v) v)]
                                       (validate-val v op-vec db)
                                       [e a v]))
-                          datoms (vec (dbi/-search db pattern))]
+                          datoms (vec (dbi/search db pattern))]
                       [(reduce transact-retract-datom report datoms) []])
                     [report []])
 
       :db.fn/retractAttribute (if-let [e (dbu/entid db e)]
                                 (let [_ (dbu/validate-attr a op-vec db)
-                                      datoms (vec (dbi/-search db [e a]))]
+                                      datoms (vec (dbi/search db [e a]))]
                                   [(reduce transact-retract-datom report datoms)
                                    (retract-components db datoms)])
                                 [report []])
@@ -655,7 +655,7 @@
                   (let [history (HistoricalDB. db)]
                     (if-some [e (dbu/entid history e)]
                       (let [v (if (dbu/ref? history a) (dbu/entid-strict history v) v)
-                            old-datoms (dbi/-search history [e a v])]
+                            old-datoms (dbi/search history [e a v])]
                         [(reduce transact-purge-datom report old-datoms) []])
                       (raise "Can't find entity with ID " e " to be purged"
                              {:error :transact/purge, :operation op, :tx-data op-vec})))
@@ -665,7 +665,7 @@
       :db.purge/attribute (if (dbi/-keep-history? db)
                             (let [history (HistoricalDB. db)]
                               (if-let [e (dbu/entid history e)]
-                                (let [datoms (vec (dbi/-search history [e a]))]
+                                (let [datoms (vec (dbi/search history [e a]))]
                                   [(reduce transact-purge-datom report datoms)
                                    (purge-components history datoms)])
                                 (raise "Can't find entity with ID " e " to be purged"
@@ -676,8 +676,8 @@
       :db.purge/entity (if (dbi/-keep-history? db)
                          (let [history (HistoricalDB. db)]
                            (if-let [e (dbu/entid history e)]
-                             (let [e-datoms (vec (dbi/-search history [e]))
-                                   v-datoms (vec (mapcat (fn [a] (dbi/-search history [nil a e]))
+                             (let [e-datoms (vec (dbi/search history [e]))
+                                   v-datoms (vec (mapcat (fn [a] (dbi/search history [nil a e]))
                                                          (dbi/-attrs-by history :db.type/ref)))]
                                [(reduce transact-purge-datom report (concat e-datoms v-datoms))
                                 (purge-components history e-datoms)])
@@ -726,7 +726,7 @@
       (if (and (keyword? op)
                (not (builtin-op? op)))
         (if-some [ident (dbu/entid db op)]
-          (let [fun (-> (dbi/-search db [ident :db/fn]) first :v)
+          (let [fun (-> (dbi/search db [ident :db/fn]) first :v)
                 args (next op-vec)]
             (if (fn? fun)
               [report (apply fun db args)]
@@ -799,7 +799,7 @@
                 (raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
                        {:error :transact/syntax, :op entity})
                 (let [upserted-eid (when (dbu/is-attr? db a :db.unique/identity)
-                                     (:e (first (dbi/-datoms db :avet [a v]))))
+                                     (:e (first (dbi/datoms db :avet [a v]))))
                       allocated-eid (get tempids e)]
                   (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
                     (retry-with-tempid initial-report report initial-es e upserted-eid)

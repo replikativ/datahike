@@ -33,10 +33,33 @@
 (defn now []
   (Date.))
 
+(defn permute-and-repeat [max-repeat elements]
+  (let [elements (vec elements)
+        n (count elements)]
+    (loop [stack [[[] (zipmap (range n) (repeat 0))]]
+           result []]
+      (if (empty? stack)
+        result
+        (let [[[fs freqs] & stack] stack]
+          (recur (into stack
+                       (keep (fn [[index counter]]
+                               (when (< counter max-repeat)
+                                 [(conj fs index) (update freqs index inc)])))
+                       freqs)
+                 (if (every? pos? (vals freqs))
+                   (conj result (mapv #(nth elements %) fs))
+                   result)))))))
+
+(defn vary-db-ops [db & ops]
+  {:post [(seq %)
+          (<= (count ops) (count %))]}
+  (for [fs (permute-and-repeat 2 ops)]
+    ((apply comp fs) db)))
+
 (deftest test-base-history
   (let [cfg (assoc-in cfg-template [:store :id] "test-base-history")
-        conn (setup-db cfg)]
-
+        conn (setup-db cfg)
+        tx-id0 (:max-tx @conn)]
     (testing "Initial data"
       (is (= #{["Alice" 25] ["Bob" 35]}
              (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] @conn))))
@@ -44,29 +67,49 @@
     (testing "historical values"
       (d/transact conn [{:db/id [:name "Alice"] :age 30}])
       (are [x y]
-           (= x y)
-        #{[30]}
-        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
-        #{[30] [25]}
-        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
+          (= x y)
+          #{[30]}
+          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
+          #{[30] [25]}
+          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
-      (d/transact conn [[:db/retractEntity [:name "Alice"]]])
-      (is (thrown-with-msg? Throwable #"Nothing found for entity id"
-                            (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])))
-      (is (= #{[30] [25]}
-             (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"]))))
-    (testing "find retracted values"
-      (is (= #{["Alice" 25] ["Alice" 30]}
-             (d/q '[:find ?n ?a :where [?r :age ?a _ false] [?r :name ?n _ false]] (d/history @conn)))))
-    (testing "find source transaction of retracted values"
-      (is (= #{[25 true] [25 false] [30 true] [30 false]}
-             (d/q '[:find ?a ?op
-                    :in $ ?e
-                    :where
-                    [?e :age ?a ?t ?op]
-                    [?t :db/txInstant ?d]]
-                  (d/history @conn)
-                  [:name "Alice"]))))
+      (let [ ;;tx-id1 (:max-tx @conn)
+            _ (d/transact conn [[:db/retractEntity [:name "Alice"]]])
+            tx-id2 (:max-tx @conn)]
+        (is (thrown-with-msg? Throwable #"Nothing found for entity id"
+                              (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])))
+
+        (doseq [db (vary-db-ops @conn d/history)]
+          (is (= #{[30] [25]}
+                 (d/q '[:find ?a :in $ ?e :where [?e :age ?a]]
+                      db
+                      [:name "Alice"]))))
+        (doseq [db (vary-db-ops @conn d/history #(d/as-of % tx-id0))]
+          (is (= #{[25]}
+                 (d/q '[:find ?a :in $ ?e :where [?e :age ?a]]
+                      db
+                      [:name "Alice"]))))
+        (doseq [db (vary-db-ops @conn d/history #(d/since % tx-id2))]
+          (is (= #{[30]}
+                 (d/q '[:find ?a :in $ ?e :where [?e :age ?a]]
+                      db
+                      [:name "Alice"]))))
+        
+        (testing "find retracted values"
+          (doseq [db (vary-db-ops @conn d/history)]
+            (is (= #{["Alice" 25] ["Alice" 30]}
+                   (d/q '[:find ?n ?a :where [?r :age ?a _ false] [?r :name ?n _ false]]
+                        db)))))
+        (testing "find source transaction of retracted values"
+          (doseq [db (vary-db-ops @conn d/history)]
+            (is (= #{[25 true] [25 false] [30 true] [30 false]}
+                   (d/q '[:find ?a ?op
+                          :in $ ?e
+                          :where
+                          [?e :age ?a ?t ?op]
+                          [?t :db/txInstant ?d]]
+                        db
+                        [:name "Alice"])))))))
     (d/release conn)))
 
 (defn replace-commit-id [s]
