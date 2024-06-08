@@ -245,7 +245,7 @@
     :db.type/valueType [:db/systemAttribRef]
     :db.type/cardinality [:db/systemAttribRef]
     :db.type/unique [:db/systemAttribRef]
-    
+
     (if (= k :db/ident)
       [:db/ident]
       (when (true? v)
