@@ -378,9 +378,12 @@
                      (assoc v (dbu/reverse-ref a-ident) eid)
                      (if reverse?
                        [:db/add v straight-a eid]
-                       [:db/add eid straight-a (if (and attribute-refs? (ds/is-system-keyword? v)) ;; translation of system enums
-                                                 (dbi/-ref-for db v)
-                                                 v)])))]
+                       [:db/add eid straight-a
+                        (if (and attribute-refs?
+                                 (dbu/is-attr? db straight-a-ident :db/systemAttribRef)
+                                 (ds/is-system-keyword? v)) ;; translation of system enums
+                          (dbi/-ref-for db v)
+                          v)])))]
     (if ensure
       (let [{:keys [:db.entity/attrs :db.entity/preds]} (-> db :schema ensure)]
         (if (empty? attrs)
