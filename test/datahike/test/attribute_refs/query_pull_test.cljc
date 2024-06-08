@@ -129,3 +129,28 @@
                         :where [?ref :age ?a]
                         [(>= ?a 18)]]
                       db [[:name "Ivan"] [:name "Oleg"] [:name "Petr"]]))))))
+
+(deftest test-pull-attribute
+  (testing "Pull an attribute"
+    (let [db (d/db-with ref-db [{:db/ident :attribute-to-use
+                                 :db/cardinality :db.cardinality/one
+                                 :db/valueType :db.type/keyword}])
+          result (d/q '[:find (pull ?attr [*])
+                        :in $ ?attr-name
+                        :where
+                        [?attr :db/ident ?attr-name]]
+                      db :attribute-to-use)
+          [[x]] result
+          ids [(:db/id x)
+               (-> x :db/valueType :db/id)
+               (-> x :db/cardinality :db/id)]]
+      (is (= 1 (count result)))
+      (is (= 1 (count (first result))))
+      (is (= #{:db/id :db/ident :db/valueType :db/cardinality} (set (keys x))))
+      (is (number? (:db/id x)))
+      (is (= :attribute-to-use (:db/ident x)))
+      (is (= :db.type/keyword (-> x :db/valueType :db/ident)))
+      (is (= :db.cardinality/one (-> x :db/cardinality :db/ident)))
+      (is (every? number? ids))
+      (is (= (count (set ids))
+             (count ids))))))

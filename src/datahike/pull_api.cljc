@@ -118,6 +118,12 @@
           (subpattern-frame eids multi? attr-key)
           (assoc :recursion rec)))))
 
+(defn db-ident-and-id [db x]
+  (let [{:keys [ident ref]} (dbu/attr-info db x)]
+    (if (dbu/ident-name? ident)
+      {:db/id ref :db/ident ident}
+      {:db/id ref})))
+
 (defn pull-attr-datoms
   "Processes datoms found to requested pattern for given attribute, i.e.
    - limits the result set to specified or default limit,
@@ -136,11 +142,13 @@
                  limit (into [] (take limit))))]
     (if found
       (let [ref?       (dbu/ref? db attr)
+            system-attrib-ref? (dbu/system-attrib-ref? db attr)
             component? (and ref? (dbu/component? db attr))
             multi?     (if forward? (dbu/multival? db attr)
                            (not component?))
             datom-val  (if forward? (fn [d] (.-v ^Datom d))
                            (fn [d] (.-e ^Datom d)))]
+
         (cond
           (contains? opts :subpattern)
           (->> (subpattern-frame (:subpattern opts)
@@ -160,8 +168,9 @@
                (conj frames parent))
 
           :else
-          (let [as-value  (cond->> datom-val
-                            ref? (comp #(hash-map :db/id %)))
+          (let [as-value  (if (or ref? system-attrib-ref?)
+                            #(db-ident-and-id db (datom-val %))
+                            datom-val)
                 single?   (not multi?)]
             (->> (cond-> (into [] (map as-value) found)
                    single? first)

@@ -28,6 +28,10 @@
           :cljs [^boolean ref?]) [db attr]
   (is-attr? db attr :db.type/ref))
 
+(defn #?@(:clj [^Boolean system-attrib-ref?]
+          :cljs [^boolean system-attrib-ref?]) [db attr]
+  (is-attr? db attr :db/systemAttribRef))
+
 (defn #?@(:clj [^Boolean component?]
           :cljs [^boolean component?]) [db attr]
   (is-attr? db attr :db/isComponent))
@@ -152,8 +156,11 @@
       {:ident attr :ref (dbi/-ref-for db attr)})
     {:ident attr :ref attr}))
 
+(defn ident-name? [x]
+  (or (keyword? x) (string? x)))
+
 (defn validate-attr-ident [a-ident at db]
-  (when-not (or (keyword? a-ident) (string? a-ident))
+  (when-not (ident-name? a-ident)
     (raise "Bad entity attribute " a-ident " at " at ", expected keyword or string"
            {:error :transact/syntax, :attribute a-ident, :context at}))
   (when (and (= :write (:schema-flexibility (dbi/-config db)))
