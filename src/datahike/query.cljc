@@ -750,55 +750,55 @@
     (update context :rels conj new-rel)))
 
 (defn bind-by-fn [context clause]
-    (let [[[f & args] out] clause
-          binding (dpi/parse-binding out)
-          fun (or (get built-ins f)
-                  (get clj-core-built-ins f)
-                  (context-resolve-val context f)
-                  (resolve-sym f)
-                  (resolve-method f)
-                  (when (nil? (rel-with-attr context f))
-                    (dt/raise "Unknown function '" f " in " clause
-                              {:error :query/where, :form clause, :var f})))
-          attrs (filter symbol? args)
-          [context production] (rel-prod-by-attrs context attrs)
-          symbols-with-values (into #{}
-                                    (mapcat keys)
-                                    [(:attrs production)
-                                     (:consts context)
-                                     (:sources context)])]
+  (let [[[f & args] out] clause
+        binding (dpi/parse-binding out)
+        fun (or (get built-ins f)
+                (get clj-core-built-ins f)
+                (context-resolve-val context f)
+                (resolve-sym f)
+                (resolve-method f)
+                (when (nil? (rel-with-attr context f))
+                  (dt/raise "Unknown function '" f " in " clause
+                            {:error :query/where, :form clause, :var f})))
+        attrs (filter symbol? args)
+        [context production] (rel-prod-by-attrs context attrs)
+        symbols-with-values (into #{}
+                                  (mapcat keys)
+                                  [(:attrs production)
+                                   (:consts context)
+                                   (:sources context)])]
       ;; Currently, we can only evaluate this clause if all variables
       ;; in the function call are bound. If not, we return nil which
       ;; is handled by `datahike.tools/resolve-clauses`.
-      (when (every? symbols-with-values attrs)
-        (let [new-rel (if fun
-                        (let [tuple-fn (-call-fn context production fun args)
-                              rels (for [tuple (:tuples production)
-                                         :let [val (tuple-fn tuple)]
-                                         :when (not (nil? val))]
-                                     (prod-rel (Relation. (:attrs production) [tuple])
-                                               (in->rel binding val)))]
-                          (if (empty? rels)
-                            (prod-rel production (empty-rel binding))
-                            (reduce sum-rel rels)))
-                        (prod-rel (assoc production :tuples []) (empty-rel binding)))
-              idx->const (reduce-kv (fn [m k v]
-                                      (if-let [c (k (:consts context))]
-                                        (assoc m v c) ;; different value at v for each tuple
-                                        m))
-                                    {}
-                                    (:attrs new-rel))]
-          (if (empty? (:tuples new-rel))
-            (update context :rels collapse-rels new-rel)
-            (-> context ;; filter output binding
-                (update :rels collapse-rels
-                        (update new-rel
-                                :tuples
-                                #(filter (fn [tuple]
-                                           (every? (fn [[ind c]]
-                                                     (= c (get tuple ind)))
-                                                   idx->const))
-                                         %)))))))))
+    (when (every? symbols-with-values attrs)
+      (let [new-rel (if fun
+                      (let [tuple-fn (-call-fn context production fun args)
+                            rels (for [tuple (:tuples production)
+                                       :let [val (tuple-fn tuple)]
+                                       :when (not (nil? val))]
+                                   (prod-rel (Relation. (:attrs production) [tuple])
+                                             (in->rel binding val)))]
+                        (if (empty? rels)
+                          (prod-rel production (empty-rel binding))
+                          (reduce sum-rel rels)))
+                      (prod-rel (assoc production :tuples []) (empty-rel binding)))
+            idx->const (reduce-kv (fn [m k v]
+                                    (if-let [c (k (:consts context))]
+                                      (assoc m v c) ;; different value at v for each tuple
+                                      m))
+                                  {}
+                                  (:attrs new-rel))]
+        (if (empty? (:tuples new-rel))
+          (update context :rels collapse-rels new-rel)
+          (-> context ;; filter output binding
+              (update :rels collapse-rels
+                      (update new-rel
+                              :tuples
+                              #(filter (fn [tuple]
+                                         (every? (fn [[ind c]]
+                                                   (= c (get tuple ind)))
+                                                 idx->const))
+                                       %)))))))))
 
 ;;; RULES
 
