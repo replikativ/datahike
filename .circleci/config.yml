@@ -183,7 +183,7 @@ jobs:
       - run:
           name: Deploy to clojars
           command: bb clojars
-  release:
+  release-jar:
     executor: tools/clojurecli
     steps:
       - attach_workspace:
@@ -191,12 +191,6 @@ jobs:
       - run:
           name: Release jar on GitHub
           command: bb release jar
-      - run:
-          name: Release cli on GitHub
-          command: bb release native-cli
-          environment:
-            DTHK_PLATFORM: linux
-            DTHK_ARCH: x86_64
 
 workflows:
   build-test-and-deploy:
@@ -251,7 +245,7 @@ workflows:
             - hitchhiker-tree-test
             # - backward-compatibility-test
             - integration-test
-      - release:
+      - release-jar:
           context:
             - dockerhub-deploy
             - github-token

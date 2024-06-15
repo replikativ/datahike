@@ -39,6 +39,8 @@
       :resource_class resource-class}
      :working_directory "/home/circleci/replikativ"
      :environment {:GRAALVM_VERSION graalvm-version
+                   :DTHK_PLATFORM: "linux"
+                   :DTHK_ARCH: arch
                    :PATH "/bin:/home/circleci/graalvm/bin:/home/circleci/clojure/bin:/home/circleci/bin"
                    :JAVA_HOME "/home/circleci/graalvm/bin/java"}
      :steps
@@ -70,6 +72,9 @@ bb ni-cli")
       (run "Test native image"
            "cd /home/circleci/replikativ
 bb test native-image")
+      (run "Release native image"
+           "cd /home/circleci/replikativ
+bb release native-image")
       {:persist_to_workspace
        {:root "/home/circleci/"
         :paths ["replikativ/dthk"]}}
