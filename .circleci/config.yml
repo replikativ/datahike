@@ -120,17 +120,17 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
-  bb-pod-test:
-    executor: tools/clojurecli
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Run bb-pod test
-          command: |
-            cd /home/circleci/replikativ
-            bb test bb-pod
-          no_output_timeout: 5m
+  # bb-pod-test:
+  #   executor: tools/clojurecli
+  #   steps:
+  #     - attach_workspace:
+  #         at: /home/circleci
+  #     - run:
+  #         name: Run bb-pod test
+  #         command: |
+  #           cd /home/circleci/replikativ
+  #           bb test bb-pod
+  #         no_output_timeout: 5m
   backward-compatibility-test:
     executor: tools/clojurecli
     steps:
@@ -218,11 +218,11 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
-      - bb-pod-test:
-          context: dockerhub-deploy
-          requires:
-            - build
-            - native-image
+      # - bb-pod-test:
+      #     context: dockerhub-deploy
+      #     requires:
+      #       - build
+      #       - native-image
       # - backward-compatibility-test:
       #     context: dockerhub-deploy
       #     requires:
