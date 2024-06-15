@@ -1,7 +1,7 @@
 {:min-bb-version "0.8.0"
  :pods {;since babashka 0.8.0, can only be declared in bb.edn
-        org.babashka/tools-deps-native {:version "0.1.1"}
-        clj-kondo/clj-kondo {:version "2023.07.13"}}
+        org.babashka/tools-deps-native {:version "0.1.6"}
+        clj-kondo/clj-kondo {:version "2024.05.24"}}
  :deps {datahike/bb {:local/root "bb"}}
  :tasks {:requires [[babashka.fs :as fs]
                     [clojure.edn :as edn]
@@ -44,7 +44,6 @@
 
          check {:doc "Run all checks"
                 :depends [test format lint outdated]}
-
 
          ; build and release
 
@@ -108,15 +107,14 @@
                               :task    (let [jar (build/jar-path config (-> config :build :http-server-clj))]
                                          (release/gh-release jar config))}
 
-
-         ;; native image
+;; native image
 
          ni-check {:doc "Check for 'native-image' program"
                    :task (try (shell "which" "native-image")
-                           (println "Program native-image found!")
-                           (catch Exception _
-                             (println "PATH does not contain native-image! Make sure to add your GraalVM to it.")
-                             (System/exit 1)))}
+                              (println "Program native-image found!")
+                              (catch Exception _
+                                (println "PATH does not contain native-image! Make sure to add your GraalVM to it.")
+                                (System/exit 1)))}
 
          ni-cli {:doc "Build native image cli"
                  :depends [jcompile ni-check]
