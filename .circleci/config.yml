@@ -203,7 +203,9 @@ workflows:
           requires:
             - setup
       - native-image:
-          context: dockerhub-deploy
+          context:
+            - dockerhub-deploy
+            - github-token
           requires:
             - setup
       - format:
