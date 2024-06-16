@@ -29,7 +29,7 @@
          myarch
          "_bin.tar.gz")))
 
-(defn native-image
+(defn build-native-image
   [arch resource-class]
   (let [cache-key (str arch "-deps-linux-{{ checksum \"deps.edn\" }}")
         graalvm-url (make-graalvm-url arch)]
@@ -72,6 +72,24 @@ bb ni-cli")
       (run "Test native image"
            "cd /home/circleci/replikativ
 bb test native-image")
+      {:persist_to_workspace
+       {:root "/home/circleci/"
+        :paths ["replikativ/dthk"]}}
+      {:save_cache
+       {:paths ["~/.m2" "~/graalvm"]
+        :key cache-key}}])))
+
+(defn release-native-image
+  [arch]
+  (let [cache-key (str arch "-deps-linux-{{ checksum \"deps.edn\" }}")]
+    (ordered-map
+     :executor "tools/clojurecli"
+     :working_directory "/home/circleci/replikativ"
+     :environment {:DTHK_PLATFORM "linux"
+                   :DTHK_ARCH arch}
+     :steps
+     [:checkout
+      {:restore_cache {:keys [cache-key]}}
       (run "Checkfuck"
            "echo GH: $GITHUB_TOKEN
 env | grep GITHUB")
@@ -98,13 +116,23 @@ bb release native-image")
         :command
         "docker run --privileged --rm tonistiigi/binfmt --install all\ndocker buildx create --name ci-builder --use"}}]}}
    :jobs (ordered-map
-          :linux-amd64 (native-image "amd64" "large")
-          :linux-aarch64 (native-image "aarch64" "arm.large"))
+          :build-linux-amd64 (build-native-image "amd64" "large")
+          :build-linux-aarch64 (build-native-image "aarch64" "arm.large")
+          :release-linux-amd64 (release-native-image "amd64")
+          :release-linux-aarch64 (release-native-image "aarch64"))
    :workflows (ordered-map
                :version 2
                :native-images
-               {:jobs [{"linux-amd64" {:context ["dockerhub-deploy"]}}
-                       {"linux-aarch64" {:context ["dockerhub-deploy"]}}]})))
+               {:jobs ["build-linux-amd64"
+                       "build-linux-aarch64"
+                       {"release-linux-amd64"
+                        {:context ["dockerhub-deploy"]
+                         :filters {:branches {:only "main"}}
+                         :requires ["build-linux-amd64"]}}
+                       {"release-linux-aarch64"
+                        {:context ["dockerhub-deploy"]
+                         :filters {:branches {:only "main"}}
+                         :requires ["build-linux-aarch64"]}}]})))
 
 (def skip-config
   {:skip-if-only [#"^doc\/.*"
@@ -143,4 +171,6 @@ bb release native-image")
 (comment
   (def changed-files (get-changes))
   (anything-relevant? changed-files (:skip-if-only skip-config))
-  (-> (make-config ) clojure.pprint/pprint))
+  (-> (make-config) 
+      (yaml/generate-string :dumper-options {:flow-style :block})
+      println))
