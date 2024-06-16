@@ -72,6 +72,9 @@ bb ni-cli")
       (run "Test native image"
            "cd /home/circleci/replikativ
 bb test native-image")
+      (run "Checkfuck"
+           "echo GH: $GITHUB_TOKEN
+env | grep GITHUB")
       (run "Release native image"
            "cd /home/circleci/replikativ
 bb release native-image")
