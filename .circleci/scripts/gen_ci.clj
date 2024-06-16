@@ -100,8 +100,8 @@ bb release native-image")
    :workflows (ordered-map
                :version 2
                :native-images
-               {:jobs ["linux-amd64"
-                       "linux-aarch64"]})))
+               {:jobs [{"linux-amd64" {:context ["dockerhub-deploy"]}}
+                       {"linux-aarch64" {:context ["dockerhub-deploy"]}}]})))
 
 (def skip-config
   {:skip-if-only [#"^doc\/.*"
@@ -139,4 +139,5 @@ bb release native-image")
 
 (comment
   (def changed-files (get-changes))
-  (anything-relevant? changed-files (:skip-if-only skip-config)))
+  (anything-relevant? changed-files (:skip-if-only skip-config))
+  (-> (make-config ) clojure.pprint/pprint))
