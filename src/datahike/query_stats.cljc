@@ -2,12 +2,12 @@
   (:require [clojure.set :as set]
             [datahike.tools :as dt]))
 
-(defn round [precision x]
+(defn round [^long precision ^java.math.BigDecimal x]
   #?(:clj (with-precision precision x)
      :cljs (let [y (Math/pow 10 precision)]
              (/ (.round js/Math (* y x)) y))))
 
-(defn compatible-abs [n]
+(defn compatible-abs [^long n]
   #?(:clj  (Math/abs n)
      :cljs (js/Math.abs n)))
 
