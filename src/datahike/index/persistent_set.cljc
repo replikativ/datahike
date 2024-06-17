@@ -268,7 +268,7 @@
         _ (arrays/asort arr (index-type->cmp-quick index-type false))
         ^PersistentSortedSet pset (psset/from-sorted-array (index-type->cmp-quick index-type false)
                                                            arr
-                                                           (alength arr)
+                                                           (arrays/alength arr)
                                                            {:branching-factor DEFAULT_BRANCHING_FACTOR})]
     (set! (.-_storage pset) (:storage store))
     (with-meta pset
