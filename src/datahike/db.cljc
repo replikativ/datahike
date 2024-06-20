@@ -196,9 +196,6 @@
                     (merge {:current-db db}
                            context)))
 
-(defmacro todo [x] x)
-
-
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map meta]
   #?@(:cljs
       [IHash (-hash [db] hash)
