@@ -96,8 +96,8 @@
   ([tuples]
    (into [] (distinct-tuples) tuples))
   ([]
-   (let [seen (HashSet.)]
-     (filter #(.add ^HashSet seen (vec %))))))
+   (let [step ((distinct) (fn [_ b] b))]
+     (filter #(step nil (vec %))))))
 
 (defn seqable?
   #?@(:clj [^Boolean [x]]
