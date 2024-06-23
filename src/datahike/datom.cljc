@@ -242,10 +242,21 @@
      :clj
      (.compareTo ^Comparable a1 a2)))
 
+(defn- class-name [x]
+  (let [c (class x)]
+    (.getName ^Class c)))
+
+(defn- safe-compare [a b]
+  (try
+    (compare a b)
+    (catch Exception _e
+      (compare (class-name a)
+               (class-name b)))))
+
 (defn cmp-nil [o1 o2]
   (if (nil? o1) nil
       (if (nil? o2) nil
-          (compare o1 o2))))
+          (safe-compare o1 o2))))
 
 (defn type-hint-datom [x]
   (vary-meta x assoc :tag `Datom))

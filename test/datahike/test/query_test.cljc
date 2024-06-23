@@ -37,6 +37,18 @@
              [3 3 "Ivan"]
              [3 2 "Petr"]}))))
 
+(deftest test-mixed-age-types
+  (let [db (-> (db/empty-db)
+               (d/db-with [{:db/id 1, :name  "Ivan", :age   15}
+                           {:db/id 2, :name  "Petr", :age   "37"}
+                           {:db/id 3, :name  "Ivan", :age   :thirtyseven}
+                           {:db/id 4, :age 15}]))]
+    (is (= (d/q '[:find  ?e ?name
+                  :where
+                  [?e :name ?name]
+                  [?e :age "37"]] db)
+           #{[2 "Petr"]}))))
+
 (deftest test-q-many
   (let [db (-> (db/empty-db {:aka {:db/cardinality :db.cardinality/many}})
                (d/db-with [[:db/add 1 :name "Ivan"]
