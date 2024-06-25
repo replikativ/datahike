@@ -27,7 +27,7 @@
 
     '[?e ?a (pull ?e [:name])]
     #{[2 25 {:name "Ivan"}] [1 44 {:name "Petr"}]}
-    
+
     '[?e ?a (pull ?e #{:name})]
     #{[2 25 {:name "Ivan"}] [1 44 {:name "Petr"}]}
 
@@ -43,7 +43,7 @@
                              res)
     '[(pull ?e ?pattern)] [:name]
     #{[{:name "Ivan"}] [{:name "Petr"}]}
-    
+
     '[(pull ?e ?pattern)] #{:name}
     #{[{:name "Ivan"}] [{:name "Petr"}]}
 
