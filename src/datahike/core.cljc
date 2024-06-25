@@ -155,31 +155,31 @@
 ; Index lookups
 
 (defn datoms
-  ([db index] {:pre [(dbu/db? db)]} (dbi/-datoms db index []))
-  ([db index c1] {:pre [(dbu/db? db)]} (dbi/-datoms db index [c1]))
-  ([db index c1 c2] {:pre [(dbu/db? db)]} (dbi/-datoms db index [c1 c2]))
-  ([db index c1 c2 c3] {:pre [(dbu/db? db)]} (dbi/-datoms db index [c1 c2 c3]))
-  ([db index c1 c2 c3 c4] {:pre [(dbu/db? db)]} (dbi/-datoms db index [c1 c2 c3 c4])))
+  ([db index] {:pre [(dbu/db? db)]} (dbi/datoms db index []))
+  ([db index c1] {:pre [(dbu/db? db)]} (dbi/datoms db index [c1]))
+  ([db index c1 c2] {:pre [(dbu/db? db)]} (dbi/datoms db index [c1 c2]))
+  ([db index c1 c2 c3] {:pre [(dbu/db? db)]} (dbi/datoms db index [c1 c2 c3]))
+  ([db index c1 c2 c3 c4] {:pre [(dbu/db? db)]} (dbi/datoms db index [c1 c2 c3 c4])))
 
 (defn seek-datoms
-  ([db index] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index []))
-  ([db index c1] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index [c1]))
-  ([db index c1 c2] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index [c1 c2]))
-  ([db index c1 c2 c3] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index [c1 c2 c3]))
-  ([db index c1 c2 c3 c4] {:pre [(dbu/db? db)]} (dbi/-seek-datoms db index [c1 c2 c3 c4])))
+  ([db index] {:pre [(dbu/db? db)]} (dbi/seek-datoms db index []))
+  ([db index c1] {:pre [(dbu/db? db)]} (dbi/seek-datoms db index [c1]))
+  ([db index c1 c2] {:pre [(dbu/db? db)]} (dbi/seek-datoms db index [c1 c2]))
+  ([db index c1 c2 c3] {:pre [(dbu/db? db)]} (dbi/seek-datoms db index [c1 c2 c3]))
+  ([db index c1 c2 c3 c4] {:pre [(dbu/db? db)]} (dbi/seek-datoms db index [c1 c2 c3 c4])))
 
 (defn rseek-datoms
   "Same as [[seek-datoms]], but goes backwards until the beginning of the index."
-  ([db index] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index []))
-  ([db index c1] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index [c1]))
-  ([db index c1 c2] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index [c1 c2]))
-  ([db index c1 c2 c3] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index [c1 c2 c3]))
-  ([db index c1 c2 c3 c4] {:pre [(dbu/db? db)]} (dbi/-rseek-datoms db index [c1 c2 c3 c4])))
+  ([db index] {:pre [(dbu/db? db)]} (dbi/rseek-datoms db index []))
+  ([db index c1] {:pre [(dbu/db? db)]} (dbi/rseek-datoms db index [c1]))
+  ([db index c1 c2] {:pre [(dbu/db? db)]} (dbi/rseek-datoms db index [c1 c2]))
+  ([db index c1 c2 c3] {:pre [(dbu/db? db)]} (dbi/rseek-datoms db index [c1 c2 c3]))
+  ([db index c1 c2 c3 c4] {:pre [(dbu/db? db)]} (dbi/rseek-datoms db index [c1 c2 c3 c4])))
 
 (defn index-range
   [db attr start end]
   {:pre [(dbu/db? db)]}
-  (dbi/-index-range db attr start end))
+  (dbi/index-range db attr start end))
 
 ;; Conn
 

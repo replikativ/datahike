@@ -137,6 +137,65 @@
       (update :aevt di/-persistent!)
       (update :avet di/-persistent!)))
 
+(defn contextual-search-fn [{:keys [temporal?]}]
+  (case temporal?
+    true dbs/temporal-search
+    false dbs/search-current-indices))
+
+(defn contextual-search [db pattern context]
+  ((contextual-search-fn context) db pattern))
+
+(defn contextual-datoms [db index-type cs {:keys [temporal?]}]
+  (case temporal?
+    true (dbu/temporal-datoms db index-type cs)
+    false (di/-slice
+           (get db index-type)
+           (dbu/components->pattern db index-type cs e0 tx0)
+           (dbu/components->pattern db index-type cs emax txmax)
+           index-type)))
+
+(defn contextual-seek-datoms [db index-type cs {:keys [temporal?]}]
+  (case temporal?
+    true (dbs/temporal-seek-datoms db index-type cs)
+    false (di/-slice (get db index-type)
+                     (dbu/components->pattern db index-type cs e0 tx0)
+                     (datom emax nil nil txmax)
+                     index-type)))
+
+(defn contextual-rseek-datoms [db index-type cs {:keys [temporal?]}]
+  (case temporal?
+    true (dbs/temporal-rseek-datoms db index-type cs)
+    false (-> (di/-slice (get db index-type)
+                         (dbu/components->pattern db index-type cs e0 tx0)
+                         (datom emax nil nil txmax)
+                         index-type)
+              vec
+              rseq)))
+
+(defn contextual-index-range [db avet attr start end {:keys [temporal? current-db]}]
+  {:pre [(or (not temporal?) current-db)]}
+  (case temporal?
+    true (dbs/temporal-index-range db current-db attr start end)
+    false (do (when-not (dbu/indexing? db attr)
+                (raise "Attribute"
+                       attr "should be marked as :db/index true" {}))
+              
+              (dbu/validate-attr
+               attr (list '-index-range 'db attr start end) db)
+              (di/-slice
+               avet
+               (dbu/resolve-datom db nil attr start nil e0 tx0)
+               (dbu/resolve-datom db nil attr end nil emax txmax)
+               :avet))))
+
+(defn deeper-index-range [origin-db db attr start end context]
+  (dbi/-index-range origin-db
+                    attr
+                    start
+                    end
+                    (merge {:current-db db}
+                           context)))
+
 (defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map meta]
   #?@(:cljs
       [IHash (-hash [db] hash)
@@ -175,70 +234,58 @@
   (-max-eid [db] max-eid)
   (-config [db] config)
   (-ref-for [db a-ident]
-            (if (:attribute-refs? config)
-              (let [ref (get ident-ref-map a-ident)]
-                (when (nil? ref)
-                  (warn (str "Attribute " a-ident " has not been found in database")))
-                ref)
-              a-ident))
+    (if (:attribute-refs? config)
+      (let [ref (get ident-ref-map a-ident)]
+        (when (nil? ref)
+          (warn (str "Attribute " a-ident " has not been found in database")))
+        ref)
+      a-ident))
   (-ident-for [db a-ref]
-              (if (:attribute-refs? config)
-                (let [a-ident (get ref-ident-map a-ref)]
-                  (when (nil? a-ident)
-                    (warn (str "Attribute with reference number " a-ref " has not been found in database")))
-                  a-ident)
-                a-ref))
+    (if (:attribute-refs? config)
+      (let [a-ident (get ref-ident-map a-ref)]
+        (when (nil? a-ident)
+          (warn (str "Attribute with reference number " a-ref " has not been found in database")))
+        a-ident)
+      a-ref))
 
   dbi/ISearch
-  (-search [db pattern]
-           (dbs/search-current-indices db pattern))
+  (-search-context [db] { ;; Don't merge datom operations when true.
+                         :historical? false
+
+                         ;; What index to use.
+                         :temporal? false})
+  (-search [db pattern context]
+    (contextual-search db pattern context))
 
   dbi/IIndexAccess
-  (-datoms [db index-type cs]
-           (di/-slice (get db index-type)
-                      (dbu/components->pattern db index-type cs e0 tx0)
-                      (dbu/components->pattern db index-type cs emax txmax)
-                      index-type))
+  (-datoms [db index-type cs context]
+           (contextual-datoms db index-type cs context))
 
-  (-seek-datoms [db index-type cs]
-                (di/-slice (get db index-type)
-                           (dbu/components->pattern db index-type cs e0 tx0)
-                           (datom emax nil nil txmax)
-                           index-type))
+  (-seek-datoms [db index-type cs context]
+                (contextual-seek-datoms db index-type cs context))
 
-  (-rseek-datoms [db index-type cs]
-                 (-> (di/-slice (get db index-type)
-                                (dbu/components->pattern db index-type cs e0 tx0)
-                                (datom emax nil nil txmax)
-                                index-type)
-                     vec
-                     rseq))
+  (-rseek-datoms [db index-type cs context]
+                 (contextual-rseek-datoms db index-type cs context))
 
-  (-index-range [db attr start end]
-                (when-not (dbu/indexing? db attr)
-                  (raise "Attribute" attr "should be marked as :db/index true" {}))
-                (dbu/validate-attr attr (list '-index-range 'db attr start end) db)
-                (di/-slice avet
-                           (dbu/resolve-datom db nil attr start nil e0 tx0)
-                           (dbu/resolve-datom db nil attr end nil emax txmax)
-                           :avet))
+  (-index-range [db attr start end context]
+                (contextual-index-range db avet attr start end context))
 
   data/EqualityPartition
   (equality-partition [x] :datahike/db)
 
   data/Diff
   (diff-similar [a b]
-                (let [datoms-a (di/-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
-                      datoms-b (di/-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
-                  (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
+    (let [datoms-a (di/-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
+          datoms-b (di/-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
+      (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
 
 ;; FilteredDB
 
 (defrecord-updatable FilteredDB [unfiltered-db pred]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
-       ISeqable (-seq [db] (dbi/-datoms db :eavt []))
-       ICounted (-count [db] (count (dbi/-datoms db :eavt [])))
+       ISeqable (-seq [db] (dbi/datoms db :eavt []))
+       ICounted (-count [db] (count (dbi/datoms db :eavt [])))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
@@ -252,12 +299,12 @@
 
       :clj
       [IPersistentCollection
-       (count [db] (count (dbi/-datoms db :eavt [])))
+       (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on FilteredDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on FilteredDB")))
 
-       Seqable (seq [db] (dbi/-datoms db :eavt []))
+       Seqable (seq [db] (dbi/datoms db :eavt []))
 
        clojure.lang.ILookup (valAt [db k] (throw (UnsupportedOperationException. "valAt/2 is not supported on FilteredDB")))
        (valAt [db k nf] (throw (UnsupportedOperationException. "valAt/3 is not supported on FilteredDB")))
@@ -283,29 +330,37 @@
   (-ident-for [db a-ref] (dbi/-ident-for unfiltered-db a-ref))
 
   dbi/ISearch
-  (-search [db pattern]
-           (filter (.-pred db) (dbi/-search unfiltered-db pattern)))
+  (-search-context [db] (dbi/-search-context unfiltered-db))
+  (-search [db pattern context]
+    (filter (.-pred db) (dbi/-search unfiltered-db pattern context)))
 
   dbi/IIndexAccess
-  (-datoms [db index cs]
-           (filter (.-pred db) (dbi/-datoms unfiltered-db index cs)))
+  (-datoms [db index cs context]
+           (filter (.-pred db) (dbi/-datoms unfiltered-db index cs context)))
 
-  (-seek-datoms [db index cs]
-                (filter (.-pred db) (dbi/-seek-datoms unfiltered-db index cs)))
+  (-seek-datoms [db index cs context]
+                (filter (.-pred db)
+                        (dbi/-seek-datoms unfiltered-db index cs context)))
 
-  (-rseek-datoms [db index cs]
-                 (filter (.-pred db) (dbi/-rseek-datoms unfiltered-db index cs)))
+  (-rseek-datoms [db index cs context]
+                 (filter (.-pred db)
+                         (dbi/-rseek-datoms unfiltered-db index cs context)))
 
-  (-index-range [db attr start end]
-                (filter (.-pred db) (dbi/-index-range unfiltered-db attr start end))))
+  (-index-range [db attr start end context]
+                (filter (.-pred db)
+                        (deeper-index-range unfiltered-db
+                                            db
+                                            attr
+                                            start end
+                                            context))))
 
 ;; HistoricalDB
 
 (defrecord-updatable HistoricalDB [origin-db]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
-       ISeqable (-seq [db] (dbi/-datoms db :eavt []))
-       ICounted (-count [db] (count (dbi/-datoms db :eavt [])))
+       ISeqable (-seq [db] (dbi/datoms db :eavt []))
+       ICounted (-count [db] (count (dbi/datoms db :eavt [])))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on HistoricalDB")))
@@ -318,13 +373,13 @@
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on HistoricalDB")))]
       :clj
       [IPersistentCollection
-       (count [db] (count (dbi/-datoms db :eavt [])))
+       (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on HistoricalDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on HistoricalDB")))
 
        Seqable
-       (seq [db] (dbi/-datoms db :eavt []))
+       (seq [db] (dbi/datoms db :eavt []))
 
        Associative
        (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on HistoricalDB")))])
@@ -347,17 +402,21 @@
   (-origin [db] origin-db)
 
   dbi/ISearch
-  (-search [db pattern]
-           (dbs/temporal-search origin-db pattern))
+  (-search-context [db]
+    (assoc (dbi/-search-context origin-db)
+           :historical? true
+           :temporal? true))
+  (-search [db pattern context]
+    (dbi/-search origin-db pattern context))
 
   dbi/IIndexAccess
-  (-datoms [db index-type cs] (dbu/temporal-datoms origin-db index-type cs))
+  (-datoms [db index-type cs context] (dbi/-datoms origin-db index-type cs context))
 
-  (-seek-datoms [db index-type cs] (dbs/temporal-seek-datoms origin-db index-type cs))
+  (-seek-datoms [db index-type cs context] (dbi/-seek-datoms origin-db index-type cs context))
 
-  (-rseek-datoms [db index-type cs] (dbs/temporal-rseek-datoms origin-db index-type cs))
+  (-rseek-datoms [db index-type cs context] (dbi/-seek-datoms origin-db index-type cs context))
 
-  (-index-range [db attr start end] (dbs/temporal-index-range origin-db db attr start end)))
+  (-index-range [db attr start end context] (deeper-index-range origin-db db attr start end context)))
 
 ;; AsOfDB
 
@@ -386,23 +445,28 @@
                 [current-ea-datom]
                 [])))))))
 
-(defn filter-as-of-datoms [datoms time-point db]
+(defn filter-as-of-datoms [datoms time-point db {:keys [historical?]}]
+  {:pre [(boolean? historical?)]}
   (let [as-of-pred (fn [^Datom d]
                      (if (date? time-point)
                        (.before ^Date (.-v d) ^Date time-point)
                        (<= (dd/datom-tx d) time-point)))
 
         filtered-tx-ids (dbu/filter-txInstant datoms as-of-pred db)
-        filtered-datoms (->> datoms
-                             (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d))))
-                             (get-current-values db))]
-    filtered-datoms))
+        filtered-datoms (into []
+                              (filter (fn [^Datom d]
+                                        (contains? filtered-tx-ids
+                                                   (datom-tx d))))
+                              datoms)]
+    (if historical?
+      filtered-datoms
+      (get-current-values db filtered-datoms))))
 
 (defrecord-updatable AsOfDB [origin-db time-point]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
-       ISeqable (-seq [db] (dbi/-datoms db :eavt []))
-       ICounted (-count [db] (count (dbi/-datoms db :eavt [])))
+       ISeqable (-seq [db] (dbi/datoms db :eavt []))
+       ICounted (-count [db] (count (dbi/datoms db :eavt [])))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on AsOfDB")))
@@ -415,13 +479,13 @@
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on AsOfDB")))]
       :clj
       [IPersistentCollection
-       (count [db] (count (dbi/-datoms db :eavt [])))
+       (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on AsOfDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on AsOfDB")))
 
        Seqable
-       (seq [db] (dbi/-datoms db :eavt []))
+       (seq [db] (dbi/datoms db :eavt []))
 
        Associative
        (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on AsOfDB")))])
@@ -444,44 +508,52 @@
   (-origin [db] origin-db)
 
   dbi/ISearch
-  (-search [db pattern]
-           (-> (dbs/temporal-search origin-db pattern)
-               (filter-as-of-datoms time-point origin-db)))
+  (-search-context [db] (assoc (dbi/-search-context origin-db)
+                               :temporal? true))
+  (-search [db pattern context]
+    (-> (dbi/-search origin-db pattern context)
+        (filter-as-of-datoms time-point origin-db context)))
 
   dbi/IIndexAccess
-  (-datoms [db index-type cs]
-           (-> (dbu/temporal-datoms origin-db index-type cs)
-               (filter-as-of-datoms time-point origin-db)))
+  (-datoms [db index-type cs context]
+           (-> (dbi/-datoms origin-db index-type cs context)
+               (filter-as-of-datoms time-point origin-db context)))
 
-  (-seek-datoms [db index-type cs]
-                (-> (dbs/temporal-seek-datoms origin-db index-type cs)
-                    (filter-as-of-datoms time-point origin-db)))
+  (-seek-datoms [db index-type cs context]
+                (-> (dbi/-seek-datoms origin-db index-type cs context)
+                    (filter-as-of-datoms time-point origin-db context)))
 
-  (-rseek-datoms [db index-type cs]
-                 (-> (dbs/temporal-rseek-datoms origin-db index-type cs)
-                     (filter-as-of-datoms time-point origin-db)))
+  (-rseek-datoms [db index-type cs context]
+                 (-> (dbi/-rseek-datoms origin-db index-type cs context)
+                     (filter-as-of-datoms time-point origin-db context)))
 
-  (-index-range [db attr start end]
-                (-> (dbs/temporal-index-range origin-db db attr start end)
-                    (filter-as-of-datoms time-point origin-db))))
+  (-index-range [db attr start end context]
+                (-> (deeper-index-range origin-db db attr start end context)
+                    (filter-as-of-datoms time-point origin-db context))))
 
 ;; SinceDB
 
-(defn- filter-since [datoms time-point db]
+(defn- filter-since [datoms time-point db {:keys [historical?]}]
+  {:pre [(boolean? historical?)]}
   (let [since-pred (fn [^Datom d]
                      (if (date? time-point)
                        (.after ^Date (.-v d) ^Date time-point)
                        (>= (.-tx d) time-point)))
-        filtered-tx-ids (dbu/filter-txInstant datoms since-pred db)]
-    (->> datoms
-         (filter datom-added)
-         (filter (fn [^Datom d] (contains? filtered-tx-ids (datom-tx d)))))))
+        filtered-tx-ids (dbu/filter-txInstant datoms since-pred db)
+        filtered-datoms (into []
+                              (filter (fn [^Datom d]
+                                        (contains? filtered-tx-ids (datom-tx d))))
+                              datoms)]
+    
+    (if historical?
+      filtered-datoms
+      (get-current-values db filtered-datoms))))
 
 (defrecord-updatable SinceDB [origin-db time-point]
   #?@(:cljs
       [IEquiv (-equiv [db other] (equiv-db db other))
-       ISeqable (-seq [db] (dbi/-datoms db :eavt []))
-       ICounted (-count [db] (count (dbi/-datoms db :eavt [])))
+       ISeqable (-seq [db] (dbi/datoms db :eavt []))
+       ICounted (-count [db] (count (dbi/datoms db :eavt [])))
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on SinceDB")))
@@ -494,13 +566,13 @@
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on SinceDB")))]
       :clj
       [IPersistentCollection
-       (count [db] (count (dbi/-datoms db :eavt [])))
+       (count [db] (count (dbi/datoms db :eavt [])))
        (equiv [db o] (equiv-db db o))
        (cons [db [k v]] (throw (UnsupportedOperationException. "cons is not supported on SinceDB")))
        (empty [db] (throw (UnsupportedOperationException. "empty is not supported on SinceDB")))
 
        Seqable
-       (seq [db] (dbi/-datoms db :eavt []))
+       (seq [db] (dbi/datoms db :eavt []))
 
        Associative
        (assoc [db k v] (throw (UnsupportedOperationException. "assoc is not supported on SinceDB")))])
@@ -523,26 +595,32 @@
   (-origin [db] origin-db)
 
   dbi/ISearch
-  (-search [db pattern]
-           (-> (dbs/temporal-search origin-db pattern)
-               (filter-since time-point origin-db)))
+  (-search-context [db] (assoc (dbi/-search-context origin-db)
+                               :temporal? true))
+  (-search [db pattern context]
+    (-> (dbi/-search origin-db pattern context)
+        (filter-since time-point origin-db context)))
 
   dbi/IIndexAccess
-  (dbi/-datoms [db index-type cs]
-               (-> (dbu/temporal-datoms origin-db index-type cs)
-                   (filter-since time-point origin-db)))
+  (dbi/-datoms [db index-type cs context]
+               (-> (dbi/-datoms origin-db index-type cs context)
+                   (filter-since time-point origin-db context)))
 
-  (dbi/-seek-datoms [db index-type cs]
-                    (-> (dbs/temporal-seek-datoms origin-db index-type cs)
-                        (filter-since time-point origin-db)))
+  (dbi/-seek-datoms [db index-type cs context]
+                    (-> (dbi/-seek-datoms origin-db index-type cs context)
+                        (filter-since time-point origin-db context)))
 
-  (dbi/-rseek-datoms [db index-type cs]
-                     (-> (dbs/temporal-rseek-datoms origin-db index-type cs)
-                         (filter-since time-point origin-db)))
+  (dbi/-rseek-datoms [db index-type cs context]
+                     (-> (dbi/-rseek-datoms origin-db index-type cs context)
+                         (filter-since time-point origin-db context)))
 
-  (dbi/-index-range [db attr start end]
-                    (-> (dbs/temporal-index-range origin-db db attr start end)
-                        (filter-since time-point origin-db))))
+  (dbi/-index-range [db attr start end context]
+                    (-> (deeper-index-range origin-db
+                                            db
+                                            attr
+                                            start end
+                                            context)
+                        (filter-since time-point origin-db context))))
 
 (defn- equiv-db-index [x y]
   (loop [xs (seq x)
@@ -556,7 +634,7 @@
   (and (or (instance? DB other) (instance? FilteredDB other))
        (or (not (instance? DB other)) (= (hash db) (hash other)))
        (= (dbi/-schema db) (dbi/-schema other))
-       (equiv-db-index (dbi/-datoms db :eavt []) (dbi/-datoms other :eavt []))))
+       (equiv-db-index (dbi/datoms db :eavt []) (dbi/datoms other :eavt []))))
 
 #?(:cljs
    (defn pr-db [db w opts]

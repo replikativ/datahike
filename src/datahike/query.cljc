@@ -245,7 +245,7 @@
   [db e a else-val]
   (when (nil? else-val)
     (dt/raise "get-else: nil default value is not supported" {:error :query/where}))
-  (if-some [datom (first (dbi/-search db [e (translate-for db a)]))]
+  (if-some [datom (first (dbi/search db [e (translate-for db a)]))]
     (:v datom)
     else-val))
 
@@ -253,7 +253,7 @@
   [db e & as]
   (reduce
    (fn [_ a]
-     (when-some [datom (first (dbi/-search db [e (translate-for db a)]))]
+     (when-some [datom (first (dbi/search db [e (translate-for db a)]))]
        (let [a-ident (if (keyword? (:a datom))
                        (:a datom)
                        (dbi/-ident-for db (:a datom)))]
@@ -604,9 +604,9 @@
         search-pattern (mapv #(if (symbol? %) nil %) pattern)
         datoms  (if (first search-pattern)
                   (if-let [eid (dbu/entid db (first search-pattern))]
-                    (dbi/-search db (assoc search-pattern 0 eid))
+                    (dbi/search db (assoc search-pattern 0 eid))
                     [])
-                  (dbi/-search db search-pattern))
+                  (dbi/search db search-pattern))
         idx->const (reduce-kv (fn [m k v]
                                 (if-let [c (k (:consts context))]
                                   (if (= c (get (first datoms) v)) ;; All datoms have the same format and the same value at position v

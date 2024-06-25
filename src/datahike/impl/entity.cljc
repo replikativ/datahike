@@ -32,7 +32,7 @@
   "Translate reverse attribute recording to database and find datoms"
   [db eid a-ident not-found]
   (let [a-db (if (:attribute-refs? (dbi/-config db)) (dbi/-ref-for db a-ident) a-ident)]
-    (if-let [datoms (not-empty (dbi/-search db [nil a-db eid]))]
+    (if-let [datoms (not-empty (dbi/search db [nil a-db eid]))]
       (if (dbu/component? db a-ident)
         (entity db (:e (first datoms)))
         (reduce #(conj %1 (entity db (:e %2))) #{} datoms))
@@ -176,7 +176,7 @@
            (if-let [a-db (if (:attribute-refs? (dbi/-config (.-db this)))
                            (dbi/-ref-for (.-db this) a-ident)
                            a-ident)]
-             (if-some [datoms (not-empty (dbi/-search (.-db this) [(.-eid this) a-db]))]
+             (if-some [datoms (not-empty (dbi/search (.-db this) [(.-eid this) a-db]))]
                (let [value (entity-attr (.-db this) a-ident datoms)]
                  (vreset! (.-cache this) (assoc @(.-cache this) a-ident value))
                  value)
@@ -205,7 +205,7 @@
 (defn touch [^Entity e]
   {:pre [(entity? e)]}
   (when-not @(.-touched e)
-    (when-let [datoms (not-empty (dbi/-search (.-db e) [(.-eid e)]))]
+    (when-let [datoms (not-empty (dbi/search (.-db e) [(.-eid e)]))]
       (vreset! (.-cache e) (->> datoms
                                 (datoms->cache (.-db e))
                                 (touch-components (.-db e))))
