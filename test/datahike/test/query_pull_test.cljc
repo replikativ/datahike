@@ -27,6 +27,9 @@
 
     '[?e ?a (pull ?e [:name])]
     #{[2 25 {:name "Ivan"}] [1 44 {:name "Petr"}]}
+    
+    '[?e ?a (pull ?e #{:name})]
+    #{[2 25 {:name "Ivan"}] [1 44 {:name "Petr"}]}
 
     '[?e (pull ?e [:name]) ?a]
     #{[2 {:name "Ivan"} 25] [1 {:name "Petr"} 44]}))
@@ -39,6 +42,9 @@
                                        test-db pattern))
                              res)
     '[(pull ?e ?pattern)] [:name]
+    #{[{:name "Ivan"}] [{:name "Petr"}]}
+    
+    '[(pull ?e ?pattern)] #{:name}
     #{[{:name "Ivan"}] [{:name "Petr"}]}
 
     '[?e ?a ?pattern (pull ?e ?pattern)] [:name]
@@ -83,6 +89,10 @@
                 :where [?e :age 25]]
               test-db)
          {:name "Ivan"}))
+  (is (= (d/q '[:find (pull ?e #{:name}) .
+                :where [?e :age 25]]
+              test-db)
+         {:name "Ivan"}))
 
   (is (= (set (d/q '[:find [(pull ?e [:name]) ...]
                      :where [?e :age ?a]]
@@ -99,6 +109,11 @@
                 :in $ ?p
                 :where [(ground 2) ?e]]
               test-db [:name])
+         {:name "Ivan"}))
+  (is (= (d/q '[:find (pull ?e ?p) .
+                :in $ ?p
+                :where [(ground 2) ?e]]
+              test-db #{:name})
          {:name "Ivan"}))
   (is (= (d/q '[:find (pull ?e p) .
                 :in $ p
