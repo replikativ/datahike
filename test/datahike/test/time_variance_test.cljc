@@ -67,13 +67,13 @@
     (testing "historical values"
       (d/transact conn [{:db/id [:name "Alice"] :age 30}])
       (are [x y]
-          (= x y)
-          #{[30]}
-          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
-          #{[30] [25]}
-          (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
+           (= x y)
+        #{[30]}
+        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])
+        #{[30] [25]}
+        (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
-      (let [ ;;tx-id1 (:max-tx @conn)
+      (let [;;tx-id1 (:max-tx @conn)
             _ (d/transact conn [[:db/retractEntity [:name "Alice"]]])
             tx-id2 (:max-tx @conn)]
         (is (thrown-with-msg? Throwable #"Nothing found for entity id"
@@ -94,7 +94,7 @@
                  (d/q '[:find ?a :in $ ?e :where [?e :age ?a]]
                       db
                       [:name "Alice"]))))
-        
+
         (testing "find retracted values"
           (doseq [db (vary-db-ops @conn d/history)]
             (is (= #{["Alice" 25] ["Alice" 30]}

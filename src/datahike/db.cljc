@@ -179,7 +179,7 @@
     false (do (when-not (dbu/indexing? db attr)
                 (raise "Attribute"
                        attr "should be marked as :db/index true" {}))
-              
+
               (dbu/validate-attr
                attr (list '-index-range 'db attr start end) db)
               (di/-slice
@@ -234,28 +234,28 @@
   (-max-eid [db] max-eid)
   (-config [db] config)
   (-ref-for [db a-ident]
-    (if (:attribute-refs? config)
-      (let [ref (get ident-ref-map a-ident)]
-        (when (nil? ref)
-          (warn (str "Attribute " a-ident " has not been found in database")))
-        ref)
-      a-ident))
+            (if (:attribute-refs? config)
+              (let [ref (get ident-ref-map a-ident)]
+                (when (nil? ref)
+                  (warn (str "Attribute " a-ident " has not been found in database")))
+                ref)
+              a-ident))
   (-ident-for [db a-ref]
-    (if (:attribute-refs? config)
-      (let [a-ident (get ref-ident-map a-ref)]
-        (when (nil? a-ident)
-          (warn (str "Attribute with reference number " a-ref " has not been found in database")))
-        a-ident)
-      a-ref))
+              (if (:attribute-refs? config)
+                (let [a-ident (get ref-ident-map a-ref)]
+                  (when (nil? a-ident)
+                    (warn (str "Attribute with reference number " a-ref " has not been found in database")))
+                  a-ident)
+                a-ref))
 
   dbi/ISearch
-  (-search-context [db] { ;; Don't merge datom operations when true.
+  (-search-context [db] {;; Don't merge datom operations when true.
                          :historical? false
 
                          ;; What index to use.
                          :temporal? false})
   (-search [db pattern context]
-    (contextual-search db pattern context))
+           (contextual-search db pattern context))
 
   dbi/IIndexAccess
   (-datoms [db index-type cs context]
@@ -275,9 +275,9 @@
 
   data/Diff
   (diff-similar [a b]
-    (let [datoms-a (di/-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
-          datoms-b (di/-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
-      (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
+                (let [datoms-a (di/-slice (:eavt a) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)
+                      datoms-b (di/-slice (:eavt b) (datom e0 nil nil tx0) (datom emax nil nil txmax) :eavt)]
+                  (dd/diff-sorted datoms-a datoms-b dd/cmp-datoms-eavt-quick))))
 
 ;; FilteredDB
 
@@ -332,7 +332,7 @@
   dbi/ISearch
   (-search-context [db] (dbi/-search-context unfiltered-db))
   (-search [db pattern context]
-    (filter (.-pred db) (dbi/-search unfiltered-db pattern context)))
+           (filter (.-pred db) (dbi/-search unfiltered-db pattern context)))
 
   dbi/IIndexAccess
   (-datoms [db index cs context]
@@ -403,11 +403,11 @@
 
   dbi/ISearch
   (-search-context [db]
-    (assoc (dbi/-search-context origin-db)
-           :historical? true
-           :temporal? true))
+                   (assoc (dbi/-search-context origin-db)
+                          :historical? true
+                          :temporal? true))
   (-search [db pattern context]
-    (dbi/-search origin-db pattern context))
+           (dbi/-search origin-db pattern context))
 
   dbi/IIndexAccess
   (-datoms [db index-type cs context] (dbi/-datoms origin-db index-type cs context))
@@ -511,8 +511,8 @@
   (-search-context [db] (assoc (dbi/-search-context origin-db)
                                :temporal? true))
   (-search [db pattern context]
-    (-> (dbi/-search origin-db pattern context)
-        (filter-as-of-datoms time-point origin-db context)))
+           (-> (dbi/-search origin-db pattern context)
+               (filter-as-of-datoms time-point origin-db context)))
 
   dbi/IIndexAccess
   (-datoms [db index-type cs context]
@@ -544,7 +544,7 @@
                               (filter (fn [^Datom d]
                                         (contains? filtered-tx-ids (datom-tx d))))
                               datoms)]
-    
+
     (if historical?
       filtered-datoms
       (get-current-values db filtered-datoms))))
@@ -598,8 +598,8 @@
   (-search-context [db] (assoc (dbi/-search-context origin-db)
                                :temporal? true))
   (-search [db pattern context]
-    (-> (dbi/-search origin-db pattern context)
-        (filter-since time-point origin-db context)))
+           (-> (dbi/-search origin-db pattern context)
+               (filter-since time-point origin-db context)))
 
   dbi/IIndexAccess
   (dbi/-datoms [db index-type cs context]
