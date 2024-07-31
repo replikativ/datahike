@@ -58,13 +58,13 @@
 
 (defmethod datoms PersistentArrayMap
   [db {:keys [index components]}]
-  (dbi/-datoms db index components))
+  (dbi/datoms db index components))
 
 (defmethod datoms Keyword
   [db index & components]
   (if (nil? components)
-    (dbi/-datoms db index [])
-    (dbi/-datoms db index components)))
+    (dbi/datoms db index [])
+    (dbi/datoms db index components)))
 
 (defmulti seek-datoms
   (fn
@@ -75,13 +75,13 @@
 
 (defmethod seek-datoms PersistentArrayMap
   [db {:keys [index components]}]
-  (dbi/-seek-datoms db index components))
+  (dbi/seek-datoms db index components))
 
 (defmethod seek-datoms Keyword
   [db index & components]
   (if (nil? components)
-    (dbi/-seek-datoms db index [])
-    (dbi/-seek-datoms db index components)))
+    (dbi/seek-datoms db index [])
+    (dbi/seek-datoms db index components)))
 
 (defn with
   ([db arg-map]
@@ -125,7 +125,7 @@
     (dt/raise "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
 (defn index-range [db {:keys [attrid start end]}]
-  (dbi/-index-range db attrid start end))
+  (dbi/index-range db attrid start end))
 
 (defn schema [db]
   (reduce-kv

@@ -186,7 +186,7 @@
   [db spec eid frames]
   (let [[attr-key opts] spec]
     (if (= :db/id attr-key)
-      (if (not-empty (dbi/-datoms db :eavt [eid]))
+      (if (not-empty (dbi/datoms db :eavt [eid]))
         (conj (rest frames)
               (update (first frames) :kvps assoc! :db/id eid))
         frames)
@@ -199,8 +199,8 @@
             results  (if (nil? a)
                        []
                        (if forward?
-                         (dbi/-datoms db :eavt [eid a])
-                         (dbi/-datoms db :avet [a eid])))]
+                         (dbi/datoms db :eavt [eid a])
+                         (dbi/datoms db :avet [a eid])))]
         (pull-attr-datoms db attr-key attr eid forward?
                           results opts frames)))))
 
@@ -256,7 +256,7 @@
   (let [datoms (group-by (fn [d] (if (:attribute-refs? (dbi/-config db))
                                    (dbi/-ident-for db (.-a ^Datom d))
                                    (.-a ^Datom d)))
-                         (dbi/-datoms db :eavt [eid]))
+                         (dbi/datoms db :eavt [eid]))
         {:keys [attr recursion]} frame
         rec (cond-> recursion
               (some? attr) (push-recursion attr eid))]

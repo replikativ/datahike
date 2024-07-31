@@ -121,12 +121,12 @@
          (nil? value)
          nil
          :else
-         (-> (dbi/-datoms db :avet eid) first :e)))
+         (-> (dbi/datoms db :avet eid) first :e)))
 
-     #?@(:cljs [(array? eid) (recur db (array-seq eid))])
+     #?@(:cljs [(array? eid) (recur db (array-seq eid) error-code)])
 
      (keyword? eid)
-     (-> (dbi/-datoms db :avet [:db/ident eid]) first :e)
+     (-> (dbi/datoms db :avet [:db/ident eid]) first :e)
 
      :else
      (or error-code
@@ -217,7 +217,7 @@
           (comp
            (map datom-tx)
            (distinct)
-           (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
+           (mapcat (fn [tx] (dbi/-datoms db :eavt [tx] {:temporal? true :historical? false})))
            (keep (fn [^Datom d]
                    (when (and (= txInstant (.-a d)) (pred d))
                      (.-e d)))))
