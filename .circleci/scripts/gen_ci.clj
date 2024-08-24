@@ -90,6 +90,7 @@ bb test native-image")
      :steps
      [:checkout
       {:restore_cache {:keys [cache-key]}}
+      {:attach_workspace {:at "/home/circleci"}}
       (run "Release native image"
            "cd /home/circleci/replikativ
 bb release native-image")
