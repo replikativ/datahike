@@ -91,7 +91,7 @@ bb test native-image")
      [:checkout
       {:restore_cache {:keys [cache-key]}}
       (run "Checkfuck"
-           "echo GH: $GITHUB_TOKEN
+           "env && echo GH: $GITHUB_TOKEN
 env | grep GITHUB")
       (run "Release native image"
            "cd /home/circleci/replikativ
