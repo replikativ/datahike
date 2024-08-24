@@ -90,9 +90,9 @@ bb test native-image")
      :steps
      [:checkout
       {:restore_cache {:keys [cache-key]}}
-      (run "Checkfuck"
-           "env && echo GH: $GITHUB_TOKEN
-env | grep GITHUB")
+      (run "Build native image"
+           "cd /home/circleci/replikativ
+bb ni-cli")
       (run "Release native image"
            "cd /home/circleci/replikativ
 bb release native-image")
