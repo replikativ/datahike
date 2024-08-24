@@ -126,11 +126,13 @@ bb release native-image")
                {:jobs ["build-linux-amd64"
                        "build-linux-aarch64"
                        {"release-linux-amd64"
-                        {:context ["dockerhub-deploy"]
+                        {:context ["dockerhub-deploy"
+                                   "github-token"]
                          :filters {:branches {:only "main"}}
                          :requires ["build-linux-amd64"]}}
                        {"release-linux-aarch64"
-                        {:context ["dockerhub-deploy"]
+                        {:context ["dockerhub-deploy"
+                                   "github-token"]
                          :filters {:branches {:only "main"}}
                          :requires ["build-linux-aarch64"]}}]})))
 
