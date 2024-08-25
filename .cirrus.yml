@@ -1,7 +1,7 @@
 macos_instance:
   image: ghcr.io/cirruslabs/macos-monterey-base:latest
 
-task:
+build-task:
   env:
     DTHK_PLATFORM: macos
     DTHK_ARCH: aarch64
@@ -49,6 +49,8 @@ task:
     bb test bb-pod
 
     # upload artifact
-    bb release native-cli
+    if [[ $CIRRUS_RELEASE == "" ]]; then
+      bb release native-cli
+    fi
   binaries_artifacts:
     path: "dist/*"
