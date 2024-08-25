@@ -28,7 +28,8 @@ task:
     pushd "$INSTALL_DIR" >/dev/null
     curl -L -O https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
     sudo xattr -r -d com.apple.quarantine graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
-    tar -xzf graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
+    tar -xzvf graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
+    ls -larhtR
     popd >/dev/null
 
     # prepare
