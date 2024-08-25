@@ -45,11 +45,13 @@
          "-X" "backward-test/read")))
 
 (defn native-image []
+  (println "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
   (if (fs/exists? "./dthk")
     (p/shell "./bb/resources/native-image-tests/run-native-image-tests")
     (println "Native image cli missing. Please run 'bb ni-cli' and try again.")))
 
 (defn bb-pod []
+  (println "MEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE")
   (if (fs/exists? "./dthk")
     (p/shell "./bb/resources/native-image-tests/run-bb-pod-tests.clj")
     (do (println "Native image cli missing. Please run 'bb ni-cli' and try again.")

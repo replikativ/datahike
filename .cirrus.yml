@@ -7,7 +7,7 @@ task:
     DTHK_PLATFORM: macos
     DTHK_ARCH: aarch64
     INSTALL_DIR: ${HOME}
-    GRAALVM_VERSION: 21.0.1
+    GRAALVM_VERSION: 22.0.2
     GRAALVM_HOME: ${HOME}/graalvm-community-openjdk-${GRAALVM_VERSION}+12.1/Contents/Home/
     GITHUB_TOKEN: ENCRYPTED[0ea782cbbd99c2486b0f55b8eefcf91606a0805faaa3f35e55ecb75268b0046b874c856753f528ba689a9cdaa11e47c2]
   script: |
@@ -41,6 +41,8 @@ task:
     bb ni-cli
 
     # test
+    file dthk
+    echo "FOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO"
     bb test native-image
     bb test bb-pod
 
