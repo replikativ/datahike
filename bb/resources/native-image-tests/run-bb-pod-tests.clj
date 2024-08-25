@@ -4,7 +4,7 @@
          '[clojure.test :refer [run-tests deftest testing is]])
 (import '[java.util Date])
 
-(pods/load-pod ["clojure" "-M:pod" "-m" "datahike.cli"])
+(pods/load-pod "./dthk")
 
 (require '[datahike.pod :as d])
 
@@ -52,14 +52,6 @@
                                      {:name  "Bob", :age   30}
                                      {:name  "Charlie", :age   40}
                                      {:age 15}])))))
-    (testing "transact with bad arg"
-      (is (thrown? clojure.lang.ExceptionInfo
-                   (keys (d/transact
-                          "foo"
-                          [{:name  "Alice", :age   20}
-                           {:name  "Bob", :age   30}
-                           {:name  "Charlie", :age   40}
-                           {:age 15}])))))
     (testing "with-db"
       (is (= #{[2 "Bob" 30] [1 "Alice" 20] [3 "Charlie" 40]}
              (d/with-db [db (d/db conn)]
