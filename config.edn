@@ -1,13 +1,13 @@
-{:org "repliktativ"
+{:org "replikativ"
  :lib "datahike"
  :version {:major 0
            :minor 6}
- :git-url "git@github.com:repliktativ/datahike.git"
+ :git-url "git@github.com:replikativ/datahike.git"
 
  :pom-template "./bb/resources/template/pom.xml"
- :scm {:connection "scm:git:git@github.com:repliktativ/datahike.git"
-       :developerConnection "scm:git:git@github.com:repliktativ/datahike.git"
-       :url "https://github.com/repliktativ/datahike"}
+ :scm {:connection "scm:git:git@github.com:replikativ/datahike.git"
+       :developerConnection "scm:git:git@github.com:replikativ/datahike.git"
+       :url "https://github.com/replikativ/datahike"}
 
  :build {:clj {;; jvm build
                :src-dirs ["src"]
@@ -17,7 +17,7 @@
                :class-dir "target/classes"
                :deps-file "deps.edn"
                :jar-pattern "{{repo.lib}}-{{version-str}}.jar"
-               :lib io.repliktativ/datahike}
+               :lib io.replikativ/datahike}
          :http-server-clj {;; jvm build
                            :src-dirs      ["src" "http-server" "resources"]
                            :java-src-dirs ["java"]
@@ -27,7 +27,7 @@
                            :jar-pattern   "{{repo.lib}}-http-server-{{version-str}}.jar"
                            :aliases       [:http-server]
                            :main          datahike.http.server
-                           :lib           io.repliktativ/datahike-http-server}
+                           :lib           io.replikativ/datahike-http-server}
          :native {;; jvm build
                   :src-dirs ["src" "libdatahike/src"]
                   :java-src-dirs ["java"]
