@@ -42,7 +42,7 @@ task:
 
     # test
     bb test native-image
-    bb test pod
+    bb test bb-pod
 
     # upload artifact
     bb release native-cli
