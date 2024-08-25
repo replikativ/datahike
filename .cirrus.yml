@@ -34,11 +34,13 @@ task:
 
     # prepare
     export PATH=${GRAALVM_HOME}/bin:${PATH}
-    export JAVA_HOME=$GRAALVM_HOME
+    export JAVA_HOME=${GRAALVM_HOME}
+    ls -lahrt ${JAVA_HOME}
     sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
     java -version
-    ls -lahrtR ${GRAALVM_HOME}
-    ${GRAALVM_HOME}/bin/gu install native-image
+    ${GRAALVM_HOME}/bin/native-image --version
+    echo $PATH
+    native-image --version
 
     # compile
     bb ni-cli
