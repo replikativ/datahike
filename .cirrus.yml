@@ -26,16 +26,17 @@ task:
 
     # install graalvm
     pushd "$INSTALL_DIR" >/dev/null
+    pwd
     curl -L -O https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
     sudo xattr -r -d com.apple.quarantine graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
     tar -xzvf graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
-    ls -larhtR
+    ls -lahrt
     popd >/dev/null
 
     # prepare
+    pwd
     export PATH=${GRAALVM_HOME}/bin:${PATH}
     export JAVA_HOME=${GRAALVM_HOME}
-    ls -lahrt ${JAVA_HOME}
     sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
     java -version
     ${GRAALVM_HOME}/bin/native-image --version

@@ -1,0 +1,69 @@
+name: Building native images
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/README.md'
+      - 'doc/**'
+      - '.github/**'
+      - '.circleci/**'
+      - 'bb/**'
+      - 'dev/**'
+      - 'examples/**'
+      - 'test/**'
+
+  jobs:
+    native:
+      if: "!contains(github.event.head_commit.message, 'skip ci')"
+      strategy:
+        matrix:
+          include:
+            - os: macos-12
+              name: macos
+      runs-on: ${{ matrix.os }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GRAALVM_VERSION: 22.0.2
+        DTHK_PLATFORM: macos
+        DTHK_ARCH: amd64
+      steps:
+        - name: Git checkout
+          uses: actions/checkout@v2
+          with:
+            fetch-depth: 1
+            submodules: 'true'
+
+        - name: Cache deps
+          uses: actions/cache@v2
+          id: cache-deps
+          with:
+            path: ~/.m2/repository
+            key: ${{ runner.os }}-maven-${{ hashFiles('project.clj') }}
+            restore-keys: ${{ runner.os }}-maven-
+
+        - name: Setup GraalVM
+          uses: graalvm/setup-graalvm@v1
+          with:
+            java-version: '22'
+            distribution: 'graalvm'
+            components: 'native-image'
+            github-token: ${{ secrets.GITHUB_TOKEN }}
+
+        - name: Install clojure tools
+          uses: DeLaGuardo/setup-clojure@5.0
+          with:
+            cli: 1.10.3.1040
+            bb: 1.3.191
+
+        - name: Build native image
+          run: bb ni-cli
+
+        - name: Test native image
+          run: |
+            bb test native-image
+            bb test bb-pod
+
+        - name: Release native-image
+          run: bb release native-cli
