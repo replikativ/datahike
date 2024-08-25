@@ -36,6 +36,7 @@ task:
     export JAVA_HOME=$GRAALVM_HOME
     sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
     java -version
+    ls -lahrtR ${GRAALVM_HOME}
     ${GRAALVM_HOME}/bin/gu install native-image
 
     # compile
