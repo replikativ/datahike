@@ -22,8 +22,6 @@ jobs:
         include:
           - os: macos-12
             name: macos
-          - os: macos-14
-            name: applesilicon
     runs-on: ${{ matrix.os }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
