@@ -33,7 +33,6 @@ task:
     popd >/dev/null
 
     # prepare
-    pwd
     export PATH=${GRAALVM_HOME}/bin:${PATH}
     export JAVA_HOME=${GRAALVM_HOME}
     sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
@@ -47,7 +46,6 @@ task:
 
     # test
     file dthk
-    echo "FOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO"
     bb test native-image
     bb test bb-pod
 
