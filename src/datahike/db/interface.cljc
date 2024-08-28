@@ -5,7 +5,7 @@
 (defrecord SearchContext [historical temporal timepred xform currentdb])
 
 (def base-context
-  (map->SearchContext 
+  (map->SearchContext
    {:historical false
     :temporal false
     :timepred nil

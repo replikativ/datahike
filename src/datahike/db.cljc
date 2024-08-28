@@ -168,7 +168,7 @@
   (let [xform (dbi/context-xform context)
         time-pred (dbi/context-time-pred context)]
     (cond
-      
+
       time-pred
       (let [time-xform (temporal-datom-filter datoms time-pred db)]
         (if (dbi/context-historical? context)
@@ -178,9 +178,9 @@
                           (group-by-step (fn [^Datom datom]
                                            [(.-e datom) (.-a datom)])))
                (into [] (dbi/nil-comp (assemble-datoms-xform db) xform)))))
-      
+
       xform (into [] xform datoms)
-      
+
       :else datoms)))
 
 (defn db-transient [db]
@@ -462,9 +462,9 @@
 
   dbi/ISearch
   (-search-context [db]
-    (-> origin-db
-        dbi/-search-context
-        dbi/context-with-history))
+                   (-> origin-db
+                       dbi/-search-context
+                       dbi/context-with-history))
   (-search [db pattern context]
            (dbi/-search origin-db pattern context))
 
