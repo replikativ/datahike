@@ -66,7 +66,7 @@ jobs:
             - /home/circleci/.m2
   native-image:
     machine:
-      image: ubuntu-2004:202010-01
+      image: default
       resource_class: large
     steps:
       - attach_workspace:
