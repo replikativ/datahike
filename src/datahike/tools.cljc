@@ -199,3 +199,13 @@
         (raise "Cannot resolve any more clauses"
                {:clauses clauses})
         (recur resolver context failed-clauses)))))
+
+(defn group-by-step
+  "Create a step function to use with `transduce` for grouping values"
+  [f]
+  (fn
+    ([] (transient {}))
+    ([dst] (persistent! dst))
+    ([dst x]
+     (let [k (f x)]
+       (assoc! dst k (conj (get dst k []) x))))))

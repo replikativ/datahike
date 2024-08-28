@@ -41,3 +41,10 @@
                (dt/resolve-clauses add-resolver
                                    {:x 9 :y 10}
                                    [[:w :z :x]]))))
+
+(deftest group-by-step-test
+  (is (= {true [1000 1002 1004 1006 1008]
+          false [1001 1003 1005 1007 1009]}
+         (transduce (map #(+ 1000 %)) 
+                    (dt/group-by-step even?)
+                    (range 10)))))

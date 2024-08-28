@@ -209,6 +209,10 @@
                      (di/-slice index from to index-type)
                      (di/-slice temporal-index from to index-type))))
 
+(def temporal-context (assoc dbi/base-context
+                             :temporal true
+                             :historical false))
+
 (defn filter-txInstant [datoms pred db]
   (let [txInstant (if (:attribute-refs? (dbi/-config db))
                     (dbi/-ref-for db :db/txInstant)
@@ -217,7 +221,7 @@
           (comp
            (map datom-tx)
            (distinct)
-           (mapcat (fn [tx] (dbi/-datoms db :eavt [tx] {:temporal? true :historical? false})))
+           (mapcat (fn [tx] (dbi/-datoms db :eavt [tx] temporal-context)))
            (keep (fn [^Datom d]
                    (when (and (= txInstant (.-a d)) (pred d))
                      (.-e d)))))

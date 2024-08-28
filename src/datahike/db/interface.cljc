@@ -2,6 +2,72 @@
 
 ;; Database Protocols
 
+(defrecord SearchContext [historical temporal timepred xform currentdb])
+
+(def base-context
+  (map->SearchContext 
+   {:historical false
+    :temporal false
+    :timepred nil
+    :xform nil
+    :currentdb nil}))
+
+(defn context-historical? [^SearchContext c]
+  (.historical c))
+
+(defn context-temporal? [^SearchContext c]
+  (.temporal c))
+
+(defn context-time-pred [^SearchContext c]
+  (.timepred c))
+
+(defn context-xform [^SearchContext c]
+  (.xform c))
+
+(defn context-current-db [^SearchContext c]
+  (.currentdb c))
+
+(defn context-set-current-db-if-not-set [^SearchContext c db]
+  (if (nil? (.currentdb c))
+    (SearchContext. (.historical c)
+                    (.temporal c)
+                    (.timepred c)
+                    (.xform c)
+                    db)
+    c))
+
+(defn- extend-pred [pred added-pred]
+  (if (nil? pred)
+    added-pred
+    (fn [x] (and (pred x) (added-pred x)))))
+
+(defn context-with-temporal-timepred [^SearchContext c timepred]
+  (SearchContext. (.historical c)
+                  true
+                  (extend-pred (.timepred c) timepred)
+                  (.xform c)
+                  (.currentdb c)))
+
+(defn nil-comp [a b]
+  (cond
+    (nil? a) b
+    (nil? b) a
+    :else (comp a b)))
+
+(defn context-with-xform-after [^SearchContext c xform]
+  (SearchContext. (.historical c)
+                  (.temporal c)
+                  (.timepred c)
+                  (nil-comp (.xform c) xform)
+                  (.currentdb c)))
+
+(defn context-with-history [^SearchContext c]
+  (SearchContext. true
+                  true
+                  (.timepred c)
+                  (.xform c)
+                  (.currentdb c)))
+
 (defprotocol ISearch
   (-search-context [data])
   (-search [data pattern context]))
