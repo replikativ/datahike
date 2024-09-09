@@ -87,7 +87,7 @@
                                     "--initialize-at-build-time"
                                     "--no-fallback"
                                     "-J-Xmx4g"
-                                    "-H:Name=dthk"]
+                                    "-o dthk"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
                         {clj.native-image/clj.native-image
