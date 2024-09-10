@@ -149,8 +149,7 @@
                                 {:branches [{:clause '[?x :follow ?y],
                                              :rels [{:bound #{'?x '?y}, :rows 6}],
                                              :t :measurement
-                                             :type   :lookup
-                                             }],
+                                             :type   :lookup}],
                                  :clause '([?x :follow ?y]),
                                  :clauses '([?x :follow ?y]),
                                  :rels [{:bound #{'?x '?y}, :rows 6}],
@@ -160,8 +159,7 @@
                      :rels [{:bound #{'?x '?y}, :rows 10}],
                      :t :measurement,
                      :type :rule}
-                    {:clause '[(even? ?x)], :rels [{:bound #{'?x '?y}, :rows 6}], :t :measurement
-                     }]}
+                    {:clause '[(even? ?x)], :rels [{:bound #{'?x '?y}, :rows 6}], :t :measurement}]}
            (unify-stats (query-stats '[:find ?y ?x
                                        :in $ %
                                        :where [_ _ ?x]
