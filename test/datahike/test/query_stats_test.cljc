@@ -148,7 +148,7 @@
                                  :type :solve}
                                 {:branches [{:clause '[?x :follow ?y],
                                              :rels [{:bound #{'?x '?y}, :rows 6}],
-                                             :t :measurement
+                                             :t :measurement,
                                              :type :lookup}],
                                  :clause '([?x :follow ?y]),
                                  :clauses '([?x :follow ?y]),
@@ -182,7 +182,7 @@
                                  :type :solve}
                                 {:branches [{:clause '[?e1 :follow ?e2],
                                              :rels [{:bound #{'?e1 '?e2}, :rows 1}],
-                                             :t :measurement
+                                             :t :measurement,
                                              :type :lookup}],
                                  :clause '([?e1 :follow ?e2]),
                                  :clauses '([?e1 :follow ?e2]),
@@ -191,11 +191,11 @@
                                  :type :solve}
                                 {:branches '[{:clause [?e1 :follow ?t_tmp],
                                               :rels [{:bound #{?e1 ?t_tmp}, :rows 1}],
-                                              :t :measurement
+                                              :t :measurement,
                                               :type :lookup}
                                              {:clause [?t_tmp :follow ?e2],
                                               :rels [{:bound #{?e1 ?e2 ?t_tmp}, :rows 2}],
-                                              :t :measurement
+                                              :t :measurement,
                                               :type :lookup}],
                                  :clause '([?e1 :follow ?t_tmp] [?t_tmp :follow ?e2]),
                                  :clauses '([?e1 :follow ?t_tmp] [?t_tmp :follow ?e2]),
