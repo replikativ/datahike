@@ -1636,7 +1636,8 @@
     (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
                                (dynamic-lookup-attrs source pattern1)
                                *lookup-attrs*)]
-      (update context :rels collapse-rels new-rel))))
+      (cond-> (update context :rels collapse-rels new-rel)
+        (:stats context) (assoc :tmp-stats {:type :lookup})))))
 
 (defn -resolve-clause*
   ([context clause]

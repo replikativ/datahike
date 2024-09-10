@@ -41,10 +41,12 @@
           :rules  {}
           :stats  [{:clause '[?e :age ?a]
                     :rels   [{:bound #{'?a '?e} :rows  6}]
-                    :t      :measurement}
+                    :t      :measurement
+                    :type :lookup}
                    {:branches [{:clause '[?e :age 60]
                                 :rels   [{:bound #{'?a '?e} :rows 1}]
-                                :t      :measurement}]
+                                :t      :measurement
+                                :type :lookup}]
                     :clause   '(not [?e :age 60])
                     :rels     [{:bound #{'?a '?e} :rows 5}]
                     :t        :measurement
@@ -66,16 +68,20 @@
           :rules  {}
           :stats  [{:clause '[?e :name]
                     :rels   [{:bound #{'?e} :rows  6}]
-                    :t      :measurement}
+                    :t      :measurement
+                    :type   :lookup}
                    {:clause '[?e :age ?a]
                     :rels   [{:bound #{'?a '?e} :rows  6}]
-                    :t      :measurement}
+                    :t      :measurement
+                    :type :lookup}
                    {:branches [{:clause '[?e :name "Oleg"]
                                 :rels   [{:bound #{'?e} :rows  2}]
-                                :t      :measurement}
+                                :t      :measurement
+                                :type :lookup}
                                {:clause '[?e :age ?a]
                                 :rels   [{:bound #{'?a '?e} :rows  2}]
-                                :t      :measurement}]
+                                :t      :measurement
+                                :type :lookup}]
                     :clause   '(not-join [?e]
                                          [?e :name "Oleg"]
                                          [?e :age ?a])
@@ -101,13 +107,16 @@
           :stats  [{:clause '[?e :age ?a]
                     :rels   [{:bound #{'?a '?e}
                               :rows  6}]
-                    :t      :measurement}
+                    :t      :measurement
+                    :type   :lookup}
                    {:branches [[{:clause '[?e :name "Ivan"]
                                  :rels   [{:bound #{'?a '?e} :rows  3}]
-                                 :t      :measurement}]
+                                 :t      :measurement
+                                 :type   :lookup}]
                                [{:clause '[?e :name "Oleg"]
                                  :rels   [{:bound #{'?a '?e} :rows  2}]
-                                 :t      :measurement}]]
+                                 :t      :measurement
+                                 :type   :lookup}]]
                     :clause   '(or [?e :name "Ivan"]
                                    [?e :name "Oleg"])
                     :rels     [{:bound #{'?a '?e} :rows  5}]
@@ -126,12 +135,11 @@
             [3 :follow 4]
             [4 :follow 6]
             [5 :follow 3]]]
-
     (is (= {:consts {},
             :query '{:find [?y ?x], :in [$ %], :where [[_ _ ?x] (rule ?x ?y) [(even? ?x)]]},
             :ret #{[3 2] [4 2] [6 4]},
             :rules {'rule '[[(rule ?a ?b) [?a :follow ?b]]]},
-            :stats [{:clause '[_ _ ?x], :rels [{:bound #{'?x}, :rows 6}], :t :measurement}
+            :stats [{:clause '[_ _ ?x], :rels [{:bound #{'?x}, :rows 6}], :t :measurement, :type :lookup}
                     {:branches [{:branches [],
                                  :clause '(rule ?x ?y),
                                  :clauses (),
@@ -140,7 +148,9 @@
                                  :type :solve}
                                 {:branches [{:clause '[?x :follow ?y],
                                              :rels [{:bound #{'?x '?y}, :rows 6}],
-                                             :t :measurement}],
+                                             :t :measurement
+                                             :type   :lookup
+                                             }],
                                  :clause '([?x :follow ?y]),
                                  :clauses '([?x :follow ?y]),
                                  :rels [{:bound #{'?x '?y}, :rows 6}],
@@ -150,7 +160,8 @@
                      :rels [{:bound #{'?x '?y}, :rows 10}],
                      :t :measurement,
                      :type :rule}
-                    {:clause '[(even? ?x)], :rels [{:bound #{'?x '?y}, :rows 6}], :t :measurement}]}
+                    {:clause '[(even? ?x)], :rels [{:bound #{'?x '?y}, :rows 6}], :t :measurement
+                     }]}
            (unify-stats (query-stats '[:find ?y ?x
                                        :in $ %
                                        :where [_ _ ?x]
@@ -173,7 +184,8 @@
                                  :type :solve}
                                 {:branches [{:clause '[?e1 :follow ?e2],
                                              :rels [{:bound #{'?e1 '?e2}, :rows 1}],
-                                             :t :measurement}],
+                                             :t :measurement
+                                             :type   :lookup}],
                                  :clause '([?e1 :follow ?e2]),
                                  :clauses '([?e1 :follow ?e2]),
                                  :rels [{:bound #{'?e1 '?e2}, :rows 1}],
@@ -181,10 +193,12 @@
                                  :type :solve}
                                 {:branches '[{:clause [?e1 :follow ?t_tmp],
                                               :rels [{:bound #{?e1 ?t_tmp}, :rows 1}],
-                                              :t :measurement}
+                                              :t :measurement
+                                              :type   :lookup}
                                              {:clause [?t_tmp :follow ?e2],
                                               :rels [{:bound #{?e1 ?e2 ?t_tmp}, :rows 2}],
-                                              :t :measurement}],
+                                              :t :measurement
+                                              :type   :lookup}],
                                  :clause '([?e1 :follow ?t_tmp] [?t_tmp :follow ?e2]),
                                  :clauses '([?e1 :follow ?t_tmp] [?t_tmp :follow ?e2]),
                                  :rels [{:bound #{'?e1 '?e2 '?t_tmp}, :rows 2}],
