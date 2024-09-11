@@ -184,7 +184,8 @@
                       [config store stored-db]))
                   [config store stored-db]))
               _ (version-check stored-db)
-              _ (ensure-stored-config-consistency config (:config stored-db))
+              _ (when-not (:allow-unsafe-config config)
+                 (ensure-stored-config-consistency config (:config stored-db)))
               conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
           (swap! (:wrapped-atom conn) assoc :writer
                  (w/create-writer (:writer config) conn))
