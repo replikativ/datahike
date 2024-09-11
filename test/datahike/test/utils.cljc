@@ -3,6 +3,37 @@
             [datahike.tools :as tools])
   #?(:clj (:import [java.util UUID Date])))
 
+(defn get-all-datoms
+  "Based on Wanderung function `wanderung.datahike/extract-datahike-data`."
+  ([db] (get-all-datoms db identity))
+  ([db final-xform]
+   (let [txs (->> db
+                  (d/q '[:find ?tx ?inst
+                         :in $
+                         :where
+                         [?tx :db/txInstant ?inst]
+                         [(< #inst "1970-01-02" ?inst)]])
+                  (sort-by first))
+         query {:query '[:find ?e ?a ?v ?t ?added
+                         :in $ ?t
+                         :where
+                         [?e ?a ?v ?t ?added]
+                         (not [?e :db/txInstant ?v ?t ?added])]
+                :args [(d/history db)]}]
+     (into []
+           (comp (mapcat
+                  (fn [[tid tinst]]
+                    (->> (d/q (update-in query [:args] conj tid))
+                         (sort-by first)
+                         (into [[tid :db/txInstant tinst tid true]]))))
+                 final-xform)
+           txs))))
+
+(defn unmap-tx-timestamp [[e a _ tx added :as datom]]
+  (if (= a :db/txInstant)
+    [e a :timestamp tx added]
+    datom))
+
 (defn cfg-template
   "Returning a config template with a random store-id"
   []

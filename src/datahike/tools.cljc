@@ -10,19 +10,43 @@
   #?(:clj  (clojure.lang.Util/hashCombine x y)
      :cljs (hash-combine x y)))
 
-#?(:clj
-   (defn- -case-tree [queries variants]
-     (if queries
-       (let [v1 (take (/ (count variants) 2) variants)
-             v2 (drop (/ (count variants) 2) variants)]
-         (list 'if (first queries)
-               (-case-tree (next queries) v1)
-               (-case-tree (next queries) v2)))
-       (first variants))))
+(defn -match-vector-class [x]
+  (case x
+    _ :negative
+    * :any
+    :positive))
 
-#?(:clj
-   (defmacro case-tree [qs vs]
-     (-case-tree qs vs)))
+(defn -match-vector [path pattern-pos pattern-size pattern-symbols pairs]
+  (cond
+    (< pattern-pos pattern-size)
+    (let [groups (group-by (comp -match-vector-class #(nth % pattern-pos) first) pairs)
+          sub (fn [p pairs] (-match-vector (conj path p)
+                                           (inc pattern-pos)
+                                           pattern-size
+                                           pattern-symbols
+                                           pairs))]
+      (if (= [:any] (keys groups))
+        (sub '* (:any groups))
+        `(if ~(nth pattern-symbols pattern-pos)
+           ~(sub 1 (mapcat groups [:positive :any]))
+           ~(sub '_ (mapcat groups [:negative :any])))))
+
+    (not= 1 (count pairs)) (throw (ex-info "There should be exactly one expression at leaf"
+                                           {:path path}))
+    :else (-> pairs first second)))
+
+(defmacro match-vector [input-vector & pattern-expr-pairs]
+  {:pre [(sequential? pattern-expr-pairs)
+         (even? (count pattern-expr-pairs))]}
+  (let [pairs (partition 2 pattern-expr-pairs)
+        patterns (map first pairs)
+        _ (assert (every? sequential? patterns))
+        pattern-sizes (into #{} (map count) patterns)
+        _ (assert (= 1 (count pattern-sizes)))
+        pattern-size (first pattern-sizes)
+        symbols (repeatedly pattern-size gensym)]
+    `(let [[~@symbols] ~input-vector]
+       ~(-match-vector [] 0 pattern-size symbols pairs))))
 
 (defn ^:dynamic get-date []
   #?(:clj (Date.)
@@ -176,6 +200,7 @@
            ~nsym (count ~vsym)
            ~vars ~vsym]
        ~(generate [] pairs))))
+
 (defn- reduce-clauses
   [resolver context clauses]
   (loop [context context
@@ -209,3 +234,42 @@
     ([dst x]
      (let [k (f x)]
        (assoc! dst k (conj (get dst k []) x))))))
+
+(defn range-subset-tree
+  "This function generates code for a decision tree that for an input expression `input` that has to represent a sequence of growing integers that is a subset of the integers in the sequence `(range length-length)`. Every leaf in the decision tree corresponds to one of the 2^range-length possible subsequences and the `branch-visitor-fn` is called at every leaf with the first argument being the subsequence and the second argument being a mask."
+  ([range-length input branch-visitor-fn]
+   (if (symbol? input)
+     (range-subset-tree range-length
+                        input
+                        branch-visitor-fn
+                        0
+                        []
+                        (vec (repeat range-length nil)))
+     (let [sym (gensym)]
+       `(let [~sym ~input]
+          ~(range-subset-tree range-length sym branch-visitor-fn)))))
+  ([range-length input-symbol branch-visitor-fn at acc-inds mask]
+   {:pre [(number? range-length)
+          (symbol? input-symbol)
+          (ifn? branch-visitor-fn)
+          (number? at)
+          (vector? acc-inds)]}
+   (if (= range-length at)
+     (branch-visitor-fn acc-inds mask)
+     `(if (empty? ~input-symbol)
+        ~(branch-visitor-fn acc-inds mask)
+        (if (= ~at (first ~input-symbol))
+          (let [~input-symbol (rest ~input-symbol)]
+            ~(range-subset-tree range-length
+                                input-symbol
+                                branch-visitor-fn
+                                (inc at)
+                                (conj acc-inds at)
+                                (assoc mask at (count acc-inds))))
+          ~(range-subset-tree range-length
+                              input-symbol
+                              branch-visitor-fn
+                              (inc at)
+                              acc-inds
+                              mask))))))
+
