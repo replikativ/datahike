@@ -1,6 +1,8 @@
 (ns ^:no-doc datahike.tools
   (:require
    [superv.async :refer [throw-if-exception-]]
+   [clojure.core.async.impl.protocols :as async-impl]
+   [clojure.core.async :as async]
    #?(:clj [clojure.java.io :as io])
    [taoensso.timbre :as log])
   #?(:clj (:import [java.util Properties UUID Date]
@@ -82,10 +84,14 @@
   once only, with deliver. Calls to deref/@ prior to delivery will
   block, unless the variant of deref with timeout is used. All
   subsequent derefs will return the same delivered value without
-  blocking. Exceptions delivered to the promise will throw on deref."
+  blocking. Exceptions delivered to the promise will throw on deref. 
+   
+  Also supports core.async take! to optionally consume values without
+  blocking the reader thread."
   []
   (let [d (java.util.concurrent.CountDownLatch. 1)
-        v (atom d)]
+        v (atom d)
+        vp (async/promise-chan)]
     (reify
       clojure.lang.IDeref
       (deref [_] (.await d) (throw-if-exception- @v))
@@ -104,7 +110,10 @@
         (when (and (pos? (.getCount d))
                    (compare-and-set! v d x))
           (.countDown d)
-          this)))))
+          (if-not (nil? x) (async/put! vp x) (async/close! vp))
+          this))
+      async-impl/ReadPort
+      (take! [_this handler] (async-impl/take! vp handler)))))
 
 (defn get-version
   "Retrieves the current version of a dependency. Thanks to https://stackoverflow.com/a/33070806/10978897"
