@@ -591,7 +591,7 @@
 
 (defn check-tuple [db op-vec]
   (let [[_ _ a v] op-vec
-        attr-schema (-> db dbi/-schema a)]
+        attr-schema (-> db dbi/-schema (get a))]
     (cond (:db/tupleType attr-schema)
           (cond (> (count v) 8)
                 (raise "Cannot store more than 8 values for homogeneous tuple: " op-vec
