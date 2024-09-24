@@ -1,29 +1,34 @@
 (ns datahike.api.specification
   "Shared specification for different bindings. This namespace holds all
   information such that individual bindings can be automatically derived from
-  it.")
+  it."
+  (:require [datahike.spec :as spec]))
 
 (defn ->url
   "Turns an API endpoint name into a URL."
   [name]
   (.replace (str name) "?" ""))
 
-(defn spec-args->argslist [args]
-  (if-not (seq? args)
-    args
-    (cond (= (first args) 's/cat)
-          [[(symbol (name (second args)))]]
+(defn spec-args->argslist
+  "This function is a helper to translate a spec into a list of arguments. It is only complete enough to deal with the specs in this namespace."
+  [s]
+  (if-not (seq? s)
+    (if (= :nil s) [] [(symbol (name s))])
+    (let [[op & args] s]
+      (cond
+        (= op 's/cat)
+        [(vec (mapcat (fn [[k v]]
+                        (if (and (seq? v) (= (first v) 's/*))
+                          (vec (concat ['&] (spec-args->argslist k)))
+                          (spec-args->argslist k)))
+                      (partition 2 args)))]
 
-          (= (first args) 's/alt)
-          (mapv (fn [s]
-                  (if (= s :nil)
-                    []
-                    [(symbol (name s))]))
-                (take-nth 2 (rest args))))))
-
-(comment
-  (spec-args->argslist '(s/alt :config (s/cat :config spec/SConfig)
-                               :nil (s/cat))))
+        (= op 's/alt)
+        (vec (mapcat (fn [[_k v]]
+                       (spec-args->argslist v))
+                     (partition 2 args)))
+        :else
+        []))))
 
 (def api-specification
   '{database-exists?
