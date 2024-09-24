@@ -71,7 +71,7 @@
      ["-v" nil "Verbosity level"
       :id :verbosity
       :default 1
-      :update-fn inc] 
+      :update-fn inc]
      [nil "--log-file PATH" "Log file to write to."
       :default "dthk.log"]
      ;; A boolean option defaulting to nil
