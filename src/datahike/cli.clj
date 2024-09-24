@@ -11,7 +11,8 @@
             [jsonista.core :as j]
             [datahike.json :as json]
             [clj-cbor.core :as cbor]
-            [taoensso.timbre :as log])
+            [taoensso.timbre :as log]
+            [taoensso.timbre.appenders.core :as appenders])
   (:import [java.util Date]))
 
 ;; This file is following https://github.com/clojure/tools.cli
@@ -69,8 +70,10 @@
      ;; A non-idempotent option (:default is applied first)
      ["-v" nil "Verbosity level"
       :id :verbosity
-      :default 0
-      :update-fn inc]
+      :default 1
+      :update-fn inc] 
+     [nil "--log-file PATH" "Log file to write to."
+      :default "dthk.log"]
      ;; A boolean option defaulting to nil
      ["-h" "--help"]]))
 
@@ -148,14 +151,19 @@
 (defn -main [& args]
   (let [{:keys [action options arguments exit-message ok?]}
         (validate-args args)]
+    (when-not (= "true" (System/getenv "BABASHKA_POD"))
+      (log/merge-config! {:appenders {:println {:enabled? false}
+                                      :spit (appenders/spit-appender {:fname (:log-file options)})}}))
     (case (int (:verbosity options))
-      0 ;; default
+      0
+      (log/set-level! :error)
+      1 ;; default
       (log/set-level! :warn)
-      1
-      (log/set-level! :info)
       2
-      (log/set-level! :debug)
+      (log/set-level! :info)
       3
+      (log/set-level! :debug)
+      4
       (log/set-level! :trace)
       (exit 1 (str "Verbosity level not supported: " (:verbosity options))))
 
