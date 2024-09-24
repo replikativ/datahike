@@ -71,7 +71,7 @@
           `(throw #?(:clj  (ex-info (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data)
                      :cljs (error (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data))))))
 
-;; Adapted from https://clojure.atlassian.net/browse/CLJ-2766
+;; adapted from https://clojure.atlassian.net/browse/CLJ-2766
 #?(:clj
    (defn throwable-promise
      "Returns a promise object that can be read with deref/@, and set, once only, with deliver. Calls to deref/@ prior to delivery will block, unless the variant of deref with timeout is used. All subsequent derefs will return the same delivered value without blocking. Exceptions delivered to the promise will throw on deref. 
@@ -82,11 +82,12 @@
            p (async/promise-chan)]
        (reify
          clojure.lang.IDeref
-         (deref [_] (.get cf))
+         (deref [_] (throw-if-exception- (try (.get cf) (catch Throwable t t))))
          clojure.lang.IBlockingDeref
          (deref [_ timeout-ms timeout-val]
-           (or (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
-               timeout-val))
+           (if-let [v (try (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS) (catch Throwable t t))]
+             (throw-if-exception- v)
+             timeout-val))
          clojure.lang.IPending
          (isRealized [_] (.isDone cf))
          clojure.lang.IFn
@@ -97,7 +98,8 @@
            (if-not (nil? x) (async/put! p x) (async/close! p))
            this)
          async-impl/ReadPort
-         (take! [_this handler] (async-impl/take! p handler))))))
+         (take! [_this handler] (async-impl/take! p handler)))))
+   :cljs (def throwable-promise async/promise-chan))
 
 (defn get-version
   "Retrieves the current version of a dependency. Thanks to https://stackoverflow.com/a/33070806/10978897"
