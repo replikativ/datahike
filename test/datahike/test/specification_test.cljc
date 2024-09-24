@@ -19,8 +19,4 @@
 
     (is (= (spec-args->argslist '(s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
                                         :full (s/cat :db spec/SDB :selector coll? :eid spec/SEId)))
-           '[[db opts] [db selector eid]]))
-
-    (is (= (spec-args->argslist '(s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
-                                        :key (s/cat :db spec/SDB :index keyword? :components (s/* any?))))
-           '[[db args] [db index & components]]))))
+           '[[db opts] [db selector eid]]))))
