@@ -204,6 +204,10 @@
   (-> ((contextual-search-fn context) db pattern)
       (post-process-datoms db context)))
 
+(defn contextual-batch-search [db pattern-mask batch-fn context]
+  (-> ((contextual-search-fn context) db pattern-mask batch-fn)
+      (post-process-datoms db context)))
+
 (defn contextual-datoms [db index-type cs context]
   (-> (case (dbi/context-temporal? context)
         true (dbu/temporal-datoms db index-type cs)
@@ -316,6 +320,8 @@
   (-search-context [db] dbi/base-context)
   (-search [db pattern context]
            (contextual-search db pattern context))
+  (-batch-search [db pattern-mask batch-fn context]
+                 (contextual-batch-search db pattern-mask batch-fn context))
 
   dbi/IIndexAccess
   (-datoms [db index-type cs context]
@@ -395,6 +401,8 @@
                          (filter (.-pred db))))
   (-search [db pattern context]
            (dbi/-search unfiltered-db pattern context))
+  (-batch-search [db pattern-mask batch-fn context]
+                 (dbi/-batch-search unfiltered-db pattern-mask batch-fn context))
 
   dbi/IIndexAccess
   (-datoms [db index cs context]
@@ -467,6 +475,8 @@
                        dbi/context-with-history))
   (-search [db pattern context]
            (dbi/-search origin-db pattern context))
+  (-batch-search [db pattern-mask batch-fn context]
+                 (dbi/-batch-search origin-db pattern-mask batch-fn context))
 
   dbi/IIndexAccess
   (-datoms [db index-type cs context] (dbi/-datoms origin-db index-type cs context))
@@ -530,6 +540,8 @@
                          (as-of-pred time-point)))
   (-search [db pattern context]
            (dbi/-search origin-db pattern context))
+  (-batch-search [db pattern batch-fn context]
+                 (dbi/-batch-search origin-db pattern batch-fn context))
 
   dbi/IIndexAccess
   (-datoms [db index-type cs context]
@@ -595,6 +607,8 @@
                          (since-pred time-point)))
   (-search [db pattern context]
            (dbi/-search origin-db pattern context))
+  (-batch-search [db pattern batch-fn context]
+                 (dbi/-batch-search origin-db pattern batch-fn context))
 
   dbi/IIndexAccess
   (dbi/-datoms [db index-type cs context]

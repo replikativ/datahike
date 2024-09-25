@@ -86,7 +86,7 @@
       (p/shell (str graalvm-dir "/bin/native-image")
                "-jar" native-jar
                "-cp" class-path
-               (str "-H:Name=" project-name)
+               (str "-o " project-name)
                "--shared"
                "-H:+ReportExceptionStackTraces"
                "-J-Dclojure.spec.skip-macros=true"

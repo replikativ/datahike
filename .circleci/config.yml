@@ -1,8 +1,10 @@
 version: 2.1
 
+setup: true
+
 orbs:
-  github-cli: circleci/github-cli@1.0
   tools: replikativ/clj-tools@0
+  continuation: circleci/continuation@0.1.2
 
 jobs:
   setup:
@@ -65,46 +67,20 @@ jobs:
           paths:
             - /home/circleci/.m2
   native-image:
-    machine:
-      image: default
-      resource_class: large
+    executor: tools/clojurecli
     steps:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: install graalvm
+          name: Generate config
           command: |
-            cd /home/circleci
-            wget https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.0/graalvm-community-jdk-21.0.0_linux-x64_bin.tar.gz
-            tar -xzf graalvm-community-jdk-21.0.0_linux-x64_bin.tar.gz
-            export PATH=/home/circleci/graalvm-community-openjdk-21+35.1/bin:$PATH
-            export JAVA_HOME=/home/circleci/graalvm-community-openjdk-21+35.1
-      - run:
-          name: install clojure
-          command: |
-            cd /home/circleci
-            curl -O https://download.clojure.org/install/linux-install-1.11.1.1165.sh
-            chmod +x linux-install-1.11.1.1165.sh
-            ./linux-install-1.11.1.1165.sh --prefix /home/circleci/clojure
-      - run:
-          name: install babashka
-          command: |
-            cd /home/circleci
-            curl -sLO https://raw.githubusercontent.com/babashka/babashka/master/install
-            chmod +x install
-            ./install --dir /home/circleci/bin
-            export PATH=/home/circleci/bin:$PATH
-      - run:
-          name: build native-image
-          command: |
-            cd /home/circleci/replikativ
-            export PATH=/home/circleci/graalvm-community-openjdk-21+35.1/bin:/home/circleci/clojure/bin:$PATH
-            export JAVA_HOME=/home/circleci/graalvm-community-openjdk-21+35.1
-            bb ni-cli
-      - persist_to_workspace:
-          root: /home/circleci/
+            bb .circleci/scripts/gen_ci.clj > generated_config.yml
+      - continuation/continue:
+          configuration_path: generated_config.yml
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
           paths:
-            - replikativ/dthk
+            - /home/circleci/.m2
   persistent-set-test:
     executor: tools/clojurecli
     steps:
@@ -144,28 +120,6 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
-  native-image-test:
-    executor: tools/clojurecli
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Run native-image test
-          command: |
-            cd /home/circleci/replikativ
-            bb test native-image
-          no_output_timeout: 5m
-  bb-pod-test:
-    executor: tools/clojurecli
-    steps:
-      - attach_workspace:
-          at: /home/circleci
-      - run:
-          name: Run bb-pod test
-          command: |
-            cd /home/circleci/replikativ
-            bb test bb-pod
-          no_output_timeout: 5m
   backward-compatibility-test:
     executor: tools/clojurecli
     steps:
@@ -218,7 +172,7 @@ jobs:
       - run:
           name: Deploy to clojars
           command: bb clojars
-  release:
+  release-jar:
     executor: tools/clojurecli
     steps:
       - attach_workspace:
@@ -226,12 +180,6 @@ jobs:
       - run:
           name: Release jar on GitHub
           command: bb release jar
-      - run:
-          name: Release cli on GitHub
-          command: bb release native-cli
-          environment:
-            DTHK_PLATFORM: linux
-            DTHK_ARCH: x86_64
 
 workflows:
   build-test-and-deploy:
@@ -244,7 +192,9 @@ workflows:
           requires:
             - setup
       - native-image:
-          context: dockerhub-deploy
+          context:
+            - dockerhub-deploy
+            - github-token
           requires:
             - setup
       - format:
@@ -259,16 +209,6 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
-      - native-image-test:
-          context: dockerhub-deploy
-          requires:
-            - build
-            - native-image
-      - bb-pod-test:
-          context: dockerhub-deploy
-          requires:
-            - build
-            - native-image
       - backward-compatibility-test:
           context: dockerhub-deploy
           requires:
@@ -290,9 +230,8 @@ workflows:
             - persistent-set-test
             - hitchhiker-tree-test
             - backward-compatibility-test
-            - native-image-test
             - integration-test
-      - release:
+      - release-jar:
           context:
             - dockerhub-deploy
             - github-token
@@ -304,5 +243,4 @@ workflows:
             - persistent-set-test
             - hitchhiker-tree-test
             - backward-compatibility-test
-            - native-image-test
             - integration-test

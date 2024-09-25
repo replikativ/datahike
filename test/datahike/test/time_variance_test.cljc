@@ -5,6 +5,7 @@
    [datahike.api :as d]
    #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.constants :as const]
+   [datahike.test.utils :as du]
    [datahike.db.interface :as dbi]
    [datahike.test.utils :refer [setup-db sleep]])
   (:import [java.util Date]))
@@ -361,7 +362,34 @@
                   (map (comp vec seq))
                   (remove (fn [[e _ _ _]]
                             (< const/tx0 e)))
-                  set))))))
+                  set))))
+    (testing "Datoms extracted like Wanderung does it"
+      (let [datoms (du/get-all-datoms @conn (map du/unmap-tx-timestamp))]
+        (is (= [[536870913 :db/txInstant :timestamp 536870913 true]
+                [1 :db/unique :db.unique/identity 536870913 true]
+                [1 :db/ident :name 536870913 true]
+                [1 :db/valueType :db.type/string 536870913 true]
+                [1 :db/index true 536870913 true]
+                [1 :db/cardinality :db.cardinality/one 536870913 true]
+                [2 :db/valueType :db.type/long 536870913 true]
+                [2 :db/cardinality :db.cardinality/one 536870913 true]
+                [2 :db/ident :age 536870913 true]
+                [3 :name "Alice" 536870913 true]
+                [3 :age 25 536870913 true]
+                [4 :age 35 536870913 true]
+                [4 :name "Bob" 536870913 true]
+                [536870914 :db/txInstant :timestamp 536870914 true]
+                [3 :age 25 536870914 false]
+                [3 :age 30 536870914 true]
+                [536870915 :db/txInstant :timestamp 536870915 true]
+                [3 :age 30 536870915 false]
+                [3 :age 35 536870915 true]
+                [536870916 :db/txInstant :timestamp 536870916 true]
+                [3 :age 35 536870916 false]
+                [3 :age 25 536870916 true]
+                [536870917 :db/txInstant :timestamp 536870917 true]
+                [3 :age 25 536870917 false]]
+               datoms))))))
 
 (deftest test-no-duplicates-on-history-search
   (let [schema [{:db/ident       :name

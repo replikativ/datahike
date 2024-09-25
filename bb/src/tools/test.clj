@@ -52,7 +52,8 @@
 (defn bb-pod []
   (if (fs/exists? "./dthk")
     (p/shell "./bb/resources/native-image-tests/run-bb-pod-tests.clj")
-    (println "Native image cli missing. Please run 'bb ni-cli' and try again.")))
+    (do (println "Native image cli missing. Please run 'bb ni-cli' and try again.")
+        (System/exit 1))))
 
 (defn specs []
   (kaocha "--focus" "specs" "--plugin" "kaocha.plugin/orchestra"))
