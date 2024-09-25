@@ -214,5 +214,10 @@
          (= "db" (first (clojure.string/split ns #"\.")))
          false)))
 
+(def built-in-attributes #{:db/ident})
+
+(defn built-in-attribute? [x]
+  (contains? built-in-attributes x))
+
 (defn get-user-schema [{:keys [schema] :as db}]
   (into {} (filter #(not (is-system-keyword? (key %))) schema)))
