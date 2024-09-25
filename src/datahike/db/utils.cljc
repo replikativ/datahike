@@ -147,13 +147,13 @@
     (entid-strict db eid)))
 
 (defn attr-has-ref? [db attr]
-  (and (not (ds/is-system-keyword? attr))
-       (:attribute-refs? (dbi/-config db))
-       (not (nil? attr))))
+  (and (not (nil? attr))
+       (not (ds/is-system-keyword? attr))
+       (:attribute-refs? (dbi/-config db))))
 
 (defn attr-ref-or-ident [db attr]
-  (if (and (attr-has-ref? db attr)
-           (not (number? attr)))
+  (if (and (not (number? attr))
+           (attr-has-ref? db attr))
     (dbi/-ref-for db attr)
     attr))
 
