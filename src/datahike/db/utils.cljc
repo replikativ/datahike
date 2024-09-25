@@ -148,7 +148,7 @@
 
 (defn attr-has-ref? [db attr]
   (and (not (nil? attr))
-       (not (ds/is-system-keyword? attr))
+       (not (ds/built-in-attribute? attr))
        (:attribute-refs? (dbi/-config db))))
 
 (defn attr-ref-or-ident [db attr]
