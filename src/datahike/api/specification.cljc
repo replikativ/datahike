@@ -1,8 +1,7 @@
 (ns datahike.api.specification
   "Shared specification for different bindings. This namespace holds all
   information such that individual bindings can be automatically derived from
-  it."
-  (:require [datahike.spec :as spec]))
+  it.")
 
 (defn ->url
   "Turns an API endpoint name into a URL."
