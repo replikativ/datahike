@@ -146,11 +146,21 @@
   (when eid
     (entid-strict db eid)))
 
+(defn attr-has-ref? [db attr]
+  (and (not (nil? attr))
+       (not (ds/is-system-keyword? attr))
+       (:attribute-refs? (dbi/-config db))))
+
+(defn attr-ref-or-ident [db attr]
+  (if (and (not (number? attr))
+           (attr-has-ref? db attr))
+    (dbi/-ref-for db attr)
+    attr))
+
 (defn attr-info
   "Returns identifier name and reference value of an attributes. Both values are identical for non-reference databases."
   [db attr]
-  (if (and (:attribute-refs? (dbi/-config db))
-           (not (nil? attr)))
+  (if (attr-has-ref? db attr)
     (if (number? attr)
       {:ident (dbi/-ident-for db attr) :ref attr}
       {:ident attr :ref (dbi/-ref-for db attr)})
@@ -237,6 +247,11 @@
           (raise "Bad entity attribute " attr " at " at ", not defined in current schema"
                  {:error :transact/schema :attribute attr :context at})))
     (validate-attr-ident attr at db)))
+
+(defn normalize-and-validate-attr [attr at db]
+  (let [attr (attr-ref-or-ident db attr)]
+    (validate-attr attr at db)
+    attr))
 
 (defn attr->properties [k v]
   (case v

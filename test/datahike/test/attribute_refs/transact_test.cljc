@@ -190,6 +190,21 @@
       (is (:had-birthday e)))
     (d/release conn)))
 
+(deftest transact-with-ident-attrs
+  (let [conn (setup-new-connection)
+        e0 (:max-eid @conn)
+        i (inc e0)]
+    (d/transact conn [[:db/add i :aka "Devil"]])
+    (d/transact conn [[:db/add i :aka "Tupen"]])
+    (is (= #{["Devil"] ["Tupen"]}
+           (d/q `[:find ?v
+                  :where [~i :aka ?v]] @conn)))
+    (d/transact conn [[:db/retract i :aka  "Tupen"]])
+    (is (= #{["Devil"]}
+           (d/q `[:find ?v
+                  :where [~i :aka ?v]] @conn)))
+    (d/release conn)))
+
 (deftest test-tuples
   (let [conn (setup-new-connection)]
     (d/transact conn [#:db{:ident :mapping/attributes,

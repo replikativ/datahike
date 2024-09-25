@@ -397,9 +397,9 @@
       entities)))
 
 (defn- transact-add [{:keys [db-after] :as report} [_ e a v tx :as ent]]
-  (dbu/validate-attr a ent db-after)
-  (validate-val v ent db-after)
-  (let [attribute-refs? (:attribute-refs? (dbi/-config db-after))
+  (let [a (dbu/normalize-and-validate-attr a ent db-after)
+        _ (validate-val v ent db-after)
+        attribute-refs? (:attribute-refs? (dbi/-config db-after))
         tx (or tx (current-tx report))
         db db-after
         e (dbu/entid-strict db e)
@@ -633,7 +633,7 @@
       :db/add [(transact-add report op-vec) []]
 
       :db/retract (if-some [e (dbu/entid db e)]
-                    (let [_ (dbu/validate-attr a op-vec db)
+                    (let [a (dbu/normalize-and-validate-attr a op-vec db)
                           pattern (if (nil? v)
                                     [e a]
                                     (let [v (if (dbu/ref? db a) (dbu/entid-strict db v) v)]
@@ -644,7 +644,7 @@
                     [report []])
 
       :db.fn/retractAttribute (if-let [e (dbu/entid db e)]
-                                (let [_ (dbu/validate-attr a op-vec db)
+                                (let [a (dbu/normalize-and-validate-attr a op-vec db)
                                       datoms (vec (dbi/search db [e a]))]
                                   [(reduce transact-retract-datom report datoms)
                                    (retract-components db datoms)])
