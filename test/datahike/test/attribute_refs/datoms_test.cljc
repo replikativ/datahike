@@ -107,5 +107,4 @@
                  :components [:db/txInstant
                               (:e datom)
                               (:v datom)
-                              (:tx datom)]})))))
-    (def the-datoms (d/datoms @conn {:index :avet}))))
+                              (:tx datom)]})))))))
