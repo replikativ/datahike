@@ -23,7 +23,7 @@
               [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
               [datahike.impl.entity Entity])))
 
-(defn transact [connection arg-map]
+(defn transact! [connection arg-map]
   (let [arg (cond
               (map? arg-map)      (if (contains? arg-map :tx-data)
                                     arg-map
@@ -35,7 +35,10 @@
               :else               (dt/raise "Bad argument to transact, expected map, vector or sequence."
                                             {:error         :transact/syntax
                                              :argument-type (type arg-map)}))]
-    (deref (dw/transact! connection arg))))
+    (dw/transact! connection arg)))
+
+(defn transact [connection arg-map]
+  @(transact! connection arg-map))
 
 ;; necessary to support initial-tx shorthand, which really should have been avoided
 (defn create-database [& args]
