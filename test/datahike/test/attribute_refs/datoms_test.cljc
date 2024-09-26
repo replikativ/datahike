@@ -108,3 +108,33 @@
                               (:e datom)
                               (:v datom)
                               (:tx datom)]})))))))
+
+(deftest test-distinct-datoms-history-db
+  (with-connect [conn (-> cfg
+                          provide-unique-id
+                          recreate-database)]
+    (is (= 1 (-> @conn
+                 d/history
+                 (d/datoms {:index :aevt
+                            :components [:db/txInstant]
+                            :limit -1})
+                 count)))))
+
+(deftest test-history-datoms-in-empty-db
+  (testing "Datoms in history of empty database"
+    (with-connect [conn (-> cfg
+                            provide-unique-id
+                            recreate-database)]
+      (let [datoms (-> @conn
+                       d/history
+                       (d/datoms {:index :aevt
+                                  :components []
+                                  :limit -1}))
+            ident-datom (some (fn [datom]
+                                (when (and (:a datom) (:e datom)
+                                           (= :db/ident (:v datom)))
+                                  datom))
+                              datoms)]
+        (is (seq datoms))
+        (is (apply distinct? datoms))
+        (is ident-datom)))))

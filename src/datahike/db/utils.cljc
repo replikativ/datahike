@@ -204,10 +204,15 @@
 
 (defn distinct-datoms [db current-datoms history-datoms]
   (if  (dbi/-keep-history? db)
-    (concat (filter #(or (no-history? db (:a %))
-                         (multival? db (:a %)))
-                    current-datoms)
-            history-datoms)
+    (let [current-datoms (filterv (fn [datom]
+                                    (let [a (:a datom)]
+                                      (or (no-history? db a)
+                                          (multival? db a))))
+                                  current-datoms)
+          current-datom-set (set current-datoms)]
+      (into current-datoms
+            (remove current-datom-set)
+            history-datoms))
     current-datoms))
 
 (defn temporal-datoms [db index-type cs]
