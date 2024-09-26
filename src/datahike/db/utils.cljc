@@ -204,15 +204,17 @@
 
 (defn distinct-datoms [db current-datoms history-datoms]
   (if  (dbi/-keep-history? db)
-    (let [current-datoms (filterv (fn [datom]
-                                    (let [a (:a datom)]
-                                      (or (no-history? db a)
-                                          (multival? db a))))
-                                  current-datoms)
-          current-datom-set (set current-datoms)]
-      (into current-datoms
-            (remove current-datom-set)
-            history-datoms))
+    (let [current-datoms (filter (fn [datom]
+                                   (let [a (:a datom)]
+                                     (or (no-history? db a)
+                                         (multival? db a))))
+                                 current-datoms)]
+      (concat current-datoms
+              ;; Delay the evaluation of `(set current-datoms)` until it is needed.
+              ;; Is this futile?
+              (lazy-seq
+               (remove (set current-datoms)
+                       history-datoms))))
     current-datoms))
 
 (defn temporal-datoms [db index-type cs]
