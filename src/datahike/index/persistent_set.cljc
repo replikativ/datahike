@@ -209,7 +209,7 @@
     (if (instance? Branch node)
       (uuid (vec (.addresses ^Branch node)))
       (uuid (mapv (comp vec seq) (.keys node))))
-    (uuid)))
+    (dt/squuid)))
 
 (defrecord CachedStorage [store config cache stats pending-writes]
   IStorage
