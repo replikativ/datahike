@@ -23,8 +23,10 @@
                       (partition 2 args)))]
 
         (= op 's/alt)
-        (vec (mapcat (fn [[_k v]]
-                       (spec-args->argslist v))
+        (vec (mapcat (fn [[k v]]
+                       (if (seq? v)
+                         (spec-args->argslist v)
+                         [[(symbol (name k))]]))
                      (partition 2 args)))
         :else
         []))))
