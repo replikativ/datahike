@@ -347,3 +347,15 @@
    (fn [[e a v t]]
      (datom e a v t))
    coll))
+
+(defn index-type->cmp-quick
+  ([index-type] (index-type->cmp-quick index-type true))
+  ([index-type current?] (if current?
+                           (case index-type
+                             :aevt cmp-datoms-aevt-quick
+                             :avet cmp-datoms-avet-quick
+                             cmp-datoms-eavt-quick)
+                           (case index-type
+                             :aevt cmp-temporal-datoms-aevt-quick
+                             :avet cmp-temporal-datoms-avet-quick
+                             cmp-temporal-datoms-eavt-quick))))

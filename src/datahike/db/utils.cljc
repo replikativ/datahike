@@ -3,11 +3,12 @@
    [clojure.data]
    [clojure.walk]
    [datahike.constants :refer [e0 tx0 emax txmax]]
-   [datahike.datom :refer [datom datom-tx]]
+   [datahike.datom :refer [datom datom-tx index-type->cmp-quick]]
    [datahike.db.interface :as dbi]
    [datahike.index :as di]
    [datahike.schema :as ds]
-   [datahike.tools :refer [raise]])
+   [datahike.tools :refer [raise merge-distinct-sorted-seqs
+                           distinct-sorted-seq?]])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]
                             [datahike.tools :refer [raise]]))
   #?(:clj (:import [datahike.datom Datom])))
@@ -202,13 +203,31 @@
     :aevt (resolve-datom db c1 c0 c2 c3 default-e default-tx)
     :avet (resolve-datom db c2 c0 c1 c3 default-e default-tx)))
 
-(defn distinct-datoms [db current-datoms history-datoms]
-  (if  (dbi/-keep-history? db)
-    (concat (filter #(or (no-history? db (:a %))
-                         (multival? db (:a %)))
-                    current-datoms)
-            history-datoms)
-    current-datoms))
+(defn merge-datoms [index-type a b]
+  (if index-type
+    (merge-distinct-sorted-seqs
+     (index-type->cmp-quick index-type false)
+     a b)
+    (concat a (lazy-seq (remove (set a) b)))))
+
+(defn distinct-sorted-datoms? [index-type datoms]
+  (when index-type
+    (distinct-sorted-seq?
+     (index-type->cmp-quick index-type false)
+     datoms)))
+
+(defn distinct-datoms
+  ([db index-type current-datoms history-datoms]
+   (if  (dbi/-keep-history? db)
+     (merge-datoms
+      index-type
+      (filter (fn [datom]
+                (let [a (:a datom)]
+                  (or (no-history? db a)
+                      (multival? db a))))
+              current-datoms)
+      history-datoms)
+     current-datoms)))
 
 (defn temporal-datoms [db index-type cs]
   (let [index (get db index-type)
@@ -216,6 +235,7 @@
         from (components->pattern db index-type cs e0 tx0)
         to (components->pattern db index-type cs emax txmax)]
     (distinct-datoms db
+                     index-type
                      (di/-slice index from to index-type)
                      (di/-slice temporal-index from to index-type))))
 
