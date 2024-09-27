@@ -310,14 +310,38 @@
       (d/release conn)))
 
   (testing "Keyword transaction in reference DB"
-    (let [[no-ref-cfg ref-cfg] (init-cfgs)
-          conn (setup-db ref-cfg)
-          next-eid (inc (:max-eid @conn))]
-      (is (thrown-with-msg? Throwable
-                            (re-pattern (str "Bad entity attribute :db/ident"
-                                             " at \\[:db/add " next-eid " :db/ident :name\\],"
-                                             " expected reference number"))
-                            (d/transact conn [[:db/add next-eid :db/ident :name]])))
+    (doseq [cfg (init-cfgs)
+            :let [attribute-refs? (:attribute-refs? cfg)
+                  conn (setup-db cfg)
+                  next-eid (inc (:max-eid @conn))
+                  init-datoms (d/datoms
+                               @conn
+                               {:index :aevt
+                                :components [:db/ident]})]]
+      (is (= (boolean (seq init-datoms))
+             (boolean attribute-refs?)))
+      (is (some? (d/transact
+                  conn
+                  [[:db/add next-eid :db/ident :name]])))
+      (let [datoms (d/datoms @conn
+                             {:index :aevt
+                              :components [:db/ident]})]
+        (is (= (inc (count init-datoms))
+               (count datoms)))
+        (is (some (fn [[_ a v]]
+                    (and (= v :name)
+                         (or attribute-refs?
+                             (= a :db/ident))))
+                  datoms)))
+      (let [[ident-name-datom :as ident-name-datoms]
+            (d/datoms @conn
+                      {:index :avet
+                       :components [:db/ident
+                                    :name]})]
+        (is (= 1 (count ident-name-datoms)))
+        (is (= :name (:v ident-name-datom)))
+        (is (or attribute-refs?
+                (= :db/ident (:a ident-name-datom)))))
       (d/release conn))))
 
 (deftest test-transact-data-with-reference-attr
