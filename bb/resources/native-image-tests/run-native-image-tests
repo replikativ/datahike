@@ -5,8 +5,22 @@ set -o pipefail
 
 TMPSTORE=/tmp/dh-test-store
 CONFIG=bb/resources/native-image-tests/testconfig.edn
+ATTR_REF_CONFIG=bb/resources/native-image-tests/testconfig.attr-refs.edn
 
 trap "rm -rf $TMPSTORE" EXIT
+
+./dthk delete-database $ATTR_REF_CONFIG
+./dthk create-database $ATTR_REF_CONFIG
+
+./dthk database-exists $ATTR_REF_CONFIG
+
+# test that warnings etc. get logged to stderr
+LOG_OUTPUT="$(./dthk query '[:find ?e . :where [?e :nonexistent _]]' db:$ATTR_REF_CONFIG 2>&1 >/dev/null | grep ':nonexistent has not been found')"
+if [ -z "$LOG_OUTPUT" ]
+then
+  echo "Exception: binary did not log to stderr"
+  exit 1
+fi
 
 ./dthk delete-database $CONFIG
 ./dthk create-database $CONFIG
@@ -29,7 +43,6 @@ fi
 ./dthk query '[:find (count ?e) . :where [?e :name _]]' history:$CONFIG
 ./dthk query '[:find (count ?e) . :where [?e :name _]]' since:0:$CONFIG
 ./dthk query '[:find (count ?e) . :where [?e :name _]]' asof:0:$CONFIG
-
 
 # other calls
 ./dthk pull db:$CONFIG "[:db/id, :name]" "1"

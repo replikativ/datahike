@@ -1,0 +1,5 @@
+{:store  {:backend :file
+          :path "/tmp/dh-test-store" }
+ :keep-history? true
+ :attribute-refs? true
+ :schema-flexibility :write}
