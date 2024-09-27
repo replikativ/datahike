@@ -16,13 +16,14 @@
 
 ;; This file is following https://github.com/clojure/tools.cli
 
-(log/merge-config!
-  {:appenders {:println {:enabled? false}
-               :stderr {:doc "Always prints to *err*"
-                        :enabled? true
-                        :fn (fn log-to-stderr [{:keys [output_]}]
-                              (binding [*out* *err*]
-                                (println (force output_))))}}})
+(when-not (= "true" (System/getenv "BABASHKA_POD"))
+  (log/merge-config!
+    {:appenders {:println {:enabled? false} ;; leave a "paper trail"
+                 :stderr {:doc "Always prints to *err*"
+                          :enabled? true
+                          :fn (fn log-to-stderr [{:keys [output_]}]
+                                (binding [*out* *err*]
+                                  (println (force output_))))}}}))
 
 (defn usage [options-summary]
   (->> [datahike-logo
