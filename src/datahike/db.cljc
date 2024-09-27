@@ -129,15 +129,20 @@
   #?(:cljs (instance? js/Date d)
      :clj (instance? Date d)))
 
-(defn- as-of-pred [time-point]
+(defn- date<= [^Date a ^Date b]
+  (not (.before b a)))
+
+(defn- as-of-pred
+  "Create an as-of predicate, *including* the time-point"
+  [time-point]
   (if (date? time-point)
-    (fn [^Datom d] (.before ^Date (.-v d) ^Date time-point))
+    (fn [^Datom d] (date<= (.-v d) time-point))
     (fn [^Datom d] (<= (dd/datom-tx d) time-point))))
 
-(defn- since-pred [time-point]
-  (if (date? time-point)
-    (fn [^Datom d] (.after ^Date (.-v d) ^Date time-point))
-    (fn [^Datom d] (>= (.-tx d) time-point))))
+(defn- since-pred
+  "Create a since predicate, *excluding* the time-point. The opposite of `as-of-pred`."
+  [time-point]
+  (complement (as-of-pred time-point)))
 
 (defn assemble-datoms-xform [db]
   (mapcat

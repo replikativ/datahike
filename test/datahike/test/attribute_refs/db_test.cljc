@@ -22,7 +22,7 @@
 
 (deftest test-partial-db
   (let [conn (setup-db ref-cfg)
-        _tx0 (d/transact conn name-schema)
+        tx0 (-> (d/transact conn name-schema) :db-after :max-tx)
         tx1 (-> (d/transact conn [{:name "Peter"}]) :db-after :max-tx)
         tx2 (-> (d/transact conn [{:name "Maria"}]) :db-after :max-tx)]
     (testing "AsOfDB"
@@ -35,8 +35,8 @@
     (testing "SinceDB"
       (is (= #{["Maria"] ["Peter"]}
              (d/q '[:find ?v :where [?e :name ?v]]
-                  (d/since @conn tx1))))
+                  (d/since @conn tx0))))
       (is (= #{["Maria"]}
              (d/q '[:find  ?v :where [?e :name ?v]]
-                  (d/since @conn tx2)))))
+                  (d/since @conn tx1)))))
     (d/release conn)))

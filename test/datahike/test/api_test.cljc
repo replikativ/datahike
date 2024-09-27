@@ -345,6 +345,8 @@
 
     (def date (java.util.Date.))
 
+    (Thread/sleep 100)
+    
     (d/transact conn {:tx-data [{:db/id [:name "Alice"] :age 35}]})
 
     (is (= #{["Alice" 25] ["Bob" 30]}
