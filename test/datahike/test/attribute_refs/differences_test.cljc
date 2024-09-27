@@ -309,7 +309,7 @@
       (is (not (nil? (d/transact conn [[:db/add next-eid :db/ident :name]]))))
       (d/release conn)))
 
-  (testing "Keyword transaction in reference DB"
+  (testing "Using :db/ident attribute"
     (doseq [cfg (init-cfgs)
             :let [attribute-refs? (:attribute-refs? cfg)
                   conn (setup-db cfg)
@@ -318,11 +318,20 @@
                                @conn
                                {:index :aevt
                                 :components [:db/ident]})]]
+
+      ;; Check that the database with attribute-refs? being true
+      ;; contains some initial atoms, and otherwise none.
       (is (= (boolean (seq init-datoms))
              (boolean attribute-refs?)))
+
+      ;; Transact a datom for attribute :db/ident. This
+      ;; must work no matter the value of :attribute-refs?
       (is (some? (d/transact
                   conn
                   [[:db/add next-eid :db/ident :name]])))
+
+      ;; Check that we can access the datom just transacted
+      ;; using d/datoms.
       (let [datoms (d/datoms @conn
                              {:index :aevt
                               :components [:db/ident]})]
@@ -333,6 +342,8 @@
                          (or attribute-refs?
                              (= a :db/ident))))
                   datoms)))
+
+      ;; Check for a more specific query.
       (let [[ident-name-datom :as ident-name-datoms]
             (d/datoms @conn
                       {:index :avet
