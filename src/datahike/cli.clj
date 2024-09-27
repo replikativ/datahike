@@ -17,7 +17,8 @@
 ;; This file is following https://github.com/clojure/tools.cli
 
 (log/merge-config!
- {:appenders {:println {:doc "Always prints to *err*"
+  {:appenders {:println {:enabled? false}
+               :stderr {:doc "Always prints to *err*"
                         :enabled? true
                         :fn (fn log-to-stderr [{:keys [output_]}]
                               (binding [*out* *err*]
