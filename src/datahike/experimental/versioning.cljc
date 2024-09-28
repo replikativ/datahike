@@ -134,7 +134,9 @@
   "Create a merge commit to the current branch of this connection for parent
   commit uuids. It is the responsibility of the caller to make sure that tx-data
   contains the data to be merged into the branch from the parents. This function
-  ensures that the parent commits are properly tracked."
+  ensures that the parent commits are properly tracked.
+   
+   NOTE: Currently merge! requires that you release all connections to conn and reconnect afterwards to reset the writer state. This will be fixed in the future by handling merge! through the writer."
   ([conn parents tx-data]
    (merge! conn parents tx-data nil))
   ([conn parents tx-data tx-meta]

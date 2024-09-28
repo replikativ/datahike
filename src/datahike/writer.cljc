@@ -1,5 +1,5 @@
 (ns ^:no-doc datahike.writer
-  (:require [superv.async :refer [S thread-try <?-]]
+  (:require [superv.async :refer [S thread-try <?- go-try]]
             [taoensso.timbre :as log]
             [datahike.core]
             [datahike.writing :as w]
@@ -42,80 +42,88 @@
       S
       (do
         ;; processing loop
-        (go
+        (go-try S
          ;; delay processing until the writer we are part of in connection is set
-          (<! (timeout 10))
-          (loop [old @connection]
-            (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
-              (do
-                (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
-                  (log/warn "Transaction queue buffer more than 90% full, "
-                            (count transaction-queue-buffer) "of" transaction-queue-size  " filled."
-                            "Reduce transaction frequency."))
-                (let [op-fn (write-fn-map op)
-                      res   (try
-                              (apply op-fn old args)
+                (while (not (:writer @(:wrapped-atom connection)))
+                  (<! (timeout 10)))
+                (loop [old @(:wrapped-atom connection)]
+                  (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
+                    (do
+                      (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
+                        (log/warn "Transaction queue buffer more than 90% full, "
+                                  (count transaction-queue-buffer) "of" transaction-queue-size  " filled."
+                                  "Reduce transaction frequency."))
+                      (let [old (if-not (= (:max-tx old) (:max-tx @(:wrapped-atom connection)))
+                                  (do
+                                    (log/warn "DEPRECATED. Connection was changed outside of writer.")
+                                    (assoc old :max-tx (:max-tx @(:wrapped-atom connection))))
+                                  old)
+
+                            op-fn (write-fn-map op)
+                            res   (try
+                                    (apply op-fn old args)
                             ;; Only catch ExceptionInfo here (intentionally rejected transactions).
                             ;; Any other exceptions should crash the writer and signal the supervisor.
-                              (catch Exception e
-                                (log/error "Error during invocation" invocation e args)
+                                    (catch Exception e
+                                      (log/error "Error during invocation" invocation e args)
                               ;; take a guess that a NPE was triggered by an invalid connection
                               ;; short circuit on errors
-                                (put! callback
-                                      (if (= (type e) NullPointerException)
-                                        (ex-info "Null pointer encountered in invocation. Connection may have been invalidated, e.g. through db deletion, and needs to be released everywhere."
-                                                 {:type       :writer-error-during-invocation
-                                                  :invocation invocation
-                                                  :connection connection
-                                                  :error      e})
-                                        e))
-                                :error))]
-                  (if-not (= res :error)
+                                      (put! callback
+                                            (if (= (type e) NullPointerException)
+                                              (ex-info "Null pointer encountered in invocation. Connection may have been invalidated, e.g. through db deletion, and needs to be released everywhere."
+                                                       {:type       :writer-error-during-invocation
+                                                        :invocation invocation
+                                                        :connection connection
+                                                        :error      e})
+                                              e))
+                                      :error))]
+                        (if-not (= res :error)
+                          (do
+                            (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
+                              (log/warn "Commit queue buffer more than 50% full, "
+                                        (count commit-queue-buffer) "of" commit-queue-size  " filled."
+                                        "Throttling transaction processing. Reduce transaction frequency and check your storage throughput.")
+                              (<! (timeout 50)))
+                            (put! commit-queue [res callback])
+                            (recur (:db-after res)))
+                          (recur old))))
                     (do
-                      (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
-                        (log/warn "Commit queue buffer more than 50% full, "
-                                  (count commit-queue-buffer) "of" commit-queue-size  " filled."
-                                  "Throttling transaction processing. Reduce transaction frequency and check your storage throughput.")
-                        (<! (timeout 50)))
-                      (put! commit-queue [res callback])
-                      (recur (:db-after res)))
-                    (recur old))))
-              (do
-                (close! commit-queue)
-                (log/debug "Writer thread gracefully closed")))))
+                      (close! commit-queue)
+                      (log/debug "Writer thread gracefully closed")))))
         ;; commit loop
-        (go-loop [tx (<?- commit-queue)]
-          (when tx
-            (let [txs (atom [tx])]
+        (go-try S
+                (loop [tx (<?- commit-queue)]
+                  (when tx
+                    (let [txs (atom [tx])]
               ;; empty channel of pending transactions
-              (loop [tx (poll! commit-queue)]
-                (when tx
-                  (swap! txs conj tx)
-                  (recur (poll! commit-queue))))
-              (log/trace "Batched transaction count: " (count @txs))
+                      (loop [tx (poll! commit-queue)]
+                        (when tx
+                          (swap! txs conj tx)
+                          (recur (poll! commit-queue))))
+                      (log/trace "Batched transaction count: " (count @txs))
               ;; commit latest tx to disk
-              (let [db (:db-after (first (peek @txs)))]
-                (try
-                  (let [start-ts (get-time-ms)
-                        {{:keys [datahike/commit-id datahike/parents]} :meta
-                         :as commit-db} (<?- (w/commit! db nil false))
-                        commit-time (- (get-time-ms) start-ts)]
-                    (log/trace "Commit time (ms): " commit-time)
-                    (reset! connection commit-db)
+                      (let [db (:db-after (first (peek @txs)))]
+                        (try
+                          (let [start-ts (get-time-ms)
+                                {{:keys [datahike/commit-id]} :meta
+                                 :as commit-db} (<?- (w/commit! db nil false))
+                                commit-time (- (get-time-ms) start-ts)]
+                            (log/trace "Commit time (ms): " commit-time)
+                            (reset! connection commit-db)
                     ;; notify all processes that transaction is complete
-                    (doseq [[tx-report callback] @txs]
-                      (let [tx-report (-> tx-report
-                                          (assoc-in [:tx-meta :db/commitId] commit-id)
-                                          (assoc :db-after commit-db))]
-                        (put! callback tx-report))))
-                  (catch Exception e
-                    (doseq [[_ callback] @txs]
-                      (put! callback e))
-                    (log/error "Writer thread shutting down because of commit error " e)
-                    (close! commit-queue)
-                    (close! transaction-queue)))
-                (<! (timeout commit-wait-time))
-                (recur (<?- commit-queue))))))))]))
+                            (doseq [[tx-report callback] @txs]
+                              (let [tx-report (-> tx-report
+                                                  (assoc-in [:tx-meta :db/commitId] commit-id)
+                                                  (assoc :db-after commit-db))]
+                                (put! callback tx-report))))
+                          (catch Exception e
+                            (doseq [[_ callback] @txs]
+                              (put! callback e))
+                            (log/error "Writer thread shutting down because of commit error." e)
+                            (close! commit-queue)
+                            (close! transaction-queue)))
+                        (<! (timeout commit-wait-time))
+                        (recur (<?- commit-queue)))))))))]))
 
 ;; public API
 
