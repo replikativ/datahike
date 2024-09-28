@@ -5,6 +5,7 @@
    [datahike.api :as d]
    #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.constants :as const]
+   [datahike.test.utils :as du]
    [datahike.db.interface :as dbi]
    [datahike.test.utils :refer [setup-db sleep]])
   (:import [java.util Date]))
@@ -33,10 +34,33 @@
 (defn now []
   (Date.))
 
+(defn permute-and-repeat [max-repeat elements]
+  (let [elements (vec elements)
+        n (count elements)]
+    (loop [stack [[[] (zipmap (range n) (repeat 0))]]
+           result []]
+      (if (empty? stack)
+        result
+        (let [[[fs freqs] & stack] stack]
+          (recur (into stack
+                       (keep (fn [[index counter]]
+                               (when (< counter max-repeat)
+                                 [(conj fs index) (update freqs index inc)])))
+                       freqs)
+                 (if (every? pos? (vals freqs))
+                   (conj result (mapv #(nth elements %) fs))
+                   result)))))))
+
+(defn vary-db-ops [db & ops]
+  {:post [(seq %)
+          (<= (count ops) (count %))]}
+  (for [fs (permute-and-repeat 2 ops)]
+    ((apply comp fs) db)))
+
 (deftest test-base-history
   (let [cfg (assoc-in cfg-template [:store :id] "test-base-history")
-        conn (setup-db cfg)]
-
+        conn (setup-db cfg)
+        tx-id0 (:max-tx @conn)]
     (testing "Initial data"
       (is (= #{["Alice" 25] ["Bob" 35]}
              (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] @conn))))
@@ -50,23 +74,43 @@
         #{[30] [25]}
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
-      (d/transact conn [[:db/retractEntity [:name "Alice"]]])
-      (is (thrown-with-msg? Throwable #"Nothing found for entity id"
-                            (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])))
-      (is (= #{[30] [25]}
-             (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"]))))
-    (testing "find retracted values"
-      (is (= #{["Alice" 25] ["Alice" 30]}
-             (d/q '[:find ?n ?a :where [?r :age ?a _ false] [?r :name ?n _ false]] (d/history @conn)))))
-    (testing "find source transaction of retracted values"
-      (is (= #{[25 true] [25 false] [30 true] [30 false]}
-             (d/q '[:find ?a ?op
-                    :in $ ?e
-                    :where
-                    [?e :age ?a ?t ?op]
-                    [?t :db/txInstant ?d]]
-                  (d/history @conn)
-                  [:name "Alice"]))))
+      (let [tx-id1 (:max-tx @conn)
+            _ (d/transact conn [[:db/retractEntity [:name "Alice"]]])
+            tx-id2 (:max-tx @conn)]
+        (is (thrown-with-msg? Throwable #"Nothing found for entity id"
+                              (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] @conn [:name "Alice"])))
+
+        (doseq [db (vary-db-ops @conn d/history)]
+          (is (= #{[30] [25]}
+                 (d/q '[:find ?a :in $ ?e :where [?e :age ?a]]
+                      db
+                      [:name "Alice"]))))
+        (doseq [db (vary-db-ops @conn d/history #(d/as-of % tx-id0))]
+          (is (= #{[25]}
+                 (d/q '[:find ?a :in $ ?e :where [?e :age ?a]]
+                      db
+                      [:name "Alice"]))))
+        (doseq [db (vary-db-ops @conn d/history #(d/since % tx-id1))]
+          (is (= #{[30]}
+                 (d/q '[:find ?a :in $ ?e :where [?e :age ?a]]
+                      db
+                      [:name "Alice"]))))
+
+        (testing "find retracted values"
+          (doseq [db (vary-db-ops @conn d/history)]
+            (is (= #{["Alice" 25] ["Alice" 30]}
+                   (d/q '[:find ?n ?a :where [?r :age ?a _ false] [?r :name ?n _ false]]
+                        db)))))
+        (testing "find source transaction of retracted values"
+          (doseq [db (vary-db-ops @conn d/history)]
+            (is (= #{[25 true] [25 false] [30 true] [30 false]}
+                   (d/q '[:find ?a ?op
+                          :in $ ?e
+                          :where
+                          [?e :age ?a ?t ?op]
+                          [?t :db/txInstant ?d]]
+                        db
+                        [:name "Alice"])))))))
     (d/release conn)))
 
 (defn replace-commit-id [s]
@@ -155,7 +199,7 @@
         first-date (now)
         ;; sleep to make sure that transact thread has newer timestamp
         _ (sleep 10)
-        tx-id 536870914
+        tx-id 536870913
         query '[:find ?a :where [?e :age ?a]]]
     (testing "empty after first insertion"
       (is (= #{}
@@ -168,7 +212,7 @@
         (is (= #{[new-age]}
                (d/q query (d/since @conn tx-id))))))
     (testing "print DB"
-      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-since-db\"] :db] :commit-id :REPLACED :max-tx 536870914 :max-eid 4} :time-point 536870914}"
+      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-since-db\"] :db] :commit-id :REPLACED :max-tx 536870914 :max-eid 4} :time-point 536870913}"
              (replace-commit-id (pr-str (d/since @conn tx-id))))))
     (d/release conn)))
 
@@ -318,7 +362,34 @@
                   (map (comp vec seq))
                   (remove (fn [[e _ _ _]]
                             (< const/tx0 e)))
-                  set))))))
+                  set))))
+    (testing "Datoms extracted like Wanderung does it"
+      (let [datoms (du/get-all-datoms @conn (map du/unmap-tx-timestamp))]
+        (is (= [[536870913 :db/txInstant :timestamp 536870913 true]
+                [1 :db/unique :db.unique/identity 536870913 true]
+                [1 :db/ident :name 536870913 true]
+                [1 :db/valueType :db.type/string 536870913 true]
+                [1 :db/index true 536870913 true]
+                [1 :db/cardinality :db.cardinality/one 536870913 true]
+                [2 :db/valueType :db.type/long 536870913 true]
+                [2 :db/cardinality :db.cardinality/one 536870913 true]
+                [2 :db/ident :age 536870913 true]
+                [3 :name "Alice" 536870913 true]
+                [3 :age 25 536870913 true]
+                [4 :age 35 536870913 true]
+                [4 :name "Bob" 536870913 true]
+                [536870914 :db/txInstant :timestamp 536870914 true]
+                [3 :age 25 536870914 false]
+                [3 :age 30 536870914 true]
+                [536870915 :db/txInstant :timestamp 536870915 true]
+                [3 :age 30 536870915 false]
+                [3 :age 35 536870915 true]
+                [536870916 :db/txInstant :timestamp 536870916 true]
+                [3 :age 35 536870916 false]
+                [3 :age 25 536870916 true]
+                [536870917 :db/txInstant :timestamp 536870917 true]
+                [3 :age 25 536870917 false]]
+               datoms))))))
 
 (deftest test-no-duplicates-on-history-search
   (let [schema [{:db/ident       :name

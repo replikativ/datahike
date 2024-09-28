@@ -3,6 +3,7 @@
             [datahike.api :as d]
             [datahike.datom :as datom]
             [datahike.migrate :as m]
+            [datahike.db.utils :as dbu]
             [datahike.test.utils :as utils]))
 
 (def tx-data [[:db/add 1 :db/cardinality :db.cardinality/one 536870913 true]
@@ -232,9 +233,23 @@
                        [[:db/retractEntity [:name "Alice"]]]]
           _           (doseq [tx-data txs]
                         (d/transact source-conn {:tx-data tx-data}))
-          export-data (->> (d/datoms (d/history @source-conn) :eavt)
+          datoms-to-export (d/datoms (d/history @source-conn) :eavt)
+
+          ;; The datoms to export must primarily
+          ;; be sorted by transaction entity id
+          ;; and secondarily so that datoms with attribute `:db/txInstant`
+          ;; come before other datoms
+          export-data (->> datoms-to-export
                            (map (comp vec seq))
-                           (sort-by #(nth % 3))
+                           (sort-by (fn [[e a v tx]]
+                                      [tx
+
+                                       ;; TODO: It seems as if :db/txInstant
+                                       ;; datoms must come first. Is this a bug
+                                       ;; in load-entities?
+                                       (case a
+                                         :db/txInstant 0
+                                         1)]))
                            (into []))
           target-cfg  (-> source-cfg
                           (assoc-in [:store :id] "load-entities-history-test-target")
@@ -250,6 +265,7 @@
                                         :where
                                         [?e :name ?n ?t ?op]]
                                       (d/history @conn)))]
+      (is (dbu/distinct-sorted-datoms? :eavt datoms-to-export))
       (is (= (current-q source-conn)
              (current-q target-conn)))
       (is (= (history-q source-conn)

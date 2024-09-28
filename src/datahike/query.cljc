@@ -6,13 +6,14 @@
    [clojure.walk :as walk]
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
+   [datahike.array :refer [wrap-comparable]]
    [datahike.impl.entity :as de]
    [datahike.lru]
    [datahike.middleware.query]
    [datahike.pull-api :as dpa]
    [datahike.query-stats :as dqs]
-   [datahike.tools :as dt]
    [datahike.middleware.utils :as middleware-utils]
+   [datahike.tools :as dt]
    [datalog.parser :refer [parse]]
    [datalog.parser.impl :as dpi]
    [datalog.parser.impl.proto :as dpip]
@@ -29,7 +30,9 @@
                     FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                     RulesVar SrcVar Variable]
                    [java.lang.reflect Method]
-                   [java.util Date Map])))
+                   [java.util Date Map HashSet HashSet])))
+
+(set! *warn-on-reflection* true)
 
 ;; ----------------------------------------------------------------------------
 
@@ -39,8 +42,8 @@
 
 ;; Records
 
-(defrecord Context [rels sources rules consts])
-(defrecord StatContext [rels sources rules consts stats])
+(defrecord Context [rels sources rules consts settings])
+(defrecord StatContext [rels sources rules consts stats settings])
 
 ;; attrs:
 ;;    {?e 0, ?v 1} or {?e2 "a", ?age "v"}
@@ -65,11 +68,12 @@
                      (log/warn (str "Query-map '" query "' already defines query input."
                                     " Additional arguments to q will be ignored!")))
                    (:args query-input))
-               arg-inputs)]
-    (cond-> {:query (dissoc query :offset :limit :stats?)
+               arg-inputs)
+        extra-ks [:offset :limit :stats? :settings]]
+    (cond-> {:query (apply dissoc query extra-ks)
              :args args}
       (map? query-input)
-      (merge (select-keys query-input [:offset :limit :stats?])))))
+      (merge (select-keys query-input extra-ks)))))
 
 (defn q [query & inputs]
   (let [{:keys [args] :as query-map} (normalize-q-input query inputs)]
@@ -86,6 +90,14 @@
       q))
 
 ;; Utilities
+
+(defn distinct-tuples
+  "Remove duplicates just like `distinct` but with the difference that it only works on values on which `vec` can be applied and two different objects are considered equal if and only if their results after `vec` has been applied are equal. This means that two different Java arrays are considered equal if and only if their elements are equal."
+  ([tuples]
+   (into [] (distinct-tuples) tuples))
+  ([]
+   (let [step ((distinct) (fn [_ _] true))]
+     (filter #(step false (vec %))))))
 
 (defn seqable?
   #?@(:clj [^Boolean [x]]
@@ -129,7 +141,7 @@
            (= (count form) (count pattern))
            (every? (fn [[pattern-el form-el]] (looks-like? pattern-el form-el))
                    (map vector pattern form))))
-    :else                                                   ;; (predicate? pattern)
+    :else ;; (predicate? pattern)
     (pattern form)))
 
 (defn source? [sym]
@@ -144,7 +156,16 @@
   (or (keyword? form) (string? form)))
 
 (defn lookup-ref? [form]
-  (looks-like? [attr? '_] form))
+  ;; Using looks-like? here is quite inefficient.
+  (and (vector? form)
+       (= 2 (count form))
+       (attr? (first form))))
+
+(defn entid? [x]  ;; See `dbu/entid for all forms that are accepted
+  (or (attr? x)
+      (lookup-ref? x)
+      (dbu/numeric-entid? x)
+      (keyword? x)))
 
 ;; Relation algebra
 (defn join-tuples [t1 #?(:cljs idxs1
@@ -192,6 +213,9 @@
             (sum-rel a)
             (sum-rel b))))))
 
+(defn simplify-rel [rel]
+  (Relation. (:attrs rel) (distinct-tuples (:tuples rel))))
+
 (defn prod-rel
   ([] (Relation. {} [(da/make-array 0)]))
   ([rel1 rel2]
@@ -224,7 +248,7 @@
   [db e a else-val]
   (when (nil? else-val)
     (dt/raise "get-else: nil default value is not supported" {:error :query/where}))
-  (if-some [datom (first (dbi/-search db [e (translate-for db a)]))]
+  (if-some [datom (first (dbi/search db [e (translate-for db a)]))]
     (:v datom)
     else-val))
 
@@ -232,7 +256,7 @@
   [db e & as]
   (reduce
    (fn [_ a]
-     (when-some [datom (first (dbi/-search db [e (translate-for db a)]))]
+     (when-some [datom (first (dbi/search db [e (translate-for db a)]))]
        (let [a-ident (if (keyword? (:a datom))
                        (:a datom)
                        (dbi/-ident-for db (:a datom)))]
@@ -509,6 +533,7 @@
                   :clj (to-array (map #(% tuple) getters))))))))
 
 (defn hash-attrs [key-fn tuples]
+  ;; Equivalent to group-by except that it uses a list instead of a vector.
   (loop [tuples tuples
          hash-table (transient {})]
     (if-some [tuple (first tuples)]
@@ -576,31 +601,46 @@
        (filter (fn [[s _]] (free-var? s)))
        (into {})))
 
-(defn lookup-pattern-db [context db pattern orig-pattern]
-  ;; TODO optimize with bound attrs min/max values here
-  (let [attr->prop (var-mapping orig-pattern ["e" "a" "v" "tx" "added"])
+(defn map-consts [context orig-pattern datoms]
+  (let [;; Create a map from free var to index
+        ;; for the positions in the pattern
         attr->idx (var-mapping orig-pattern (range))
-        search-pattern (mapv #(if (symbol? %) nil %) pattern)
-        datoms  (if (first search-pattern)
-                  (if-let [eid (dbu/entid db (first search-pattern))]
-                    (dbi/-search db (assoc search-pattern 0 eid))
-                    [])
-                  (dbi/-search db search-pattern))
         idx->const (reduce-kv (fn [m k v]
                                 (if-let [c (k (:consts context))]
                                   (if (= c (get (first datoms) v)) ;; All datoms have the same format and the same value at position v
-                                    m                              ;; -> avoid unnecessary translations
+                                    m ;; -> avoid unnecessary translations
                                     (assoc m v c))
                                   m))
                               {}
                               attr->idx)]
-    (if (empty? idx->const)
-      (Relation. attr->prop datoms)
+    (when (seq idx->const)
       (Relation. attr->idx (map #(reduce (fn [datom [k v]]
                                            (assoc datom k v))
                                          (vec (seq %))
                                          idx->const)
                                 datoms)))))
+
+(defn replace-symbols-by-nil [pattern]
+  (mapv #(if (symbol? %) nil %) pattern))
+
+(defn resolve-pattern-eid [db search-pattern]
+  (let [first-p (first search-pattern)]
+    (if (and (some? first-p)
+             (not (symbol? first-p)))
+      (when-let [eid (dbu/entid db first-p)]
+        (assoc search-pattern 0 eid))
+      search-pattern)))
+
+(defn relation-from-datoms-xform []
+  (comp (map (fn [[e a v tx added?]]
+               [e a v tx added?]))
+        (distinct-tuples)))
+
+(defn relation-from-datoms [context orig-pattern datoms]
+  (or (map-consts context orig-pattern datoms)
+      (Relation. (var-mapping orig-pattern
+                              (range))
+                 datoms)))
 
 (defn matches-pattern? [pattern tuple]
   (loop [tuple tuple
@@ -617,13 +657,6 @@
   (let [attr->idx (var-mapping orig-pattern (range))
         data (filter #(matches-pattern? pattern %) coll)]
     (Relation. attr->idx (mapv to-array data))))            ;; FIXME to-array
-
-(defn lookup-pattern [context source pattern orig-pattern]
-  (cond
-    (dbu/db? source)
-    (lookup-pattern-db context source pattern orig-pattern)
-    :else
-    (lookup-pattern-coll source pattern orig-pattern)))
 
 (defn collapse-rels [rels new-rel]
   (loop [rels rels
@@ -739,33 +772,45 @@
                 (when (nil? (rel-with-attr context f))
                   (dt/raise "Unknown function '" f " in " clause
                             {:error :query/where, :form clause, :var f})))
-        [context production] (rel-prod-by-attrs context (filter symbol? args))
-        new-rel (if fun
-                  (let [tuple-fn (-call-fn context production fun args)
-                        rels (for [tuple (:tuples production)
-                                   :let [val (tuple-fn tuple)]
-                                   :when (not (nil? val))]
-                               (prod-rel (Relation. (:attrs production) [tuple])
-                                         (in->rel binding val)))]
-                    (if (empty? rels)
-                      (prod-rel production (empty-rel binding))
-                      (reduce sum-rel rels)))
-                  (prod-rel (assoc production :tuples []) (empty-rel binding)))
-        idx->const (reduce-kv (fn [m k v]
-                                (if-let [c (k (:consts context))]
-                                  (assoc m v c)     ;; different value at v for each tuple
-                                  m))
-                              {}
-                              (:attrs new-rel))]
-    (if (empty? (:tuples new-rel))
-      (update context :rels collapse-rels new-rel)
-      (-> context                                        ;; filter output binding
-          (update :rels collapse-rels
-                  (update new-rel :tuples #(filter (fn [tuple]
-                                                     (every? (fn [[ind c]]
-                                                               (= c (get tuple ind)))
-                                                             idx->const))
-                                                   %)))))))
+        attrs (filter symbol? args)
+        [context production] (rel-prod-by-attrs context attrs)
+        symbols-with-values (into #{}
+                                  (mapcat keys)
+                                  [(:attrs production)
+                                   (:consts context)
+                                   (:sources context)])]
+      ;; Currently, we can only evaluate this clause if all variables
+      ;; in the function call are bound. If not, we return nil which
+      ;; is handled by `datahike.tools/resolve-clauses`.
+    (when (every? symbols-with-values attrs)
+      (let [new-rel (if fun
+                      (let [tuple-fn (-call-fn context production fun args)
+                            rels (for [tuple (:tuples production)
+                                       :let [val (tuple-fn tuple)]
+                                       :when (not (nil? val))]
+                                   (prod-rel (Relation. (:attrs production) [tuple])
+                                             (in->rel binding val)))]
+                        (if (empty? rels)
+                          (prod-rel production (empty-rel binding))
+                          (reduce sum-rel rels)))
+                      (prod-rel (assoc production :tuples []) (empty-rel binding)))
+            idx->const (reduce-kv (fn [m k v]
+                                    (if-let [c (k (:consts context))]
+                                      (assoc m v c) ;; different value at v for each tuple
+                                      m))
+                                  {}
+                                  (:attrs new-rel))]
+        (if (empty? (:tuples new-rel))
+          (update context :rels collapse-rels new-rel)
+          (-> context ;; filter output binding
+              (update :rels collapse-rels
+                      (update new-rel
+                              :tuples
+                              #(filter (fn [tuple]
+                                         (every? (fn [[ind c]]
+                                                   (= c (get tuple ind)))
+                                                 idx->const))
+                                       %)))))))))
 
 ;;; RULES
 
@@ -843,15 +888,16 @@
                 (if stats?
                   (dqs/update-ctx-with-stats prefix-context clause
                                              (fn [ctx]
-                                               (let [tmp-context (reduce -resolve-clause
-                                                                         (assoc ctx :stats [])
-                                                                         clauses)]
+                                               (let [tmp-context (dt/resolve-clauses
+                                                                  -resolve-clause
+                                                                  (assoc ctx :stats [])
+                                                                  clauses)]
                                                  (assoc tmp-context
                                                         :stats (:stats ctx)
                                                         :tmp-stats {:type :solve
                                                                     :clauses clauses
                                                                     :branches (:stats tmp-context)}))))
-                  (reduce -resolve-clause prefix-context clauses)))
+                  (dt/resolve-clauses -resolve-clause prefix-context clauses)))
         empty-rels? (fn [ctx]
                       (some #(empty? (:tuples %)) (:rels ctx)))]
     (loop [stack (list {:prefix-clauses []
@@ -910,27 +956,72 @@
           stats? (assoc :tmp-stats {:type :rule
                                     :branches tmp-stats}))))))
 
+(defn resolve-pattern-lookup-entity-id [source e error-code]
+  (cond
+    (dbu/numeric-entid? e) e
+    (or (lookup-ref? e) (attr? e)) (dbu/entid-strict source e error-code)
+                                        ;(entid? e) e
+    (keyword? e) e
+    (symbol? e) e
+    :else (or error-code (dt/raise "Invalid entid" {:error :entity-id/syntax :entity-id e}))))
+
 (defn resolve-pattern-lookup-refs
   "Translate pattern entries before using pattern for database search"
+  ([source pattern] (resolve-pattern-lookup-refs source pattern nil))
+  ([source pattern error-code]
+   (if (dbu/db? source)
+     (dt/with-destructured-vector pattern
+       e (resolve-pattern-lookup-entity-id source e error-code)
+       a (if (and (:attribute-refs? (dbi/-config source)) (keyword? a))
+           (dbi/-ref-for source a)
+           a)
+       v (if (and v (attr? a) (dbu/ref? source a) (or (lookup-ref? v) (attr? v)))
+           (dbu/entid-strict source v error-code)
+           v)
+       tx (if (lookup-ref? tx)
+            (dbu/entid-strict source tx error-code)
+            tx)
+       added added)
+     pattern)))
+
+(defn good-lookup-refs? [pattern]
+  (if (coll? pattern)
+    (not-any? #(= % ::error) pattern)
+    (not= ::error pattern)))
+
+(defn resolve-pattern-lookup-refs-or-nil
+  "This function works just like `resolve-pattern-lookup-refs` but if there is an error it returns `nil` instead of throwing an exception. This is used to reject patterns with variables substituted for invalid values.
+
+  For instance, take the query
+
+  (d/q '[:find ?e
+      :in $ [?e ...]
+      :where [?e :friend 3]]
+     db [1 2 3 \"A\"])
+
+  in the test `datahike.test.lookup-refs-test/test-lookup-refs-query`.
+
+  According to this query, the variable `?e` can be either `1`, `2`, `3` or `\"A\"`
+  but \"A\" is not a valid entity.
+
+  The query engine will evaluate the pattern `[?e :friend 3]`. For the strategies
+  `identity` and `select-simple`, no substitution will be performed in this pattern.
+  Instead, they will ask for all tuples from the database and then filter them, so
+  the fact that `?e` can be bound to an impossible entity id `\"A\"` is not a problem.
+
+  But with the strategy `select-all`, the substituted pattern will become 
+
+  [\"A\" :friend 3]
+
+  and consequently, the `result` below will take the value `[::error :friend 3]`.
+  The unit test is currently written to simply ignore illegal illegal entity ids
+  such as \"A\" and therefore, we handle that by letting this function return nil
+  in those cases.
+  "
   [source pattern]
-  (if (dbu/db? source)
-    (let [[e a v tx added] pattern]
-      (->
-       [(if (or (lookup-ref? e) (attr? e))
-          (dbu/entid-strict source e)
-          e)
-        (if (and (:attribute-refs? (dbi/-config source)) (keyword? a))
-          (dbi/-ref-for source a)
-          a)
-        (if (and v (attr? a) (dbu/ref? source a) (or (lookup-ref? v) (attr? v)))
-          (dbu/entid-strict source v)
-          v)
-        (if (lookup-ref? tx)
-          (dbu/entid-strict source tx)
-          tx)
-        added]
-       (subvec 0 (count pattern))))
-    pattern))
+  (let [result (resolve-pattern-lookup-refs source pattern ::error)]
+    (when (good-lookup-refs? result)
+      result)))
 
 (defn dynamic-lookup-attrs [source pattern]
   (let [[e a v tx] pattern]
@@ -970,29 +1061,605 @@
                  :form form}))))
 
 (defn resolve-context [context clauses]
-  (reduce resolve-clause context clauses))
+  (dt/resolve-clauses resolve-clause context clauses))
+
+(defn tuple-var-mapper [rel]
+  (let [attrs (:attrs rel)
+        key-fn-pairs (into []
+                           (map (juxt identity (partial getter-fn attrs)))
+                           (keys attrs))]
+    (fn [tuple]
+      (into {}
+            (map (fn [[k f]] [k (f tuple)]))
+            key-fn-pairs))))
+
+(def rel-product-unit (Relation. {} [[]]))
+
+(defn bound-symbol-map
+  "Given a sequential collection of relations, return a map where every key is a symbol of a variable and every value is a map with the keys `:relation-index` and `:tuple-element-index`. The key `:relation-index` is associated with the index of the relation where the variable occurs and the key `:tuple-element-index` is associated with the index of the location in the clause where the symbol occurs."
+  [rels]
+  (into {} (for [[rel-index rel] (map-indexed vector rels)
+                 [sym tup-index] (:attrs rel)]
+             [sym {:relation-index rel-index
+                   :tuple-element-index tup-index}])))
+
+(defn normalize-pattern
+  "Takes a pattern and returns a new pattern with exactly five elements, filling in any missing ones with nil."
+  [[e a v tx added?]]
+  [e a v tx added?])
+
+(defn replace-unbound-symbols-by-nil [bsm pattern]
+  (normalize-pattern
+   (mapv #(when-not (and (symbol? %) (not (contains? bsm %)))
+            %)
+         pattern)))
+
+(defn search-index-mapping
+  "Returns a sequence of maps with index-information for a subset of e, a, v, tx. The `strategy-vec` argument is a vector of four elements corresponding to e, a, v, tx respectively. Every such element can be either `:substitute`, `:filter` or `nil` depending on how the corresponding element in the pattern should be used. The `clean-pattern` is argument is a vector with the elements corresponding to e, a, v, tx. The argument `selected-strategy-symbol` can be either `:substitute`, `:filter` or `nil` and is used to filter e, a, v, tx based on the value of `:strategy-vec`."
+  [{:keys [strategy-vec clean-pattern bsm]}
+   selected-strategy-symbol]
+  {:pre [(= 4 (count strategy-vec))]}
+  (let [pattern (normalize-pattern clean-pattern)]
+    (for [[pattern-element-index
+           pattern-var
+           strategy-symbol] (map vector (range) pattern strategy-vec)
+          :when (= selected-strategy-symbol strategy-symbol)
+          :let [m (bsm pattern-var)]
+          :when m]
+      (assoc m :pattern-element-index pattern-element-index))))
+
+(defn substitution-relation-indices
+  "Returns the set of indices of relations that have symbols that are substituted for actual values in the pattern before index lookup."
+  [context]
+  (into #{}
+        (map :relation-index)
+        (search-index-mapping context :substitute)))
+
+(defn filtering-relation-indices
+  "Returns the set of indices of relations that have symbols that will be used for filtering the datoms returned from the inex lookup."
+  [context subst-inds]
+  (into #{}
+        (comp (map :relation-index)
+              (remove subst-inds))
+        (search-index-mapping context :filter)))
+
+(defn index-feature-extractor
+  "Given a set of indices referring to elements in a sequential container such as a datom or vector, construct a function that returns a value computed from such a sequential container such that two different values returned from that function are equal if and only if their corresponding values at those indices are equal. Optionally takes a function that can remap the selected elements."
+  ([inds include-empty?]
+   (index-feature-extractor inds include-empty? (fn [_ x] x)))
+  ([inds include-empty? replacer]
+   (let [first-index (first inds)]
+     (case (count inds)
+       0 (when include-empty?
+           (fn
+             ([] [nil])
+             ([_] nil)))
+       1 (fn
+           ([] [first-index])
+           ([x] (wrap-comparable (replacer first-index (nth x first-index)))))
+       (fn
+         ([] inds)
+         ([x]
+          (mapv #(wrap-comparable (replacer % (nth x %))) inds)))))))
+
+(defn extend-predicate1 [predicate feature-extractor ref-feature]
+  (if (nil? feature-extractor)
+    predicate
+    (if predicate
+      (fn [datom]
+        (let [feature (feature-extractor datom)]
+          (if (= ref-feature feature)
+            (predicate datom)
+            false)))
+      (fn [datom]
+        (= ref-feature (feature-extractor datom))))))
+
+(defn predicate-from-set [s]
+  (case (count s)
+    0 (fn [_] false)
+    1 (let [y (first s)]
+        (fn [x] (= x y)))
+    (fn [x] (contains? s x))))
+
+(defn extend-predicate [predicate feature-extractor features]
+  {:pre [(or (set? features)
+             (instance? HashSet features))]}
+  (let [this-pred (predicate-from-set features)]
+    (if (nil? feature-extractor)
+      predicate
+      (if predicate
+        (fn
+          ([] (conj (predicate) [(feature-extractor) features]))
+          ([datom]
+           (let [feature (feature-extractor datom)]
+             (if (this-pred feature)
+               (predicate datom)
+               false))))
+        (fn
+          ([] [(feature-extractor) features])
+          ([datom]
+           (this-pred (feature-extractor datom))))))))
+
+(defn resolve-pattern-lookup-ref-at-index
+  [source clean-attribute pattern-index pattern-value error-code]
+  (let [a clean-attribute]
+    (case (int pattern-index)
+      0 (resolve-pattern-lookup-entity-id source pattern-value error-code)
+      1 (if (and (:attribute-refs? (dbi/-config source)) (keyword? pattern-value))
+          (dbi/-ref-for source pattern-value)
+          pattern-value)
+      2 (if (and pattern-value
+                 (attr? a)
+                 (dbu/ref? source a)
+                 (or (lookup-ref? pattern-value) (attr? pattern-value)))
+          (dbu/entid-strict source pattern-value error-code)
+          pattern-value)
+      3 (if (lookup-ref? pattern-value)
+          (dbu/entid-strict source pattern-value error-code)
+          pattern-value)
+      4 pattern-value)))
+
+(defn lookup-ref-replacer
+  ([context] (lookup-ref-replacer context ::error))
+  ([{:keys [source clean-pattern]} error-value]
+   (let [[_ attribute _ _] clean-pattern]
+     (if source
+       (if (dbu/db? source)
+         (fn [index pattern-value]
+           (resolve-pattern-lookup-ref-at-index source
+                                                attribute
+                                                index
+                                                pattern-value
+                                                error-value))
+         (fn [_i x] x))
+       (fn [_ x] x)))))
+
+(defn- generate-substitution-xform-code [pred-expr
+                                         datom-predicate-symbol
+                                         filter-feature-symbol
+                                         pmask
+                                         substituted-pattern-and-filter-feature-pairs]
+  (let [pattern-symbols (repeatedly 5 gensym)
+        substitution-value-vector (gensym "substitution-value-vector")]
+    `(fn [step#]
+       (fn
+         ([] (step#))
+         ([dst-one#] (step# dst-one#))
+
+         ;; This is a higher-arity step function.
+         ([dst# ~@pattern-symbols ~datom-predicate-symbol]
+
+          ;; This generates the code that substitutes some of the
+          ;; incomping values by values from the relation and calls
+          ;; the next step function in the transducer chain.
+          (reduce
+           (fn [dst-inner# [~substitution-value-vector ~filter-feature-symbol]]
+             (step# dst-inner#
+                    ~@(map (fn [i sym]
+                             (if (nil? i)
+                               sym
+                               `(nth ~substitution-value-vector ~i)))
+                           pmask
+                           pattern-symbols)
+                    ~pred-expr))
+           dst#
+           ~substituted-pattern-and-filter-feature-pairs))))))
+
+(defmacro substitution-expansion [substitution-pattern-element-inds
+                                  filter-feature-extractor
+                                  substituted-pattern-and-filter-feature-pairs]
+  (let [datom-predicate-symbol (gensym)
+        filter-feature-symbol (gensym)]
+
+    ;; This code generates a tree of `if`-forms for all ordered subsets of
+    ;; the sequence `(range 5)` that `substitution-pattern-element-inds`.
+    ;; can take. At each leaf of the tree, code is generated for that particular
+    ;; subset.
+    (dt/range-subset-tree
+     5
+     substitution-pattern-element-inds
+
+     ;; This function is called at each leaf of the tree.
+     ;; `pmast` is a boolean sequence
+     (fn [_pinds pmask]
+
+       ;; `branch-expr` is a function that generates the actual
+       ;; code given a predicate expression.
+       (let [branch-expr (fn [pred-expr]
+
+                           ;; This is the code for the transducer.
+                           (generate-substitution-xform-code
+                            pred-expr
+                            datom-predicate-symbol
+                            filter-feature-symbol
+                            pmask
+                            substituted-pattern-and-filter-feature-pairs))]
+
+         ;; Generate different code depending on whether or not there is a
+         ;; `filt-extractor`, meaning that the resulting datoms have to be
+         ;; filtered.
+         `(if (nil? ~filter-feature-extractor)
+            ~(branch-expr datom-predicate-symbol)
+            ~(branch-expr `(extend-predicate1 ~datom-predicate-symbol
+                                              ~filter-feature-extractor
+                                              ~filter-feature-symbol))))))))
+
+#_(instantiate-substitution-xform substitution-pattern-element-inds
+                                  filter-feature-extractor
+                                  substituted-pattern-and-filter-feature-pairs)
+
+(defn instantiate-substitution-xform [substitution-pattern-element-inds
+                                      filter-feature-extractor
+                                      substituted-pattern-and-filter-feature-pairs]
+
+  ;; Returns a transducer based on the indices in `substitution-pattern-element-inds`
+  (substitution-expansion substitution-pattern-element-inds
+                          filter-feature-extractor
+                          substituted-pattern-and-filter-feature-pairs))
+
+;; The performance improvement of using this macro has been measured,
+;; see comment in single-substition-xform.
+(defmacro make-vec-lookup-ref-replacer [range-length]
+  (let [inds (gensym)
+        replacer (gensym)
+        tuple (gensym)]
+    `(fn tree-fn# [~replacer ~inds]
+       ~(dt/range-subset-tree
+         range-length inds
+         (fn replacer-fn# [pinds _mask]
+           `(fn [~tuple]
+              (try
+                ~(mapv (fn [index i] `(~replacer ~index (nth ~tuple ~i)))
+                       pinds
+                       (range))
+                (catch Exception e# nil))))))))
+
+(def vec-lookup-ref-replacer (make-vec-lookup-ref-replacer 5))
+
+;; The performance improvement of using this macro has been measured,
+;; see comment in single-substition-xform.
+(defmacro basic-index-selector [max-length]
+  (let [inds (gensym)
+
+        obj (gensym)]
+    `(fn [~inds]
+       (case (count ~inds)
+         ~@(mapcat (fn [length]
+                     (let [index-symbols (vec (repeatedly length gensym))]
+                       [length `(let [~index-symbols ~inds]
+                                  (fn [~obj]
+                                    ~(mapv
+                                      (fn [sym] `(nth ~obj ~sym))
+                                      index-symbols)))]))
+                   (range (inc max-length)))))))
+
+(def make-basic-index-selector (basic-index-selector 5))
+
+(defn single-substitution-xform
+  "Returns a transducer that substitutes the symbols for a single relation."
+  [search-context
+   relation-index
+   substituted-vars-per-relation
+   filtered-vars-per-relation]
+  (let [;; This function maps the value at a pattern at a certain index to
+        ;; a new value where the lookup-ref has been replaced. If there is an
+        ;; error, it returns the `::error` value.
+        lrr (lookup-ref-replacer search-context)
+
+        tuples (:tuples (nth (:rels search-context) relation-index))
+        substituted-vars (substituted-vars-per-relation relation-index)
+        filtered-vars (filtered-vars-per-relation relation-index)
+        pattern-substitution-inds (map :tuple-element-index substituted-vars)
+        pattern-filter-inds (map :tuple-element-index filtered-vars)
+
+        ;; This function returns a unique feature for the values at
+        ;; `pattern-filter-inds` given a pattern.
+        feature-extractor (index-feature-extractor pattern-filter-inds
+                                                   true
+                                                   lrr)
+
+        ;; These are the indices of the locations in the pattern that will be substituted
+        ;; with values from the tuples in this relation.
+        substitution-pattern-element-inds (map :pattern-element-index substituted-vars)
+
+        ;; This function maps the value at a pattern at a certain index to
+        ;; a new value where the lookup-ref has been replaced. If there is an error,
+        ;; an exception is thrown.
+        lrr-ex (lookup-ref-replacer search-context nil)
+
+        ;; This constructs a new pattern given a tuple of values that will be inserted
+        ;; at the `substitution-pattern-element-inds`.
+        ;;
+        ;; Precomputing this function moves some work out of the loop
+        ;; and contributes to about 1½ seconds reduction in
+        ;; https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/experimental/datahike-benchmark/
+        pattern-from-tuple (vec-lookup-ref-replacer lrr-ex substitution-pattern-element-inds)
+
+        ;; This is a function that simply picks out a subset of the elements from a sequential
+        ;; collection, at the indices `pattern-subsitution-inds`.
+        ;;
+        ;; Precomputing this function moves some work out of the loop
+        ;; and contributes to about 2 seconds reduction in
+        ;; https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/experimental/datahike-benchmark/
+        select-pattern-substitution-inds (make-basic-index-selector pattern-substitution-inds)
+
+        ;; This is a list of pairs such that:
+        ;;
+        ;; * The first element is a pattern where variables for this relation have been substituted.
+        ;; * The second element is a feature used for filtering the datoms after querying the backend
+        ;;
+        ;; Using a transducer here (with a transient vector under the hood)
+        ;; is about ½ second faster than a doseq-loop that accumulates to
+        ;; an ArrayList in the benchmark
+        ;; https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/experimental/datahike-benchmark/
+        ;; In other words, there is no use writing imperative code here
+        ;; with Java mutable collections.
+        substituted-pattern-and-filter-feature-pairs
+        (into []
+              (keep
+               (fn [tuple]
+                 (let [feature (feature-extractor tuple)]
+                   (when (good-lookup-refs? feature)
+                     (when-let [k (-> tuple
+                                      select-pattern-substitution-inds
+                                      pattern-from-tuple)]
+                       [k feature])))))
+              tuples)
+
+        filter-feature-extractor (index-feature-extractor
+                                  (map :pattern-element-index filtered-vars)
+                                  false
+                                  lrr)]
+
+    ;; This expression will produce an `xform` that performs the substitutions for
+    ;; this relation.
+    (instantiate-substitution-xform substitution-pattern-element-inds
+                                    filter-feature-extractor
+                                    substituted-pattern-and-filter-feature-pairs)))
+
+(defn search-context? [x]
+  (assert (map? x))
+  (let [{:keys [bsm clean-pattern rels strategy-vec]} x]
+    (assert bsm)
+    (assert clean-pattern)
+    (assert rels)
+    (assert strategy-vec))
+  true)
+
+(defn compute-per-rel-map [search-context rel-inds strat-symbol]
+  {:pre [(search-context? search-context)]}
+  (->> strat-symbol
+       (search-index-mapping search-context)
+       (filter (comp rel-inds :relation-index))
+       (group-by :relation-index)))
+
+(defn clean-pattern-before-substitution [pattern subst-map]
+  (let [subst-pattern-positions (into #{}
+                                      (comp cat (map :pattern-element-index))
+                                      (vals subst-map))]
+    (into []
+          (map-indexed (fn [i x]
+                         (cond
+                           (subst-pattern-positions i) x
+                           (symbol? x) nil
+                           :else x)))
+          pattern)))
+
+(defn initialization-and-substitution-xform
+  "Returns a transducer that performs all subsitutions possible given the relations with indices `rel-inds`."
+  [search-context substituted-relation-inds]
+  {:pre [(map? search-context)
+         (set? substituted-relation-inds)]}
+  (let [;; We refer to relations by their index in the vector in the context.
+        substituted-vars-per-relation (compute-per-rel-map search-context
+                                                           substituted-relation-inds
+                                                           :substitute)
+
+        filtered-vars-per-relation (compute-per-rel-map search-context
+                                                        substituted-relation-inds
+                                                        :filter)
+
+        all-substitutions-xform (apply comp
+                                       (map (fn [relation-index]
+                                              (single-substitution-xform
+                                               search-context
+                                               relation-index
+                                               substituted-vars-per-relation
+                                               filtered-vars-per-relation))
+                                            substituted-relation-inds))
+        init-coll [[;; This is the initial pattern
+                    (clean-pattern-before-substitution
+                     (:clean-pattern search-context)
+                     substituted-vars-per-relation)
+
+                    ;; This is the initial predicate (nil because there is no predicate)
+                    nil]]]
+    [init-coll all-substitutions-xform]))
+
+(defn datom-filter-predicate [filtered-relation-inds search-context]
+  (let [filtered-vars-per-relation (compute-per-rel-map search-context filtered-relation-inds :filter)
+        rels (:rels search-context)]
+    (reduce (fn [predicate [relation-index filtered-vars]]
+              (let [tuples (:tuples (nth rels relation-index))
+                    pos-inds (map :pattern-element-index filtered-vars)
+                    tup-inds (map :tuple-element-index filtered-vars)
+                    tuple-feature-extractor (index-feature-extractor tup-inds true)
+                    features (into #{}
+                                   (map tuple-feature-extractor)
+                                   tuples)
+                    datom-feature-extractor
+                    (index-feature-extractor pos-inds false)]
+                (extend-predicate predicate
+                                  datom-feature-extractor
+                                  features)))
+            nil
+            filtered-vars-per-relation)))
+
+(defn filter-from-predicate [pred]
+  (if pred
+    (filter pred)
+    identity))
+
+(defn backend-xform [backend-fn]
+  (fn [step]
+    (fn
+      ([] (step))
+      ([dst] (step dst))
+      ([dst e a v tx added? datom-predicate]
+       (let [inner-step (if datom-predicate
+                          (fn [dst datom]
+                            (if (datom-predicate datom)
+                              (step dst datom)
+                              dst))
+                          step)
+             datoms (try
+                      (backend-fn e a v tx added?)
+                      (catch Exception e
+                        (throw e)))]
+         (reduce inner-step
+                 dst
+                 datoms))))))
+
+(defn extend-predicate-for-pattern-constants
+  [predicate {:keys [strategy-vec clean-pattern] :as search-context}]
+  (let [inds (for [[i strategy pattern-value] (mapv vector (range)
+                                                    strategy-vec
+                                                    clean-pattern)
+                   :when (= :filter strategy)
+                   :when (and (some? pattern-value)
+                              (not (symbol? pattern-value)))]
+               i)
+        extractor (index-feature-extractor
+                   inds
+                   false
+                   (lookup-ref-replacer search-context))]
+    (if extractor
+      (extend-predicate predicate extractor #{(extractor clean-pattern)})
+      predicate)))
+
+(defn unpack6 [step]
+  (fn
+    ([] (step))
+    ([dst] (step dst))
+    ([dst [[e a v tx added?] filt]]
+     (step dst e a v tx added? filt))))
+
+(defn search-batch-fn
+  "This function constructs a \"strategy function\" that gets called by `dbi/-batch-search.`"
+  [search-context]
+  (fn [strategy-vec backend-fn datom-xform]
+    (let [search-context (merge search-context {:strategy-vec strategy-vec
+                                                :backend-fn backend-fn})
+
+          ;; Relations with indices `substituted-relation-inds` are used for substituting variables
+          ;; in the pattern.
+          substituted-relation-inds (substitution-relation-indices search-context)
+
+          ;; Relations with indices `filtered-relation-inds` are used for filtering the datoms
+          ;; returned by the search backend.
+          filtered-relation-inds (filtering-relation-indices search-context substituted-relation-inds)
+
+          [init-coll substitution-xform] (initialization-and-substitution-xform
+                                          search-context
+                                          substituted-relation-inds)
+
+          filter-xform (-> filtered-relation-inds
+                           (datom-filter-predicate search-context)
+                           (extend-predicate-for-pattern-constants search-context)
+                           filter-from-predicate)
+
+          ;; This transduction will take the initial pattern,
+          ;; perform all variable substitutions for all combinations
+          ;; of relations and then look up the datoms in the index.
+          ;; Finally, the datoms will be filtered for the variables
+          ;; that were not substituted.
+          result (into []
+
+                       ;; From the output of `unpack6`
+                       ;; to the input of `backend-xform`
+                       ;; the transducers are higher-arity. That is,
+                       ;; instead of calling `(step acc [[e a v tx added?] pred])`,
+                       ;; they call `(step acc e a v tx added? pred)`. This avoids
+                       ;; the allocation of short-lived vectors and speeds up the
+                       ;; process by about 0.4 seconds in
+                       ;; https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/experimental/datahike-benchmark/
+
+                       (comp
+
+                        ;; Unpack the pattern as arguments to the next step function.
+                        unpack6
+
+                        ;; Substitute variables with values
+                        ;; from tuples in the relations and accumulate the filter predicate.
+                        substitution-xform
+
+                        ;; Perform the lookup in the search backend.
+                        (backend-xform backend-fn)
+
+                        ;; Filter the datoms returned from the search backend.
+                        filter-xform
+
+                        ;; Apply the provided datom-xform on the returned datoms
+                        datom-xform)
+                       init-coll)]
+      result)))
+
+(defn lookup-batch-search [source context orig-pattern pattern1]
+  (let [new-rel (if (dbu/db? source)
+                  (let [rels (vec (:rels context))
+                        bsm (bound-symbol-map rels)
+                        clean-pattern (->> pattern1
+                                           (replace-unbound-symbols-by-nil bsm)
+                                           (resolve-pattern-eid source))
+                        search-context {:source source
+                                        :bsm bsm
+                                        :clean-pattern clean-pattern
+                                        :rels rels}
+
+                        datoms (if clean-pattern
+
+                                 ;; Make the call to the search backend
+                                 (dbi/batch-search
+                                  source clean-pattern
+                                  (search-batch-fn search-context)
+                                  (relation-from-datoms-xform))
+
+                                 [])
+
+                        new-rel (relation-from-datoms
+                                 context orig-pattern datoms)]
+                    new-rel)
+                  (lookup-pattern-coll source pattern1 orig-pattern))]
+
+    ;; This binding is needed for `collapse-rels` to work, and more specifically,
+    ;; `hash-join` to work, that in turn depends on `getter-fn`.
+    (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
+                               (dynamic-lookup-attrs source pattern1)
+                               *lookup-attrs*)]
+      (cond-> (update context :rels collapse-rels new-rel)
+        (:stats context) (assoc :tmp-stats {:type :lookup})))))
 
 (defn -resolve-clause*
   ([context clause]
    (-resolve-clause* context clause clause))
   ([context clause orig-clause]
    (condp looks-like? clause
-     [[symbol? '*]]                                       ;; predicate [(pred ?a ?b ?c)]
+     [[symbol? '*]] ;; predicate [(pred ?a ?b ?c)]
      (do (check-all-bound context (identity (filter free-var? (first clause))) orig-clause)
          (filter-by-pred context clause))
 
-     [[symbol? '*] '_]                                    ;; function [(fn ?a ?b) ?res]
+     [[symbol? '*] '_] ;; function [(fn ?a ?b) ?res]
      (bind-by-fn context clause)
 
-     [source? '*]                                         ;; source + anything
+     [source? '*] ;; source + anything
      (let [[source-sym & rest] clause]
        (binding [*implicit-source* (get (:sources context) source-sym)]
          (-resolve-clause context rest clause)))
 
-     '[or *]                                              ;; (or ...)
+     '[or *] ;; (or ...)
      (let [[_ & branches] clause
            context' (assoc context :stats [])
-           contexts (map #(resolve-clause context' %) branches)
+           contexts (mapv #(resolve-clause context' %) branches)
            sum-rel (->> contexts
                         (map #(reduce hash-join (:rels %)))
                         (reduce sum-rel))]
@@ -1000,13 +1667,13 @@
          (:stats context) (assoc :tmp-stats {:type :or
                                              :branches (mapv :stats contexts)})))
 
-     '[or-join [[*] *] *]                                 ;; (or-join [[req-vars] vars] ...)
+     '[or-join [[*] *] *] ;; (or-join [[req-vars] vars] ...)
      (let [[_ [req-vars & vars] & branches] clause]
        (check-all-bound context req-vars orig-clause)
        (recur context (list* 'or-join (concat req-vars vars) branches) clause))
 
-     '[or-join [*] *]                                     ;; (or-join [vars] ...)
-       ;; TODO required vars
+     '[or-join [*] *] ;; (or-join [vars] ...)
+     ;; TODO required vars
      (let [[_ vars & branches] clause
            vars (set vars)
            join-context (-> context
@@ -1023,7 +1690,7 @@
          (:stats context) (assoc :tmp-stats {:type :or-join
                                              :branches (mapv #(-> % :stats first) contexts)})))
 
-     '[and *]                                             ;; (and ...)
+     '[and *] ;; (and ...)
      (let [[_ & clauses] clause]
        (if (:stats context)
          (let [and-context (-> context
@@ -1035,7 +1702,7 @@
                   :stats (:stats context)))
          (resolve-context context clauses)))
 
-     '[not *]                                             ;; (not ...)
+     '[not *] ;; (not ...)
      (let [[_ & clauses] clause
            negation-vars (collect-vars clauses)
            _ (check-some-bound context negation-vars orig-clause)
@@ -1050,7 +1717,7 @@
          (:stats context) (assoc :tmp-stats {:type :not
                                              :branches (:stats negation-context)})))
 
-     '[not-join [*] *]                                    ;; (not-join [vars] ...)
+     '[not-join [*] *] ;; (not-join [vars] ...)
      (let [[_ vars & clauses] clause
            _ (check-all-bound context vars orig-clause)
            join-rel (reduce hash-join (:rels context))
@@ -1066,24 +1733,19 @@
          (:stats context) (assoc :tmp-stats {:type :not
                                              :branches (:stats negation-context)})))
 
-     '[*]                                                 ;; pattern
+     '[*] ;; pattern
      (let [source *implicit-source*
-           pattern (->> clause
-                        (replace (:consts context))
-                        (resolve-pattern-lookup-refs source))
-           relation (lookup-pattern context source pattern clause)]
-       (binding [*lookup-attrs* (if (satisfies? dbi/IDB source)
-                                  (dynamic-lookup-attrs source pattern)
-                                  *lookup-attrs*)]
-         (cond-> (update context :rels collapse-rels relation)
-           (:stats context) (assoc :tmp-stats {:type :lookup})))))))
+           pattern0 (replace (:consts context) clause)
+           pattern1 (resolve-pattern-lookup-refs source pattern0)]
+       (lookup-batch-search source context clause pattern1)))))
 
 (defn -resolve-clause
   ([context clause]
    (-resolve-clause context clause clause))
   ([context clause orig-clause]
    (dqs/update-ctx-with-stats context orig-clause
-                              (fn [context] (-resolve-clause* context clause orig-clause)))))
+                              (fn [context]
+                                (-resolve-clause* context clause orig-clause)))))
 
 (defn resolve-clause [context clause]
   (if (rule? context clause)
@@ -1096,7 +1758,7 @@
 
 (defn -q [context clauses]
   (binding [*implicit-source* (get (:sources context) '$)]
-    (reduce resolve-clause context clauses)))
+    (dt/resolve-clauses resolve-clause context clauses)))
 
 (defn -collect
   ([context symbols]
@@ -1169,13 +1831,17 @@
 
 (extend-protocol IPostProcess
   FindRel
-  (-post-process [_ tuples] (if (seq? tuples) (vec tuples) tuples))
+  (-post-process [_ tuples]
+    (if (seq? tuples) (vec tuples) tuples))
   FindColl
-  (-post-process [_ tuples] (into [] (map first) tuples))
+  (-post-process [_ tuples]
+    (into [] (map first) tuples))
   FindScalar
-  (-post-process [_ tuples] (ffirst tuples))
+  (-post-process [_ tuples]
+    (ffirst tuples))
   FindTuple
-  (-post-process [_ tuples] (first tuples)))
+  (-post-process [_ tuples]
+    (first tuples)))
 
 (defn- pull [find-elements context resultset]
   (let [resolved (for [find find-elements]
@@ -1201,12 +1867,6 @@
       (vswap! query-cache assoc q qp)
       qp)))
 
-(defn paginate [offset limit resultset]
-  (let [subseq (drop (or offset 0) (distinct resultset))]
-    (if (or (nil? limit) (neg? limit))
-      subseq
-      (take limit subseq))))
-
 (defn convert-to-return-maps [{:keys [mapping-type mapping-keys]} resultset]
   (let [mapping-keys (map #(get % :mapping-key) mapping-keys)
         convert-fn (fn [mkeys]
@@ -1220,30 +1880,40 @@
   (->> (-collect context symbols)
        (map vec)))
 
-(defn raw-q [{:keys [query args offset limit stats?] :as _query-map}]
-  (let [{:keys [qfind
+(def default-settings {})
+
+(defn raw-q [{:keys [query args offset limit stats? settings] :as _query-map}]
+  (let [settings (merge default-settings settings)
+        {:keys [qfind
                 qwith
                 qreturnmaps
                 qin]} (memoized-parse-query query)
         context-in    (-> (if stats?
-                            (StatContext. [] {} {} {} [])
-                            (Context. [] {} {} {}))
+                            (StatContext. [] {} {} {} [] settings)
+                            (Context. [] {} {} {} settings))
                           (resolve-ins qin args))
         ;; TODO utilize parser
+
         all-vars      (concat (dpi/find-vars qfind) (map :symbol qwith))
         context-out   (-q context-in (:where query))
         resultset     (collect context-out all-vars)
         find-elements (dpip/find-elements qfind)
         result-arity  (count find-elements)]
-    (cond->> resultset
-      (or offset limit)                             (paginate offset limit)
-      true                                          set
+    (cond->> (into #{}
+                   (comp (distinct)
+                         (if offset
+                           (drop offset)
+                           identity)
+                         (if (or (nil? limit) (neg? limit))
+                           identity
+                           (take limit)))
+                   resultset)
       (:with query)                                 (mapv #(subvec % 0 result-arity))
       (some #(instance? Aggregate %) find-elements) (aggregate find-elements context-in)
       (some #(instance? Pull %) find-elements)      (pull find-elements context-in)
       true                                          (-post-process qfind)
       qreturnmaps                                   (convert-to-return-maps qreturnmaps)
       stats?                                        (#(-> context-out
-                                                          (dissoc :rels :sources)
+                                                          (dissoc :rels :sources :settings)
                                                           (assoc :ret %
                                                                  :query query))))))

@@ -1,28 +1,55 @@
 (ns ^:no-doc datahike.tools
   (:require
    [superv.async :refer [throw-if-exception-]]
+   [clojure.core.async.impl.protocols :as async-impl]
+   [clojure.core.async :as async]
    #?(:clj [clojure.java.io :as io])
    [taoensso.timbre :as log])
   #?(:clj (:import [java.util Properties UUID Date]
+                   [java.util.concurrent CompletableFuture]
                    [java.net InetAddress])))
 
 (defn combine-hashes [x y]
   #?(:clj  (clojure.lang.Util/hashCombine x y)
      :cljs (hash-combine x y)))
 
-#?(:clj
-   (defn- -case-tree [queries variants]
-     (if queries
-       (let [v1 (take (/ (count variants) 2) variants)
-             v2 (drop (/ (count variants) 2) variants)]
-         (list 'if (first queries)
-               (-case-tree (next queries) v1)
-               (-case-tree (next queries) v2)))
-       (first variants))))
+(defn -match-vector-class [x]
+  (case x
+    _ :negative
+    * :any
+    :positive))
 
-#?(:clj
-   (defmacro case-tree [qs vs]
-     (-case-tree qs vs)))
+(defn -match-vector [path pattern-pos pattern-size pattern-symbols pairs]
+  (cond
+    (< pattern-pos pattern-size)
+    (let [groups (group-by (comp -match-vector-class #(nth % pattern-pos) first) pairs)
+          sub (fn [p pairs] (-match-vector (conj path p)
+                                           (inc pattern-pos)
+                                           pattern-size
+                                           pattern-symbols
+                                           pairs))]
+      (if (= [:any] (keys groups))
+        (sub '* (:any groups))
+        `(if ~(nth pattern-symbols pattern-pos)
+           ~(sub 1 (mapcat groups [:positive :any]))
+           ~(sub '_ (mapcat groups [:negative :any])))))
+
+    (not= 1 (count pairs)) (throw (ex-info "There should be exactly one expression at leaf"
+                                           {:path path}))
+    :else (-> pairs first second)))
+
+(defmacro match-vector [input-vector & pattern-expr-pairs]
+  {:pre [(sequential? pattern-expr-pairs)
+         (even? (count pattern-expr-pairs))]}
+  (let [pairs (partition 2 pattern-expr-pairs)
+        patterns (map first pairs)
+        _ (assert (every? sequential? patterns))
+        pattern-sizes (into #{} (map count) patterns)
+        _ (assert (= 1 (count pattern-sizes)))
+        pattern-size (first pattern-sizes)
+        symbols (repeatedly pattern-size gensym)]
+    `(let [[~@symbols] ~input-vector]
+       ~(-match-vector [] 0 pattern-size symbols pairs))))
 
 (defn ^:dynamic get-date []
   #?(:clj (Date.)
@@ -44,43 +71,35 @@
           `(throw #?(:clj  (ex-info (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data)
                      :cljs (error (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data))))))
 
-; (throwable-promise) derived from (promise) in clojure/core.clj.
-; *   Clojure
-; *   Copyright (c) Rich Hickey. All rights reserved.
-; *   The use and distribution terms for this software are covered by the
-; *   Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)
-; *   which can be found in the file epl-v10.html at the root of this distribution.
-; *   By using this software in any fashion, you are agreeing to be bound by
-; * 	 the terms of this license.
-; *   You must not remove this notice, or any other, from this software.
-(defn throwable-promise
-  "Returns a promise object that can be read with deref/@, and set,
-  once only, with deliver. Calls to deref/@ prior to delivery will
-  block, unless the variant of deref with timeout is used. All
-  subsequent derefs will return the same delivered value without
-  blocking. Exceptions delivered to the promise will throw on deref."
-  []
-  (let [d (java.util.concurrent.CountDownLatch. 1)
-        v (atom d)]
-    (reify
-      clojure.lang.IDeref
-      (deref [_] (.await d) (throw-if-exception- @v))
-      clojure.lang.IBlockingDeref
-      (deref
-        [_ timeout-ms timeout-val]
-        (if (.await d timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
-          (throw-if-exception- @v)
-          timeout-val))
-      clojure.lang.IPending
-      (isRealized [this]
-        (zero? (.getCount d)))
-      clojure.lang.IFn
-      (invoke
-        [this x]
-        (when (and (pos? (.getCount d))
-                   (compare-and-set! v d x))
-          (.countDown d)
-          this)))))
+;; adapted from https://clojure.atlassian.net/browse/CLJ-2766
+#?(:clj
+   (defn throwable-promise
+     "Returns a promise object that can be read with deref/@, and set, once only, with deliver. Calls to deref/@ prior to delivery will block, unless the variant of deref with timeout is used. All subsequent derefs will return the same delivered value without blocking. Exceptions delivered to the promise will throw on deref. 
+   
+      Also supports core.async take! to optionally consume values without blocking the reader thread."
+     []
+     (let [cf (CompletableFuture.)
+           p (async/promise-chan)]
+       (reify
+         clojure.lang.IDeref
+         (deref [_] (throw-if-exception- (try (.get cf) (catch Throwable t t))))
+         clojure.lang.IBlockingDeref
+         (deref [_ timeout-ms timeout-val]
+           (if-let [v (try (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS) (catch Throwable t t))]
+             (throw-if-exception- v)
+             timeout-val))
+         clojure.lang.IPending
+         (isRealized [_] (.isDone cf))
+         clojure.lang.IFn
+         (invoke [this x]
+           (if (instance? Throwable x)
+             (.completeExceptionally cf x)
+             (.complete cf x))
+           (if-not (nil? x) (async/put! p x) (async/close! p))
+           this)
+         async-impl/ReadPort
+         (take! [_this handler] (async-impl/take! p handler)))))
+   :cljs (def throwable-promise async/promise-chan))
 
 (defn get-version
   "Retrieves the current version of a dependency. Thanks to https://stackoverflow.com/a/33070806/10978897"
@@ -153,3 +172,131 @@
      :cljs (raise "Not supported yet." {:type :hostname-not-supported-yet})))
 
 (def datahike-logo (slurp (io/resource "datahike-logo.txt")))
+
+(defmacro with-destructured-vector [v & var-expr-pairs]
+  {:pre [(even? (count var-expr-pairs))]}
+  (let [pairs (partition 2 var-expr-pairs)
+        vars (mapv first pairs)
+        vsym (gensym)
+        nsym (gensym)
+        generate (fn generate [acc pairs]
+                   (let [i (count acc)]
+                     `(if (<= ~nsym ~i)
+                        ~acc
+                        ~(if (empty? pairs)
+                           `(throw (ex-info "Pattern mismatch"
+                                            {:input ~vsym
+                                             :pattern (quote ~var-expr-pairs)}))
+                           (let [[[_ expr] & pairs] pairs
+                                 g (gensym)]
+                             `(let [~g ~expr]
+                                ~(generate (conj acc g) pairs)))))))]
+    `(let [~vsym ~v
+           ~nsym (count ~vsym)
+           ~vars ~vsym]
+       ~(generate [] pairs))))
+
+(defn- reduce-clauses
+  [resolver context clauses]
+  (loop [context context
+         clauses clauses
+         failed-clauses []]
+    (if (empty? clauses)
+      [context failed-clauses]
+      (let [[clause & clauses] clauses]
+        (if-let [next-context (resolver context clause)]
+          (recur next-context clauses failed-clauses)
+          (recur context clauses (conj failed-clauses clause)))))))
+
+(defn resolve-clauses [resolver context clauses]
+  (if (empty? clauses)
+    context
+    (let [[context failed-clauses] (reduce-clauses resolver
+                                                   context
+                                                   clauses)]
+      (if (= (count failed-clauses)
+             (count clauses))
+        (raise "Cannot resolve any more clauses"
+               {:clauses clauses})
+        (recur resolver context failed-clauses)))))
+
+(defn group-by-step
+  "Create a step function to use with `transduce` for grouping values"
+  [f]
+  (fn
+    ([] (transient {}))
+    ([dst] (persistent! dst))
+    ([dst x]
+     (let [k (f x)]
+       (assoc! dst k (conj (get dst k []) x))))))
+
+(defn range-subset-tree
+  "This function generates code for a decision tree that for an input expression `input` that has to represent a sequence of growing integers that is a subset of the integers in the sequence `(range length-length)`. Every leaf in the decision tree corresponds to one of the 2^range-length possible subsequences and the `branch-visitor-fn` is called at every leaf with the first argument being the subsequence and the second argument being a mask."
+  ([range-length input branch-visitor-fn]
+   (if (symbol? input)
+     (range-subset-tree range-length
+                        input
+                        branch-visitor-fn
+                        0
+                        []
+                        (vec (repeat range-length nil)))
+     (let [sym (gensym)]
+       `(let [~sym ~input]
+          ~(range-subset-tree range-length sym branch-visitor-fn)))))
+  ([range-length input-symbol branch-visitor-fn at acc-inds mask]
+   {:pre [(number? range-length)
+          (symbol? input-symbol)
+          (ifn? branch-visitor-fn)
+          (number? at)
+          (vector? acc-inds)]}
+   (if (= range-length at)
+     (branch-visitor-fn acc-inds mask)
+     `(if (empty? ~input-symbol)
+        ~(branch-visitor-fn acc-inds mask)
+        (if (= ~at (first ~input-symbol))
+          (let [~input-symbol (rest ~input-symbol)]
+            ~(range-subset-tree range-length
+                                input-symbol
+                                branch-visitor-fn
+                                (inc at)
+                                (conj acc-inds at)
+                                (assoc mask at (count acc-inds))))
+          ~(range-subset-tree range-length
+                              input-symbol
+                              branch-visitor-fn
+                              (inc at)
+                              acc-inds
+                              mask))))))
+
+(defn distinct-sorted-seq? [cmp s]
+  (if (empty? s)
+    true
+    (loop [previous (first s)
+           s (rest s)]
+      (if (empty? s)
+        true
+        (let [x (first s)]
+          (if (neg? (cmp previous x))
+            (recur x (rest s))
+            false))))))
+
+(defn merge-distinct-sorted-seqs
+  "Takes a comparator function `cmp` and two sequences `seq-a` and `seq-b` that are both distinct and sorted by `cmp`. Then combines the elements from both sequences to form a new sorted sequence that is distinct. The function distinct-sorted-seq? must return true for all input sequences and the result will also be a sequence for which this function returns true."
+  [cmp seq-a seq-b]
+  (cond
+    (empty? seq-a) seq-b
+    (empty? seq-b) seq-a
+    :else
+    (let [a (first seq-a)
+          b (first seq-b)
+          i (cmp a b)]
+      (cond
+        (< i 0) (cons
+                 a (lazy-seq
+                    (merge-distinct-sorted-seqs cmp (rest seq-a) seq-b)))
+        (= i 0) (cons
+                 a (lazy-seq
+                    (merge-distinct-sorted-seqs cmp (rest seq-a) (rest seq-b))))
+        :else (cons
+               b (lazy-seq
+                  (merge-distinct-sorted-seqs cmp seq-a (rest seq-b))))))))

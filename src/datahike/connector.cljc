@@ -127,7 +127,7 @@
         config (update config :store ds/store-identity)
         stored-config (update stored-config :store ds/store-identity)]
     (when-not (= config stored-config)
-      (dt/raise "Configuration does not match stored configuration."
+      (dt/raise "Configuration does not match stored configuration. In some cases this check is too restrictive. If you are sure you are loading the right database with the right configuration then you can disable this check by setting :allow-unsafe-config to true in your config."
                 {:type          :config-does-not-match-stored-db
                  :config        config
                  :stored-config stored-config
@@ -136,7 +136,7 @@
 (defn- normalize-config [cfg]
   (-> cfg
       (update :store ds/store-identity)
-      (dissoc :writer)))
+      (dissoc :writer :store-cache-size :search-cache-size)))
 
 (extend-protocol PConnector
   String
@@ -184,7 +184,8 @@
                       [config store stored-db]))
                   [config store stored-db]))
               _ (version-check stored-db)
-              _ (ensure-stored-config-consistency config (:config stored-db))
+              _ (when-not (:allow-unsafe-config config)
+                  (ensure-stored-config-consistency config (:config stored-db)))
               conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
           (swap! (:wrapped-atom conn) assoc :writer
                  (w/create-writer (:writer config) conn))

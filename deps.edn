@@ -7,7 +7,7 @@
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/superv.async                  {:mvn/version "0.3.46"
                                                      :exclusions [org.clojure/clojurescript]}
-        io.replikativ/datalog-parser                {:mvn/version "0.2.28"}
+        io.replikativ/datalog-parser                {:mvn/version "0.2.29"}
         io.replikativ/zufall                        {:mvn/version "0.2.9"}
         persistent-sorted-set/persistent-sorted-set {:mvn/version "0.3.0"}
         environ/environ                             {:mvn/version "1.2.0"}
@@ -87,7 +87,7 @@
                                     "--initialize-at-build-time"
                                     "--no-fallback"
                                     "-J-Xmx4g"
-                                    "-H:Name=dthk"]
+                                    "-o dthk"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]
                         :extra-deps
                         {clj.native-image/clj.native-image

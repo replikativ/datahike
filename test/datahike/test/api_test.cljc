@@ -5,6 +5,7 @@
    [datahike.test.utils :as utils]
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.query :as dq]
    [datahike.db.interface :as dbi]
    [datahike.index.interface :as di]
    [datahike.constants :refer [tx0]]))
@@ -344,6 +345,8 @@
 
     (def date (java.util.Date.))
 
+    (Thread/sleep 100)
+    
     (d/transact conn {:tx-data [{:db/id [:name "Alice"] :age 35}]})
 
     (is (= #{["Alice" 25] ["Bob" 30]}
@@ -873,3 +876,18 @@
 
 (deftest test-metrics-attr-refs
   (test-metrics (assoc metrics-base-cfg :attribute-refs? true)))
+
+(deftest test-no-history-datoms-in-empty-db
+  (testing "When attribute-refs? is false, there are no initial datoms"
+    (utils/with-connect [conn (-> {:store {:backend :mem
+                                           :id "hashing"}
+                                   :keep-history? true
+                                   :schema-flexibility :write}
+                                  utils/provide-unique-id
+                                  utils/recreate-database)]
+      (is (-> @conn
+              d/history
+              (d/datoms {:index :aevt
+                         :components []
+                         :limit -1})
+              empty?)))))

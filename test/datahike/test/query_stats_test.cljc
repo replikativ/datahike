@@ -27,10 +27,9 @@
 
 (defn unify-stats [stats]
   (cw/postwalk
-   #(cond
-      (and (map? %) (contains? % :t))                  (assoc % :t :measurement)
-      (and (symbol? %) (re-find #"__auto__" (name %))) (symbol (str/replace (name %) #"__auto__\d*" "_tmp"))
-      :else                                            %)
+   #(cond-> %
+      (and (map? %) (contains? % :t))                  (assoc :t :measurement)
+      (and (symbol? %) (re-find #"__auto__" (name %))) (-> name (str/replace #"__auto__\d*" "_tmp") symbol))
    stats))
 
 (deftest test-not
@@ -136,7 +135,6 @@
             [3 :follow 4]
             [4 :follow 6]
             [5 :follow 3]]]
-
     (is (= {:consts {},
             :query '{:find [?y ?x], :in [$ %], :where [[_ _ ?x] (rule ?x ?y) [(even? ?x)]]},
             :ret #{[3 2] [4 2] [6 4]},

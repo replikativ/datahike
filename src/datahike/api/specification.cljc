@@ -8,22 +8,28 @@
   [name]
   (.replace (str name) "?" ""))
 
-(defn spec-args->argslist [args]
-  (if-not (seq? args)
-    args
-    (cond (= (first args) 's/cat)
-          [[(symbol (name (second args)))]]
+(defn spec-args->argslist
+  "This function is a helper to translate a spec into a list of arguments. It is only complete enough to deal with the specs in this namespace."
+  [s]
+  (if-not (seq? s)
+    (if (= :nil s) [] [(symbol (name s))])
+    (let [[op & args] s]
+      (cond
+        (= op 's/cat)
+        [(vec (mapcat (fn [[k v]]
+                        (if (and (seq? v) (= (first v) 's/*))
+                          (vec (concat ['&] (spec-args->argslist k)))
+                          (spec-args->argslist k)))
+                      (partition 2 args)))]
 
-          (= (first args) 's/alt)
-          (mapv (fn [s]
-                  (if (= s :nil)
-                    []
-                    [(symbol (name s))]))
-                (take-nth 2 (rest args))))))
-
-(comment
-  (spec-args->argslist '(s/alt :config (s/cat :config spec/SConfig)
-                               :nil (s/cat))))
+        (= op 's/alt)
+        (vec (mapcat (fn [[k v]]
+                       (if (seq? v)
+                         (spec-args->argslist v)
+                         [[(symbol (name k))]]))
+                     (partition 2 args)))
+        :else
+        []))))
 
 (def api-specification
   '{database-exists?
@@ -136,7 +142,7 @@ Exists for Datomic API compatibility. Prefer using `@conn` directly if possible.
      :doc  "Same as transact, but asynchronously returns a future."
      :supports-remote? false
      :referentially-transparent? false
-     :impl datahike.writer/transact!}
+     :impl datahike.api.impl/transact!}
 
     transact
     {:args             (s/cat :conn spec/SConnection :txs spec/STransactions)

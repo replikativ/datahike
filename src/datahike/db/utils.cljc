@@ -3,11 +3,12 @@
    [clojure.data]
    [clojure.walk]
    [datahike.constants :refer [e0 tx0 emax txmax]]
-   [datahike.datom :refer [datom datom-tx]]
+   [datahike.datom :refer [datom datom-tx index-type->cmp-quick]]
    [datahike.db.interface :as dbi]
    [datahike.index :as di]
    [datahike.schema :as ds]
-   [datahike.tools :refer [raise]])
+   [datahike.tools :refer [raise merge-distinct-sorted-seqs
+                           distinct-sorted-seq?]])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]
                             [datahike.tools :refer [raise]]))
   #?(:clj (:import [datahike.datom Datom])))
@@ -27,6 +28,10 @@
 (defn #?@(:clj [^Boolean ref?]
           :cljs [^boolean ref?]) [db attr]
   (is-attr? db attr :db.type/ref))
+
+(defn #?@(:clj [^Boolean system-attrib-ref?]
+          :cljs [^boolean system-attrib-ref?]) [db attr]
+  (is-attr? db attr :db/systemAttribRef))
 
 (defn #?@(:clj [^Boolean component?]
           :cljs [^boolean component?]) [db attr]
@@ -94,57 +99,78 @@
        (satisfies? dbi/IIndexAccess x)
        (satisfies? dbi/IDB x)))
 
-(defn entid [db eid]
-  {:pre [(db? db)]}
-  (cond
-    (and (number? eid) (pos? eid))
-    eid
+(defn numeric-entid? [x]
+  (and (number? x) (pos? x)))
 
-    (sequential? eid)
-    (let [[attr value] eid]
-      (cond
-        (not= (count eid) 2)
-        (raise "Lookup ref should contain 2 elements: " eid
-               {:error :lookup-ref/syntax, :entity-id eid})
-        (not (is-attr? db attr :db/unique))
-        (raise "Lookup ref attribute should be marked as :db/unique: " eid
-               {:error :lookup-ref/unique, :entity-id eid})
-        (nil? value)
-        nil
-        :else
-        (-> (dbi/-datoms db :avet eid) first :e)))
+(defn entid
+  ([db eid] (entid db eid nil))
+  ([db eid error-code]
+   {:pre [(db? db)]}
+   (cond
+     (numeric-entid? eid) eid
+     (sequential? eid)
+     (let [[attr value] eid]
+       (cond
+         (not= (count eid) 2)
+         (or error-code
+             (raise "Lookup ref should contain 2 elements: " eid
+                    {:error :lookup-ref/syntax, :entity-id eid}))
+         (not (is-attr? db attr :db/unique))
+         (or error-code
+             (raise "Lookup ref attribute should be marked as :db/unique: " eid
+                    {:error :lookup-ref/unique, :entity-id eid}))
+         (nil? value)
+         nil
+         :else
+         (-> (dbi/datoms db :avet eid) first :e)))
 
-    #?@(:cljs [(array? eid) (recur db (array-seq eid))])
+     #?@(:cljs [(array? eid) (recur db (array-seq eid) error-code)])
 
-    (keyword? eid)
-    (-> (dbi/-datoms db :avet [:db/ident eid]) first :e)
+     (keyword? eid)
+     (-> (dbi/datoms db :avet [:db/ident eid]) first :e)
 
-    :else
-    (raise "Expected number or lookup ref for entity id, got " eid
-           {:error :entity-id/syntax, :entity-id eid})))
+     :else
+     (or error-code
+         (raise "Expected number or lookup ref for entity id, got " eid
+                {:error :entity-id/syntax, :entity-id eid})))))
 
-(defn entid-strict [db eid]
-  (or (entid db eid)
-      (raise "Nothing found for entity id " eid
-             {:error :entity-id/missing
-              :entity-id eid})))
+(defn entid-strict
+  ([db eid] (entid-strict db eid nil))
+  ([db eid error-code]
+   (or (entid db eid error-code)
+       error-code
+       (raise "Nothing found for entity id " eid
+              {:error :entity-id/missing
+               :entity-id eid}))))
 
 (defn entid-some [db eid]
   (when eid
     (entid-strict db eid)))
 
+(defn attr-has-ref? [db attr]
+  (and (not (nil? attr))
+       (:attribute-refs? (dbi/-config db))))
+
+(defn attr-ref-or-ident [db attr]
+  (if (and (not (number? attr))
+           (attr-has-ref? db attr))
+    (dbi/-ref-for db attr)
+    attr))
+
 (defn attr-info
   "Returns identifier name and reference value of an attributes. Both values are identical for non-reference databases."
   [db attr]
-  (if (and (:attribute-refs? (dbi/-config db))
-           (not (nil? attr)))
+  (if (attr-has-ref? db attr)
     (if (number? attr)
       {:ident (dbi/-ident-for db attr) :ref attr}
       {:ident attr :ref (dbi/-ref-for db attr)})
     {:ident attr :ref attr}))
 
+(defn ident-name? [x]
+  (or (keyword? x) (string? x)))
+
 (defn validate-attr-ident [a-ident at db]
-  (when-not (or (keyword? a-ident) (string? a-ident))
+  (when-not (ident-name? a-ident)
     (raise "Bad entity attribute " a-ident " at " at ", expected keyword or string"
            {:error :transact/syntax, :attribute a-ident, :context at}))
   (when (and (= :write (:schema-flexibility (dbi/-config db)))
@@ -176,13 +202,31 @@
     :aevt (resolve-datom db c1 c0 c2 c3 default-e default-tx)
     :avet (resolve-datom db c2 c0 c1 c3 default-e default-tx)))
 
-(defn distinct-datoms [db current-datoms history-datoms]
-  (if  (dbi/-keep-history? db)
-    (concat (filter #(or (no-history? db (:a %))
-                         (multival? db (:a %)))
-                    current-datoms)
-            history-datoms)
-    current-datoms))
+(defn merge-datoms [index-type a b]
+  (if index-type
+    (merge-distinct-sorted-seqs
+     (index-type->cmp-quick index-type false)
+     a b)
+    (concat a (lazy-seq (remove (set a) b)))))
+
+(defn distinct-sorted-datoms? [index-type datoms]
+  (when index-type
+    (distinct-sorted-seq?
+     (index-type->cmp-quick index-type false)
+     datoms)))
+
+(defn distinct-datoms
+  ([db index-type current-datoms history-datoms]
+   (if  (dbi/-keep-history? db)
+     (merge-datoms
+      index-type
+      (filter (fn [datom]
+                (let [a (:a datom)]
+                  (or (no-history? db a)
+                      (multival? db a))))
+              current-datoms)
+      history-datoms)
+     current-datoms)))
 
 (defn temporal-datoms [db index-type cs]
   (let [index (get db index-type)
@@ -190,8 +234,13 @@
         from (components->pattern db index-type cs e0 tx0)
         to (components->pattern db index-type cs emax txmax)]
     (distinct-datoms db
+                     index-type
                      (di/-slice index from to index-type)
                      (di/-slice temporal-index from to index-type))))
+
+(def temporal-context (assoc dbi/base-context
+                             :temporal true
+                             :historical false))
 
 (defn filter-txInstant [datoms pred db]
   (let [txInstant (if (:attribute-refs? (dbi/-config db))
@@ -201,7 +250,7 @@
           (comp
            (map datom-tx)
            (distinct)
-           (mapcat (fn [tx] (temporal-datoms db :eavt [tx])))
+           (mapcat (fn [tx] (dbi/-datoms db :eavt [tx] temporal-context)))
            (keep (fn [^Datom d]
                    (when (and (= txInstant (.-a d)) (pred d))
                      (.-e d)))))
@@ -218,6 +267,11 @@
                  {:error :transact/schema :attribute attr :context at})))
     (validate-attr-ident attr at db)))
 
+(defn normalize-and-validate-attr [attr at db]
+  (let [attr (attr-ref-or-ident db attr)]
+    (validate-attr attr at db)
+    attr))
+
 (defn attr->properties [k v]
   (case v
     :db.unique/identity [:db/unique :db.unique/identity :db/index]
@@ -225,6 +279,11 @@
     :db.cardinality/many [:db.cardinality/many]
     :db.type/ref [:db.type/ref :db/index]
     :db.type/tuple [:db.type/tuple]
+
+    :db.type/valueType [:db/systemAttribRef]
+    :db.type/cardinality [:db/systemAttribRef]
+    :db.type/unique [:db/systemAttribRef]
+
     (if (= k :db/ident)
       [:db/ident]
       (when (true? v)

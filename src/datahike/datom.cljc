@@ -242,10 +242,24 @@
      :clj
      (.compareTo ^Comparable a1 a2)))
 
+(defn- class-name [x]
+  (let [c (class x)]
+    (.getName ^Class c)))
+
+(defn- safe-compare [a b]
+  (try
+    (compare a b)
+    (catch Exception _e
+      (compare (class-name a)
+               (class-name b)))))
+
 (defn cmp-nil [o1 o2]
   (if (nil? o1) nil
       (if (nil? o2) nil
-          (compare o1 o2))))
+          (safe-compare o1 o2))))
+
+(defn type-hint-datom [x]
+  (vary-meta x assoc :tag `Datom))
 
 (defn cmp-val [val]
   (case val
@@ -254,6 +268,14 @@
     :v (fn [^Datom d1 ^Datom d2] (cmp-nil (.-v d1) (.-v d2)))
     :tx (fn [^Datom d1 ^Datom d2] (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2)))
     :added (fn [^Datom d1 ^Datom d2] (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2)))))
+
+(defn cmp-val-expr [val d1 d2]
+  (case val
+    :e `(#?(:clj Long/compare :cljs -) (.-e ~d1) (.-e ~d2))
+    :a `(cmp-nil (.-a ~d1) (.-a ~d2))
+    :v `(cmp-nil (.-v ~d1) (.-v ~d2))
+    :tx `(#?(:clj Long/compare :cljs -) (datom-tx ~d1) (datom-tx ~d2))
+    :added `(#?(:clj Boolean/compare :cljs -) (datom-added ~d1) (datom-added ~d2))))
 
 (defn cmp-datoms-eavt-quick [^Datom d1, ^Datom d2]
   (combine-cmp
@@ -325,3 +347,15 @@
    (fn [[e a v t]]
      (datom e a v t))
    coll))
+
+(defn index-type->cmp-quick
+  ([index-type] (index-type->cmp-quick index-type true))
+  ([index-type current?] (if current?
+                           (case index-type
+                             :aevt cmp-datoms-aevt-quick
+                             :avet cmp-datoms-avet-quick
+                             cmp-datoms-eavt-quick)
+                           (case index-type
+                             :aevt cmp-temporal-datoms-aevt-quick
+                             :avet cmp-temporal-datoms-avet-quick
+                             cmp-temporal-datoms-eavt-quick))))
