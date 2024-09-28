@@ -74,7 +74,7 @@
         #{[30] [25]}
         (d/q '[:find ?a :in $ ?e :where [?e :age ?a]] (d/history @conn) [:name "Alice"])))
     (testing "historical values after with retraction"
-      (let [;;tx-id1 (:max-tx @conn)
+      (let [tx-id1 (:max-tx @conn)
             _ (d/transact conn [[:db/retractEntity [:name "Alice"]]])
             tx-id2 (:max-tx @conn)]
         (is (thrown-with-msg? Throwable #"Nothing found for entity id"
@@ -90,7 +90,7 @@
                  (d/q '[:find ?a :in $ ?e :where [?e :age ?a]]
                       db
                       [:name "Alice"]))))
-        (doseq [db (vary-db-ops @conn d/history #(d/since % tx-id2))]
+        (doseq [db (vary-db-ops @conn d/history #(d/since % tx-id1))]
           (is (= #{[30]}
                  (d/q '[:find ?a :in $ ?e :where [?e :age ?a]]
                       db
@@ -199,7 +199,7 @@
         first-date (now)
         ;; sleep to make sure that transact thread has newer timestamp
         _ (sleep 10)
-        tx-id 536870914
+        tx-id 536870913
         query '[:find ?a :where [?e :age ?a]]]
     (testing "empty after first insertion"
       (is (= #{}
@@ -212,7 +212,7 @@
         (is (= #{[new-age]}
                (d/q query (d/since @conn tx-id))))))
     (testing "print DB"
-      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-since-db\"] :db] :commit-id :REPLACED :max-tx 536870914 :max-eid 4} :time-point 536870914}"
+      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-since-db\"] :db] :commit-id :REPLACED :max-tx 536870914 :max-eid 4} :time-point 536870913}"
              (replace-commit-id (pr-str (d/since @conn tx-id))))))
     (d/release conn)))
 

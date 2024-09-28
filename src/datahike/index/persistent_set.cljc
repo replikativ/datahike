@@ -3,7 +3,7 @@
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
             [clojure.core.cache :as cache]
             [clojure.core.cache.wrapped :as wrapped]
-            [datahike.datom :as dd]
+            [datahike.datom :as dd :refer [index-type->cmp-quick]]
             [datahike.constants :refer [tx0 txmax]]
             [datahike.index.interface :as di :refer [IIndex]]
             [datahike.tools :as dt]
@@ -15,18 +15,6 @@
                    [org.fressian.handlers WriteHandler ReadHandler]
                    [me.tonsky.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode Settings]
                    [java.util List])))
-
-(defn index-type->cmp-quick
-  ([index-type] (index-type->cmp-quick index-type true))
-  ([index-type current?] (if current?
-                           (case index-type
-                             :aevt dd/cmp-datoms-aevt-quick
-                             :avet dd/cmp-datoms-avet-quick
-                             dd/cmp-datoms-eavt-quick)
-                           (case index-type
-                             :aevt dd/cmp-temporal-datoms-aevt-quick
-                             :avet dd/cmp-temporal-datoms-avet-quick
-                             dd/cmp-temporal-datoms-eavt-quick))))
 
 (def index-type->kwseq
   {:eavt [:e :a :v :tx :added]

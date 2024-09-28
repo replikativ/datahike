@@ -166,38 +166,40 @@
        (boolean tx)
        (boolean indexed?)))))
 
-(defn current-search-strategy [db pattern]
-  (let [[_ a _ _] pattern]
-    (when-let [strategy (get-search-strategy pattern
-                                             (dbu/indexing? db a)
-                                             false)]
-      (update strategy :index-key #(get db %)))))
+(defn- resolve-db-index [strategy index-map]
+  (when strategy
+    (assoc strategy
+           :db-index
+           (get index-map (:index-key strategy)))))
 
-(defn temporal-search-strategy [db pattern]
-  (let [[_ a _ _ _] pattern]
-    (when-let [strategy (get-search-strategy
-                         pattern
-                         (dbu/indexing? db a)
-                         true)]
-      (update strategy :index-key #(case %
-                                     :eavt (:temporal-eavt db)
-                                     :aevt (:temporal-aevt db)
-                                     :avet (:temporal-avet db)
-                                     nil)))))
+(defn- indexing-for-pattern? [db pattern]
+  (let [[_ a _ _] pattern]
+    (dbu/indexing? db a)))
+
+(defn search-strategy-with-index [db pattern temporal?]
+  (-> pattern
+      (get-search-strategy (indexing-for-pattern? db pattern)
+                           temporal?)
+      (resolve-db-index (if temporal?
+                          {:eavt (:temporal-eavt db)
+                           :aevt (:temporal-aevt db)
+                           :avet (:temporal-avet db)}
+                          db))))
 
 (defn search-current-indices
   ([db pattern]
    (memoize-for
     db [:search pattern]
-    #(if-let [{:keys [index-key lookup-fn]} (current-search-strategy db pattern)]
-       (lookup-fn index-key pattern)
+    #(if-let [{:keys [db-index lookup-fn]}
+              (search-strategy-with-index db pattern false)]
+       (lookup-fn db-index pattern)
        [])))
 
   ;; For batches
   ([db pattern batch-fn]
-   (if-let [{:keys [index-key strategy-vec backend-fn]}
-            (current-search-strategy db pattern)]
-     (batch-fn strategy-vec (backend-fn index-key) identity)
+   (if-let [{:keys [db-index strategy-vec backend-fn]}
+            (search-strategy-with-index db pattern false)]
+     (batch-fn strategy-vec (backend-fn db-index) identity)
      [])))
 
 (defn added? [[_ _ _ _ added]]
@@ -219,30 +221,45 @@
   ([db pattern]
    (validate-pattern pattern false)
    (memoize-for db [:temporal-search pattern]
-                #(if-let [{:keys [index-key lookup-fn]}
-                          (temporal-search-strategy db pattern)]
-                   (let [result (lookup-fn index-key pattern)]
+                #(if-let [{:keys [db-index lookup-fn]}
+                          (search-strategy-with-index
+                           db pattern true)]
+                   (let [result (lookup-fn db-index pattern)]
                      (filter-by-added pattern result))
                    [])))
   ([db pattern batch-fn]
    (validate-pattern pattern true)
-   (if-let [{:keys [index-key strategy-vec backend-fn]}
-            (temporal-search-strategy db pattern)]
-     (batch-fn strategy-vec (backend-fn index-key)
+   (if-let [{:keys [db-index strategy-vec backend-fn]}
+            (search-strategy-with-index
+             db pattern true)]
+     (batch-fn strategy-vec (backend-fn db-index)
                (filter-by-added pattern))
      [])))
+
+(defn index-type [db pattern]
+  (let [idx (indexing-for-pattern? db pattern)
+        a (:index-key (get-search-strategy pattern idx false))
+        b (:index-key (get-search-strategy pattern idx true))]
+    (assert (or (nil? a) (keyword? a)))
+    (assert (or (nil? b) (keyword? b)))
+    (when (= a b)
+      a)))
 
 (defn temporal-search
   ([db pattern]
    (validate-pattern pattern false)
-   (dbu/distinct-datoms db
-                        (search-current-indices db pattern)
-                        (search-temporal-indices db pattern)))
+   (dbu/distinct-datoms
+    db
+    (index-type db pattern)
+    (search-current-indices db pattern)
+    (search-temporal-indices db pattern)))
   ([db pattern batch-fn]
    (validate-pattern pattern true)
-   (dbu/distinct-datoms db
-                        (search-current-indices db pattern batch-fn)
-                        (search-temporal-indices db pattern batch-fn))))
+   (dbu/distinct-datoms
+    db
+    (index-type db pattern)
+    (search-current-indices db pattern batch-fn)
+    (search-temporal-indices db pattern batch-fn))))
 
 (defn temporal-seek-datoms [db index-type cs]
   (let [index (get db index-type)
@@ -250,6 +267,7 @@
         from (dbu/components->pattern db index-type cs e0 tx0)
         to (datom emax nil nil txmax)]
     (dbu/distinct-datoms db
+                         index-type
                          (di/-slice index from to index-type)
                          (di/-slice temporal-index from to index-type))))
 
@@ -260,6 +278,7 @@
         to (datom emax nil nil txmax)]
     (concat
      (-> (dbu/distinct-datoms db
+                              index-type
                               (di/-slice index from to index-type)
                               (di/-slice temporal-index from to index-type))
          vec
@@ -272,6 +291,7 @@
   (let [from (dbu/resolve-datom current-db nil attr start nil e0 tx0)
         to (dbu/resolve-datom current-db nil attr end nil emax txmax)]
     (dbu/distinct-datoms db
+                         :avet
                          (di/-slice (:avet db) from to :avet)
                          (di/-slice (:temporal-avet db) from to :avet))))
 

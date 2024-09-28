@@ -96,3 +96,39 @@
          (wrap-range-tree [1])))
   (is (= [:inds [0 2] :mask [0 nil 1]]
          (wrap-range-tree [0 2]))))
+
+(deftest merge-distinct-sorted-seqs-test
+  (testing "Custom comparator"
+    (let [m {:one 1
+             :two 2
+             :three 3
+             :four 4
+             :five 5
+             :six 6
+             :seven 7
+             :eight 8
+             :nine 9
+             :ten 10}
+          cmp (fn [a b] (compare (m a) (m b)))]
+      (is (= [] (dt/merge-distinct-sorted-seqs cmp [] [])))
+      (is (= [:one] (dt/merge-distinct-sorted-seqs cmp [:one] [])))
+      (is (= [:one] (dt/merge-distinct-sorted-seqs cmp [:one] [:one])))
+      (is (= [:one] (dt/merge-distinct-sorted-seqs cmp [] [:one])))
+      (is (= [:one :two] (dt/merge-distinct-sorted-seqs cmp [:two] [:one])))
+      (is (= [:one :two :three :four :five :nine :ten]
+             (dt/merge-distinct-sorted-seqs cmp
+                                            [:one :two :three :nine :ten]
+                                            [:two :three :four :five])))
+      (is (dt/distinct-sorted-seq? cmp []))
+      (is (dt/distinct-sorted-seq? cmp [:one]))
+      (is (dt/distinct-sorted-seq? cmp [:one :two]))
+      (is (dt/distinct-sorted-seq? cmp [:one :two :three]))
+      (is (not (dt/distinct-sorted-seq? cmp [:one :two :three :three])))
+      (is (not (dt/distinct-sorted-seq? cmp [:one :one :two :three])))
+      (is (not (dt/distinct-sorted-seq? cmp [:one :two :two :three])))
+      (is (not (dt/distinct-sorted-seq? cmp [:one :two :three :five :four])))))
+  (testing "Infinite length sequences"
+    (let [evens (iterate #(+ 2 %) 0)
+          odds (iterate #(+ 2 %) 1)
+          result (dt/merge-distinct-sorted-seqs compare odds evens)]
+      (is (= (range 1000) (take 1000 result))))))

@@ -306,3 +306,35 @@
                (js/parseInt 16)
                (* 1000))))
 
+(defn distinct-sorted-seq? [cmp s]
+  (if (empty? s)
+    true
+    (loop [previous (first s)
+           s (rest s)]
+      (if (empty? s)
+        true
+        (let [x (first s)]
+          (if (neg? (cmp previous x))
+            (recur x (rest s))
+            false))))))
+
+(defn merge-distinct-sorted-seqs
+  "Takes a comparator function `cmp` and two sequences `seq-a` and `seq-b` that are both distinct and sorted by `cmp`. Then combines the elements from both sequences to form a new sorted sequence that is distinct. The function distinct-sorted-seq? must return true for all input sequences and the result will also be a sequence for which this function returns true."
+  [cmp seq-a seq-b]
+  (cond
+    (empty? seq-a) seq-b
+    (empty? seq-b) seq-a
+    :else
+    (let [a (first seq-a)
+          b (first seq-b)
+          i (cmp a b)]
+      (cond
+        (< i 0) (cons
+                 a (lazy-seq
+                    (merge-distinct-sorted-seqs cmp (rest seq-a) seq-b)))
+        (= i 0) (cons
+                 a (lazy-seq
+                    (merge-distinct-sorted-seqs cmp (rest seq-a) (rest seq-b))))
+        :else (cons
+               b (lazy-seq
+                  (merge-distinct-sorted-seqs cmp seq-a (rest seq-b))))))))
