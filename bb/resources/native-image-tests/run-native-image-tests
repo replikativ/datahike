@@ -57,4 +57,14 @@ fi
 ./dthk query '[:find ?e . :where [?e :name ?n]]' db:$CONFIG --format cbor >> /tmp/test
 ./dthk query '[:find ?i :in $ ?i . :where [?e :name ?n]]' db:$CONFIG cbor:/tmp/test # => 1
 
+# test arbitrary :in[puts] as positional args
+QUERY_OUT=`./dthk query '[:find (pull ?e [*]) . :in $ ?name :where [?e :name ?name]]' db:$CONFIG '"Judea"'`
+if [ "$QUERY_OUT" = '{:db/id 100001, :name "Judea"}' ]
+then
+  echo "Positional input test successful."
+else
+  echo "Exception: Query did not return correct value."
+  exit 1
+fi
+
 ./dthk delete-database $CONFIG
