@@ -68,3 +68,4 @@ else
 fi
 
 ./dthk delete-database $CONFIG
+./dthk delete-database $ATTR_REF_CONFIG
