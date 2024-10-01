@@ -42,8 +42,15 @@ value(s), whereas the `db:<file>` argument to `query` comes after the query
 value, mirroring the Clojure API. As an added benefit, this also allows passing
 multiple db configuration files prefixed with `db:` for joining over arbitrary
 many databases or data files with "edn:" or "json:". Everything non-prefixed is
-read in as `edn` and passed to the query engine as well.
+read in as `edn` and passed to the query engine as well:
 
+```bash
+$ dthk query '[:find ?e . :in $ ?name :where [?e :name ?name]]' db:myconfig.edn '"Linus"'
+123
+```
+
+When passing strings as EDN, make sure to enclose double quotes as part of the
+command-line arg value. Otherwise it will be parsed as a symbol.
 
 Provided the filestore is configured with `{:in-place? true}` you can even write
 to the same database without a dedicated daemon from different shells:

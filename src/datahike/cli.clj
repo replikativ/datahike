@@ -144,8 +144,7 @@
                    nil
                    input->db)]
     res
-    (throw (ex-info "Input format not know." {:type  :input-format-not-known
-                                              :input s}))))
+    (edn/read-string s)))
 
 (defn report [format out]
   (case format
