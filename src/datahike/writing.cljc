@@ -13,7 +13,8 @@
             [hasch.core :refer [uuid]]
             [superv.async :refer [go-try- <?-]]
             [clojure.core.async :refer [poll!]]
-            [konserve.utils :refer [async+sync *default-sync-translation*]]))
+            [konserve.utils :refer [async+sync *default-sync-translation*]]
+            [taoensso.timbre :as t]))
 
 ;; mapping to storage
 
@@ -147,27 +148,14 @@
                   (<?- branch-op)
                   db)))))
 
-(defn add-commit-meta! [connection commit-db]
-  (let [{{:keys [datahike/commit-id datahike/parents]} :meta} commit-db]
-    (swap! connection #(-> %
-                           (assoc-in [:meta :datahike/parents] parents)
-                           (assoc-in [:meta :datahike/commit-id] commit-id)))))
-
-(defn update-connection! [connection tx-data tx-meta update-fn]
-  (let [ret-atom (atom nil)]
-    (swap! connection
-           (fn [old]
-             (let [{:keys [writer]} old
-                   {:keys [db-after]
-                    {:keys [db/txInstant]}
-                    :tx-meta
-                    :as   tx-report} (update-fn old tx-data tx-meta)
-                   new-meta               (assoc (:meta db-after) :datahike/updated-at txInstant)
-                   db                     (assoc db-after :meta new-meta :writer writer)
-                   tx-report              (assoc tx-report :db-after db)]
-               (reset! ret-atom tx-report)
-               db)))
-    @ret-atom))
+(defn complete-db-update [old tx-report]
+  (let [{:keys [writer]} old
+        {:keys [db-after]
+         {:keys [db/txInstant]} :tx-meta} tx-report
+        new-meta  (assoc (:meta db-after) :datahike/updated-at txInstant)
+        db        (assoc db-after :meta new-meta :writer writer)
+        tx-report (assoc tx-report :db-after db)]
+    tx-report))
 
 (defprotocol PDatabaseManager
   (-create-database [config opts])
@@ -274,11 +262,11 @@
    ;; TODO log deprecation notice with #54
    (-database-exists? config)))
 
-(defn transact! [connection {:keys [tx-data tx-meta]}]
+(defn transact! [old {:keys [tx-data tx-meta]}]
   (log/debug "Transacting" (count tx-data) " objects with meta: " tx-meta)
   (log/trace "Transaction data" tx-data)
-  (update-connection! connection tx-data tx-meta #(core/with %1 %2 %3)))
+  (complete-db-update old (core/with old tx-data tx-meta)))
 
-(defn load-entities [connection entities]
+(defn load-entities [old entities]
   (log/debug "Loading" (count entities) " entities.")
-  (update-connection! connection entities nil #(core/load-entities-with %1 %2 %3)))
+  (complete-db-update old (core/load-entities-with old entities nil)))

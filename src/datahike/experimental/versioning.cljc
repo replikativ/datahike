@@ -5,8 +5,7 @@
             [datahike.core :refer [with]]
             [datahike.store :refer [store-identity]]
             [datahike.writing :refer [stored->db db->stored stored-db?
-                                      update-connection! commit! add-commit-meta!
-                                      create-commit-id flush-pending-writes]]
+                                      complete-db-update commit! create-commit-id flush-pending-writes]]
             [superv.async :refer [<? S go-loop-try]]
             [datahike.db.utils :refer [db?]]
             [datahike.tools :as dt]))
@@ -135,12 +134,16 @@
   "Create a merge commit to the current branch of this connection for parent
   commit uuids. It is the responsibility of the caller to make sure that tx-data
   contains the data to be merged into the branch from the parents. This function
-  ensures that the parent commits are properly tracked."
+  ensures that the parent commits are properly tracked.
+   
+   NOTE: Currently merge! requires that you release all connections to conn and reconnect afterwards to reset the writer state. This will be fixed in the future by handling merge! through the writer."
   ([conn parents tx-data]
    (merge! conn parents tx-data nil))
   ([conn parents tx-data tx-meta]
    (parent-check parents)
-   (let [db (:db-after (update-connection! conn tx-data tx-meta #(with %1 %2 %3)))
-         parents (conj parents (get-in @conn [:config :branch]))]
-     (add-commit-meta! conn (commit! db parents))
+   (let [old @conn
+         db (:db-after (complete-db-update old (with old tx-data tx-meta)))
+         parents (conj parents (get-in old [:config :branch]))
+         commit-db (commit! db parents)]
+     (reset! conn commit-db)
      true)))
