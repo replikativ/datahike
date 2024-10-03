@@ -94,15 +94,11 @@
         (go-try S
                 (loop [tx (<?- commit-queue)]
                   (when tx
-                    (let [txs (atom [tx])]
+                    (let [txs (into [tx] (take-while some?) (repeatedly #(poll! commit-queue)))]
               ;; empty channel of pending transactions
-                      (loop [tx (poll! commit-queue)]
-                        (when tx
-                          (swap! txs conj tx)
-                          (recur (poll! commit-queue))))
-                      (log/trace "Batched transaction count: " (count @txs))
+                      (log/trace "Batched transaction count: " (count txs))
               ;; commit latest tx to disk
-                      (let [db (:db-after (first (peek @txs)))]
+                      (let [db (:db-after (first (peek txs)))]
                         (try
                           (let [start-ts (get-time-ms)
                                 {{:keys [datahike/commit-id]} :meta
@@ -111,13 +107,13 @@
                             (log/trace "Commit time (ms): " commit-time)
                             (reset! connection commit-db)
                     ;; notify all processes that transaction is complete
-                            (doseq [[tx-report callback] @txs]
+                            (doseq [[tx-report callback] txs]
                               (let [tx-report (-> tx-report
                                                   (assoc-in [:tx-meta :db/commitId] commit-id)
                                                   (assoc :db-after commit-db))]
                                 (put! callback tx-report))))
                           (catch Exception e
-                            (doseq [[_ callback] @txs]
+                            (doseq [[_ callback] txs]
                               (put! callback e))
                             (log/error "Writer thread shutting down because of commit error." e)
                             (close! commit-queue)

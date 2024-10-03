@@ -13,7 +13,8 @@
             [hasch.core :refer [uuid]]
             [superv.async :refer [go-try- <?-]]
             [clojure.core.async :refer [poll!]]
-            [konserve.utils :refer [async+sync *default-sync-translation*]]))
+            [konserve.utils :refer [async+sync *default-sync-translation*]]
+            [taoensso.timbre :as t]))
 
 ;; mapping to storage
 
@@ -147,15 +148,13 @@
                   (<?- branch-op)
                   db)))))
 
-(defn update-db [old tx-data tx-meta update-fn]
+(defn complete-db-update [old tx-report]
   (let [{:keys [writer]} old
         {:keys [db-after]
-         {:keys [db/txInstant]}
-         :tx-meta
-         :as   tx-report} (update-fn old tx-data tx-meta)
-        new-meta               (assoc (:meta db-after) :datahike/updated-at txInstant)
-        db                     (assoc db-after :meta new-meta :writer writer)
-        tx-report              (assoc tx-report :db-after db)]
+         {:keys [db/txInstant]} :tx-meta} tx-report
+        new-meta  (assoc (:meta db-after) :datahike/updated-at txInstant)
+        db        (assoc db-after :meta new-meta :writer writer)
+        tx-report (assoc tx-report :db-after db)]
     tx-report))
 
 (defprotocol PDatabaseManager
@@ -266,8 +265,8 @@
 (defn transact! [old {:keys [tx-data tx-meta]}]
   (log/debug "Transacting" (count tx-data) " objects with meta: " tx-meta)
   (log/trace "Transaction data" tx-data)
-  (update-db old tx-data tx-meta #(core/with %1 %2 %3)))
+  (complete-db-update old (core/with old tx-data tx-meta)))
 
 (defn load-entities [old entities]
   (log/debug "Loading" (count entities) " entities.")
-  (update-db old entities nil #(core/load-entities-with %1 %2 %3)))
+  (complete-db-update old (core/load-entities-with old entities nil)))

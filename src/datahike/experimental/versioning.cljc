@@ -5,7 +5,7 @@
             [datahike.core :refer [with]]
             [datahike.store :refer [store-identity]]
             [datahike.writing :refer [stored->db db->stored stored-db?
-                                      update-db commit! create-commit-id flush-pending-writes]]
+                                      complete-db-update commit! create-commit-id flush-pending-writes]]
             [superv.async :refer [<? S go-loop-try]]
             [datahike.db.utils :refer [db?]]
             [datahike.tools :as dt]))
@@ -141,8 +141,9 @@
    (merge! conn parents tx-data nil))
   ([conn parents tx-data tx-meta]
    (parent-check parents)
-   (let [db (:db-after (update-db @conn tx-data tx-meta #(with %1 %2 %3)))
-         parents (conj parents (get-in @conn [:config :branch]))
+   (let [old @conn
+         db (:db-after (complete-db-update old (with old tx-data tx-meta)))
+         parents (conj parents (get-in old [:config :branch]))
          commit-db (commit! db parents)]
      (reset! conn commit-db)
      true)))
