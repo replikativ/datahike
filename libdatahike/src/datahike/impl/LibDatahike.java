@@ -279,6 +279,19 @@ public final class LibDatahike {
         }
     }
 
+    @CEntryPoint(name = "gc_storage")
+    public static void gc_storage(@CEntryPoint.IsolateThreadContext long isolateId,
+                                 @CConst CCharPointer db_config,
+                                 @CConst CCharPointer output_format,
+                                 @CConst OutputReader output_reader) {
+        try {
+            Object db = Datahike.connect(readConfig(db_config));
+            output_reader.call(toOutput(output_format, Datahike.gcStorage(db)));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+
     // seekdatoms not supported yet because we would always realize the iterator until the end
 
     // release we do not expose connection objects yet, but create them internally on the fly

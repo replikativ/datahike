@@ -50,6 +50,7 @@ public class Datahike {
     private static final IFn schemaFn = Clojure.var("datahike.api", "schema");
     private static final IFn reverseSchemaFn = Clojure.var("datahike.api", "reverse-schema");
     private static final IFn metricsFn = Clojure.var("datahike.api", "metrics");
+    private static final IFn gcStorageFn = Clojure.var("datahike.api", "gc-storage");
 
     /**
      * Forbids instances creation.
@@ -364,5 +365,24 @@ public class Datahike {
      */
     public static APersistentMap metrics(Object db) {
         return (APersistentMap)metricsFn.invoke(db);
+    }
+
+    /**
+     * Perform garbage collection on the database
+     *
+     * @param db a database
+     */
+    public static Object gcStorage(Object db) {
+        return gcStorageFn.invoke(db);
+    }
+
+    /**
+     * Perform garbage collection on the database
+     *
+     * @param db a database
+     * @param removeBefore a date
+     */
+    public static Object gcStorage(Object db, Date removeBefore) {
+        return gcStorageFn.invoke(db, removeBefore);
     }
 }

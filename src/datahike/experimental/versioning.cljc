@@ -78,7 +78,7 @@
     (when-not (branches branch)
       (dt/raise "Branch does not exist." {:type :branch-does-not-exist
                                           :branch branch}))
-    (delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
+    #_(delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
     (k/update store :branches #(disj % branch) {:sync? true})))
 
 (defn force-branch!
@@ -94,11 +94,12 @@
   (parent-check parents)
   (let [store (:store db)
         cid (create-commit-id db)
-        db (db->stored (-> db
-                           (assoc-in [:config :branch] branch)
-                           (assoc-in [:meta :datahike/parents] parents)
-                           (assoc-in [:meta :datahike/commit-id] cid))
-                       true)]
+        [_schema-meta-op db] (db->stored (-> db
+                                             (assoc-in [:config :branch] branch)
+                                             (assoc-in [:meta :datahike/parents] parents)
+                                             (assoc-in [:meta :datahike/commit-id] cid))
+                                         true
+                                         true)]
     (flush-pending-writes store true)
     (k/update store :branches #(conj % branch) {:sync? true})
     (k/assoc store cid db {:sync? true})

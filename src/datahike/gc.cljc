@@ -1,11 +1,12 @@
-(ns datahike.experimental.gc
+(ns datahike.gc
   (:require [clojure.set :as set]
             [datahike.index.interface :refer [-mark]]
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
             [taoensso.timbre :refer [debug trace]]
             [superv.async :refer [<? S go-try <<?]]
-            [clojure.core.async  :as async])
+            [clojure.core.async  :as async]
+            [datahike.schema-cache :as sc])
   (:import [java.util Date]))
 
 ;; meta-data does not get passed in macros
@@ -22,7 +23,8 @@
                 (if (visited to-check) ;; skip
                   (recur r visited reachable)
                   (let [{:keys                         [eavt-key avet-key aevt-key
-                                                        temporal-eavt-key temporal-avet-key temporal-aevt-key]
+                                                        temporal-eavt-key temporal-avet-key temporal-aevt-key
+                                                        schema-meta-key]
                          {:keys [datahike/parents
                                  datahike/created-at
                                  datahike/updated-at]} :meta}
@@ -32,6 +34,7 @@
                     (recur (concat r (when in-range? parents))
                            (conj visited to-check)
                            (set/union reachable #{to-check}
+                                      (when schema-meta-key #{schema-meta-key})
                                       (-mark eavt-key)
                                       (-mark aevt-key)
                                       (-mark avet-key)
@@ -42,24 +45,25 @@
                                          (-mark temporal-avet-key)))))))
                 reachable)))))
 
-(defn gc!
+(defn gc-storage!
   "Invokes garbage collection on the database by whitelisting currently known branches.
   All db snapshots on these branches before remove-before date will also be
   erased (defaults to beginning of time [no erasure]). The branch heads will
   always be retained."
-  ([db] (gc! db (Date.)))
+  ([db] (gc-storage! db (Date. 0)))
   ([db remove-before]
    (go-try S
            (let [now (Date.)
                  _ (debug "starting gc" now)
                  {:keys [config store]} db
+                 _ (sc/clear-write-cache (:store config)) ; Clear the schema write cache for this store
                  branches (<? S (k/get store :branches))
-                 _ (trace "retaining branches" branches)
+                 _ (debug  "retaining branches" branches)
                  reachable (->> branches
                                 (map #(reachable-in-branch store % remove-before config))
                                 async/merge
                                 (<<? S)
                                 (apply set/union))
                  reachable (conj reachable :branches)]
-             (trace "gc reached: " reachable)
+             (debug  "gc reached: " reachable)
              (<? S (sweep! store reachable now))))))

@@ -1,7 +1,9 @@
 (ns datahike.api.specification
   "Shared specification for different bindings. This namespace holds all
   information such that individual bindings can be automatically derived from
-  it.")
+  it."
+  (:require [clojure.spec.alpha :as s]
+            [datahike.spec :as spec]))
 
 (defn ->url
   "Turns an API endpoint name into a URL."
@@ -850,7 +852,19 @@ Returns the key under which this listener is registered. See also [[unlisten]]."
      :doc  "Returns database metrics."
      :impl datahike.db/metrics
      :supports-remote? true
-     :referentially-transparent? true}})
+     :referentially-transparent? true}
+
+    gc-storage
+    {:args             (s/alt :with-date (s/cat :conn spec/SConnection :remove-before spec/time-point?)
+                              :no-date (s/cat :conn spec/SConnection))
+     :ret              any? #_(s/set? @%)
+     :doc "Invokes garbage collection on the store of connection by whitelisting currently known branches.
+All db snapshots on these branches before remove-before date will also be
+erased (defaults to beginning of time [no erasure]). The branch heads will
+always be retained. Return the set of removed blobs from the store."
+     :impl datahike.writer/gc-storage!
+     :supports-remote? true
+     :referentially-transparent? false}})
 
 (comment
   (map (fn [[k v]] [k (:impl v)]) api-specification))

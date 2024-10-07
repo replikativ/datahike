@@ -3,9 +3,14 @@
             [taoensso.timbre :as log]
             [datahike.core]
             [datahike.writing :as w]
+            [datahike.gc :as gc]
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
             [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]])
-  (:import [clojure.lang ExceptionInfo]))
+  (:import [clojure.lang ExceptionInfo]
+           [clojure.core.async.impl.channels ManyToManyChannel]))
+
+(defn chan? [x]
+  (instance? ManyToManyChannel x))
 
 (defprotocol PWriter
   (-dispatch! [_ arg-map] "Returns a channel that resolves when the transaction finalizes.")
@@ -28,6 +33,7 @@
 
 ;; minimum wait time between commits in ms
 ;; this reduces write pressure on the storage
+;; at the cost of higher latency
 (def ^:const DEFAULT_COMMIT_WAIT_TIME 0) ;; in ms
 
 (defn create-thread
@@ -77,16 +83,23 @@
                                                         :error      e})
                                               e))
                                       :error))]
-                        (if-not (= res :error)
-                          (do
-                            (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
-                              (log/warn "Commit queue buffer more than 50% full, "
-                                        (count commit-queue-buffer) "of" commit-queue-size  " filled."
-                                        "Throttling transaction processing. Reduce transaction frequency and check your storage throughput.")
-                              (<! (timeout 50)))
-                            (put! commit-queue [res callback])
-                            (recur (:db-after res)))
-                          (recur old))))
+                        (cond (chan? res)
+                              ;; async op, run in parallel in background, no sequential commit handling needed
+                              (do
+                                (go (>! callback (<! res)))
+                                (recur old))
+
+                              (not= res :error)
+                              (do
+                                (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
+                                  (log/warn "Commit queue buffer more than 50% full, "
+                                            (count commit-queue-buffer) "of" commit-queue-size  " filled."
+                                            "Throttling transaction processing. Reduce transaction frequency and check your storage throughput.")
+                                  (<! (timeout 50)))
+                                (put! commit-queue [res callback])
+                                (recur (:db-after res)))
+                              :else
+                              (recur old))))
                     (do
                       (close! commit-queue)
                       (log/debug "Writer thread gracefully closed")))))
@@ -121,10 +134,11 @@
                         (<! (timeout commit-wait-time))
                         (recur (<?- commit-queue)))))))))]))
 
-;; public API
-
+;; public API to internal mapping
 (def default-write-fn-map {'transact!     w/transact!
-                           'load-entities w/load-entities})
+                           'load-entities w/load-entities
+                           ;; async operations that run in background
+                           'gc-storage!   gc/gc-storage!})
 
 (defmulti create-writer
   (fn [writer-config _]
@@ -198,4 +212,14 @@
                                      {:op 'load-entities
                                       :args [entities]}))]
         (deliver p tx-report)))
+    p))
+
+(defn gc-storage! [conn & args]
+  (let [p (throwable-promise)
+        writer (:writer @(:wrapped-atom conn))]
+    (go
+      (let [result (<! (dispatch! writer
+                                  {:op 'gc-storage!
+                                   :args (vec args)}))]
+        (deliver p result)))
     p))
