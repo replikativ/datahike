@@ -255,6 +255,7 @@
           active-conns (filter (fn [[store-id _branch]]
                                  (= store-id config-store-id))
                                (keys @*connections*))]
+      (sc/clear-write-cache (:store config))
       (doseq [conn active-conns]
         (log/warn "Deleting database without releasing all connections first: " conn "."
                   "All connections will be released now, but this cannot be ensured for remote readers.")
