@@ -251,6 +251,15 @@ public class DatahikeTest {
         assertTrue(res.size() == 3);
     }
 
+    /* TODO: This requires a durable backend */
+    // @Test
+    // public void gcStorage() {
+    //     APersistentMap config = config();
+    //     Datahike.createDatabase(config);
+    //     Object conn = Datahike.connect(config);
+    //     Set<UUID> res = (Set<UUID>)deref(Datahike.gcStorage(conn));
+    //     assertTrue(res.size() == 0);
+    // }
 
     /**
      * Called by Datahike's Clojure tests and runs the above Junit tests.
