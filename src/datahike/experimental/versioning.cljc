@@ -78,7 +78,7 @@
     (when-not (branches branch)
       (dt/raise "Branch does not exist." {:type :branch-does-not-exist
                                           :branch branch}))
-    #_(delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
+    (delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
     (k/update store :branches #(disj % branch) {:sync? true})))
 
 (defn force-branch!

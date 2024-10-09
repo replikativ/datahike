@@ -58,12 +58,12 @@
                  {:keys [config store]} db
                  _ (sc/clear-write-cache (:store config)) ; Clear the schema write cache for this store
                  branches (<? S (k/get store :branches))
-                 _ (debug  "retaining branches" branches)
+                 _ (trace  "retaining branches" branches)
                  reachable (->> branches
                                 (map #(reachable-in-branch store % remove-before config))
                                 async/merge
                                 (<<? S)
                                 (apply set/union))
                  reachable (conj reachable :branches)]
-             (debug  "gc reached: " reachable)
+             (trace  "gc reached: " reachable)
              (<? S (sweep! store reachable now))))))

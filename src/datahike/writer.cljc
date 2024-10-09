@@ -6,8 +6,7 @@
             [datahike.gc :as gc]
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
             [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]])
-  (:import [clojure.lang ExceptionInfo]
-           [clojure.core.async.impl.channels ManyToManyChannel]))
+  (:import [clojure.core.async.impl.channels ManyToManyChannel]))
 
 (defn chan? [x]
   (instance? ManyToManyChannel x))
@@ -59,10 +58,9 @@
                         (log/warn "Transaction queue buffer more than 90% full, "
                                   (count transaction-queue-buffer) "of" transaction-queue-size  " filled."
                                   "Reduce transaction frequency."))
-                      (let [old (if-not (= (:max-tx old) (:max-tx @(:wrapped-atom connection)))
-                                  (do
-                                    (log/warn "DEPRECATED. Connection was changed outside of writer.")
-                                    (assoc old :max-tx (:max-tx @(:wrapped-atom connection))))
+                      (let [;; TODO remove this after import is ported to writer API
+                            old (if-not (= (:max-tx old) (:max-tx @(:wrapped-atom connection)))
+                                  (assoc old :max-tx (:max-tx @(:wrapped-atom connection)))
                                   old)
 
                             op-fn (write-fn-map op)
