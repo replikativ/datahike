@@ -282,11 +282,12 @@ public final class LibDatahike {
     @CEntryPoint(name = "gc_storage")
     public static void gc_storage(@CEntryPoint.IsolateThreadContext long isolateId,
                                  @CConst CCharPointer db_config,
+                                 long before_tx_unix_time_ms,
                                  @CConst CCharPointer output_format,
                                  @CConst OutputReader output_reader) {
         try {
             Object db = Datahike.connect(readConfig(db_config));
-            output_reader.call(toOutput(output_format, Datahike.gcStorage(db)));
+            output_reader.call(toOutput(output_format, Datahike.gcStorage(db, new Date(before_tx_unix_time_ms))));
         } catch (Exception e) {
             output_reader.call(toException(e));
         }
