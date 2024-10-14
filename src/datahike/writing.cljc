@@ -239,7 +239,9 @@
                                {:temporal-eavt-key (di/-flush temporal-eavt backend)
                                 :temporal-aevt-key (di/-flush temporal-aevt backend)
                                 :temporal-avet-key (di/-flush temporal-avet backend)}))]
+      ;;we just created the first data base in this store, so the write cache is empty
       (k/assoc store schema-meta-key schema-meta {:sync? true})
+      (sc/add-to-write-cache (:store config) schema-meta-key)
       (when-not (sc/cache-has? schema-meta-key)
         (sc/cache-miss schema-meta-key schema-meta))
       (flush-pending-writes store true)
