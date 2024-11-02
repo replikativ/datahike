@@ -865,7 +865,3 @@ always be retained. Return the set of removed blobs from the store."
      :impl datahike.writer/gc-storage!
      :supports-remote? true
      :referentially-transparent? false}})
-
-(comment
-  (map (fn [[k v]] [k (:impl v)]) api-specification)
-  )
