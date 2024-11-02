@@ -857,7 +857,7 @@ Returns the key under which this listener is registered. See also [[unlisten]]."
     gc-storage
     {:args             (s/alt :with-date (s/cat :conn spec/SConnection :remove-before spec/time-point?)
                               :no-date (s/cat :conn spec/SConnection))
-     :ret              seq? #_(s/set? @%)
+     :ret              set?
      :doc "Invokes garbage collection on the store of connection by whitelisting currently known branches.
 All db snapshots on these branches before remove-before date will also be
 erased (defaults to beginning of time [no erasure]). The branch heads will
@@ -867,4 +867,5 @@ always be retained. Return the set of removed blobs from the store."
      :referentially-transparent? false}})
 
 (comment
-  (map (fn [[k v]] [k (:impl v)]) api-specification))
+  (map (fn [[k v]] [k (:impl v)]) api-specification)
+  )
