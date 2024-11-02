@@ -10,8 +10,8 @@
   (:import [java.net URI]))
 
 ;; global
-(def ^:dynamic *schema-meta-cache-size* (or (env :schema-meta-cache-size) 1024))
-(def ^:dynamic *schema-write-cache-max-db-count* (or (env :schema-write-cache-size) 1024))
+(def ^:dynamic *schema-meta-cache-size* (env :schema-meta-cache-size 1024))
+(def ^:dynamic *schema-write-cache-max-db-count* (env :schema-write-cache-size 1024))
 
 ;; per database
 (def ^:dynamic *default-index* :datahike.index/persistent-set)

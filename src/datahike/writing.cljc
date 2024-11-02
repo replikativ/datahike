@@ -20,8 +20,7 @@
 
 (defn stored-db? [obj]
   ;; TODO use proper schema to match?
-  (let [keys-to-check [:eavt-key :aevt-key :avet-key ;:schema :rschema
-                       ;:system-entities :ident-ref-map :ref-ident-map :config
+  (let [keys-to-check [:eavt-key :aevt-key :avet-key :config
                        :max-tx :max-eid :op-count :hash :meta]]
     (= (count (select-keys obj keys-to-check))
        (count keys-to-check))))
@@ -288,8 +287,8 @@
    (-database-exists? config)))
 
 (defn transact! [old {:keys [tx-data tx-meta]}]
-  (log/debug "Transacting" (count tx-data) "objects with meta:" tx-meta)
-  (log/trace "Transaction data" tx-data)
+  (log/debug "Transacting" (count tx-data) "objects")
+  (log/trace "Transaction data" tx-data  "with meta:" tx-meta)
   (complete-db-update old (core/with old tx-data tx-meta)))
 
 (defn load-entities [old entities]

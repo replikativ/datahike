@@ -10,7 +10,7 @@
 (def schema-write-caches
   (cw/lru-cache-factory {} :threshold dc/*schema-write-cache-max-db-count*))
 
-(defn get-or-create-write-cache [store-config]
+(defn- get-or-create-write-cache [store-config]
   (let [store-id (ds/store-identity store-config)]
     (if (cw/has? schema-write-caches store-id)
       (cw/lookup schema-write-caches store-id)
