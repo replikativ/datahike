@@ -6,7 +6,6 @@
    [superv.async :refer [<?? S]]
    [datahike.api :as d]
    [datahike.index.interface :refer [-mark]]
-   [datahike.experimental.gc :refer [gc!]]
    [datahike.experimental.versioning :refer [branch! delete-branch! merge!
                                              branch-history]]
    [konserve.core :as k]
@@ -41,16 +40,16 @@
                (d/connect cfg))
           ;; everything will fit into the root nodes of each index here
         num-roots 3
-        fresh-count (+ num-roots 3) ;; :branches + :db + cid + roots
+        fresh-count (+ num-roots 4) ;; :branches + :db + cid + roots + schema-meta
         history-count 3]
     (testing "Test initial store counts."
       (is (= 1 (count (-mark (:eavt @conn)))))
       (is (= fresh-count (count-store @conn)))
       (d/transact conn schema)
       (is (= 1 (count (-mark (:eavt @conn)))))
-      (is (= (+ 1 history-count fresh-count num-roots) (count-store @conn))))
+      (is (= (+ 2 history-count fresh-count num-roots) (count-store @conn))))
     (testing "Delete old db with roots."
-      (is (= (+ num-roots 1) (count (<?? S (gc! @conn (Date.))))))
+      (is (= (+ num-roots 2) (count (<?? S (d/gc-storage conn (Date.))))))
       (is (= (+ history-count fresh-count) (count-store @conn))))
     (testing "Try to run on dirty index and fail."
       (is (thrown-with-msg? Throwable #"Index needs to be properly flushed before marking."
@@ -62,7 +61,7 @@
     (testing "Check that we can still read the data."
       (let [new-conn (d/connect cfg)]
         (d/transact conn txs)
-        (<?? S (gc! @conn (Date.)))
+        (<?? S (d/gc-storage conn (Date.)))
         (is (= 1000 (d/q count-query @new-conn)))
         (d/release new-conn)))
     (d/release conn)))
@@ -84,12 +83,12 @@
     (testing "Check branches."
       (d/transact conn-branch1 txs)
       (d/transact conn-branch2 txs)
-      (<?? S (gc! @conn (Date.)))
+      (<?? S (d/gc-storage conn (Date.)))
       (is (nil? (d/q count-query @conn)))
       (is (= 1000 (d/q count-query @conn-branch1)))
       (is (= 1000 (d/q count-query @conn-branch2)))
       (delete-branch! conn :branch2)
-      (<?? S (gc! @conn (Date.))))
+      (<?? S (d/gc-storage conn (Date.))))
 
     (d/release conn)
     (d/release conn-branch1)
@@ -148,7 +147,7 @@
                                                (.getTime remove-before))))
                                         (concat db-history branch1-history)))
           ;; gc
-          _                (<?? S (gc! @conn remove-before))
+          _                (<?? S (d/gc-storage conn remove-before))
           history-after-gc (set (<?? S (branch-history conn)))]
       (testing "Check that newer db roots are still there and counts after gc."
         (is (set/subset? new-history history-after-gc))

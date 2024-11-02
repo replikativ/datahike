@@ -257,4 +257,8 @@
 
         :metrics
         (let [out (d/metrics (load-input (first arguments)))]
+          (report (:format options) out))
+
+        :gc-storage
+        (let [out (d/gc-storage (load-input (first arguments)) (load-input (second arguments)))]
           (report (:format options) out))))))

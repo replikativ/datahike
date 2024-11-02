@@ -8,20 +8,19 @@
             [datahike.tools :as dt]
             [datahike.core :as core]
             [datahike.config :as dc]
+            [datahike.schema-cache :as sc]
             [konserve.core :as k]
             [taoensso.timbre :as log]
             [hasch.core :refer [uuid]]
             [superv.async :refer [go-try- <?-]]
             [clojure.core.async :refer [poll!]]
-            [konserve.utils :refer [async+sync *default-sync-translation*]]
-            [taoensso.timbre :as t]))
+            [konserve.utils :refer [async+sync *default-sync-translation*]]))
 
 ;; mapping to storage
 
 (defn stored-db? [obj]
   ;; TODO use proper schema to match?
-  (let [keys-to-check [:eavt-key :aevt-key :avet-key :schema :rschema
-                       :system-entities :ident-ref-map :ref-ident-map :config
+  (let [keys-to-check [:eavt-key :aevt-key :avet-key :config
                        :max-tx :max-eid :op-count :hash :meta]]
     (= (count (select-keys obj keys-to-check))
        (count keys-to-check))))
@@ -48,7 +47,7 @@
 
 (defn db->stored
   "Maps memory db to storage layout and flushes dirty indices."
-  [db flush?]
+  [db flush? sync?]
   (when-not (dbu/db? db)
     (dt/raise "Argument is not a database."
               {:type     :argument-is-not-a-db
@@ -56,28 +55,36 @@
   (let [{:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
                 schema rschema system-entities ident-ref-map ref-ident-map config
                 max-tx max-eid op-count hash meta store]} db
+        schema-meta {:schema schema
+                     :rschema rschema
+                     :system-entities system-entities
+                     :ident-ref-map ident-ref-map
+                     :ref-ident-map ref-ident-map}
+        schema-meta-key (uuid schema-meta)
         backend                                           (di/konserve-backend (:index config) store)
         not-in-memory?                                    (not= :mem (-> config :store :backend))
-        flush! (and flush? not-in-memory?)]
-    (merge
-     {:schema          schema
-      :rschema         rschema
-      :system-entities system-entities
-      :ident-ref-map   ident-ref-map
-      :ref-ident-map   ref-ident-map
-      :config          config
-      :meta            meta
-      :hash            hash
-      :max-tx          max-tx
-      :max-eid         max-eid
-      :op-count        op-count
-      :eavt-key        (cond-> eavt flush! (di/-flush backend))
-      :aevt-key        (cond-> aevt flush! (di/-flush backend))
-      :avet-key        (cond-> avet flush! (di/-flush backend))}
-     (when (:keep-history? config)
-       {:temporal-eavt-key (cond-> temporal-eavt flush! (di/-flush backend))
-        :temporal-aevt-key (cond-> temporal-aevt flush! (di/-flush backend))
-        :temporal-avet-key (cond-> temporal-avet flush! (di/-flush backend))}))))
+        flush! (and flush? not-in-memory?)
+        schema-meta-op (when-not (sc/write-cache-has? (:store config) schema-meta-key)
+                         (sc/add-to-write-cache (:store config) schema-meta-key)
+                         (k/assoc store schema-meta-key schema-meta {:sync? sync?}))]
+    (when-not (sc/cache-has? schema-meta-key)
+      (sc/cache-miss schema-meta-key schema-meta))
+    [schema-meta-op
+     (merge
+      {:schema-meta-key  schema-meta-key
+       :config          config
+       :meta            meta
+       :hash            hash
+       :max-tx          max-tx
+       :max-eid         max-eid
+       :op-count        op-count
+       :eavt-key        (cond-> eavt flush! (di/-flush backend))
+       :aevt-key        (cond-> aevt flush! (di/-flush backend))
+       :avet-key        (cond-> avet flush! (di/-flush backend))}
+      (when (:keep-history? config)
+        {:temporal-eavt-key (cond-> temporal-eavt flush! (di/-flush backend))
+         :temporal-aevt-key (cond-> temporal-aevt flush! (di/-flush backend))
+         :temporal-avet-key (cond-> temporal-avet flush! (di/-flush backend))}))]))
 
 (defn stored->db
   "Constructs in-memory db instance from stored map value."
@@ -85,28 +92,35 @@
   (let [{:keys [eavt-key aevt-key avet-key
                 temporal-eavt-key temporal-aevt-key temporal-avet-key
                 schema rschema system-entities ref-ident-map ident-ref-map
-                config max-tx max-eid op-count hash meta]
+                config max-tx max-eid op-count hash meta schema-meta-key]
          :or   {op-count 0}} stored-db
-        empty              (db/empty-db nil config store)]
-    (assoc empty
-           :max-tx max-tx
-           :max-eid max-eid
-           :config config
-           :meta meta
-           :schema schema
-           :hash hash
-           :op-count op-count
-           :eavt eavt-key
-           :aevt aevt-key
-           :avet avet-key
-           :temporal-eavt temporal-eavt-key
-           :temporal-aevt temporal-aevt-key
-           :temporal-avet temporal-avet-key
-           :rschema rschema
-           :system-entities system-entities
-           :ident-ref-map ident-ref-map
-           :ref-ident-map ref-ident-map
-           :store store)))
+        schema-meta (or (sc/cache-lookup schema-meta-key)
+                        ;; not in store in case we load an old db where the schema meta data was inline
+                        (when-let [schema-meta (k/get store schema-meta-key nil {:sync? true})]
+                          (sc/cache-miss schema-meta-key schema-meta)
+                          schema-meta))
+        empty       (db/empty-db nil config store)]
+    (merge
+     (assoc empty
+            :max-tx max-tx
+            :max-eid max-eid
+            :config config
+            :meta meta
+            :schema schema
+            :hash hash
+            :op-count op-count
+            :eavt eavt-key
+            :aevt aevt-key
+            :avet avet-key
+            :temporal-eavt temporal-eavt-key
+            :temporal-aevt temporal-aevt-key
+            :temporal-avet temporal-avet-key
+            :rschema rschema
+            :system-entities system-entities
+            :ident-ref-map ident-ref-map
+            :ref-ident-map ref-ident-map
+            :store store)
+     schema-meta)))
 
 (defn branch-heads-as-commits [store parents]
   (set (doall (for [p parents]
@@ -140,10 +154,12 @@
                       db            (-> db
                                         (assoc-in [:meta :datahike/commit-id] cid)
                                         (assoc-in [:meta :datahike/parents] parents))
-                      db-to-store   (db->stored db true)
+                      [schema-meta-op db-to-store]   (db->stored db true sync?)
                       _             (<?- (flush-pending-writes store sync?))
                       commit-log-op (k/assoc store cid db-to-store {:sync? sync?})
                       branch-op     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
+                      ;; now wait for all the writes to complete
+                  (when (and schema-meta-op (not sync?)) (<?- schema-meta-op))
                   (<?- commit-log-op)
                   (<?- branch-op)
                   db)))))
@@ -202,15 +218,17 @@
           backend (di/konserve-backend (:index config) store)
           cid (create-commit-id db)
           meta (assoc meta :datahike/commit-id cid)
-          db-to-store (merge {:schema          schema
-                              :max-tx          max-tx
+          schema-meta {:schema schema
+                       :rschema rschema
+                       :system-entities system-entities
+                       :ident-ref-map ident-ref-map
+                       :ref-ident-map ref-ident-map}
+          schema-meta-key (uuid schema-meta)
+          db-to-store (merge {:max-tx          max-tx
                               :max-eid         max-eid
                               :op-count        op-count
                               :hash            hash
-                              :rschema         rschema
-                              :system-entities system-entities
-                              :ident-ref-map   ident-ref-map
-                              :ref-ident-map   ref-ident-map
+                              :schema-meta-key schema-meta-key
                               :config          (update config :initial-tx (comp not empty?))
                               :meta            meta
                               :eavt-key        (di/-flush eavt backend)
@@ -220,6 +238,11 @@
                                {:temporal-eavt-key (di/-flush temporal-eavt backend)
                                 :temporal-aevt-key (di/-flush temporal-aevt backend)
                                 :temporal-avet-key (di/-flush temporal-avet backend)}))]
+      ;;we just created the first data base in this store, so the write cache is empty
+      (k/assoc store schema-meta-key schema-meta {:sync? true})
+      (sc/add-to-write-cache (:store config) schema-meta-key)
+      (when-not (sc/cache-has? schema-meta-key)
+        (sc/cache-miss schema-meta-key schema-meta))
       (flush-pending-writes store true)
       (k/assoc store :branches #{:db} {:sync? true})
       (k/assoc store cid db-to-store {:sync? true})
@@ -233,6 +256,7 @@
           active-conns (filter (fn [[store-id _branch]]
                                  (= store-id config-store-id))
                                (keys @*connections*))]
+      (sc/clear-write-cache (:store config))
       (doseq [conn active-conns]
         (log/warn "Deleting database without releasing all connections first: " conn "."
                   "All connections will be released now, but this cannot be ensured for remote readers.")
@@ -263,8 +287,8 @@
    (-database-exists? config)))
 
 (defn transact! [old {:keys [tx-data tx-meta]}]
-  (log/debug "Transacting" (count tx-data) " objects with meta: " tx-meta)
-  (log/trace "Transaction data" tx-data)
+  (log/debug "Transacting" (count tx-data) "objects")
+  (log/trace "Transaction data" tx-data  "with meta:" tx-meta)
   (complete-db-update old (core/with old tx-data tx-meta)))
 
 (defn load-entities [old entities]
