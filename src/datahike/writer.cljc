@@ -1,5 +1,6 @@
 (ns ^:no-doc datahike.writer
   (:require [superv.async :refer [S thread-try <?- go-try]]
+            [konserve.core :as k]
             [taoensso.timbre :as log]
             [datahike.core]
             [datahike.writing :as w]
@@ -51,7 +52,7 @@
          ;; delay processing until the writer we are part of in connection is set
                 (while (not (:writer @(:wrapped-atom connection)))
                   (<! (timeout 10)))
-                (loop [old @(:wrapped-atom connection)]
+                (loop [old  @(:wrapped-atom connection)]
                   (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
                     (do
                       (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
@@ -103,34 +104,40 @@
                       (log/debug "Writer thread gracefully closed")))))
         ;; commit loop
         (go-try S
-                (loop [tx (<?- commit-queue)]
+                (loop [tx (<?- commit-queue)
+                       last-flushed (<?- (k/get (:store @(:wrapped-atom connection))
+                                                (get-in @(:wrapped-atom connection) [:config :branch])
+                                                nil {:sync? false}))]
                   (when tx
                     (let [txs (into [tx] (take-while some?) (repeatedly #(poll! commit-queue)))]
               ;; empty channel of pending transactions
                       (log/trace "Batched transaction count: " (count txs))
               ;; commit latest tx to disk
-                      (let [db (:db-after (first (peek txs)))]
-                        (try
-                          (let [start-ts (get-time-ms)
-                                {{:keys [datahike/commit-id]} :meta
-                                 :as commit-db} (<?- (w/commit! db nil false))
-                                commit-time (- (get-time-ms) start-ts)]
-                            (log/trace "Commit time (ms): " commit-time)
-                            (reset! connection commit-db)
+                      (let [{:keys [db-after tx-data]} (first (peek txs))
+                            last-flushed
+                            (try
+                              (let [start-ts (get-time-ms)
+                                    [last-flushed
+                                     {{:keys [datahike/commit-id]} :meta
+                                      :as commit-db}] (<?- (w/commit! last-flushed db-after tx-data nil false))
+                                    commit-time (- (get-time-ms) start-ts)]
+                                (log/trace "Commit time (ms): " commit-time)
+                                (reset! connection commit-db)
                     ;; notify all processes that transaction is complete
-                            (doseq [[tx-report callback] txs]
-                              (let [tx-report (-> tx-report
-                                                  (assoc-in [:tx-meta :db/commitId] commit-id)
-                                                  (assoc :db-after commit-db))]
-                                (put! callback tx-report))))
-                          (catch Exception e
-                            (doseq [[_ callback] txs]
-                              (put! callback e))
-                            (log/error "Writer thread shutting down because of commit error." e)
-                            (close! commit-queue)
-                            (close! transaction-queue)))
+                                (doseq [[tx-report callback] txs]
+                                  (let [tx-report (-> tx-report
+                                                      (assoc-in [:tx-meta :db/commitId] commit-id)
+                                                      (assoc :db-after commit-db))]
+                                    (put! callback tx-report)))
+                                last-flushed)
+                              (catch Exception e
+                                (doseq [[_ callback] txs]
+                                  (put! callback e))
+                                (log/error "Writer thread shutting down because of commit error." e)
+                                (close! commit-queue)
+                                (close! transaction-queue)))]
                         (<! (timeout commit-wait-time))
-                        (recur (<?- commit-queue)))))))))]))
+                        (recur (<?- commit-queue) last-flushed))))))))]))
 
 ;; public API to internal mapping
 (def default-write-fn-map {'transact!     w/transact!

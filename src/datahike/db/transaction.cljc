@@ -153,7 +153,7 @@
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
 
-(defn- with-datom [db ^Datom datom]
+(defn with-datom [db ^Datom datom]
   (validate-datom db datom)
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom))
         indexing? (dbu/indexing? db a-ident)

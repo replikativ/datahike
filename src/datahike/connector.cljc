@@ -136,7 +136,7 @@
 (defn- normalize-config [cfg]
   (-> cfg
       (update :store ds/store-identity)
-      (dissoc :writer :store-cache-size :search-cache-size)))
+      (dissoc :writer :store-cache-size :search-cache-size :tx-log-size)))
 
 (extend-protocol PConnector
   String
