@@ -3,9 +3,9 @@
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"
                                                      :exclusions [org.clojure/clojurescript]}
-        io.replikativ/konserve                      {:mvn/version "0.7.317"
+        io.replikativ/konserve                      {:mvn/version "0.7.319"
                                                      :exclusions [org.clojure/clojurescript]}
-        io.replikativ/superv.async                  {:mvn/version "0.3.46"
+        io.replikativ/superv.async                  {:mvn/version "0.3.48"
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/datalog-parser                {:mvn/version "0.2.29"}
         io.replikativ/zufall                        {:mvn/version "0.2.9"}
