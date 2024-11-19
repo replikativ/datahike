@@ -24,6 +24,7 @@
 (def ^:dynamic *default-store* :mem)                           ;; store-less = in-memory?
 (def ^:dynamic *default-db-name* nil)                         ;; when nil creates random name
 (def ^:dynamic *default-db-branch* :db)                         ;; when nil creates random name
+(def ^:dynamic *default-tx-log-size* 256)
 
 (s/def ::index #{:datahike.index/hitchhiker-tree :datahike.index/persistent-set})
 (s/def ::keep-history? boolean?)
@@ -31,6 +32,7 @@
 (s/def ::attribute-refs? boolean?)
 (s/def ::search-cache-size nat-int?)
 (s/def ::store-cache-size pos-int?)
+(s/def ::tx-log-size #(not (neg? %)))
 (s/def ::crypto-hash? boolean?)
 (s/def ::writer map?)
 (s/def ::branch keyword?)
@@ -54,6 +56,7 @@
                                          ::attribute-refs?
                                          ::search-cache-size
                                          ::store-cache-size
+                                         ::tx-log-size
                                          ::crypto-hash?
                                          ::initial-tx
                                          ::name
@@ -96,7 +99,8 @@
    :writer self-writer
    :crypto-hash? *default-crypto-hash?*
    :search-cache-size *default-search-cache-size*
-   :store-cache-size *default-store-cache-size*})
+   :store-cache-size *default-store-cache-size*
+   :tx-log-size *default-tx-log-size*})
 
 (defn int-from-env
   [key default]
@@ -135,6 +139,7 @@
    :index *default-index*
    :search-cache-size *default-search-cache-size*
    :store-cache-size *default-store-cache-size*
+   :tx-log-size *default-tx-log-size*
    :crypto-hash? *default-crypto-hash?*
    :branch *default-db-branch*
    :writer self-writer
@@ -177,6 +182,7 @@
                  :writer self-writer
                  :search-cache-size (int-from-env :datahike-search-cache-size *default-search-cache-size*)
                  :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)
+                 :tx-log-size (int-from-env :datahike-tx-log-size *default-tx-log-size*)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
                                  index-config
                                  (di/default-index-config index))}
