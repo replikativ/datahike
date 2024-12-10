@@ -1,8 +1,10 @@
 (ns ^:no-doc datahike.datom
+  #?(:cljs (:require-macros [datahike.datom :refer [combine-cmp]]))
   (:require  [clojure.walk]
              [clojure.data]
+             [datahike.constants :refer [tx0]]
              [datahike.tools :refer [combine-hashes]]
-             [datahike.constants :refer [tx0]]))
+             #?(:cljs [goog.array :as garray])))
 
 (declare hash-datom equiv-datom seq-datom nth-datom assoc-datom val-at-datom)
 
@@ -147,7 +149,8 @@
     :v (datom (.-e d) (.-a d) v (datom-tx d) (datom-added d))
     :tx (datom (.-e d) (.-a d) (.-v d) v (datom-added d))
     :added (datom (.-e d) (.-a d) (.-v d) (datom-tx d) v)
-    (throw (IllegalArgumentException. (str "invalid key for #datahike/Datom: " k)))))
+    (throw (#?(:clj IllegalArgumentException. :cljs js/Error.)
+            (str "invalid key for #datahike/Datom: " k)))))
 
 ;; printing and reading
 ;; #datomic/DB {:schema <map>, :datoms <vector of [e a v tx]>}
@@ -243,13 +246,13 @@
      (.compareTo ^Comparable a1 a2)))
 
 (defn- class-name [x]
-  (let [c (class x)]
-    (.getName ^Class c)))
+  #?(:clj (.getName (class x))
+     :cljs (type x)))
 
 (defn- safe-compare [a b]
   (try
     (compare a b)
-    (catch Exception _e
+    (catch #?(:clj Exception :cljs js/Error) _e
       (compare (class-name a)
                (class-name b)))))
 

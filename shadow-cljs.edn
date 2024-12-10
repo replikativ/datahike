@@ -1,0 +1,9 @@
+{:deps true
+ :src-paths ["src" "test"]
+ :builds {:comptest
+          {:target :node-script
+           :output-to "target/out/comptest.js"
+           :main datahike.cljs-compilation-test/-main
+           :compiler-options {:infer-externs true
+                              :warnings {:fn-deprecated false
+                                         :protocol-multiple-impls false}}}}}

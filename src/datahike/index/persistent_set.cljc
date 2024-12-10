@@ -1,8 +1,11 @@
 (ns ^:no-doc datahike.index.persistent-set
+  #?(:cljs (:require-macros [datahike.index.persistent-set :refer [generate-slice-comparator-constructor]]))
   (:require [me.tonsky.persistent-sorted-set :as psset]
             [me.tonsky.persistent-sorted-set.arrays :as arrays]
-            [clojure.core.cache :as cache]
-            [clojure.core.cache.wrapped :as wrapped]
+            #?@(:clj  [[clojure.core.cache :as cache]
+                       [clojure.core.cache.wrapped :as wrapped]]
+                :cljs [[cljs.cache :as cache]
+                       [cljs.cache.wrapped :as wrapped]])
             [datahike.datom :as dd :refer [index-type->cmp-quick]]
             [datahike.constants :refer [tx0 txmax]]
             [datahike.index.interface :as di :refer [IIndex]]
@@ -162,7 +165,7 @@
     (psset/walk-addresses pset (fn [address] (swap! addresses conj address)))
     @addresses))
 
-(extend-type PersistentSortedSet
+(extend-type #?(:clj PersistentSortedSet :cljs psset/BTSet)
   IIndex
   (-slice [^PersistentSortedSet pset from to index-type]
     (psset/slice pset from to (slice-comparator-constructor index-type from to)))
@@ -268,10 +271,11 @@
 
 ;; temporary import from psset until public
 (defn- map->settings ^Settings [m]
-  (Settings.
-   (int (or (:branching-factor m) 0))
-   nil ;; weak ref default
-   ))
+  #?(:cljs m
+     :clj (Settings.
+           (int (or (:branching-factor m) 0))
+           nil                                             ;; weak ref default
+           )))
 
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
   ;; deal with circular reference between storage and store

@@ -7,7 +7,8 @@
             [datahike.tools :as dt]
             [datahike.store :as ds]
             [datahike.index :as di])
-  (:import [java.net URI]))
+  (:import #?(:clj [java.net URI]
+              :cljs [goog.Uri])))
 
 ;; global
 (def ^:dynamic *schema-meta-cache-size* (env :schema-meta-cache-size 1024))
@@ -83,7 +84,7 @@
                         :path path
                         :host host
                         :port port
-                        :id (str (java.util.UUID/randomUUID))}
+                        :id (str #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid)))}
                    :level {:path path}
                    :file {:path path}))
    :index index
@@ -101,19 +102,20 @@
 (defn int-from-env
   [key default]
   (try
-    (Integer/parseInt (get env key (str default)))
-    (catch Exception _ default)))
+    (#?(:clj Integer/parseInt :cljs js/parseInt) (get env key (str default)))
+    (catch #?(:clj Exception :cljs js/Error) _ default)))
 
 (defn bool-from-env
   [key default]
   (try
-    (Boolean/parseBoolean (get env key default))
-    (catch Exception _ default)))
+    #?(:clj  (Boolean/parseBoolean (get env key default))
+       :cljs (= "true" (get env key default)))
+    (catch #?(:clj Exception :cljs js/Error) _ default)))
 
 (defn map-from-env [key default]
   (try
     (edn/read-string (get env key (str default)))
-    (catch Exception _ default)))
+    (catch #?(:clj Exception :cljs js/Error) _ default)))
 
 (defn validate-config-attribute [attribute value config]
   (when-not (s/valid? attribute value)
@@ -167,7 +169,7 @@
                  (keyword "datahike.index" (:datahike-index env))
                  *default-index*)
          config {:store store-config
-                 :initial-tx (:datahike-intial-tx env)
+                 :initial-tx (:datahike-initial-tx env)
                  :keep-history? (bool-from-env :datahike-keep-history *default-keep-history?*)
                  :attribute-refs? (bool-from-env :datahike-attribute-refs *default-attribute-refs?*)
                  :schema-flexibility (keyword (:datahike-schema-flexibility env *default-schema-flexibility*))
@@ -191,7 +193,8 @@
      (when (and attribute-refs? (= :read schema-flexibility))
        (throw (ex-info "Attribute references cannot be used with schema-flexibility ':read'." config)))
      (if (string? initial-tx)
-       (update merged-config :initial-tx (fn [path] (-> path slurp read-string)))
+       #?(:clj (update merged-config :initial-tx (fn [path] (-> path slurp read-string)))
+          :cljs (throw (ex-info ":initial-tx from path is not supported in cljs at this time" merged-config)))
        merged-config))))
 
 ;; deprecation begin
@@ -207,10 +210,11 @@
                                      :opt-un [::username ::password ::path ::host ::port]))
 
 (defn uri->config [uri]
-  (let [base-uri (URI. uri)
+  (let [base-uri (#?(:clj URI. :cljs goog.Uri.) uri)
         _ (when-not (= (.getScheme base-uri) "datahike")
             (throw (ex-info "URI scheme is not datahike conform." {:uri uri})))
-        sub-uri (URI. (.getSchemeSpecificPart base-uri))
+        sub-uri #?(:clj (URI. (.getSchemeSpecificPart base-uri))
+                   :cljs (goog.Uri. (.getScheme base-uri)))
         backend (keyword (.getScheme sub-uri))
         [username password] (when-let [user-info (.getUserInfo sub-uri)]
                               (str/split user-info #":"))

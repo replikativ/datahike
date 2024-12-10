@@ -11,7 +11,7 @@
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.data :refer [diff]])
-  (:import [clojure.lang IDeref IAtom IMeta ILookup IRef]))
+  #?(:clj (:import [clojure.lang IDeref IAtom IMeta ILookup IRef])))
 
 ;; connection
 
@@ -22,25 +22,25 @@
 
 (deftype Connection [wrapped-atom]
   IDeref
-  (deref [conn] (deref-conn conn))
+  (#?(:clj deref :cljs -deref) [conn] (deref-conn conn))
   ;; These interfaces should not be used from the outside, they are here to keep
   ;; the internal interfaces lean and working.
   ILookup
-  (valAt [c k] (if (= k :wrapped-atom) wrapped-atom nil))
-  IAtom
-  (swap [_ f] (swap! wrapped-atom f))
-  (swap [_ f arg] (swap! wrapped-atom f arg))
-  (swap [_ f arg1 arg2] (swap! wrapped-atom f arg1 arg2))
-  (swap [_ f arg1 arg2 args] (apply swap! wrapped-atom f arg1 arg2 args))
-  (compareAndSet [_ oldv newv] (compare-and-set! wrapped-atom oldv newv))
-  (reset [_ newval] (reset! wrapped-atom newval))
-
+  (#?(:clj valAt :cljs -lookup) [c k] (if (= k :wrapped-atom) wrapped-atom nil))
   IMeta
-  (meta [_] (meta wrapped-atom))
-
-  IRef ;; TODO This is unoffically supported, it triggers watches on each update, not on commits. For proper listeners use the API.
-  (addWatch [_ key f] (add-watch wrapped-atom key f))
-  (removeWatch [_ key] (remove-watch wrapped-atom key)))
+  (#?(:clj meta :cljs -meta) [_] (meta wrapped-atom))
+  #?(:cljs IAtom)
+  #?@(:clj
+      [IAtom
+       (swap [_ f] (swap! wrapped-atom f))
+       (swap [_ f arg] (swap! wrapped-atom f arg))
+       (swap [_ f arg1 arg2] (swap! wrapped-atom f arg1 arg2))
+       (swap [_ f arg1 arg2 args] (apply swap! wrapped-atom f arg1 arg2 args))
+       (compareAndSet [_ oldv newv] (compare-and-set! wrapped-atom oldv newv))
+       (reset [_ newval] (reset! wrapped-atom newval))
+       IRef ;; TODO This is unofficially supported, it triggers watches on each update, not on commits. For proper listeners use the API.
+       (addWatch [_ key f] (add-watch wrapped-atom key f))
+       (removeWatch [_ key] (remove-watch wrapped-atom key))]))
 
 (defn connection? [x]
   (instance? Connection x))
@@ -139,11 +139,11 @@
       (dissoc :writer :store-cache-size :search-cache-size)))
 
 (extend-protocol PConnector
-  String
+  #?(:clj String :cljs string)
   (-connect [uri]
     (-connect (dc/uri->config uri)))
 
-  clojure.lang.IPersistentMap
+  #?(:clj clojure.lang.IPersistentMap :cljs PersistentArrayMap)
   (-connect [raw-config]
     (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))

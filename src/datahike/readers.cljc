@@ -2,6 +2,7 @@
   (:require [datahike.connections :refer [get-connection *connections*]]
             [datahike.writing :as dw]
             [datahike.datom :refer [datom] :as dd]
+            #?(:cljs [datahike.db :refer [HistoricalDB AsOfDB SinceDB]])
             [datahike.impl.entity :as de]
             [datahike.core :refer [init-db] :as dc]
             [datahike.tools :refer [raise]]
