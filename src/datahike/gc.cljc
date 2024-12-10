@@ -7,7 +7,7 @@
             [superv.async :refer [<? S go-try <<?]]
             [clojure.core.async  :as async]
             [datahike.schema-cache :as sc])
-  (:import [java.util Date]))
+  #?(:clj (:import [java.util Date])))
 
 ;; meta-data does not get passed in macros
 (defn get-time [d]
@@ -50,10 +50,10 @@
   All db snapshots on these branches before remove-before date will also be
   erased (defaults to beginning of time [no erasure]). The branch heads will
   always be retained."
-  ([db] (gc-storage! db (Date. 0)))
+  ([db] (gc-storage! db (#?(:clj Date. :cljs js/Date.) 0)))
   ([db remove-before]
    (go-try S
-           (let [now (Date.)
+           (let [now #?(:clj (Date.) :cljs (js/Date.))
                  _ (debug "starting gc" now)
                  {:keys [config store]} db
                  _ (sc/clear-write-cache (:store config)) ; Clear the schema write cache for this store

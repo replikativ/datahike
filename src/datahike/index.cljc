@@ -1,7 +1,8 @@
 (ns ^:no-doc datahike.index
+  (:refer-clojure :exclude [-persistent! -flush -count -seq])
   (:require [datahike.index.interface :as di]
             [datahike.index.persistent-set]
-            [datahike.index.hitchhiker-tree]))
+            #?(:clj [datahike.index.hitchhiker-tree])))
 
 ;; Aliases for protocol functions
 

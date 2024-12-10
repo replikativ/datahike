@@ -2,8 +2,7 @@
   (:require
    [datahike.db.utils :as dbu]
    [datahike.db.interface :as dbi]
-   [datalog.parser.pull :as dpp])
-  #?@(:cljs [datalog.parser.pull :refer [PullSpec]])
+   [datalog.parser.pull :as dpp #?@(:cljs [:refer [PullSpec]])])
   #?(:clj
      (:import
       [datahike.datom Datom]

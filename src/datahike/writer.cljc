@@ -5,8 +5,9 @@
             [datahike.writing :as w]
             [datahike.gc :as gc]
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
-            [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]])
-  (:import [clojure.core.async.impl.channels ManyToManyChannel]))
+            [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]]
+            #?(:cljs [cljs.core.async.impl.channels :refer [ManyToManyChannel]]))
+  #?(:clj (:import [clojure.core.async.impl.channels ManyToManyChannel])))
 
 (defn chan? [x]
   (instance? ManyToManyChannel x))
@@ -43,7 +44,7 @@
         commit-queue-buffer         (buffer commit-queue-size)
         commit-queue                (chan commit-queue-buffer)]
     [transaction-queue commit-queue
-     (thread-try
+     (#?(:clj thread-try :cljs try)
       S
       (do
         ;; processing loop
@@ -68,18 +69,20 @@
                                     (apply op-fn old args)
                             ;; Only catch ExceptionInfo here (intentionally rejected transactions).
                             ;; Any other exceptions should crash the writer and signal the supervisor.
-                                    (catch Exception e
+                                    (catch #?(:clj Exception :cljs js/Error) e
                                       (log/error "Error during invocation" invocation e args)
                               ;; take a guess that a NPE was triggered by an invalid connection
                               ;; short circuit on errors
-                                      (put! callback
-                                            (if (= (type e) NullPointerException)
-                                              (ex-info "Null pointer encountered in invocation. Connection may have been invalidated, e.g. through db deletion, and needs to be released everywhere."
-                                                       {:type       :writer-error-during-invocation
-                                                        :invocation invocation
-                                                        :connection connection
-                                                        :error      e})
-                                              e))
+                                      #?(:cljs (put! callback e)
+                                         :clj
+                                         (put! callback
+                                               (if (= (type e) NullPointerException)
+                                                 (ex-info "Null pointer encountered in invocation. Connection may have been invalidated, e.g. through db deletion, and needs to be released everywhere."
+                                                          {:type       :writer-error-during-invocation
+                                                           :invocation invocation
+                                                           :connection connection
+                                                           :error      e})
+                                                 e)))
                                       :error))]
                         (cond (chan? res)
                               ;; async op, run in parallel in background, no sequential commit handling needed
@@ -123,7 +126,7 @@
                                                   (assoc-in [:tx-meta :db/commitId] commit-id)
                                                   (assoc :db-after commit-db))]
                                 (put! callback tx-report))))
-                          (catch Exception e
+                          (catch #?(:clj Exception :cljs js/Error) e
                             (doseq [[_ callback] txs]
                               (put! callback e))
                             (log/error "Writer thread shutting down because of commit error." e)
@@ -178,14 +181,14 @@
 
 (defmethod create-database :self [& args]
   (let [p (throwable-promise)]
-    (deliver p (apply w/create-database args))
+    (#?(:clj deliver :cljs put!) p (apply w/create-database args))
     p))
 
 (defmulti delete-database backend-dispatch)
 
 (defmethod delete-database :self [& args]
   (let [p (throwable-promise)]
-    (deliver p (apply w/delete-database args))
+    (#?(:clj deliver :cljs put!) p (apply w/delete-database args))
     p))
 
 (defn transact!
@@ -199,7 +202,7 @@
         (when (map? tx-report) ;; not error
           (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
             (callback tx-report)))
-        (deliver p tx-report)))
+        (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 
 (defn load-entities [connection entities]
@@ -209,7 +212,7 @@
       (let [tx-report (<! (dispatch! writer
                                      {:op 'load-entities
                                       :args [entities]}))]
-        (deliver p tx-report)))
+        (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 
 (defn gc-storage! [conn & args]
@@ -219,5 +222,5 @@
       (let [result (<! (dispatch! writer
                                   {:op 'gc-storage!
                                    :args (vec args)}))]
-        (deliver p result)))
+        (#?(:clj deliver :cljs put!) p result)))
     p))

@@ -1,4 +1,5 @@
 (ns ^:no-doc datahike.tools
+  #?(:cljs (:require-macros [datahike.tools :refer [raise]]))
   (:require
    [superv.async :refer [throw-if-exception-]]
    [clojure.core.async.impl.protocols :as async-impl]
@@ -68,8 +69,7 @@
   (let [msgs (butlast fragments)
         data (last fragments)]
     (list `(log/log! :error :p ~fragments ~{:?line (:line (meta &form))})
-          `(throw #?(:clj  (ex-info (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data)
-                     :cljs (error (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data))))))
+          `(throw (ex-info (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data)))))
 
 ;; adapted from https://clojure.atlassian.net/browse/CLJ-2766
 #?(:clj
@@ -128,8 +128,8 @@
    :konserve/version konserve-version
    :hitchhiker.tree/version hitchhiker-tree-version
    :persistent.set/version persistent-set-version
-   :datahike/id (UUID/randomUUID)
-   :datahike/created-at (Date.)})
+   :datahike/id #?(:clj (UUID/randomUUID) :cljs (random-uuid))
+   :datahike/created-at #?(:clj (Date.) :cljs (js/Date.))})
 
 (defn deep-merge
   "Recursively merges maps together. If all the maps supplied have nested maps
@@ -169,9 +169,9 @@
 
 (defn get-hostname []
   #?(:clj (.getHostAddress (InetAddress/getLocalHost))
-     :cljs (raise "Not supported yet." {:type :hostname-not-supported-yet})))
+     :cljs "" #_(raise "Not supported." {:type :hostname-not-supported})))
 
-(def datahike-logo (slurp (io/resource "datahike-logo.txt")))
+#?(:clj (def datahike-logo (slurp (io/resource "datahike-logo.txt"))))
 
 (defmacro with-destructured-vector [v & var-expr-pairs]
   {:pre [(even? (count var-expr-pairs))]}
