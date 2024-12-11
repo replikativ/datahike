@@ -1,4 +1,5 @@
 (ns ^:no-doc datahike.query
+  #?(:cljs (:require-macros [datahike.query :refer [basic-index-selector make-vec-lookup-ref-replacer some-of substitution-expansion]]))
   (:require
    [#?(:cljs cljs.reader :clj clojure.edn) :as edn]
    [clojure.set :as set]
@@ -32,7 +33,7 @@
                    [java.lang.reflect Method]
                    [java.util Date Map HashSet HashSet])))
 
-(set! *warn-on-reflection* true)
+#?(:clj (set! *warn-on-reflection* true))
 
 ;; ----------------------------------------------------------------------------
 
@@ -312,7 +313,7 @@
                                          true (map vector (cons x more) more))
                             :cljs (apply >= x more)))
 
-  Object ;; default
+  #?(:clj Object :cljs object) ;; default
   (-strictly-decreasing? [x more] (reduce (fn [res [v1 s2]] (if (neg? (compare  v1 s2))
                                                               res
                                                               (reduced false)))
@@ -1162,8 +1163,8 @@
     (fn [x] (contains? s x))))
 
 (defn extend-predicate [predicate feature-extractor features]
-  {:pre [(or (set? features)
-             (instance? HashSet features))]}
+  {:pre [#?(:clj (or (set? features) (instance? HashSet features))
+            :cljs (set? features))]}
   (let [this-pred (predicate-from-set features)]
     (if (nil? feature-extractor)
       predicate
@@ -1302,7 +1303,10 @@
 (defmacro make-vec-lookup-ref-replacer [range-length]
   (let [inds (gensym)
         replacer (gensym)
-        tuple (gensym)]
+        tuple (gensym)
+        ex-sym# (if (get-in &env [:ns])
+                  'js/Error
+                  Exception)]
     `(fn tree-fn# [~replacer ~inds]
        ~(dt/range-subset-tree
          range-length inds
@@ -1312,7 +1316,7 @@
                 ~(mapv (fn [index i] `(~replacer ~index (nth ~tuple ~i)))
                        pinds
                        (range))
-                (catch Exception e# nil))))))))
+                (catch ~ex-sym# e# nil))))))))
 
 (def vec-lookup-ref-replacer (make-vec-lookup-ref-replacer 5))
 
@@ -1514,7 +1518,7 @@
                           step)
              datoms (try
                       (backend-fn e a v tx added?)
-                      (catch Exception e
+                      (catch #?(:clj Exception :cljs js/Error) e
                         (throw e)))]
          (reduce inner-step
                  dst

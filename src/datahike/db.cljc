@@ -18,7 +18,7 @@
    [taoensso.timbre :refer [warn]])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable]]
                             [datahike.datom :refer [combine-cmp datom]]
-                            [datahike.tools :refer [case-tree raise]]))
+                            [datahike.tools :refer [raise]]))
   (:refer-clojure :exclude [seqable?])
   #?(:clj (:import [clojure.lang AMapEntry ITransientCollection IEditableCollection IPersistentCollection Seqable
                     IHashEq Associative IKeywordLookup ILookup]
@@ -109,9 +109,7 @@
 
 #?(:clj
    (defn- make-record-updatable-cljs [name fields & impls]
-     `(do
-        (defrecord ~name ~fields)
-        (extend-type ~name ~@impls))))
+     `(defrecord ~name ~fields ~@impls)))
 
 #?(:clj
    (defmacro defrecord-updatable [name fields & impls]
@@ -360,12 +358,12 @@
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on FilteredDB")))
 
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on FilteredDB")))
                         ([_ _ _] (throw (js/Error. "-lookup is not supported on FilteredDB"))))
 
-       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on FilteredDB")))
+       IAssociative
+       (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on FilteredDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on FilteredDB")))]
 
       :clj
@@ -436,12 +434,12 @@
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on HistoricalDB")))
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on HistoricalDB")))
 
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on HistoricalDB")))
                         ([_ _ _] (throw (js/Error. "-lookup is not supported on HistoricalDB"))))
 
-       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on HistoricalDB")))
+       IAssociative
+       (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on HistoricalDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on HistoricalDB")))]
       :clj
       [IPersistentCollection
@@ -502,12 +500,12 @@
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on AsOfDB")))
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on AsOfDB")))
 
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on AsOfDB")))
                         ([_ _ _] (throw (js/Error. "-lookup is not supported on AsOfDB"))))
 
-       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on AsOfDB")))
+       IAssociative
+       (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on AsOfDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on AsOfDB")))]
       :clj
       [IPersistentCollection
@@ -569,12 +567,12 @@
        IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
 
        IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on SinceDB")))
-       IEmptyableCollection (-empty [_] (throw (js/Error. "-empty is not supported on SinceDB")))
 
        ILookup (-lookup ([_ _] (throw (js/Error. "-lookup is not supported on SinceDB")))
                         ([_ _ _] (throw (js/Error. "-lookup is not supported on SinceDB"))))
 
-       IAssociative (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on SinceDB")))
+       IAssociative
+       (-contains-key? [_ _] (throw (js/Error. "-contains-key? is not supported on SinceDB")))
        (-assoc [_ _ _] (throw (js/Error. "-assoc is not supported on SinceDB")))]
       :clj
       [IPersistentCollection
@@ -871,9 +869,6 @@
          {:temporal-eavt eavt
           :temporal-aevt aevt
           :temporal-avet avet}))))))
-
-(defn get-max-tx [eavt]
-  (transduce (map (fn [^Datom d] (datom-tx d))) max tx0 (di/-all eavt)))
 
 (defn ^DB init-db
   ([datoms] (init-db datoms nil nil nil))

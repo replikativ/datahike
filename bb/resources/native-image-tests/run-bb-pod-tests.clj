@@ -85,6 +85,7 @@
                     [?e :age ?a]]
                   (d/db conn)))))
     (let [timestamp (Date.)]
+      (Thread/sleep 1)
       (d/transact conn {:tx-data [{:db/id 3 :age 25}]})
       (d/transact conn [{:name "FOO"  :age "BAR"}])
       (testing "pull"
