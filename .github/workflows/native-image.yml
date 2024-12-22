@@ -7,7 +7,6 @@ on:
     paths-ignore:
       - '**/README.md'
       - 'doc/**'
-      - '.github/**'
       - '.circleci/**'
       - 'bb/**'
       - 'dev/**'
@@ -20,42 +19,40 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-12
+          - os: macos-13
             name: macos
     runs-on: ${{ matrix.os }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GRAALVM_VERSION: 22.0.2
+      GRAALVM_VERSION: 24.0.1
       DTHK_PLATFORM: macos
       DTHK_ARCH: amd64
     steps:
       - name: Git checkout
         uses: actions/checkout@v2
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           submodules: 'true'
 
-      - name: Cache deps
-        uses: actions/cache@v2
-        id: cache-deps
+      - name: Restore cache
+        uses: actions/cache/restore@v4
+        id: restore-cache
         with:
           path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-${{ hashFiles('project.clj') }}
-          restore-keys: ${{ runner.os }}-maven-
+          key: ${{ runner.os }}-maven-${{ hashFiles('deps.edn') }}
 
       - name: Setup GraalVM
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '22'
+          java-version: '24'
           distribution: 'graalvm'
-          components: 'native-image'
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install clojure tools
         uses: DeLaGuardo/setup-clojure@5.0
         with:
-          cli: 1.10.3.1040
-          bb: 1.3.191
+          cli: 1.12.1.1550
+          bb: 1.12.204
 
       - name: Build native image
         run: bb ni-cli
@@ -66,4 +63,11 @@ jobs:
           bb test bb-pod
 
       - name: Release native-image
-        run: bb release native-cli
+        run: bb release native-image
+
+      - name: Save cache
+        uses: actions/cache/save@v4
+        id: save-cache
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('deps.edn') }}
