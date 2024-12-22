@@ -2,8 +2,8 @@ name: Building native images
 
 on:
   push:
-    branches:
-      - main
+    # branches:
+    #   - main
     paths-ignore:
       - '**/README.md'
       - 'doc/**'
