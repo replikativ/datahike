@@ -7,7 +7,7 @@ on:
     paths-ignore:
       - '**/README.md'
       - 'doc/**'
-      - '.github/**'
+      # - '.github/**'
       - '.circleci/**'
       - 'bb/**'
       - 'dev/**'
