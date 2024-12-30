@@ -12,21 +12,25 @@
 
 [Datahike](https://datahike.io) is a git-like, read-scalable, distributed
 [Datalog](https://en.wikipedia.org/wiki/Datalog) database powered by an
-efficient Datalog query engine. It expands the *copy-on-write* memory semantics
-of Clojure to a globally joinable index space, Datahike databases can be joined
-remotely without any coordination, only access to the underlying store is needed
-and database snapshots can be hold onto by readers between queries. This removes
-the necessity of any glue code to bring different data sources together.
-Compared to SQL Datahike allows invocation of any Clojure (JVM) function as part
-of its queries. Datahike has competitive performance to Datomic and can handle
-databases with many millions of entities consisting of billions of Datoms. It is
-used in multiple production setups for years and has not experienced any data
-losses to our knowledge. Datahike has a [Java
-API](./java/src/datahike/java/Datahike.java), can be natively compiled and used
-from the [command line](./doc/cli.md) and a [babashka pod](./doc/bb-pod.md). Its
-ClojureScript port is work in progress. The goal is to make it easy to bring the
-Datalog query engine in whatever runtime environments that need access to your
-data.
+expressive, flexible and efficient query engine. It expands the functional
+*copy-on-write* memory semantics of Clojure to a globally joinable index space.
+Datahike databases can be joined remotely without any coordination, only access
+to the underlying store is needed and database snapshots can be hold onto by
+readers between queries.
+
+This removes the necessity of any glue code to bring different data sources
+together. Compared to SQL Datahike allows invocation of any Clojure (JVM)
+function as part of its queries. Datahike has competitive performance to Datomic
+and can handle databases with many millions of entities consisting of billions
+of Datoms. It is used in multiple production setups for years and has not
+experienced any data losses to our knowledge. 
+
+Datahike has a [Java API](./java/src/datahike/java/Datahike.java), can be
+natively compiled and used from the [command line](./doc/cli.md) and a [babashka
+pod](./doc/bb-pod.md). Its ClojureScript port is work in progress. The goal is
+to make it easy to bring the Datalog query engine in whatever runtime
+environments that need access to your data. It is also used as a foundation for
+a next generation [AI simulation runtime](https://github.com/whilo/simmis/).
 
 Besides the integrated file store different underlying durable stores are supported by Datahike:
 
@@ -35,13 +39,6 @@ Besides the integrated file store different underlying durable stores are suppor
 - [JDBC](https://github.com/replikativ/datahike-jdbc)
 - [Redis](https://github.com/replikativ/datahike-redis)
 - [Google Cloud Storage](https://github.com/The-Literal-Company/datahike-gcs)
-
-We presented Datahike also at meetups, for example at:
-
-- [2021 Bay Area Clojure meetup](https://www.youtube.com/watch?v=GG-S-xrDS5M)
-- [2019 scicloj online meetup](https://www.youtube.com/watch?v=Hjo4TEV81sQ).
-- [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
-- [2018 Dutch clojure meetup](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
 
 ## Usage
 
@@ -136,6 +133,16 @@ Refer to the docs for more information:
 
 
 For simple examples have a look at the projects in the `examples` folder.
+
+## Presentations
+
+We presented Datahike also at meetups, for example at:
+
+- [2021 Bay Area Clojure meetup](https://www.youtube.com/watch?v=GG-S-xrDS5M)
+- [2019 scicloj online meetup](https://www.youtube.com/watch?v=Hjo4TEV81sQ).
+- [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
+- [2018 Dutch clojure meetup](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
+
 
 ## Example Projects
 
