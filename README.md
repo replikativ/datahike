@@ -52,7 +52,7 @@ if you need help.
 
 Add to your dependencies:
 
-[![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
+[![Clojars Project](https://img.shields.io/clojars/v/io.replikativ/datahike.svg)](https://clojars.org/io.replikativ/datahike)
 
 ```clojure
 (require '[datahike.api :as d])
