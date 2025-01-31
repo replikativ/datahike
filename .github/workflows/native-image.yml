@@ -20,7 +20,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-14
+          - os: macos-14-large
             name: macos
     runs-on: ${{ matrix.os }}
     env:
