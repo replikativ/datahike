@@ -49,6 +49,14 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: foo
+        run: |
+          echo $GRAALVM_HOME
+          echo $JAVA_HOME
+          ls -larhtR $JAVA_HOME
+          cd $JAVA_HOME
+          pwd
+
       - name: Install clojure tools
         uses: DeLaGuardo/setup-clojure@5.0
         with:
