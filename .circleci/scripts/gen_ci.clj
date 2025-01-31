@@ -101,10 +101,10 @@ bb test native-image")
            "sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license")
       (run "Install GraalVM"
            (format "/bin/wget -O graalvm.tar.gz %s
-/bin/mkdir graalvm || true
-/bin/tar -xzf graalvm.tar.gz --directory graalvm --strip-components 1
-/bin/ls -la graalvm
-/bin/pwd"
+mkdir graalvm || true
+tar -xzf graalvm.tar.gz --directory graalvm --strip-components 1
+ls -la graalvm
+pwd"
                    graalvm-url))
       (run "Install Clojure"
            ".circleci/scripts/install-clojure /usr/local")
