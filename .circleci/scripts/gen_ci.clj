@@ -89,7 +89,6 @@ bb test native-image")
      :macos
      {:xcode "13.4.1"}
      :resource_class "macos.m1.medium.gen1"
-     :working_directory "/home/circleci/replikativ"
      :environment {:GRAALVM_VERSION graalvm-version
                    :DTHK_PLATFORM "macos"
                    :DTHK_ARCH arch
@@ -113,10 +112,10 @@ bb test native-image")
            "bash <(curl -s https://raw.githubusercontent.com/borkdude/babashka/master/install) --dir $(pwd)
             sudo mv bb /usr/local/bin")
       (run "Build native image"
-           "cd /home/circleci/replikativ
+           "cd datahike
 bb ni-cli")
       (run "Test native image"
-           "cd /home/circleci/replikativ
+           "cd datahike
 bb test native-image")
       {:persist_to_workspace
        {:root "/home/circleci/"
