@@ -112,11 +112,10 @@ pwd"
            "bash <(curl -s https://raw.githubusercontent.com/borkdude/babashka/master/install) --dir $(pwd)
             sudo mv bb /usr/local/bin")
       (run "Build native image"
-           "cd datahike
+           "ls -lahrt
 bb ni-cli")
       (run "Test native image"
-           "cd datahike
-bb test native-image")
+           "bb test native-image")
       {:persist_to_workspace
        {:root "/home/circleci/"
         :paths ["replikativ/dthk"]}}
