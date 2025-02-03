@@ -110,9 +110,8 @@ pwd"
            ".circleci/scripts/install-clojure /usr/local")
       (run "Install Babashka"
            "bash <(curl -s https://raw.githubusercontent.com/borkdude/babashka/master/install) --dir /Users/distiller
-            ls -lahrt
-            echo $PATH
-            sudo mv bb /usr/local/bin
+            ls -lahrt /Users/distiller
+            sudo mv /Users/distiller/bb /usr/local/bin
             ls -lahrt /usr/local/bin
             /usr/local/bin/bb --version
             bb --version")
