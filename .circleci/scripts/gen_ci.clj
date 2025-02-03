@@ -100,7 +100,7 @@ bb test native-image")
       (run "Install Rosetta"
            "sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license")
       (run "Install GraalVM"
-           (format "/bin/wget -O graalvm.tar.gz %s
+           (format "wget -O graalvm.tar.gz %s
 mkdir graalvm || true
 tar -xzf graalvm.tar.gz --directory graalvm --strip-components 1
 ls -la graalvm
