@@ -110,7 +110,9 @@ pwd"
            ".circleci/scripts/install-clojure /usr/local")
       (run "Install Babashka"
            "bash <(curl -s https://raw.githubusercontent.com/borkdude/babashka/master/install) --dir $(pwd)
-            sudo mv bb /usr/local/bin")
+            sudo mv bb /usr/local/bin
+            bb --version
+            /usr/local/bin/bb --version")
       (run "Build native image"
            "ls -lahrt
 bb ni-cli")
