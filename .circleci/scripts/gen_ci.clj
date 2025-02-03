@@ -92,28 +92,29 @@ bb test native-image")
      :environment {:GRAALVM_VERSION graalvm-version
                    :DTHK_PLATFORM "macos"
                    :DTHK_ARCH arch
-                   :GRAALVM_HOME "/Users/distiller/graalvm/Contents/Home"
-                   :JAVA_HOME "/Users/distiller/graalvm/Contents/Home"}
+                   :GRAALVM_HOME "/Library/Java/JavaVirtualMachines/graalvm/Contents/Home"
+                   :JAVA_HOME "/Library/Java/JavaVirtualMachines/graalvm/Contents/Home"}
      :steps
      [:checkout
       {:restore_cache {:keys [cache-key]}}
       (run "Install Rosetta"
            "sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license")
       (run "Install GraalVM"
-           (format "wget -O graalvm.tar.gz %s
+           (format "cd /Users/distiller
+wget -O graalvm.tar.gz %s
 mkdir graalvm || true
 tar -xzf graalvm.tar.gz --directory graalvm --strip-components 1
-ls -la graalvm
-pwd"
+sudo mv graalvm /Library/Java/JavaVirtualMachines
+cd /Library/Java/JavaVirtualMachines/graalvm
+ls -lahrtR
+java -version
+native-image"
                    graalvm-url))
       (run "Install Clojure"
            ".circleci/scripts/install-clojure /usr/local")
       (run "Install Babashka"
            "bash <(curl -s https://raw.githubusercontent.com/borkdude/babashka/master/install) --dir /Users/distiller
-            ls -lahrt /Users/distiller
             sudo mv /Users/distiller/bb /usr/local/bin
-            ls -lahrt /usr/local/bin
-            /usr/local/bin/bb --version
             bb --version")
       (run "Build native image"
            "ls -lahrt
