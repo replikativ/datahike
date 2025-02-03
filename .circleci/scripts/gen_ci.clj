@@ -114,8 +114,8 @@ pwd"
             echo $PATH
             sudo mv bb /usr/local/bin
             ls -lahrt /usr/local/bin
-            bb --version
-            /usr/local/bin/bb --version")
+            /usr/local/bin/bb --version
+            bb --version")
       (run "Build native image"
            "ls -lahrt
 bb ni-cli")
