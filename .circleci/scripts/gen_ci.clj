@@ -93,7 +93,8 @@ bb test native-image")
                    :DTHK_PLATFORM "macos"
                    :DTHK_ARCH arch
                    :GRAALVM_HOME "/Library/Java/JavaVirtualMachines/graalvm/Contents/Home"
-                   :JAVA_HOME "/Library/Java/JavaVirtualMachines/graalvm/Contents/Home"}
+                   :JAVA_HOME "/Library/Java/JavaVirtualMachines/graalvm/Contents/Home"
+                   :PATH "${PATH}:/Library/Java/JavaVirtualMachines/graalvm/Contents/Home/bin"}
      :steps
      [:checkout
       {:restore_cache {:keys [cache-key]}}
