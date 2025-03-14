@@ -46,9 +46,11 @@
     (stop-fn)))
 
 (defn import-db [conn path & opts]
-  (let [star-time (System/currentTimeMillis)
-        filter-schema? (get opts :filter-schema? false)
+  (let [filter-schema? (get opts :filter-schema? false)
         sync? (get opts :sync? true)
+        load-entities? (get opts :load-entities? false)
+        
+        star-time (System/currentTimeMillis)
         tx-max (atom 0)
         datom-count (atom 0)
         txn-count (atom 0)
@@ -66,11 +68,10 @@
                             ;; convert Float to Double (previously reported bug)
                             (update :v instance-to-double)))
         add-datom (fn [item]
-                    (let [datom (prepare-datom item)]
-                        ;; skip schema datoms
+                     ;; skip schema datoms
                       (if filter-schema?
-                        (when (-> item (nth 1) (str "0000") (subs 0 4) (not= ":db/")) (.put q datom))
-                        (.put q datom))))
+                        (when (-> item (nth 1) (str "0000") (subs 0 4) (not= ":db/")) (.put q (prepare-datom item)))
+                        (.put q (prepare-datom item))))
         drain-queue (fn []
                       (let [acc (java.util.ArrayList.)]
                           ;; max required otherwise if previous write is slow too many in transaction
@@ -80,29 +81,40 @@
     (timbre/merge-config! {:min-level [[#{"datahike.writing"} :fatal] [#{"datahike.writer"} :fatal]]})
 
     (async/thread
-      (timbre/info "Starting import")
-      (loop []
-        (Thread/sleep 100) ; batch writes for improved performance
-        (let [datoms (drain-queue)]
-          (try
-            (timbre/debug "loading" (count datoms) "datoms")
-            (swap! txn-count + (count datoms))
-            (api/load-entities conn datoms)
-            (catch Exception e
-                ;; we can't print the message as it contains all the datoms
-              (timbre/error "Error loading" (count datoms)))))
-        (when (and (>= @txn-count @datom-count) @processed)
-            ;; stop when we've transacted all datoms
-          (timbre/info "\nImported" @datom-count "datoms in total. \nTime elapsed" (- (System/currentTimeMillis) star-time) "ms")
-          (reset! stop true))
-        (when (not @stop) (recur))))
-
-    (async/thread
       (process-cbor-file
        path
        add-datom
        (fn []
          (reset! processed true))))
+
+    (async/thread
+      (timbre/info "Starting import")
+      (loop []
+        (Thread/sleep 100) ; batch writes for improved performance
+        (when (or @processed (not sync?))
+          (let [datoms (drain-queue)]
+            (try
+              (timbre/debug "loading" (count datoms) "datoms")
+              (swap! txn-count + (count datoms))
+              
+              ;; in sync mode the max-tx will be as the test expect
+              ;; in async mode the max-tx will be tx-max + 1
+              (when sync?
+                (swap! conn assoc :max-tx @tx-max))
+              
+              (if load-entities?
+                (api/load-entities conn datoms) ;; load entities is faster for large datasets
+                (api/transact conn datoms)) ;; transact is slow but preserves max-tx id
+              (catch Exception e
+                  ;; we can't print the message as it contains all the datoms
+                (timbre/error "Error loading" (count datoms))))))
+        (when (and (>= @txn-count @datom-count) @processed)
+            ;; stop when we've transacted all datoms
+          (when-not sync?
+            (swap! conn assoc :max-tx @tx-max))
+          (timbre/info "\nImported" @datom-count "datoms in total. \nTime elapsed" (- (System/currentTimeMillis) star-time) "ms")
+          (reset! stop true))
+        (when (not @stop) (recur))))
 
     (when sync?
       (loop []
