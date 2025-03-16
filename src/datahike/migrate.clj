@@ -35,21 +35,18 @@
   "Reads a CBOR file from `filename` and calls `process-fn` this allows for
   ingesting a large number of datoms without running out of memory."
   [filename process-fn stop-fn]
-  (let [codec (cbor/cbor-codec
-               {:read-handlers {0 :x}
-                :write-handlers tags.time/date-read-handlers})]
-    (with-open [in (io/input-stream filename)]
-      (loop []
-        (when-let [data (cbor/decode cbor/default-codec in)]
-          (process-fn data)
-          (recur))))
-    (stop-fn)))
+  (with-open [in (io/input-stream filename)]
+    (loop []
+      (when-let [data (cbor/decode cbor/default-codec in)]
+        (process-fn data)
+        (recur))))
+  (stop-fn))
 
 (defn import-db [conn path & opts]
   (let [filter-schema? (get opts :filter-schema? false)
         sync? (get opts :sync? true)
         load-entities? (get opts :load-entities? false)
-        
+
         star-time (System/currentTimeMillis)
         tx-max (atom 0)
         datom-count (atom 0)
@@ -69,9 +66,9 @@
                             (update :v instance-to-double)))
         add-datom (fn [item]
                      ;; skip schema datoms
-                      (if filter-schema?
-                        (when (-> item (nth 1) (str "0000") (subs 0 4) (not= ":db/")) (.put q (prepare-datom item)))
-                        (.put q (prepare-datom item))))
+                    (if filter-schema?
+                      (when (-> item (nth 1) (str "0000") (subs 0 4) (not= ":db/")) (.put q (prepare-datom item)))
+                      (.put q (prepare-datom item))))
         drain-queue (fn []
                       (let [acc (java.util.ArrayList.)]
                           ;; max required otherwise if previous write is slow too many in transaction
@@ -96,12 +93,12 @@
             (try
               (timbre/debug "loading" (count datoms) "datoms")
               (swap! txn-count + (count datoms))
-              
+
               ;; in sync mode the max-tx will be as the test expect
               ;; in async mode the max-tx will be tx-max + 1
               (when sync?
                 (swap! conn assoc :max-tx @tx-max))
-              
+
               (if load-entities?
                 (api/load-entities conn datoms) ;; load entities is faster for large datasets
                 (api/transact conn datoms)) ;; transact is slow but preserves max-tx id
