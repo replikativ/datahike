@@ -43,9 +43,10 @@
   (stop-fn))
 
 (defn import-db [conn path & opts]
-  (let [filter-schema? (get opts :filter-schema? false)
-        sync? (get opts :sync? true)
-        load-entities? (get opts :load-entities? false)
+  (let [options (first opts)
+        filter-schema? (get options :filter-schema? false)
+        sync? (get options :sync? true)
+        load-entities? (get options :load-entities? false)
 
         star-time (System/currentTimeMillis)
         tx-max (atom 0)
