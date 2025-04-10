@@ -14,7 +14,7 @@
     (float? v) :db.type/float
     (double? v) :db.type/double
     (number? v) :db.type/number
-    (string? v) :db.type/string 
+    (string? v) :db.type/string
     (boolean? v) :db.type/boolean
     (keyword? v) :db.type/keyword
     (symbol? v) :db.type/symbol
@@ -31,16 +31,16 @@
   [attr v]
   (cond
     (vector? v)
-    (when (seq v) 
+    (when (seq v)
       {:db/ident attr
        :db/valueType (value->type (first v))
        :db/cardinality :db.cardinality/many})
-    
+
     (map? v)
     {:db/ident attr
      :db/valueType :db.type/ref
      :db/cardinality :db.cardinality/one}
-    
+
     :else
     {:db/ident attr
      :db/valueType (value->type v)
@@ -85,14 +85,14 @@
       (when-let [existing-schema (get db-schema ident)]
         (when (not= (:db/valueType existing-schema) valueType)
           (swap! conflicts conj {:attr ident
-                                :conflict :value-type
-                                :existing (:db/valueType existing-schema)
-                                :inferred valueType}))
+                                 :conflict :value-type
+                                 :existing (:db/valueType existing-schema)
+                                 :inferred valueType}))
         (when (not= (:db/cardinality existing-schema) cardinality)
           (swap! conflicts conj {:attr ident
-                                :conflict :cardinality
-                                :existing (:db/cardinality existing-schema)
-                                :inferred cardinality}))))
+                                 :conflict :cardinality
+                                 :existing (:db/cardinality existing-schema)
+                                 :inferred cardinality}))))
     {:compatible? (empty? @conflicts)
      :conflicts @conflicts}))
 
