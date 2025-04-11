@@ -1,12 +1,13 @@
 (ns ^:no-doc datahike.store
   (:require [clojure.spec.alpha :as s]
-            [konserve.filestore :as fs]
+            #?(:clj [konserve.filestore :as fs])
             [konserve.memory :as mem]
             [environ.core :refer [env]]
             [datahike.index :as di]
             [datahike.tools :as dt]
             [konserve.cache :as kc]
-            [clojure.core.cache :as cache]
+            #?(:clj [clojure.core.cache :as cache]
+               :cljs [cljs.cache :as cache])
             [taoensso.timbre :refer [info]]
             [zufall.core :refer [rand-german-mammal]])
   #?(:clj (:import [java.nio.file Paths])))
@@ -29,7 +30,7 @@
   :backend)
 
 (defmethod empty-store :default [{:keys [backend]}]
-  (throw (IllegalArgumentException. (str "Can't create a store with scheme: " backend))))
+  (throw (#?(:clj IllegalArgumentException. :cljs js/Error.) (str "Can't create a store with scheme: " backend))))
 
 (defmulti delete-store
   "Deletes an existing store"
@@ -37,7 +38,7 @@
   :backend)
 
 (defmethod delete-store :default [{:keys [backend]}]
-  (throw (IllegalArgumentException. (str "Can't delete a store with scheme: " backend))))
+  (throw (#?(:clj IllegalArgumentException. :cljs js/Error.) (str "Can't delete a store with scheme: " backend))))
 
 (defmulti connect-store
   "Makes a connection to an existing store"
@@ -45,7 +46,7 @@
   :backend)
 
 (defmethod connect-store :default [{:keys [backend]}]
-  (throw (IllegalArgumentException. (str "Can't connect to store with scheme: " backend))))
+  (throw (#?(:clj IllegalArgumentException. :cljs js/Error.) (str "Can't connect to store with scheme: " backend))))
 
 (defmulti release-store
   "Releases the connection to an existing store (optional)."
@@ -109,33 +110,38 @@
 (defmethod config-spec :mem [_config] ::mem)
 
 ;; file
+#?(:clj
+   (defmethod store-identity :file [config]
+     [:file (:scope config) (:path config)]))
 
-(defmethod store-identity :file [config]
-  [:file (:scope config) (:path config)])
+#?(:clj
+   (defmethod empty-store :file [{:keys [path config]}]
+     (fs/connect-fs-store path :opts {:sync? true} :config config)))
 
-(defmethod empty-store :file [{:keys [path config]}]
-  (fs/connect-fs-store path :opts {:sync? true} :config config))
+#?(:clj
+   (defmethod delete-store :file [{:keys [path]}]
+     (fs/delete-store path)))
 
-(defmethod delete-store :file [{:keys [path]}]
-  (fs/delete-store path))
+#?(:clj
+   (defmethod connect-store :file [{:keys [path config]}]
+     (fs/connect-fs-store path :opts {:sync? true} :config config)))
 
-(defmethod connect-store :file [{:keys [path config]}]
-  (fs/connect-fs-store path :opts {:sync? true} :config config))
+#?(:clj
+   (defn- get-working-dir []
+     (.toString (.toAbsolutePath (Paths/get "" (into-array String []))))))
 
-(defn- get-working-dir []
-  (.toString (.toAbsolutePath (Paths/get "" (into-array String [])))))
+#?(:clj
+   (defmethod default-config :file [config]
+     (merge
+      {:path  (:datahike-store-path env (str (get-working-dir) "/datahike-db-" (rand-german-mammal)))
+       :scope (dt/get-hostname)}
+      config)))
 
-(defmethod default-config :file [config]
-  (merge
-   {:path (:datahike-store-path env (str (get-working-dir) "/datahike-db-" (rand-german-mammal)))
-    :scope (dt/get-hostname)}
-   config))
+#?(:clj (s/def :datahike.store.file/path string?))
+#?(:clj (s/def :datahike.store.file/backend #{:file}))
+#?(:clj (s/def :datahike.store.file/scope string?))
+#?(:clj (s/def ::file (s/keys :req-un [:datahike.store.file/backend
+                                       :datahike.store.file/path
+                                       :datahike.store.file/scope])))
 
-(s/def :datahike.store.file/path string?)
-(s/def :datahike.store.file/backend #{:file})
-(s/def :datahike.store.file/scope string?)
-(s/def ::file (s/keys :req-un [:datahike.store.file/backend
-                               :datahike.store.file/path
-                               :datahike.store.file/scope]))
-
-(defmethod config-spec :file [_] ::file)
+#?(:clj  (defmethod config-spec :file [_] ::file))

@@ -1,21 +1,31 @@
 (ns ^:no-doc datahike.schema
   (:require [clojure.spec.alpha :as s]
             [datahike.datom])
-  (:import [datahike.datom Datom]))
+  #?(:clj (:import [datahike.datom Datom])))
 
-(s/def :db.type/id #(or (= (class %) java.lang.Long) string?))
+(s/def :db.type/id #?(:clj #(or (= (class %) java.lang.Long) string?)
+                      :cljs #(or (and (number? %)
+                                      (js/Number.isSafeInteger %))
+                                 string?)))
 
 ;; db types
-(s/def :db.type/bigdec decimal?)
-(s/def :db.type/bigint integer?)
+(s/def :db.type/bigdec #?(:cljs (complement any?) ; feels more appropriate than hiding key -pat
+                          :clj decimal?))
+(s/def :db.type/bigint #?(:clj integer?
+                          :cljs #(or (integer? %)
+                                     (= js/BigInt (type %)))))
 (s/def :db.type/boolean boolean?)
-(s/def :db.type/bytes bytes?)
+(s/def :db.type/bytes #?(:clj bytes?
+                         :cljs #(and (some->> (.-buffer %) (instance? js/ArrayBuffer))
+                                     (some->> (.-byteLength %) (number?)))))
 (s/def :db.type/double double?)
 (s/def :db.type/float float?)
 (s/def :db.type/number number?)
-(s/def :db.type/instant #(= (class %) java.util.Date))
+(s/def :db.type/instant #?(:clj #(= (class %) java.util.Date)
+                           :cljs inst?))
 (s/def :db.type/keyword keyword?)
-(s/def :db.type/long #(= (class %) java.lang.Long))
+(s/def :db.type/long #?(:clj #(= (class %) java.lang.Long)
+                        :cljs #(js/Number.isSafeInteger %)))
 (s/def :db.type/ref :db.type/id)
 (s/def :db.type/string string?)
 (s/def :db.type/symbol symbol?)

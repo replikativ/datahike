@@ -1,5 +1,6 @@
 (ns datahike.schema-cache
-  (:require [clojure.core.cache.wrapped :as cw]
+  (:require #?(:clj [clojure.core.cache.wrapped :as cw]
+               :cljs [cljs.cache.wrapped :as cw])
             [datahike.config :as dc]
             [datahike.store :as ds]))
 

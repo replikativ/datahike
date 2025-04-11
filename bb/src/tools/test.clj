@@ -58,12 +58,17 @@
 (defn specs []
   (kaocha "--focus" "specs" "--plugin" "kaocha.plugin/orchestra"))
 
+(defn cljs-compile-test []
+  (p/shell "clj -M:cljs -m shadow.cljs.devtools.cli compile :comptest")
+  (p/shell "node target/out/comptest.js"))
+
 (defn all [config]
   (kaocha "--skip" "specs")
   (specs)
   (back-compat config)
   (native-image)
-  (bb-pod))
+  (bb-pod)
+  (cljs-compile-test))
 
 (defn -main [config & args]
   (if (seq args)
@@ -72,5 +77,6 @@
       "bb-pod" (bb-pod)
       "back-compat" (back-compat config)
       "specs" (specs)
+      "cljs" (cljs-compile-test)
       (apply kaocha "--focus" args))
     (all config)))

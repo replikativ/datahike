@@ -4,7 +4,7 @@
             [datahike.db :as db]
             [datahike.db.interface :as dbi]
             [datahike.db.utils :as dbu])
-  (:import [datahike.java IEntity]))
+  #?(:clj (:import [datahike.java IEntity])))
 
 (declare entity ->Entity equiv-entity lookup-entity touch)
 
@@ -46,7 +46,7 @@
    (defn- js-seq [e]
      (touch e)
      (for [[a v] @(.-cache e)]
-       (if (db/multival? (.-db e) a)
+       (if (dbu/multival? (.-db e) a)
          [a (multival->js v)]
          [a v]))))
 
@@ -60,7 +60,7 @@
 
        ;; js/map interface
        (keys [this]
-             (es6-iterator (c/keys this)))
+             (es6-iterator (cljs.core/keys this)))
        (entries [this]
                 (es6-entries-iterator (js-seq this)))
        (values [this]
@@ -83,7 +83,7 @@
                   (.call f use-as-this v a this)))
 
        ;; js fallbacks
-       (key_set   [this] (to-array (c/keys this)))
+       (key_set   [this] (to-array (cljs.core/keys this)))
        (entry_set [this] (to-array (map to-array (js-seq this))))
        (value_set [this] (to-array (map second (js-seq this))))
 
