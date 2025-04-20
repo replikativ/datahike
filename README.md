@@ -123,6 +123,7 @@ Refer to the docs for more information:
 - [logging and error handling](./doc/logging_and_error_handling.md)
 - [schema flexibility](./doc/schema.md)
 - [time variance](./doc/time_variance.md)
+- [unstructured input support](./doc/unstructured.md) (experimental)
 - [versioning](./doc/versioning.md)
 
 
