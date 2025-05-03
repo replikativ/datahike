@@ -1,7 +1,7 @@
 {:org "replikativ"
  :lib "datahike"
- :version {:major 0
-           :minor 6}
+ :version {:major 1
+           :minor 0}
  :git-url "git@github.com:replikativ/datahike.git"
 
  :pom-template "./bb/resources/template/pom.xml"
