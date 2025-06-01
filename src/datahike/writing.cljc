@@ -13,8 +13,7 @@
             [taoensso.timbre :as log]
             [hasch.core :refer [uuid]]
             [superv.async :refer [go-try- <?-]]
-            [clojure.core.async :refer [poll!]]
-            [konserve.utils :refer [#?(:clj async+sync) *default-sync-translation*]
+            [konserve.utils :refer [#?(:clj async+sync :cljs async+sync) multi-key-capable? *default-sync-translation*]
              #?@(:cljs [:refer-macros [async+sync]])]))
 
 ;; mapping to storage
@@ -26,34 +25,20 @@
     (= (count (select-keys obj keys-to-check))
        (count keys-to-check))))
 
-(defn flush-pending-writes [store sync?]
-  (let [pending-writes (:pending-writes (:storage store))
-        current-writes (atom nil)]
-      ;; atomic extraction and reset
-    (when pending-writes
-      ;; at least as new as the current commit, maybe some more writes are included
-      (swap! pending-writes (fn [old] (reset! current-writes old) [])))
-    (if sync?
-      (loop [pfs @current-writes]
-        (let [f (first pfs)]
-          (when f
-            (let [fv (poll! f)]
-              (if fv
-                (recur (rest pfs))
-                #?(:cljs
-                   (throw (ex-info "sync cljs writers must be finished before flush-pending-writes calls"
-                                   {:pending-writes @pending-writes
-                                    :current-writes @current-writes}))
-                   :clj
-                   (do (Thread/sleep 1)
-                       (recur pfs))))))))
-      (go-try-
-       (loop [[f & r] @current-writes]
-         (when f (<?- f) (recur r)))))))
+(defn get-and-clear-pending-kvs!
+  "Retrieves and clears pending key-value pairs from the store's pending-writes atom.
+  Assumes :pending-writes in store's storage holds an atom of a collection of [key value] pairs."
+  [store]
+  (let [pending-writes-atom (-> store :storage :pending-writes) ; Assumes :storage key holds the CachedStorage
+        kvs-to-write (atom [])]
+    (when pending-writes-atom
+      ;; Atomically get current KVs and reset the pending-writes atom.
+      (swap! pending-writes-atom (fn [old-kvs] (reset! kvs-to-write old-kvs) [])))
+    @kvs-to-write))
 
 (defn db->stored
-  "Maps memory db to storage layout and flushes dirty indices."
-  [db flush? sync?]
+  "Maps memory db to storage layout. Index flushes will add [k v] pairs to pending-writes."
+  [db flush?]
   (when-not (dbu/db? db)
     (dt/raise "Argument is not a database."
               {:type     :argument-is-not-a-db
@@ -70,12 +55,13 @@
         backend                                           (di/konserve-backend (:index config) store)
         not-in-memory?                                    (not= :mem (-> config :store :backend))
         flush! (and flush? not-in-memory?)
-        schema-meta-op (when-not (sc/write-cache-has? (:store config) schema-meta-key)
-                         (sc/add-to-write-cache (:store config) schema-meta-key)
-                         (k/assoc store schema-meta-key schema-meta {:sync? sync?}))]
+        ;; Prepare schema meta KV pair for writing, but don't write it here.
+        schema-meta-kv-to-write (when-not (sc/write-cache-has? (:store config) schema-meta-key)
+                                  (sc/add-to-write-cache (:store config) schema-meta-key)
+                                  [schema-meta-key schema-meta])]
     (when-not (sc/cache-has? schema-meta-key)
       (sc/cache-miss schema-meta-key schema-meta))
-    [schema-meta-op
+    [schema-meta-kv-to-write ;; Return [key value] pair or nil
      (merge
       {:schema-meta-key  schema-meta-key
        :config          config
@@ -84,6 +70,7 @@
        :max-tx          max-tx
        :max-eid         max-eid
        :op-count        op-count
+       ;; di/-flush will now add [k v] to pending-writes via CachedStorage
        :eavt-key        (cond-> eavt flush! (di/-flush backend))
        :aevt-key        (cond-> aevt flush! (di/-flush backend))
        :avet-key        (cond-> avet flush! (di/-flush backend))}
@@ -147,6 +134,17 @@
   (let [{:keys [hash max-tx max-eid meta]} db]
     (uuid [hash max-tx max-eid meta])))
 
+(defn write-pending-kvs!
+  "Writes a collection of key-value pairs to the store.
+  Handles synchronous and asynchronous writes.
+  Assumes it's called within a go-try- block if sync? is false."
+  [store kvs sync?]
+  (if sync?
+    (doseq [[k v] kvs]
+      (k/assoc store k v {:sync? true}))
+    (let [pending-ops (mapv (fn [[k v]] (k/assoc store k v {:sync? false})) kvs)]
+      (go-try- (doseq [op pending-ops] (<?- op))))))
+
 (defn commit!
   ([db parents]
    (commit! db parents true))
@@ -160,14 +158,31 @@
                       db            (-> db
                                         (assoc-in [:meta :datahike/commit-id] cid)
                                         (assoc-in [:meta :datahike/parents] parents))
-                      [schema-meta-op db-to-store]   (db->stored db true sync?)
-                      _             (<?- (flush-pending-writes store sync?))
-                      commit-log-op (k/assoc store cid db-to-store {:sync? sync?})
-                      branch-op     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
-                      ;; now wait for all the writes to complete
-                  (when (and schema-meta-op (not sync?)) (<?- schema-meta-op))
-                  (<?- commit-log-op)
-                  (<?- branch-op)
+                      ;; db->stored now returns [schema-meta-kv-to-write db-to-store]
+                      ;; and index flushes will have populated pending-writes
+                      [schema-meta-kv-to-write db-to-store] (db->stored db true)
+                      ;; Get all pending [k v] pairs (e.g., from index flushes)
+                      pending-kvs   (get-and-clear-pending-kvs! store)]
+
+                  (if (multi-key-capable? store)
+                    (let [writes-map (cond-> (into {} pending-kvs) ; Initialize with pending KVs
+                                       schema-meta-kv-to-write (assoc (first schema-meta-kv-to-write) (second schema-meta-kv-to-write))
+                                       true                    (assoc cid db-to-store)
+                                       true                    (assoc (:branch config) db-to-store))]
+                      (<?- (k/multi-assoc store writes-map {:sync? sync?})))
+                    ;; Then write schema-meta, commit-log, branch
+                    (let [schema-meta-written (when schema-meta-kv-to-write
+                                                (k/assoc store (first schema-meta-kv-to-write) (second schema-meta-kv-to-write) {:sync? sync?}))
+
+                          ;; Make sure all pointed to values are written before the commit log and branch
+                          _ (when schema-meta-kv-to-write (<?- schema-meta-written))
+                          _ (<?- (write-pending-kvs! store pending-kvs sync?))
+
+                          commit-log-written (k/assoc store cid db-to-store {:sync? sync?})
+                          branch-written     (k/assoc store (:branch config) db-to-store {:sync? sync?})]
+                      (when-not sync?
+                        (<?- commit-log-written)
+                        (<?- branch-written))))
                   db)))))
 
 (defn complete-db-update [old tx-report]
@@ -230,6 +245,7 @@
                        :ident-ref-map ident-ref-map
                        :ref-ident-map ref-ident-map}
           schema-meta-key (uuid schema-meta)
+          ;; di/-flush calls will populate pending-writes via CachedStorage
           db-to-store (merge {:max-tx          max-tx
                               :max-eid         max-eid
                               :op-count        op-count
@@ -249,7 +265,11 @@
       (sc/add-to-write-cache (:store config) schema-meta-key)
       (when-not (sc/cache-has? schema-meta-key)
         (sc/cache-miss schema-meta-key schema-meta))
-      (flush-pending-writes store true)
+      
+      ;; Process pending KVs from index flushes synchronously
+      (let [pending-kvs (get-and-clear-pending-kvs! store)]
+        (write-pending-kvs! store pending-kvs true))
+
       (k/assoc store :branches #{:db} {:sync? true})
       (k/assoc store cid db-to-store {:sync? true})
       (k/assoc store :db db-to-store {:sync? true})

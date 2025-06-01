@@ -5,10 +5,12 @@
             [datahike.core :refer [with]]
             [datahike.store :refer [store-identity]]
             [datahike.writing :refer [stored->db db->stored stored-db?
-                                      complete-db-update commit! create-commit-id flush-pending-writes]]
+                                      complete-db-update commit! create-commit-id get-and-clear-pending-kvs!
+                                      write-pending-kvs!]]
             [superv.async :refer [<? S go-loop-try]]
             [datahike.db.utils :refer [db?]]
-            [datahike.tools :as dt]))
+            [datahike.tools :as dt]
+            [konserve.utils :refer [multi-key-capable?]]))
 
 (defn- branch-check [branch]
   (when-not (keyword? branch)
@@ -94,16 +96,36 @@
   (parent-check parents)
   (let [store (:store db)
         cid (create-commit-id db)
-        [_schema-meta-op db] (db->stored (-> db
-                                             (assoc-in [:config :branch] branch)
-                                             (assoc-in [:meta :datahike/parents] parents)
-                                             (assoc-in [:meta :datahike/commit-id] cid))
-                                         true
-                                         true)]
-    (flush-pending-writes store true)
+        db-with-meta (-> db
+                         (assoc-in [:config :branch] branch)
+                         (assoc-in [:meta :datahike/parents] parents)
+                         (assoc-in [:meta :datahike/commit-id] cid))
+        ;; db->stored now returns [schema-meta-kv-to-write db-to-store]
+        ;; and index flushes will have populated pending-writes
+        [schema-meta-kv-to-write db-to-store] (db->stored db-with-meta true)
+        ;; Get all pending [k v] pairs (e.g., from index flushes)
+        pending-kvs (get-and-clear-pending-kvs! store)]
+
+    ;; Update the set of known branches
     (k/update store :branches #(conj % branch) {:sync? true})
-    (k/assoc store cid db {:sync? true})
-    (k/assoc store branch db {:sync? true})))
+
+    ;; Write all data synchronously
+    (if (multi-key-capable? store)
+      (let [writes-map (cond-> (into {} pending-kvs) ; Initialize with pending KVs
+                         schema-meta-kv-to-write (assoc (first schema-meta-kv-to-write) (second schema-meta-kv-to-write))
+                         true                    (assoc cid db-to-store)
+                         true                    (assoc branch db-to-store))]
+        (k/multi-assoc store writes-map {:sync? true}))
+      (do
+        ;; Use the helper function to write pending KVs (synchronously)
+        (write-pending-kvs! store pending-kvs true)
+        ;; Then write schema-meta
+        (when schema-meta-kv-to-write
+          (k/assoc store (first schema-meta-kv-to-write) (second schema-meta-kv-to-write) {:sync? true}))
+        ;; Then write commit-log and branch head
+        (k/assoc store cid db-to-store {:sync? true})
+        (k/assoc store branch db-to-store {:sync? true})))
+    nil))
 
 (defn commit-id
   "Retrieve the commit-id for this db."
