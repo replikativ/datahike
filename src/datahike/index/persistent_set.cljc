@@ -209,7 +209,7 @@
     (swap! stats update :writes inc)
     (let [address (gen-address node (:crypto-hash? config))
           _ (trace "writing storage: " address " crypto: " (:crypto-hash? config))]
-      (swap! pending-writes conj (k/assoc store address node {:sync? false}))
+      (swap! pending-writes conj [address node])
       (wrapped/miss cache address node)
       address))
   (accessed [_ address]
