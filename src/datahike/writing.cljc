@@ -165,14 +165,16 @@
                       pending-kvs   (get-and-clear-pending-kvs! store)]
 
                   (if (multi-key-capable? store)
-                    (let [writes-map (cond-> (into {} pending-kvs) ; Initialize with pending KVs
-                                       schema-meta-kv-to-write (assoc (first schema-meta-kv-to-write) (second schema-meta-kv-to-write))
+                    (let [[meta-key meta-val] schema-meta-kv-to-write
+                          writes-map (cond-> (into {} pending-kvs) ; Initialize with pending KVs
+                                       schema-meta-kv-to-write (assoc meta-key meta-val)
                                        true                    (assoc cid db-to-store)
                                        true                    (assoc (:branch config) db-to-store))]
                       (<?- (k/multi-assoc store writes-map {:sync? sync?})))
                     ;; Then write schema-meta, commit-log, branch
-                    (let [schema-meta-written (when schema-meta-kv-to-write
-                                                (k/assoc store (first schema-meta-kv-to-write) (second schema-meta-kv-to-write) {:sync? sync?}))
+                    (let [[meta-key meta-val] schema-meta-kv-to-write
+                          schema-meta-written (when schema-meta-kv-to-write
+                                                (k/assoc store meta-key meta-val {:sync? sync?}))
 
                           ;; Make sure all pointed to values are written before the commit log and branch
                           _ (when schema-meta-kv-to-write (<?- schema-meta-written))
