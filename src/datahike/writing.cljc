@@ -265,7 +265,7 @@
       (sc/add-to-write-cache (:store config) schema-meta-key)
       (when-not (sc/cache-has? schema-meta-key)
         (sc/cache-miss schema-meta-key schema-meta))
-      
+
       ;; Process pending KVs from index flushes synchronously
       (let [pending-kvs (get-and-clear-pending-kvs! store)]
         (write-pending-kvs! store pending-kvs true))
