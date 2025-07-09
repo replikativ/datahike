@@ -195,6 +195,9 @@ workflows:
           context:
             - dockerhub-deploy
             - github-token
+          filters:
+            branches:
+              only: main
           requires:
             - setup
       - format:
