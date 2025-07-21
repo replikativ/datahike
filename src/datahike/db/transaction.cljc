@@ -336,19 +336,25 @@
           found-eav-including-composite-tuples
           (reduce
            (fn [acc a-tuple]
-             (let [tuple-attrs           (get-in (dbi/-schema db) [a-tuple :db/tupleAttrs])
-                   contains-tuple-attrs? (clojure.set/subset?
-                                          (set tuple-attrs)
-                                          (set (keys entity)))
-                   _                     (and contains-tuple-attrs?
-                                              (run!
-                                               (fn [a]
-                                                 (let [v (get entity a)]
-                                                   (validate-val v [nil nil a v nil] db)))
-                                               tuple-attrs))
-                   v-tuple               (and contains-tuple-attrs?
-                                              (mapv (fn [a] (get entity a)) tuple-attrs))]
+             (let [tuple-attrs             (get-in (dbi/-schema db) [a-tuple :db/tupleAttrs])
+                   contains-tuple-attrs?   (clojure.set/subset?
+                                            (set tuple-attrs)
+                                            (set (keys entity)))
+                   tuple-contains-tempids? (and contains-tuple-attrs?
+                                                (some (fn [a] (and (dbu/ref? db a)
+                                                                   (tempid? (get entity a))))
+                                                      tuple-attrs))
+                   v-tuple                 (and contains-tuple-attrs?
+                                                (not tuple-contains-tempids?)
+                                                (mapv (fn [a]
+                                                        (let [v (get entity a)]
+                                                          (validate-val v [nil nil a v nil] db)
+                                                          (if (dbu/ref? db a)
+                                                            (dbu/entid-strict db v)
+                                                            v)))
+                                                      tuple-attrs))]
                (if-let [e (and contains-tuple-attrs?
+                               (not tuple-contains-tempids?)
                                (:e (first (dbi/datoms db :avet [a-tuple v-tuple]))))]
                  (cond
                    (nil? acc) [e a-tuple v-tuple]        ;; first upsert
