@@ -300,37 +300,73 @@
 
 (defn- upsert-eid [db entity tempids] ;; TODO: adjust to datascript?
   (when-let [unique-idents (not-empty (dbi/-attrs-by db :db.unique/identity))]
-    (->>
-     (reduce-kv
-      (fn [acc a-ident v-original]                                 ;; acc = [e a v]
-        (if-not (contains? unique-idents a-ident)
-          acc
-          (let [a (if (:attribute-refs? (dbi/-config db))
-                    (dbi/-ref-for db a-ident)
-                    a-ident)
-                tempid-val (and (dbu/ref? db a-ident) (tempid? v-original))
-                v (if tempid-val
-                    (tempids v-original)
-                    v-original)]
-            (if-some [e (when v
-                          (validate-val v [nil nil a v nil] db)
-                          (:e (first (dbi/datoms db :avet [a v]))))]
-              (cond
-                (nil? acc) [e a v]                    ;; first upsert
-                (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
-                :else
-                (let [[_e _a _v] acc]
-                  (raise "Conflicting upserts: " [_a _v] " resolves to " _e
-                         ", but " [a v] " resolves to " e
-                         {:error :transact/upsert
-                          :entity entity
-                          :assertion [e a v]
-                          :conflict [_e _a _v]})))
-              acc))))                                   ;; upsert attr, but resolves to nothing                                      ;; non-upsert attr
-      nil
-      entity)
-     (check-upsert-conflict entity)
-     first)))                                         ;; getting eid from acc
+    (let [unique-tuple-idents (clojure.set/intersection
+                               (dbi/-attrs-by db :db.type/tuple)
+                               unique-idents)
+          found-eav
+          (reduce-kv
+           (fn [acc a-ident v-original]                                 ;; acc = [e a v]
+             (if-not (contains? unique-idents a-ident)
+               acc
+               (let [a (if (:attribute-refs? (dbi/-config db))
+                         (dbi/-ref-for db a-ident)
+                         a-ident)
+                     tempid-val (and (dbu/ref? db a-ident) (tempid? v-original))
+                     v (if tempid-val
+                         (tempids v-original)
+                         v-original)]
+                 (if-some [e (when v
+                               (validate-val v [nil nil a v nil] db)
+                               (:e (first (dbi/datoms db :avet [a v]))))]
+                   (cond
+                     (nil? acc) [e a v]                    ;; first upsert
+                     (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
+                     :else
+                     (let [[_e _a _v] acc]
+                       (raise "Conflicting upserts: " [_a _v] " resolves to " _e
+                              ", but " [a v] " resolves to " e
+                              {:error :transact/upsert
+                               :entity entity
+                               :assertion [e a v]
+                               :conflict [_e _a _v]})))
+                   acc))))                                   ;; upsert attr, but resolves to nothing                                      ;; non-upsert attr
+           nil
+           entity)
+
+          found-eav-including-composite-tuples
+          (reduce
+           (fn [acc a-tuple]
+             (let [tuple-attrs           (get-in (dbi/-schema db) [a-tuple :db/tupleAttrs])
+                   contains-tuple-attrs? (clojure.set/subset?
+                                          (set tuple-attrs)
+                                          (set (keys entity)))
+                   _                     (and contains-tuple-attrs?
+                                              (run!
+                                               (fn [a]
+                                                 (let [v (get entity a)]
+                                                   (validate-val v [nil nil a v nil] db)))
+                                               tuple-attrs))
+                   v-tuple               (and contains-tuple-attrs?
+                                              (mapv (fn [a] (get entity a)) tuple-attrs))]
+               (if-let [e (and contains-tuple-attrs?
+                               (:e (first (dbi/datoms db :avet [a-tuple v-tuple]))))]
+                 (cond
+                   (nil? acc) [e a-tuple v-tuple]        ;; first upsert
+                   (= (get acc 0) e) acc                 ;; second+ upsert, but does not conflict
+                   :else
+                   (let [[_e _a _v] acc]
+                     (raise "Conflicting upserts: " [_a _v] " resolves to " _e
+                            ", but " [a-tuple v-tuple] " resolves to " e
+                            {:error :transact/upsert
+                             :entity entity
+                             :assertion [e a-tuple v-tuple]
+                             :conflict [_e _a _v]})))
+                 acc)))                                   ;; upsert attr, but resolves to nothing                                      ;; non-upsert attr
+           found-eav
+           unique-tuple-idents)]
+      (->> found-eav-including-composite-tuples
+           (check-upsert-conflict entity)
+           first))))                                         ;; getting eid from acc
 
 ;; multivals/reverse can be specified as coll or as a single value, trying to guess
 (defn- maybe-wrap-multival [db a-ident vs]
