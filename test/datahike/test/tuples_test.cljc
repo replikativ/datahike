@@ -331,6 +331,49 @@
             :a+b   ["a" "b"]
             :c     "c"}
            (d/pull (d/db conn) '[*] [:a+b ["a" "b"]])))
+
+    (d/release conn)))
+
+(deftest test-upsert-insert
+  (let [conn (connect)]
+    (d/transact conn [{:db/ident :a
+                       :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one}
+                      {:db/ident :b
+                       :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one}
+                      {:db/ident :c
+                       :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one}
+                      {:db/ident :a+b
+                       :db/valueType :db.type/tuple
+                       :db/tupleAttrs [:a :b]
+                       :db/cardinality :db.cardinality/one
+                       :db/unique :db.unique/identity}])
+
+    ;; insert side of upsert:
+    (d/transact conn
+                [{:a "x" :b "y"}])
+
+    (d/transact conn
+                [{:a "x" :b "y"}])
+
+    (d/transact conn
+                [{:a "x" :b "y" :c "xyz"}])
+
+    (is (=
+         #{[:a "x"]
+           [:b "y"]
+           [:a+b ["x" "y"]]
+           [:c "xyz"]}
+         (set
+          (d/q '[:find ?a ?v
+                 :with ?t
+                 :where
+                 [?e ?a ?v ?t]
+                 [?e :a+b ["x" "y"]]]
+               (d/history (d/db conn))))))
+
     (d/release conn)))
 
 (deftest test-unique
