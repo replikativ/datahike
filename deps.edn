@@ -71,7 +71,8 @@
            :build {:deps {io.github.clojure/tools.build {:mvn/version "0.9.5"}}
                    :ns-default build}
 
-           :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
+           :deploy {:extra-paths ["http-server"] ;; add server here to give people access to the routes
+                    :extra-deps {slipset/deps-deploy {:mvn/version "0.2.1"}}}
 
            :http-server {:extra-paths ["http-server"]
                          :extra-deps {buddy/buddy-auth        {:mvn/version "3.0.323"}
