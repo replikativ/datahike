@@ -1,13 +1,18 @@
 (ns tools.release
   (:require
    [babashka.fs :as fs]
+   [babashka.http-client :as http]
    [babashka.process :as p]
    [borkdude.gh-release-artifact :as gh]
+   [cheshire.core :as json]
+   [clojure.string :as s]
+   [clojure.tools.build.api :as b]
    [selmer.parser :refer [render]]
    [tools.build :as build]
    [tools.version :as version])
   (:import
-   (clojure.lang ExceptionInfo)))
+   [clojure.lang ExceptionInfo]
+   [java.nio.file FileAlreadyExistsException]))
 
 (defn fib [a b]
   (lazy-seq (cons a (fib b (+ a b)))))
@@ -49,6 +54,55 @@
           (System/exit 1))
       (println (:url ret)))))
 
+(defn pod-release
+  "Create a PR on babashka pod-registry"
+  [repo-config]
+  (let [version (version/string repo-config)
+        branch-name (str "datahike-" version)
+        home (System/getenv "HOME")
+        ssh-key (System/getenv "GITHUB_SSH_KEY")
+        github-token (System/getenv "GITHUB_TOKEN")]
+    (println "Loading ssh-key")
+    (if ssh-key
+      (spit (str home "/.ssh/pod-registry-key") ssh-key)
+      (do
+        (println "Could not find ssh key")
+        (System/exit 1)))
+    (println (:err (b/process {:command-args ["ssh-add" (str home "/.ssh/pod-registry-key")] :out :capture :err :capture})))
+    (println "Checking out pod-registry")
+    (b/git-process {:git-args ["clone" "git@github.com:replikativ/pod-registry.git"] :dir "../" :capture :err})
+    (b/git-process {:git-args ["checkout" "-b" branch-name] :dir "../pod-registry"})
+    (b/git-process {:git-args ["config" "user.email" "info@lambdaforge.io"] :dir "../pod-registry"})
+    (b/git-process {:git-args ["config" "user.name" "Datahike CI"] :dir "../pod-registry"})
+    (println "Changing manifest")
+    (let [manifest (slurp "../pod-registry/manifests/replikativ/datahike/0.6.1601/manifest.edn")]
+      (try (fs/create-dir (str "../pod-registry/manifests/replikativ/datahike/" version))
+        (catch FileAlreadyExistsException _
+          (do
+            (println "It seems there is already a release with that number")
+            (System/exit 1))))
+      (->> (s/replace manifest #"0\.6\.1601" version)
+           (spit (str "../pod-registry/manifests/replikativ/datahike/" version "/manifest.edn"))))
+    (println "Committing and pushing changes to fork")
+    (b/git-process {:git-args "add manifests/replikativ/datahike" :dir "../pod-registry"})
+    (b/git-process {:git-args ["commit" "-m" (str "Update Datahike pod to " version)] :dir "../pod-registry" :capture :err})
+    (b/git-process {:git-args ["push" "origin" branch-name] :dir "../pod-registry"})
+    (println "Creating PR on pod-registry")
+    (let [url "https://api.github.com/repos/babashka/pod-registry/pulls"]
+      (try
+        (http/post url {:headers {"Accept" "application/vnd.github+json"
+                                   "Authorization" (str "Bearer " github-token)
+                                   "X-GitHub-Api-Version" "2022-11-28"
+                                   "Content-Type" "application/json"}
+                         :body (json/generate-string {:title (str "Update Datahike pod to " version)
+                                                      :body "Automated update of Datahike pod"
+                                                      :head (str "replikativ:" branch-name)
+                                                      :base "master"})})
+        (catch ExceptionInfo _
+          (do
+            (println "Failed creating PR on babashka/pod-registry")
+            (System/exit 1)))))))
+
 (defn zip-path [lib version target-dir zip-pattern]
   (let [platform (System/getenv "DTHK_PLATFORM")
         arch (System/getenv "DTHK_ARCH")]
@@ -78,5 +132,6 @@
       "jar" (gh-release config (build/jar-path config (-> config :build :clj)))
       "native-image" (->> (zip-cli config :native-cli)
                           (gh-release config))
+      "pod" (pod-release config)
       (do (println "ERROR: Command not found: " cmd)
           (System/exit 1)))))

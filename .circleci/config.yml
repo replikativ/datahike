@@ -4,7 +4,7 @@ setup: true
 
 orbs:
   tools: replikativ/clj-tools@0
-  continuation: circleci/continuation@0.1.2
+  continuation: circleci/continuation@2.0
 
 jobs:
   setup:
@@ -180,6 +180,15 @@ jobs:
       - run:
           name: Release jar on GitHub
           command: bb release jar
+  release-pod:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Release pod on pod registry
+          command: bb release pod
+
 
 workflows:
   build-test-and-deploy:
@@ -238,6 +247,20 @@ workflows:
           context:
             - dockerhub-deploy
             - github-token
+          filters:
+            branches:
+              only: main
+          requires:
+            - format
+            - persistent-set-test
+            - hitchhiker-tree-test
+            - backward-compatibility-test
+            - integration-test
+      - release-pod:
+          context:
+            - dockerhub-deploy
+            - github-pod-registry-token
+            - github-ssh-key
           filters:
             branches:
               only: main
