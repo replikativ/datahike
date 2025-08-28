@@ -61,14 +61,15 @@
         branch-name (str "datahike-" version)
         home (System/getenv "HOME")
         ssh-key (System/getenv "GITHUB_SSH_KEY")
-        github-token (System/getenv "GITHUB_TOKEN")]
+        github-token (System/getenv "GITHUB_TOKEN")
+        key-file (str home "/pod-registry-key")]
     (println "Loading ssh-key")
     (if ssh-key
-      (spit (str home "/.ssh/pod-registry-key") ssh-key)
+      (spit key-file ssh-key)
       (do
         (println "Could not find ssh key")
         (System/exit 1)))
-    (println (:err (b/process {:command-args ["ssh-add" (str home "/.ssh/pod-registry-key")] :out :capture :err :capture})))
+    (println (:err (b/process {:command-args ["ssh-add" key-file] :out :capture :err :capture})))
     (println "Checking out pod-registry")
     (b/git-process {:git-args ["clone" "git@github.com:replikativ/pod-registry.git"] :dir "../" :capture :err})
     (b/git-process {:git-args ["checkout" "-b" branch-name] :dir "../pod-registry"})
