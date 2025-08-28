@@ -99,11 +99,11 @@
                           :sha     "7708e7fd4572459c81f6a6b8e44c96f41cdd92d4"}
                          com.cognitect/transit-clj {:mvn/version "1.0.333"}
                          babashka/pods             {:git/url "https://github.com/babashka/pods"
-                                                    :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
+                                                    :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}}}
 
            :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
                               babashka/pods             {:git/url "https://github.com/babashka/pods"
-                                                         :git/sha "8b717eb001811bc5da5d15d1163565de00b4ffa4"}}}
+                                                         :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}}}
 
            ;; Checks
 
