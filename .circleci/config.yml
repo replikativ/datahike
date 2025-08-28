@@ -183,6 +183,9 @@ jobs:
   release-pod:
     executor: tools/clojurecli
     steps:
+      - add_ssh_keys:
+          fingerprints:
+            - "SHA256:+nqfgSWriNWtzcE6xLJTUzdfH3lLnWWscrJ5RLPHRLc"
       - attach_workspace:
           at: /home/circleci
       - run:
@@ -260,7 +263,6 @@ workflows:
           context:
             - dockerhub-deploy
             - github-pod-registry-token
-            - github-ssh-key
           filters:
             branches:
               only: main

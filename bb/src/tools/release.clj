@@ -5,6 +5,7 @@
    [babashka.process :as p]
    [borkdude.gh-release-artifact :as gh]
    [cheshire.core :as json]
+   [clojure.java.io :as io]
    [clojure.string :as s]
    [clojure.tools.build.api :as b]
    [selmer.parser :refer [render]]
@@ -59,18 +60,11 @@
   [repo-config]
   (let [version (version/string repo-config)
         branch-name (str "datahike-" version)
-        home (System/getenv "HOME")
-        ssh-key (System/getenv "GITHUB_SSH_KEY")
+        home (str (fs/home))
         github-token (System/getenv "GITHUB_TOKEN")]
-    (println "Loading ssh-key")
-    (if ssh-key
-      (spit (str home "/.ssh/pod-registry-key") ssh-key)
-      (do
-        (println "Could not find ssh key")
-        (System/exit 1)))
-    (println (:err (b/process {:command-args ["ssh-add" (str home "/.ssh/pod-registry-key")] :out :capture :err :capture})))
     (println "Checking out pod-registry")
-    (b/git-process {:git-args ["clone" "git@github.com:replikativ/pod-registry.git"] :dir "../" :capture :err})
+    (spit (str home "/.ssh/known_hosts") (slurp (io/resource "github-fingerprints")) :append true)
+    (b/git-process {:git-args ["clone" "git@github.com:replikativ/pod-registry.git"] :dir "../"})
     (b/git-process {:git-args ["checkout" "-b" branch-name] :dir "../pod-registry"})
     (b/git-process {:git-args ["config" "user.email" "info@lambdaforge.io"] :dir "../pod-registry"})
     (b/git-process {:git-args ["config" "user.name" "Datahike CI"] :dir "../pod-registry"})
@@ -84,24 +78,24 @@
       (->> (s/replace manifest #"0\.6\.1601" version)
            (spit (str "../pod-registry/manifests/replikativ/datahike/" version "/manifest.edn"))))
     (println "Committing and pushing changes to fork")
-    (b/git-process {:git-args "add manifests/replikativ/datahike" :dir "../pod-registry"})
-    (b/git-process {:git-args ["commit" "-m" (str "Update Datahike pod to " version)] :dir "../pod-registry" :capture :err})
+    (b/git-process {:git-args ["add" "manifests/replikativ/datahike"] :dir "../pod-registry"})
+    (b/git-process {:git-args ["commit" "-m" (str "Update Datahike pod to " version)] :dir "../pod-registry"})
     (b/git-process {:git-args ["push" "origin" branch-name] :dir "../pod-registry"})
     (println "Creating PR on pod-registry")
-    (let [url "https://api.github.com/repos/babashka/pod-registry/pulls"]
-      (try
-        (http/post url {:headers {"Accept" "application/vnd.github+json"
-                                   "Authorization" (str "Bearer " github-token)
-                                   "X-GitHub-Api-Version" "2022-11-28"
-                                   "Content-Type" "application/json"}
-                         :body (json/generate-string {:title (str "Update Datahike pod to " version)
-                                                      :body "Automated update of Datahike pod"
-                                                      :head (str "replikativ:" branch-name)
-                                                      :base "master"})})
-        (catch ExceptionInfo _
-          (do
-            (println "Failed creating PR on babashka/pod-registry")
-            (System/exit 1)))))))
+    (try
+      (http/post "https://api.github.com/repos/babashka/pod-registry/pulls"
+                 {:headers {"Accept" "application/vnd.github+json"
+                            "Authorization" (str "Bearer " github-token)
+                            "X-GitHub-Api-Version" "2022-11-28"
+                            "Content-Type" "application/json"}
+                  :body (json/generate-string {:title (str "Update Datahike pod to " version)
+                                               :body "Automated update of Datahike pod"
+                                               :head "replikativ:pod-registry"
+                                               :base branch-name})})
+      (catch ExceptionInfo e
+        (do
+          (println "Failed creating PR on babashka/pod-registry: " (ex-message e))
+          (System/exit 1))))))
 
 (defn zip-path [lib version target-dir zip-pattern]
   (let [platform (System/getenv "DTHK_PLATFORM")
