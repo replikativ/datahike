@@ -12,8 +12,9 @@
             [konserve.core :as k]
             [taoensso.timbre :as log]
             [hasch.core :refer [uuid]]
-            [superv.async :refer [go-try- <?-]]
-            [konserve.utils :refer [#?(:clj async+sync :cljs async+sync) multi-key-capable? *default-sync-translation*]
+            #?(:cljs [clojure.core.async :as async :refer-macros [go]])
+            [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?-]]
+            [konserve.utils :refer [#?(:clj async+sync) multi-key-capable? *default-sync-translation*]
              #?@(:cljs [:refer-macros [async+sync]])]))
 
 ;; mapping to storage
