@@ -29,7 +29,19 @@
   (#?(:clj valAt :cljs -lookup) [c k] (if (= k :wrapped-atom) wrapped-atom nil))
   IMeta
   (#?(:clj meta :cljs -meta) [_] (meta wrapped-atom))
-  #?(:cljs IAtom)
+  #?@(:cljs
+     [IAtom
+     ISwap
+      (-swap! [_ f] (swap! wrapped-atom f))
+      (-swap! [_ f arg] (swap! wrapped-atom f arg))
+      (-swap! [_ f arg1 arg2] (swap! wrapped-atom f arg1 arg2))
+      (-swap! [_ f arg1 arg2 args] (apply swap! wrapped-atom f arg1 arg2 args))
+      IReset
+      (-reset! [_ newval] (reset! wrapped-atom newval))
+      IWatchable ;; TODO This is unofficially supported, it triggers watches on each update, not on commits. For proper listeners use the API.
+      (-add-watch [_ key f] (add-watch wrapped-atom key f))
+      (-remove-watch [_ key] (remove-watch wrapped-atom key))
+      (-notify-watches [_ old new] (-notify-watches wrapped-atom old new))])
   #?@(:clj
       [IAtom
        (swap [_ f] (swap! wrapped-atom f))
@@ -142,7 +154,7 @@
   (-connect [uri]
     (-connect (dc/uri->config uri)))
 
-  #?(:clj clojure.lang.IPersistentMap :cljs PersistentArrayMap)
+  #?(:clj clojure.lang.IPersistentMap :cljs PersistentHashMap)
   (-connect [raw-config]
     (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
           _ (log/debug "Using config " (update-in config [:store] dissoc :password))

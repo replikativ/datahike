@@ -17,7 +17,10 @@
             [datahike.db :as db #?@(:cljs [:refer [HistoricalDB AsOfDB SinceDB FilteredDB]])]
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
-            [datahike.impl.entity :as de])
+            [datahike.impl.entity :as de]
+            #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!]]))
+  #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]
+                            [clojure.core.async :refer [go]]))
   #?(:clj
      (:import [clojure.lang Keyword PersistentArrayMap]
               [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
@@ -42,12 +45,21 @@
 
 ;; necessary to support initial-tx shorthand, which really should have been avoided
 (defn create-database [& args]
-  (let [config @(apply dw/create-database args)]
-    (when-let [txs (:initial-tx config)]
-      (let [conn (dc/connect config)]
-        (transact conn txs)
-        (dc/release conn)))
-    config))
+  #?(:clj
+     (let [config @(apply dw/create-database args)]
+       (when-let [txs (:initial-tx config)]
+         (let [conn (dc/connect config)]
+           (transact conn txs)
+           (dc/release conn)))
+       config)
+     :cljs
+     (go-try-
+      (let [config (<?- (apply dw/create-database args))]
+        (when-let [txs (:initial-tx config)]
+          (let [conn (dc/connect config)]
+            (transact conn txs)
+            (dc/release conn)))
+        config))))
 
 (defn delete-database [& args]
   @(apply dw/delete-database args))
