@@ -16,7 +16,7 @@
                                                      #_#_:mvn/version "0.3.0"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
-        com.taoensso/timbre                         {:mvn/version "6.3.1"}
+        com.taoensso/timbre                         {:mvn/version "6.8.0"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.6"}
@@ -43,6 +43,8 @@
 
            :dev {:extra-paths ["dev" "benchmark/src"]
                  :extra-deps {org.clojure/tools.namespace {:mvn/version "1.4.4"}
+                              org.clojure/clojurescript   {:mvn/version "1.11.132"}
+                              thheller/shadow-cljs        {:mvn/version "2.28.20"}
                               clj-http/clj-http           {:mvn/version "3.12.3"}
                               com.gfredericks/user.clj    {:mvn/version "0.1.0"}
                               org.clojure/tools.cli       {:mvn/version "1.0.219"}
