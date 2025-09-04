@@ -43,15 +43,18 @@ build-task:
     echo $PATH
     native-image --version
 
-    # compile
+    # compile native-image
     bb ni-cli
+    bb ni-compile
 
     # test
     bb test native-image
     bb test bb-pod
+    bb test libdatahike
 
-    # upload artifact
+    # release artifacts
     bb release native-image
+    bb release libdatahike
 
   binaries_artifacts:
     path: "dist/*"

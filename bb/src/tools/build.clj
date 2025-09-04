@@ -54,6 +54,11 @@
                                            :repo repo-config
                                            :version-str (version/string repo-config)})))
 
+(defn lib-path [repo-config {:keys [target-dir jar-pattern] :as project-config}]
+  (str target-dir "/" (render jar-pattern {:project project-config
+                                           :repo repo-config
+                                           :version-str (version/string repo-config)})))
+
 (defn jar
   "Builds jar file"
   [repo-config {:keys [class-dir target-dir src-dirs resource-dir] :as project-config}]

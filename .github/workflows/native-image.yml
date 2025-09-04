@@ -57,13 +57,23 @@ jobs:
       - name: Build native image
         run: bb ni-cli
 
+      - name: Build libdatahike
+        run: bb ni-compile
+
       - name: Test native image
-        run: |
-          bb test native-image
-          bb test bb-pod
+        run: bb test native-image
+
+      - name: Test babashka pod
+        run:  bb test bb-pod
+
+      - name: Test libdatahike
+        run:  bb test libdatahike
 
       - name: Release native-image
         run: bb release native-image
+
+      - name: Release libdatahike
+        run: bb release libdatahike
 
       - name: Save cache
         uses: actions/cache/save@v4

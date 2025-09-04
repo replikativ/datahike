@@ -1,0 +1,10 @@
+#!/bin/env bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+export LD_LIBRARY_PATH=./libdatahike/target
+
+rm -rf "/tmp/libdatahike-test"
+./libdatahike/target/test_cpp "{:store {:backend :file :path \"/tmp/libdatahike-test\"} :schema-flexibility :read}" "[{:name \"Alice\"}]" "[:find ?e ?v :where [?e :name ?v]]"

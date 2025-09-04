@@ -18,7 +18,7 @@ void transact_reader(char* transact_result_edn) {
 
 void query_reader(char* query_result_edn) {
   std::cout << "query result: " << query_result_edn << std::endl;
-  std::string expected_q_result = "1";
+  std::string expected_q_result = "#{[1 \"Alice\"]}";
   assert(expected_q_result.compare(query_result_edn) == 0);
 }
 
@@ -36,16 +36,16 @@ int main(int argc, char* argv[]) {
 
   void (*default_reader_pointer)(char*);
   default_reader_pointer = &default_reader;
-  create_database((long)thread, config_str, (const void*)default_reader_pointer);
+  create_database((long)thread, config_str, "edn", (const void*)default_reader_pointer);
 
   void (*database_exists_reader_pointer)(char*);
   database_exists_reader_pointer = &database_exists_reader;
-  database_exists((long)thread, config_str, (const void*)database_exists_reader_pointer);
+  database_exists((long)thread, config_str, "edn", (const void*)database_exists_reader_pointer);
 
-  char *json_str = &argv[2][0];
+  char *tx_str = &argv[2][0];
   void (*transact_reader_pointer)(char*);
   transact_reader_pointer = &transact_reader;
-  transact((long)thread, config_str, "json", json_str, "edn", (const void*)transact_reader);
+  transact((long)thread, config_str, "edn", tx_str, "edn", (const void*)transact_reader);
 
   char *query_str = &argv[3][0];
   long num_inputs = 1;

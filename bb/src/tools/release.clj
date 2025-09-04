@@ -108,6 +108,17 @@
                                                :lib lib
                                                :version version})))))
 
+(defn zip-lib [config project]
+  (let [{:keys [target-dir zip-pattern]} (-> config :release project)
+        lib "libdatahike"
+        version (version/string config)]
+    (if-not (fs/exists? target-dir)
+      (do (println (str "ERROR: " target-dir " path not found, please compile first."))
+          (System/exit 1))
+      (let [zip-name (zip-path lib version target-dir zip-pattern)]
+        (fs/zip zip-name [target-dir])
+        zip-name))))
+
 (defn zip-cli [config project]
   (let [{:keys [target-dir binary-name zip-pattern]} (-> config :release project)
         lib (:lib config)
@@ -117,15 +128,18 @@
       (do (println (str "ERROR: " binary-path " executable not found, please compile first."))
           (System/exit 1))
       (let [zip-name (zip-path lib version target-dir zip-pattern)]
-        (p/shell "zip" zip-name binary-name)
+        (fs/zip zip-name [binary-name])
         zip-name))))
 
 (defn -main [config args]
   (let [cmd (first args)]
     (case cmd
-      "jar" (gh-release config (build/jar-path config (-> config :build :clj)))
+      "jar" (->> (build/jar-path config (-> config :build :clj))
+                 (gh-release config))
       "native-image" (->> (zip-cli config :native-cli)
                           (gh-release config))
       "pod" (pod-release config)
+      "libdatahike" (->> (zip-lib config :libdatahike)
+                         (gh-release config))
       (do (println "ERROR: Command not found: " cmd)
           (System/exit 1)))))

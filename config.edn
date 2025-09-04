@@ -44,4 +44,7 @@
 
  :release {:native-cli {:target-dir "."
                         :binary-name "dthk"
-                        :zip-pattern "{{lib}}-{{version}}-{{platform}}-{{arch}}.zip"}}}
+                        :zip-pattern "{{lib}}-{{version}}-{{platform}}-{{arch}}.zip"}
+           :libdatahike {:target-dir "libdatahike/target"
+                         :binary-name "dthk"
+                         :zip-pattern "{{lib}}-{{version}}-{{platform}}-{{arch}}.zip"}}}

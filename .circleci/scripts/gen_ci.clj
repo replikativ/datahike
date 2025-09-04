@@ -69,9 +69,18 @@ sudo update-alternatives --set javac /home/circleci/graalvm/bin/javac"
       (run "Build native image"
            "cd /home/circleci/replikativ
 bb ni-cli")
+      (run "Build libdatahike"
+           "cd /home/circleci/replikativ
+bb ni-compile")
       (run "Test native image"
            "cd /home/circleci/replikativ
 bb test native-image")
+      (run "Test babashka pod"
+           "cd /home/circleci/replikativ
+bb test bb-pod")
+      (run "Test libdatahike"
+           "cd /home/circleci/replikativ
+bb test libdatahike")
       {:persist_to_workspace
        {:root "/home/circleci/"
         :paths ["replikativ/dthk"]}}
@@ -79,7 +88,7 @@ bb test native-image")
        {:paths ["~/.m2" "~/graalvm"]
         :key cache-key}}])))
 
-(defn release-native-image
+(defn release-artifacts
   [arch]
   (let [cache-key (str arch "-deps-linux-{{ checksum \"deps.edn\" }}")]
     (ordered-map
@@ -94,6 +103,9 @@ bb test native-image")
       (run "Release native image"
            "cd /home/circleci/replikativ
 bb release native-image")
+      (run "Release libdatahike"
+           "cd /home/circleci/replikativ
+bb release libdatahike")
       {:persist_to_workspace
        {:root "/home/circleci/"
         :paths ["replikativ/dthk"]}}
@@ -116,8 +128,8 @@ bb release native-image")
    :jobs (ordered-map
           :build-linux-amd64 (build-native-image "amd64" "large")
           :build-linux-aarch64 (build-native-image "aarch64" "arm.large")
-          :release-linux-amd64 (release-native-image "amd64")
-          :release-linux-aarch64 (release-native-image "aarch64"))
+          :release-linux-amd64 (release-artifacts "amd64")
+          :release-linux-aarch64 (release-artifacts "aarch64"))
    :workflows (ordered-map
                :version 2
                :native-images
