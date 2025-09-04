@@ -5,7 +5,7 @@
    [clojure.string :as str]
    [flatland.ordered.map :refer [ordered-map]]))
 
-(def graalvm-version "24.0.1")
+(def graalvm-version "24.0.2")
 
 (defn run
   ([cmd-name cmd]

@@ -89,6 +89,7 @@
                (str "-o " project-name)
                "--shared"
                "-H:+ReportExceptionStackTraces"
+               "-H:+GenerateBuildArtifactsFile"
                "-J-Dclojure.spec.skip-macros=true"
                "-J-Dclojure.compiler.direct-linking=true"
                (str "-H:IncludeResources=" (version/string repo-config))
@@ -101,8 +102,8 @@
       (fs/delete-tree project-target-dir)
       (fs/create-dir project-target-dir)
       (run! #(fs/move % project-target-dir)
-            (concat ["graal_isolate.h" "graal_isolate_dynamic.h"]
+            (concat ["graal_isolate.h" "graal_isolate_dynamic.h" "build-artifacts.json"]
                     (map (fn [ext] (str project-name ext))
-                         [".so" ".h" "_dynamic.h" ".build_artifacts.txt"]))))
+                         [".so" ".h" "_dynamic.h"]))))
     (do (println "GRAALVM_HOME not set!")
         (println "Please set GRAALVM_HOME to the root of the graalvm directory on your system."))))
