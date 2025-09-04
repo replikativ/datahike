@@ -83,7 +83,7 @@ bb test bb-pod")
 bb test libdatahike")
       {:persist_to_workspace
        {:root "/home/circleci/"
-        :paths ["replikativ/dthk"]}}
+        :paths ["replikativ/dthk" "replikativ/libdatahike/target"]}}
       {:save_cache
        {:paths ["~/.m2" "~/graalvm"]
         :key cache-key}}])))
