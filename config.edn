@@ -1,13 +1,13 @@
-{:org "replikativ"
+{:org "timokramer"
  :lib "datahike"
  :version {:major 1
            :minor 0}
- :git-url "git@github.com:replikativ/datahike.git"
+ :git-url "git@github.com:timokramer/datahike.git"
 
  :pom-template "./bb/resources/template/pom.xml"
- :scm {:connection "scm:git:git@github.com:replikativ/datahike.git"
-       :developerConnection "scm:git:git@github.com:replikativ/datahike.git"
-       :url "https://github.com/replikativ/datahike"}
+ :scm {:connection "scm:git:git@github.com:timokramer/datahike.git"
+       :developerConnection "scm:git:git@github.com:timokramer/datahike.git"
+       :url "https://github.com/timokramer/datahike"}
 
  :build {:clj {:src-dirs ["src"]
                :resource-dir "resources"
@@ -16,7 +16,7 @@
                :class-dir "target/classes"
                :deps-file "deps.edn"
                :jar-pattern "{{repo.lib}}-{{version-str}}.jar"
-               :lib io.replikativ/datahike}
+               :lib timokramer/datahike}
          :http-server-clj {:src-dirs      ["src" "http-server" "resources"]
                            :java-src-dirs ["java"]
                            :target-dir    "target-http-server"
@@ -25,7 +25,7 @@
                            :jar-pattern   "{{repo.lib}}-http-server-{{version-str}}.jar"
                            :aliases       [:http-server]
                            :main          datahike.http.server
-                           :lib           io.replikativ/datahike-http-server}
+                           :lib           timokramer/datahike-http-server}
          :native {:src-dirs ["src" "libdatahike/src"]
                   :java-src-dirs ["java"]
                   :resource-dir "resources"
