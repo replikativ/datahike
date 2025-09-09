@@ -111,4 +111,5 @@
                     (map (fn [ext] (str project-name ext))
                          [".so" ".h" "_dynamic.h"]))))
     (do (println "GRAALVM_HOME not set!")
-        (println "Please set GRAALVM_HOME to the root of the graalvm directory on your system."))))
+        (println "Please set GRAALVM_HOME to the root of the graalvm directory on your system.")
+        (System/exit 1))))
