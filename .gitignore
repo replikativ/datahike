@@ -36,3 +36,5 @@ dthk
 trace.edn
 tmp.edn
 .shadow-cljs
+.claude
+repl-mcp.log
