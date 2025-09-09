@@ -2,7 +2,6 @@
   (:require
    [babashka.fs :as fs]
    [babashka.http-client :as http]
-   [babashka.process :as p]
    [borkdude.gh-release-artifact :as gh]
    [cheshire.core :as json]
    [clojure.java.io :as io]
@@ -109,13 +108,12 @@
                                                :version version})))))
 
 (defn zip-lib [config project]
-  (let [{:keys [target-dir zip-pattern]} (-> config :release project)
-        lib "libdatahike"
+  (let [{:keys [target-dir zip-pattern]} (-> config :release project) lib "libdatahike"
         version (version/string config)]
     (if-not (fs/exists? target-dir)
       (do (println (str "ERROR: " target-dir " path not found, please compile first."))
           (System/exit 1))
-      (let [zip-name (zip-path lib version target-dir zip-pattern)]
+      (let [zip-name (zip-path lib version "." zip-pattern)]
         (fs/zip zip-name [target-dir])
         zip-name))))
 

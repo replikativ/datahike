@@ -33,6 +33,7 @@ out/
 tests.user.edn
 libdatahike.zip
 dthk
+libdatahike*.zip
 trace.edn
 tmp.edn
 .shadow-cljs
