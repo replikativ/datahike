@@ -4,4 +4,4 @@ set -eo pipefail
 
 g++ libdatahike/src/test_cpp.cpp -L libdatahike/target -I libdatahike/target -ldatahike -o libdatahike/target/test_cpp
 
-echo "Created libdatahike/target/test_cpp.cpp"
+echo "Created libdatahike/target/test_cpp"
