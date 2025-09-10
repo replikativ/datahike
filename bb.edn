@@ -88,7 +88,7 @@
                                :depends [http-server-clean]
                                :task    (build/compile-java (-> config :build :http-server-clj))}
 
-         http-server-ccompile {:doc  "Compile clojure namespaces"
+         http-server-ccompile {:doc  "Compile clojure namespaces for http-server"
                                :task (build/compile-clojure (-> config :build :http-server-clj))}
 
          http-server-pom {:doc  "Create pom file"
@@ -119,7 +119,7 @@
                  :depends [jcompile ni-check]
                  :task (clojure "-M:native-cli")}
 
-         ni-ccompile {:doc "Create native cpp library"
+         ni-ccompile {:doc "Compile clojure namespaces for native-image"
                       :task (build/compile-clojure (-> config :build :native))}
 
          ni-uber {:doc "Build native image uber jar"
@@ -128,11 +128,4 @@
 
          ni-compile {:doc "Create native cpp library"
                      :depends [ni-uber]
-                     :task (build/native-compile config (-> config :build :native))}
-
-         ni-release {:doc "Build and release native assets to GitHub"
-                     :depends [ni-compile]
-                     :task (let [{:keys [artifact target-dir]} (-> config :build :native)]
-                             (fs/zip artifact [target-dir])
-                             (release/gh-release artifact config)
-                             (fs/delete artifact))}}}
+                     :task (build/native-compile config (-> config :build :native))}}}

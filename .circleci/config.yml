@@ -190,8 +190,10 @@ jobs:
           at: /home/circleci
       - run:
           name: Release pod on pod registry
-          command: bb release pod
-
+          command: |
+            if ["$CIRCLE_ORGANIZATION_ID" = "replikativ"]; then
+              bb release pod
+            fi
 
 workflows:
   build-test-and-deploy:

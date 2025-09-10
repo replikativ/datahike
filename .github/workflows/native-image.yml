@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GRAALVM_VERSION: 24.0.1
+      GRAALVM_VERSION: 24.0.2
       DTHK_PLATFORM: macos
       DTHK_ARCH: amd64
     steps:
@@ -45,7 +45,7 @@ jobs:
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: '24'
-          distribution: 'graalvm'
+          distribution: 'graalvm-community'
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install clojure tools
@@ -57,13 +57,23 @@ jobs:
       - name: Build native image
         run: bb ni-cli
 
+      - name: Build libdatahike
+        run: bb ni-compile
+
       - name: Test native image
-        run: |
-          bb test native-image
-          bb test bb-pod
+        run: bb test native-image
+
+      - name: Test babashka pod
+        run:  bb test bb-pod
+
+      - name: Test libdatahike
+        run:  bb test libdatahike
 
       - name: Release native-image
         run: bb release native-image
+
+      - name: Release libdatahike
+        run: bb release libdatahike
 
       - name: Save cache
         uses: actions/cache/save@v4
