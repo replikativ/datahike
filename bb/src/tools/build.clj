@@ -1,10 +1,13 @@
 (ns tools.build
   (:refer-clojure :exclude [compile])
-  (:require [babashka.fs :as fs]
-            [babashka.process :as p]
-            [clojure.tools.build.api :as b]
-            [selmer.parser :refer [render]]
-            [tools.version :as version :refer [read-edn-file]]))
+  (:require
+    [babashka.fs :as fs]
+    [babashka.process :as p]
+    [cheshire.core :as json]
+    [clojure.tools.build.api :as b]
+    [selmer.parser :refer [render]]
+    [tools.version :as version :refer [read-edn-file]])
+  (:import [java.nio.file NoSuchFileException]))
 
 (defn clean [{:keys [target-dir] :as _project-config}]
   (print (str "Cleaning up target directory '" target-dir "'..."))
@@ -106,10 +109,12 @@
                "-J-Xmx5g")
       (fs/delete-tree project-target-dir)
       (fs/create-dir project-target-dir)
-      (run! #(fs/move % project-target-dir)
-            (concat ["graal_isolate.h" "graal_isolate_dynamic.h" "build-artifacts.json"]
-                    (map (fn [ext] (str project-name ext))
-                         [".so" ".h" "_dynamic.h"]))))
+      (->> (slurp "build-artifacts.json")
+           (json/parse-string)
+           vals
+           (apply concat)
+           (cons "build-artifacts.json")
+           (run! #(fs/move % project-target-dir))))
     (do (println "GRAALVM_HOME not set!")
         (println "Please set GRAALVM_HOME to the root of the graalvm directory on your system.")
         (System/exit 1))))

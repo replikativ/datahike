@@ -67,7 +67,9 @@ jobs:
         run:  bb test bb-pod
 
       - name: Test libdatahike
-        run:  bb test libdatahike
+        run: |
+          rm -rf "/tmp/libdatahike-test"
+          ./libdatahike/target/test_cpp "{:store {:backend :file :path \"/tmp/libdatahike-test\"} :schema-flexibility :read}" "[{:name \"Alice\"}]" "[:find ?e ?v :where [?e :name ?v]]"
 
       - name: Release native-image
         run: bb release native-image

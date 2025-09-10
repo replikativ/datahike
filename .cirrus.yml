@@ -1,5 +1,5 @@
 macos_instance:
-  image: ghcr.io/cirruslabs/macos-monterey-base:latest
+  image: ghcr.io/cirruslabs/macos-runner:sequoia
 
 build-task:
   only_if: $CIRRUS_BRANCH == 'main'
@@ -50,7 +50,8 @@ build-task:
     # test native artifacts
     bb test native-image
     bb test bb-pod
-    bb test libdatahike
+    rm -rf "/tmp/libdatahike-test"
+    ./libdatahike/target/test_cpp "{:store {:backend :file :path \"/tmp/libdatahike-test\"} :schema-flexibility :read}" "[{:name \"Alice\"}]" "[:find ?e ?v :where [?e :name ?v]]"
 
     # release native artifacts
     bb release native-image
