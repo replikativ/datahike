@@ -47,6 +47,7 @@ jobs:
           java-version: '24'
           distribution: 'graalvm-community'
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          set-java-home: true
 
       - name: Install clojure tools
         uses: DeLaGuardo/setup-clojure@5.0
@@ -67,9 +68,7 @@ jobs:
         run:  bb test bb-pod
 
       - name: Test libdatahike
-        run: |
-          rm -rf "/tmp/libdatahike-test"
-          ./libdatahike/target/test_cpp "{:store {:backend :file :path \"/tmp/libdatahike-test\"} :schema-flexibility :read}" "[{:name \"Alice\"}]" "[:find ?e ?v :where [?e :name ?v]]"
+        run: bb test libdatahike
 
       - name: Release native-image
         run: bb release native-image

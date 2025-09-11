@@ -50,8 +50,7 @@ build-task:
     # test native artifacts
     bb test native-image
     bb test bb-pod
-    rm -rf "/tmp/libdatahike-test"
-    ./libdatahike/target/test_cpp "{:store {:backend :file :path \"/tmp/libdatahike-test\"} :schema-flexibility :read}" "[{:name \"Alice\"}]" "[:find ?e ?v :where [?e :name ?v]]"
+    bb test libdatahike
 
     # release native artifacts
     bb release native-image
