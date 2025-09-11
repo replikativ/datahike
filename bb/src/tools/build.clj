@@ -6,8 +6,7 @@
     [cheshire.core :as json]
     [clojure.tools.build.api :as b]
     [selmer.parser :refer [render]]
-    [tools.version :as version :refer [read-edn-file]])
-  (:import [java.nio.file NoSuchFileException]))
+    [tools.version :as version :refer [read-edn-file]]))
 
 (defn clean [{:keys [target-dir] :as _project-config}]
   (print (str "Cleaning up target directory '" target-dir "'..."))
