@@ -5,6 +5,7 @@ set -o pipefail
 set -o nounset
 
 export LD_LIBRARY_PATH=./libdatahike/target
+export DYLD_LIBRARY_PATH=./libdatahike/target
 
 rm -rf "/tmp/libdatahike-test"
 ./libdatahike/compile-cpp
