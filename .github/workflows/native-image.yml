@@ -19,7 +19,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-15
+          - os: macos-13
             name: macos
     runs-on: ${{ matrix.os }}
     env:
@@ -47,6 +47,7 @@ jobs:
           java-version: '24'
           distribution: 'graalvm-community'
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          set-java-home: true
 
       - name: Install clojure tools
         uses: DeLaGuardo/setup-clojure@5.0
