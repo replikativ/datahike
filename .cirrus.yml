@@ -51,7 +51,6 @@ build-task:
     bb test native-image
     bb test bb-pod
     bb test libdatahike
-    ls -lahrtR libdatahike
 
     # release native artifacts
     bb release native-image
