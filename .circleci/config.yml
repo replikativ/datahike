@@ -191,6 +191,7 @@ jobs:
       - run:
           name: Release pod on pod registry
           command: |
+            echo $CIRCLE_ORGANIZATION_ID
             if [[ $CIRCLE_ORGANIZATION_ID == "replikativ" ]]; then
               bb release pod
             fi

@@ -51,8 +51,7 @@
 
 (defn libdatahike []
   (if (fs/exists? "./libdatahike/target")
-    (do (p/shell "./libdatahike/compile-cpp")
-        (p/shell "./bb/resources/native-image-tests/run-libdatahike-tests"))
+    (p/shell "./bb/resources/native-image-tests/run-libdatahike-tests")
     (println "libdatahike binaries missing. Please run 'bb ni-compile' and try again.")))
 
 (defn bb-pod []
