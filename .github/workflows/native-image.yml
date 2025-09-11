@@ -19,7 +19,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-13
+          - os: macos-15
             name: macos
     runs-on: ${{ matrix.os }}
     env:
@@ -68,6 +68,7 @@ jobs:
 
       - name: Test libdatahike
         run: |
+          ls -Rlahrt ./libdatahike
           rm -rf "/tmp/libdatahike-test"
           ./libdatahike/target/test_cpp "{:store {:backend :file :path \"/tmp/libdatahike-test\"} :schema-flexibility :read}" "[{:name \"Alice\"}]" "[:find ?e ?v :where [?e :name ?v]]"
 
