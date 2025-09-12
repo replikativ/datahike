@@ -1,5 +1,4 @@
 (ns datahike.db.search
-  #?(:cljs (:require-macros [datahike.db.search :refer [lookup-strategy]]))
   (:require
    #?(:clj [clojure.core.cache.wrapped :as cw]
       :cljs [cljs.cache.wrapped :as cw])
@@ -11,6 +10,7 @@
    [datahike.lru :refer [lru-datom-cache-factory]]
    [datahike.tools :refer [raise match-vector]]
    [environ.core :refer [env]])
+  #?(:cljs (:require-macros [datahike.db.search :refer [lookup-strategy]]))
   #?(:clj (:import [datahike.datom Datom])))
 
 (def db-caches (cw/lru-cache-factory {} :threshold (:datahike-max-db-caches env 5)))

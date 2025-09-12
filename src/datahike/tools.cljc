@@ -1,11 +1,11 @@
 (ns ^:no-doc datahike.tools
-  #?(:cljs (:require-macros [datahike.tools :refer [raise]]))
   (:require
    [superv.async :refer [throw-if-exception-]]
    [clojure.core.async.impl.protocols :as async-impl]
    [clojure.core.async :as async]
    #?(:clj [clojure.java.io :as io])
    [taoensso.timbre :as log])
+  #?(:cljs (:require-macros [datahike.tools :refer [raise]]))
   #?(:clj (:import [java.util Properties UUID Date]
                    [java.util.concurrent CompletableFuture]
                    [java.net InetAddress])))
