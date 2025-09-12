@@ -89,8 +89,8 @@
                             "Content-Type" "application/json"}
                   :body (json/generate-string {:title (str "Update Datahike pod to " version)
                                                :body "Automated update of Datahike pod"
-                                               :head "replikativ:pod-registry"
-                                               :base branch-name})})
+                                               :head (str "replikativ:" branch-name)
+                                               :base "master"})})
       (catch ExceptionInfo e
         (do
           (println "Failed creating PR on babashka/pod-registry: " (ex-message e))
