@@ -10,7 +10,9 @@
                    ["Differences to Datomic" {:file "doc/datomic_differences.md"}]
                    ["Distribution" {:file "doc/distributed.md"}]
                    ["Entity specs" {:file "doc/entity_spec.md"}]
-                   ["Logging and error handling" {:file "logging_and_error_handling.md"}]
+                   ["Logging and error handling" {:file "doc/logging_and_error_handling.md"}]
+                   ["Norms" {:file "doc/norms.md"}]
+                   ["Middleware" {:file "doc/middleware.md"}]
                    ["Experimental" {}
                     ["Garbage collection" {:file "doc/gc.md"}]
                     ["Unstructured input" {:file "doc/unstructured.md"}]

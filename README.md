@@ -143,7 +143,6 @@ Refer to the docs for more information:
     - [versioning](./doc/versioning.md)
     - [libdatahike](./doc/libdatahike.md)
 
-
 For simple examples have a look at the projects in the `examples` folder.
 
 ## Presentations
