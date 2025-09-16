@@ -1,4 +1,4 @@
-(ns datahike.readers
+(ns ^:no-doc datahike.readers
   (:require [datahike.connections :refer [get-connection *connections*]]
             [datahike.writing :as dw]
             [datahike.datom :refer [datom] :as dd]

@@ -39,3 +39,4 @@ tmp.edn
 .shadow-cljs
 .claude
 repl-mcp.log
+.clj-kondo

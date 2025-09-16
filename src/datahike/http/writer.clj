@@ -1,4 +1,4 @@
-(ns datahike.http.writer
+(ns ^:no-doc datahike.http.writer
   "Remote writer implementation for datahike.http.server through datahike.http.client."
   (:require [datahike.writer :refer [PWriter create-writer create-database delete-database]]
             [datahike.http.client :refer [request-json] :as client]

@@ -1,4 +1,4 @@
-(ns datahike.writing
+(ns ^:no-doc datahike.writing
   "Manage all state changes and access to state of durable store."
   (:require [datahike.connections :refer [delete-connection! *connections*]]
             [datahike.db :as db]
