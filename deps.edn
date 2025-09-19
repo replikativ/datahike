@@ -90,6 +90,7 @@
                                     "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
                                     "--no-fallback"
+                                    ; "--future-defaults=all"
                                     "-J-Xmx4g"
                                     "-o dthk"]
                         :jvm-opts  ["-Dclojure.compiler.direct-linking=true"]

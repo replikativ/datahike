@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GRAALVM_VERSION: 24.0.2
+      GRAALVM_VERSION: 25.0.0
       DTHK_PLATFORM: macos
       DTHK_ARCH: amd64
     steps:
@@ -44,16 +44,16 @@ jobs:
       - name: Setup GraalVM
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '24'
+          java-version: '25'
           distribution: 'graalvm-community'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           set-java-home: true
 
       - name: Install clojure tools
-        uses: DeLaGuardo/setup-clojure@5.0
+        uses: DeLaGuardo/setup-clojure@13.4
         with:
-          cli: 1.12.1.1550
-          bb: 1.12.204
+          cli: 1.12.2.1565
+          bb: 1.12.208
 
       - name: Build native image
         run: bb ni-cli
