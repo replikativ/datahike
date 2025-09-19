@@ -9,9 +9,8 @@ build-task:
     DTHK_PLATFORM: macos
     DTHK_ARCH: aarch64
     INSTALL_DIR: ${HOME}
-    GRAALVM_VERSION: 24.0.2
-    GRAALVM_SLUG: 11.1
-    GRAALVM_HOME: ${HOME}/graalvm-community-openjdk-${GRAALVM_VERSION}+${GRAALVM_SLUG}/Contents/Home/
+    GRAALVM_VERSION: 25.0.0
+    GRAALVM_HOME: ${HOME}/graalvm/Contents/Home/
     GITHUB_TOKEN: ENCRYPTED[!86a3791406be6ffc9490f464846ec5385908ae8d3d2a9eeb1457d529060816e14e9d7b88ecd190970add6a5d5d4e7b59!]
   script: |
     set -euo pipefail
@@ -29,9 +28,10 @@ build-task:
 
     # install graalvm
     pushd "$INSTALL_DIR" >/dev/null
-    curl -L -O https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
-    sudo xattr -r -d com.apple.quarantine graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
-    tar -xzf graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
+    curl -sL https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz -o graalvm.tar.gz
+    sudo xattr -r -d com.apple.quarantine graalvm.tar.gz
+    mkdir graalvm
+    tar -xzf graalvm.tar.gz --strip-components=1 -C graalvm
     popd >/dev/null
 
     # prepare

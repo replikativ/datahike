@@ -66,6 +66,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   native-image:
     executor: tools/clojurecli
     steps:
@@ -81,6 +82,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   persistent-set-test:
     executor: tools/clojurecli
     steps:
@@ -94,6 +96,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   hitchhiker-tree-test:
     executor: tools/clojurecli
     steps:
@@ -107,6 +110,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   spec-test:
     executor: tools/clojurecli
     steps:
@@ -120,6 +124,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   backward-compatibility-test:
     executor: tools/clojurecli
     steps:
@@ -137,6 +142,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   integration-test:
     executor: tools/clojurecli
     steps:
@@ -150,6 +156,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   build:
     executor: tools/clojurecli
     steps:
