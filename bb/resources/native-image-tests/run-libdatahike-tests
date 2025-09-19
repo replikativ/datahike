@@ -9,4 +9,4 @@ export DYLD_LIBRARY_PATH=./libdatahike/target
 
 rm -rf "/tmp/libdatahike-test"
 ./libdatahike/compile-cpp
-./libdatahike/target/test_cpp
+./libdatahike/target/test_cpp "{:store {:backend :file :path \"/tmp/libdatahike-test\"} :schema-flexibility :read}" "[{:name \"Alice\"}]" "[:find ?e ?v :where [?e :name ?v]]"

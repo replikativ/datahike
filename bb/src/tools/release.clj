@@ -68,18 +68,14 @@
     (b/git-process {:git-args ["config" "user.email" "info@lambdaforge.io"] :dir "../pod-registry"})
     (b/git-process {:git-args ["config" "user.name" "Datahike CI"] :dir "../pod-registry"})
     (println "Changing manifest")
-    (let [manifest (slurp "../pod-registry/manifests/replikativ/datahike/0.6.1607/manifest.edn")]
+    (let [manifest (slurp "../pod-registry/manifests/replikativ/datahike/0.6.1601/manifest.edn")]
       (try (fs/create-dir (str "../pod-registry/manifests/replikativ/datahike/" version))
         (catch FileAlreadyExistsException _
           (do
             (println "It seems there is already a release with that number")
             (System/exit 1))))
-      (->> (s/replace manifest #"0\.6\.1607" version)
-           (spit (str "../pod-registry/manifests/replikativ/datahike/" version "/manifest.edn")))
-      (->> (s/replace (slurp "../pod-registry/README.md") #"0\.6\.1607" version)
-           (spit "../pod-registry/README.md"))
-      (->> (s/replace (slurp "../pod-registry/examples/datahike.clj") #"0\.6\.1607" version)
-           (spit "../pod-registry/examples/datahike.clj")))
+      (->> (s/replace manifest #"0\.6\.1601" version)
+           (spit (str "../pod-registry/manifests/replikativ/datahike/" version "/manifest.edn"))))
     (println "Committing and pushing changes to fork")
     (b/git-process {:git-args ["add" "manifests/replikativ/datahike"] :dir "../pod-registry"})
     (b/git-process {:git-args ["commit" "-m" (str "Update Datahike pod to " version)] :dir "../pod-registry"})
