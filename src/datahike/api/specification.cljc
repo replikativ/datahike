@@ -1,4 +1,4 @@
-(ns datahike.api.specification
+(ns ^:no-doc datahike.api.specification
   "Shared specification for different bindings. This namespace holds all
   information such that individual bindings can be automatically derived from
   it."

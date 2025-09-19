@@ -13,7 +13,7 @@
            (combined 0 0)))))
 
 (deftest apply-middlewares-should-throw-exception-on-non-resolved-symbols
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid middleware.😱"
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid middleware"
                         (utils/apply-middlewares ['is-not-there
                                                   'datahike.middleware.utils-test/test-handler-inc-second]
                                                  (fn [a b] (+ a b))))))

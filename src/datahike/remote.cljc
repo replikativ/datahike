@@ -1,4 +1,4 @@
-(ns datahike.remote
+(ns ^:no-doc datahike.remote
   "Literals that can function as lightweight remote pointers to connections and
   dbs."
   (:require [cognitect.transit :as transit]

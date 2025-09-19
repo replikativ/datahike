@@ -1,4 +1,4 @@
-(ns datahike.json
+(ns ^:no-doc datahike.json
   "JSON related translations."
   (:require [clojure.edn :as edn]
             [clojure.walk :as walk]

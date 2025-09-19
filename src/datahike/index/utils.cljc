@@ -1,4 +1,4 @@
-(ns datahike.index.utils
+(ns ^:no-doc datahike.index.utils
   (:require [datahike.constants :refer [e0 tx0 emax txmax]]
             [datahike.datom :as dd])
   #?(:clj (:import [datahike.datom Datom])))
