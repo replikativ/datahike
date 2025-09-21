@@ -15,6 +15,7 @@
             [datahike.tools :as dt]
             [konserve.core :as k]
             [konserve.serializers :refer [fressian-serializer]]
+            #?(:cljs [fress.api :as fress])
             [hasch.core :refer [uuid]]
             [taoensso.timbre :refer [trace]])
   #?(:cljs (:require-macros [datahike.index.persistent-set :refer [generate-slice-comparator-constructor]]))
@@ -288,6 +289,8 @@
         store
         (assoc store
                :serializers {:FressianSerializer (fressian-serializer
+
+                                                  ;; read handlers
                                                   {"datahike.index.PersistentSortedSet"
                                                    #?(:clj
                                                       (reify ReadHandler
@@ -298,31 +301,49 @@
                                                             ;; - 'edit' is set to false, i.e. the set is assumed to be persistent, not transient
                                                             ;; - 'version' is set back to 0
                                                             (PersistentSortedSet. meta cmp address @storage nil count settings 0))))
-                                                      ;; TODO
-                                                      :cljs nil)
+                                                      :cljs
+                                                      (fn [reader _tag _component-count]
+                                                        (let [{:keys [meta address count]} (fress/read-object reader)
+                                                              cmp                          (index-type->cmp-quick (:index-type meta) false)]
+                                                          (prn "read pset " meta address count)
+                                                          ;; root will be loaded from storage
+                                                          (BTSet. nil count cmp meta nil @storage address))))
                                                    "datahike.index.PersistentSortedSet.Leaf"
                                                    #?(:clj
                                                       (reify ReadHandler
                                                         (read [_ reader _tag _component-count]
-                                                          (let [{:keys [keys level]} (.readObject reader)]
+                                                          (let [{:keys [keys _level]} (.readObject reader)]
                                                             (Leaf. ^List keys settings))))
-                                                      :cljs nil)
+                                                      :cljs
+                                                      (fn [reader _tag _component-count]
+                                                        (let [{:keys [keys _level]} (fress/read-object reader)]
+                                                          (prn "read leaf " keys)
+                                                          (Leaf. (clj->js keys)))))
                                                    "datahike.index.PersistentSortedSet.Branch"
                                                    #?(:clj
                                                       (reify ReadHandler
                                                         (read [_ reader _tag _component-count]
                                                           (let [{:keys [keys level addresses]} (.readObject reader)]
                                                             (Branch. (int level) ^List keys ^List (seq addresses) settings))))
-                                                      :cljs nil)
+                                                      :cljs
+                                                      (fn [reader _tag _component-count]
+                                                        (let [{:keys [keys level addresses]} (fress/read-object reader)]
+                                                          (prn "read branch " keys level addresses)
+                                                          (Branch. (int level) (clj->js keys) nil (clj->js addresses)))))
                                                    "datahike.datom.Datom"
                                                    #?(:clj
                                                       (reify ReadHandler
                                                         (read [_ reader _tag _component-count]
                                                           (dd/datom-from-reader (.readObject reader))))
-                                                      :cljs nil)}
-                                                  #?(:clj
-                                                     {me.tonsky.persistent_sorted_set.PersistentSortedSet
-                                                      {"datahike.index.PersistentSortedSet"
+                                                      :cljs
+                                                      (fn [reader _tag _component-count]
+                                                        (dd/datom-from-reader (fress/read-object reader))))}
+
+                                                  ;; write handlers
+                                                  {#?(:clj me.tonsky.persistent_sorted_set.PersistentSortedSet
+                                                      :cljs BTSet)
+                                                   {"datahike.index.PersistentSortedSet"
+                                                    #?(:clj
                                                        (reify WriteHandler
                                                          (write [_ writer  pset]
                                                            (when (nil? (.-_address  ^PersistentSortedSet pset))
@@ -331,30 +352,60 @@
                                                            (.writeTag writer "datahike.index.PersistentSortedSet" 1)
                                                            (.writeObject writer {:meta    (meta pset)
                                                                                  :address (.-_address  ^PersistentSortedSet pset)
-                                                                                 :count   (count pset)})))}
-                                                      me.tonsky.persistent_sorted_set.Leaf
-                                                      {"datahike.index.PersistentSortedSet.Leaf"
+                                                                                 :count   (count pset)})))
+                                                       :cljs
+                                                       (fn [writer pset]
+                                                         (when (nil? (.-address  ^BTSet pset))
+                                                           (dt/raise "Must be flushed." {:type :must-be-flushed
+                                                                                         :pset pset}))
+                                                         (prn "write pset " (meta pset) (.-address  ^BTSet pset) (count pset))
+                                                         (fress/write-tag writer "datahike.index.PersistentSortedSet" 1)
+                                                         (fress/write-object writer {:meta    (meta pset)
+                                                                                     :address (.-address  ^BTSet pset)
+                                                                                     :count   (count pset)})))}
+                                                   #?(:clj me.tonsky.persistent_sorted_set.Leaf
+                                                      :cljs Leaf)
+                                                   {"datahike.index.PersistentSortedSet.Leaf"
+                                                    #?(:clj
                                                        (reify WriteHandler
                                                          (write [_ writer leaf]
                                                            (.writeTag writer "datahike.index.PersistentSortedSet.Leaf" 1)
                                                            (.writeObject writer {:level (.level ^Leaf leaf)
-                                                                                 :keys  (.keys ^Leaf leaf)})))}
-                                                      me.tonsky.persistent_sorted_set.Branch
-                                                      {"datahike.index.PersistentSortedSet.Branch"
+                                                                                 :keys  (.keys ^Leaf leaf)})))
+                                                       :cljs
+                                                       (fn [writer leaf]
+                                                         (prn "write leaf " (.-keys ^Leaf leaf))
+                                                         (fress/write-tag writer "datahike.index.PersistentSortedSet.Leaf" 1)
+                                                         (fress/write-object writer {:level 0 #_(.level ^Leaf leaf) ;; not supported in cljs
+                                                                                     :keys  (vec (.-keys ^Leaf leaf))})))}
+                                                   #?(:clj me.tonsky.persistent_sorted_set.Branch
+                                                      :cljs Branch)
+                                                   {"datahike.index.PersistentSortedSet.Branch"
+                                                    #?(:clj
                                                        (reify WriteHandler
                                                          (write [_ writer node]
                                                            (.writeTag writer "datahike.index.PersistentSortedSet.Branch" 1)
                                                            (.writeObject writer {:level     (.level ^Branch node)
                                                                                  :keys      (.keys ^Branch node)
-                                                                                 :addresses (.addresses ^Branch node)})))}
-                                                      datahike.datom.Datom
-                                                      {"datahike.datom.Datom"
+                                                                                 :addresses (.addresses ^Branch node)})))
+                                                       :cljs
+                                                       (fn [writer node]
+                                                         (prn "write branch " (.-keys ^Branch node) (.-addresses ^Branch node))
+                                                         (fress/write-tag writer "datahike.index.PersistentSortedSet.Branch" 1)
+                                                         (fress/write-object writer {:level     0 #_(.level ^Branch node) ;; not supported in cljs
+                                                                                     :keys      (vec (.-keys ^Branch node))
+                                                                                     :addresses (vec (.-addresses ^Branch node))})))}
+                                                   datahike.datom.Datom
+                                                   {"datahike.datom.Datom"
+                                                    #?(:clj
                                                        (reify WriteHandler
                                                          (write [_ writer datom]
                                                            (.writeTag writer "datahike.datom.Datom" 1)
-                                                           (.writeObject writer (vec (seq ^Datom datom)))))}}
-                                                     ;; TODO
-                                                     :cljs {}))})]
+                                                           (.writeObject writer (vec (seq ^Datom datom)))))
+                                                       :cljs
+                                                       (fn [writer datom]
+                                                         (fress/write-tag writer "datahike.datom.Datom" 1)
+                                                         (fress/write-object writer (vec (seq ^Datom datom)))))}})})]
     (reset! storage (or (:storage store)
                         (create-storage store config)))
     (assoc store :storage @storage)))
