@@ -7,41 +7,52 @@
 <a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://badgen.net/badge/-/slack?icon=slack&label"/></a>
 <a href="https://clojars.org/io.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/io.replikativ/datahike.svg" /></a>
 <a href="https://circleci.com/gh/replikativ/datahike"><img src="https://circleci.com/gh/replikativ/datahike.svg?style=shield"/></a>
-<a href="https://github.com/replikativ/datahike/tree/main"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/main"/></a>
+<a href="https://cljdoc.org/d/io.replikativ/datahike"><img src="https://badgen.net/badge/cljdoc/datahike/blue"/></a>
 </p>
 
-[Datahike](https://datahike.io) is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
-powered by an efficient Datalog query engine. This project started as a port of
-[DataScript](https://github.com/tonsky/DataScript) to the
-[hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
-DataScript tests are passing, but we are still working on the internals. Having
-said this we consider Datahike usable for medium sized projects, since DataScript is
-very mature and deployed in many applications and the hitchhiker-tree
-implementation is heavily tested through generative testing. We are
-building on the two projects and the storage backends for the hitchhiker-tree
-through [konserve](https://github.com/replikativ/konserve). We would like to
-hear experience reports and are happy if you join us.
+[Datahike](https://datahike.io) is a git-like, read-scalable, distributed
+[Datalog](https://en.wikipedia.org/wiki/Datalog) database.It expands the
+functional *copy-on-write* memory semantics of Clojure to a globally joinable
+index space. It is powered by an expressive, flexible and efficient query engine
+that runs in-process and can interleave its execution with application logic.
+Datahike databases can be joined remotely without any coordination, only access
+to the underlying store is needed and database snapshots can be freely hold onto
+by readers between queries.
 
-You can find [API documentation on cljdoc](https://cljdoc.org/d/io.replikativ/datahike) and articles on Datahike on our company's [blog page](https://lambdaforge.io/articles).
+The ability to join different remote databases openly removes the necessity of
+any glue code to bring distributed data sources together. Compared to SQL the
+Datalog query DSL allows invocation of any Clojure (JVM) function as part of its
+queries. Datahike has competitive performance to Datomic and can handle
+databases with many millions of entities consisting of billions of Datoms
+(triples/facts). It is used in multiple production setups for years and has not
+experienced any data losses to our knowledge.
 
-[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
+Datahike has a [Java API](./java/src/datahike/java/Datahike.java), can be
+natively compiled into a shared library and used from the [command
+line](./doc/cli.md) and a [babashka pod](./doc/bb-pod.md). Its ClojureScript
+port is work in progress. The goal is to make it easy to bring the Datalog query
+engine in whatever runtime environments that need access to your data. It is
+also used as a foundation for a next generation [AI simulation
+runtime](https://github.com/whilo/simmis/).
 
-We presented Datahike also at meetups,for example at:
+Besides the integrated file store different underlying durable stores are supported by Datahike:
 
-- [2021 Bay Area Clojure meetup](https://www.youtube.com/watch?v=GG-S-xrDS5M)
-- [2019 scicloj online meetup](https://www.youtube.com/watch?v=Hjo4TEV81sQ).
-- [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
-- [2018 Dutch clojure meetup](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
+- [S3](https://github.com/replikativ/datahike-s3)
+- [DynamoDB](https://github.com/replikativ/datahike-dynamodb)
+- [JDBC](https://github.com/replikativ/datahike-jdbc)
+- [Redis](https://github.com/replikativ/datahike-redis)
+- [Google Cloud Storage](https://github.com/The-Literal-Company/datahike-gcs)
+
+Supporting new backends through
+[konserve](https://github.com/replikativ/konserve) is low effort, reach out to
+our [Clojurians slack channel](https://clojurians.slack.com/archives/CB7GJAN0L)
+if you need help.
 
 ## Usage
 
 Add to your dependencies:
 
-[![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
-
-We provide a small stable API for the JVM at the moment, but the on-disk schema
-is not fixed yet. We will provide a migration guide until we have reached a
-stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
+[![Clojars Project](https://img.shields.io/clojars/v/io.replikativ/datahike.svg)](https://clojars.org/io.replikativ/datahike)
 
 ```clojure
 (require '[datahike.api :as d])
@@ -108,26 +119,41 @@ stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
 ```
 
 The API namespace provides compatibility to a subset of Datomic functionality
-and should work as a drop-in replacement on the JVM. The rest of Datahike will
-be ported to core.async to coordinate IO in a platform-neutral manner.
+and should work as a drop-in replacement on the JVM.
 
 Refer to the docs for more information:
 
-- [backend development](./doc/backend-development.md)
-- [benchmarking](./doc/benchmarking.md)
-- [garbage collection](./doc/gc.md)
-- [contributing to Datahike](./doc/contributing.md)
 - [configuration](./doc/config.md)
-- [differences to Datomic](./doc/datomic_differences.md)
-- [entity spec](./doc/entity_spec.md)
-- [logging and error handling](./doc/logging_and_error_handling.md)
 - [schema flexibility](./doc/schema.md)
 - [time variance](./doc/time_variance.md)
-- [unstructured input support](./doc/unstructured.md) (experimental)
-- [versioning](./doc/versioning.md)
-
+- [entity spec](./doc/entity_spec.md)
+- [babashka pod](./doc/bb-pod.md)
+- [backend development](./doc/backend-development.md)
+- [benchmarking](./doc/benchmarking.md)
+- [cli](./doc/cli.md)
+- [contributing to Datahike](./doc/contributing.md)
+- [differences to Datomic](./doc/datomic_differences.md)
+- [distribution](./doc/distribution.md)
+- [logging and error handling](./doc/logging_and_error_handling.md)
+- [norms](./doc/norms.md)
+- [middleware](./doc/middleware.md)
+- experimental
+    - [garbage collection](./doc/gc.md)
+    - [unstructured input support](./doc/unstructured.md)
+    - [versioning](./doc/versioning.md)
+    - [libdatahike](./doc/libdatahike.md)
 
 For simple examples have a look at the projects in the `examples` folder.
+
+## Presentations
+
+We presented Datahike also at meetups, for example at:
+
+- [2021 Bay Area Clojure meetup](https://www.youtube.com/watch?v=GG-S-xrDS5M)
+- [2019 scicloj online meetup](https://www.youtube.com/watch?v=Hjo4TEV81sQ).
+- [2019 Vancouver Meetup](https://www.youtube.com/watch?v=A2CZwOHOb6U).
+- [2018 Dutch clojure meetup](https://www.youtube.com/watch?v=W6Z1mkvqp3g).
+
 
 ## Example Projects
 
@@ -249,6 +275,6 @@ feature, please let us know.
 
 ## License
 
-Copyright © 2014–2023 Konrad Kühne, Christian Weilbach, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov, Ryan Sundberg
+Copyright © 2014–2025 Konrad Kühne, Christian Weilbach, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov, Ryan Sundberg
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).

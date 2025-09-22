@@ -1,4 +1,4 @@
-(ns datahike.api.impl
+(ns ^:no-doc datahike.api.impl
   "API input and backwards compatibility. This namespace only ensures
   compatibility and does not implement underlying functionality."
   (:refer-clojure :exclude [filter])
