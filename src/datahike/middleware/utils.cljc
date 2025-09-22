@@ -10,6 +10,6 @@
       (fn [acc f-sym]
         (if-let [f (resolve f-sym)]
           (f acc)
-          (throw (ex-info "Invalid middleware.😱" {:fn f-sym}))))
+          (throw (ex-info "Invalid middleware" {:fn f-sym}))))
       handler
       middlewares)))

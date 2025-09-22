@@ -1,4 +1,4 @@
-(ns datahike.db.utils
+(ns ^:no-doc datahike.db.utils
   (:require
    [clojure.data]
    [clojure.walk]

@@ -1,4 +1,4 @@
-(ns datahike.http.client
+(ns ^:no-doc datahike.http.client
   (:refer-clojure :exclude [filter])
   (:require [babashka.http-client :as http]
             [cognitect.transit :as transit]

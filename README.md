@@ -123,22 +123,25 @@ and should work as a drop-in replacement on the JVM.
 
 Refer to the docs for more information:
 
+- [configuration](./doc/config.md)
+- [schema flexibility](./doc/schema.md)
+- [time variance](./doc/time_variance.md)
+- [entity spec](./doc/entity_spec.md)
 - [babashka pod](./doc/bb-pod.md)
 - [backend development](./doc/backend-development.md)
 - [benchmarking](./doc/benchmarking.md)
 - [cli](./doc/cli.md)
 - [contributing to Datahike](./doc/contributing.md)
-- [configuration](./doc/config.md)
 - [differences to Datomic](./doc/datomic_differences.md)
 - [distribution](./doc/distribution.md)
-- [entity spec](./doc/entity_spec.md)
-- [garbage collection](./doc/gc.md)
 - [logging and error handling](./doc/logging_and_error_handling.md)
-- [schema flexibility](./doc/schema.md)
-- [time variance](./doc/time_variance.md)
-- [unstructured input support](./doc/unstructured.md) (experimental)
-- [versioning](./doc/versioning.md)
-
+- [norms](./doc/norms.md)
+- [middleware](./doc/middleware.md)
+- experimental
+    - [garbage collection](./doc/gc.md)
+    - [unstructured input support](./doc/unstructured.md)
+    - [versioning](./doc/versioning.md)
+    - [libdatahike](./doc/libdatahike.md)
 
 For simple examples have a look at the projects in the `examples` folder.
 

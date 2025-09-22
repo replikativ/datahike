@@ -1,4 +1,4 @@
-(ns datahike.transit
+(ns ^:no-doc datahike.transit
   "Transit related translations."
   (:require [datahike.store :refer [store-identity]]
             [datahike.readers :as readers]

@@ -1,4 +1,4 @@
-(ns datahike.spec
+(ns ^:no-doc datahike.spec
   (:require [datahike.connector :refer [connection?]]
             [datahike.datom :refer [datom?]]
             [datahike.db.utils :as dbu]

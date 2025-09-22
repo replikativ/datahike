@@ -1,4 +1,4 @@
-(ns datahike.db.transaction
+(ns ^:no-doc datahike.db.transaction
   (:require
    [clojure.spec.alpha :as s]
    [clojure.string :as str]

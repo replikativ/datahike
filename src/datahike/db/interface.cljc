@@ -1,4 +1,4 @@
-(ns datahike.db.interface)
+(ns ^:no-doc datahike.db.interface)
 
 ;; Database Protocols
 

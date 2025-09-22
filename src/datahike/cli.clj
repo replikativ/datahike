@@ -1,4 +1,4 @@
-(ns datahike.cli
+(ns ^:no-doc datahike.cli
   (:gen-class)
   (:require [clojure.java.io :as io]
             [clojure.pprint :refer [pprint]]
