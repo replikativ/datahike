@@ -19,7 +19,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-13
+          - os: macos-15-intel
             name: macos
     runs-on: ${{ matrix.os }}
     env:
