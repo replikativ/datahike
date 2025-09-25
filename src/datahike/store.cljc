@@ -1,6 +1,8 @@
 (ns ^:no-doc datahike.store
   (:require [clojure.spec.alpha :as s]
-            #?(:clj [konserve.filestore :as fs])
+            #?(:clj [konserve.filestore :as fs]
+               :cljs [konserve.node-filestore :as fs])
+            [konserve.tiered :as kt]
             [konserve.memory :as mem]
             [environ.core :refer [env]]
             [datahike.index :as di]
@@ -110,38 +112,76 @@
 (defmethod config-spec :mem [_config] ::mem)
 
 ;; file
-#?(:clj
-   (defmethod store-identity :file [config]
-     [:file (:scope config) (:path config)]))
+(defmethod store-identity :file [config]
+     [:file (:scope config) (:path config)])
 
-#?(:clj
-   (defmethod empty-store :file [{:keys [path config]}]
-     (fs/connect-fs-store path :opts {:sync? true} :config config)))
+(defmethod empty-store :file [{:keys [path config]}]
+     (fs/connect-fs-store path :opts {:sync? true} :config config))
 
-#?(:clj
-   (defmethod delete-store :file [{:keys [path]}]
-     (fs/delete-store path)))
+(defmethod delete-store :file [{:keys [path]}]
+     (fs/delete-store path))
 
-#?(:clj
-   (defmethod connect-store :file [{:keys [path config]}]
-     (fs/connect-fs-store path :opts {:sync? true} :config config)))
+(defmethod connect-store :file [{:keys [path config]}]
+     (fs/connect-fs-store path :opts {:sync? true} :config config))
 
-#?(:clj
-   (defn- get-working-dir []
-     (.toString (.toAbsolutePath (Paths/get "" (into-array String []))))))
+(defn- get-working-dir []
+  #?(:clj (.toString (.toAbsolutePath (Paths/get "" (into-array String []))))
+     :cljs "/tmp"))
 
-#?(:clj
-   (defmethod default-config :file [config]
+(defmethod default-config :file [config]
      (merge
       {:path  (:datahike-store-path env (str (get-working-dir) "/datahike-db-" (rand-german-mammal)))
        :scope (dt/get-hostname)}
+      config))
+
+(s/def :datahike.store.file/path string?)
+(s/def :datahike.store.file/backend #{:file})
+(s/def :datahike.store.file/scope string?)
+(s/def ::file (s/keys :req-un [:datahike.store.file/backend
+                                       :datahike.store.file/path
+                                       :datahike.store.file/scope]))
+
+(defmethod config-spec :file [_] ::file)
+
+;; tiered store for cljs with memory front and file backend
+#?(:cljs
+   (defmethod store-identity :tiered [config]
+     [:tiered (:scope config) (:path config)]))
+
+#?(:cljs
+   (defmethod empty-store :tiered [{:keys [path config]}]
+     (let [backend-store (fs/connect-fs-store path :opts {:sync? true} :config config)]
+       (kt/connect-memory-tiered-store backend-store
+                                       :opts {:sync? true}
+                                       :write-policy :write-through
+                                       :read-policy :frontend-first))))
+
+#?(:cljs
+   (defmethod delete-store :tiered [{:keys [path]}]
+     (fs/delete-store path)))
+
+#?(:cljs
+   (defmethod connect-store :tiered [{:keys [path config]}]
+     (let [backend-store (fs/connect-fs-store path :opts {:sync? true} :config config)
+           frontend-store (mem/new-mem-store (atom {}) {:sync? true})]
+       (kt/connect-memory-tiered-store backend-store
+                                       :opts {:sync? true}
+                                       :frontend-store frontend-store
+                                       :write-policy :write-through
+                                       :read-policy :frontend-first))))
+
+#?(:cljs
+   (defmethod default-config :tiered [config]
+     (merge
+      {:path  (:datahike-store-path env (str "/tmp/datahike-db-" (rand-german-mammal)))
+       :scope (dt/get-hostname)}
       config)))
 
-#?(:clj (s/def :datahike.store.file/path string?))
-#?(:clj (s/def :datahike.store.file/backend #{:file}))
-#?(:clj (s/def :datahike.store.file/scope string?))
-#?(:clj (s/def ::file (s/keys :req-un [:datahike.store.file/backend
-                                       :datahike.store.file/path
-                                       :datahike.store.file/scope])))
+(s/def :datahike.store.tiered/path string?)
+(s/def :datahike.store.tiered/backend #{:tiered})
+(s/def :datahike.store.tiered/scope string?)
+(s/def ::tiered (s/keys :req-un [:datahike.store.tiered/backend
+                                 :datahike.store.tiered/path
+                                 :datahike.store.tiered/scope]))
 
-#?(:clj  (defmethod config-spec :file [_] ::file))
+#?(:cljs  (defmethod config-spec :tiered [_] ::tiered))

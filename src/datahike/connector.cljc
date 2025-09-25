@@ -29,7 +29,19 @@
   (#?(:clj valAt :cljs -lookup) [c k] (if (= k :wrapped-atom) wrapped-atom nil))
   IMeta
   (#?(:clj meta :cljs -meta) [_] (meta wrapped-atom))
-  #?(:cljs IAtom)
+  #?@(:cljs
+     [IAtom
+     ISwap
+      (-swap! [_ f] (swap! wrapped-atom f))
+      (-swap! [_ f arg] (swap! wrapped-atom f arg))
+      (-swap! [_ f arg1 arg2] (swap! wrapped-atom f arg1 arg2))
+      (-swap! [_ f arg1 arg2 args] (apply swap! wrapped-atom f arg1 arg2 args))
+      IReset
+      (-reset! [_ newval] (reset! wrapped-atom newval))
+      IWatchable ;; TODO This is unofficially supported, it triggers watches on each update, not on commits. For proper listeners use the API.
+      (-add-watch [_ key f] (add-watch wrapped-atom key f))
+      (-remove-watch [_ key] (remove-watch wrapped-atom key))
+      (-notify-watches [_ old new] (-notify-watches wrapped-atom old new))])
   #?@(:clj
       [IAtom
        (swap [_ f] (swap! wrapped-atom f))
@@ -137,59 +149,66 @@
   (-> cfg
       (dissoc :writer :store :store-cache-size :search-cache-size)))
 
+(defn- -connect* [raw-config]
+  (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
+        _ (log/debug "Using config " (update-in config [:store] dissoc :password))
+        store-config (:store config)
+        store-id (ds/store-identity store-config)
+        conn-id [store-id (:branch config)]]
+    (if-let [conn (get-connection conn-id)]
+      (let [conn-config (:config @(:wrapped-atom conn))
+            ;; replace store config with its identity                              
+            cfg (normalize-config config)
+            conn-cfg (normalize-config conn-config)]
+        (when-not (= cfg conn-cfg)
+          (dt/raise "Configuration does not match existing connections."
+                    {:type :config-does-not-match-existing-connections
+                     :config cfg
+                     :existing-connections-config conn-cfg
+                     :diff (diff cfg conn-cfg)}))
+        conn)
+      (let [raw-store (ds/connect-store store-config)
+            _         (when-not raw-store
+                        (dt/raise "Backend does not exist." {:type   :backend-does-not-exist
+                                                             :config store-config}))
+            store     (ds/add-cache-and-handlers raw-store config)
+            stored-db (k/get store (:branch config) nil {:sync? true})
+            _         (when-not stored-db
+                        (ds/release-store store-config store)
+                        (dt/raise "Database does not exist." {:type   :db-does-not-exist
+                                                              :config config}))
+            [config store stored-db]
+            (let [intended-index (:index config)
+                  stored-index   (get-in stored-db [:config :index])]
+              (if-not (= intended-index stored-index)
+                (do
+                  (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. The default index is now :datahike/persistent-set. Using stored index setting now, but this might throw an error in the future."))
+                  (let [config    (assoc config :index stored-index)
+                        store     (ds/add-cache-and-handlers raw-store config)
+                        stored-db (k/get store (:branch config) nil {:sync? true})]
+                    [config store stored-db]))
+                [config store stored-db]))
+            _ (version-check stored-db)
+            _ (when-not (:allow-unsafe-config config)
+                (ensure-stored-config-consistency config (:config stored-db)))
+            conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
+        (swap! (:wrapped-atom conn) assoc :writer
+               (w/create-writer (:writer config) conn))
+        (add-connection! conn-id conn)
+        conn))))
+
 (extend-protocol PConnector
   #?(:clj String :cljs string)
   (-connect [uri]
     (-connect (dc/uri->config uri)))
 
   #?(:clj clojure.lang.IPersistentMap :cljs PersistentArrayMap)
-  (-connect [raw-config]
-    (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
-          _ (log/debug "Using config " (update-in config [:store] dissoc :password))
-          store-config (:store config)
-          store-id (ds/store-identity store-config)
-          conn-id [store-id (:branch config)]]
-      (if-let [conn (get-connection conn-id)]
-        (let [conn-config (:config @(:wrapped-atom conn))
-              ;; replace store config with its identity                              
-              cfg (normalize-config config)
-              conn-cfg (normalize-config conn-config)]
-          (when-not (= cfg conn-cfg)
-            (dt/raise "Configuration does not match existing connections."
-                      {:type :config-does-not-match-existing-connections
-                       :config cfg
-                       :existing-connections-config conn-cfg
-                       :diff (diff cfg conn-cfg)}))
-          conn)
-        (let [raw-store (ds/connect-store store-config)
-              _         (when-not raw-store
-                          (dt/raise "Backend does not exist." {:type   :backend-does-not-exist
-                                                               :config store-config}))
-              store     (ds/add-cache-and-handlers raw-store config)
-              stored-db (k/get store (:branch config) nil {:sync? true})
-              _         (when-not stored-db
-                          (ds/release-store store-config store)
-                          (dt/raise "Database does not exist." {:type   :db-does-not-exist
-                                                                :config config}))
-              [config store stored-db]
-              (let [intended-index (:index config)
-                    stored-index   (get-in stored-db [:config :index])]
-                (if-not (= intended-index stored-index)
-                  (do
-                    (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. The default index is now :datahike/persistent-set. Using stored index setting now, but this might throw an error in the future."))
-                    (let [config    (assoc config :index stored-index)
-                          store     (ds/add-cache-and-handlers raw-store config)
-                          stored-db (k/get store (:branch config) nil {:sync? true})]
-                      [config store stored-db]))
-                  [config store stored-db]))
-              _ (version-check stored-db)
-              _ (when-not (:allow-unsafe-config config)
-                  (ensure-stored-config-consistency config (:config stored-db)))
-              conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
-          (swap! (:wrapped-atom conn) assoc :writer
-                 (w/create-writer (:writer config) conn))
-          (add-connection! conn-id conn)
-          conn)))))
+  (-connect [config]
+    (-connect* config))
+
+  #?(:cljs cljs.core/PersistentHashMap) 
+  #?(:cljs (-connect [config]
+            (-connect* config))))
 
 ;; public API
 

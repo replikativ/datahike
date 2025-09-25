@@ -1,4 +1,4 @@
-{:deps true
+{:deps {:aliases [:cljs]}
  :src-paths ["src" "test"]
  :builds {:comptest
           {:target :node-script
@@ -6,4 +6,13 @@
            :main datahike.cljs-compilation-test/-main
            :compiler-options {:infer-externs true
                               :warnings {:fn-deprecated false
-                                         :protocol-multiple-impls false}}}}}
+                                         :protocol-multiple-impls false}}}
+          :repl
+          {:target :node-script
+           :output-to "target/out/repl.js"
+           :main shadow.cljs.devtools.cli
+           :compiler-options {:infer-externs true
+                              :warnings-as-errors false
+                              :warnings {:fn-deprecated false
+                                         :protocol-multiple-impls false}}}
+ }}
