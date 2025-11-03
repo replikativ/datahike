@@ -1,7 +1,10 @@
 (ns datahike.test.http.router-test
   (:require
    [clojure.test :refer :all]
+   [clojure.set :as set]
    [datahike.http.router :as router]
+   [datahike.http.server :as server]
+   [datahike.api.specification :refer [api-specification]]
    [datahike.api :as d]))
 
 (deftest test-route-generation
@@ -59,7 +62,7 @@
         (is (= 404 (:status response))))
 
       ;; Test that database-exists? route exists
-      (let [response (handler {:uri "/database-exists?"
+      (let [response (handler {:uri "/database-exists"
                                :request-method :post
                                :body [{:store {:backend :mem
                                                :id "test"}}]})]
@@ -132,15 +135,15 @@
           handler (router/create-ring-handler :config config)]
 
       ;; Test without token - should fail
-      (let [response (handler {:uri "/database-exists?"
+      (let [response (handler {:uri "/database-exists"
                                :request-method :post
                                :body [{:store {:backend :mem
                                                :id "test"}}]})]
         (is (= 401 (:status response)) "Should require authentication")
-        (is (= {:error "Not authorized"} (:body response))))
+        (is (= {:error "Not authorized"} (read-string (:body response)))))
 
       ;; Test with wrong token - should fail
-      (let [response (handler {:uri "/database-exists?"
+      (let [response (handler {:uri "/database-exists"
                                :request-method :post
                                :headers {"authorization" "token wrong-token"}
                                :body [{:store {:backend :mem
@@ -148,7 +151,7 @@
         (is (= 401 (:status response)) "Wrong token should fail"))
 
       ;; Test with correct token - should succeed
-      (let [response (handler {:uri "/database-exists?"
+      (let [response (handler {:uri "/database-exists"
                                :request-method :post
                                :headers {"authorization" "token test-token"}
                                :body [{:store {:backend :mem
@@ -156,7 +159,7 @@
         (is (not= 401 (:status response)) "Correct token should succeed"))
 
       ;; Test with Bearer format - should also work
-      (let [response (handler {:uri "/database-exists?"
+      (let [response (handler {:uri "/database-exists"
                                :request-method :post
                                :headers {"authorization" "Bearer test-token"}
                                :body [{:store {:backend :mem
@@ -170,7 +173,7 @@
           handler (router/create-ring-handler :config config)]
 
       ;; Even without token, should succeed in dev mode
-      (let [response (handler {:uri "/database-exists?"
+      (let [response (handler {:uri "/database-exists"
                                :request-method :post
                                :body [{:store {:backend :mem
                                                :id "test"}}]})]
@@ -183,14 +186,14 @@
                    :prefix "/datahike")]
 
       ;; Test that route without prefix returns 404
-      (let [response (handler {:uri "/database-exists?"
+      (let [response (handler {:uri "/database-exists"
                                :request-method :post
                                :body [{:store {:backend :mem
                                                :id "test"}}]})]
         (is (= 404 (:status response)) "Route without prefix should not exist"))
 
       ;; Test that route with prefix works
-      (let [response (handler {:uri "/datahike/database-exists?"
+      (let [response (handler {:uri "/datahike/database-exists"
                                :request-method :post
                                :body [{:store {:backend :mem
                                                :id "test"}}]})]
@@ -202,7 +205,7 @@
                    :prefix "/api/v1/db")]
 
       ;; Test with nested prefix
-      (let [response (handler {:uri "/api/v1/db/database-exists?"
+      (let [response (handler {:uri "/api/v1/db/database-exists"
                                :request-method :post
                                :body [{:store {:backend :mem
                                                :id "test"}}]})]
@@ -213,7 +216,7 @@
                    :config {:dev-mode true})]  ; No prefix specified
 
       ;; Test at root level
-      (let [response (handler {:uri "/database-exists?"
+      (let [response (handler {:uri "/database-exists"
                                :request-method :post
                                :body [{:store {:backend :mem
                                                :id "test"}}]})]
@@ -230,11 +233,142 @@
       (d/create-database cfg)
 
       ;; Test database-exists? through handler
-      (let [response (handler {:uri "/database-exists?"
+      (let [response (handler {:uri "/database-exists"
                                :request-method :post
                                :body [cfg]})]
         (is (= 200 (:status response)))
-        (is (true? (:body response))))
+        (is (true? (read-string (:body response)))))
 
       ;; Clean up
       (d/delete-database cfg))))
+
+(deftest test-content-negotiation
+  (testing "Router supports multiple serialization formats"
+    (let [cfg {:store {:backend :mem :id "content-test"}}
+          handler (router/create-ring-handler :include-writers? false)]
+
+      ;; Create database for testing
+      (d/create-database cfg)
+
+      ;; Test EDN format (default)
+      (let [response (handler {:uri "/database-exists"
+                               :request-method :post
+                               :headers {"content-type" "application/edn"
+                                        "accept" "application/edn"}
+                               :body (pr-str [cfg])})]
+        (is (= 200 (:status response)))
+        (is (= "application/edn" (get-in response [:headers "Content-Type"])))
+        (is (string? (:body response)))
+        (is (true? (read-string (:body response)))))
+
+      ;; Test Transit+JSON format
+      (let [out (java.io.ByteArrayOutputStream.)
+            writer (cognitect.transit/writer out :json {:handlers datahike.transit/write-handlers})
+            _ (cognitect.transit/write writer [cfg])
+            response (handler {:uri "/database-exists"
+                               :request-method :post
+                               :headers {"content-type" "application/transit+json"
+                                        "accept" "application/transit+json"}
+                               :body (.toByteArray out)})]
+        (is (= 200 (:status response)) "Transit request should succeed")
+        (when (not= 200 (:status response))
+          (println "Transit error:" (:body response)))
+        (is (= "application/transit+json" (get-in response [:headers "Content-Type"])))
+        (is (bytes? (:body response)))
+        (let [in (java.io.ByteArrayInputStream. (:body response))
+              reader (cognitect.transit/reader in :json {:handlers datahike.transit/read-handlers})]
+          (is (true? (cognitect.transit/read reader)))))
+
+      ;; Test JSON format - use the datahike JSON mapper
+      (let [json-body (jsonista.core/write-value-as-bytes [cfg] datahike.json/mapper)
+            response (handler {:uri "/database-exists"
+                               :request-method :post
+                               :headers {"content-type" "application/json"
+                                        "accept" "application/json"}
+                               :body json-body})]
+        (is (= 200 (:status response)) "JSON request should succeed")
+        (when (not= 200 (:status response))
+          (println "JSON error body:" (jsonista.core/read-value (:body response) datahike.json/mapper)))
+        (is (= "application/json" (get-in response [:headers "Content-Type"])))
+        (is (bytes? (:body response)))
+        (is (true? (jsonista.core/read-value (:body response) datahike.json/mapper))))
+
+      ;; Clean up
+      (d/delete-database cfg))))
+
+;; Compatibility test with server
+(deftest test-router-matches-server-routes
+  (testing "Router routes match server routes exactly"
+    (let [config {}
+          ;; Get routes from server (uses eval approach)
+          server-routes (server/create-routes config)
+
+          ;; Extract route info from server (Reitit format)
+          server-route-info (into #{}
+                                  (map (fn [[path route-data]]
+                                         (let [method (if (:get route-data) :get :post)]
+                                           {:path path
+                                            :method method
+                                            :operation-id (get-in route-data [method :operationId])}))
+                                       server-routes))
+
+          ;; Get routes from router (raw format)
+          router-routes (router/generate-api-routes)
+
+          ;; Extract route info from router
+          router-route-info (into #{}
+                                  (map (fn [{:keys [path method name]}]
+                                         {:path path
+                                          :method method
+                                          :operation-id (str (clojure.core/name name))})
+                                       router-routes))]
+
+      ;; Check counts match
+      (is (= (count server-route-info) (count router-route-info))
+          (str "Route counts should match. Server: " (count server-route-info)
+               ", Router: " (count router-route-info)))
+
+      ;; Check all server routes exist in router
+      (is (set/subset? server-route-info router-route-info)
+          "All server routes should exist in router routes")
+
+      ;; Check all router routes exist in server
+      (is (set/subset? router-route-info server-route-info)
+          "All router routes should exist in server routes")
+
+      ;; Verify they are identical
+      (is (= server-route-info router-route-info)
+          "Server and router routes should be identical")))
+
+  (testing "Writer routes match between router and server"
+    (let [server-connections (atom {})
+          ;; Get writer routes from server
+          server-writer-routes (server/internal-writer-routes server-connections)
+
+          ;; Extract info from server writer routes
+          server-writer-info (into #{}
+                                   (map (fn [[path route-data]]
+                                          {:path path
+                                           :method :post
+                                           :operation-id (get-in route-data [:post :operationId])})
+                                        server-writer-routes))
+
+          ;; Get writer routes from router
+          router-writer-routes (router/generate-writer-routes)
+
+          ;; Extract info from router writer routes
+          router-writer-info (into #{}
+                                   (map (fn [{:keys [path method name]}]
+                                          {:path path
+                                           :method method
+                                           :operation-id (clojure.core/name name)})
+                                        router-writer-routes))]
+
+      ;; Check counts match
+      (is (= 3 (count server-writer-info) (count router-writer-info))
+          "Should have 3 writer routes in both")
+
+      ;; Check paths match
+      (is (= (set (map :path server-writer-info))
+             (set (map :path router-writer-info)))
+          "Writer route paths should match"))))

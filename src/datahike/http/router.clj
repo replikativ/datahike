@@ -2,9 +2,47 @@
   "Route generation and handlers for Datahike HTTP API.
    This namespace can be used in embedded mode without pulling in server dependencies."
   (:require [datahike.api :as d]
-            [datahike.api.specification :refer [api-specification]]
+            [datahike.api.specification :refer [api-specification ->url]]
             [datahike.tools :as dt]
-            [clojure.string :as string]))
+            [datahike.store :as ds]
+            [datahike.transit :as transit]
+            [datahike.json :as json]
+            [datahike.readers :refer [edn-readers]]
+            [clojure.edn :as edn]
+            [clojure.string :as string]
+            [cognitect.transit :as t]
+            [jsonista.core :as j])
+  (:import [java.io ByteArrayOutputStream ByteArrayInputStream]))
+
+;; -----------------------------------------------------------------------------
+;; Connection Registry
+;; -----------------------------------------------------------------------------
+
+;; Atom holding all active connections managed by the router.
+;; Key: store identity vector [backend scope identifier], Value: connection object.
+(defonce router-connections (atom {}))
+
+(defn get-connection
+  "Retrieves a connection for the given config or store-identity from the router's registry.
+   Accepts either:
+   - A config map: extracts store identity and looks up connection
+   - A store identity vector: directly looks up connection
+   Returns nil if no connection exists."
+  [config-or-store-id]
+  (let [store-id (if (vector? config-or-store-id)
+                   config-or-store-id
+                   (ds/store-identity (:store config-or-store-id)))]
+    (get @router-connections store-id)))
+
+(defn list-connections
+  "Returns a map of all active connections in the router's registry."
+  []
+  @router-connections)
+
+(defn clear-connections!
+  "Clears all connections from the registry. Useful for testing."
+  []
+  (reset! router-connections {}))
 
 ;; -----------------------------------------------------------------------------
 ;; Handler functions
@@ -37,6 +75,23 @@
                      (let [cfg (or config (first body))
                            rest-args (if config args (rest body))]
                        (apply api-fn (dissoc cfg :remote-peer) rest-args))
+
+                     connect
+                     (let [cfg (or config (first body))
+                           rest-args (if config args (rest body))
+                           conn (apply api-fn cfg rest-args)
+                           store-id (ds/store-identity (:store cfg))]
+                       ;; Register the connection in the router's registry using store identity
+                       (swap! router-connections assoc store-id conn)
+                       conn)
+
+                     release-connection
+                     (let [conn (first body)
+                           ;; Find and remove the connection from registry
+                           _ (swap! router-connections
+                                    (fn [conns]
+                                      (into {} (remove (fn [[_ v]] (identical? v conn)) conns))))]
+                       (apply api-fn body))
 
                      (apply api-fn body))
                    (catch Exception e
@@ -81,9 +136,9 @@
 ;; -----------------------------------------------------------------------------
 
 (defn api-fn-name->path
-  "Converts function name to URL path (e.g., create-database -> /create-database)."
+  "Converts function name to URL path (e.g., database-exists? -> /database-exists)."
   [fn-name]
-  (str "/" (name fn-name)))
+  (str "/" (->url fn-name)))
 
 (defn generate-api-routes
   "Generates routes for all remotely-supported API functions.
@@ -125,14 +180,139 @@
 ;; Minimal middleware for embedded use
 ;; -----------------------------------------------------------------------------
 
-(defn wrap-format-response
-  "Handles response formatting."
+(defn- detect-content-type
+  "Detects content type from request headers."
+  [request]
+  (or (get-in request [:headers "content-type"])
+      (get-in request [:headers "Content-Type"])
+      "application/edn"))
+
+(defn- detect-accept-type
+  "Detects accept type from request headers, defaults to content-type or edn."
+  [request]
+  (or (get-in request [:headers "accept"])
+      (get-in request [:headers "Accept"])
+      (detect-content-type request)
+      "application/edn"))
+
+(defn- parse-edn-body
+  "Parses EDN format body."
+  [body]
+  (cond
+    (instance? java.io.InputStream body)
+    (edn/read {:readers edn-readers} (java.io.PushbackReader. (java.io.InputStreamReader. body)))
+
+    (string? body)
+    (edn/read-string {:readers edn-readers} body)
+
+    :else body))
+
+(defn- parse-transit-body
+  "Parses transit+json format body."
+  [body]
+  (cond
+    (instance? java.io.InputStream body)
+    (let [reader (t/reader body :json {:handlers transit/read-handlers})]
+      (t/read reader))
+
+    (string? body)
+    (let [in (ByteArrayInputStream. (.getBytes ^String body))
+          reader (t/reader in :json {:handlers transit/read-handlers})]
+      (t/read reader))
+
+    (bytes? body)
+    (let [in (ByteArrayInputStream. body)
+          reader (t/reader in :json {:handlers transit/read-handlers})]
+      (t/read reader))
+
+    :else body))
+
+(defn- parse-json-body
+  "Parses JSON format body."
+  [body]
+  (cond
+    (instance? java.io.InputStream body)
+    (j/read-value body json/mapper)
+
+    (string? body)
+    (j/read-value body json/mapper)
+
+    (bytes? body)
+    (j/read-value body json/mapper)
+
+    :else body))
+
+(defn wrap-parse-body
+  "Parses request body based on content-type."
   [handler]
   (fn [request]
-    (let [response (handler request)]
-      (if (and (map? response) (contains? response :body))
-        response
-        {:status 200 :body response}))))
+    (if-let [body (:body request)]
+      (let [content-type (detect-content-type request)
+            parsed-body (cond
+                          (string/includes? content-type "application/edn")
+                          (parse-edn-body body)
+
+                          (string/includes? content-type "application/transit+json")
+                          (parse-transit-body body)
+
+                          (string/includes? content-type "application/json")
+                          (parse-json-body body)
+
+                          :else
+                          (parse-edn-body body))]
+        (handler (assoc request :body parsed-body)))
+      (handler request))))
+
+(defn- serialize-edn
+  "Serializes response body to EDN."
+  [body]
+  (pr-str body))
+
+(defn- serialize-transit
+  "Serializes response body to transit+json."
+  [body]
+  (let [out (ByteArrayOutputStream.)
+        writer (t/writer out :json {:handlers transit/write-handlers})]
+    (t/write writer body)
+    (.toByteArray out)))
+
+(defn- serialize-json
+  "Serializes response body to JSON."
+  [body]
+  (j/write-value-as-bytes body json/mapper))
+
+(defn wrap-format-response
+  "Handles response formatting and serialization based on Accept header."
+  [handler]
+  (fn [request]
+    (let [response (handler request)
+          body (:body response)
+          accept-type (detect-accept-type request)]
+      (try
+        (let [[serialized-body content-type]
+              (cond
+                (string/includes? accept-type "application/transit+json")
+                [(serialize-transit body) "application/transit+json"]
+
+                (string/includes? accept-type "application/json")
+                [(serialize-json body) "application/json"]
+
+                :else
+                [(serialize-edn body) "application/edn"])]
+          (if (and (map? response) (contains? response :body))
+            (assoc response
+                   :body serialized-body
+                   :headers (merge {"Content-Type" content-type}
+                                   (:headers response)))
+            {:status 200
+             :body serialized-body
+             :headers {"Content-Type" content-type}}))
+        (catch Exception e
+          ;; If serialization fails, fall back to EDN
+          {:status 500
+           :body (pr-str {:error (str "Serialization error: " (.getMessage e))
+                          :type (str (type e))})
+           :headers {"Content-Type" "application/edn"}})))))
 
 (defn wrap-error-handling
   "Basic error handling middleware."
@@ -290,7 +470,9 @@
    - :prefix - URL prefix (e.g., \"/datahike\", \"/api/db\")
    - :include-writers? - Include writer routes (default false)
    - :middleware - Additional Ring middleware
-   - :not-found-handler - Custom 404 handler"
+   - :not-found-handler - Custom 404 handler
+
+   Supports EDN, Transit+JSON, and JSON serialization based on Content-Type and Accept headers."
   [& {:keys [config prefix include-writers? middleware not-found-handler]
       :or {config {}
            prefix ""
@@ -302,7 +484,11 @@
                                       :not-found-handler not-found-handler)
         handler-with-auth (if (or (:token config) (:dev-mode config))
                             (wrap-token-auth base-handler config)
-                            base-handler)]
+                            base-handler)
+        handler-with-format (-> handler-with-auth
+                                wrap-parse-body
+                                wrap-error-handling
+                                wrap-format-response)]
     (reduce (fn [h mw] (mw h))
-            handler-with-auth
+            handler-with-format
             (reverse middleware))))
