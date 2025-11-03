@@ -1,12 +1,12 @@
 (ns datahike.http.server
-  "HTTP server implementation for Datahike."
+  "HTTP server implementation for Datahike using the router namespace."
   (:gen-class)
   (:refer-clojure :exclude [read-string filter])
   (:require
    [clojure.string :as str]
    [clojure.edn :as edn]
    [datahike.connections :refer [*connections*]]
-   [datahike.api.specification :refer [api-specification ->url]]
+   [datahike.http.router :as router]
    [datahike.http.middleware :as middleware]
    [datahike.readers :refer [edn-readers]]
    [datahike.transit :as transit]
@@ -34,63 +34,33 @@
    [spec-tools.core :as st])
   (:import [datahike.datom Datom]))
 
-(defn generic-handler [config f]
+;; Handler wrapper for server-specific functionality (caching, logging)
+(defn wrap-server-handler
+  "Wraps a handler with server-specific functionality like caching and logging."
+  [handler config]
   (fn [request]
-    (try
-      (let [{{body :body} :parameters
-             :keys [headers params method]} request
-            _ (log/trace "request body" f body)
-          ;; TODO move this to client
-            ret-body
-            (cond (= f #'api/create-database)
-                ;; remove remote-peer and re-add
-                  (assoc
-                   (apply f (dissoc (first body) :remote-peer) (rest body))
-                   :remote-peer (:remote-peer (first body)))
+    (let [response (handler request)]
+      (merge response
+             (when (and (= (:request-method request) :get)
+                        (get-in request [:params "args-id"])
+                        (get-in config [:cache :get :max-age]))
+               {:headers {"Cache-Control" (str (when-not (:token config) "public, ")
+                                               "max-age=" (get-in config [:cache :get :max-age]))}})))))
 
-                  (= f #'api/delete-database)
-                  (apply f (dissoc (first body) :remote-peer) (rest body))
-
-                  :else
-                  (apply f body))]
-        (log/trace "return body" ret-body)
-        (merge
-         {:status 200
-          :body
-          (when-not (headers "no-return-value")
-            ret-body)}
-         (when (and (= method :get)
-                    (get params "args-id")
-                    (get-in config [:cache :get :max-age]))
-           {:headers {"Cache-Control" (str (when-not (:token config) "public, ")
-                                           "max-age=" (get-in config [:cache :get :max-age]))}})))
-      (catch Exception e
-        {:status 500
-         :body   {:msg (ex-message e)
-                  :ex-data (ex-data e)}}))))
-
-(declare create-routes)
-
-(defn extract-first-sentence [doc]
-  (str (first (str/split doc #"\.\s")) "."))
-
-;; This code expands and evals the server route construction given the
-;; API specification. 
-;; TODO This would not need macro-expansion if s/spec would not be a macro.
-(eval
- `(defn ~'create-routes [~'config]
-    ~(vec
-      (for [[n {:keys [args doc supports-remote? referentially-transparent?]}] api-specification
-            :when supports-remote?]
-        `[~(str "/" (->url n))
-          {:swagger {:tags ["API"]}
-           ~(if referentially-transparent? :get :post)
-           {:operationId ~(str n)
-            :summary     ~(extract-first-sentence doc)
-            :description ~doc
-            :parameters  {:body (st/spec {:spec (s/spec ~args)
-                                          :name ~(str n)})}
-            :handler     (generic-handler ~'config ~(resolve n))}}]))))
+;; Convert router routes to Reitit format with Swagger support
+(defn routes-to-reitit
+  "Converts routes from the router namespace to Reitit format with Swagger metadata."
+  [routes config]
+  (vec
+   (for [{:keys [path method handler name doc]} routes]
+     [path
+      {:swagger {:tags ["API"]}
+       method {:operationId (str name)
+               :summary (when doc (str (first (str/split doc #"\.\s")) "."))
+               :description doc
+               :parameters {:body (st/spec {:spec any?
+                                           :name (str name)})}
+               :handler (wrap-server-handler handler config)}}])))
 
 (def muuntaja-with-opts
   (m/create
@@ -122,63 +92,7 @@
                             multipart/multipart-middleware
                             middleware/patch-swagger-json]}})
 
-(defn internal-writer-routes [server-connections]
-  [["/delete-database-writer"
-    {:post {:parameters  {:body (st/spec {:spec any?
-                                          :name "delete-database-writer"})},
-            :summary     "Internal endpoint. DO NOT USE!"
-            :no-doc      true
-            :handler     (fn [{{:keys [body]} :parameters}]
-                           (binding [*connections* server-connections]
-                             (let [cfg (dissoc (first body) :remote-peer :writer)]
-                               (try
-                                 (try
-                                   (api/release (api/connect cfg) true)
-                                   (catch Exception _))
-                                 {:status 200
-                                  :body   (apply datahike.writing/delete-database cfg (rest body))}
-                                 (catch Exception e
-                                   {:status 500
-                                    :body   {:msg (ex-message e)
-                                             :ex-data (ex-data e)}})))))
-            :operationId "delete-database"},
-     :swagger {:tags ["Internal"]}}]
-   ["/create-database-writer"
-    {:post {:parameters  {:body (st/spec {:spec any?
-                                          :name "create-database-writer"})},
-            :summary     "Internal endpoint. DO NOT USE!"
-            :no-doc      true
-            :handler     (fn [{{:keys [body]} :parameters}]
-                           (let [cfg (dissoc (first body) :remote-peer :writer)]
-                             (try
-                               {:status 200
-                                :body   (apply datahike.writing/create-database
-                                               cfg
-                                               (rest body))}
-                               (catch Exception e
-                                 {:status 500
-                                  :body   {:msg (ex-message e)
-                                           :ex-data (ex-data e)}}))))
-            :operationId "create-database"},
-     :swagger {:tags ["Internal"]}}]
-   ["/transact!-writer"
-    {:post {:parameters  {:body (st/spec {:spec any?
-                                          :name "transact-writer"})},
-            :summary     "Internal endpoint. DO NOT USE!"
-            :no-doc      true
-            :handler     (fn [{{:keys [body]} :parameters}]
-                           (binding [*connections* server-connections]
-                             (try
-                               (let [conn (api/connect (dissoc (first body) :remote-peer :writer)) ;; TODO maybe release?
-                                     res @(apply datahike.writer/transact! conn (rest body))]
-                                 {:status 200
-                                  :body   res})
-                               (catch Exception e
-                                 {:status 500
-                                  :body   {:msg (ex-message e)
-                                           :ex-data (ex-data e)}}))))
-            :operationId "transact"},
-     :swagger {:tags ["Internal"]}}]])
+;; Writer routes handled by router namespace
 
 (defn app [config route-opts server-connections]
   (-> (ring/ring-handler
@@ -189,13 +103,18 @@
                   :swagger {:info {:title       "Datahike API"
                                    :description "Transaction and query functions for Datahike.\n\nThe signatures match those of the Clojure API. All functions take their arguments passed as a vector/list in the POST request body."}}
                   :handler (swagger/create-swagger-handler)}}]]
-         (map (fn [route]
-                (let [method (if (:get (second route)) :get :post)]
-                  (assoc-in route [1 method :middleware]
-                            [(partial middleware/token-auth config)
-                             (partial middleware/auth config)])))
-              (concat (create-routes config)
-                      (internal-writer-routes server-connections)))) route-opts)
+         ;; Get routes from router namespace
+         (let [api-routes (router/create-routes :format :raw :include-writers? false)
+               writer-routes (router/generate-writer-routes)
+               reitit-api-routes (routes-to-reitit api-routes config)
+               reitit-writer-routes (routes-to-reitit writer-routes config)]
+           (map (fn [route]
+                  (let [method (if (:get (second route)) :get :post)]
+                    (assoc-in route [1 method :middleware]
+                              [(partial middleware/token-auth config)
+                               (partial middleware/auth config)])))
+                (concat reitit-api-routes
+                        reitit-writer-routes)))) route-opts)
        (ring/routes
         (swagger-ui/create-swagger-ui-handler
          {:path   "/"

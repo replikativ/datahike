@@ -37,3 +37,4 @@ dhi.build_artifacts.txt
 trace.edn
 tmp.edn
 .shadow-cljs
+*.temp.*
