@@ -4,8 +4,11 @@
    [clojure.set :as set]
    [datahike.http.router :as router]
    [datahike.http.server :as server]
+   [datahike.http.client :as client]
+   [datahike.store :as ds]
    [datahike.api.specification :refer [api-specification]]
-   [datahike.api :as d]))
+   [datahike.api :as d]
+   [ring.adapter.jetty :as jetty]))
 
 (deftest test-route-generation
   (testing "API routes are generated correctly"
@@ -372,3 +375,149 @@
       (is (= (set (map :path server-writer-info))
              (set (map :path router-writer-info)))
           "Writer route paths should match"))))
+
+(deftest test-connection-registry-sync
+  (testing "Connection registry maintains consistency across all connection types"
+    (let [test-port 3030
+          db-path (str "/tmp/router-test-sync-" (System/currentTimeMillis))
+          handler (router/create-ring-handler :config {:dev-mode true})
+          server (jetty/run-jetty handler {:port test-port :join? false})]
+
+      (try
+        (Thread/sleep 500) ; Let server start
+
+        ;; Define configs for different connection types
+        (let [http-client-cfg {:store {:backend :file :path db-path}
+                               :remote-peer {:url (str "http://localhost:" test-port)}
+                               :allow-unsafe-config true}
+              writer-cfg {:store {:backend :file :path db-path}
+                         :writer {:backend :self}
+                         :allow-unsafe-config true}
+              remote-peer-cfg {:store {:backend :file :path db-path}
+                              :remote-peer {:url (str "http://localhost:" test-port)}
+                              :allow-unsafe-config true}
+              local-cfg {:store {:backend :file :path db-path}
+                        :allow-unsafe-config true}]
+
+          (try
+            ;; Clean up
+            (try (client/delete-database http-client-cfg) (catch Exception _))
+            (router/clear-connections!)
+
+            ;; Phase 1: HTTP CLIENT creates DB and writes
+            (client/create-database http-client-cfg)
+            (let [http-conn (client/connect http-client-cfg)]
+
+              (client/transact http-conn [{:db/ident :test/source
+                                          :db/valueType :db.type/string
+                                          :db/cardinality :db.cardinality/one}
+                                         {:db/ident :test/value
+                                          :db/valueType :db.type/long
+                                          :db/cardinality :db.cardinality/one}])
+
+              (client/transact http-conn [{:test/source "http-client" :test/value 1}])
+
+              ;; Phase 2: MAIN PROCESS accesses router connection
+              (let [main-conn (router/get-connection local-cfg)]
+                (is (some? main-conn) "Should retrieve connection from router registry")
+
+                (let [main-db @main-conn
+                      main-data (d/q '[:find ?source ?val
+                                      :where [?e :test/source ?source]
+                                             [?e :test/value ?val]]
+                                    main-db)]
+                  (is (= #{["http-client" 1]} main-data)
+                      "MAIN should see HTTP CLIENT data"))
+
+                ;; Phase 3: WRITER writes
+                (let [writer-conn (d/connect writer-cfg)]
+                  (d/transact writer-conn [{:test/source "writer" :test/value 2}])
+
+                  ;; Verify MAIN sees WRITER data
+                  (let [main-db-2 @main-conn
+                        main-data-2 (d/q '[:find ?source ?val
+                                          :where [?e :test/source ?source]
+                                                 [?e :test/value ?val]]
+                                        main-db-2)]
+                    (is (= 2 (count main-data-2))
+                        "MAIN should see both HTTP CLIENT and WRITER data"))
+
+                  ;; Verify HTTP CLIENT sees WRITER data
+                  (let [http-db-2 (client/db http-conn)
+                        http-data-2 (client/q '[:find ?source ?val
+                                               :where [?e :test/source ?source]
+                                                      [?e :test/value ?val]]
+                                             http-db-2)]
+                    (is (= 2 (count http-data-2))
+                        "HTTP CLIENT should see WRITER data"))
+
+                  ;; Phase 4: REMOTE-PEER writes
+                  (let [remote-peer-conn (d/connect remote-peer-cfg)]
+                    (d/transact remote-peer-conn [{:test/source "remote-peer" :test/value 3}])
+
+                    ;; Verify all processes see all data
+                    (let [main-db-3 @main-conn
+                          http-db-3 (client/db http-conn)
+                          writer-db-3 @writer-conn
+                          remote-db-3 @remote-peer-conn
+
+                          main-data (d/q '[:find ?source ?val
+                                          :where [?e :test/source ?source]
+                                                 [?e :test/value ?val]]
+                                        main-db-3)
+                          http-data (client/q '[:find ?source ?val
+                                               :where [?e :test/source ?source]
+                                                      [?e :test/value ?val]]
+                                             http-db-3)
+                          writer-data (d/q '[:find ?source ?val
+                                            :where [?e :test/source ?source]
+                                                   [?e :test/value ?val]]
+                                          writer-db-3)
+                          remote-data (d/q '[:find ?source ?val
+                                            :where [?e :test/source ?source]
+                                                   [?e :test/value ?val]]
+                                          remote-db-3)]
+
+                      (is (= 3 (count main-data)) "MAIN should see 3 records")
+                      (is (= 3 (count http-data)) "HTTP CLIENT should see 3 records")
+                      (is (= 3 (count writer-data)) "WRITER should see 3 records")
+                      (is (= 3 (count remote-data)) "REMOTE-PEER should see 3 records")
+
+                      ;; All should see identical data
+                      (is (= main-data http-data writer-data remote-data)
+                          "All connection types should see identical data"))
+
+                    ;; Phase 5: Cross-process writes
+                    (d/transact main-conn [{:test/source "main" :test/value 100}])
+                    (client/transact http-conn [{:test/source "http-round2" :test/value 200}])
+                    (d/transact writer-conn [{:test/source "writer-round2" :test/value 300}])
+                    (d/transact remote-peer-conn [{:test/source "remote-round2" :test/value 400}])
+
+                    ;; Final verification: all see all 7 records
+                    (let [final-main (d/q '[:find ?source :where [_ :test/source ?source]] @main-conn)
+                          final-http (client/q '[:find ?source :where [_ :test/source ?source]]
+                                              (client/db http-conn))
+                          final-writer (d/q '[:find ?source :where [_ :test/source ?source]] @writer-conn)
+                          final-remote (d/q '[:find ?source :where [_ :test/source ?source]] @remote-peer-conn)]
+
+                      (is (= 7 (count final-main)) "MAIN should see all 7 records")
+                      (is (= 7 (count final-http)) "HTTP CLIENT should see all 7 records")
+                      (is (= 7 (count final-writer)) "WRITER should see all 7 records")
+                      (is (= 7 (count final-remote)) "REMOTE-PEER should see all 7 records")
+
+                      (is (= final-main final-http final-writer final-remote)
+                          "All processes maintain perfect consistency"))
+
+                    ;; Test store identity vector access
+                    (let [store-id (ds/store-identity (:store local-cfg))
+                          conn-by-id (router/get-connection store-id)]
+                      (is (some? conn-by-id) "Should retrieve connection by store identity vector")
+                      (is (identical? main-conn conn-by-id)
+                          "Both access methods should return same connection object"))))))
+
+            (finally
+              (try (client/delete-database http-client-cfg) (catch Exception _))
+              (router/clear-connections!))))
+
+        (finally
+          (.stop server))))))
