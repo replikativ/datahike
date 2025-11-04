@@ -32,8 +32,10 @@ out/
 /datahike
 tests.user.edn
 libdatahike.zip
-dhi
-dhi.build_artifacts.txt
+dthk
+libdatahike*.zip
 trace.edn
 tmp.edn
 .shadow-cljs
+.claude
+repl-mcp.log
