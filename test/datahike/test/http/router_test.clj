@@ -388,13 +388,15 @@
 
         ;; Define configs for different connection types
         (let [http-client-cfg {:store {:backend :file :path db-path}
-                               :remote-peer {:url (str "http://localhost:" test-port)}
+                               :remote-peer {:backend :datahike-server
+                                           :url (str "http://localhost:" test-port)}
                                :allow-unsafe-config true}
               writer-cfg {:store {:backend :file :path db-path}
                          :writer {:backend :self}
                          :allow-unsafe-config true}
               remote-peer-cfg {:store {:backend :file :path db-path}
-                              :remote-peer {:url (str "http://localhost:" test-port)}
+                              :remote-peer {:backend :datahike-server
+                                          :url (str "http://localhost:" test-port)}
                               :allow-unsafe-config true}
               local-cfg {:store {:backend :file :path db-path}
                         :allow-unsafe-config true}]
