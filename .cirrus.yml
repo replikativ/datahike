@@ -1,15 +1,17 @@
 macos_instance:
-  image: ghcr.io/cirruslabs/macos-monterey-base:latest
+  image: ghcr.io/cirruslabs/macos-runner:sequoia
 
 build-task:
+  only_if: $CIRRUS_BRANCH == 'main'
+  maven_cache:
+    folder: ~/.m2
   env:
     DTHK_PLATFORM: macos
     DTHK_ARCH: aarch64
     INSTALL_DIR: ${HOME}
-    GRAALVM_VERSION: 22.0.2
-    GRAALVM_SLUG: 9.1
-    GRAALVM_HOME: ${HOME}/graalvm-community-openjdk-${GRAALVM_VERSION}+${GRAALVM_SLUG}/Contents/Home/
-    GITHUB_TOKEN: ENCRYPTED[0ea782cbbd99c2486b0f55b8eefcf91606a0805faaa3f35e55ecb75268b0046b874c856753f528ba689a9cdaa11e47c2]
+    GRAALVM_VERSION: 25.0.0
+    GRAALVM_HOME: ${HOME}/graalvm/Contents/Home/
+    GITHUB_TOKEN: ENCRYPTED[!86a3791406be6ffc9490f464846ec5385908ae8d3d2a9eeb1457d529060816e14e9d7b88ecd190970add6a5d5d4e7b59!]
   script: |
     set -euo pipefail
 
@@ -26,9 +28,10 @@ build-task:
 
     # install graalvm
     pushd "$INSTALL_DIR" >/dev/null
-    curl -L -O https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
-    sudo xattr -r -d com.apple.quarantine graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
-    tar -xzf graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz
+    curl -sL https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_${DTHK_PLATFORM}-${DTHK_ARCH}_bin.tar.gz -o graalvm.tar.gz
+    sudo xattr -r -d com.apple.quarantine graalvm.tar.gz
+    mkdir graalvm
+    tar -xzf graalvm.tar.gz --strip-components=1 -C graalvm
     popd >/dev/null
 
     # prepare
@@ -40,17 +43,18 @@ build-task:
     echo $PATH
     native-image --version
 
-    # compile
+    # compile native artifacts
     bb ni-cli
+    bb ni-compile
 
-    # test
-    file dthk
+    # test native artifacts
     bb test native-image
     bb test bb-pod
+    bb test libdatahike
 
-    # upload artifact
-    if [[ $CIRRUS_RELEASE == "" ]]; then
-      bb release native-cli
-    fi
+    # release native artifacts
+    bb release native-image
+    bb release libdatahike
+
   binaries_artifacts:
     path: "dist/*"

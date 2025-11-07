@@ -15,8 +15,8 @@
 
 (defn init-db [config]
   (d/delete-database config)
-  (d/create-database config)
-  (d/connect config))
+  (let [config (d/create-database config)]
+    [(d/connect config) config]))
 
 (defn init-tx [entity-count conn]
   (when (= :write (get-in @conn [:config :schema-flexibility]))
@@ -98,7 +98,7 @@
                         (assoc :backend (get-in config [:store :backend]))
                         (dissoc :store))
          datom-count (* entity-count (count c/schema))
-         conn (init-db unique-cfg)
+         [conn unique-cfg] (init-db unique-cfg)
          initial-tx (init-tx entity-count conn)
          measurements (vec (if (some? make-fn-invocation)
                              (do

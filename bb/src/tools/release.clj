@@ -1,13 +1,18 @@
 (ns tools.release
   (:require
    [babashka.fs :as fs]
-   [babashka.process :as p]
+   [babashka.http-client :as http]
    [borkdude.gh-release-artifact :as gh]
+   [cheshire.core :as json]
+   [clojure.java.io :as io]
+   [clojure.string :as s]
+   [clojure.tools.build.api :as b]
    [selmer.parser :refer [render]]
    [tools.build :as build]
    [tools.version :as version])
   (:import
-   (clojure.lang ExceptionInfo)))
+   [clojure.lang ExceptionInfo]
+   [java.nio.file FileAlreadyExistsException]))
 
 (defn fib [a b]
   (lazy-seq (cons a (fib b (+ a b)))))
@@ -49,6 +54,52 @@
           (System/exit 1))
       (println (:url ret)))))
 
+(defn pod-release
+  "Create a PR on babashka pod-registry"
+  [repo-config]
+  (let [version (version/string repo-config)
+        branch-name (str "datahike-" version)
+        home (str (fs/home))
+        github-token (System/getenv "GITHUB_TOKEN")]
+    (println "Checking out pod-registry")
+    (spit (str home "/.ssh/known_hosts") (slurp (io/resource "github-fingerprints")) :append true)
+    (b/git-process {:git-args ["clone" "git@github.com:replikativ/pod-registry.git"] :dir "../"})
+    (b/git-process {:git-args ["checkout" "-b" branch-name] :dir "../pod-registry"})
+    (b/git-process {:git-args ["config" "user.email" "info@lambdaforge.io"] :dir "../pod-registry"})
+    (b/git-process {:git-args ["config" "user.name" "Datahike CI"] :dir "../pod-registry"})
+    (println "Changing manifest")
+    (let [manifest (slurp "../pod-registry/manifests/replikativ/datahike/0.6.1607/manifest.edn")]
+      (try (fs/create-dir (str "../pod-registry/manifests/replikativ/datahike/" version))
+        (catch FileAlreadyExistsException _
+          (do
+            (println "It seems there is already a release with that number")
+            (System/exit 1))))
+      (->> (s/replace manifest #"0\.6\.1607" version)
+           (spit (str "../pod-registry/manifests/replikativ/datahike/" version "/manifest.edn")))
+      (->> (s/replace (slurp "../pod-registry/README.md") #"0\.6\.1607" version)
+           (spit "../pod-registry/README.md"))
+      (->> (s/replace (slurp "../pod-registry/examples/datahike.clj") #"0\.6\.1607" version)
+           (spit "../pod-registry/examples/datahike.clj")))
+    (println "Committing and pushing changes to fork")
+    (b/git-process {:git-args ["add" "manifests/replikativ/datahike"] :dir "../pod-registry"})
+    (b/git-process {:git-args ["commit" "-m" (str "Update Datahike pod to " version)] :dir "../pod-registry"})
+    (b/git-process {:git-args ["push" "origin" branch-name] :dir "../pod-registry"})
+    (println "Creating PR on pod-registry")
+    (try
+      (http/post "https://api.github.com/repos/babashka/pod-registry/pulls"
+                 {:headers {"Accept" "application/vnd.github+json"
+                            "Authorization" (str "Bearer " github-token)
+                            "X-GitHub-Api-Version" "2022-11-28"
+                            "Content-Type" "application/json"}
+                  :body (json/generate-string {:title (str "Update Datahike pod to " version)
+                                               :body "Automated update of Datahike pod"
+                                               :head (str "replikativ:" branch-name)
+                                               :base "master"})})
+      (catch ExceptionInfo e
+        (do
+          (println "Failed creating PR on babashka/pod-registry: " (ex-message e))
+          (System/exit 1))))))
+
 (defn zip-path [lib version target-dir zip-pattern]
   (let [platform (System/getenv "DTHK_PLATFORM")
         arch (System/getenv "DTHK_ARCH")]
@@ -60,6 +111,16 @@
                                                :lib lib
                                                :version version})))))
 
+(defn zip-lib [config project]
+  (let [{:keys [target-dir zip-pattern]} (-> config :release project) lib "libdatahike"
+        version (version/string config)]
+    (if-not (fs/exists? target-dir)
+      (do (println (str "ERROR: " target-dir " path not found, please compile first."))
+          (System/exit 1))
+      (let [zip-name (zip-path lib version "." zip-pattern)]
+        (fs/zip zip-name [target-dir])
+        zip-name))))
+
 (defn zip-cli [config project]
   (let [{:keys [target-dir binary-name zip-pattern]} (-> config :release project)
         lib (:lib config)
@@ -69,14 +130,18 @@
       (do (println (str "ERROR: " binary-path " executable not found, please compile first."))
           (System/exit 1))
       (let [zip-name (zip-path lib version target-dir zip-pattern)]
-        (p/shell "zip" zip-name binary-name)
+        (fs/zip zip-name [binary-name])
         zip-name))))
 
 (defn -main [config args]
   (let [cmd (first args)]
     (case cmd
-      "jar" (gh-release config (build/jar-path config (-> config :build :clj)))
+      "jar" (->> (build/jar-path config (-> config :build :clj))
+                 (gh-release config))
       "native-image" (->> (zip-cli config :native-cli)
                           (gh-release config))
+      "pod" (pod-release config)
+      "libdatahike" (->> (zip-lib config :libdatahike)
+                         (gh-release config))
       (do (println "ERROR: Command not found: " cmd)
           (System/exit 1)))))

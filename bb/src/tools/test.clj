@@ -49,6 +49,11 @@
     (p/shell "./bb/resources/native-image-tests/run-native-image-tests")
     (println "Native image cli missing. Please run 'bb ni-cli' and try again.")))
 
+(defn libdatahike []
+  (if (fs/exists? "./libdatahike/target")
+    (p/shell "./bb/resources/native-image-tests/run-libdatahike-tests")
+    (println "libdatahike binaries missing. Please run 'bb ni-compile' and try again.")))
+
 (defn bb-pod []
   (if (fs/exists? "./dthk")
     (p/shell "./bb/resources/native-image-tests/run-bb-pod-tests.clj")
@@ -67,6 +72,7 @@
   (specs)
   (back-compat config)
   (native-image)
+  (libdatahike)
   (bb-pod)
   (cljs-compile-test))
 
@@ -74,6 +80,7 @@
   (if (seq args)
     (case (first args)
       "native-image" (native-image)
+      "libdatahike" (libdatahike)
       "bb-pod" (bb-pod)
       "back-compat" (back-compat config)
       "specs" (specs)

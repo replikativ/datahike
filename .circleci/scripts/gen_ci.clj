@@ -5,7 +5,7 @@
    [clojure.string :as str]
    [flatland.ordered.map :refer [ordered-map]]))
 
-(def graalvm-version "22.0.2")
+(def graalvm-version "25.0.0")
 
 (defn run
   ([cmd-name cmd]
@@ -39,6 +39,7 @@
       :resource_class resource-class}
      :working_directory "/home/circleci/replikativ"
      :environment {:GRAALVM_VERSION graalvm-version
+                   :GRAALVM_HOME "/home/circleci/graalvm"
                    :DTHK_PLATFORM "linux"
                    :DTHK_ARCH arch
                    :PATH "/bin:/home/circleci/graalvm/bin:/home/circleci/clojure/bin:/home/circleci/bin"
@@ -48,7 +49,7 @@
       {:restore_cache {:keys [cache-key]}}
       (run "Install GraalVM"
            (format "cd /home/circleci
-/bin/wget -O graalvm.tar.gz %s
+/bin/curl -sL %s -o graalvm.tar.gz
 /bin/mkdir graalvm || true
 /bin/tar -xzf graalvm.tar.gz --directory graalvm --strip-components 1
 sudo update-alternatives --install /usr/bin/java java /home/circleci/graalvm/bin/java 0
@@ -58,28 +59,37 @@ sudo update-alternatives --set javac /home/circleci/graalvm/bin/javac"
                    graalvm-url))
       (run "Install Clojure"
            "cd /home/circleci
-/bin/curl -sLO https://download.clojure.org/install/linux-install-1.11.1.1165.sh
-/bin/chmod +x linux-install-1.11.1.1165.sh
-./linux-install-1.11.1.1165.sh --prefix /home/circleci/clojure")
+/bin/curl -sL https://download.clojure.org/install/linux-install-1.12.2.1565.sh -o clojure-install.sh
+/bin/chmod +x clojure-install.sh
+/bin/bash -x clojure-install.sh --prefix /home/circleci/clojure")
       (run "Install Babashka"
            "cd /home/circleci
-/bin/curl -sLO https://raw.githubusercontent.com/babashka/babashka/master/install
-/bin/chmod +x install
-./install --dir /home/circleci/bin")
+/bin/curl -sL https://raw.githubusercontent.com/babashka/babashka/master/install -o babashka-install.sh
+/bin/chmod +x babashka-install.sh
+/bin/bash -x babashka-install.sh --dir /home/circleci/bin")
       (run "Build native image"
            "cd /home/circleci/replikativ
 bb ni-cli")
+      (run "Build libdatahike"
+           "cd /home/circleci/replikativ
+bb ni-compile")
       (run "Test native image"
            "cd /home/circleci/replikativ
 bb test native-image")
+      (run "Test babashka pod"
+           "cd /home/circleci/replikativ
+bb test bb-pod")
+      (run "Test libdatahike"
+           "cd /home/circleci/replikativ
+bb test libdatahike")
       {:persist_to_workspace
        {:root "/home/circleci/"
-        :paths ["replikativ/dthk"]}}
+        :paths ["replikativ/dthk" "replikativ/libdatahike/target" "replikativ/graalvm"]}}
       {:save_cache
-       {:paths ["~/.m2" "~/graalvm"]
+       {:paths ["~/.m2" ".deps.clj"]
         :key cache-key}}])))
 
-(defn release-native-image
+(defn release-artifacts
   [arch]
   (let [cache-key (str arch "-deps-linux-{{ checksum \"deps.edn\" }}")]
     (ordered-map
@@ -94,11 +104,14 @@ bb test native-image")
       (run "Release native image"
            "cd /home/circleci/replikativ
 bb release native-image")
+      (run "Release libdatahike"
+           "cd /home/circleci/replikativ
+bb release libdatahike")
       {:persist_to_workspace
        {:root "/home/circleci/"
-        :paths ["replikativ/dthk"]}}
+        :paths ["replikativ/dthk" "replikativ/graalvm"]}}
       {:save_cache
-       {:paths ["~/.m2" "~/graalvm"]
+       {:paths ["~/.m2" ".deps.clj"]
         :key cache-key}}])))
 
 (defn make-config []
@@ -116,8 +129,8 @@ bb release native-image")
    :jobs (ordered-map
           :build-linux-amd64 (build-native-image "amd64" "large")
           :build-linux-aarch64 (build-native-image "aarch64" "arm.large")
-          :release-linux-amd64 (release-native-image "amd64")
-          :release-linux-aarch64 (release-native-image "aarch64"))
+          :release-linux-amd64 (release-artifacts "amd64")
+          :release-linux-aarch64 (release-artifacts "aarch64"))
    :workflows (ordered-map
                :version 2
                :native-images

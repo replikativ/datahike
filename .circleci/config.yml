@@ -4,7 +4,7 @@ setup: true
 
 orbs:
   tools: replikativ/clj-tools@0
-  continuation: circleci/continuation@0.1.2
+  continuation: circleci/continuation@2.0
 
 jobs:
   setup:
@@ -66,6 +66,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   native-image:
     executor: tools/clojurecli
     steps:
@@ -81,6 +82,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   persistent-set-test:
     executor: tools/clojurecli
     steps:
@@ -94,6 +96,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   hitchhiker-tree-test:
     executor: tools/clojurecli
     steps:
@@ -107,6 +110,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   spec-test:
     executor: tools/clojurecli
     steps:
@@ -120,6 +124,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   backward-compatibility-test:
     executor: tools/clojurecli
     steps:
@@ -137,6 +142,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   integration-test:
     executor: tools/clojurecli
     steps:
@@ -150,6 +156,7 @@ jobs:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   build:
     executor: tools/clojurecli
     steps:
@@ -180,6 +187,21 @@ jobs:
       - run:
           name: Release jar on GitHub
           command: bb release jar
+  release-pod:
+    executor: tools/clojurecli
+    steps:
+      - add_ssh_keys:
+          fingerprints:
+            - "SHA256:+nqfgSWriNWtzcE6xLJTUzdfH3lLnWWscrJ5RLPHRLc"
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Release pod on pod registry
+          command: |
+            echo $CIRCLE_PROJECT_USERNAME
+            if [[ $CIRCLE_PROJECT_USERNAME == "replikativ" ]]; then
+              bb release pod
+            fi
 
 workflows:
   build-test-and-deploy:
@@ -195,6 +217,9 @@ workflows:
           context:
             - dockerhub-deploy
             - github-token
+          filters:
+            branches:
+              only: main
           requires:
             - setup
       - format:
@@ -235,6 +260,19 @@ workflows:
           context:
             - dockerhub-deploy
             - github-token
+          filters:
+            branches:
+              only: main
+          requires:
+            - format
+            - persistent-set-test
+            - hitchhiker-tree-test
+            - backward-compatibility-test
+            - integration-test
+      - release-pod:
+          context:
+            - dockerhub-deploy
+            - github-pod-registry-token
           filters:
             branches:
               only: main

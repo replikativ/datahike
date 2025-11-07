@@ -1,10 +1,12 @@
 (ns tools.build
   (:refer-clojure :exclude [compile])
-  (:require [babashka.fs :as fs]
-            [babashka.process :as p]
-            [clojure.tools.build.api :as b]
-            [selmer.parser :refer [render]]
-            [tools.version :as version :refer [read-edn-file]]))
+  (:require
+    [babashka.fs :as fs]
+    [babashka.process :as p]
+    [cheshire.core :as json]
+    [clojure.tools.build.api :as b]
+    [selmer.parser :refer [render]]
+    [tools.version :as version :refer [read-edn-file]]))
 
 (defn clean [{:keys [target-dir] :as _project-config}]
   (print (str "Cleaning up target directory '" target-dir "'..."))
@@ -54,6 +56,11 @@
                                            :repo repo-config
                                            :version-str (version/string repo-config)})))
 
+(defn lib-path [repo-config {:keys [target-dir jar-pattern] :as project-config}]
+  (str target-dir "/" (render jar-pattern {:project project-config
+                                           :repo repo-config
+                                           :version-str (version/string repo-config)})))
+
 (defn jar
   "Builds jar file"
   [repo-config {:keys [class-dir target-dir src-dirs resource-dir] :as project-config}]
@@ -89,6 +96,7 @@
                (str "-o " project-name)
                "--shared"
                "-H:+ReportExceptionStackTraces"
+               "-H:+GenerateBuildArtifactsFile"
                "-J-Dclojure.spec.skip-macros=true"
                "-J-Dclojure.compiler.direct-linking=true"
                (str "-H:IncludeResources=" (version/string repo-config))
@@ -100,9 +108,12 @@
                "-J-Xmx5g")
       (fs/delete-tree project-target-dir)
       (fs/create-dir project-target-dir)
-      (run! #(fs/move % project-target-dir)
-            (concat ["graal_isolate.h" "graal_isolate_dynamic.h"]
-                    (map (fn [ext] (str project-name ext))
-                         [".so" ".h" "_dynamic.h" ".build_artifacts.txt"]))))
+      (->> (slurp "build-artifacts.json")
+           (json/parse-string)
+           vals
+           (apply concat)
+           (cons "build-artifacts.json")
+           (run! #(fs/move % project-target-dir))))
     (do (println "GRAALVM_HOME not set!")
-        (println "Please set GRAALVM_HOME to the root of the graalvm directory on your system."))))
+        (println "Please set GRAALVM_HOME to the root of the graalvm directory on your system.")
+        (System/exit 1))))

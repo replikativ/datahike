@@ -1,8 +1,8 @@
 {:min-bb-version "0.8.0"
- :pods {;since babashka 0.8.0, can only be declared in bb.edn
-        org.babashka/tools-deps-native {:version "0.1.6"}
-        clj-kondo/clj-kondo {:version "2024.05.24"}}
- :deps {datahike/bb {:local/root "bb"}}
+ :pods {org.babashka/tools-deps-native {:version "0.1.7"}
+        clj-kondo/clj-kondo {:version "2025.07.28"}}
+ :deps {datahike/bb {:local/root "bb"}
+        org.babashka/http-client {:mvn/version "0.4.22"}}
  :tasks {:requires [[babashka.fs :as fs]
                     [clojure.edn :as edn]
                     [pod.borkdude.clj-kondo :as clj-kondo]
@@ -12,8 +12,7 @@
                     [tools.test :as test]
                     [tools.version :as version]]
          :init (do (def config-file "config.edn")
-                   (def config (edn/read-string (slurp config-file)))
-                   (def deps (edn/read-string (slurp "deps.edn"))))
+                   (def config (edn/read-string (slurp config-file))))
 
          ; tools
 
@@ -89,7 +88,7 @@
                                :depends [http-server-clean]
                                :task    (build/compile-java (-> config :build :http-server-clj))}
 
-         http-server-ccompile {:doc  "Compile clojure namespaces"
+         http-server-ccompile {:doc  "Compile clojure namespaces for http-server"
                                :task (build/compile-clojure (-> config :build :http-server-clj))}
 
          http-server-pom {:doc  "Create pom file"
@@ -120,7 +119,7 @@
                  :depends [jcompile ni-check]
                  :task (clojure "-M:native-cli")}
 
-         ni-ccompile {:doc "Create native cpp library"
+         ni-ccompile {:doc "Compile clojure namespaces for native-image"
                       :task (build/compile-clojure (-> config :build :native))}
 
          ni-uber {:doc "Build native image uber jar"
@@ -129,11 +128,4 @@
 
          ni-compile {:doc "Create native cpp library"
                      :depends [ni-uber]
-                     :task (build/native-compile config (-> config :build :native))}
-
-         ni-release {:doc "Build and release native assets to GitHub"
-                     :depends [ni-compile]
-                     :task (let [{:keys [artifact target-dir]} (-> config :build :native)]
-                             (fs/zip artifact [target-dir])
-                             (release/gh-release artifact config)
-                             (fs/delete artifact))}}}
+                     :task (build/native-compile config (-> config :build :native))}}}
