@@ -257,7 +257,7 @@
       (let [response (handler {:uri "/database-exists"
                                :request-method :post
                                :headers {"content-type" "application/edn"
-                                        "accept" "application/edn"}
+                                         "accept" "application/edn"}
                                :body (pr-str [cfg])})]
         (is (= 200 (:status response)))
         (is (= "application/edn" (get-in response [:headers "Content-Type"])))
@@ -271,7 +271,7 @@
             response (handler {:uri "/database-exists"
                                :request-method :post
                                :headers {"content-type" "application/transit+json"
-                                        "accept" "application/transit+json"}
+                                         "accept" "application/transit+json"}
                                :body (.toByteArray out)})]
         (is (= 200 (:status response)) "Transit request should succeed")
         (when (not= 200 (:status response))
@@ -287,7 +287,7 @@
             response (handler {:uri "/database-exists"
                                :request-method :post
                                :headers {"content-type" "application/json"
-                                        "accept" "application/json"}
+                                         "accept" "application/json"}
                                :body json-body})]
         (is (= 200 (:status response)) "JSON request should succeed")
         (when (not= 200 (:status response))
@@ -389,17 +389,17 @@
         ;; Define configs for different connection types
         (let [http-client-cfg {:store {:backend :file :path db-path}
                                :remote-peer {:backend :datahike-server
-                                           :url (str "http://localhost:" test-port)}
+                                             :url (str "http://localhost:" test-port)}
                                :allow-unsafe-config true}
               writer-cfg {:store {:backend :file :path db-path}
-                         :writer {:backend :self}
-                         :allow-unsafe-config true}
+                          :writer {:backend :self}
+                          :allow-unsafe-config true}
               remote-peer-cfg {:store {:backend :file :path db-path}
-                              :remote-peer {:backend :datahike-server
-                                          :url (str "http://localhost:" test-port)}
-                              :allow-unsafe-config true}
+                               :remote-peer {:backend :datahike-server
+                                             :url (str "http://localhost:" test-port)}
+                               :allow-unsafe-config true}
               local-cfg {:store {:backend :file :path db-path}
-                        :allow-unsafe-config true}]
+                         :allow-unsafe-config true}]
 
           (try
             ;; Clean up
@@ -411,11 +411,11 @@
             (let [http-conn (client/connect http-client-cfg)]
 
               (client/transact http-conn [{:db/ident :test/source
-                                          :db/valueType :db.type/string
-                                          :db/cardinality :db.cardinality/one}
-                                         {:db/ident :test/value
-                                          :db/valueType :db.type/long
-                                          :db/cardinality :db.cardinality/one}])
+                                           :db/valueType :db.type/string
+                                           :db/cardinality :db.cardinality/one}
+                                          {:db/ident :test/value
+                                           :db/valueType :db.type/long
+                                           :db/cardinality :db.cardinality/one}])
 
               (client/transact http-conn [{:test/source "http-client" :test/value 1}])
 
@@ -425,9 +425,9 @@
 
                 (let [main-db @main-conn
                       main-data (d/q '[:find ?source ?val
-                                      :where [?e :test/source ?source]
-                                             [?e :test/value ?val]]
-                                    main-db)]
+                                       :where [?e :test/source ?source]
+                                       [?e :test/value ?val]]
+                                     main-db)]
                   (is (= #{["http-client" 1]} main-data)
                       "MAIN should see HTTP CLIENT data"))
 
@@ -438,18 +438,18 @@
                   ;; Verify MAIN sees WRITER data
                   (let [main-db-2 @main-conn
                         main-data-2 (d/q '[:find ?source ?val
-                                          :where [?e :test/source ?source]
-                                                 [?e :test/value ?val]]
-                                        main-db-2)]
+                                           :where [?e :test/source ?source]
+                                           [?e :test/value ?val]]
+                                         main-db-2)]
                     (is (= 2 (count main-data-2))
                         "MAIN should see both HTTP CLIENT and WRITER data"))
 
                   ;; Verify HTTP CLIENT sees WRITER data
                   (let [http-db-2 (client/db http-conn)
                         http-data-2 (client/q '[:find ?source ?val
-                                               :where [?e :test/source ?source]
-                                                      [?e :test/value ?val]]
-                                             http-db-2)]
+                                                :where [?e :test/source ?source]
+                                                [?e :test/value ?val]]
+                                              http-db-2)]
                     (is (= 2 (count http-data-2))
                         "HTTP CLIENT should see WRITER data"))
 
@@ -464,21 +464,21 @@
                           remote-db-3 @remote-peer-conn
 
                           main-data (d/q '[:find ?source ?val
-                                          :where [?e :test/source ?source]
-                                                 [?e :test/value ?val]]
-                                        main-db-3)
+                                           :where [?e :test/source ?source]
+                                           [?e :test/value ?val]]
+                                         main-db-3)
                           http-data (client/q '[:find ?source ?val
-                                               :where [?e :test/source ?source]
-                                                      [?e :test/value ?val]]
-                                             http-db-3)
+                                                :where [?e :test/source ?source]
+                                                [?e :test/value ?val]]
+                                              http-db-3)
                           writer-data (d/q '[:find ?source ?val
-                                            :where [?e :test/source ?source]
-                                                   [?e :test/value ?val]]
-                                          writer-db-3)
+                                             :where [?e :test/source ?source]
+                                             [?e :test/value ?val]]
+                                           writer-db-3)
                           remote-data (d/q '[:find ?source ?val
-                                            :where [?e :test/source ?source]
-                                                   [?e :test/value ?val]]
-                                          remote-db-3)]
+                                             :where [?e :test/source ?source]
+                                             [?e :test/value ?val]]
+                                           remote-db-3)]
 
                       (is (= 3 (count main-data)) "MAIN should see 3 records")
                       (is (= 3 (count http-data)) "HTTP CLIENT should see 3 records")
@@ -498,7 +498,7 @@
                     ;; Final verification: all see all 7 records
                     (let [final-main (d/q '[:find ?source :where [_ :test/source ?source]] @main-conn)
                           final-http (client/q '[:find ?source :where [_ :test/source ?source]]
-                                              (client/db http-conn))
+                                               (client/db http-conn))
                           final-writer (d/q '[:find ?source :where [_ :test/source ?source]] @writer-conn)
                           final-remote (d/q '[:find ?source :where [_ :test/source ?source]] @remote-peer-conn)]
 
