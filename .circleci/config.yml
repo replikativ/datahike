@@ -209,6 +209,10 @@ workflows:
       - setup:
           context: dockerhub-deploy
           setup_cljs: false
+      - tools/tools:
+          context: dockerhub-deploy
+          requires:
+            - setup
       - build:
           context: dockerhub-deploy
           requires:
