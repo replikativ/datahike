@@ -3,6 +3,7 @@
   (:require [datahike.writer :refer [PWriter create-writer create-database delete-database]]
             [datahike.http.client :refer [request-json] :as client]
             [datahike.json :as json]
+            [datahike.connector :as connector]
             [datahike.tools :as dt :refer [throwable-promise]]
             [taoensso.timbre :as log]
             [clojure.core.async :refer [promise-chan put!]]))
@@ -68,3 +69,11 @@
                  (catch Exception e
                    e)))
     p))
+
+;; =============================================================================
+;; Connection Integration
+;; =============================================================================
+
+(defmethod connector/-connect* :datahike-server [config opts]
+  ;; HTTP uses standard connection logic with async+sync behavior
+  (connector/-connect-impl* config opts))

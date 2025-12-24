@@ -165,6 +165,9 @@
       :thread thread
       :streaming? true})))
 
+;; Note: :kabel backend is implemented in datahike.kabel.writer
+;; Require that namespace to register the defmethod
+
 (defn dispatch! [writer arg-map]
   (-dispatch! writer arg-map))
 
@@ -181,14 +184,17 @@
 
 (defmethod create-database :self [& args]
   (let [p (throwable-promise)]
-    (#?(:clj deliver :cljs put!) p (apply w/create-database args))
+    (go
+      (#?(:clj deliver :cljs put!) p (<! (apply w/create-database args))))
     p))
 
 (defmulti delete-database backend-dispatch)
 
 (defmethod delete-database :self [& args]
   (let [p (throwable-promise)]
-    (#?(:clj deliver :cljs put!) p (apply w/delete-database args))
+    (go
+      (let [res (<! (apply w/delete-database args))]
+        #?(:clj (deliver p res) :cljs (if (nil? res) (close! p) (put! p res)))))
     p))
 
 (defn transact!

@@ -1,0 +1,25 @@
+{
+  "description" : "Durable Datalog database for JavaScript and ClojureScript",
+  "engines" : {
+    "node" : ">=14.0.0"
+  },
+  "repository" : {
+    "type" : "git",
+    "url" : "https://github.com/replikativ/datahike.git"
+  },
+  "license" : "EPL-1.0",
+  "homepage" : "https://github.com/replikativ/datahike",
+  "name" : "datahike",
+  "scripts" : {
+    "test" : "node test.js"
+  },
+  "bugs" : {
+    "url" : "https://github.com/replikativ/datahike/issues"
+  },
+  "keywords" : [ "database", "datalog", "datomic", "clojurescript", "immutable", "functional" ],
+  "types" : "index.d.ts",
+  "author" : "Christian Weilbach",
+  "files" : [ "*.js", "*.js.map", "index.d.ts", "README.md", "LICENSE" ],
+  "version" : "{{VERSION}}",
+  "main" : "datahike.js.api.js"
+}

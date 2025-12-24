@@ -45,7 +45,7 @@
 Usage:
 
     (database-exists? {:store {:backend :mem :id \"example\"}})"
-     :impl             datahike.writing/database-exists?}
+     :impl             datahike.api.impl/database-exists?}
 
     create-database
     {:args             (s/alt :config
@@ -104,6 +104,7 @@ For more information refer to the [docs](https://github.com/replikativ/datahike/
 
     connect
     {:args             (s/alt :config (s/cat :config spec/SConfig)
+                              :config+opts (s/cat :config spec/SConfig :opts map?)
                               :nil (s/cat))
      :ret              spec/SConnection
      :supports-remote? true
