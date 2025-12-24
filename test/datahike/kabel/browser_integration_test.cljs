@@ -16,6 +16,8 @@
   (:require [cljs.test :refer [deftest is testing async use-fixtures]]
             [clojure.core.async :refer [<! timeout alts!] :refer-macros [go]]
             [datahike.api :as d]
+            [datahike.kabel.connector]  ;; registers -connect* :kabel multimethod
+            [datahike.kabel.writer]     ;; registers create-database/delete-database :kabel multimethods
             [datahike.kabel.fressian-handlers :refer [datahike-fressian-middleware]]
             [is.simm.distributed-scope :as ds]
             [kabel.peer :as peer]

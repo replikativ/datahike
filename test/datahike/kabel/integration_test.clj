@@ -15,6 +15,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.java.io :as io]
             [datahike.api :as d]
+            [datahike.kabel.connector]  ;; registers -connect* :kabel multimethod
             [datahike.kabel.writer :as kw]
             [datahike.connector :refer [release]]
             [hasch.core :as hasch]
