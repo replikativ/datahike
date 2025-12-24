@@ -8,6 +8,7 @@
                     [pod.borkdude.clj-kondo :as clj-kondo]
                     [tools.build :as build]
                     [tools.deploy :as deploy]
+                    [tools.npm :as npm]
                     [tools.release :as release]
                     [tools.test :as test]
                     [tools.version :as version]]
@@ -17,14 +18,17 @@
          ; tools
 
          bench {:doc "Run benchmarks"
+                :depends [prep]
                 :task (clojure "-M:benchmark" "measure")}
 
          ffix {:doc "Format source files"
+               :depends [prep]
                :task (clojure "-M:ffix")}
 
          ; checks
 
          format {:doc "Test formatting"
+                 :depends [prep]
                  :task (clojure "-M:format")}
 
          lint {:doc "Run clj-kondo linter"
@@ -38,11 +42,10 @@
          kaocha {:doc "Run kaocha with arbitrary arguments"
                  :task (apply test/kaocha *command-line-args*)}
 
-         outdated {:doc "Find outdated libraries"
-                   :task (clojure "-M:outdated")}
 
-         check {:doc "Run all checks"
-                :depends [test format lint outdated]}
+         outdated {:doc "Find outdated libraries"
+                   :depends [prep]
+                   :task (clojure "-M:outdated")}
 
          ; build and release
 
@@ -55,8 +58,11 @@
          clean {:doc "Remove build files"
                 :task (build/clean (-> config :build :clj))}
 
+         prep {:doc "Prepare git dependencies (compile Java sources)"
+               :task (clojure "-X:deps prep")}
+
          jcompile {:doc "Compile java classes"
-                   :depends [clean]
+                   :depends [clean prep]
                    :task (build/compile-java (-> config :build :clj))}
 
          ccompile {:doc "Compile clojure namespaces"
@@ -106,14 +112,14 @@
                               :task    (let [jar (build/jar-path config (-> config :build :http-server-clj))]
                                          (release/gh-release jar config))}
 
-;; native image
+         ;; native image
 
          ni-check {:doc "Check for 'native-image' program"
                    :task (try (shell "which" "native-image")
-                           (println "Program native-image found!")
-                           (catch Exception _
-                             (println "PATH does not contain native-image! Make sure to add your GraalVM to it.")
-                             (System/exit 1)))}
+                              (println "Program native-image found!")
+                              (catch Exception _
+                                (println "PATH does not contain native-image! Make sure to add your GraalVM to it.")
+                                (System/exit 1)))}
 
          ni-cli {:doc "Build native image cli"
                  :depends [jcompile ni-check]
@@ -128,4 +134,39 @@
 
          ni-compile {:doc "Create native cpp library"
                      :depends [ni-uber]
-                     :task (build/native-compile config (-> config :build :native))}}}
+                     :task (build/native-compile config (-> config :build :native))}
+
+        ;; npm package
+
+         npm-version {:doc "Update npm package.json version from config.edn"
+                      :task (npm/update-package-json-version! config "npm-package")}
+
+         npm-types {:doc "Generate TypeScript definitions for npm package"
+                    :task (npm/generate-typescript-definitions! "npm-package/index.d.ts")}
+
+         npm-build {:doc "Build npm package (update version, generate types, compile ClojureScript)"
+                    :depends [prep]
+                    :task (npm/build-npm-package! config "npm-package")}
+
+         npm-test {:doc "Run npm package JavaScript tests"
+                   :task (do
+                           (println "Running npm package tests...")
+                           (let [result (shell {:dir "npm-package"
+                                                :out :inherit
+                                                :err :inherit}
+                                               "node test.js")]
+                             (when-not (zero? (:exit result))
+                               (System/exit 1))))}
+
+         node-cljs-test {:doc "Compile and run ClojureScript tests on Node.js"
+                         :depends [prep]
+                         :task (do
+                                 (println "Compiling CLJS node tests...")
+                                 (shell "npx shadow-cljs compile node-test")
+                                 (println "Running CLJS node tests...")
+                                 (shell "node target/out/node-test.js"))}
+
+         ;; aggregate tasks
+
+         ci {:doc "Run CI checks (Clojure/ClojureScript + npm tests)"
+             :depends [test npm-test format lint]}}}

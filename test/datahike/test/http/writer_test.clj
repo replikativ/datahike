@@ -20,7 +20,8 @@
                                            :url     (str "http://localhost:" port)
                                            :token   "securerandompassword"}}
               conn   (do
-                       (d/delete-database cfg)
+                       (when (d/database-exists? cfg)
+                         (d/delete-database cfg))
                        (d/create-database cfg)
                        (d/connect cfg))]
 

@@ -3,17 +3,21 @@
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"
                                                      :exclusions [org.clojure/clojurescript]}
-        io.replikativ/konserve                      {:mvn/version "0.8.321"
+        io.replikativ/konserve                      {:mvn/version "0.8.328"
                                                      :exclusions [org.clojure/clojurescript
-                                                                  org.clojars.mmb90/cljs-cache]}
+                                                                  org.clojars.mmb90/cljs-cache]
+                                                     }
         io.replikativ/superv.async                  {:mvn/version "0.3.48"
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/datalog-parser                {:mvn/version "0.2.30"}
         io.replikativ/zufall                        {:mvn/version "0.2.9"}
-        persistent-sorted-set/persistent-sorted-set {:mvn/version "0.3.0"}
+        persistent-sorted-set/persistent-sorted-set {#_#_:local/root "../persistent-sorted-set"
+                                                     :git/url "https://github.com/replikativ/persistent-sorted-set"
+                                                     :git/sha "61e2a681503aec1183171132d0899534fa41c5b2" #_"7e5d31c27a8cc9a6a4fe7aa8a81656dcc8e96f5f" #_"62faeb45d2b286a7250f7de4ad60c540c615d0b4"
+                                                     #_#_:mvn/version "0.3.0"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
-        com.taoensso/timbre                         {:mvn/version "6.3.1"}
+        com.taoensso/timbre                         {:mvn/version "6.8.0"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.6"}
@@ -40,6 +44,8 @@
 
            :dev {:extra-paths ["dev" "benchmark/src"]
                  :extra-deps {org.clojure/tools.namespace {:mvn/version "1.4.4"}
+                              org.clojure/clojurescript   {:mvn/version "1.11.132"}
+                              thheller/shadow-cljs        {:mvn/version "2.28.20"}
                               clj-http/clj-http           {:mvn/version "3.12.3"}
                               com.gfredericks/user.clj    {:mvn/version "0.1.0"}
                               org.clojure/tools.cli       {:mvn/version "1.0.219"}
@@ -59,7 +65,13 @@
                                ring/ring-core                {:mvn/version "1.9.5"}
                                ring/ring-jetty-adapter       {:mvn/version "1.9.5"}
                                metosin/reitit                {:mvn/version "0.5.18"}
-                               ring-cors/ring-cors           {:mvn/version "0.1.13"}}}
+                               ring-cors/ring-cors           {:mvn/version "0.1.13"}
+
+                               ;; kabel integration for distributed datahike
+                               io.replikativ/kabel           {:mvn/version "0.3.91"}
+                               is.simm/distributed-scope     {:mvn/version "0.1.2"}
+                               io.replikativ/konserve-sync   {:mvn/version "0.1.9"}
+                               http-kit/http-kit             {:mvn/version "2.8.0"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
 

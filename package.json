@@ -1,0 +1,16 @@
+{
+  "name": "datahike-browser-tests",
+  "version": "1.0.0",
+  "description": "Browser testing for Datahike",
+  "devDependencies": {
+    "karma": "^6.4.2",
+    "karma-chrome-launcher": "^3.2.0",
+    "karma-cljs-test": "^0.1.0",
+    "shadow-cljs": "^2.28.20"
+  },
+  "scripts": {
+    "test:browser": "karma start --single-run"
+  },
+  "author": "",
+  "license": "EPL-1.0"
+}

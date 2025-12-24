@@ -5,18 +5,19 @@
             [datahike.store :as ds]
             [datahike.writing :as dsi]
             [datahike.config :as dc]
-            [datahike.tools :as dt]
+            [datahike.tools :as dt #?(:clj :refer :cljs :refer-macros) [meta-data]]
             [datahike.writer :as w]
             [konserve.core :as k]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
-            [clojure.data :refer [diff]])
+            [clojure.data :refer [diff]]
+            [konserve.utils :refer [#?(:clj async+sync) *default-sync-translation*]
+             #?@(:cljs [:refer-macros [async+sync]])]
+            [superv.async :refer [go-try- <?-]]
+            [clojure.core.async :refer [go] :as async])
   #?(:clj (:import [clojure.lang IDeref IAtom IMeta ILookup IRef])))
 
 ;; connection
-
-(defprotocol PConnector
-  (-connect [config]))
 
 (declare deref-conn)
 
@@ -29,7 +30,19 @@
   (#?(:clj valAt :cljs -lookup) [c k] (if (= k :wrapped-atom) wrapped-atom nil))
   IMeta
   (#?(:clj meta :cljs -meta) [_] (meta wrapped-atom))
-  #?(:cljs IAtom)
+  #?@(:cljs
+      [IAtom
+       ISwap
+       (-swap! [_ f] (swap! wrapped-atom f))
+       (-swap! [_ f arg] (swap! wrapped-atom f arg))
+       (-swap! [_ f arg1 arg2] (swap! wrapped-atom f arg1 arg2))
+       (-swap! [_ f arg1 arg2 args] (apply swap! wrapped-atom f arg1 arg2 args))
+       IReset
+       (-reset! [_ newval] (reset! wrapped-atom newval))
+       IWatchable ;; TODO This is unofficially supported, it triggers watches on each update, not on commits. For proper listeners use the API.
+       (-add-watch [_ key f] (add-watch wrapped-atom key f))
+       (-remove-watch [_ key] (remove-watch wrapped-atom key))
+       (-notify-watches [_ old new] (-notify-watches wrapped-atom old new))])
   #?@(:clj
       [IAtom
        (swap [_ f] (swap! wrapped-atom f))
@@ -77,10 +90,10 @@
          hh-stored :hitchhiker.tree/version
          pss-stored :persistent.set/version
          ksv-stored :konserve/version} meta
-        dh-now dt/datahike-version
-        hh-now dt/hitchhiker-tree-version
-        pss-now dt/persistent-set-version
-        ksv-now dt/konserve-version]
+        {dh-now :datahike/version
+         hh-now :hitchhiker.tree/version
+         pss-now :persistent.set/version
+         ksv-now :konserve/version} (meta-data)]
     (when-not (or (= dh-now "DEVELOPMENT")
                   (= dh-stored "DEVELOPMENT")
                   (>= (compare dh-now dh-stored) 0))
@@ -137,73 +150,92 @@
   (-> cfg
       (dissoc :writer :store :store-cache-size :search-cache-size)))
 
-(extend-protocol PConnector
-  #?(:clj String :cljs string)
-  (-connect [uri]
-    (-connect (dc/uri->config uri)))
+(defn -connect-impl* [config opts]
+  (async+sync (:sync? opts) *default-sync-translation*
+              (go-try-
+               (let [_ (log/debug "Using config " (update-in config [:store] dissoc :password))
+                     store-config (:store config)
+                     store-id (ds/store-identity store-config)
+                     conn-id [store-id (:branch config)]]
+                 (if-let [conn (get-connection conn-id)]
+                   (let [conn-config (:config @(:wrapped-atom conn))
+               ;; replace store config with its identity
+                         cfg (normalize-config config)
+                         conn-cfg (normalize-config conn-config)]
+                     (when-not (= cfg conn-cfg)
+                       (dt/raise "Configuration does not match existing connections."
+                                 {:type :config-does-not-match-existing-connections
+                                  :config cfg
+                                  :existing-connections-config conn-cfg
+                                  :diff (diff cfg conn-cfg)}))
+                     conn)
+                   (let [raw-store (<?- (ds/connect-store (assoc store-config :opts opts)))
+                         _         (when-not raw-store
+                                     (dt/raise "Backend does not exist." {:type   :backend-does-not-exist
+                                                                          :config store-config}))
+                         store     (ds/add-cache-and-handlers raw-store config)
+                         _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
+                         stored-db (<?- (k/get store (:branch config) nil opts))
+                         _         (when-not stored-db
+                                     (ds/release-store store-config store)
+                                     (dt/raise "Database does not exist." {:type   :db-does-not-exist
+                                                                           :config config}))
+                         [config store stored-db]
+                         (let [intended-index (:index config)
+                               stored-index   (get-in stored-db [:config :index])]
+                           (if-not (= intended-index stored-index)
+                             (do
+                               (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. The default index is now :datahike/persistent-set. Using stored index setting now, but this might throw an error in the future."))
+                               (let [config    (assoc config :index stored-index)
+                                     store     (ds/add-cache-and-handlers raw-store config)
+                                     _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
+                                     stored-db (<?- (k/get store (:branch config) nil opts))]
+                                 [config store stored-db]))
+                             [config store stored-db]))
+                         _ (version-check stored-db)
+                         _ (when-not (:allow-unsafe-config config)
+                             (ensure-stored-config-consistency config (:config stored-db)))
+                         conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
+                     (swap! (:wrapped-atom conn) assoc :writer
+                            (w/create-writer (:writer config) conn))
+                     (add-connection! conn-id conn)
+                     conn))))))
 
-  #?(:clj clojure.lang.IPersistentMap :cljs PersistentArrayMap)
-  (-connect [raw-config]
-    (let [config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
-          _ (log/debug "Using config " (update-in config [:store] dissoc :password))
-          store-config (:store config)
-          store-id (ds/store-identity store-config)
-          conn-id [store-id (:branch config)]]
-      (if-let [conn (get-connection conn-id)]
-        (let [conn-config (:config @(:wrapped-atom conn))
-              ;; replace store config with its identity                              
-              cfg (normalize-config config)
-              conn-cfg (normalize-config conn-config)]
-          (when-not (= cfg conn-cfg)
-            (dt/raise "Configuration does not match existing connections."
-                      {:type :config-does-not-match-existing-connections
-                       :config cfg
-                       :existing-connections-config conn-cfg
-                       :diff (diff cfg conn-cfg)}))
-          conn)
-        (let [raw-store (ds/connect-store store-config)
-              _         (when-not raw-store
-                          (dt/raise "Backend does not exist." {:type   :backend-does-not-exist
-                                                               :config store-config}))
-              store     (ds/add-cache-and-handlers raw-store config)
-              stored-db (k/get store (:branch config) nil {:sync? true})
-              _         (when-not stored-db
-                          (ds/release-store store-config store)
-                          (dt/raise "Database does not exist." {:type   :db-does-not-exist
-                                                                :config config}))
-              [config store stored-db]
-              (let [intended-index (:index config)
-                    stored-index   (get-in stored-db [:config :index])]
-                (if-not (= intended-index stored-index)
-                  (do
-                    (log/warn (str "Stored index does not match configuration. Please set :index explicitly to " stored-index " in config. The default index is now :datahike/persistent-set. Using stored index setting now, but this might throw an error in the future."))
-                    (let [config    (assoc config :index stored-index)
-                          store     (ds/add-cache-and-handlers raw-store config)
-                          stored-db (k/get store (:branch config) nil {:sync? true})]
-                      [config store stored-db]))
-                  [config store stored-db]))
-              _ (version-check stored-db)
-              _ (when-not (:allow-unsafe-config config)
-                  (ensure-stored-config-consistency config (:config stored-db)))
-              conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
-          (swap! (:wrapped-atom conn) assoc :writer
-                 (w/create-writer (:writer config) conn))
-          (add-connection! conn-id conn)
-          conn)))))
+;; Multimethod dispatch for different writer backends
+
+(defn backend-dispatch [config & _]
+  (get-in config [:writer :backend] :self))
+
+(defmulti -connect* #'backend-dispatch)
+
+(defmethod -connect* :self [config opts]
+  (-connect-impl* config opts))
 
 ;; public API
 
 (defn connect
-  ([]
-   (-connect {}))
-  ([config]
-   (-connect config)))
+  "Connect to a Datahike database.
+   
+   Config can be a map or URI string. Opts map supports:
+   - :sync? (default true) - Block and return connection, or return channel for async"
+  ([] (connect {} {}))
+  ([config] (connect config {}))
+  ([config opts]
+   (let [opts (merge {:sync? true} opts)
+         normalized (cond
+                      (string? config) (dc/uri->config config)
+                      (map? config) config
+                      :else config)
+         loaded (dissoc (dc/load-config normalized) :initial-tx :remote-peer :name)]
+     (-connect* loaded opts))))
 
 (defn release
   ([connection] (release connection false))
   ([connection release-all?]
    (when-not (= @(:wrapped-atom connection) :released)
      (let [db      @(:wrapped-atom connection)
+           _ (log/info "Releasing connection, config store backend:"
+                       (get-in db [:config :store :backend]))
            conn-id [(ds/store-identity (get-in db [:config :store]))
                     (get-in db [:config :branch])]]
        (if-not (get @*connections* conn-id)

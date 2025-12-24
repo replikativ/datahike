@@ -1,9 +1,45 @@
-{:deps true
+{:deps {:aliases [:cljs :test]}
  :src-paths ["src" "test"]
- :builds {:comptest
+ :dev-http {8022 "target/browser-integration-test"}
+ :builds {:repl
           {:target :node-script
-           :output-to "target/out/comptest.js"
-           :main datahike.cljs-compilation-test/-main
+           :output-to "target/out/repl.js"
+           :main shadow.cljs.devtools.cli
            :compiler-options {:infer-externs true
+                              :warnings-as-errors false
                               :warnings {:fn-deprecated false
-                                         :protocol-multiple-impls false}}}}}
+                                         :protocol-multiple-impls false}}}
+          :node-test
+          {:target :node-script
+           :output-to "target/out/node-test.js"
+           :main datahike.test.nodejs-test/-main
+           :compiler-options {:optimizations :advanced
+                              :infer-externs :auto}}
+          
+          :browser-integration-test
+          {:target :browser-test
+           :test-dir "target/browser-integration-test"
+           :ns-regexp "datahike.kabel.browser-integration-test"
+           :compiler-options {:optimizations :advanced
+                              :infer-externs :auto
+                              :warnings-as-errors false
+                              :warnings {:fn-deprecated false}}}
+          
+          :browser-ci
+          {:target :karma
+           :output-to "target/browser-ci.js"
+           :ns-regexp "datahike.kabel.browser-integration-test"
+           :compiler-options {:optimizations :advanced
+                              :infer-externs :auto
+                              :warnings-as-errors false
+                              :warnings {:fn-deprecated false}}}
+          
+          :npm-release
+          {:target :npm-module
+           :output-dir "npm-package"
+           :entries [datahike.js.api]
+           :compiler-options {:optimizations :advanced
+                              :infer-externs :auto
+                              :output-feature-set :es6
+                              :preloads [datahike.nodejs]}}
+ }}

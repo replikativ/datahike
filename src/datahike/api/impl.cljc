@@ -17,7 +17,10 @@
             [datahike.db :as db #?@(:cljs [:refer [HistoricalDB AsOfDB SinceDB FilteredDB]])]
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
-            [datahike.impl.entity :as de])
+            [datahike.impl.entity :as de]
+            #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!]]))
+  #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]
+                            [clojure.core.async :refer [go]]))
   #?(:clj
      (:import [clojure.lang Keyword PersistentArrayMap]
               [datahike.db HistoricalDB AsOfDB SinceDB FilteredDB]
@@ -38,19 +41,36 @@
     (dw/transact! connection arg)))
 
 (defn transact [connection arg-map]
-  @(transact! connection arg-map))
+  #?(:clj
+     @(transact! connection arg-map)
+     :cljs (throw (ex-info "Synchronous transact not supported in ClojureScript, use transact! instead."
+                           {:error :transact/sync-not-supported}))))
 
 ;; necessary to support initial-tx shorthand, which really should have been avoided
 (defn create-database [& args]
-  (let [config @(apply dw/create-database args)]
-    (when-let [txs (:initial-tx config)]
-      (let [conn (dc/connect config)]
-        (transact conn txs)
-        (dc/release conn)))
-    config))
+  #?(:clj
+     (let [config @(apply dw/create-database args)]
+       (when-let [txs (:initial-tx config)]
+         (let [conn (dc/connect config)]
+           (transact conn txs)
+           (dc/release conn)))
+       config)
+     :cljs
+     (go
+       (let [config (<! (apply dw/create-database args))]
+         (when-let [txs (:initial-tx config)]
+           (let [conn (<! (dc/connect config {:sync? false}))]
+             (<! (transact! conn txs))
+             (dc/release conn)))
+         config))))
 
 (defn delete-database [& args]
-  @(apply dw/delete-database args))
+  #?(:clj @(apply dw/delete-database args)
+     :cljs (apply dw/delete-database args)))
+
+(defn database-exists? [config]
+  #?(:clj  @(writing/database-exists? config)
+     :cljs (writing/database-exists? config)))
 
 (defmulti datoms
   (fn

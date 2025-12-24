@@ -5,4 +5,5 @@
         io.github.babashka/tools.bbuild {:git/sha "73e4d0a26c65cdf1d4c7bf7e9e46e6e5f1978a37"}
         ;; https://github.com/borkdude/gh-release-artifact
         io.github.borkdude/gh-release-artifact {:git/sha "05f8d8659e6805d513c59447ff41dc8497878462"}
-        selmer/selmer {:mvn/version "1.12.55"}}}
+        selmer/selmer {:mvn/version "1.12.55"}
+        cheshire/cheshire {:mvn/version "5.13.0"}}}
