@@ -59,6 +59,165 @@ singleton lambda for write operations while reader lambdas can be run multiple
 times and scale out. This setup can be upgraded later to use dedicated servers
 through EC2 instances.
 
+### Streaming writer (Kabel)
+
+**This feature is in beta. Please try it out and provide feedback.**
+
+While the HTTP-based `datahike-server` uses request/response for each
+transaction, the Kabel writer uses WebSockets for streaming updates. This
+enables real-time synchronization where clients receive database updates as they
+happen, without polling. The stack consists of:
+
+- [kabel](https://github.com/replikativ/kabel) - WebSocket transport with
+  middleware support
+- [distributed-scope](https://github.com/replikativ/distributed-scope) - Remote
+  function invocation
+- [konserve-sync](https://github.com/replikativ/konserve-sync) - Store
+  replication with differential sync
+
+This setup is particularly useful for browser clients where the underlying store
+cannot be shared directly (see [ClojureScript Support](cljs-support.md)).
+
+#### Server setup
+
+The server owns the database and handles all write operations. It uses a file
+backend and broadcasts updates to connected clients via konserve-sync.
+
+```clojure
+(ns my-app.server
+  (:require [datahike.api :as d]
+            [datahike.kabel.handlers :as handlers]
+            [datahike.kabel.fressian-handlers :as fh]
+            [kabel.peer :as peer]
+            [kabel.http-kit :refer [create-http-kit-handler!]]
+            [konserve-sync.core :as sync]
+            [is.simm.distributed-scope :refer [remote-middleware invoke-on-peer]]
+            [superv.async :refer [S go-try <?]]
+            [clojure.core.async :refer [<!!]]))
+
+(def server-id #uuid "aaaaaaaa-0000-0000-0000-000000000001")
+(def server-url "ws://localhost:47296")
+
+;; Fressian middleware with Datahike type handlers for serialization
+(defn datahike-fressian-middleware [peer-config]
+  (kabel.middleware.fressian/fressian
+   (atom fh/read-handlers)
+   (atom fh/write-handlers)
+   peer-config))
+
+;; Store config factory - maps client scope-id to server-side file store
+;; Browsers use TieredStore (memory + IndexedDB), but the server uses file backend
+(defn store-config-fn [scope-id _client-config]
+  {:backend :file
+   :path (str "/var/data/datahike/" scope-id)
+   :scope scope-id})
+
+(defn start-server! []
+  (let [;; Create kabel server peer with middleware stack:
+        ;; - sync/server-middleware: handles konserve-sync replication
+        ;; - remote-middleware: handles distributed-scope RPC
+        ;; - datahike-fressian-middleware: serializes Datahike types
+        server (peer/server-peer
+                S
+                (create-http-kit-handler! S server-url server-id)
+                server-id
+                (comp (sync/server-middleware) remote-middleware)
+                datahike-fressian-middleware)]
+
+    ;; Start server and enable remote function invocation
+    (<!! (peer/start server))
+    (invoke-on-peer server)
+
+    ;; Register global Datahike handlers for create-database, delete-database, transact
+    ;; The :store-config-fn translates client config to server-side store config
+    (handlers/register-global-handlers! server {:store-config-fn store-config-fn})
+
+    server))
+```
+
+#### Browser client setup
+
+Browser clients use a TieredStore combining fast in-memory access with
+persistent IndexedDB storage. The KabelWriter sends transactions to the server,
+and konserve-sync replicates updates back to the client's store.
+
+```clojure
+(ns my-app.client
+  (:require [cljs.core.async :refer [<! timeout alts!] :refer-macros [go]]
+            [datahike.api :as d]
+            [datahike.kabel.connector :as kc]
+            [datahike.kabel.fressian-handlers :refer [datahike-fressian-middleware]]
+            [is.simm.distributed-scope :as ds]
+            [kabel.peer :as peer]
+            [konserve-sync.core :as sync]
+            [superv.async :refer [S] :refer-macros [go-try <?]]))
+
+(def server-url "ws://localhost:47296")
+(def server-id #uuid "aaaaaaaa-0000-0000-0000-000000000001")
+(def client-id #uuid "bbbbbbbb-0000-0000-0000-000000000002")
+
+(defonce client-peer (atom nil))
+
+(defn init-peer! []
+  ;; Create client peer with middleware stack (innermost runs first):
+  ;; - ds/remote-middleware: handles distributed-scope RPC responses
+  ;; - sync/client-middleware: handles konserve-sync replication
+  (let [peer-atom (peer/client-peer
+                   S
+                   client-id
+                   (comp ds/remote-middleware (sync/client-middleware))
+                   datahike-fressian-middleware)]
+    ;; Start invocation loop for handling remote calls
+    (ds/invoke-on-peer peer-atom)
+    (reset! client-peer peer-atom)))
+
+(defn example []
+  ;; go-try/<?  from superv.async propagate errors through async channels
+  ;; Use go/<! if you prefer manual error handling
+  (go-try S
+    ;; Connect to server via distributed-scope
+    (<? S (ds/connect-distributed-scope S @client-peer server-url))
+
+    (let [scope-id (random-uuid)
+          ;; TieredStore: memory frontend for fast reads, IndexedDB for persistence
+          ;; The server uses file backend - store-config-fn handles this translation
+          config {:store {:backend :tiered
+                          :frontend-store {:backend :mem :id (str "mem-" scope-id)}
+                          :backend-store {:backend :indexeddb :name (str "db-" scope-id)}
+                          :scope (str scope-id)}
+                  :writer {:backend :kabel
+                           :peer-id server-id
+                           :scope-id scope-id
+                           :local-peer @client-peer}
+                  :schema-flexibility :write
+                  :keep-history? false}]
+
+      ;; Create database on server (transmitted via distributed-scope RPC)
+      (<? S (d/create-database config))
+
+      ;; Connect locally - syncs initial state from server via konserve-sync
+      ;; TieredStore caches data from IndexedDB into memory before subscribing
+      ;; so the sync handshake only requests keys newer than cached timestamps
+      (let [conn (<? S (kc/connect-kabel config {:sync? false}))]
+
+        ;; Transact schema - sent to server, then synced back to local store
+        (<? S (d/transact! conn [{:db/ident :name
+                                  :db/valueType :db.type/string
+                                  :db/cardinality :db.cardinality/one}]))
+
+        ;; Transact data
+        (<? S (d/transact! conn [{:name "Alice"} {:name "Bob"}]))
+
+        ;; Query locally - no network round-trip needed
+        (let [db (d/db conn)
+              results (d/q '[:find ?name :where [?e :name ?name]] db)]
+          (println "Found:" results))  ;; => #{["Alice"] ["Bob"]}
+
+        ;; Clean up
+        (d/release conn)
+        (<? S (d/delete-database config))))))
+```
+
 # Distribution of compute
 
 Datahike supports sending all requests to a server. This has the benefit that
