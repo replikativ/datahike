@@ -16,7 +16,6 @@
   (:require [cljs.test :refer [deftest is testing async use-fixtures]]
             [clojure.core.async :refer [<! timeout alts!] :refer-macros [go]]
             [datahike.api :as d]
-            [datahike.kabel.connector :as kc]
             [datahike.kabel.fressian-handlers :refer [datahike-fressian-middleware]]
             [is.simm.distributed-scope :as ds]
             [kabel.peer :as peer]
@@ -159,7 +158,7 @@
 
                 ;; Step 2: Connect to database
                      (js/console.log "\n[TEST] Step 2: Connecting to database...")
-                     (let [conn (<! (kc/connect-kabel config {:sync? false}))]
+                     (let [conn (<! (d/connect config {:sync? false}))]
                        (is (some? conn) "Connection established")
                        (is (some? @(:wrapped-atom conn)) "Connection has database")
                        (js/console.log "[TEST] Connected! max-tx:" (:max-tx @(:wrapped-atom conn)))
@@ -220,7 +219,7 @@
 
                           ;; Step 9: Reconnect to verify persistence
                                  (js/console.log "\n[TEST] Step 9: Reconnecting to verify persistence...")
-                                 (let [conn2 (<! (kc/connect-kabel config {:sync? false}))]
+                                 (let [conn2 (<! (d/connect config {:sync? false}))]
                                    (is (some? conn2) "Reconnected successfully")
                                    (let [db2 (d/db conn2)
                                          query-result2 (d/q '[:find ?name ?age
@@ -272,7 +271,7 @@
                                :keep-history? false}]
 
                    (<! (d/create-database config))
-                   (let [conn (<! (kc/connect-kabel config {:sync? false}))]
+                   (let [conn (<! (d/connect config {:sync? false}))]
 
                 ;; Transact schema
                      (<! (d/transact! conn test-schema))

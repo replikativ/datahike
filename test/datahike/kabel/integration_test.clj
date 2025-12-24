@@ -16,7 +16,6 @@
             [clojure.java.io :as io]
             [datahike.api :as d]
             [datahike.kabel.writer :as kw]
-            [datahike.kabel.connector :as kc]
             [datahike.connector :refer [release]]
             [hasch.core :as hasch]
             [datahike.kabel.handlers :as handlers]
@@ -138,8 +137,8 @@
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
-          ;; Connect with KabelWriter using connect-kabel directly
-          ;; (async, returns channel - we take from it with <!!)
+          ;; Connect with KabelWriter via d/connect
+          ;; (async with :kabel backend, returns channel - we take from it with <!!)
           client-config {:store {:backend :file :path client-path :scope store-scope}
                          :index :datahike.index/persistent-set
                          :schema-flexibility :write
@@ -148,7 +147,7 @@
                                   :peer-id server-id
                                   :scope-id scope-id
                                   :local-peer client-peer}}
-          client-conn (<!! (kc/connect-kabel client-config {:sync? false}))]
+          client-conn (<!! (d/connect client-config {:sync? false}))]
 
       ;; Debug: inspect connection state
       (when (instance? Throwable client-conn)
@@ -289,7 +288,7 @@
                                   :peer-id server-id
                                   :scope-id scope-id
                                   :local-peer client-peer}}
-          client-conn (<!! (kc/connect-kabel client-config {:sync? false}))]
+          client-conn (<!! (d/connect client-config {:sync? false}))]
 
       ;; Send multiple transactions
       (let [tx-results (doall
@@ -367,7 +366,7 @@
                                   :peer-id server-id
                                   :scope-id scope-id
                                   :local-peer client-peer}}
-          client-conn (<!! (kc/connect-kabel client-config {:sync? false}))
+          client-conn (<!! (d/connect client-config {:sync? false}))
 
           ;; Track listen callbacks
           listen-reports (atom [])
@@ -457,7 +456,7 @@
                                     :peer-id server-id
                                     :scope-id scope-id
                                     :local-peer client-peer-1}}
-          client-conn-1 (<!! (kc/connect-kabel client-config-1 {:sync? false}))]
+          client-conn-1 (<!! (d/connect client-config-1 {:sync? false}))]
 
       (is (some? client-conn-1) "First client connection should succeed")
 
@@ -525,7 +524,7 @@
                                       :peer-id server-id
                                       :scope-id scope-id
                                       :local-peer client-peer-2}}
-            client-conn-2 (<!! (kc/connect-kabel client-config-2 {:sync? false}))]
+            client-conn-2 (<!! (d/connect client-config-2 {:sync? false}))]
 
         (is (some? client-conn-2) "Second client connection should succeed")
 

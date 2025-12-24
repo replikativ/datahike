@@ -145,7 +145,6 @@ and konserve-sync replicates updates back to the client's store.
 (ns my-app.client
   (:require [cljs.core.async :refer [<! timeout alts!] :refer-macros [go]]
             [datahike.api :as d]
-            [datahike.kabel.connector :as kc]
             [datahike.kabel.fressian-handlers :refer [datahike-fressian-middleware]]
             [is.simm.distributed-scope :as ds]
             [kabel.peer :as peer]
@@ -198,7 +197,7 @@ and konserve-sync replicates updates back to the client's store.
       ;; Connect locally - syncs initial state from server via konserve-sync
       ;; TieredStore caches data from IndexedDB into memory before subscribing
       ;; so the sync handshake only requests keys newer than cached timestamps
-      (let [conn (<? S (kc/connect-kabel config {:sync? false}))]
+      (let [conn (<? S (d/connect config {:sync? false}))]
 
         ;; Transact schema - sent to server, then synced back to local store
         (<? S (d/transact! conn [{:db/ident :name

@@ -103,7 +103,6 @@
   [raw-config opts]
   (go-try-
    (let [;; Normalize config with defaults (cache sizes, etc.)
-          ;; This ensures connect-kabel can be called directly with raw user config
          config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
          store-config (:store config)
          store-id (ds/store-identity store-config)
