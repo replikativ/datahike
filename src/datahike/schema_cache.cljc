@@ -1,4 +1,4 @@
-(ns datahike.schema-cache
+(ns ^:no-doc datahike.schema-cache
   (:require #?(:clj [clojure.core.cache.wrapped :as cw]
                :cljs [cljs.cache.wrapped :as cw])
             [datahike.config :as dc]
