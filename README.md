@@ -230,6 +230,17 @@ project before exporting.
 
 Have a look at the [change log](./CHANGELOG.md) for recent updates.
 
+## Production use
+
+### Swedish Public Employment Service
+
+The Swedish Public Employment Service (Arbetsförmedlingen) has been using Datahike in production since 2024 to store and serve the Labour Market Taxonomy (Arbetsmarknadstaxonomin). This is a terminology consisting of more than 40,000 labour market concepts, primarily representing occupations and skills, used to encode labour market data both within Arbetsförmedlingen and externally.
+
+The terminology is continuously kept up to date to remain relevant to the current labour market, and its versioning system is implemented using Datahike’s transaction history. Every working day, thousands of case workers across Sweden indirectly access the Labour Market Taxonomy API, which uses Datahike to serve requests.
+
+The source code of the API is public and can be found here:
+https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/jobtech-taxonomy-api
+
 ## Roadmap and Participation
 
 Instead of providing a static roadmap, we have moved to working closely with the community to decide what will be worked on next in a dynamic and interactive way.
