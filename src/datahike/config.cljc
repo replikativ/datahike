@@ -162,9 +162,10 @@
    (let [config-as-arg (if (s/valid? :datahike/config-depr config-as-arg)
                          (apply from-deprecated config-as-arg (first opts))
                          config-as-arg)
-         store-config (ds/default-config (merge
-                                          {:backend (keyword (:datahike-store-backend env *default-store*))}
-                                          (:store config-as-arg)))
+         ;; Store config now provided by user - konserve validates :id requirement
+         store-config (merge
+                       {:backend (keyword (:datahike-store-backend env *default-store*))}
+                       (:store config-as-arg))
          index (if (:datahike-index env)
                  (keyword "datahike.index" (:datahike-index env))
                  *default-index*)
@@ -183,11 +184,8 @@
                                  index-config
                                  (di/default-index-config index))}
          merged-config ((comp remove-nils dt/deep-merge) config config-as-arg)
-         {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config
-         config-spec (ds/config-spec store)]
-     (when config-spec
-       (when-not (s/valid? config-spec store)
-         (throw (ex-info "Invalid store configuration." (s/explain-data config-spec store)))))
+         {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config]
+     ;; konserve now handles store config validation at runtime
      (when-not (s/valid? :datahike/config merged-config)
        (throw (ex-info "Invalid Datahike configuration." (s/explain-data :datahike/config merged-config))))
      (when (and attribute-refs? (= :read schema-flexibility))

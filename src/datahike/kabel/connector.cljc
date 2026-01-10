@@ -17,6 +17,7 @@
             [konserve-sync.walkers.datahike :as dh-walker]
             [konserve.tiered :as kt]
             [konserve.core :as k]
+            [konserve.store :as ks]
             #?(:clj [clojure.core.async :refer [promise-chan put!]]
                :cljs [clojure.core.async :refer [promise-chan put!] :include-macros true])
             #?(:clj [superv.async :refer [go-try- <?-]]
@@ -130,7 +131,7 @@
           ;; receive data via sync - the store may not exist yet
          _ (log/trace "Creating store..." {:backend (:backend store-config)
                                            :scope (:scope store-config)})
-         raw-store (<?- (ds/empty-store (assoc store-config :opts opts)))
+         raw-store (<?- (ks/create-store store-config opts))
          _ (log/trace "Store created" {:raw-store (some? raw-store)})
          _ (when-not raw-store
              (dt/raise "Failed to create store." {:type :store-creation-failed

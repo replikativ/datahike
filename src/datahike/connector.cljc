@@ -8,6 +8,7 @@
             [datahike.tools :as dt #?(:clj :refer :cljs :refer-macros) [meta-data]]
             [datahike.writer :as w]
             [konserve.core :as k]
+            [konserve.store :as ks]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.data :refer [diff]]
@@ -169,7 +170,7 @@
                                   :existing-connections-config conn-cfg
                                   :diff (diff cfg conn-cfg)}))
                      conn)
-                   (let [raw-store (<?- (ds/connect-store (assoc store-config :opts opts)))
+                   (let [raw-store (<?- (ks/connect-store store-config opts))
                          _         (when-not raw-store
                                      (dt/raise "Backend does not exist." {:type   :backend-does-not-exist
                                                                           :config store-config}))
@@ -177,7 +178,7 @@
                          _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
                          stored-db (<?- (k/get store (:branch config) nil opts))
                          _         (when-not stored-db
-                                     (ds/release-store store-config store)
+                                     (ks/release-store store-config store opts)
                                      (dt/raise "Database does not exist." {:type   :db-does-not-exist
                                                                            :config config}))
                          [config store stored-db]

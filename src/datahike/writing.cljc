@@ -10,6 +10,7 @@
             [datahike.config :as dc]
             [datahike.schema-cache :as sc]
             [konserve.core :as k]
+            [konserve.store :as ks]
             [taoensso.timbre :as log]
             [hasch.core :refer [uuid]]
             [hasch.platform]
@@ -208,14 +209,14 @@
     (go-try-
      (let [config (dc/load-config config)
            store-config (:store config)
-           raw-store (<?- (ds/connect-store (assoc store-config :opts {:sync? false})))]
+           raw-store (<?- (ks/connect-store (assoc store-config :opts {:sync? false})))]
        (if (not (nil? raw-store))
          (let [store (ds/add-cache-and-handlers raw-store config)
                stored-db (<?- (k/get store :db nil {:sync? false}))]
-           (ds/release-store store-config store)
+           (ks/release-store store-config store)
            (put! p (not (nil? stored-db))))
          (do
-           (ds/release-store store-config raw-store)
+           (ks/release-store store-config raw-store)
            (put! p false)))))
     p))
 
@@ -224,7 +225,7 @@
    (let [opts {:sync? false}
          {:keys [keep-history?] :as config} (dc/load-config config deprecated-config)
          store-config (:store config)
-         store (ds/add-cache-and-handlers (<?- (ds/empty-store (assoc store-config :opts opts))) config)
+         store (ds/add-cache-and-handlers (<?- (ks/create-store (assoc store-config :opts opts))) config)
          stored-db (<?- (k/get store :db nil opts))
          _ (when stored-db
              (dt/raise "Database already exists."
@@ -270,7 +271,7 @@
      (<?- (k/assoc store :branches #{:db} opts))
      (<?- (k/assoc store cid db-to-store opts))
      (<?- (k/assoc store :db db-to-store opts))
-     (ds/release-store store-config store)
+     (ks/release-store store-config store)
      config)))
 
 (defn -delete-database* [config]
@@ -285,7 +286,7 @@
        (log/warn "Deleting database without releasing all connections first: " conn "."
                  "All connections will be released now, but this cannot be ensured for remote readers.")
        (delete-connection! conn))
-     (ds/delete-store (:store config)))))
+     (ks/delete-store (:store config)))))
 
 (extend-protocol PDatabaseManager
   #?(:clj String :cljs string)
