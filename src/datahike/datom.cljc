@@ -258,9 +258,32 @@
   #?(:clj (.getName (class x))
      :cljs (type x)))
 
+(defn compare-value
+  "Compare two values with cross-platform UUID compatibility.
+   CLJS UUID comparison is adjusted to match CLJ's signed comparison,
+   ensuring consistent ordering when indices are built on CLJ and queried on CLJS."
+  [v1 v2]
+  #?(:clj (compare v1 v2)
+     :cljs
+     (if (and (uuid? v1) (uuid? v2))
+       ;; Match Java's signed UUID comparison where MSB is treated as signed
+       ;; In signed comparison: 0x8... is negative, so 0x8... < 0x0...
+       (let [s1 (.-uuid v1)
+             s2 (.-uuid v2)
+             c1 (.charCodeAt s1 0)
+             c2 (.charCodeAt s2 0)
+             ;; charCode 56 = "8", chars 8-F are "negative" in signed
+             neg1 (>= c1 56)
+             neg2 (>= c2 56)]
+         (cond
+           (and neg1 (not neg2)) -1  ;; v1 "negative", v2 "positive" → v1 < v2
+           (and neg2 (not neg1)) 1   ;; v2 "negative", v1 "positive" → v1 > v2
+           :else (compare s1 s2)))   ;; same sign → string compare works
+       (compare v1 v2))))
+
 (defn- safe-compare [a b]
   (try
-    (compare a b)
+    (compare-value a b)
     (catch #?(:clj Exception :cljs js/Error) _e
       (compare (class-name a)
                (class-name b)))))
@@ -293,20 +316,20 @@
   (combine-cmp
    (long-cmp (.-e d1) (.-e d2))
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare (.-v d1) (.-v d2))
+   (compare-value (.-v d1) (.-v d2))
    (long-cmp (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-aevt-quick [^Datom d1, ^Datom d2]
   (combine-cmp
    (cmp-attr-quick (.-a d1) (.-a d2))
    (long-cmp (.-e d1) (.-e d2))
-   (compare (.-v d1) (.-v d2))
+   (compare-value (.-v d1) (.-v d2))
    (long-cmp (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-avet-quick [^Datom d1, ^Datom d2]
   (combine-cmp
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare (.-v d1) (.-v d2))
+   (compare-value (.-v d1) (.-v d2))
    (long-cmp (.-e d1) (.-e d2))
    (long-cmp (datom-tx d1) (datom-tx d2))))
 
@@ -314,7 +337,7 @@
   (combine-cmp
    (long-cmp (.-e d1) (.-e d2))
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare (.-v d1) (.-v d2))
+   (compare-value (.-v d1) (.-v d2))
    (long-cmp (datom-tx d1) (datom-tx d2))
    (boolean-cmp (datom-added d1) (datom-added d2))))
 
@@ -322,14 +345,14 @@
   (combine-cmp
    (cmp-attr-quick (.-a d1) (.-a d2))
    (long-cmp (.-e d1) (.-e d2))
-   (compare (.-v d1) (.-v d2))
+   (compare-value (.-v d1) (.-v d2))
    (long-cmp (datom-tx d1) (datom-tx d2))
    (boolean-cmp (datom-added d1) (datom-added d2))))
 
 (defn cmp-temporal-datoms-avet-quick [^Datom d1, ^Datom d2]
   (combine-cmp
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare (.-v d1) (.-v d2))
+   (compare-value (.-v d1) (.-v d2))
    (long-cmp (.-e d1) (.-e d2))
    (long-cmp (datom-tx d1) (datom-tx d2))
    (boolean-cmp (datom-added d1) (datom-added d2))))
