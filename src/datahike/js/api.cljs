@@ -3,7 +3,7 @@
   (:require [datahike.api.specification :refer [api-specification]]
             [datahike.api.impl]
             [datahike.store] ;; Register :mem backend
-            [datahike.nodejs] ;; Register :file backend for Node.js
+            [konserve.node-filestore] ;; Register :file backend for Node.js
             [datahike.db.interface]
             [datahike.datom]
             [cljs.core.async :refer [<!]]

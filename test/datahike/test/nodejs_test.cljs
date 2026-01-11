@@ -1,8 +1,8 @@
 (ns datahike.test.nodejs-test
   (:require [cljs.test :refer [deftest is async] :as t]
             [datahike.api :as d]
-            [datahike.nodejs] ;; Register :file backend
-            [cljs.core.async :refer [go <!]]
+            [konserve.node-filestore] ;; Register :file backend for Node.js
+            [cljs.core.async :refer [go <!] :include-macros true]
             [cljs.nodejs :as nodejs]))
 
 (def fs (nodejs/require "fs"))
@@ -15,7 +15,8 @@
 
 (deftest roundtrip-test
   (let [dir (tmp-dir)
-        cfg {:store {:backend :file :path dir}
+        store-id (random-uuid)
+        cfg {:store {:backend :file :path dir :id store-id}
              :keep-history? true
              :schema-flexibility :write}]
     (async done

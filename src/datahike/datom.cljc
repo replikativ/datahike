@@ -268,8 +268,8 @@
      (if (and (uuid? v1) (uuid? v2))
        ;; Match Java's signed UUID comparison where MSB is treated as signed
        ;; In signed comparison: 0x8... is negative, so 0x8... < 0x0...
-       (let [s1 (.-uuid v1)
-             s2 (.-uuid v2)
+       (let [s1 (.-uuid ^cljs.core/UUID v1)
+             s2 (.-uuid ^cljs.core/UUID v2)
              c1 (.charCodeAt s1 0)
              c2 (.charCodeAt s2 0)
              ;; charCode 56 = "8", chars 8-F are "negative" in signed

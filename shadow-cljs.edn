@@ -40,6 +40,5 @@
            :entries [datahike.js.api]
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
-                              :output-feature-set :es6
-                              :preloads [datahike.nodejs]}}
+                              :output-feature-set :es6}}
  }}
