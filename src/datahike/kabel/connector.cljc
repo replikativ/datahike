@@ -94,8 +94,10 @@
 
    The writer config must include:
    - :peer-id - UUID of the remote peer (server) for RPC
-   - :scope-id - UUID/keyword for the store topic (sync subscription)
    - :local-peer - The kabel client peer atom (for sync subscription)
+
+   The store config must include:
+   - :id - UUID for the store topic (sync subscription)
 
    Called by datahike.connector/-connect* when writer backend is :kabel.
 
@@ -109,7 +111,9 @@
          store-id (ds/store-identity store-config)
          branch (or (:branch config) :db)
          conn-id [store-id branch]
-         {:keys [peer-id scope-id local-peer]} (:writer config)
+         ;; Extract store UUID for kabel topic from store config
+         scope-id (:id store-config)
+         {:keys [peer-id local-peer]} (:writer config)
          is-tiered? (= :tiered (:backend store-config))
          _ (log/trace "Connecting via KabelWriter" {:scope-id scope-id
                                                     :peer-id peer-id
@@ -122,21 +126,21 @@
                        {:type :kabel-missing-local-peer
                         :config (:writer config)}))
          _ (when-not scope-id
-             (dt/raise "KabelWriter requires :scope-id in writer config"
-                       {:type :kabel-missing-scope-id
-                        :config (:writer config)}))
+             (dt/raise "KabelWriter requires :id in store config"
+                       {:type :kabel-missing-store-id
+                        :store-config store-config}))
 
           ;; 1. Create store with Datahike handlers
           ;; Use empty-store instead of connect-store because kabel clients
           ;; receive data via sync - the store may not exist yet
          _ (log/trace "Creating store..." {:backend (:backend store-config)
-                                           :scope (:scope store-config)})
+                                           :id (:id store-config)})
          raw-store (<?- (ks/create-store store-config opts))
          _ (log/trace "Store created" {:raw-store (some? raw-store)})
          _ (when-not raw-store
              (dt/raise "Failed to create store." {:type :store-creation-failed
                                                   :backend (:backend store-config)
-                                                  :scope (:scope store-config)}))
+                                                  :id (:id store-config)}))
          store (ds/add-cache-and-handlers raw-store config)
          _ (log/trace "Store ready, adding handlers...")
 
@@ -169,8 +173,9 @@
          sync-complete-ch (promise-chan)
          stored-db-atom (atom cached-stored-db)  ;; Pre-fill with cached value if available
          conn-atom (atom nil)  ;; Set after connection is created
-         store-topic (if (keyword? scope-id) scope-id (keyword (str scope-id)))
-         _ (log/trace "Subscribing to store topic" {:store-topic store-topic :scope-id scope-id})
+         ;; Use UUID directly as topic (kabel pubsub supports any EDN value)
+         store-topic scope-id
+         _ (log/trace "Subscribing to store topic" {:store-topic store-topic})
 
          _ (log/trace "Calling subscribe-store!")
          sub-result (<?- (kp/subscribe-store!

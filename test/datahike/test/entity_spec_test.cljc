@@ -7,8 +7,8 @@
 
 #?(:cljs (def Throwable js/Error))
 
-(def cfg-template {:store {:backend :mem
-                           :id "entity-spec"}
+(def cfg-template {:store {:backend :memory
+                           :id #uuid "001c0000-0000-0000-0000-00000000001c"}
                    :keep-history? false
                    :schema-flexibility :write})
 
@@ -38,7 +38,7 @@
               (d/transact conn [(assoc account :db/ensure :account/guard)]))]
       (testing "with write schema flexibility"
         (let [cfg (-> cfg-template
-                      (assoc-in [:store :id] "attribute-assertion-write")
+                      (assoc-in [:store :id] #uuid "a77e0000-0000-0000-0000-000000000001")
                       (assoc :initial-tx schema))
               conn (setup-db cfg)]
           (testing "assert valid account"
@@ -56,7 +56,7 @@
       (testing "with read schema flexibility"
         (let [cfg (-> cfg-template
                       (assoc :schema-flexibility :read)
-                      (assoc-in [:store :id] "attribute-assertion-read")
+                      (assoc-in [:store :id] #uuid "a77e0000-0000-0000-0000-000000000002")
                       (assoc :initial-tx schema))
               conn (setup-db cfg)]
           (testing "assert valid account"
@@ -96,7 +96,7 @@
                                   :account/balance -500}
         empty-account {}
         cfg (-> cfg-template
-                (assoc-in [:store :id] "predicate-assertion")
+                (assoc-in [:store :id] #uuid "a77e0000-0000-0000-0000-000000000003")
                 (assoc :initial-tx schema))
         conn (setup-db cfg)]
     (letfn [(tx-with-ensure [account]
@@ -132,7 +132,7 @@
                                        :account/balance -500}
         empty-account {}
         cfg (-> cfg-template
-                (assoc-in [:store :id] "predicate-attribute-assertion")
+                (assoc-in [:store :id] #uuid "a77e0000-0000-0000-0000-000000000004")
                 (assoc :initial-tx schema))
         conn (setup-db cfg)]
     (letfn [(tx-with-ensure [account]

@@ -44,7 +44,7 @@
      "Checks if a database exists via configuration map.
 Usage:
 
-    (database-exists? {:store {:backend :mem :id \"example\"}})"
+    (database-exists? {:store {:backend :memory :id \"example\"}})"
      :impl             datahike.api.impl/database-exists?}
 
     create-database
@@ -63,7 +63,7 @@ Usage:
 The configuration is a hash-map with keys: `:store`, `:initial-tx`, `:keep-history?`, `:schema-flexibility`, `:index`
 
 - `:store` defines the backend configuration as hash-map with mandatory key: `:backend` and store dependent keys.
-Per default Datahike ships with `:mem` and `:file` backend.
+Per default Datahike ships with `:memory` and `:file` backend.
 - `:initial-tx` defines the first transaction into the database, often setting default data like the schema.
 - `:keep-history?` is a boolean that toggles whether Datahike keeps historical data.
 - `:schema-flexibility` can be set to either `:read` or `:write` setting the validation method for the data.
@@ -73,23 +73,23 @@ Per default Datahike ships with `:mem` and `:file` backend.
 - `:writer` optionally configures a writer as a hash map. If not set, the default local writer is used.
 
 Default configuration has in-memory store, keeps history with write schema flexibility, and has no initial transaction:
-`{:store {:backend :mem :id \"default\"} :keep-history? true :schema-flexibility :write}`
+`{:store {:backend :memory :id \"default\"} :keep-history? true :schema-flexibility :write}`
 
 Usage:
 
     ;; create an empty database:
-    (create-database {:store {:backend :mem :id \"example\"} :name \"my-favourite-database\"})
+    (create-database {:store {:backend :memory :id \"example\"} :name \"my-favourite-database\"})
 
     ;; Datahike has a strict schema validation (schema-flexibility `:write`) policy by default, that only allows transaction of data that has been pre-defined by a schema.
     ;; You may influence this behaviour using the `:schema-flexibility` attribute:
-    (create-database {:store {:backend :mem :id \"example\"} :schema-flexibility :read})
+    (create-database {:store {:backend :memory :id \"example\"} :schema-flexibility :read})
 
     ;; By writing historical data in a separate index, datahike has the capability of querying data from any point in time.
     ;; You may control this feature using the `:keep-history?` attribute:
-    (create-database {:store {:backend :mem :id \"example\"} :keep-history? false})
+    (create-database {:store {:backend :memory :id \"example\"} :keep-history? false})
 
     ;; Initial data after creation may be added using the `:initial-tx` attribute, which in this example adds a schema:
-    (create-database {:store {:backend :mem :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"
+    (create-database {:store {:backend :memory :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"
      :impl             datahike.api.impl/create-database}
 
     delete-database
@@ -115,10 +115,10 @@ The configuration for a connection is a subset of the Datahike configuration wit
 
 `:store` defines the backend configuration as hash-map with mandatory key: `:backend` and store dependent keys.
 
-Per default Datahike ships with `:mem` and `:file` backend.
+Per default Datahike ships with `:memory` and `:file` backend.
 
 The default configuration:
-`{:store {:backend :mem :id \"default\"}}`
+`{:store {:backend :memory :id \"default\"}}`
 
 Usage:
 

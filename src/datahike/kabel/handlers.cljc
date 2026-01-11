@@ -16,7 +16,7 @@
    (register-global-handlers!)
 
    ;; Register a database for remote access
-   (register-store-for-remote-access! scope-id conn peer)
+   (register-store-for-remote-access! store-id conn peer)
 
    ;; Now clients can send transactions to this store via KabelWriter
    ```"
@@ -318,26 +318,23 @@
    for remote transactions.
 
    Parameters:
-   - scope-id: String or UUID identifying the store (will be normalized to string)
+   - scope-id: UUID identifying the store (from store :id)
    - conn: The datahike connection
    - peer: The kabel peer atom"
   [scope-id conn peer]
-  ;; Normalize scope-id to string
-  (let [scope-id (if (uuid? scope-id) (str scope-id) scope-id)]
-    (log/info "Registering store for remote access" {:scope-id scope-id})
+  (log/info "Registering store for remote access" {:scope-id scope-id})
 
-    ;; Register connection lookup
-    (register-connection-for-scope! scope-id conn peer)
+  ;; Register connection lookup
+  (register-connection-for-scope! scope-id conn peer)
 
-    ;; Register for konserve-sync
-    (let [store (:store @(:wrapped-atom conn))
-          store-topic (keyword (str scope-id))]
-      (sync/register-store! peer store-topic store
-                            {:walk-fn dh-walker/datahike-walk-fn
-                             :key-sort-fn (fn [k] (if (= k :db) 1 0))}))
+  ;; Register for konserve-sync (use UUID directly as topic)
+  (let [store (:store @(:wrapped-atom conn))]
+    (sync/register-store! peer scope-id store
+                          {:walk-fn dh-walker/datahike-walk-fn
+                           :key-sort-fn (fn [k] (if (= k :db) 1 0))}))
 
-    ;; Register tx-report topic for pubsub
-    (tx-broadcast/register-tx-report-topic! peer scope-id)))
+  ;; Register tx-report topic for pubsub
+  (tx-broadcast/register-tx-report-topic! peer scope-id))
 
 (defn unregister-store-for-remote-access!
   "Unregister a datahike store from remote access.
@@ -345,19 +342,16 @@
    Cleans up all registrations made by register-store-for-remote-access!.
 
    Parameters:
-   - scope-id: String or UUID identifying the store (will be normalized to string)
+   - scope-id: UUID identifying the store (from store :id)
    - peer: The kabel peer atom"
   [scope-id peer]
-  ;; Normalize scope-id to string
-  (let [scope-id (if (uuid? scope-id) (str scope-id) scope-id)]
-    (log/info "Unregistering store from remote access" {:scope-id scope-id})
+  (log/info "Unregistering store from remote access" {:scope-id scope-id})
 
-    ;; Unregister from sync
-    (let [store-topic (keyword (str scope-id))]
-      (sync/unregister-store! peer store-topic))
+  ;; Unregister from sync (use UUID directly as topic)
+  (sync/unregister-store! peer scope-id)
 
-    ;; Unregister tx-report topic
-    (tx-broadcast/unregister-tx-report-topic! peer scope-id)
+  ;; Unregister tx-report topic
+  (tx-broadcast/unregister-tx-report-topic! peer scope-id)
 
-    ;; Remove from registry
-    (unregister-connection-for-scope! scope-id)))
+  ;; Remove from registry
+  (unregister-connection-for-scope! scope-id))

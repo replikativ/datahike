@@ -5,8 +5,8 @@
    [datahike.api :as d]))
 
 (deftest q-with-history-should-contain-sys-attributes
-  (let [cfg {:store {:backend :mem
-                     :id "attr-refs-test.temporal-serach"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "00220000-0000-0000-0000-000000000022"}
              :attribute-refs? true
              :keep-history? true
              :schema-flexibility :write}

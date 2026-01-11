@@ -2,7 +2,7 @@
   (:require [clojure.test :refer :all]
             [datahike.integration-test :as it]))
 
-(def config "datahike:file:///tmp/file-test-3")
+(def config "datahike:file:///tmp/file-test-3?id=5c6e0000-0000-0000-0000-000000000003")
 
 (defn depr-config-uri-fixture [f]
   (println "deprecated file uri config: " config)

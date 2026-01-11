@@ -663,9 +663,11 @@
    (do
      (defn pr-db [db, ^Writer w]
        (.write w (str "#datahike/DB {"))
-       (.write w (str ":store-id ["
-                      (store/store-identity (:store (dbi/-config db)))
-                      " " (:branch (dbi/-config db))  "] "))
+       (.write w ":store-id [")
+       (.write w (pr-str (store/store-identity (:store (dbi/-config db)))))
+       (.write w " ")
+       (.write w (pr-str (:branch (dbi/-config db))))
+       (.write w "] ")
        (.write w (str ":commit-id " (pr-str (:datahike/commit-id (:meta db))) " "))
        (.write w (str ":max-tx " (dbi/-max-tx db) " "))
        (.write w (str ":max-eid " (dbi/-max-eid db)))

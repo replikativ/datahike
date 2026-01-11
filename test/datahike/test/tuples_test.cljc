@@ -24,7 +24,7 @@
 (defn connect
   []
   (let [config {:schema-flexibility :write
-                :store              {:backend :mem :id      (str (get-time))}}]
+                :store              {:backend :memory :id (random-uuid)}}]
     (d/delete-database config)
     (d/create-database config)
     (d/connect config)))

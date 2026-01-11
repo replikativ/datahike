@@ -134,22 +134,22 @@
 (deftest ^:browser dynamic-database-lifecycle-test
   (testing "Dynamic database creation, connection, and deletion"
     (async done
-           (let [scope-id (random-uuid)
-                 db-name (str "test-dynamic-" scope-id)]
+           (let [store-id (random-uuid)
+                 db-name (str "test-dynamic-" store-id)]
              (go
                (try
             ;; Ensure peer is ready
                  (<! (ensure-peer-ready!))
 
             ;; Step 1: Create database
-                 (js/console.log "\n[TEST] Step 1: Creating database with scope-id:" (str scope-id))
+                 (js/console.log "\n[TEST] Step 1: Creating database with store-id:" (str store-id))
                  (let [config {:store {:backend :tiered
-                                       :frontend-store {:backend :mem :id (str "mem-" scope-id)}
+                                       :frontend-store {:backend :memory :id (random-uuid)}
                                        :backend-store {:backend :indexeddb :name db-name}
-                                       :scope (str scope-id)}
+                                       :id store-id}
                                :writer {:backend :kabel
                                         :peer-id test-server-id
-                                        :scope-id scope-id
+
                                         :local-peer @client-peer
                                         :url test-server-url}  ; Add explicit URL
                                :schema-flexibility :write
@@ -254,20 +254,20 @@
 (deftest ^:browser multiple-transactions-test
   (testing "Multiple transactions and query updates"
     (async done
-           (let [scope-id (random-uuid)
-                 db-name (str "test-multi-tx-" scope-id)]
+           (let [store-id (random-uuid)
+                 db-name (str "test-multi-tx-" store-id)]
              (go
                (try
                  (<! (ensure-peer-ready!))
 
                  (js/console.log "\n[TEST-MULTI] Creating database...")
                  (let [config {:store {:backend :tiered
-                                       :frontend-store {:backend :mem :id (str "mem-" scope-id)}
+                                       :frontend-store {:backend :memory :id (random-uuid)}
                                        :backend-store {:backend :indexeddb :name db-name}
-                                       :scope (str scope-id)}
+                                       :id store-id}
                                :writer {:backend :kabel
                                         :peer-id test-server-id
-                                        :scope-id scope-id
+
                                         :local-peer @client-peer}
                                :schema-flexibility :write
                                :keep-history? false}]

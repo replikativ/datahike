@@ -23,7 +23,9 @@
 
 (def txs (vec (for [i (range 1000)] {:age i})))
 
-(def cfg {:store              {:backend :file}
+(def cfg {:store              {:backend :file
+                               :path "/tmp/gc-test"
+                               :id #uuid "9c000000-0000-0000-0000-000000000001"}
           :keep-history?      true
           :schema-flexibility :write
           :index              :datahike.index/persistent-set})

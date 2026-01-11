@@ -93,6 +93,7 @@
                      :schema-flexibility :write
                      :keep-history? false
                      :attribute-refs? false}
+        add-uuid (fn [cfg] (assoc-in cfg [:store :id] (java.util.UUID/randomUUID)))
         schema [{:db/ident       :name
                  :db/cardinality :db.cardinality/one
                  :db/index       true
@@ -118,9 +119,9 @@
         (let [cfg (merge base-config
                          {:keep-history? hist
                           :attribute-refs? attr-ref})
-              old-cfg (assoc-in cfg [:store :path] (str old-path (utils/get-time)))
+              old-cfg (add-uuid (assoc-in cfg [:store :path] (str old-path (utils/get-time))))
               old-conn (utils/setup-db old-cfg)
-              new-cfg (assoc-in cfg [:store :path] (str new-path (utils/get-time)))
+              new-cfg (add-uuid (assoc-in cfg [:store :path] (str new-path (utils/get-time))))
               new-conn (utils/setup-db new-cfg)]
           (d/transact old-conn schema)
           (d/transact old-conn tx-data)
@@ -138,11 +139,13 @@
     (testing "Export history database, import non-history database"
       (let [old-cfg (-> base-config
                         (assoc-in [:store :path] (str old-path (utils/get-time)))
-                        (assoc :keep-history? true))
+                        (assoc :keep-history? true)
+                        add-uuid)
             old-conn (utils/setup-db old-cfg)
             new-cfg (-> base-config
                         (assoc-in [:store :path] (str new-path (utils/get-time)))
-                        (assoc :keep-history? false))
+                        (assoc :keep-history? false)
+                        add-uuid)
             new-conn (utils/setup-db new-cfg)]
         (d/transact old-conn schema)
         (d/transact old-conn tx-data)
@@ -158,11 +161,13 @@
     (testing "Export non-history database, import history database"
       (let [old-cfg (-> base-config
                         (assoc-in [:store :path] (str old-path (utils/get-time)))
-                        (assoc :keep-history? false))
+                        (assoc :keep-history? false)
+                        add-uuid)
             old-conn (utils/setup-db old-cfg)
             new-cfg (-> base-config
                         (assoc-in [:store :path] (str new-path (utils/get-time)))
-                        (assoc :keep-history? true))
+                        (assoc :keep-history? true)
+                        add-uuid)
             new-conn (utils/setup-db new-cfg)]
         (d/transact old-conn schema)
         (d/transact old-conn tx-data)
@@ -181,8 +186,8 @@
     (let [source-datoms (->> tx-data
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
-          cfg           {:store         {:backend :mem
-                                         :id      "load-entities-test-no-attr-refs1"}
+          cfg           {:store         {:backend :memory
+                                         :id      #uuid "001d0000-0000-0000-0000-00000000001d"}
                          :keep-history? true
                          :attribute-refs false}
           conn (utils/setup-db cfg)]
@@ -194,8 +199,8 @@
     (let [source-datoms (->> tx-data
                              (mapv #(-> % rest vec))
                              (concat [[536870913 :db/txInstant #inst "2020-03-11T14:54:27.979-00:00" 536870913 true]]))
-          cfg           {:store         {:backend :mem
-                                         :id      "load-entities-test-no-attr-refs2"}
+          cfg           {:store         {:backend :memory
+                                         :id      #uuid "001e0000-0000-0000-0000-00000000001e"}
                          :keep-history? true
                          :attribute-refs? true
                          :schema-flexibility :write}
@@ -212,8 +217,8 @@
 
 (deftest load-entities-history-test
   (testing "Migrate predefined set with historical data"
-    (let [source-cfg {:store              {:backend :mem
-                                           :id      "load-entities-history-test-source"}
+    (let [source-cfg {:store              {:backend :memory
+                                           :id      #uuid "001f0000-0000-0000-0000-00000000001f"}
                       :name               "load-entities-history-test-source"
                       :keep-history?      true
                       :schema-flexibility :write
@@ -251,7 +256,7 @@
                                          1)]))
                            (into []))
           target-cfg  (-> source-cfg
-                          (assoc-in [:store :id] "load-entities-history-test-target")
+                          (assoc-in [:store :id] #uuid "00200000-0000-0000-0000-000000000020")
                           (assoc-in [:name] "load-entities-history-test-target"))
           target-conn (utils/setup-db target-cfg)
           _           @(d/load-entities target-conn export-data)
@@ -273,8 +278,8 @@
       (d/release target-conn))))
 
 (deftest test-binary-support
-  (let [config {:store {:backend :mem
-                        :id "test-export-binary-support"}
+  (let [config {:store {:backend :memory
+                        :id #uuid "00210000-0000-0000-0000-000000000021"}
                 :schema-flexibility :read
                 :keep-history? false}
         export-path "/tmp/test-export-binary-support"

@@ -8,7 +8,7 @@
                                 recreate-database]]))
 
 (def cfg
-  {:store {:backend :mem}
+  {:store {:backend :memory :id (random-uuid)}
    :keep-history? true
    :attribute-refs? true
    :schema-flexibility :write})

@@ -10,6 +10,7 @@
             [datahike.writer :as dw]
             #?(:clj [datahike.http.writer])
             [datahike.writing :as writing]
+            [konserve.store]
             [datahike.constants :as const]
             [datahike.core :as dcore]
             [datahike.spec :as spec]

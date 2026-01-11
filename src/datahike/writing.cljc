@@ -56,7 +56,7 @@
                      :ref-ident-map ref-ident-map}
         schema-meta-key (uuid schema-meta)
         backend                                           (di/konserve-backend (:index config) store)
-        not-in-memory?                                    (not= :mem (-> config :store :backend))
+        not-in-memory?                                    (not= :memory (-> config :store :backend))
         flush! (and flush? not-in-memory?)
         ;; Prepare schema meta KV pair for writing, but don't write it here.
         schema-meta-kv-to-write (when-not (sc/write-cache-has? (:store config) schema-meta-key)
@@ -209,15 +209,18 @@
     (go-try-
      (let [config (dc/load-config config)
            store-config (:store config)
-           raw-store (<?- (ks/connect-store (assoc store-config :opts {:sync? false})))]
-       (if (not (nil? raw-store))
-         (let [store (ds/add-cache-and-handlers raw-store config)
+           ;; First check if store exists (avoids exception when store not in registry)
+           store-exists? (<?- (ks/store-exists? store-config {:sync? false}))]
+       (if store-exists?
+         ;; Store exists, now check if it contains a database
+         (let [raw-store (<?- (ks/connect-store store-config {:sync? false}))
+               store (ds/add-cache-and-handlers raw-store config)
                stored-db (<?- (k/get store :db nil {:sync? false}))]
-           (ks/release-store store-config store)
-           (put! p (not (nil? stored-db))))
-         (do
-           (ks/release-store store-config raw-store)
-           (put! p false)))))
+           ;; Release store and await completion
+           (<?- (ks/release-store store-config store {:sync? false}))
+           (put! p (some? stored-db)))
+         ;; Store doesn't exist, so database doesn't exist
+         (put! p false))))
     p))
 
 (defn -create-database* [config deprecated-config]
@@ -225,7 +228,7 @@
    (let [opts {:sync? false}
          {:keys [keep-history?] :as config} (dc/load-config config deprecated-config)
          store-config (:store config)
-         store (ds/add-cache-and-handlers (<?- (ks/create-store (assoc store-config :opts opts))) config)
+         store (ds/add-cache-and-handlers (<?- (ks/create-store store-config opts)) config)
          stored-db (<?- (k/get store :db nil opts))
          _ (when stored-db
              (dt/raise "Database already exists."

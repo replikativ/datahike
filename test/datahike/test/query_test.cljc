@@ -403,8 +403,8 @@
                                   :args [db]}))))))
 
 (deftest test-zeros-in-pattern
-  (let [cfg {:store {:backend :mem
-                     :id "sandbox"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "b0000000-0000-0000-0000-00000000000b"}
              :schema-flexibility :write
              :attribute-refs? false}
         conn (do
@@ -436,8 +436,8 @@
                 {:db/ident       :age
                  :db/cardinality :db.cardinality/one
                  :db/valueType   :db.type/long}]
-        cfg    {:store              {:backend :mem
-                                     :id      "DEV"}
+        cfg    {:store              {:backend :memory
+                                     :id      #uuid "c0000000-0000-0000-0000-00000000000c"}
                 :schema-flexibility :write
                 :attribute-refs?    true}
         conn   (utils/setup-db cfg)]
@@ -837,7 +837,7 @@
                    :doc "A broader concept. NOTE: This the JobTech Taxonomy, every relation between two concepts has an entity with attributes :relation/concept-1, :relation-concept-2 and :relation/type."}])
 
 (defn initialize-test-db0 []
-  (let [conn (utils/setup-db {:store {:backend :mem}
+  (let [conn (utils/setup-db {:store {:backend :memory :id (random-uuid)}
                               :schema-flexibility :write
                               :attribute-refs? false
                               :keep-history? true})]

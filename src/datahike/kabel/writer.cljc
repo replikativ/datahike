@@ -8,10 +8,9 @@
    Usage:
    ```clojure
    ;; In connection config
-   {:store {:backend :file :path \"...\" :scope scope-id}
+   {:store {:backend :file :path \"...\" :id store-id}
     :writer {:backend :kabel
-             :peer-id server-peer-id
-             :scope-id scope-id}}
+             :peer-id server-peer-id}}
    ```"
   (:require [datahike.writer :as writer :refer [PWriter]]
             [datahike.writing :as dw]
@@ -62,7 +61,7 @@
 
 (defrecord KabelWriter
            [peer-id        ; UUID of the remote peer that owns the database
-            scope-id       ; UUID identifying the store/database
+            scope-id       ; UUID identifying the store/database (from store :id)
             store-config   ; Store config for fressian handler registry cleanup
             pending-txs    ; atom: {expected-max-tx -> {:tx-report ... :ch promise-chan}}
             current-max-tx ; atom: current synced max-tx from konserve-sync
@@ -241,7 +240,7 @@
 
    Parameters:
    - peer-id: UUID of the remote peer that owns the database
-   - scope-id: UUID identifying the store/database
+   - scope-id: UUID identifying the store/database (extracted from store :id)
    - store-config: Store config for fressian handler registry cleanup on shutdown
 
    Returns a KabelWriter instance."
@@ -259,8 +258,10 @@
 ;; =============================================================================
 
 (defmethod writer/create-writer :kabel
-  [{:keys [peer-id scope-id store-config]} _connection]
-  (kabel-writer peer-id scope-id store-config))
+  [{:keys [peer-id store-config]} _connection]
+  ;; Extract scope-id from store config :id
+  (let [scope-id (:id store-config)]
+    (kabel-writer peer-id scope-id store-config)))
 
 (defmethod writer/create-database :kabel
   [config & _args]

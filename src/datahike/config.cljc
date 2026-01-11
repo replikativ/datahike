@@ -6,7 +6,8 @@
             [environ.core :refer [env]]
             [datahike.tools :as dt]
             [datahike.store :as ds]
-            [datahike.index :as di])
+            [datahike.index :as di]
+            [taoensso.timbre :as log])
   (:import #?(:clj [java.net URI]
               :cljs [goog.Uri])))
 
@@ -22,7 +23,7 @@
 (def ^:dynamic *default-search-cache-size* 10000)
 (def ^:dynamic *default-store-cache-size* 1000)
 (def ^:dynamic *default-crypto-hash?* false)
-(def ^:dynamic *default-store* :mem)                           ;; store-less = in-memory?
+(def ^:dynamic *default-store* :memory)                           ;; store-less = in-memory?
 (def ^:dynamic *default-db-name* nil)                         ;; when nil creates random name
 (def ^:dynamic *default-db-branch* :db)                         ;; when nil creates random name
 
@@ -70,7 +71,7 @@
 (def self-writer {:backend :self})
 
 (defn from-deprecated
-  [{:keys [backend username password path host port] :as _backend-cfg}
+  [{:keys [backend username password path host port id] :as _backend-cfg}
    & {:keys [schema-on-read temporal-index index initial-tx]
       :as _index-cfg
       :or {schema-on-read false
@@ -78,15 +79,26 @@
            temporal-index true}}]
   {:store (merge {:backend backend}
                  (case backend
-                   :mem {:id (or host path)}
+                   :memory {:id (or id
+                                    (when (or host path)
+                                      #?(:clj (java.util.UUID/nameUUIDFromBytes (.getBytes (str (or host path)) "UTF-8"))
+                                         :cljs (uuid (str (or host path))))))}
                    :pg {:username username
                         :password password
                         :path path
                         :host host
                         :port port
-                        :id (str #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid)))}
-                   :level {:path path}
-                   :file {:path path}))
+                        :id (or id #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid)))}
+                   :level {:path path
+                           :id (or id
+                                   (when path
+                                     #?(:clj (java.util.UUID/nameUUIDFromBytes (.getBytes path "UTF-8"))
+                                        :cljs (uuid path))))}
+                   :file {:path path
+                          :id (or id
+                                  (when path
+                                    #?(:clj (java.util.UUID/nameUUIDFromBytes (.getBytes path "UTF-8"))
+                                       :cljs (uuid path))))}))
    :index index
    :index-config (di/default-index-config index)
    :keep-history? temporal-index
@@ -208,12 +220,15 @@
                                      :opt-un [::username ::password ::path ::host ::port]))
 
 (defn uri->config [uri]
+  (log/warn "DEPRECATION WARNING: URI string format for Datahike configuration is deprecated and may be removed in a future version. Please migrate to the map-based configuration format. See documentation for details.")
   (let [base-uri (#?(:clj URI. :cljs goog.Uri.) uri)
         _ (when-not (= (.getScheme base-uri) "datahike")
             (throw (ex-info "URI scheme is not datahike conform." {:uri uri})))
         sub-uri #?(:clj (URI. (.getSchemeSpecificPart base-uri))
                    :cljs (goog.Uri. (.getScheme base-uri)))
-        backend (keyword (.getScheme sub-uri))
+        backend-raw (keyword (.getScheme sub-uri))
+        ;; Normalize :mem to :memory for backward compatibility
+        backend (if (= backend-raw :mem) :memory backend-raw)
         [username password] (when-let [user-info (.getUserInfo sub-uri)]
                               (str/split user-info #":"))
         credentials (when-not (and (nil? username) (nil? password))
@@ -222,6 +237,21 @@
         port (.getPort sub-uri)
         path (.getPath sub-uri)
         host (.getHost sub-uri)
+        ;; Parse query parameters to extract id if present
+        query-string #?(:clj (.getQuery sub-uri)
+                        :cljs (when-let [qd (.getQueryData sub-uri)]
+                                (when (.containsKey qd "id")
+                                  (str "id=" (.get qd "id")))))
+        parsed-id (when query-string
+                    (when-let [[_ id-str] (re-find #"id=([0-9a-fA-F-]+)" query-string)]
+                      #?(:clj (try (java.util.UUID/fromString id-str)
+                                   (catch Exception e
+                                     (throw (ex-info "Invalid UUID format in ?id= query parameter"
+                                                     {:uri uri :id-str id-str :error (.getMessage e)}))))
+                         :cljs (try (uuid id-str)
+                                    (catch js/Error e
+                                      (throw (ex-info "Invalid UUID format in ?id= query parameter"
+                                                      {:uri uri :id-str id-str :error (.-message e)})))))))
         config (merge
                 {:backend backend
                  :uri uri}
@@ -231,7 +261,9 @@
                 (when-not (empty? path)
                   {:path path})
                 (when (<= 0 port)
-                  {:port port}))]
+                  {:port port})
+                (when parsed-id
+                  {:id parsed-id}))]
     config))
 
 (defn validate-config-depr [config]

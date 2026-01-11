@@ -26,11 +26,11 @@
    The cache improves read performance by keeping frequently accessed keys
    in memory. The handlers enable persistent-sorted-set serialization."
   [raw-store config]
-  (cond->> (kc/ensure-cache
-            raw-store
-            (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config))))
-    (not= :memory (get-in config [:store :backend]))
-    (di/add-konserve-handlers config)))
+  (di/add-konserve-handlers
+   config
+   (kc/ensure-cache
+    raw-store
+    (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config))))))
 
 ;; =============================================================================
 ;; Store Identity

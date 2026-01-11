@@ -22,10 +22,11 @@
   (testing "create-writer :kabel dispatches correctly"
     (let [config {:backend :kabel
                   :peer-id test-peer-id
-                  :scope-id test-scope-id}
+                  :store-config {:id test-scope-id}}
           w (writer/create-writer config nil)]
       (is (instance? datahike.kabel.writer.KabelWriter w))
-      (is (= test-peer-id (:peer-id w))))))
+      (is (= test-peer-id (:peer-id w)))
+      (is (= test-scope-id (:scope-id w))))))
 
 (deftest test-on-sync-update
   (testing "on-sync-update! resolves pending transactions"

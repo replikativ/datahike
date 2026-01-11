@@ -177,8 +177,8 @@
            #{[2]}))))
 
 (deftest test-rule-arguments
-  (let [cfg {:store {:backend :mem
-                     :id "rule-test"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "a0000000-0000-0000-0000-00000000000a"}
              :name "rule-test"
              :keep-history? true
              :schema-flexibility :write

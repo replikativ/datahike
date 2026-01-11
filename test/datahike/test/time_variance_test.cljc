@@ -25,8 +25,8 @@
              {:name "Bob"
               :age  35}])
 
-(def cfg-template {:store {:backend :mem
-                           :id "time-variance"}
+(def cfg-template {:store {:backend :memory
+                           :id #uuid "00110000-0000-0000-0000-000000000011"}
                    :keep-history? true
                    :schema-flexibility :write
                    :initial-tx schema})
@@ -58,7 +58,7 @@
     ((apply comp fs) db)))
 
 (deftest test-base-history
-  (let [cfg (assoc-in cfg-template [:store :id] "test-base-history")
+  (let [cfg (assoc-in cfg-template [:store :id] #uuid "71000000-0000-0000-0000-000000000001")
         conn (setup-db cfg)
         tx-id0 (:max-tx @conn)]
     (testing "Initial data"
@@ -114,12 +114,11 @@
     (d/release conn)))
 
 (defn replace-commit-id [s]
-  (clojure.string/replace s #"#uuid \".+\"" ":REPLACED"))
+  (clojure.string/replace s #":commit-id #uuid \"[^\"]+\"" ":commit-id :REPLACED"))
 
 (deftest test-historical-queries
   (let [cfg (-> cfg-template
-                (assoc-in [:store :id] "test-historical-queries")
-                (assoc-in [:store :scope] "test.datahike.io"))
+                (assoc-in [:store :id] #uuid "71000000-0000-0000-0000-000000000002"))
         conn (setup-db cfg)]
 
     (testing "get all values before specific time"
@@ -152,14 +151,13 @@
         (is (= #{[25] [30]}
                (d/q query-with-< history-db [:name "Alice"] date)))))
     (testing "print DB"
-      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-historical-queries\"] :db] :commit-id :REPLACED :max-tx 536870915 :max-eid 4}}"
+      (is (= "#datahike/HistoricalDB {:origin #datahike/DB {:store-id [#uuid \"71000000-0000-0000-0000-000000000002\" :db] :commit-id :REPLACED :max-tx 536870915 :max-eid 4}}"
              (replace-commit-id (pr-str (d/history @conn))))))
     (d/release conn)))
 
 (deftest test-as-of-db
   (let [cfg (-> cfg-template
-                (assoc-in [:store :id] "test-as-of-db")
-                (assoc-in [:store :scope] "test.datahike.io"))
+                (assoc-in [:store :id] #uuid "71000000-0000-0000-0000-000000000003"))
         conn (setup-db cfg)
         first-date (now)
         ;; sleep to make sure that transact thread has newer timestamp
@@ -175,9 +173,9 @@
     (testing "print DB"
       (let [as-of-str (pr-str (d/as-of @conn tx-id))
             origin-str (pr-str (dbi/-origin (d/as-of @conn tx-id)))]
-        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-as-of-db\"] :db] :commit-id :REPLACED :max-tx 536870913 :max-eid 4} :time-point 536870914}"
+        (is (= "#datahike/AsOfDB {:origin #datahike/DB {:store-id [#uuid \"71000000-0000-0000-0000-000000000003\" :db] :commit-id :REPLACED :max-tx 536870913 :max-eid 4} :time-point 536870914}"
                (replace-commit-id as-of-str)))
-        (is (= "#datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-as-of-db\"] :db] :commit-id :REPLACED :max-tx 536870913 :max-eid 4}"
+        (is (= "#datahike/DB {:store-id [#uuid \"71000000-0000-0000-0000-000000000003\" :db] :commit-id :REPLACED :max-tx 536870913 :max-eid 4}"
                (replace-commit-id origin-str)))
         (is (not= as-of-str origin-str))))
     (testing "retraction"
@@ -193,8 +191,7 @@
 
 (deftest test-since-db
   (let [cfg (-> cfg-template
-                (assoc-in [:store :id] "test-since-db")
-                (assoc-in [:store :scope] "test.datahike.io"))
+                (assoc-in [:store :id] #uuid "71000000-0000-0000-0000-000000000004"))
         conn (setup-db cfg)
         first-date (now)
         ;; sleep to make sure that transact thread has newer timestamp
@@ -212,7 +209,7 @@
         (is (= #{[new-age]}
                (d/q query (d/since @conn tx-id))))))
     (testing "print DB"
-      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [[:mem \"test.datahike.io\" \"test-since-db\"] :db] :commit-id :REPLACED :max-tx 536870914 :max-eid 4} :time-point 536870913}"
+      (is (= "#datahike/SinceDB {:origin #datahike/DB {:store-id [#uuid \"71000000-0000-0000-0000-000000000004\" :db] :commit-id :REPLACED :max-tx 536870914 :max-eid 4} :time-point 536870913}"
              (replace-commit-id (pr-str (d/since @conn tx-id))))))
     (d/release conn)))
 
@@ -228,7 +225,7 @@
                     {:name "Alice" :age 25}
                     {:name "Bob" :age 35}]
         cfg (-> cfg-template
-                (assoc-in [:store :id] "test-no-history")
+                (assoc-in [:store :id] #uuid "71000000-0000-0000-0000-000000000005")
                 (assoc :initial-tx initial-tx))
         conn (setup-db cfg)
         query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]]
@@ -245,8 +242,8 @@
     (d/release conn)))
 
 (deftest upsert-history
-  (let [cfg {:store {:backend :mem
-                     :id "test-upsert-history"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "00120000-0000-0000-0000-000000000012"}
              :keep-history? true
              :schema-flexibility :read
              :initial-tx schema}
@@ -403,7 +400,7 @@
                 {:db/ident       :age
                  :db/cardinality :db.cardinality/one
                  :db/valueType   :db.type/long}]
-        cfg {:store {:backend :mem :id "sandbox"}
+        cfg {:store {:backend :memory :id #uuid "00130000-0000-0000-0000-000000000013"}
              :keep-history? true
              :schema-flexibility :write
              :attribute-refs? false}
@@ -427,7 +424,7 @@
 
 ;; https://github.com/replikativ/datahike/issues/470
 (deftest test-history-record-attribute-access
-  (let [cfg                                {:store              {:backend :mem}
+  (let [cfg                                {:store              {:backend :memory :id (random-uuid)}
                                             :keep-history?      true
                                             :schema-flexibility :read
                                             :attribute-refs?    false}
@@ -449,7 +446,7 @@
     (d/release conn)))
 
 (deftest test-filter-current-values-of-same-transaction
-  (let [keyword-cfg                                {:store              {:backend :mem}
+  (let [keyword-cfg                                {:store              {:backend :memory :id (random-uuid)}
                                                     :keep-history?      true
                                                     :schema-flexibility :write
                                                     :attribute-refs?    false}
@@ -514,7 +511,7 @@
 
 ;; https://github.com/replikativ/datahike/issues/572
 (deftest as-of-should-fail-on-invalid-time-points
-  (let [cfg (assoc-in cfg-template [:store :id] "as-of-invalid-time-points")
+  (let [cfg (assoc-in cfg-template [:store :id] #uuid "71000000-0000-0000-0000-000000000006")
         conn (setup-db cfg)]
     (is (thrown-with-msg? Throwable #"Invalid transaction ID. Must be bigger than 536870912."
                           (d/as-of @conn 42)))

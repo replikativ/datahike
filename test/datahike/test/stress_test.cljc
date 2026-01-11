@@ -23,6 +23,7 @@
                    :db/valueType   :db.type/long}]
 
           cfg {:store  {:backend :file :path "/tmp/dh-stress"
+                        :id #uuid "57e55000-0000-0000-0000-000000000001"
                         :config {:sync-blob? true :in-place? false}}
                :keep-history? false
                :schema-flexibility :read

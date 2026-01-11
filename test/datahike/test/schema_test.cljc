@@ -35,7 +35,8 @@
                      [?e :db/cardinality ?c]])
 
 (deftest test-empty-db
-  (let [cfg "datahike:mem://test-empty-db"
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "5c100000-0000-0000-0000-000000000001"}}
         _ (d/delete-database cfg)
         _ (d/create-database cfg)
         conn (d/connect cfg)
@@ -106,9 +107,11 @@
     (d/release conn)))
 
 (deftest test-db-with-initial-schema
-  (let [cfg "datahike:mem://test-db-with-initial-schema"
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "5c100000-0000-0000-0000-000000000002"}
+             :initial-tx [name-schema]}
         _ (d/delete-database cfg)
-        _ (d/create-database cfg :initial-tx [name-schema])
+        _ (d/create-database cfg)
         conn (d/connect cfg)]
 
     (testing "schema existence"
@@ -184,9 +187,7 @@
                             (d/transact conn [{schema-name wrong-val}]))))))
 
 (deftest test-schema-types
-  (let [cfg "datahike:mem://test-schema-types"
-        _ (d/delete-database cfg)
-        schema-tx [{:db/ident       :value/bigdec
+  (let [schema-tx [{:db/ident       :value/bigdec
                     :db/valueType   :db.type/bigdec
                     :db/cardinality :db.cardinality/one}
                    {:db/ident       :value/bigint
@@ -219,7 +220,11 @@
                    {:db/ident       :value/uuid
                     :db/valueType   :db.type/uuid
                     :db/cardinality :db.cardinality/one}]
-        _ (d/create-database cfg :initial-tx schema-tx)
+        cfg {:store {:backend :memory
+                     :id #uuid "5c100000-0000-0000-0000-000000000003"}
+             :initial-tx schema-tx}
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
         conn (d/connect cfg)]
 
     (testing-type conn "bigdec" (bigdec 1) 13 1)
@@ -236,9 +241,7 @@
     (d/release conn)))
 
 (deftest test-schema-cardinality
-  (let [cfg "datahike:mem://test-schema-cardinality"
-        _ (d/delete-database cfg)
-        schema-tx [{:db/ident       :owner
+  (let [schema-tx [{:db/ident       :owner
                     :db/valueType   :db.type/string
                     :db/index       true
                     :db/unique      :db.unique/identity
@@ -246,7 +249,11 @@
                    {:db/ident       :cars
                     :db/valueType   :db.type/keyword
                     :db/cardinality :db.cardinality/many}]
-        _ (d/create-database cfg :initial-tx schema-tx)
+        cfg {:store {:backend :memory
+                     :id #uuid "5c100000-0000-0000-0000-000000000004"}
+             :initial-tx schema-tx}
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
         conn (d/connect cfg)]
 
     (testing "insert :owner and :cars one by one"
@@ -290,7 +297,8 @@
                  "Windows 10"  (str (System/getProperty "java.io.tmpdir") "dh-test-persistence")
                  "/tmp/dh-test-persistence")
           cfg {:store {:backend :file
-                       :path path}
+                       :path path
+                       :id #uuid "5c6e0000-0000-0000-0000-000000000001"}
                :initial-tx [name-schema]}
           _ (d/delete-database cfg)
           _ (d/create-database cfg)
@@ -304,8 +312,10 @@
       (d/release conn)
       (d/delete-database cfg)))
   (testing "test mem persistence"
-    (let [cfg "datahike:mem://test-schema-persistence"
-          _ (d/create-database cfg :initial-tx [name-schema])
+    (let [cfg {:store {:backend :memory
+                       :id #uuid "5c100000-0000-0000-0000-000000000005"}
+               :initial-tx [name-schema]}
+          _ (d/create-database cfg)
           conn (d/connect cfg)]
       (testing "schema exists on creation and first connection"
         (is (= #{[:name :db.type/string :db.cardinality/one]} (d/q find-schema-q (d/db conn)))))
@@ -317,8 +327,8 @@
 
 (deftest test-schema-on-read-db
   (testing "test database creation with schema-on-read"
-    (let [cfg {:store {:backend :mem
-                       :id "test-schemaless-db"}
+    (let [cfg {:store {:backend :memory
+                       :id #uuid "d0000000-0000-0000-0000-00000000000d"}
                :schema-flexibility :read}
           _ (d/delete-database cfg)
           _ (d/create-database cfg)
@@ -333,8 +343,7 @@
 
 (deftest test-ident
   (testing "use db/ident as enum"
-    (let [cfg "datahike:mem://test-ident"
-          schema [{:db/ident :important}
+    (let [schema [{:db/ident :important}
                   {:db/ident :archive}
                   {:db/ident       :message
                    :db/valueType   :db.type/string
@@ -342,8 +351,11 @@
                   {:db/ident       :tag
                    :db/valueType   :db.type/ref
                    :db/cardinality :db.cardinality/many}]
+          cfg {:store {:backend :memory
+                       :id #uuid "5c100000-0000-0000-0000-000000000006"}
+               :initial-tx schema}
           _ (d/delete-database cfg)
-          _ (d/create-database cfg :initial-tx schema)
+          _ (d/create-database cfg)
           conn (d/connect cfg)]
       (testing "insert data with enums"
         (d/transact conn [{:message "important" :tag :important} {:message "archive" :tag [:important :archive]}])
@@ -352,7 +364,8 @@
         (d/release conn)))))
 
 (deftest test-remove-schema
-  (let [cfg "datahike:mem://test-remove-schema"
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "5c100000-0000-0000-0000-000000000007"}}
         _ (d/delete-database cfg)
         _ (d/create-database cfg)
         conn (d/connect cfg)
@@ -366,9 +379,11 @@
     (d/release conn)))
 
 (deftest test-update-schema
-  (let [cfg "datahike:mem://test-update-schema"
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "5c100000-0000-0000-0000-000000000008"}
+             :initial-tx [name-schema personal-id-schema]}
         _ (d/delete-database cfg)
-        _ (d/create-database cfg :initial-tx [name-schema personal-id-schema])
+        _ (d/create-database cfg)
         conn (d/connect cfg)
         update-name-attr (fn [attr new-value] (d/transact conn {:tx-data [(assoc name-schema attr new-value)]}))]
     (testing "Allow to update doc"

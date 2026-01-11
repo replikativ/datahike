@@ -20,8 +20,8 @@
                 {:name "Bob"
                  :age  35}])
 
-(def cfg-template {:store {:backend :mem
-                           :id "purge-test-template"}
+(def cfg-template {:store {:backend :memory
+                           :id #uuid "001b0000-0000-0000-0000-00000000001b"}
                    :keep-history? true
                    :schema-flexibility :write
                    :initial-tx schema-tx})
@@ -37,7 +37,7 @@
         (d/q '[:find [(pull ?e [:name :age]) ...] :where [?e :name _]] db)))
 
 (deftest test-purge
-  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] "test-purge"))]
+  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000001"))]
     (testing "retract datom, data is removed from current db and found in history"
       (let [name "Alice"]
         (d/transact conn [[:db/retract [:name name] :age 25]])
@@ -59,7 +59,7 @@
     (d/release conn)))
 
 (deftest test-purge-attribute
-  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] "test-purge-attribute"))]
+  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000002"))]
     (testing "purge attribute from current index"
       (let [name "Alice"]
         (d/transact conn [[:db.purge/attribute [:name name] :age]])
@@ -82,7 +82,7 @@
     (d/release conn)))
 
 (deftest test-purge-entity
-  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] "test-purge-entity"))]
+  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000003"))]
     (testing "purge entity from current index"
       (is (= #{{:name "Alice" :age 25} {:name "Bob" :age 35}} (find-entities @conn)))
       (d/transact conn [[:db.purge/entity [:name "Alice"]]])
@@ -105,7 +105,7 @@
     (d/release conn)))
 
 (deftest test-purge-non-temporal-database
-  (let [conn (tu/setup-db (-> (assoc-in cfg-template [:store :id] "purge-non-temporal")
+  (let [conn (tu/setup-db (-> (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000004")
                               (assoc :keep-history? false)))]
     (testing "purge data in non temporal database"
       (is (thrown-with-msg? Throwable #"Purge entity is only available in temporal databases\."
@@ -122,7 +122,7 @@
        name))
 
 (deftest test-history-purge-before
-  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] "purge-history-before"))
+  (let [conn (tu/setup-db (assoc-in cfg-template [:store :id] #uuid "09000000-0000-0000-0000-000000000005"))
         name "Alice"]
     (testing "remove all historical data before date"
       (is (= #{[25 true]}

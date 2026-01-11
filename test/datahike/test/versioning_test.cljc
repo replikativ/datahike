@@ -12,7 +12,8 @@
 (deftest datahike-versioning-test
   (testing "Testing versioning functionality."
     (let [cfg {:store              {:backend :file
-                                    :path    "/tmp/dh-versioning-test"}
+                                    :path    "/tmp/dh-versioning-test"
+                                    :id #uuid "1e510000-0000-0000-0000-00000000001e"}
                :keep-history?      true
                :schema-flexibility :write
                :index              :datahike.index/persistent-set}

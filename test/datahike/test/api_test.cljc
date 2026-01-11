@@ -11,8 +11,8 @@
    [datahike.constants :refer [tx0]]))
 
 (deftest test-transact-docs
-  (let [cfg {:store {:backend :mem
-                     :id "hashing"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "ba5b1000-0000-0000-0000-000000000001"}
              :keep-history? false
              :schema-flexibility :read}
         conn (utils/setup-db cfg)
@@ -124,8 +124,8 @@
     (d/release conn)))
 
 (deftest test-transact!-docs
-  (let [cfg {:store {:backend :mem
-                     :id "hashing"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "ba5b1000-0000-0000-0000-000000000001"}
              :keep-history? false
              :schema-flexibility :read}
         conn (utils/setup-db cfg)]
@@ -136,8 +136,8 @@
     ;; retract a single datom
 
 (deftest test-pull-docs
-  (let [cfg {:store {:backend :mem
-                     :id "pull"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "0011aaaa-0000-0000-0000-000000000001"}
              :initial-tx [{:db/ident :likes
                            :db/cardinality :db.cardinality/many}
                           {:db/ident :friends
@@ -167,8 +167,8 @@
     (d/release conn)))
 
 (deftest test-pull-many-docs
-  (let [cfg {:store {:backend :mem
-                     :id "hashing"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "ba5b1000-0000-0000-0000-000000000001"}
              :initial-tx [[:db/add 1 :name "Ivan"]
                           [:db/add 2 :name "Oleg"]]
              :keep-history? false
@@ -180,8 +180,8 @@
     (d/release conn)))
 
 (deftest test-q-docs
-  (let [cfg {:store {:backend :mem
-                     :id "q"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "00000000-0000-0000-0000-00000000000a"}
              :initial-tx [[:db/add -1 :name "Ivan"]
                           [:db/add -1 :likes "fries"]
                           [:db/add -1 :likes "pizza"]
@@ -259,8 +259,8 @@
     (d/release conn)))
 
 (deftest test-with-docs
-  (let [cfg {:store {:backend :mem
-                     :id "with"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "00000111-7bbb-0000-0000-000000000001"}
              :keep-history? false
              :schema-flexibility :read}
         conn (utils/setup-db cfg)
@@ -281,8 +281,8 @@
 
 ;; TODO testing properly on what?
 (deftest test-db-docs
-  (let [cfg {:store {:backend :mem
-                     :id "db"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "00000dbb-0000-0000-0000-000000000001"}
              :keep-history? false
              :schema-flexibility :read}
         conn (utils/setup-db cfg)]
@@ -293,8 +293,8 @@
     (d/release conn)))
 
 (deftest test-history-docs
-  (let [cfg {:store {:backend :mem
-                     :id "history"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "b15700ee-0000-0000-0000-000000000001"}
              :initial-tx [{:db/ident :name
                            :db/valueType :db.type/string
                            :db/unique :db.unique/identity
@@ -325,8 +325,8 @@
     (d/release conn)))
 
 (deftest test-as-of-docs
-  (let [cfg {:store {:backend :mem
-                     :id "as-of"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "a500ffff-0000-0000-0000-000000000001"}
              :initial-tx [{:db/ident :name
                            :db/valueType :db.type/string
                            :db/unique :db.unique/identity
@@ -359,8 +359,8 @@
     (d/release conn)))
 
 (deftest test-since-docs
-  (let [cfg {:store {:backend :mem
-                     :id "since"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "051ceeee-0000-0000-0000-000000000001"}
              :initial-tx [{:db/ident :name
                            :db/valueType :db.type/string
                            :db/unique :db.unique/identity
@@ -397,8 +397,8 @@
     (d/release conn)))
 
 (deftest test-datoms-docs
-  (let [cfg {:store {:backend :mem
-                     :id "datoms"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "da7000aa-0000-0000-0000-000000000001"}
              :initial-tx [{:db/ident :name
                            :db/type :db.type/string
                            :db/cardinality :db.cardinality/one}
@@ -538,8 +538,8 @@
     (d/release db)))
 
 (deftest test-seek-datoms-doc
-  (let [cfg {:store {:backend :mem
-                     :id "seek-datoms"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "5eeeeeee-da70-00aa-0000-000000000001"}
              :initial-tx  [{:db/ident :name
                             :db/type :db.type/string
                             :db/index true
@@ -590,8 +590,8 @@
     (d/release db)))
 
 (deftest test-index-range-doc
-  (let [cfg {:store {:backend :mem
-                     :id "seek-datoms"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "5eeeeeee-da70-00aa-0000-000000000001"}
              :initial-tx [{:db/ident :name
                            :db/type :db.type/string
                            :db/cardinality :db.cardinality/one}
@@ -623,8 +623,8 @@
 
 (deftest test-database-hash
   (testing "Hashing without history"
-    (let [cfg {:store {:backend :mem
-                       :id "hashing"}
+    (let [cfg {:store {:backend :memory
+                       :id #uuid "ba5b1000-0000-0000-0000-000000000001"}
                :keep-history? false
                :schema-flexibility :read}
           conn (utils/setup-db cfg false)
@@ -644,8 +644,8 @@
               (is (= hash-0 hash-2))))))
       (d/release conn)))
   (testing "Hashing with history"
-    (let [cfg {:store {:backend :mem
-                       :id "hashing-with-history"}
+    (let [cfg {:store {:backend :memory
+                       :id #uuid "ba5b1001-0000-0000-0000-000000000001"}
                :keep-history? true
                :schema-flexibility :read}
           conn (utils/setup-db cfg false)
@@ -717,8 +717,8 @@
               (is (= related-to-reverse-schema
                      (d/reverse-schema @conn)))
               (d/release conn)))]
-    (let [base-cfg {:store              {:backend :mem
-                                         :id      "api-db-schema-test"}
+    (let [base-cfg {:store              {:backend :memory
+                                         :id      #uuid "a0100000-0000-0000-0000-000000000001"}
                     :keep-history?      false
                     :attribute-refs?    false
                     :schema-flexibility :write}]
@@ -740,8 +740,8 @@
         (test-schema (assoc base-cfg :schema-flexibility :read))))))
 
 (deftest test-db-meta
-  (let [cfg {:store              {:backend :mem
-                                  :id      "api-db-schema-test"}
+  (let [cfg {:store              {:backend :memory
+                                  :id      #uuid "a0100000-0000-0000-0000-000000000002"}
              :keep-history?      false
              :attribute-refs?    false
              :schema-flexibility :write}
@@ -750,7 +750,7 @@
            (-> @conn :meta keys set)))
     (d/release conn)))
 
-(def ^:private metrics-base-cfg {:store              {:backend :mem}
+(def ^:private metrics-base-cfg {:store              {:backend :memory}
                                  :index              :datahike.index/persistent-set
                                  :keep-history?      true
                                  :schema-flexibility :write
@@ -879,8 +879,8 @@
 
 (deftest test-no-history-datoms-in-empty-db
   (testing "When attribute-refs? is false, there are no initial datoms"
-    (utils/with-connect [conn (-> {:store {:backend :mem
-                                           :id "hashing"}
+    (utils/with-connect [conn (-> {:store {:backend :memory
+                                           :id #uuid "ba5b1000-0000-0000-0000-000000000001"}
                                    :keep-history? true
                                    :schema-flexibility :write}
                                   utils/provide-unique-id

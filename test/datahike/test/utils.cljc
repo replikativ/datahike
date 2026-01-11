@@ -37,7 +37,8 @@
 (defn cfg-template
   "Returning a config template with a random store-id"
   []
-  {:store {:backend :mem}
+  {:store {:backend :memory
+           :id #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid))}
    :keep-history? true
    :schema-flexibility :read})
 
@@ -57,7 +58,8 @@
   `(with-connect-fn ~cfg (fn [~conn] ~@body)))
 
 (defn provide-unique-id [cfg]
-  (assoc-in cfg [:store :id] (str (UUID/randomUUID))))
+  (assoc-in cfg [:store :id] #?(:clj (UUID/randomUUID)
+                                :cljs (random-uuid))))
 
 (defn setup-db
   "Setting up a test-db in memory by default.  Deep-merges the passed config into the defaults."

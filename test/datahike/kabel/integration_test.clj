@@ -92,10 +92,8 @@
   (testing "Full flow: d/connect with KabelWriter, d/transact routed to server"
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
-          scope-id #uuid "70000000-0000-0000-0000-000000000007"
-          ;; Shared scope for store matching across client/server (must be string per spec)
-          store-scope "test-full-flow-scope"
-          store-topic (keyword (str scope-id))
+          ;; Shared store ID for matching across client/server
+          store-id #uuid "7e570000-0000-0000-0000-000000000001"  ; test-full-flow-scope
           server-path (create-temp-dir "full-flow-server")
           client-path (create-temp-dir "full-flow-client")
 
@@ -104,7 +102,7 @@
           ;; =====================================================================
 
           ;; Server database config
-          server-config {:store {:backend :file :path server-path :scope store-scope}
+          server-config {:store {:backend :file :path server-path :id store-id}
                          :schema-flexibility :write
                          :keep-history? false}
           _ (d/create-database server-config)
@@ -124,7 +122,7 @@
           _ (handlers/register-global-handlers! server-peer)
 
           ;; Register for remote transactions (includes sync + tx-broadcast)
-          _ (handlers/register-store-for-remote-access! scope-id server-conn server-peer)
+          _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
 
           ;; =====================================================================
           ;; CLIENT SETUP - d/connect handles sync automatically
@@ -140,13 +138,13 @@
 
           ;; Connect with KabelWriter via d/connect
           ;; (async with :kabel backend, returns channel - we take from it with <!!)
-          client-config {:store {:backend :file :path client-path :scope store-scope}
+          client-config {:store {:backend :file :path client-path :id store-id}
                          :index :datahike.index/persistent-set
                          :schema-flexibility :write
                          :keep-history? false
                          :writer {:backend :kabel
                                   :peer-id server-id
-                                  :scope-id scope-id
+
                                   :local-peer client-peer}}
           client-conn (<!! (d/connect client-config {:sync? false}))]
 
@@ -250,13 +248,13 @@
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
           scope-id #uuid "80000000-0000-0000-0000-000000000008"
-          store-scope "test-ordering-scope"
+          store-id #uuid "7e570000-0000-0000-0000-000000000002"  ; test-ordering-scope
           store-topic (keyword (str scope-id))
           server-path (create-temp-dir "ordering-server")
           client-path (create-temp-dir "ordering-client")
 
           ;; Server setup
-          server-config {:store {:backend :file :path server-path :scope store-scope}
+          server-config {:store {:backend :file :path server-path :id store-id}
                          :schema-flexibility :write
                          :keep-history? false}
           _ (d/create-database server-config)
@@ -281,7 +279,7 @@
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
-          client-config {:store {:backend :file :path client-path :scope store-scope}
+          client-config {:store {:backend :file :path client-path :id store-id}
                          :index :datahike.index/persistent-set
                          :schema-flexibility :write
                          :keep-history? false
@@ -328,13 +326,13 @@
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
           scope-id #uuid "90000000-0000-0000-0000-000000000009"
-          store-scope "test-listen-scope"
+          store-id #uuid "7e570000-0000-0000-0000-000000000003"  ; test-listen-scope
           store-topic (keyword (str scope-id))
           server-path (create-temp-dir "listen-server")
           client-path (create-temp-dir "listen-client")
 
           ;; Server setup
-          server-config {:store {:backend :file :path server-path :scope store-scope}
+          server-config {:store {:backend :file :path server-path :id store-id}
                          :schema-flexibility :write
                          :keep-history? false}
           _ (d/create-database server-config)
@@ -359,7 +357,7 @@
           _ (ds/invoke-on-peer client-peer)
           _ (<?? S (peer/connect S client-peer url))
 
-          client-config {:store {:backend :file :path client-path :scope store-scope}
+          client-config {:store {:backend :file :path client-path :id store-id}
                          :index :datahike.index/persistent-set
                          :schema-flexibility :write
                          :keep-history? false
@@ -407,7 +405,7 @@
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
           scope-id #uuid "b0000000-0000-0000-0000-00000000000b"
-          store-scope "test-tiered-scope"
+          store-id #uuid "7e570000-0000-0000-0000-000000000004"  ; test-tiered-scope
           store-topic (keyword (str scope-id))
           server-path (create-temp-dir "tiered-server")
           client-backend-path (create-temp-dir "tiered-client-backend")
@@ -415,7 +413,7 @@
           ;; =====================================================================
           ;; SERVER SETUP
           ;; =====================================================================
-          server-config {:store {:backend :file :path server-path :scope store-scope}
+          server-config {:store {:backend :file :path server-path :id store-id}
                          :schema-flexibility :write
                          :keep-history? false}
           _ (d/create-database server-config)
@@ -447,9 +445,9 @@
 
           ;; Client uses tiered store: memory frontend + file backend
           client-config-1 {:store {:backend :tiered
-                                   :frontend-store {:backend :mem :id "tiered-test-mem-1"}
-                                   :backend-store {:backend :file :path client-backend-path :scope store-scope}
-                                   :scope store-scope}
+                                   :frontend-store {:backend :memory :id #uuid "c1000000-0000-0000-0000-00000000000c"}
+                                   :backend-store {:backend :file :path client-backend-path :id store-id}
+                                   :id store-id}
                            :index :datahike.index/persistent-set
                            :schema-flexibility :write
                            :keep-history? false
@@ -515,9 +513,9 @@
 
             ;; Same backend path - should have cached data from first connection
             client-config-2 {:store {:backend :tiered
-                                     :frontend-store {:backend :mem :id "tiered-test-mem-2"}
-                                     :backend-store {:backend :file :path client-backend-path :scope store-scope}
-                                     :scope store-scope}
+                                     :frontend-store {:backend :memory :id #uuid "c2000000-0000-0000-0000-00000000000c"}
+                                     :backend-store {:backend :file :path client-backend-path :id store-id}
+                                     :id store-id}
                              :index :datahike.index/persistent-set
                              :schema-flexibility :write
                              :keep-history? false
@@ -561,7 +559,7 @@
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
           scope-id #uuid "a0000000-0000-0000-0000-00000000000a"
-          store-scope "test-remote-create-scope"
+          store-id #uuid "7e570000-0000-0000-0000-000000000005"  ; test-remote-create-scope
           server-path (create-temp-dir "remote-create-server")
 
           ;; Server peer setup (no database yet!)
@@ -586,7 +584,7 @@
           _ (<?? S (peer/connect S client-peer url))]
 
       ;; Client creates database on server
-      (let [create-config {:store {:backend :file :path server-path :scope store-scope}
+      (let [create-config {:store {:backend :file :path server-path :id store-id}
                            :schema-flexibility :write
                            :keep-history? false
                            :writer {:backend :kabel
@@ -597,7 +595,7 @@
         (is (:success create-result) "create-database should succeed"))
 
       ;; Verify database exists on server by connecting locally
-      (let [server-config {:store {:backend :file :path server-path :scope store-scope}
+      (let [server-config {:store {:backend :file :path server-path :id store-id}
                            :schema-flexibility :write
                            :keep-history? false}
             server-conn (d/connect server-config)]
@@ -612,7 +610,7 @@
         (release server-conn))
 
       ;; Client deletes database on server
-      (let [delete-config {:store {:backend :file :path server-path :scope store-scope}
+      (let [delete-config {:store {:backend :file :path server-path :id store-id}
                            :writer {:backend :kabel
                                     :peer-id server-id
                                     :scope-id scope-id}}

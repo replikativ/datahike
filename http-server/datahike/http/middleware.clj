@@ -3,8 +3,10 @@
    [buddy.auth :refer [authenticated?]]
    [buddy.auth.backends :as buddy-auth-backends]
    [buddy.auth.middleware :as buddy-auth-middleware]
+   [clojure.edn :as edn]
    [clojure.walk :as cw]
    [datahike.json :as json]
+   [datahike.readers :refer [edn-readers]]
    [muuntaja.core :as m]
    [taoensso.timbre :refer [info trace]])
   (:import
@@ -66,7 +68,7 @@
             (trace "transact transformation" new-body-params)
             (handler (assoc request :body-params new-body-params)))
           (let [[f & r]         body-params
-                new-body-params (vec (concat [(if (string? f) (read-string f) f)] r))]
+                new-body-params (vec (concat [(if (string? f) (edn/read-string {:readers edn-readers} f) f)] r))]
             (trace "old-body-params" body-params)
             (trace "new-body-params" new-body-params)
             (handler (assoc request :body-params new-body-params))))

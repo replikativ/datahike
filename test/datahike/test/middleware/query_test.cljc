@@ -9,8 +9,8 @@
    [java.util Date]))
 
 (deftest timed-query-should-log-time-for-query-to-run
-  (let [cfg {:store {:backend :mem
-                     :id "query-middleware"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "00160000-0000-0000-0000-000000000016"}
              :keep-history? false
              :schema-flexibility :read
              :middleware {:query ['datahike.middleware.query/timed-query]}}
@@ -27,16 +27,16 @@
     (d/release conn)))
 
 (deftest invalid-middleware-should-be-caught-on-connection
-  (let [cfg {:store {:backend :mem
-                     :id "query-middleware"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "00160000-0000-0000-0000-000000000016"}
              :keep-history? false
              :schema-flexibility :read
              :middleware {:query "this is neither a function nor a vector!"}}]
     (is (thrown-with-msg? ExceptionInfo #"Invalid Datahike configuration." (utils/setup-db cfg)))))
 
 (deftest middleware-should-work-with-as-of-db
-  (let [cfg {:store {:backend :mem
-                     :id "query-middleware"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "00160000-0000-0000-0000-000000000016"}
              :keep-history? true
              :schema-flexibility :read
              :middleware {:query ['datahike.middleware.query/timed-query]}}
@@ -55,8 +55,8 @@
     (d/release conn)))
 
 (deftest middleware-should-work-with-since
-  (let [cfg {:store {:backend :mem
-                     :id "query-middleware"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "00160000-0000-0000-0000-000000000016"}
              :keep-history? true
              :schema-flexibility :read
              :middleware {:query ['datahike.middleware.query/timed-query]}}
@@ -75,8 +75,8 @@
     (d/release conn)))
 
 (deftest middleware-should-work-with-history
-  (let [cfg {:store {:backend :mem
-                     :id "query-middleware"}
+  (let [cfg {:store {:backend :memory
+                     :id #uuid "00160000-0000-0000-0000-000000000016"}
              :keep-history? true
              :schema-flexibility :read
              :middleware {:query ['datahike.middleware.query/timed-query]}}

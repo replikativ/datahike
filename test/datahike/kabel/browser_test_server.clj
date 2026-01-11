@@ -71,7 +71,7 @@
   (let [base-path (:temp-dir @server-state)]
     {:backend :file
      :path (str base-path "/" scope-id)
-     :scope scope-id}))
+     :id (java.util.UUID/nameUUIDFromBytes (.getBytes (str scope-id) "UTF-8"))}))
 
 ;; =============================================================================
 ;; Server Lifecycle

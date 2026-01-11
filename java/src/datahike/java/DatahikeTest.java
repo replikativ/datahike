@@ -32,8 +32,8 @@ public class DatahikeTest {
             "                 :db/cardinality :db.cardinality/one}]");
 
     private APersistentMap config() {
-        String connId = ((Long)(new Date()).getTime()).toString();
-        return map(kwd(":store"), map(kwd(":backend"), kwd(":mem"),
+        UUID connId = UUID.randomUUID();
+        return map(kwd(":store"), map(kwd(":backend"), kwd(":memory"),
                                       kwd(":id"), connId),
                    kwd(":initial-tx"), this.schema);
     }
@@ -59,7 +59,7 @@ public class DatahikeTest {
         APersistentMap config = config();
         Datahike.createDatabase(config);
         assertTrue(Datahike.databaseExists(config));
-        APersistentMap configNotExisting = (APersistentMap)ednFromString("{:store {:backend :mem :id \"it-does-not-exist\"}}");
+        APersistentMap configNotExisting = (APersistentMap)ednFromString("{:store {:backend :memory :id #uuid \"00000000-0000-0000-0000-000000000000\"}}");
         assertFalse(Datahike.databaseExists(configNotExisting));
     }
 

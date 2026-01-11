@@ -46,10 +46,9 @@
 
 (defn store-identity-for-registry
   "Extract identity for registry matching.
-   Uses [:backend :scope] which allows matching across machines
-   (where paths differ but scope is shared via konserve-sync)."
+   Uses :id which uniquely identifies the store across machines."
   [store-config]
-  (select-keys store-config [:backend :scope]))
+  (:id store-config))
 
 (defn register-store!
   "Register a store in the registry by store-config.
@@ -60,7 +59,7 @@
 
 (defn get-store
   "Get store from registry by store-config.
-   The store-config should include :scope to match stores across
+   The store-config should include :id to match stores across
    client/server that are synced via konserve-sync."
   [store-config]
   (get @store-registry (store-identity-for-registry store-config)))
@@ -182,8 +181,8 @@
         (dd/datom-from-reader (fress/read-object reader))))
 
    ;; DB is serialized via db->stored format - deserialize via stored->db
-   ;; Looks up store by :scope from config. Store must be registered with
-   ;; matching :scope via register-store! before receiving DBs.
+   ;; Looks up store by :id from config. Store must be registered with
+   ;; matching :id via register-store! before receiving DBs.
    ;; Reconstructs deferred indexes before calling stored->db.
    "datahike.db.DB"
    #?(:clj

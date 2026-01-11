@@ -3,7 +3,7 @@
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"
                                                      :exclusions [org.clojure/clojurescript]}
-        io.replikativ/konserve                      {:mvn/version "0.8.328"
+        io.replikativ/konserve                      {:mvn/version "0.9.338"
                                                      :exclusions [org.clojure/clojurescript
                                                                   org.clojars.mmb90/cljs-cache]
                                                      }
