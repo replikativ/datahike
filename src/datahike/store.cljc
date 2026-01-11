@@ -14,7 +14,8 @@
                :cljs [cljs.cache :as cache])
             [konserve.utils :refer [#?(:clj async+sync) *default-sync-translation*]
              #?@(:cljs [:refer-macros [async+sync]])]
-            [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?-]]))
+            [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?-]]
+            #?(:cljs [clojure.core.async :refer-macros [go]])))
 
 ;; =============================================================================
 ;; Cache and Handlers
