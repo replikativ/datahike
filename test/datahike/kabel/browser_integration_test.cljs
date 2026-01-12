@@ -143,9 +143,11 @@
 
             ;; Step 1: Create database
                  (js/console.log "\n[TEST] Step 1: Creating database with store-id:" (str store-id))
+                 ;; Note: All tiered store :id values must match for konserve validation
+                 ;; konserve uses :frontend-config/:backend-config to avoid collision with :backend :tiered
                  (let [config {:store {:backend :tiered
-                                       :frontend-store {:backend :memory :id (random-uuid)}
-                                       :backend-store {:backend :indexeddb :name db-name}
+                                       :frontend-config {:backend :memory :id store-id}
+                                       :backend-config {:backend :indexeddb :name db-name :id store-id}
                                        :id store-id}
                                :writer {:backend :kabel
                                         :peer-id test-server-id
@@ -160,8 +162,21 @@
 
                 ;; Step 2: Connect to database
                      (js/console.log "\n[TEST] Step 2: Connecting to database...")
-                     (let [conn (<! (d/connect config {:sync? false}))]
+                     (let [connect-result (d/connect config {:sync? false})
+                           _ (js/console.log "[TEST] d/connect returned:" (pr-str (type connect-result)))
+                           conn (<! connect-result)
+                           _ (js/console.log "[TEST] Channel yielded:" (pr-str conn))
+                           _ (js/console.log "[TEST] conn type:" (pr-str (type conn)))
+                           ;; Check if conn is an exception (error from connect-kabel)
+                           _ (when (instance? js/Error conn)
+                               (js/console.error "[TEST] Connection returned error:" (.-message conn))
+                               (throw conn))
+                           _ (when (instance? ExceptionInfo conn)
+                               (js/console.error "[TEST] Connection returned ExceptionInfo:" (ex-message conn) (ex-data conn))
+                               (throw conn))]
                        (is (some? conn) "Connection established")
+                       (when-not conn
+                         (throw (ex-info "Connection is nil" {:config config})))
                        (is (some? @(:wrapped-atom conn)) "Connection has database")
                        (js/console.log "[TEST] Connected! max-tx:" (:max-tx @(:wrapped-atom conn)))
 
@@ -261,9 +276,11 @@
                  (<! (ensure-peer-ready!))
 
                  (js/console.log "\n[TEST-MULTI] Creating database...")
+                 ;; Note: All tiered store :id values must match for konserve validation
+                 ;; konserve uses :frontend-config/:backend-config to avoid collision with :backend :tiered
                  (let [config {:store {:backend :tiered
-                                       :frontend-store {:backend :memory :id (random-uuid)}
-                                       :backend-store {:backend :indexeddb :name db-name}
+                                       :frontend-config {:backend :memory :id store-id}
+                                       :backend-config {:backend :indexeddb :name db-name :id store-id}
                                        :id store-id}
                                :writer {:backend :kabel
                                         :peer-id test-server-id

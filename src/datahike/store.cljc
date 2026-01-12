@@ -64,7 +64,7 @@
   (async+sync (:sync? opts) *default-sync-translation*
               (go-try- true)))
 
-(defmethod ready-store :tiered [{:keys [opts]} store]
+(defmethod ready-store :tiered [{:keys [opts frontend-config backend-config]} store]
   "Populate tiered store frontend from backend and sync on connect.
 
    This ensures:
@@ -72,7 +72,9 @@
    2. Subsequent sync handshakes send accurate timestamps (only fetch newer keys)"
   (async+sync (:sync? (or opts {:sync? true})) *default-sync-translation*
               (go-try-
-               (<?- (ready-store (:frontend-store opts) (:frontend-store store)))
-               (<?- (ready-store (:backend-store opts) (:backend-store store)))
+               ;; Config uses :frontend-config/:backend-config (avoids collision with :backend :tiered)
+               ;; Store record uses :frontend-store/:backend-store (field names in TieredStore)
+               (<?- (ready-store (assoc frontend-config :opts opts) (:frontend-store store)))
+               (<?- (ready-store (assoc backend-config :opts opts) (:backend-store store)))
                (<?- (kt/sync-on-connect store kt/populate-missing-strategy opts))
                true)))

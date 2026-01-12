@@ -66,12 +66,16 @@
 
 (defn server-store-config-fn
   "Create server-side store config for a given scope-id.
-   Uses file backend since client's TieredStore won't work on JVM."
-  [scope-id _client-config]
-  (let [base-path (:temp-dir @server-state)]
+   Uses file backend since client's TieredStore won't work on JVM.
+   IMPORTANT: Must use client's :id for sync/fressian matching to work."
+  [_scope-id client-config]
+  (let [base-path (:temp-dir @server-state)
+        ;; Use client's store :id - this is required for fressian handlers
+        ;; and konserve-sync to match the correct store
+        store-id (-> client-config :store :id)]
     {:backend :file
-     :path (str base-path "/" scope-id)
-     :id (java.util.UUID/nameUUIDFromBytes (.getBytes (str scope-id) "UTF-8"))}))
+     :path (str base-path "/" store-id)
+     :id store-id}))
 
 ;; =============================================================================
 ;; Server Lifecycle

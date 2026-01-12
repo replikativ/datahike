@@ -4,6 +4,7 @@
  :deps {datahike/bb {:local/root "bb"}
         org.babashka/http-client {:mvn/version "0.4.22"}}
  :tasks {:requires [[babashka.fs :as fs]
+                    [babashka.process :as process]
                     [clojure.edn :as edn]
                     [pod.borkdude.clj-kondo :as clj-kondo]
                     [tools.build :as build]
@@ -165,6 +166,48 @@
                                  (shell "npx shadow-cljs compile node-test")
                                  (println "Running CLJS node tests...")
                                  (shell "node target/out/node-test.js"))}
+
+         browser-test {:doc "Run browser integration tests with Karma (headless Chrome)"
+                       :depends [prep]
+                       :task (let [;; Auto-detect Chrome binary
+                                   chrome-bin (or (System/getenv "CHROME_BIN")
+                                                  (when (fs/exists? "/usr/bin/chromium-browser") "/usr/bin/chromium-browser")
+                                                  (when (fs/exists? "/usr/bin/chromium") "/usr/bin/chromium")
+                                                  (when (fs/exists? "/usr/bin/google-chrome") "/usr/bin/google-chrome"))]
+                               (when-not chrome-bin
+                                 (println "ERROR: Chrome not found. Set CHROME_BIN environment variable.")
+                                 (System/exit 1))
+
+                               ;; Start JVM test server in background
+                               (println "Starting Kabel test server on ws://localhost:47296...")
+                               (let [server-proc (process/process
+                                                  ["clojure" "-M:test" "-e"
+                                                   "(require 'datahike.kabel.browser-test-server) (datahike.kabel.browser-test-server/start-test-server!) (Thread/sleep Long/MAX_VALUE)"]
+                                                  {:out :inherit :err :inherit})]
+                                 (try
+                                   ;; Wait for server to start
+                                   (println "Waiting for server startup (10s)...")
+                                   (Thread/sleep 10000)
+
+                                   ;; Compile browser tests
+                                   (println "Compiling browser tests...")
+                                   (shell "npx shadow-cljs compile browser-ci")
+
+                                   ;; Run Karma
+                                   (println "Running tests with Karma...")
+                                   (shell {:extra-env {"CHROME_BIN" chrome-bin}} "npx karma start --single-run")
+
+                                   (finally
+                                     ;; Kill the server process
+                                     (println "Stopping test server...")
+                                     (process/destroy-tree server-proc)))))}
+
+         browser-watch {:doc "Start browser test dev server (open http://localhost:8022)"
+                        :depends [prep]
+                        :task (do
+                                (println "Starting browser test dev server...")
+                                (println "Open http://localhost:8022 in your browser")
+                                (shell "npx shadow-cljs watch browser-integration-test"))}
 
          ;; aggregate tasks
 

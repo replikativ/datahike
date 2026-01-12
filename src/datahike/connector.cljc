@@ -245,4 +245,6 @@
            (when (or release-all? (zero? (get-in new-conns [conn-id :count])))
              (delete-connection! conn-id)
              (w/shutdown (:writer db))
+             ;; Release the underlying store to clean up resources (memory registry, etc.)
+             (ks/release-store (get-in db [:config :store]) (:store db))
              nil)))))))

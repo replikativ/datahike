@@ -1,8 +1,14 @@
 // Comprehensive test for reorganized JS API - covers all nodejs_test.cljs functionality
 const d = require('./datahike.js.api.js');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+
+// Helper to generate UUID for store :id
+function generateUUID() {
+  return crypto.randomUUID();
+}
 
 // Helper to find entity ID by name
 async function findEntityByName(db, name) {
@@ -25,9 +31,9 @@ function tmpDir() {
 
 async function testBasicOperations() {
   console.log('\n=== Test 1: Basic Database Operations ===');
-  
+
   const config = {
-    store: { backend: ':mem', id: 'basic-test' }
+    store: { backend: ':memory', id: generateUUID() }
   };
   
   console.log('  Creating database...');
@@ -57,9 +63,9 @@ async function testBasicOperations() {
 
 async function testSchemaAndTransactions() {
   console.log('\n=== Test 2: Schema and Transactions ===');
-  
+
   const config = {
-    store: { backend: ':mem', id: 'schema-test' }
+    store: { backend: ':memory', id: generateUUID() }
   };
   
   await d.createDatabase(config);
@@ -106,9 +112,9 @@ async function testSchemaAndTransactions() {
 
 async function testDatomsAPI() {
   console.log('\n=== Test 3: Datoms API ===');
-  
+
   const config = {
-    store: { backend: ':mem', id: 'datoms-test' }
+    store: { backend: ':memory', id: generateUUID() }
   };
   
   await d.createDatabase(config);
@@ -149,9 +155,9 @@ async function testDatomsAPI() {
 
 async function testPullAPI() {
   console.log('\n=== Test 4: Pull API ===');
-  
+
   const config = {
-    store: { backend: ':mem', id: 'pull-test' }
+    store: { backend: ':memory', id: generateUUID() }
   };
   
   await d.createDatabase(config);
@@ -202,9 +208,9 @@ async function testPullAPI() {
 
 async function testEntityAPI() {
   console.log('\n=== Test 5: Entity API ===');
-  
+
   const config = {
-    store: { backend: ':mem', id: 'entity-test' }
+    store: { backend: ':memory', id: generateUUID() }
   };
   
   await d.createDatabase(config);
@@ -248,9 +254,9 @@ async function testEntityAPI() {
 
 async function testTemporalDatabases() {
   console.log('\n=== Test 6: Temporal Databases (History, as-of) ===');
-  
+
   const config = {
-    store: { backend: ':mem', id: 'temporal-test' },
+    store: { backend: ':memory', id: generateUUID() },
     'keep-history?': true
   };
   
@@ -299,10 +305,10 @@ async function testTemporalDatabases() {
 
 async function testFilePersistence() {
   console.log('\n=== Test 7: File Backend Persistence ===');
-  
+
   const dir = tmpDir();
   const config = {
-    store: { backend: ':file', path: dir }
+    store: { backend: ':file', path: dir, id: generateUUID() }
   };
   
   console.log(`  Using temp directory: ${dir}`);
@@ -346,9 +352,9 @@ async function testFilePersistence() {
 
 async function testSchemaRetrieval() {
   console.log('\n=== Test 8: Schema Retrieval ===');
-  
+
   const config = {
-    store: { backend: ':mem', id: 'schema-retrieval-test' }
+    store: { backend: ':memory', id: generateUUID() }
   };
   
   await d.createDatabase(config);
@@ -375,9 +381,9 @@ async function testSchemaRetrieval() {
 
 async function testMultipleTransactions() {
   console.log('\n=== Test 9: Multiple Sequential Transactions ===');
-  
+
   const config = {
-    store: { backend: ':mem', id: 'multi-tx-test' }
+    store: { backend: ':memory', id: generateUUID() }
   };
   
   await d.createDatabase(config);
@@ -408,9 +414,9 @@ async function testMultipleTransactions() {
 
 async function testQueryAPI() {
   console.log('\n=== Test 10: Query API (Datalog queries as EDN strings) ===');
-  
+
   const config = {
-    store: { backend: ':mem', id: 'query-api-test' }
+    store: { backend: ':memory', id: generateUUID() }
   };
   
   await d.createDatabase(config);

@@ -148,7 +148,7 @@
             #?(:clj (println "[SERVER] create-database handler invoked!" config)
                :cljs (.log js/console "[SERVER] create-database handler invoked!" config))
             (let [scope-id (or (get-in config [:writer :scope-id])
-                               (-> config :store :scope))
+                               (-> config :store :id))  ;; Use :id (refactored from :scope)
             ;; Normalize scope-id to string (store scopes are always strings)
                   scope-id (if (uuid? scope-id) (str scope-id) scope-id)
                   _ (do
@@ -175,13 +175,13 @@
             ;; Register connection in scope registry
                   _ (register-connection-for-scope! scope-id conn peer)
 
-            ;; Register for konserve-sync
+            ;; Register for konserve-sync (use UUID directly as topic to match client)
                   store (:store @(:wrapped-atom conn))
-                  store-topic (keyword (str scope-id))
-                  _ (sync/register-store! peer store-topic store
+                  store-id (-> config :store :id)  ;; Use original UUID, not stringified scope-id
+                  _ (sync/register-store! peer store-id store
                                           {:walk-fn dh-walker/datahike-walk-fn
                                            :key-sort-fn (fn [k] (if (= k :db) 1 0))})
-                  _ (log/trace "Registered for sync" {:scope-id scope-id :topic store-topic})
+                  _ (log/trace "Registered for sync" {:scope-id scope-id :store-id store-id})
 
             ;; Register tx-report topic for pubsub
                   _ (tx-broadcast/register-tx-report-topic! peer scope-id)]
@@ -206,20 +206,20 @@
   (fn [{:keys [config]}]
     (go-try S
             (let [scope-id (or (get-in config [:writer :scope-id])
-                               (-> config :store :scope))
+                               (-> config :store :id))  ;; Use :id (refactored from :scope)
             ;; Normalize scope-id to string (store scopes are always strings)
                   scope-id (if (uuid? scope-id) (str scope-id) scope-id)
                   _ (log/info "Global delete-database request" {:scope-id scope-id})
                   {:keys [conn peer]} (get @scope-registry scope-id)
-                  store-topic (keyword (str scope-id))
+                  store-id (-> config :store :id)  ;; Use original UUID for sync topic
             ;; Build server-side config using store-config-fn
                   store-config (store-config-fn scope-id config)
                   server-config {:store store-config}]
 
               (when conn
-          ;; Unregister from sync
+          ;; Unregister from sync (use UUID to match registration)
                 (when peer
-                  (sync/unregister-store! peer store-topic)
+                  (sync/unregister-store! peer store-id)
                   (tx-broadcast/unregister-tx-report-topic! peer scope-id))
 
           ;; Remove from registry

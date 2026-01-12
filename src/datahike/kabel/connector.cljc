@@ -53,15 +53,17 @@
    avoiding syncing old/garbage data."
   [store store-config branch opts]
   (go-try-
+   ;; TieredStore record uses :frontend-store/:backend-store field names
+   ;; Config uses :frontend-config/:backend-config (avoids collision with :backend :tiered)
    (let [frontend (:frontend-store store)
          backend (:backend-store store)]
      (log/trace "Populating tiered store from cache" {:branch branch})
       ;; Ready sub-stores individually (skip the default sync-on-connect)
       ;; Pass opts with :sync? false to ensure async operation
      (log/trace "Calling ready-store on frontend...")
-     (<?- (ds/ready-store (assoc (:frontend-store store-config) :opts opts) frontend))
+     (<?- (ds/ready-store (assoc (:frontend-config store-config) :opts opts) frontend))
      (log/trace "Frontend ready. Calling ready-store on backend...")
-     (<?- (ds/ready-store (assoc (:backend-store store-config) :opts opts) backend))
+     (<?- (ds/ready-store (assoc (:backend-config store-config) :opts opts) backend))
      (log/trace "Backend ready. Calling perform-walk-sync...")
       ;; Walk-sync with datahike walker for the branch
      (let [walk-opts (assoc opts :sync? false)
@@ -104,6 +106,8 @@
    Always returns a channel - kabel connections are inherently async due to
    network sync. Caller must take from the channel to get the connection."
   [raw-config opts]
+  (log/info "connect-kabel called" {:store-backend (get-in raw-config [:store :backend])
+                                    :opts opts})
   (go-try-
    (let [;; Normalize config with defaults (cache sizes, etc.)
          config (dissoc (dc/load-config raw-config) :initial-tx :remote-peer :name)
@@ -130,17 +134,21 @@
                        {:type :kabel-missing-store-id
                         :store-config store-config}))
 
-          ;; 1. Create store with Datahike handlers
-          ;; Use empty-store instead of connect-store because kabel clients
-          ;; receive data via sync - the store may not exist yet
-         _ (log/trace "Creating store..." {:backend (:backend store-config)
-                                           :id (:id store-config)})
-         raw-store (<?- (ks/create-store store-config opts))
-         _ (log/trace "Store created" {:raw-store (some? raw-store)})
+          ;; 1. Create or connect to store with Datahike handlers
+          ;; For initial connection, store may not exist yet (create-store)
+          ;; For reconnection after release, store exists (connect-store)
+         _ (log/trace "Checking if store exists..." {:backend (:backend store-config)
+                                                     :id (:id store-config)})
+         store-exists? (<?- (ks/store-exists? store-config opts))
+         _ (log/trace "Store exists?" {:exists store-exists?})
+         raw-store (if store-exists?
+                     (<?- (ks/connect-store store-config opts))
+                     (<?- (ks/create-store store-config opts)))
+         _ (log/trace "Store ready" {:raw-store (some? raw-store)})
          _ (when-not raw-store
-             (dt/raise "Failed to create store." {:type :store-creation-failed
-                                                  :backend (:backend store-config)
-                                                  :id (:id store-config)}))
+             (dt/raise "Failed to create/connect store." {:type :store-creation-failed
+                                                          :backend (:backend store-config)
+                                                          :id (:id store-config)}))
          store (ds/add-cache-and-handlers raw-store config)
          _ (log/trace "Store ready, adding handlers...")
 
@@ -273,6 +281,7 @@
 ;; =============================================================================
 
 (defmethod datahike.connector/-connect* :kabel [config opts]
+  (log/info "Kabel -connect* multimethod dispatched" {:sync? (:sync? opts)})
   (when (:sync? opts)
     (dt/raise "Kabel connections must be async. Use {:sync? false} or omit :sync? option."
               {:type :kabel-requires-async

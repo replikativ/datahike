@@ -16,7 +16,7 @@
             [konserve.core :as k]
             [konserve.serializers :refer [fressian-serializer]]
             #?(:cljs [fress.api :as fress])
-            [hasch.core :refer [uuid]]
+            [hasch.core :refer [uuid squuid]]
             [taoensso.timbre :refer [trace]])
   #?(:cljs (:require-macros [datahike.index.persistent-set :refer [generate-slice-comparator-constructor]]))
   #?(:clj (:import [datahike.datom Datom]
@@ -205,7 +205,7 @@
     (if (instance? Branch node)
       (uuid (vec (.addresses ^Branch node)))
       (uuid (mapv (comp vec seq) (.keys node))))
-    (uuid)))
+    (squuid)))  ;; Sequential UUID for better index locality
 
 (defrecord CachedStorage [store config cache stats pending-writes cost-center-fn]
   IStorage

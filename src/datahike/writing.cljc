@@ -12,7 +12,7 @@
             [konserve.core :as k]
             [konserve.store :as ks]
             [taoensso.timbre :as log]
-            [hasch.core :refer [uuid]]
+            [hasch.core :refer [uuid squuid]]
             [hasch.platform]
             [clojure.core.async :as async :refer [go put!]]
             [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?-]]
@@ -134,8 +134,11 @@
                             commit-id)))))))
 
 (defn create-commit-id [db]
-  (let [{:keys [hash max-tx max-eid meta]} db]
-    (uuid [hash max-tx max-eid meta])))
+  (let [{:keys [hash max-tx max-eid meta config]} db
+        content-uuid (uuid [hash max-tx max-eid meta])]
+    (if (:crypto-hash? config)
+      content-uuid
+      (squuid content-uuid))))  ;; Sequential UUID for better index locality
 
 (defn write-pending-kvs!
   "Writes a collection of key-value pairs to the store.

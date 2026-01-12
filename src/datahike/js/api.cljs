@@ -1,5 +1,6 @@
 (ns datahike.js.api
   "JavaScript API for Datahike with Promise conversion and data transformation"
+  (:refer-clojure :exclude [filter])
   (:require [datahike.api.specification :refer [api-specification]]
             [datahike.api.impl]
             [datahike.store] ;; Register :mem backend
@@ -17,18 +18,29 @@
 ;; Data Conversion Helpers
 ;; =============================================================================
 
-(defn- keywordize-string
-  "Convert a string starting with ':' to a keyword, handling namespaces.
-  ':db/ident' -> :db/ident
-  ':person/name' -> :person/name"
+(def ^:private uuid-regex
+  "Regex pattern for UUID strings (8-4-4-4-12 hex digits)"
+  #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+(defn- uuid-string?
+  "Check if a string is a valid UUID format"
   [s]
-  (if (and (string? s) (str/starts-with? s ":"))
-    (keyword (subs s 1))
-    s))
+  (and (string? s) (re-matches uuid-regex s)))
+
+(defn- convert-string
+  "Convert a string to appropriate Clojure type:
+  - ':keyword' -> keyword
+  - UUID format -> UUID object
+  - otherwise -> string"
+  [s]
+  (cond
+    (str/starts-with? s ":") (keyword (subs s 1))
+    (uuid-string? s) (uuid s)
+    :else s))
 
 (defn js->clj-recursive
   "Recursively convert JS objects to Clojure data with keyword keys.
-  Also converts strings like ':keyword' to actual keywords."
+  Also converts strings like ':keyword' to keywords and UUID strings to UUIDs."
   [x]
   (cond
     ;; Check for JS object first (but not arrays, functions, or null)
@@ -46,9 +58,9 @@
     (array? x)
     (mapv js->clj-recursive x)
 
-    ;; Strings that look like keywords become keywords
+    ;; Strings: convert keywords, UUIDs, or pass through
     (string? x)
-    (keywordize-string x)
+    (convert-string x)
 
     ;; Everything else passes through
     :else x))
