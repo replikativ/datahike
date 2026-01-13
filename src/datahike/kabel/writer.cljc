@@ -86,9 +86,9 @@
         (try
           ;; 1. Send to remote peer via distributed-scope
           (let [remote-result (<?- (ds/invoke-remote peer-id
-                                                    remote-fn
-                                                    {:store-id store-id
-                                                     :arg-map arg-map}))]
+                                                     remote-fn
+                                                     {:store-id store-id
+                                                      :arg-map arg-map}))]
             (if (instance? #?(:clj Throwable :cljs js/Error) remote-result)
               ;; Remote error - return immediately
               (put! result-ch remote-result)
@@ -282,8 +282,8 @@
       (try
         ;; Global create-database handler - config contains store-id
         (let [result (<?- (ds/invoke-remote peer-id
-                                           'datahike.kabel/create-database
-                                           {:config remote-config}))]
+                                            'datahike.kabel/create-database
+                                            {:config remote-config}))]
           (#?(:clj deliver :cljs put!) p result))
         (catch #?(:clj Exception :cljs js/Error) e
           (log/error "Error in create-database :kabel" e)
@@ -300,8 +300,8 @@
       (try
         ;; Global delete-database handler - config contains store-id
         (let [result (<?- (ds/invoke-remote peer-id
-                                           'datahike.kabel/delete-database
-                                           {:config remote-config}))]
+                                            'datahike.kabel/delete-database
+                                            {:config remote-config}))]
           (#?(:clj deliver :cljs put!) p result))
         (catch #?(:clj Exception :cljs js/Error) e
           (log/error "Error in delete-database :kabel" e)

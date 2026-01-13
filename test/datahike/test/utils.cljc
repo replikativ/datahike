@@ -1,8 +1,8 @@
 (ns datahike.test.utils
   (:require ;; Load hitchhiker-tree FIRST before datahike.api which loads datahike.index
-            #?(:clj [datahike.index.hitchhiker-tree])
-            [datahike.api :as d]
-            [datahike.tools :as tools])
+   #?(:clj [datahike.index.hitchhiker-tree])
+   [datahike.api :as d]
+   [datahike.tools :as tools])
   #?(:clj (:import [java.util UUID Date])))
 
 (defn get-all-datoms
