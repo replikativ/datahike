@@ -29,7 +29,8 @@ Node.js supports the file backend via
 
 (go
   (let [config {:store {:backend :file
-                        :path "./my-database"}
+                        :path "./my-database"
+                        :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
                 :schema-flexibility :write}]
     (<! (d/create-database config))
     (let [conn (<! (d/connect config))]
@@ -46,7 +47,7 @@ Browsers cannot use file storage directly. Datahike provides two browser-compati
 Fast but not persistent across page reloads:
 
 ```clojure
-{:store {:backend :mem :id "my-db"}}
+{:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440000"}}
 ```
 
 ### IndexedDB backend
@@ -55,7 +56,7 @@ Persistent browser storage via
 [konserve-indexeddb](https://github.com/replikativ/konserve):
 
 ```clojure
-{:store {:backend :indexeddb :name "my-database"}}
+{:store {:backend :indexeddb :id #uuid "550e8400-e29b-41d4-a716-446655440000"}}
 ```
 
 IndexedDB is async, so all operations return channels.
@@ -67,8 +68,11 @@ with a persistent IndexedDB backend:
 
 ```clojure
 {:store {:backend :tiered
-         :frontend-store {:backend :mem :id "mem-cache"}
-         :backend-store {:backend :indexeddb :name "my-database"}}}
+         :id #uuid "550e8400-e29b-41d4-a716-446655440000"
+         :frontend-config {:backend :memory
+                          :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
+         :backend-config {:backend :indexeddb
+                         :id #uuid "550e8400-e29b-41d4-a716-446655440000"}}}
 ```
 
 Writes go to both stores (write-through). Reads come from memory. On
@@ -95,9 +99,16 @@ See [JavaScript API](javascript-api.md) for documentation.
 
 ```javascript
 const d = require('datahike');
+const crypto = require('crypto');
 
 async function example() {
-  const config = { store: { backend: ':mem', id: 'example' } };
+  const config = {
+    store: {
+      backend: ':memory',
+      id: crypto.randomUUID()
+    }
+  };
+
   await d.createDatabase(config);
   const conn = await d.connect(config);
   await d.transact(conn, [{ name: 'Alice' }]);
