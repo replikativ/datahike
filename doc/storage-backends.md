@@ -30,11 +30,12 @@ Datahike provides pluggable storage through [konserve](https://github.com/replik
 ```
 
 **Characteristics**:
-- Each index stored as separate files
+- Each immutable index fragment stored as an individual file
 - Efficient incremental backups with rsync
-- Can version database directories with git
+- Can version database directories similar to or with git
 - Good for single-machine deployments
-- Natural fit for container volumes
+- Extensively tested and reliable without external dependencies
+- Not ideal for databases with a lot of churn
 
 ### LMDB Backend
 
@@ -50,10 +51,12 @@ Datahike provides pluggable storage through [konserve](https://github.com/replik
 
 **Characteristics**:
 - Memory-mapped for zero-copy reads
-- Copy-on-write B+ trees
 - Single filesystem only (not distributed)
 - Excellent read performance
 - Lower memory overhead than file backend
+- Well suited for very high churn of small changes
+- Very low latency
+- Large file blob that cannot be as efficiently synched a the file store
 
 **Note**: The LMDB backend is available as a separate library: [datahike-lmdb](https://github.com/replikativ/datahike-lmdb), extending [konserve-lmdb](https://github.com/replikativ/lmdb).
 
@@ -98,7 +101,7 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 **Characteristics**:
 - Use familiar SQL database operations
 - Existing backup/restore procedures work
-- Read scaling via DIS (readers don't need JDBC connections)
+- Read scaling via DIS (readers don't interfere with writer in database's MVCC)
 - Good for teams already operating PostgreSQL
 - Available for: PostgreSQL, MySQL, H2, and others
 
@@ -143,6 +146,7 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 - High durability (11 nines)
 - Eventually consistent (may have slight read lag)
 - Ideal for read-heavy workloads with occasional writes
+- Can have high latency
 - Works well with AWS Lambda deployments
 
 **Performance note**: Higher latency than local storage, but cost-effective for billions of datoms.

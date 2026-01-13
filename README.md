@@ -35,7 +35,7 @@ As systems evolve, SQL schemas accumulate join complexity. What starts as simple
 
 **Time is fundamental to information**: Most value derives from how facts evolve over time. Datahike's immutable design treats the database as an append-only log of facts—queryable at any point in history, enabling audit trails, debugging through time-travel, and GDPR-compliant data excision. Immutability also powers Distributed Index Space: database snapshots are values that can be shared, cached, and queried without locks.
 
-You can find [API documentation on cljdoc](https://cljdoc.org/d/io.replikativ/datahike) and articles on Datahike on our company's [blog page](https://lambdaforge.io/articles).
+You can find [API documentation on cljdoc](https://cljdoc.org/d/io.replikativ/datahike) and articles on Datahike on our company's [blog page](https://datahike.io/notes/).
 
 [![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
 
