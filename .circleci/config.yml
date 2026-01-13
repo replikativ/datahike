@@ -76,6 +76,7 @@ jobs:
       - run:
           name: Generate config
           command: |
+            bb --version
             bb .circleci/scripts/gen_ci.clj > generated_config.yml
       - continuation/continue:
           configuration_path: generated_config.yml
@@ -309,7 +310,7 @@ workflows:
             branches:
               only: main
           requires:
-            - setup
+            - tools/tools
       - format:
           context: dockerhub-deploy
           requires:
