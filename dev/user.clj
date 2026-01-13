@@ -19,7 +19,6 @@
   (def cfg {:store              {:backend :mem :id "sandbox"}
             :keep-history?      true
             :schema-flexibility :write
-            :middleware         {:query ['datahike.middleware.query/timed]}
             :attribute-refs?    true})
 
   (def conn (do

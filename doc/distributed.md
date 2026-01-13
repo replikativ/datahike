@@ -1,39 +1,50 @@
-# Distribution
+# Distributed Architecture
 
-Datahike supports two types of distributed access, *distribution of data* or
-*distribution of computation*. Distribution of data means that each Datahike
-`runtime` can access `store`s in the `distributed index space` (DIS), while
-distribution of computation means that `client`s send requests to be evaluated to
-be processed by a `server` on a remote runtime.
+Datahike's architecture is built on **immutable persistent data structures** that enable efficient distribution and collaboration. The database is fundamentally designed around two complementary approaches:
+
+1. **Distributed Index Space (DIS)**: Share persistent indices across processes—readers access data directly without database connections
+2. **Remote Procedure Calls (RPC)**: Centralize computation on a server for shared caching and simplified deployment
 
 ![Network topology](assets/network_topology.svg)
 
-# Distributed index space (DIS)
+# Distributed Index Space (DIS)
 
-Datahike has a similar memory model to [Datomic](https://datomic.com), which is
-built on distributed persistent indices. But while Datomic requires active
-connections to its transactor, Datahike works with lightweight connections that
-do not require communication by default.
+**Distributed Index Space is Datahike's key architectural advantage.** It enables massive read scalability and powers collaborative systems by treating database snapshots as immutable values that can be shared like files.
 
-In case where you do not need to write to a database, only *read* from it, e.g.
-a database that a 3rd party provides you access to, it is sufficient to have
-read access rights to the store, no setup of a server or additional steps are
-needed to join against the indices of this external database!
+## How it works
 
-Note: This allows you to *massively shard* databases. A good design pattern is
-to create a separate database for a set of facts that you need to consistently
-update together, e.g. one database per business client.
+Datahike builds on **copy-on-write persistent data structures** where changes create new structure sharing most data with previous versions. When you transact to a database:
 
-## Single writer
+1. New index nodes are written to the shared [storage backend](storage-backends.md) (S3, JDBC, file, etc.)
+2. A new root pointer is published atomically
+3. Readers pick up the new snapshot on next access—no active connections needed
 
-If you want to provide distributed write access to databases you need to setup a
-server as described in the section at the end. Datahike then centralizes all
-write operations and state changes to the database on this single machine, while
-all read operations still can happen locally on as many machines as have access
-to the distributed konserve store (e.g. shared filesystem, JDBC, S3, etc.). The
-benefit of the single writer is that it provides strong linearization guarantees
-for transactions, i.e. strong consistency. This memory model is also supported
-by the CLI, babashka and libdatahike clients.
+This is similar to [Datomic](https://datomic.com), but **Datahike connections are lightweight and require no communication by default**. If you only need to read from a database (e.g., a dataset provided by a third party), you just need read access to the storage—no server setup required.
+
+## Scaling and collaboration
+
+The DIS model provides fundamental advantages for distributed systems:
+
+- **Massive read scaling**: Add readers without coordination—they access persistent indices directly
+- **Zero connection overhead**: No connection pooling, no network round-trips for reads
+- **Snapshot isolation**: Each reader sees a consistent point-in-time view
+- **Efficient sharding**: Create one database per logical unit (e.g., per customer, per project)—readers can join across databases locally
+- **Offline-first capable**: Readers can cache indices locally and sync differentially when online
+
+This architecture enables collaborative systems where multiple processes share access to evolving datasets without centralized coordination. The same design principles that enable DIS (immutability, structural sharing) also support more advanced distribution patterns including CRDT-based merge strategies (see [replikativ](https://github.com/replikativ/replikativ)) and peer-to-peer synchronization (demonstrated with [dat-sync](https://github.com/replikativ/dat-sync)).
+
+These capabilities are valuable even in centralized production environments: differential sync reduces bandwidth, immutable snapshots simplify caching and recovery, and the architecture naturally handles network partitions.
+
+## Single writer model
+
+Datahike uses a **single-writer, multiple-reader** model—the same architectural choice as Datomic, Datalevin, and XTDB. While multiple readers can access indices concurrently via DIS, write operations are serialized through a single writer process to ensure strong consistency and linearizable transactions.
+
+To provide distributed write access, you configure a writer endpoint (HTTP server or Kabel WebSocket). The writer:
+- Serializes all transactions for strong consistency guarantees
+- Publishes new index snapshots to the shared storage backend
+- Allows unlimited readers to access the updated indices via DIS
+
+**All readers continue to access data locally** from the distributed storage (shared filesystem, JDBC, S3, etc.) without connecting to the writer—they only contact it to submit transactions. This model is supported by all Datahike clients: JVM, Node.js, browser, CLI, Babashka pod, and libdatahike.
 
 The client setup is simple, you just add a `:writer` entry in the configuration
 for your database, e.g.
@@ -63,22 +74,17 @@ through EC2 instances.
 
 ### Streaming writer (Kabel)
 
-**This feature is in beta. Please try it out and provide feedback.**
+**Beta feature - please try it out and provide feedback.**
 
-While the HTTP-based `datahike-server` uses request/response for each
-transaction, the Kabel writer uses WebSockets for streaming updates. This
-enables real-time synchronization where clients receive database updates as they
-happen, without polling. The stack consists of:
+The Kabel writer provides **real-time reactive updates** via WebSockets, complementing the HTTP server's REST API. Where HTTP server is ideal for conventional REST integrations (including non-Clojure clients), Kabel enables live synchronization where clients receive database updates as they happen, without polling.
 
-- [kabel](https://github.com/replikativ/kabel) - WebSocket transport with
-  middleware support
-- [distributed-scope](https://github.com/replikativ/distributed-scope) - Remote
-  function invocation
-- [konserve-sync](https://github.com/replikativ/konserve-sync) - Store
-  replication with differential sync
+The stack consists of:
 
-This setup is particularly useful for browser clients where the underlying store
-cannot be shared directly (see [ClojureScript Support](cljs-support.md)).
+- [kabel](https://github.com/replikativ/kabel) - WebSocket transport with middleware support
+- [distributed-scope](https://github.com/replikativ/distributed-scope) - Remote function invocation with Clojure semantics
+- [konserve-sync](https://github.com/replikativ/konserve-sync) - Differential store synchronization (only transmits changed data)
+
+This setup is particularly useful for browser clients where storage backends cannot be shared directly, and for applications requiring reactive UIs that update automatically when data changes on the server (see [JavaScript API](javascript-api.md)).
 
 #### Server setup
 
@@ -225,20 +231,23 @@ unique UUID with `(random-uuid)` for ephemeral/test databases.
         (<? S (d/delete-database config))))))
 ```
 
-# Distribution of compute
+# Remote Procedure Calls (RPC)
 
-Datahike supports sending all requests to a server. This has the benefit that
-the server will do all the computation and its caches will be shared between
-different clients. The disadvantage is that you cannot easily share information
-in process, e.g. call your own functions or closures in queries without
-deploying them to the server first.
+In addition to DIS, Datahike supports **remote procedure calls** where all operations (reads and writes) are executed on a server. This approach is complementary to DIS:
 
-## Remote procedure calls (RPCs)
+**Use RPC when:**
+- You want simplified deployment (thin clients, all logic on server)
+- Shared server-side caching benefits multiple clients
+- Clients are resource-constrained (mobile, embedded)
+- You need conventional REST integration with non-Clojure clients
 
-The remote API has the same call signatures as `datahike.api` and is located in
-`datahike.api.client`. Except for listening and `with` all functionality is
-supported. Given a server is setup (see below), you can interact with it by
-adding `:remote-peer` to the config you would otherwise with `datahike.api`:
+**Use DIS when:**
+- Read scalability is critical (unlimited readers without server load)
+- You want offline-capable or low-latency reads
+- Clients need to run custom queries with local functions/closures
+- Network bandwidth or availability is a concern
+
+The remote API has the same call signatures as `datahike.api` and is located in `datahike.api.client`. All functionality except `listen!` and `with` is supported. To use it, add `:remote-peer` to your config:
 
 ```clojure
 {:store  {:backend :memory :id "distributed-datahike"}
@@ -253,17 +262,25 @@ The API will return lightweight remote pointers that follow the same semantics
 as `datahike.api`, but do not support any of Datahike's local functionality,
 i.e. you can only use them with this API.
 
-# Combined distribution
+# Hybrid Architecture
 
-Note that you can combine both data accesses, i.e. run a set of servers sharing
-a single writer among themselves, while they all serve a large set of outside
-clients through RPCs.
+You can combine DIS and RPC in the same deployment. For example:
+- A set of application servers access a shared database via DIS (direct index access)
+- These servers expose RPC/REST APIs to external clients
+- Internal servers benefit from DIS scalability and local query execution
+- External clients get a simple REST interface without needing Datahike dependencies
 
-# Setup datahike.http.server
+This pattern is common in production systems where internal services need high-performance data access while external integrations require conventional APIs.
 
-To build it locally you only need to clone the repository and run `bb
-http-server-uber` to create the jar. The server can then be run with `java -jar
-datahike-http-server-VERSION.jar path/to/config.edn`.
+# HTTP Server Setup
+
+The HTTP server provides a **REST/RPC interface** for conventional integrations with any language or tool that speaks HTTP. Use this when you need request/response semantics rather than reactive updates (for reactive updates, see Kabel above).
+
+To build locally, clone the repository and run `bb http-server-uber` to create the jar. Run the server with:
+
+```bash
+java -jar datahike-http-server-VERSION.jar path/to/config.edn
+```
 
 The edn configuration file looks like:
 
@@ -304,16 +321,11 @@ caching and you often run the same queries many times on different queries (e.g.
 to retrieve a daily context in an app against a database only changes with low
 frequency.)
 
-# JSON support
+# JSON Support (HTTP Server)
 
-The remote API supports JSON with embedded [tagged
-literals](https://github.com/metosin/jsonista#tagged-json). There are two
-extensions for convenience provided (please provide feedback or explore better
-options if you have ideas!).
+The HTTP server supports JSON with embedded [tagged literals](https://github.com/metosin/jsonista#tagged-json) for language-agnostic integration. This allows non-Clojure clients (JavaScript, Python, etc.) to interact with Datahike using familiar JSON syntax.
 
-Provided you are sending HTTP requests to a datahike-server you can put the
-following JSON argument arrays into each method body. You have to provide
-the "token" in the header if you use authentication.
+When sending HTTP requests to the datahike-server, you can use JSON argument arrays in each method body. Include the "token" header if authentication is enabled.
 
 `POST` to "/create-database"
 ```javascript

@@ -145,7 +145,10 @@
          npm-types {:doc "Generate TypeScript definitions for npm package"
                     :task (npm/generate-typescript-definitions! "npm-package/index.d.ts")}
 
-         npm-build {:doc "Build npm package (update version, generate types, compile ClojureScript)"
+         npm-clean {:doc "Clean compiled files from npm package directory"
+                    :task (npm/clean-npm-package! "npm-package")}
+
+         npm-build {:doc "Build npm package (clean, update version, generate types, compile ClojureScript)"
                     :depends [prep]
                     :task (npm/build-npm-package! config "npm-package")}
 

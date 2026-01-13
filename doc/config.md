@@ -1,28 +1,62 @@
-# Datahike database configuration
+# Datahike Database Configuration
 
-At database creation _Datahike_ supports features that can be configured based on the application's requirements. As of version `0.2.0` configuration for the [storage backend](#storage-backend), the [schema flexibility](#schema-flexibility), and [time variance](#historical-data) is supported.  Be aware: all these features can be set at database creation but can not be changed afterwards. You can still migrate the data to a new configuration.
+Datahike is highly configurable to support different deployment models and use cases. Configuration is set at database creation and cannot be changed afterward (though data can be migrated to a new configuration).
 
-## Configuration
+## Configuration Methods
 
-Configuring _Datahike_ is now possible via the [environ library made by weavejester](https://github.com/weavejester/environ). You can use environment variables, java system properties and passing a config-map as argument.
+Datahike uses the [environ library](https://github.com/weavejester/environ) for configuration, supporting three methods:
 
-The sources are resolved in following order:
-1. Environment variables
-2. Java system properties
-3. Argument to load-config
+1. **Environment variables** (lowest priority)
+2. **Java system properties** (middle priority)
+3. **Configuration map argument** (highest priority - overwrites others)
 
-That means passing a config as argument overwrites java system properties and using java system properties overwrite environment variables etc. Currently the configuration map looks like this per default:
+This allows flexible deployment: hardcode configs in development, use environment variables in containers, or Java properties in production JVMs.
+
+## Basic Configuration
+
+The minimal configuration map includes:
 
 ```clojure
-{:store              {:backend  :mem        ;keyword
-                      :id        "default"} ;string
- :name               (generated)            ;string
- :schema-flexibility :write                 ;keyword
- :keep-history?      true
- :attribute-refs?    false}                  ;boolean
+{:store              {:backend :memory      ;keyword - storage backend
+                      :id #uuid "550e8400-e29b-41d4-a716-446655440020"} ;UUID - database identifier
+ :name               nil                    ;string - optional database name (auto-generated if nil)
+ :schema-flexibility :write                 ;keyword - :read or :write
+ :keep-history?      true                   ;boolean - enable time-travel queries
+ :attribute-refs?    false                  ;boolean - use entity IDs for attributes (Datomic-compatible)
+ :index              :datahike.index/persistent-set  ;keyword - index implementation
+ :store-cache-size   1000                   ;number - store cache entries
+ :search-cache-size  10000}                 ;number - search cache entries
 ```
 
-If you are using a backend different from the builtins `:mem` or `:file`, please have a look at the README in the corresponding Github repository. The configuration is outsourced to the backends so you will find the configuration documentation there. An example for `:mem`, `:file`, and `:jdbc`-backend you can see below. Please refer to the documentation of the [environ library](https://github.com/weavejester/environ) on how to use it. If you want to pass the config as environment variables or Java system properties you need to name them like following:
+**Quick start** with defaults (in-memory database):
+
+```clojure
+(require '[datahike.api :as d])
+(d/create-database)  ;; Creates memory DB with sensible defaults
+```
+
+## Storage Backends
+
+Datahike supports multiple storage backends via [konserve](https://github.com/replikativ/konserve). The choice of backend determines durability, scalability, and deployment model.
+
+**Built-in backends:**
+- `:memory` - In-memory (ephemeral)
+- `:file` - File-based persistent storage
+
+**External backend libraries:**
+- [LMDB](https://github.com/replikativ/datahike-lmdb) - High-performance local storage
+- [JDBC](https://github.com/replikativ/datahike-jdbc) - PostgreSQL, MySQL, H2
+- [Redis](https://github.com/replikativ/konserve-redis) - High write throughput
+- [S3](https://github.com/replikativ/konserve-s3) - AWS cloud storage
+- [GCS](https://github.com/replikativ/konserve-gcs) - Google Cloud storage
+- [DynamoDB](https://github.com/replikativ/konserve-dynamodb) - AWS NoSQL
+- [IndexedDB](https://github.com/replikativ/konserve-indexeddb) - Browser storage
+
+**For detailed backend selection guidance**, see [Storage Backends Documentation](./storage-backends.md).
+
+### Environment Variable Configuration
+
+When using environment variables or Java system properties, name them like:
 
 properties                  | envvar
 ----------------------------|--------------------------
@@ -34,135 +68,290 @@ datahike.attribute.refs     | DATAHIKE_ATTRIBUTE_REFS
 datahike.name               | DATAHIKE_NAME
 etc.
 
-*Do not use `:` in the keyword strings, it will be added automatically.*
+**Note**: Do not use `:` in keyword strings for environment variables—it will be added automatically.
 
-## Storage Backend
+### Backend Configuration Examples
 
-Each backend needs a different set of provided parameters. See definition
-[below](#storage-backend) for further information. For simple and fast creation
-you can simply use the defaults which creates an in-memory database with ID `"default"`, write schema flexibility, and history support:
+#### Memory (Built-in)
+
+Ephemeral storage for testing and development:
 
 ```clojure
-(require '[datahike.api :as d])
-(d/create-database)
+{:store {:backend :memory
+         :id #uuid "550e8400-e29b-41d4-a716-446655440021"}}
 ```
 
-At the moment we support two different backends from within Datahike: [in-memory](#in-memory) and [file-based](#file-based).
-Additionally, [JDBC](https://docs.oracle.com/javase/8/docs/technotes/guides/jdbc/) databases like [PostgreSQL](#postgresql) are supported via an external library: [datahike-jdbc](https://github.com/replikativ/datahike-jdbc/).
-
-### in-memory
-
-- `<backend>`: `mem`
-- `id`: ID of the database
-- example: 
-```clojure 
-  {:store {:backend :mem 
-           :id "mem-example"}}
-```
-- via environment variables:
+Environment variables:
 ```bash
-DATAHIKE_STORE_BACKEND=mem
-DATAHIKE_STORE_CONFIG='{:id "mem-example"}'
+DATAHIKE_STORE_BACKEND=memory
+DATAHIKE_STORE_CONFIG='{:id #uuid "550e8400-e29b-41d4-a716-446655440021"}'
 ```
 
-### file-based
+#### File (Built-in)
 
-- `<backend>`: `file`
-- `path`: absolute path to the storage folder
-- example: 
-```clojure 
-  {:store {:backend :file 
-           :path "/tmp/file-example"}}
+Persistent local file storage:
+
+```clojure
+{:store {:backend :file
+         :path "/var/db/datahike"}}
 ```
-- via environment variables:
+
+Environment variables:
 ```bash
 DATAHIKE_STORE_BACKEND=file
-DATAHIKE_STORE_CONFIG='{:path "/tmp/file-example"}'
+DATAHIKE_STORE_CONFIG='{:path "/var/db/datahike"}'
 ```
 
-### Supported External Backends
+#### LMDB (External Library)
 
-#### JDBC
-
-- `<backend>`: `jdbc`
-- `dbtype`: [JDBC supported database](https://cljdoc.org/d/com.github.seancorfield/next.jdbc/1.2.737/doc/getting-started)
-- `user`: PostgreSQL user
-- `password`: password for PostgreSQL user
-- `dbname`: name of the PostgreSQL database
-- example:
-```clojure 
- {:store {:backend :jdbc
-          :dbtype "postgresql"
-          :user "datahike"
-          :password "datahike"
-          :dbname "datahike"}}
-```
-- via environment variables:
-```bash
-DATAHIKE_STORE_BACKEND=jdbc
-DATAHIKE_STORE_CONFIG='{:dbtype "postgresql" :user "datahike" :password "datahike" :dbname "datahike"}'
-```
-
-
-## Name
-
-By default _Datahike_ generates a name for your database for you. If you want to set
-the name yourself just set a name for it in your config. It helps to specify the
-database you want to use, in case you are using multiple _Datahike_ databases in
-your application (to be seen in datahike-server).
-
-## Schema Flexibility
-
-By default the _Datahike_ api uses a schema on `:write` approach with strict value
-types that need to be defined in advance. If you are not sure how your data
-model looks like and you want to transact any kind of data into the database you
-can set `:schema-flexibility` to `read`. You may add basic schema definitions like `:db/unique`,
-`:db/cardinality` or `db.type/ref` where these kind of structure is needed.
+High-performance local storage via [datahike-lmdb](https://github.com/replikativ/datahike-lmdb):
 
 ```clojure
-(require '[datahike.api :as d])
-
-(d/create-database {:schema-flexibility :read})
+{:store {:backend :lmdb
+         :path "/var/db/datahike-lmdb"}}
 ```
 
-Have a look at the [schema documentation](./schema.md) for more information.
+#### JDBC (External Library)
 
-## Historical Data
-
-Datahike has the capability to inspect and query historical data within temporal
-indices. If your application does not require any temporal data, you may
-set `:keep-history?` to `false`.
+PostgreSQL or other JDBC databases via [datahike-jdbc](https://github.com/replikativ/datahike-jdbc):
 
 ```clojure
-(require '[datahike.api :as d])
-(d/create-database {:keep-history? true})
+{:store {:backend :jdbc
+         :dbtype "postgresql"
+         :host "db.example.com"
+         :port 5432
+         :dbname "datahike"
+         :user "datahike"
+         :password "secret"}}
 ```
 
-Be aware: when deactivating the temporal index you may not use any temporal databases like `history`, `as-of`, or
-`since`.
+#### S3 (External Library)
 
-Refer to the [time variance documentation](./time_variance.md) for more information.
-
-## Attribute References
-
-Originally being a fork of the [DataScript](https://github.com/tonsky/datascript) project, attributes in Datahike used to be stored always as simple keywords. This would cause trouble for users switching from [Datomic](https://www.datomic.com/) as some queries were incompatible with _Datahike_ due to the difference between the attribute storing systems. In _Datomic_, attributes are not stored directly as keywords, but attributes themselves are entities that can be refered to by their entity ID. While this makes some translations between attributes and their IDs necessary, the big advantage of this approach is the increased speed due to fast integer comparisons as opposed to slower keyword comparisons necessary if the attributes are stored directly. 
-
-You can enable this feature now as follows:
+AWS S3 storage via [konserve-s3](https://github.com/replikativ/konserve-s3):
 
 ```clojure
-(require '[datahike.api :as d])
-(d/create-database {:attribute-refs? true})
+{:store {:backend :s3
+         :bucket "my-datahike-bucket"
+         :region "us-east-1"}}
 ```
 
-## Deprecation Notice
-Starting from version `0.3.0` it is encouraged to use the new hashmap configuration since it is more flexible than the previously used URI scheme. Datahike still supports the old configuration so you don't need to migrate yourself. The differences for the configuration are as following:
+#### TieredStore (Composable)
 
-- optional parameters are added in the configuration map instead of optional parameters
-- `:temporal-index` renamed to `:keep-history?`
-- `:schema-on-read` renamed to `:schema-flexibility` with values `:read` and `:write`
-- store configuration for backends moved into `:store` atttribute
-- `:initial-tx` also added as attribute in configuration
-- the store configuration is now more flexible, so it fits better with its backends
-- all backend configuration remains the same except for `:mem`
-- naming attribute for `:mem` backend is moved to `:id` from `:host` or `:path`
-- optional `clojure.spec` validation has been added
+Memory hierarchy (e.g., Memory → IndexedDB for browsers):
+
+```clojure
+{:store {:backend :tiered
+         :id #uuid "550e8400-e29b-41d4-a716-446655440022"
+         :frontend-config {:backend :memory
+                          :id #uuid "550e8400-e29b-41d4-a716-446655440022"}
+         :backend-config {:backend :indexeddb
+                         :name "persistent-db"
+                         :id #uuid "550e8400-e29b-41d4-a716-446655440022"}}}
+         ;; All :id values must match for konserve validation
+```
+
+For complete backend options and selection guidance, see [Storage Backends](./storage-backends.md).
+
+
+## Core Configuration Options
+
+### Database Name
+
+Optional identifier for the database. Auto-generated if not specified. Useful when running multiple databases:
+
+```clojure
+{:name "production-db"
+ :store {:backend :file :path "/var/db/prod"}}
+```
+
+### Schema Flexibility
+
+Controls when schema validation occurs:
+
+- **`:write`** (default): Strict schema—attributes must be defined before use. Catches errors early.
+- **`:read`**: Schema-less—accept any data, validate on read. Flexible for evolving data models.
+
+```clojure
+{:schema-flexibility :read}  ;; Allow any data structure
+```
+
+With `:read` flexibility, you can still define critical schema like `:db/unique`, `:db/cardinality`, or `:db.type/ref` where needed.
+
+See [Schema Documentation](./schema.md) for details.
+
+### Time-Travel Queries
+
+Enable historical query capabilities:
+
+```clojure
+{:keep-history? true}  ;; Default: true
+```
+
+When enabled, use `history`, `as-of`, and `since` to query past states:
+
+```clojure
+(d/q '[:find ?e :where [?e :name "Alice"]] (d/as-of db #inst "2024-01-01"))
+```
+
+**Disable if**: You never need historical queries and want to save storage space.
+
+See [Time Variance Documentation](./time_variance.md) for time-travel query examples.
+
+### Attribute References (Datomic Compatibility)
+
+Store attributes as entity IDs instead of keywords for Datomic compatibility and faster comparisons:
+
+```clojure
+{:attribute-refs? true}  ;; Default: false
+```
+
+**Benefits**:
+- Datomic query compatibility
+- Faster integer comparisons vs. keyword comparisons
+- Attributes become queryable entities
+
+**Trade-off**: Requires ID → keyword lookups in some operations.
+
+### Index Selection
+
+Choose the underlying index implementation:
+
+```clojure
+{:index :datahike.index/persistent-set}  ;; Default (recommended)
+```
+
+**Available indexes**:
+- `:datahike.index/persistent-set` - Default, actively maintained, supports all features
+- `:datahike.index/hitchhiker-tree` - Legacy, requires explicit library and namespace loading
+
+Most users should use the default. Hitchhiker-tree is maintained for backward compatibility with existing databases.
+
+## Advanced Configuration
+
+### Single-Writer Model (Distributed Access)
+
+For distributed deployments, configure a writer to handle all transactions while readers access storage directly via Distributed Index Space.
+
+#### HTTP Server Writer
+
+```clojure
+{:store {:backend :file :path "/shared/db"}
+ :writer {:backend :datahike-server
+          :url "http://writer.example.com:4444"
+          :token "secure-token"}}
+```
+
+Clients connect and transact through the HTTP server. Reads happen locally from shared storage.
+
+#### Kabel WebSocket Writer (Beta)
+
+Real-time reactive updates via WebSocket:
+
+```clojure
+{:store {:backend :indexeddb :name "app-db" :id store-id}
+ :writer {:backend :kabel
+          :peer-id server-peer-id
+          :local-peer @client-peer}}  ;; Set up via kabel/distributed-scope
+```
+
+Enables browser clients with live synchronization. See [Distributed Architecture](./distributed.md) for setup details.
+
+### Branching (Beta)
+
+Access specific database branches (git-like versioning):
+
+```clojure
+{:store {:backend :file :path "/var/db"}
+ :branch :staging}  ;; Default branch is :db
+```
+
+Create and merge branches for testing, staging, or experiments. See [Versioning](./versioning.md) for the branching API.
+
+### Remote Procedure Calls
+
+Send all operations (reads and writes) to a remote server:
+
+```clojure
+{:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440023"}
+ :remote-peer {:backend :datahike-server
+               :url "http://server.example.com:4444"
+               :token "secure-token"}}
+```
+
+Useful for thin clients or when you want centralized query execution. See [Distributed Architecture](./distributed.md) for RPC vs. DIS trade-offs.
+
+### Initial Transaction
+
+Seed the database with schema or data on creation:
+
+```clojure
+{:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440024"}
+ :initial-tx [{:db/ident :name
+               :db/valueType :db.type/string
+               :db/cardinality :db.cardinality/one}
+              {:db/ident :email
+               :db/valueType :db.type/string
+               :db/unique :db.unique/identity
+               :db/cardinality :db.cardinality/one}]}
+```
+
+Convenient for testing or deploying databases with predefined schema.
+
+### Complete Configuration Example
+
+```clojure
+{:store {:backend :file
+         :path "/var/datahike/production"
+         :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
+ :name "production-db"
+ :schema-flexibility :write
+ :keep-history? true
+ :attribute-refs? false
+ :index :datahike.index/persistent-set
+ :store-cache-size 10000
+ :search-cache-size 100000
+ :initial-tx [{:db/ident :user/email
+               :db/valueType :db.type/string
+               :db/unique :db.unique/identity
+               :db/cardinality :db.cardinality/one}]
+ :writer {:backend :datahike-server
+          :url "http://writer.example.com:4444"
+          :token "secure-token"}
+ :branch :db}
+```
+
+## Migration and Compatibility
+
+### URI Scheme (Pre-0.3.0, Deprecated)
+
+Prior to version 0.3.0, Datahike used URI-style configuration. This is **still supported** but deprecated in favor of the more flexible hashmap format.
+
+**Old URI format**:
+```clojure
+"datahike:memory://my-db?temporal-index=true&schema-on-read=true"
+```
+
+**New hashmap format** (equivalent):
+```clojure
+{:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440025"}
+ :keep-history? true
+ :schema-flexibility :read}
+```
+
+**Key changes**:
+- `:temporal-index` → `:keep-history?`
+- `:schema-on-read` → `:schema-flexibility` (`:read` or `:write`)
+- Store parameters moved to `:store` map
+- Memory backend: `:host`/`:path` → `:id`
+- Direct support for advanced features (writer, branches, initial-tx)
+
+Existing URI configurations continue to work—no migration required unless you need new features.
+
+## Further Documentation
+
+- [Storage Backends](./storage-backends.md) - Choosing and configuring storage
+- [Schema](./schema.md) - Schema definition and flexibility
+- [Time Variance](./time_variance.md) - Historical queries (as-of, history, since)
+- [Versioning](./versioning.md) - Git-like branching and merging
+- [Distributed Architecture](./distributed.md) - DIS, writers, and RPC
+- [JavaScript API](./javascript-api.md) - Node.js and browser usage

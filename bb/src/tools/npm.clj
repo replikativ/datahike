@@ -1,9 +1,24 @@
 (ns tools.npm
   "Build and version management for npm package."
-  (:require [babashka.process :as p]
+  (:require [babashka.fs :as fs]
+            [babashka.process :as p]
             [cheshire.core :as json]
             [clojure.string :as str]
             [tools.version :as version]))
+
+(defn clean-npm-package!
+  "Remove compiled JS files from npm package directory"
+  [npm-package-path]
+  (println "Cleaning npm package directory...")
+  (let [js-files (fs/glob npm-package-path "*.js")
+        js-map-files (fs/glob npm-package-path "*.js.map")
+        all-files (concat js-files js-map-files)
+        ;; Keep test files and package.json
+        files-to-keep #{"test.js" "test-final.js" "test-config-keys.js" "test-key-duplication.js"}
+        files-to-delete (remove #(contains? files-to-keep (str (fs/file-name %))) all-files)]
+    (doseq [file files-to-delete]
+      (fs/delete file))
+    (println (str "Removed " (count files-to-delete) " compiled files from " npm-package-path))))
 
 (defn update-package-json-version!
   "Generate npm package.json from template with version from config.edn"
@@ -32,32 +47,37 @@
     (println (str "TypeScript definitions written to: " output-path))))
 
 (defn build-npm-package!
-  "Build npm package: update version, generate types, compile ClojureScript"
+  "Build npm package: clean, update version, generate types, compile ClojureScript"
   [config npm-package-path]
   (println "Building npm package...")
   (println "")
-  
-  ;; Step 1: Update package.json version
-  (println "Step 1/4: Updating package.json version")
+
+  ;; Step 1: Clean old compiled files
+  (println "Step 1/5: Cleaning old compiled files")
+  (clean-npm-package! npm-package-path)
+  (println "")
+
+  ;; Step 2: Update package.json version
+  (println "Step 2/5: Updating package.json version")
   (update-package-json-version! config npm-package-path)
   (println "")
-  
-  ;; Step 2: Generate TypeScript definitions
-  (println "Step 2/4: Generating TypeScript definitions")
+
+  ;; Step 3: Generate TypeScript definitions
+  (println "Step 3/5: Generating TypeScript definitions")
   (generate-typescript-definitions! (str npm-package-path "/index.d.ts"))
   (println "")
-  
-  ;; Step 3: Compile ClojureScript
-  (println "Step 3/4: Compiling ClojureScript with shadow-cljs")
+
+  ;; Step 4: Compile ClojureScript
+  (println "Step 4/5: Compiling ClojureScript with shadow-cljs")
   (let [result (p/shell {:out :inherit
                          :err :inherit}
                         "npx shadow-cljs compile npm-release")]
     (when-not (zero? (:exit result))
       (throw (ex-info "Shadow-cljs compilation failed" result)))
     (println "")
-    
-    ;; Step 4: Run tests
-    (println "Step 4/4: Running npm package tests")
+
+    ;; Step 5: Run tests
+    (println "Step 5/5: Running npm package tests")
     (let [test-result (p/shell {:dir npm-package-path
                                 :out :inherit
                                 :err :inherit}

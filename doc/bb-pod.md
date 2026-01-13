@@ -1,6 +1,6 @@
-# Datahike Babashka Pod
+# Datahike babashka Pod
 
-With the help of [the Datahike cli](doc/cli.md) we provide the possibility to run Datahike as a[babashka pod](https://book.babashka.org/#pods).
+With the help of [the Datahike cli](doc/cli.md) we provide the possibility to run Datahike as a [babashka pod](https://book.babashka.org/#pods).
 
 ## Why Datahike as a babashka pod?
 
@@ -9,11 +9,13 @@ don't want to run a whole JVM for a little script you can use babashka and write
 Babashka already has ways to persist data to other databases but Datahike adds the possibility to write to a durable
 datalog database.
 
+## babashka pod-registry
+
+You can use the [official babashka pod-registry](https://github.com/babashka/pod-registry/tree/master/manifests/replikativ/datahike) to download the latest version of Datahike as a pod and run it with babashka.
+
 ## Compilation
 
-We plan to provide the native binaries of Datahike via GitHub-Releases in the future. Unfortunately you have to compile it yourself for now. To do that you need to clone the [Datahike repository](https://github.com/replikativ/datahike), have babashka and clojure as well as a JDK installed.
-
-Then please run `bb ni-cli` inside the datahike repository.
+Please run `bb ni-cli` inside the datahike repository. You'll need [GraalVM-JDK](https://www.graalvm.org/latest/getting-started/) installed with `native-compile` on your path, [babashka](https://babashka.org/) and [Clojure](https://clojure.org/guides/install_clojure).
 
 ## Maturity
 
@@ -43,11 +45,11 @@ This feature is not used in production so far. Please try it and [open issues on
 
 ## Example usage
 
-```
+```clojure
 (ns pod
   (:require [babashka.pods :as pods]))
 
-(pods/load-pod "./dthk")
+(pods/load-pod 'replikativ/datahike "0.7.1628") ;; Please check for the latest version
 
 (require '[datahike.pod :as d])
 

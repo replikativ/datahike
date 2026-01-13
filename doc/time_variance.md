@@ -1,39 +1,38 @@
 # Time Variance
 
-For the purpose of auditing and analytics modern business information systems
-need to be time variant. This
-means, they should have the ability to store, track and query data entities that
-change over time. As a [temporal database](https://en.wikipedia.org/wiki/Temporal_database),
-Datahike tracks by default the transaction time for each entity by using the
-`:db/txInstant` attribute in the meta entity that is added to each
-transaction. This uni-temporal approach allows different perspectives of the
-data present in the index. Entities can be searched either at the [current point
-in time](#db), [at a specific point in time](#as-of), [over the whole database
-existence](#history), or [since a specific point in time](#since).
+As a [temporal database](https://en.wikipedia.org/wiki/Temporal_database), Datahike tracks transaction time for every change, enabling auditing, analytics, and time-travel queries. Each transaction records `:db/txInstant`, allowing you to view data at different points in time.
 
-If the database does not require to be time variant you can choose to ignore the
-temporal data and set the `keep-history?` parameter to `false` at database
-creation like so:
+## Time Travel Views
+
+| View | Function | Returns | Use Case |
+|------|----------|---------|----------|
+| **Current** | `@conn` or `(d/db conn)` | Latest state | Normal queries |
+| **As-of** | `(d/as-of db date)` | State at specific time | "What did the data look like on July 1st?" |
+| **History** | `(d/history db)` | All versions (current + historical) | Audit trails, change analysis |
+| **Since** | `(d/since db date)` | Changes after specific time | "What changed since yesterday?" |
+
+**Related:** For git-like branching and merging of database snapshots, see [Versioning](versioning.md). For removing old historical data from storage, see [Garbage Collection](gc.md).
+
+## Disabling History
+
+If you don't need time-travel queries, disable history tracking to save storage:
 
 ```clojure
 (require '[datahike.api :as d])
 
-(d/create-database {:store {:backend :mem :id "time-invariant"} :keep-history? true})
-
+(d/create-database {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440000"} :keep-history? false})
 ```
 
-Have a look at the `examples/time-travel` namespace in the examples project for more example queries and
-interactions.
+**Trade-off:** Saves storage and improves write performance, but removes as-of/history/since queries and purging capabilities.
 
-## DB
+## Setup for Examples
 
-The most common perspective of your data is the current state of the
-system. Use `db` for this view. The following example shows a simple interaction:
+All examples below use this shared setup:
 
 ```clojure
 (require '[datahike.api :as d])
 
-;; define simple schema
+;; Simple schema for person data
 (def schema [{:db/ident :name
               :db/valueType :db.type/string
               :db/unique :db.unique/identity
@@ -43,12 +42,20 @@ system. Use `db` for this view. The following example shows a simple interaction
               :db/valueType :db.type/long
               :db/cardinality :db.cardinality/one}])
 
-(def cfg {:store {:backend :mem :id "current-db"} :initial-tx schema})
+(def cfg {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440001"} :initial-tx schema})
 
-;; create our temporal database
 (d/create-database cfg)
-
 (def conn (d/connect cfg))
+
+;; Query to find names and ages
+(def query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]])
+```
+
+## DB (Current State)
+
+`@conn` or `(d/db conn)` returns the current state - the most common view for queries:
+
+```clojure
 
 ;; add first data
 (d/transact conn {:tx-data [{:name "Alice" :age 25}]})
@@ -85,7 +92,7 @@ You can query the database at a specific point in time using `as-of`:
               :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
-(def cfg {:store {:backend :mem :id "as-of-db"} :initial-tx schema})
+(def cfg {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440003"} :initial-tx schema})
 
 (d/create-database cfg)
 
@@ -133,7 +140,7 @@ current and all historical data:
               :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
-(def cfg {:store {:backend :mem :id "history-db"} :initial-tx schema})
+(def cfg {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440004"} :initial-tx schema})
 
 (d/create-database cfg)
 
@@ -176,7 +183,7 @@ database:
               :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
-(def cfg {:store {:backend :mem :id "since-db"} :initial-tx schema})
+(def cfg {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440005"} :initial-tx schema})
 
 (d/create-database cfg)
 
@@ -237,7 +244,7 @@ your purposes.
               :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
-(def cfg {:store {:backend :mem :id "meta-db"} :initial-tx schema})
+(def cfg {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440006"} :initial-tx schema})
 
 (d/create-database cfg)
 
@@ -258,15 +265,18 @@ your purposes.
 
 ## Data Purging
 
-Since retraction only moves the datoms from the current index to a history, data
-is in that way never completely deleted. If your use case (for instance related
-to GDPR compliance) requires complete data removal use the `db.purge` functions
-available in transactions:
+**Retraction vs Purging:** Normal retractions preserve data in history. Purging permanently deletes data from both current and historical indices.
 
-- `:db/purge`: removes a datom with given entity identifier, attribute and value
-- `:db.purge/attribute`: removes attribute datoms given an identifier and attribute name
-- `:db.purge/entity`: removes all datoms related to an entity given an entity identifier
-- `:db.history.purge/before`: removes all datoms from historical data before given date, useful for cleanup after some retention period
+**When to purge:** Privacy regulations (GDPR, HIPAA, CCPA) requiring "right to deletion", sensitive data removal, or retention policy enforcement.
+
+**⚠️ Warning:** Purging is permanent and irreversible. Use only when legally required or explicitly needed.
+
+### Purge Operations
+
+- **`:db/purge`** - Remove specific datom (entity, attribute, value)
+- **`:db.purge/attribute`** - Remove all values for an attribute on an entity
+- **`:db.purge/entity`** - Remove entire entity and all its attributes
+- **`:db.history.purge/before`** - Remove all historical data before a date (retention policy cleanup)
 
 ```clojure
 (require '[datahike.api :as d])
@@ -282,7 +292,7 @@ available in transactions:
               :db/cardinality :db.cardinality/one}])
 
 ;; create our temporal database
-(def cfg {:store {:backend :mem :id "purge-db"} :initial-tx schema})
+(def cfg {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440007"} :initial-tx schema})
 
 (d/create-database cfg)
 
@@ -309,8 +319,7 @@ available in transactions:
 ;; => #{}
 ```
 
-Have a look at the the `time-travel` namespace in the examples project for
-more examples.
-
-Be aware: these functions are only available if temporal index is active. Don't
-use these functions to remove data by default.
+**Requirements for purging:**
+- History must be enabled (`:keep-history? true`)
+- Cannot purge schema attributes
+- Use retractions for normal data lifecycle - reserve purging for compliance requirements

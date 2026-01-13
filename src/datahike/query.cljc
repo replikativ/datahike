@@ -11,10 +11,8 @@
    [datahike.array :refer [wrap-comparable]]
    [datahike.impl.entity :as de]
    [datahike.lru]
-   [datahike.middleware.query]
    [datahike.pull-api :as dpa]
    [datahike.query-stats :as dqs]
-   [datahike.middleware.utils :as middleware-utils]
    [datahike.tools :as dt]
    [datalog.parser :refer [parse]]
    [datalog.parser.impl :as dpi]
@@ -79,12 +77,7 @@
       (merge (select-keys query-input extra-ks)))))
 
 (defn q [query & inputs]
-  (let [{:keys [args] :as query-map} (normalize-q-input query inputs)]
-    (if-let [middleware (when (dbu/db? (first args))
-                          (get-in (dbi/-config (first args)) [:middleware :query]))]
-      (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
-        (q-with-middleware query-map))
-      (raw-q query-map))))
+  (raw-q (normalize-q-input query inputs)))
 
 (defn query-stats [query & inputs]
   (-> query

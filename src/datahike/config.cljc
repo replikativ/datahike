@@ -42,9 +42,6 @@
 (s/def ::name string?)
 
 (s/def ::index-config map?)
-(s/def :datahike.middleware/fn symbol?)
-(s/def :datahike.middleware/query (s/coll-of :datahike.middleware/fn))
-(s/def ::middleware (s/keys :opt-un [:datahike.middleware/query]))
 
 (s/def ::store map?)
 
@@ -60,8 +57,7 @@
                                          ::initial-tx
                                          ::name
                                          ::branch
-                                         ::writer
-                                         ::middleware]))
+                                         ::writer]))
 
 (s/def :deprecated/schema-on-read boolean?)
 (s/def :deprecated/temporal-index boolean?)
