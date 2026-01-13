@@ -17,8 +17,9 @@
             [datahike.kabel.fressian-handlers :as fh]
             [datahike.tools :refer [throwable-promise]]
             [is.simm.distributed-scope :as ds]
-            #?(:clj [clojure.core.async :refer [go <! put! promise-chan close!]]
-               :cljs [clojure.core.async :refer [go <! put! promise-chan close!] :include-macros true])
+            [superv.async :refer [<?-]]
+            #?(:clj [clojure.core.async :refer [go put! promise-chan close!]]
+               :cljs [clojure.core.async :refer [go put! promise-chan close!]])
             #?(:clj [taoensso.timbre :as log]
                :cljs [taoensso.timbre :as log :include-macros true])))
 
@@ -84,7 +85,7 @@
       (go
         (try
           ;; 1. Send to remote peer via distributed-scope
-          (let [remote-result (<! (ds/invoke-remote peer-id
+          (let [remote-result (<?- (ds/invoke-remote peer-id
                                                     remote-fn
                                                     {:store-id store-id
                                                      :arg-map arg-map}))]
@@ -125,7 +126,7 @@
                     ;; Wait indefinitely for sync (no timeout)
                     ;; Cleanup happens on shutdown or connection close
                     (do
-                      (<! wait-ch)
+                      (<?- wait-ch)
                       (finalize-and-return!)))))))
           (catch #?(:clj Exception :cljs js/Error) e
             (log/error "Error in KabelWriter dispatch" e)
@@ -280,7 +281,7 @@
     (go
       (try
         ;; Global create-database handler - config contains store-id
-        (let [result (<! (ds/invoke-remote peer-id
+        (let [result (<?- (ds/invoke-remote peer-id
                                            'datahike.kabel/create-database
                                            {:config remote-config}))]
           (#?(:clj deliver :cljs put!) p result))
@@ -298,7 +299,7 @@
     (go
       (try
         ;; Global delete-database handler - config contains store-id
-        (let [result (<! (ds/invoke-remote peer-id
+        (let [result (<?- (ds/invoke-remote peer-id
                                            'datahike.kabel/delete-database
                                            {:config remote-config}))]
           (#?(:clj deliver :cljs put!) p result))

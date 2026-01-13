@@ -1,5 +1,7 @@
 (ns datahike.test.api-test
   (:require
+   ;; Load hitchhiker-tree FIRST before anything that loads datahike.index
+   #?(:clj [datahike.index.hitchhiker-tree])
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing]])
    [datahike.test.utils :as utils]

@@ -103,7 +103,8 @@
                  :stored dh-stored
                  :now dh-now
                  :config config}))
-    (when-not (>= (compare hh-now hh-stored) 0)
+    (when (and hh-stored hh-now
+               (not (>= (compare hh-now hh-stored) 0)))
       (dt/raise "Database was written with newer hitchhiker-tree version."
                 {:type :db-was-written-with-newer-hht-version
                  :stored hh-stored
@@ -123,9 +124,9 @@
                  :config config}))))
 
 (defn ensure-stored-config-consistency [config stored-config]
-  (let [config (dissoc config :name)
-        config config  ;; No need for backwards compat with old :scope key
-        stored-config (dissoc stored-config :initial-tx :name)
+  (let [;; Remove runtime parameters and creation-time parameters
+        config (dissoc config :name :search-cache-size :store-cache-size)
+        stored-config (dissoc stored-config :initial-tx :name :search-cache-size :store-cache-size)
         stored-config (merge {:writer dc/self-writer} stored-config)
         stored-config (if (empty? (:index-config stored-config))
                         (dissoc stored-config :index-config)
@@ -135,16 +136,25 @@
                                  [(dissoc config :writer)
                                   (dissoc stored-config :writer)]
                                  [config stored-config])
-        ;; replace store config with its identity
-        stored-store-id (ds/store-identity (:store stored-config))
-        config (update config :store ds/store-identity)
-        stored-config (update stored-config :store ds/store-identity)
-        ;; Backwards compatibility: if stored config has no store :id (old database),
-        ;; allow connecting with any :id - user is providing one for an old database
-        [config stored-config] (if (nil? stored-store-id)
-                                 [(dissoc config :store)
-                                  (dissoc stored-config :store)]
-                                 [config stored-config])]
+
+        ;; Validate store identities match (prevents connecting to wrong database)
+        ;; Store configuration details (backend, path, credentials) can differ
+        stored-store-id (get-in stored-config [:store :id])
+        connect-store-id (get-in config [:store :id])
+        _ (when (and stored-store-id connect-store-id
+                     (not= stored-store-id connect-store-id))
+            (dt/raise "Store identity mismatch: connecting to wrong database."
+                      {:type :store-identity-mismatch
+                       :stored-id stored-store-id
+                       :connect-id connect-store-id
+                       :config config
+                       :stored-config stored-config}))
+
+        ;; Remove entire :store from comparison (backend, path, credentials can change)
+        ;; Only the :id needs to match (checked above)
+        config (dissoc config :store)
+        stored-config (dissoc stored-config :store)]
+
     (when-not (= config stored-config)
       (dt/raise "Configuration does not match stored configuration. In some cases this check is too restrictive. If you are sure you are loading the right database with the right configuration then you can disable this check by setting :allow-unsafe-config to true in your config."
                 {:type          :config-does-not-match-stored-db

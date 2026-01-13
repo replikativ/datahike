@@ -1,8 +1,6 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.11.1"}
         io.replikativ/hasch                         {:mvn/version "0.3.94"
                                                      :exclusions [org.clojure/clojurescript]}
-        io.replikativ/hitchhiker-tree               {:mvn/version "0.2.222"
-                                                     :exclusions [org.clojure/clojurescript]}
         io.replikativ/konserve                      {:mvn/version "0.9.340"
                                                      :exclusions [org.clojure/clojurescript
                                                                   org.clojars.mmb90/cljs-cache]
@@ -11,7 +9,7 @@
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/datalog-parser                {:mvn/version "0.2.30"}
         io.replikativ/zufall                        {:mvn/version "0.2.9"}
-        io.replikativ/persistent-sorted-set         {:mvn/version "0.3.114"}
+        io.replikativ/persistent-sorted-set         {:mvn/version "0.3.115"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
         com.taoensso/timbre                         {:mvn/version "6.8.0"}
@@ -56,6 +54,10 @@
                                lambdaisland/kaocha-cljs    {:mvn/version "1.5.154"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}
                                orchestra/orchestra         {:mvn/version "2021.01.01-1"}
+
+                               ;; hitchhiker-tree index (optional, for testing)
+                               io.replikativ/hitchhiker-tree {:mvn/version "0.2.222"
+                                                              :exclusions [org.clojure/clojurescript]}
 
                                ;; http server
                                buddy/buddy-auth              {:mvn/version "3.0.323"}

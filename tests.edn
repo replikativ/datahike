@@ -4,7 +4,8 @@
                                   :bindings {datahike.config/*default-index* :datahike.index/persistent-set}}
                                  {:id          :clj-hht
                                   :ns-patterns ["datahike.test."]
-                                  :bindings {datahike.config/*default-index* :datahike.index/hitchhiker-tree}}
+                                  :bindings {datahike.config/*default-index* :datahike.index/hitchhiker-tree}
+                                  :kaocha.plugin.hooks/pre-load [datahike.index.hitchhiker-tree]}
                                  {:id          :specs
                                   :skip-meta   [:no-spec]
                                   :ns-patterns ["datahike.test."]}

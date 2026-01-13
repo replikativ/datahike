@@ -75,7 +75,7 @@
    & {:keys [schema-on-read temporal-index index initial-tx]
       :as _index-cfg
       :or {schema-on-read false
-           index :datahike.index/hitchhiker-tree
+           index *default-index*
            temporal-index true}}]
   {:store (merge {:backend backend}
                  (case backend

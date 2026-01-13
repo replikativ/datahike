@@ -37,10 +37,8 @@
         default-new-cfg {:attribute-refs? false
                          :keep-history? true
                          :initial-tx nil
-                         :index :datahike.index/hitchhiker-tree
-                         :index-config {:index-b-factor       dih/default-index-b-factor
-                                        :index-log-size       dih/default-index-log-size
-                                        :index-data-node-size dih/default-index-data-node-size}
+                         :index :datahike.index/persistent-set
+                         :index-config {}
                          :schema-flexibility :write
                          :crypto-hash? false
                          :branch :db
@@ -113,7 +111,7 @@
                               :id #uuid "51de0715-1000-0000-0000-000000000001"
                               :irrelevant-property true}}]
       (is (thrown-with-msg? Throwable
-                            #"Configuration does not match stored configuration."
+                            #"Store identity mismatch"
                             (conn/ensure-stored-config-consistency mem-start mem-other)))
       (is (not= mem-start mem-other))
       (is (thrown-with-msg? Throwable
@@ -121,7 +119,7 @@
                             (conn/ensure-stored-config-consistency file-start file-index)))
       (is (not= file-start file-index))
       (is (thrown-with-msg? Throwable
-                            #"Configuration does not match stored configuration."
+                            #"Store identity mismatch"
                             (conn/ensure-stored-config-consistency mem-start file-start)))
       (is (not= mem-start file-start))
       (is (nil? (conn/ensure-stored-config-consistency mem-start mem-named)))

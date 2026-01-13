@@ -122,7 +122,9 @@
 
 #?(:clj (def datahike-version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT")))
 
-#?(:clj (def hitchhiker-tree-version (get-version 'io.replikativ/hitchhiker-tree)))
+#?(:clj (def hitchhiker-tree-version
+          (try (get-version 'io.replikativ/hitchhiker-tree)
+               (catch Exception _ nil))))
 
 #?(:clj (def persistent-set-version (get-version 'io.replikativ/persistent-sorted-set)))
 
