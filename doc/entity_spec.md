@@ -2,7 +2,9 @@
 
 Similar to [Datomic's](https://www.datomic.com/) [entity specs](https://docs.datomic.com/on-prem/schema.html#entity-specs) Datahike supports assertion to ensure properties of transacted entities.
 
-In short: you need to transact a `spec` to the database using `:db/ident` as the identifier, with at least either `:db.entity/attrs` as a list of attributes defined in the schema for ensuring required attributes, or `:db.entity/preds` with a list of fully namespaced symbols that refer to predicate function that you want to assert. The signature of the predicate function should be of `[db eid]` with the database record `db` where the transaction has happened and the entity `eid` to be asserted.
+**⚠️ Important:** Predicate validation (`:db.entity/preds`) only works in Clojure, not ClojureScript. Attribute validation (`:db.entity/attrs`) works in both.
+
+In short: you need to transact a `spec` to the database using `:db/ident` as the identifier, with at least either `:db.entity/attrs` as a list of attributes defined in the schema for ensuring required attributes, or `:db.entity/preds` with a list of fully namespaced symbols that refer to predicate functions that you want to assert. The signature of the predicate function should be `[db eid]` with the database value `db` where the transaction has happened and the entity id `eid` to be asserted.
 
 
 ## Example
@@ -28,9 +30,8 @@ Let's fire up a REPL:
               :db/valueType :db.type/long
               :db/cardinality :db.cardinality/one}])
 
-(def cfg {:store {:backend :mem
-                  :id "accounts"}
-          :name "accounts"
+(def cfg {:store {:backend :memory
+                  :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
           :schema-flexibility :write
           :keep-history? true
           :initial-tx schema})
@@ -41,10 +42,10 @@ Let's fire up a REPL:
 
 (def conn (d/connect cfg))
 
-;; define both predicates
+;; define both predicates (must be fully-qualified symbols matching the namespace)
 (defn is-email? [db eid]
   (if-let [email (:account/email (d/entity db eid))]
-    (-> (re-find #"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)" email) empty? not)
+    (seq (re-find #"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)" email))
     false))
 
 (defn positive-balance? [db eid]
@@ -53,6 +54,8 @@ Let's fire up a REPL:
     false))
 
 ;; add the person spec
+;; Note: 'user/is-email? assumes you're in the 'user namespace (default REPL namespace)
+;; If running in a different namespace, use that namespace in the symbol
 (d/transact conn {:tx-data [{:db/ident :person/guard
                              :db.entity/attrs [:account/email :account/holder]
                              :db.entity/preds ['user/is-email?]}]})

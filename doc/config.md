@@ -197,20 +197,69 @@ When enabled, use `history`, `as-of`, and `since` to query past states:
 
 See [Time Variance Documentation](./time_variance.md) for time-travel query examples.
 
-### Attribute References (Datomic Compatibility)
+### Attribute References
 
-Store attributes as entity IDs instead of keywords for Datomic compatibility and faster comparisons:
+Store attributes as entity IDs (integers) instead of keywords in datoms for performance and Datomic compatibility:
 
 ```clojure
 {:attribute-refs? true}  ;; Default: false
 ```
 
-**Benefits**:
-- Datomic query compatibility
-- Faster integer comparisons vs. keyword comparisons
-- Attributes become queryable entities
+**How it works:**
 
-**Trade-off**: Requires ID → keyword lookups in some operations.
+Without attribute references (default):
+```clojure
+;; Datoms store attribute keywords directly
+#datahike/Datom [1 :name "Alice" 536870913 true]
+```
+
+With attribute references enabled:
+```clojure
+;; Datoms store attribute entity IDs (integers)
+#datahike/Datom [1 73 "Alice" 536870913 true]  ;; where 73 is the entity ID for :name
+```
+
+**Benefits:**
+- **Better performance**: Integer comparisons are significantly faster than keyword comparisons, especially with many attributes
+- **Datomic compatibility**: Matches Datomic's internal representation for easier migration
+- **Attributes as entities**: Attributes become queryable entities in the database
+- **Recommended for production**: Generally beneficial unless you have specific reasons to use keywords
+
+**Considerations:**
+- Must use `:schema-flexibility :write` (cannot use with `:read`)
+- Requires ID ↔ keyword mapping (maintained automatically)
+- System schema is bootstrapped into the index on database creation
+- You still use keyword syntax in queries and transactions - translation is automatic
+
+**Example:**
+
+```clojure
+;; Create database with attribute references
+(def cfg {:store {:backend :memory
+                  :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
+          :attribute-refs? true
+          :schema-flexibility :write})
+
+(d/create-database cfg)
+(def conn (d/connect cfg))
+
+;; Use normal keyword syntax in transactions and queries
+(d/transact conn [{:db/ident :name
+                   :db/valueType :db.type/string
+                   :db/cardinality :db.cardinality/one}])
+
+(d/transact conn [{:name "Alice"}])
+
+;; Queries use keywords as usual - translation happens automatically
+(d/q '[:find ?n :where [?e :name ?n]] @conn)
+;; => #{["Alice"]}
+
+;; But internally, datoms store integer attribute IDs for performance
+```
+
+**When to use:**
+- **Use `:attribute-refs? true`** for production databases (recommended for performance)
+- Use `:attribute-refs? false` only if you need `:schema-flexibility :read` or have specific compatibility requirements
 
 ### Index Selection
 

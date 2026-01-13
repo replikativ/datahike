@@ -21,11 +21,15 @@ npm install datahike
 
 ```javascript
 const d = require('datahike');
+const crypto = require('crypto');
 
 async function example() {
-  // Create database configuration
+  // Create database configuration (requires UUID for :id)
   const config = {
-    store: { backend: ':mem', id: 'example' }
+    store: {
+      backend: ':memory',
+      id: crypto.randomUUID()
+    }
   };
 
   // Create and connect to database
@@ -33,31 +37,30 @@ async function example() {
   const conn = await d.connect(config);
 
   // Define schema
-  await d.transact(conn, {
-    'tx-data': [
-      {
-        ':db/ident': ':name',
-        ':db/valueType': ':db.type/string',
-        ':db/cardinality': ':db.cardinality/one'
-      },
-      {
-        ':db/ident': ':age',
-        ':db/valueType': ':db.type/long',
-        ':db/cardinality': ':db.cardinality/one'
-      }
-    ]
-  });
+  // Keys: WITHOUT colon, Values: WITH colon
+  const schema = [
+    {
+      'db/ident': ':name',
+      'db/valueType': ':db.type/string',
+      'db/cardinality': ':db.cardinality/one'
+    },
+    {
+      'db/ident': ':age',
+      'db/valueType': ':db.type/long',
+      'db/cardinality': ':db.cardinality/one'
+    }
+  ];
+  await d.transact(conn, schema);
 
-  // Add data
-  await d.transact(conn, {
-    'tx-data': [
-      { ':name': 'Alice', ':age': 30 },
-      { ':name': 'Bob', ':age': 25 }
-    ]
-  });
+  // Add data (data keys without colons)
+  const data = [
+    { name: 'Alice', age: 30 },
+    { name: 'Bob', age: 25 }
+  ];
+  await d.transact(conn, data);
 
   // Query with Datalog
-  const db = d.db(conn);
+  const db = await d.db(conn);
   const results = await d.q(
     '[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]',
     db
@@ -66,7 +69,8 @@ async function example() {
   console.log(results); // [['Alice', 30], ['Bob', 25]]
 
   // Disconnect
-  await d.releaseConnection(conn);
+  d.release(conn);
+  await d.deleteDatabase(config);
 }
 
 example();
@@ -76,25 +80,37 @@ example();
 
 ### Configuration
 
-Datahike requires configuration for database backend. All keys use keyword syntax (`:key`):
+**⚠️ Note:** Keyword syntax may change in future versions to simplify the API.
 
 ```javascript
+const crypto = require('crypto');
+
 const config = {
   store: {
-    backend: ':mem',  // or ':file', ':level', etc.
-    id: 'my-db',      // optional: database identifier
-    path: './data'    // for :file backend
+    backend: ':memory',       // or ':file'
+    id: crypto.randomUUID()   // Required: UUID identifier
   },
-  'keep-history': true,  // default: true
+  // Optional configuration:
+  'keep-history': true,           // default: true
   'schema-flexibility': ':write'  // or ':read'
+};
+
+// File backend example (Node.js only)
+const fileConfig = {
+  store: {
+    backend: ':file',
+    path: './data'
+  }
 };
 ```
 
 ### Keywords
 
-Datahike uses keywords (`:keyword`) extensively. In JavaScript:
-- Prefix with colon: `:name`, `:db/ident`
-- Use in queries, schema, and data
+**Current keyword rules:**
+- **Schema keys**: WITHOUT `:` prefix (`'db/ident'`, not `':db/ident'`)
+- **Schema values**: WITH `:` prefix (`':name'`, `':db.type/string'`)
+- **Data keys**: WITHOUT `:` prefix (`name`, `age`)
+- **Pull patterns**: WITH `:` prefix (`[':name', ':age']`)
 
 ### Datalog Queries
 
@@ -134,26 +150,21 @@ await d.pullMany(db, ['*'], [id1, id2, id3]);
 Add or retract data:
 
 ```javascript
-// Entity maps
-await d.transact(conn, {
-  'tx-data': [
-    { ':name': 'Charlie', ':age': 35 }
-  ]
-});
+// Entity maps (data keys without colons)
+const data = [
+  { name: 'Charlie', age: 35 }
+];
+await d.transact(conn, data);
 
 // Tuple form
-await d.transact(conn, {
-  'tx-data': [
-    [':db/add', entityId, ':age', 36]
-  ]
-});
+await d.transact(conn, [
+  [':db/add', entityId, ':age', 36]
+]);
 
 // Retract
-await d.transact(conn, {
-  'tx-data': [
-    [':db/retract', entityId, ':age', 35]
-  ]
-});
+await d.transact(conn, [
+  [':db/retract', entityId, ':age', 35]
+]);
 ```
 
 ### Temporal Queries
@@ -178,7 +189,7 @@ See [TypeScript definitions](index.d.ts) for complete API documentation.
 - `deleteDatabase(config)` - Delete database
 - `databaseExists(config)` - Check if database exists
 - `connect(config)` - Connect to database
-- `releaseConnection(conn)` - Close connection
+- `release(conn)` - Close connection
 - `db(conn)` - Get current database value
 - `transact(conn, txData)` - Execute transaction
 - `q(query, ...args)` - Execute Datalog query
@@ -199,9 +210,10 @@ See [TypeScript definitions](index.d.ts) for complete API documentation.
 
 ## Known Limitations
 
-- Entity API returns ClojureScript objects (use Pull API for plain data)
-- Keywords must be prefixed with `:` in JavaScript
-- Some advanced Datalog features may have limited support
+- **Query API**: Requires EDN string format (no JavaScript object syntax)
+- **Entity API**: Returns ClojureScript objects (use Pull API for plain JavaScript objects)
+- **Keyword syntax**: May change in future versions for simplification
+- **Advanced Datalog**: Some advanced features may have limited support
 
 ## License
 

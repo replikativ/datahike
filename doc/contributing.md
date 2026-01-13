@@ -101,8 +101,7 @@ Each merge to `main` creates a draft release on GitHub and a git tag to point to
 made when merging a branch into `main`. The jar is appended to the Github-release.
 
 ### The release process step by step
-- Update the `[CHANGELOG.md](https://github.com/replikativ/datahike/blob/main/CHANGELOG.md)`
-- Set a  new version in build.clj if you want to release a new minor or major version.
+- Set a new version in build.clj if you want to release a new minor or major version.
   For the ordinary patch release you can let the CI automatically increment the patch
   release version.
 - Squash and rebase if you see a need to.

@@ -1,6 +1,6 @@
 # Datahike JavaScript API
 
-**This is an experimental feature. Please try it out in a test environment and provide feedback.**
+**Status: Beta** - API is stable and tested. Published as `datahike@next` on npm.
 
 ## Overview
 
@@ -56,20 +56,26 @@ npm install datahike
 
 ```javascript
 const d = require('datahike');
+const crypto = require('crypto');
 
 async function example() {
-  // Configuration
+  // Configuration - must use UUID for :id
   const config = {
-    store: { backend: ':memory', id: 'my-db' }
+    store: {
+      backend: ':memory',
+      id: crypto.randomUUID()
+    }
   };
-  
+
   // Create database
   await d.createDatabase(config);
-  
+
   // Connect
   const conn = await d.connect(config);
-  
-  // Define schema (note: keywords need ':' prefix)
+
+  // Define schema
+  // Keys: WITHOUT colon (plain strings)
+  // Values: WITH colon prefix (keywords)
   const schema = [
     {
       'db/ident': ':name',
@@ -83,26 +89,26 @@ async function example() {
     }
   ];
   await d.transact(conn, schema);
-  
-  // Insert data
+
+  // Insert data (data keys without colons)
   const data = [
     { name: 'Alice', age: 30 },
     { name: 'Bob', age: 25 }
   ];
   await d.transact(conn, data);
-  
-  // Get database value
-  const db = d.db(conn);
-  
+
+  // Get database value (synchronous)
+  const db = await d.db(conn);
+
   // Get datoms
   const datoms = await d.datoms(db, ':eavt');
   console.log('Datoms:', datoms.length);
-  
-  // Pull API
+
+  // Pull API (pattern attributes with colons)
   const entityId = 1; // Find ID through query or datoms
-  const pulled = await d.pull(db, ['name', 'age'], entityId);
+  const pulled = await d.pull(db, [':name', ':age'], entityId);
   console.log('Entity:', pulled);
-  
+
   // Clean up
   d.release(conn);
   await d.deleteDatabase(config);
@@ -130,53 +136,88 @@ async function example() {
 
 ### Keyword Syntax
 
-Keywords **must** include the `:` prefix in strings:
+**⚠️ Note:** The JavaScript keyword syntax translation may change in future versions to simplify the API.
+
+**Current syntax (critical distinction):**
+- **Schema/config keys**: Plain strings WITHOUT `:` prefix
+- **Schema/config values**: Strings WITH `:` prefix (keywords)
+- **Data keys**: Plain strings WITHOUT `:` prefix
+- **Pull patterns**: Strings WITH `:` prefix (keywords)
 
 ```javascript
 // ✅ Correct
 const schema = [{
-  'db/ident': ':name',           // Good
-  'db/valueType': ':db.type/string'  // Good
+  'db/ident': ':name',              // Key: no colon, Value: with colon
+  'db/valueType': ':db.type/string' // Key: no colon, Value: with colon
 }];
+
+const data = [
+  { name: 'Alice', age: 30 }        // Data keys: no colons
+];
+
+const pattern = [':name', ':age'];   // Pattern: with colons
 
 // ❌ Wrong
 const schema = [{
-  'db/ident': 'name',            // Bad - missing ':'
-  'db/valueType': 'db.type/string'   // Bad - missing ':'
+  ':db/ident': ':name',             // Bad - key has colon
+  'db/valueType': 'db.type/string'  // Bad - value missing colon
 }];
 ```
 
 ### Backend Configuration
 
 ```javascript
-// In-memory backend
+const crypto = require('crypto');
+
+// In-memory backend (requires UUID)
 const memConfig = {
-  store: { backend: ':memory', id: 'my-db' }
+  store: {
+    backend: ':memory',
+    id: crypto.randomUUID()
+  }
 };
 
 // File backend (Node.js only)
 const fileConfig = {
-  store: { backend: ':file', path: '/path/to/db' }
+  store: {
+    backend: ':file',
+    path: '/path/to/db'
+  }
 };
 ```
 
 ### Async Operations
 
-All database operations return Promises:
+All database operations return Promises. Use `await` or `.then()`:
 
 ```javascript
-// Use await
-All functions are exported with camelCase naming. The JavaScript API automatically:
+// Using await (recommended)
+const conn = await d.connect(config);
+const result = await d.transact(conn, data);
+console.log(result['tx-data']);      // Note: 'tx-data' not 'tx_data'
+console.log(result['db-before']);
+console.log(result['db-after']);
+
+// Using promises
+d.connect(config).then(conn => {
+  return d.transact(conn, data);
+}).then(result => {
+  console.log(result['tx-data']);
+});
+```
+
+## API Functions
+
+All functions use camelCase naming. The JavaScript API automatically:
 - Converts `kebab-case` → `camelCase`
 - Removes `!` and `?` suffixes
 - Renames `with` → `withDb` (reserved keyword)
-- Filters out incompatible functions (e.g., synchronous `transact`)
 
 **Main API Functions:**
 - **Database Lifecycle**: `createDatabase`, `deleteDatabase`, `databaseExists`
 - **Connection**: `connect`, `release`
-- **Database Values**: `db`, `asOf`, `since`, `history`, `withDb`
-- **Transactions**: `transact` (async, returns Promise)
+- **Database Values**: `db`, `asOf`, `since`, `history`, `withDb`, `dbWith`
+- **Transactions**: `transact` (async, returns Promise), `loadEntities`
 - **Queries**: `q`, `pull`, `pullMany`, `datoms`, `seekDatoms`, `entity`, `entityDb`
 - **Schema**: `schema`, `reverseSchema`
 - **Utilities**: `tempid`, `isFiltered`, `filter`, `indexRange`
@@ -184,23 +225,8 @@ All functions are exported with camelCase naming. The JavaScript API automatical
 - **Info**: `datahikeVersion`
 
 Note: `transact!` from Clojure becomes `transact` in JavaScript (the `!` is removed).
-```javascript
-const result = await d.transact(conn, data);
-console.log(result['tx-data']);      // Note: 'tx-data' not 'tx_data'
-console.log(result['db-before']);
-console.log(result['db-after']);
-```
 
-## API Functions
-
-The following functions are exported (camelCase naming):
-
-- **Database Lifecycle**: `createDatabase`, `deleteDatabase`, `databaseExists`
-- **Connection**: `connect`, `release`
-- **Database Values**: `db`, `asOf`, `since`, `history`, `withDb`, `dbWith`
-- **Transactions**: `transact` (async), `loadEntities`
-- **Queries**: `q`, `pull`, `pullMany`, `datoms`, `seekDatoms`, `entity`, `entityDb`
-- **ypeScript Support
+## TypeScript Support
 
 Full TypeScript definitions are automatically generated and included:
 
@@ -231,7 +257,24 @@ async function example() {
 
 ## Testing
 
-Run Naming Conventions
+The comprehensive test suite in `npm-package/test.js` covers all functionality:
+- Basic database operations
+- Schema and transactions
+- Datoms API
+- Pull API
+- Entity API
+- Temporal databases (history, as-of, since)
+- File backend persistence
+- Query API
+
+Run tests with:
+```bash
+bb npm-test
+```
+
+Tests are automatically run in CI/CD as part of `bb check`.
+
+## Naming Conventions
 
 Naming is centralized in `src/datahike/js/naming.cljc` for consistency:
 
@@ -278,34 +321,15 @@ bb npm-build
 # 2. Verify package
 cd npm-package && npm pack --dry-run
 
-# 3. Publish
-npm publish
-``
-
-The test suite includes:
-- Basic database operations
-- Schema and transactions
-- Datoms API
-- Pull API
-- Entity API
-- Temporal databases (history, as-of)
-- File backend persistence
-- Schema retrieval
-- Query API
-
-## CI/CD Integration
-
-The npm tests are integrated into the main CI/CD pipeline:
-
-```bash
-bb check  # Runs: test, npm-test, format, lint, outdated
+# 3. Publish as next
+npm publish --tag next
 ```
 
 ## Known Limitations
 
 ### Query API
 
-The Datalog query API works with EDN string format:
+The Datalog query API requires EDN string format:
 
 ```javascript
 // ✅ Works: EDN string format
@@ -314,23 +338,35 @@ const results = await d.q(
   db
 );
 
-// ✅ Also works: Datoms API (recommended for simple queries)
-const db = d.db(conn);
+// ❌ Doesn't work: JavaScript object syntax
+// const results = await d.q({ find: '?e', where: [...] }, db);
+
+// ✅ Alternative: Use Datoms API for simple queries
 const datoms = await d.datoms(db, ':eavt');
+```
+
+### Entity API
+
+The `entity` function returns ClojureScript objects, not plain JavaScript objects. Use the Pull API for plain data:
+
+```javascript
+// ✅ Recommended: Pull API returns plain objects
+const data = await d.pull(db, [':name', ':age'], entityId);
+console.log(data.name); // Works
+
+// ⚠️ Entity API returns ClojureScript objects
+const entity = await d.entity(db, entityId);
+// Accessing attributes requires understanding ClojureScript objects
 ```
 
 ### Compilation Warnings
 
 Shadow-cljs compilation may produce warnings from dependencies:
 - **BigInt warnings** from `persistent-sorted-set` (harmless, ES2020 feature)
-- **Infer warnings** from dependencies (cosmetic, doesn't affect functionality)
+- **Infer warnings** (cosmetic, doesn't affect functionality)
 - **Redef warning** for `filter` (expected, intentional override)
-// const results = await d.q({ find: '?e', where: [...] }, db);
-```
 
-### BigInt Warnings
-
-Compilation produces harmless warnings about ES2020 BigInt usage from `persistent-sorted-set`. These can be ignored - the code works correctly.
+These can be safely ignored.
 
 ## Development
 
@@ -346,17 +382,20 @@ Functions are automatically generated from `datahike.api.specification` by the `
 
 If you need to handle special types, update `clj->js-recursive` and `js->clj-recursive` in `src/datahike/js/api.cljs`.
 
-## Next Steps
+## Current Release
 
-### API Improvements to Consider
-- [ ] Simplify keyword syntax (auto-detect vs requiring `:` prefix)
-- [ ] Add transaction builder helpers for common patterns
-- [ ] Consider fluent/chainable API for queries
-- [ ] Add convenience wrappers for common query patterns
-- [ ] Improve error messages for JavaScript users
+Published as `datahike@next` on npm. Install with:
+```bash
+npm install datahike@next
+```
 
-### Publishing
-- [ ] Publish to npm
+## Future Improvements
+
+- Simplify keyword syntax (auto-detect vs requiring `:` prefix)
+- Add transaction builder helpers for common patterns
+- Fluent/chainable API for queries
+- Convenience wrappers for common query patterns
+- Improved error messages for JavaScript users
 
 ## See Also
 
