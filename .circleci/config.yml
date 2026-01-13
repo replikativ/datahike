@@ -74,11 +74,6 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: install babashka
-          environment:
-            BABASHKA_VERSION: 1.12.213
-          command: curl -sSL "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" | sudo tar -xz -C /usr/local/bin/ && bb --version
-      - run:
           name: Generate config
           command: |
             bb --version
@@ -180,24 +175,11 @@ jobs:
             - /home/circleci/.deps.clj
   browser-test:
     docker:
-      - image: cimg/node:20.18-browsers
+      - image: tools/clojurecli
     working_directory: /home/circleci/replikativ
     steps:
       - attach_workspace:
           at: /home/circleci
-      - browser-tools/install-chrome
-      - run:
-          name: Install Java 17
-          command: |
-            sudo apt-get update
-            sudo apt-get install -y openjdk-17-jdk
-            sudo update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java
-      - run:
-          name: Install Clojure
-          command: |
-            curl -L -O https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh
-            chmod +x linux-install.sh
-            sudo ./linux-install.sh
       - run:
           name: Prepare dependencies
           command: clojure -X:deps prep
