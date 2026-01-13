@@ -97,24 +97,30 @@ This architecture means:
 For JavaScript/TypeScript applications, Datahike provides a Promise-based API.
 See [JavaScript API](javascript-api.md) for documentation.
 
+**Installation:**
+```bash
+npm install datahike@next
+```
+
+**Example:**
 ```javascript
 const d = require('datahike');
 const crypto = require('crypto');
 
-async function example() {
-  const config = {
-    store: {
-      backend: ':memory',
-      id: crypto.randomUUID()
-    }
-  };
+const config = {
+  store: {
+    backend: ':memory',
+    id: crypto.randomUUID()
+  },
+  schemaFlexibility: ':read'  // Allow schemaless data
+};
 
-  await d.createDatabase(config);
-  const conn = await d.connect(config);
-  await d.transact(conn, [{ name: 'Alice' }]);
-  const db = d.db(conn);
-  console.log(await d.q('[:find ?n :where [?e :name ?n]]', db));
-}
+await d.createDatabase(config);
+const conn = await d.connect(config);
+await d.transact(conn, [{ name: 'Alice' }]);
+const db = d.db(conn);
+console.log(await d.q('[:find ?n :where [?e :name ?n]]', db));
+// => [['Alice']]
 ```
 
 ## Limitations
