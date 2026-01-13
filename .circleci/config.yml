@@ -74,6 +74,11 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
+          name: install babashka
+          environment:
+            BABASHKA_VERSION: 1.12.213
+          command: curl -sSL "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" | sudo tar -xz -C /usr/local/bin/ && bb --version
+      - run:
           name: Generate config
           command: |
             bb --version
@@ -294,10 +299,6 @@ workflows:
       - setup:
           context: dockerhub-deploy
           setup_cljs: true
-      - tools/tools:
-          context: dockerhub-deploy
-          requires:
-            - setup
       - build:
           context: dockerhub-deploy
           requires:
@@ -310,7 +311,7 @@ workflows:
             branches:
               only: main
           requires:
-            - tools/tools
+            - setup
       - format:
           context: dockerhub-deploy
           requires:
