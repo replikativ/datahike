@@ -38,3 +38,56 @@
 (defmulti default-index-config
   "Returns the default index configuration."
   (fn [index-name] index-name))
+
+;; Default handlers for missing index implementations
+
+(defn- hitchhiker-tree-missing-error []
+  (ex-info
+   "Hitchhiker-tree index requires explicit setup:
+   1. Add io.replikativ/hitchhiker-tree to your deps.edn
+   2. Require datahike.index.hitchhiker-tree in your namespace
+   Or use the default :datahike.index/persistent-set index."
+   {:type :missing-index-implementation
+    :index :datahike.index/hitchhiker-tree
+    :available-indexes (disj (set (keys (methods empty-index))) :default)}))
+
+(defmethod empty-index :default [index-name _ _ _]
+  (if (= index-name :datahike.index/hitchhiker-tree)
+    (throw (hitchhiker-tree-missing-error))
+    (throw (ex-info (str "Unknown index type: " index-name)
+                    {:type :unknown-index-type
+                     :index index-name
+                     :available-indexes (disj (set (keys (methods empty-index))) :default)}))))
+
+(defmethod init-index :default [index-name _ _ _ _ _]
+  (if (= index-name :datahike.index/hitchhiker-tree)
+    (throw (hitchhiker-tree-missing-error))
+    (throw (ex-info (str "Unknown index type: " index-name)
+                    {:type :unknown-index-type
+                     :index index-name
+                     :available-indexes (disj (set (keys (methods init-index))) :default)}))))
+
+(defmethod add-konserve-handlers :default [config _]
+  (let [index-name (:index config)]
+    (if (= index-name :datahike.index/hitchhiker-tree)
+      (throw (hitchhiker-tree-missing-error))
+      (throw (ex-info (str "Unknown index type: " index-name)
+                      {:type :unknown-index-type
+                       :index index-name
+                       :available-indexes (disj (set (keys (methods add-konserve-handlers))) :default)})))))
+
+(defmethod konserve-backend :default [index-name _]
+  (if (= index-name :datahike.index/hitchhiker-tree)
+    (throw (hitchhiker-tree-missing-error))
+    (throw (ex-info (str "Unknown index type: " index-name)
+                    {:type :unknown-index-type
+                     :index index-name
+                     :available-indexes (disj (set (keys (methods konserve-backend))) :default)}))))
+
+(defmethod default-index-config :default [index-name]
+  (if (= index-name :datahike.index/hitchhiker-tree)
+    (throw (hitchhiker-tree-missing-error))
+    (throw (ex-info (str "Unknown index type: " index-name)
+                    {:type :unknown-index-type
+                     :index index-name
+                     :available-indexes (disj (set (keys (methods default-index-config))) :default)}))))

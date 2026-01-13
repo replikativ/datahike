@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [test])
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
+            [clojure.java.io :as io]
             [tools.build :as build]))
 
 (defn clj [opts & args] (apply p/shell opts "clojure" args))
@@ -63,18 +64,49 @@
 (defn specs []
   (kaocha "--focus" "specs" "--plugin" "kaocha.plugin/orchestra"))
 
-(defn cljs-compile-test []
-  (p/shell "clj -M:cljs -m shadow.cljs.devtools.cli compile :comptest")
-  (p/shell "node target/out/comptest.js"))
+(defn kabel []
+  (kaocha "--focus" "kabel"))
+
+(defn cljs-node-test []
+  (p/shell "clj -M:cljs -m shadow.cljs.devtools.cli compile :node-test")
+  (p/shell "node target/out/node-test.js"))
+
+(defn cljs-browser-test []
+  (println "Installing npm dependencies...")
+  (p/shell "npm install")
+  (println "Starting Kabel test server...")
+  (let [server-process (p/process "clojure -M:test -e \"(require 'datahike.kabel.browser-test-server) (datahike.kabel.browser-test-server/start-test-server!) (Thread/sleep Long/MAX_VALUE)\"")]
+    (try
+      (println "Waiting for server startup...")
+      (Thread/sleep 5000)
+      (println "Compiling browser tests...")
+      (p/shell "npx shadow-cljs compile :browser-ci")
+      (println "Running tests with Karma...")
+      ;; Set CHROME_BIN to chromium if available
+      (let [chrome-bin (or (System/getenv "CHROME_BIN")
+                           (first (keep #(when (.exists (io/file %)) %)
+                                        ["/snap/bin/chromium"
+                                         "/usr/bin/chromium"
+                                         "/usr/bin/chromium-browser"
+                                         "/usr/bin/google-chrome"])))
+            env (if chrome-bin
+                  (assoc (into {} (System/getenv)) "CHROME_BIN" chrome-bin)
+                  (into {} (System/getenv)))]
+        (p/shell {:env env} "npx karma start --single-run"))
+      (finally
+        (println "Stopping test server...")
+        (p/destroy server-process)))))
 
 (defn all [config]
   (kaocha "--skip" "specs")
   (specs)
+  (kabel)
   (back-compat config)
   (native-image)
   (libdatahike)
   (bb-pod)
-  (cljs-compile-test))
+  (cljs-node-test)
+  (cljs-browser-test))
 
 (defn -main [config & args]
   (if (seq args)
@@ -84,6 +116,8 @@
       "bb-pod" (bb-pod)
       "back-compat" (back-compat config)
       "specs" (specs)
-      "cljs" (cljs-compile-test)
+      "kabel" (kabel)
+      "cljs-node" (cljs-node-test)
+      "cljs-browser" (cljs-browser-test)
       (apply kaocha "--focus" args))
     (all config)))

@@ -10,10 +10,13 @@
             [datahike.config :as dc]
             [datahike.schema-cache :as sc]
             [konserve.core :as k]
+            [konserve.store :as ks]
             [taoensso.timbre :as log]
-            [hasch.core :refer [uuid]]
-            [superv.async :refer [go-try- <?-]]
-            [konserve.utils :refer [#?(:clj async+sync :cljs async+sync) multi-key-capable? *default-sync-translation*]
+            [hasch.core :refer [uuid squuid]]
+            [hasch.platform]
+            [clojure.core.async :as async :refer [go put!]]
+            [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?-]]
+            [konserve.utils :refer [#?(:clj async+sync) multi-key-capable? *default-sync-translation*]
              #?@(:cljs [:refer-macros [async+sync]])]))
 
 ;; mapping to storage
@@ -53,7 +56,7 @@
                      :ref-ident-map ref-ident-map}
         schema-meta-key (uuid schema-meta)
         backend                                           (di/konserve-backend (:index config) store)
-        not-in-memory?                                    (not= :mem (-> config :store :backend))
+        not-in-memory?                                    (not= :memory (-> config :store :backend))
         flush! (and flush? not-in-memory?)
         ;; Prepare schema meta KV pair for writing, but don't write it here.
         schema-meta-kv-to-write (when-not (sc/write-cache-has? (:store config) schema-meta-key)
@@ -131,8 +134,11 @@
                             commit-id)))))))
 
 (defn create-commit-id [db]
-  (let [{:keys [hash max-tx max-eid meta]} db]
-    (uuid [hash max-tx max-eid meta])))
+  (let [{:keys [hash max-tx max-eid meta config]} db
+        content-uuid (uuid [hash max-tx max-eid meta])]
+    (if (:crypto-hash? config)
+      content-uuid
+      (squuid content-uuid))))  ;; Sequential UUID for better index locality
 
 (defn write-pending-kvs!
   "Writes a collection of key-value pairs to the store.
@@ -201,6 +207,93 @@
   (-delete-database [config])
   (-database-exists? [config]))
 
+(defn -database-exists?* [config]
+  (let [p (dt/throwable-promise)]
+    (go-try-
+     (let [config (dc/load-config config)
+           store-config (:store config)
+           ;; First check if store exists (avoids exception when store not in registry)
+           store-exists? (<?- (ks/store-exists? store-config {:sync? false}))]
+       (if store-exists?
+         ;; Store exists, now check if it contains a database
+         (let [raw-store (<?- (ks/connect-store store-config {:sync? false}))
+               store (ds/add-cache-and-handlers raw-store config)
+               stored-db (<?- (k/get store :db nil {:sync? false}))]
+           ;; Release store and await completion
+           (<?- (ks/release-store store-config store {:sync? false}))
+           (put! p (some? stored-db)))
+         ;; Store doesn't exist, so database doesn't exist
+         (put! p false))))
+    p))
+
+(defn -create-database* [config deprecated-config]
+  (go-try-
+   (let [opts {:sync? false}
+         {:keys [keep-history?] :as config} (dc/load-config config deprecated-config)
+         store-config (:store config)
+         store (ds/add-cache-and-handlers (<?- (ks/create-store store-config opts)) config)
+         stored-db (<?- (k/get store :db nil opts))
+         _ (when stored-db
+             (dt/raise "Database already exists."
+                       {:type :db-already-exists :config store-config}))
+         {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
+                 schema rschema system-entities ref-ident-map ident-ref-map
+                 config max-tx max-eid op-count hash meta] :as db}
+         (db/empty-db nil config store)
+         backend (di/konserve-backend (:index config) store)
+         cid (create-commit-id db)
+         meta (assoc meta :datahike/commit-id cid)
+         schema-meta {:schema schema
+                      :rschema rschema
+                      :system-entities system-entities
+                      :ident-ref-map ident-ref-map
+                      :ref-ident-map ref-ident-map}
+         schema-meta-key (uuid schema-meta)
+         ;; di/-flush calls will populate pending-writes via CachedStorage
+         db-to-store (merge {:max-tx          max-tx
+                             :max-eid         max-eid
+                             :op-count        op-count
+                             :hash            hash
+                             :schema-meta-key schema-meta-key
+                             :config          (update config :initial-tx (comp not empty?))
+                             :meta            meta
+                             :eavt-key        (di/-flush eavt backend)
+                             :aevt-key        (di/-flush aevt backend)
+                             :avet-key        (di/-flush avet backend)}
+                            (when keep-history?
+                              {:temporal-eavt-key (di/-flush temporal-eavt backend)
+                               :temporal-aevt-key (di/-flush temporal-aevt backend)
+                               :temporal-avet-key (di/-flush temporal-avet backend)}))]
+     ;;we just created the first data base in this store, so the write cache is empty
+     (<?- (k/assoc store schema-meta-key schema-meta opts))
+     (sc/add-to-write-cache (:store config) schema-meta-key)
+     (when-not (sc/cache-has? schema-meta-key)
+       (sc/cache-miss schema-meta-key schema-meta))
+
+     ;; Process pending KVs from index flushes synchronously
+     (let [pending-kvs (get-and-clear-pending-kvs! store)]
+       (<?- (write-pending-kvs! store pending-kvs false)))
+
+     (<?- (k/assoc store :branches #{:db} opts))
+     (<?- (k/assoc store cid db-to-store opts))
+     (<?- (k/assoc store :db db-to-store opts))
+     (ks/release-store store-config store)
+     config)))
+
+(defn -delete-database* [config]
+  (go-try-
+   (let [config (dc/load-config config {})
+         config-store-id (ds/store-identity (:store config))
+         active-conns (filter (fn [[store-id _branch]]
+                                (= store-id config-store-id))
+                              (keys @*connections*))]
+     (sc/clear-write-cache (:store config))
+     (doseq [conn active-conns]
+       (log/warn "Deleting database without releasing all connections first: " conn "."
+                 "All connections will be released now, but this cannot be ensured for remote readers.")
+       (delete-connection! conn))
+     (ks/delete-store (:store config)))))
+
 (extend-protocol PDatabaseManager
   #?(:clj String :cljs string)
   (-create-database #?(:clj [uri & opts] :cljs [uri opts])
@@ -214,82 +307,18 @@
 
   #?(:clj clojure.lang.IPersistentMap :cljs PersistentArrayMap)
   (-database-exists? [config]
-    (let [config (dc/load-config config)
-          store-config (:store config)
-          raw-store (ds/connect-store store-config)]
-      (if (not (nil? raw-store))
-        (let [store (ds/add-cache-and-handlers raw-store config)
-              stored-db (k/get store :db nil {:sync? true})]
-          (ds/release-store store-config store)
-          (not (nil? stored-db)))
-        (do
-          (ds/release-store store-config raw-store)
-          false))))
-
-  (-create-database [config deprecated-config]
-    (let [{:keys [keep-history?] :as config} (dc/load-config config deprecated-config)
-          store-config (:store config)
-          store (ds/add-cache-and-handlers (ds/empty-store store-config) config)
-          stored-db (k/get store :db nil {:sync? true})
-          _ (when stored-db
-              (dt/raise "Database already exists."
-                        {:type :db-already-exists :config store-config}))
-          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
-                  schema rschema system-entities ref-ident-map ident-ref-map
-                  config max-tx max-eid op-count hash meta] :as db}
-          (db/empty-db nil config store)
-          backend (di/konserve-backend (:index config) store)
-          cid (create-commit-id db)
-          meta (assoc meta :datahike/commit-id cid)
-          schema-meta {:schema schema
-                       :rschema rschema
-                       :system-entities system-entities
-                       :ident-ref-map ident-ref-map
-                       :ref-ident-map ref-ident-map}
-          schema-meta-key (uuid schema-meta)
-          ;; di/-flush calls will populate pending-writes via CachedStorage
-          db-to-store (merge {:max-tx          max-tx
-                              :max-eid         max-eid
-                              :op-count        op-count
-                              :hash            hash
-                              :schema-meta-key schema-meta-key
-                              :config          (update config :initial-tx (comp not empty?))
-                              :meta            meta
-                              :eavt-key        (di/-flush eavt backend)
-                              :aevt-key        (di/-flush aevt backend)
-                              :avet-key        (di/-flush avet backend)}
-                             (when keep-history?
-                               {:temporal-eavt-key (di/-flush temporal-eavt backend)
-                                :temporal-aevt-key (di/-flush temporal-aevt backend)
-                                :temporal-avet-key (di/-flush temporal-avet backend)}))]
-      ;;we just created the first data base in this store, so the write cache is empty
-      (k/assoc store schema-meta-key schema-meta {:sync? true})
-      (sc/add-to-write-cache (:store config) schema-meta-key)
-      (when-not (sc/cache-has? schema-meta-key)
-        (sc/cache-miss schema-meta-key schema-meta))
-
-      ;; Process pending KVs from index flushes synchronously
-      (let [pending-kvs (get-and-clear-pending-kvs! store)]
-        (write-pending-kvs! store pending-kvs true))
-
-      (k/assoc store :branches #{:db} {:sync? true})
-      (k/assoc store cid db-to-store {:sync? true})
-      (k/assoc store :db db-to-store {:sync? true})
-      (ds/release-store store-config store)
-      config))
-
+    (-database-exists?* config))
+  (-create-database [config opts]
+    (-create-database* config opts))
   (-delete-database [config]
-    (let [config (dc/load-config config {})
-          config-store-id (ds/store-identity (:store config))
-          active-conns (filter (fn [[store-id _branch]]
-                                 (= store-id config-store-id))
-                               (keys @*connections*))]
-      (sc/clear-write-cache (:store config))
-      (doseq [conn active-conns]
-        (log/warn "Deleting database without releasing all connections first: " conn "."
-                  "All connections will be released now, but this cannot be ensured for remote readers.")
-        (delete-connection! conn))
-      (ds/delete-store (:store config)))))
+    (-delete-database* config))
+
+  #?(:cljs PersistentHashMap)
+  #?(:cljs
+     (-database-exists? [config]
+                        (-database-exists?* config)))
+  #?(:cljs (-create-database [config opts] (-create-database* config opts)))
+  #?(:cljs (-delete-database [config] (-delete-database* config))))
 
 ;; public API
 

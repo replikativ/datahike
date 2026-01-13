@@ -5,7 +5,7 @@
    [datahike.api :as d]))
 
 (def ref-cfg
-  {:store {:backend :mem :id "attr-refs-test.db"}
+  {:store {:backend :memory :id #uuid "00230000-0000-0000-0000-000000000023"}
    :keep-history? true
    :attribute-refs? true
    :schema-flexibility :write

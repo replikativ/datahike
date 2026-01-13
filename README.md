@@ -10,17 +10,30 @@
 <a href="https://github.com/replikativ/datahike/tree/main"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/main"/></a>
 </p>
 
-[Datahike](https://datahike.io) is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database
-powered by an efficient Datalog query engine. This project started as a port of
-[DataScript](https://github.com/tonsky/DataScript) to the
-[hitchhiker-tree](https://github.com/datacrypt-project/hitchhiker-tree). All
-DataScript tests are passing, but we are still working on the internals. Having
-said this we consider Datahike usable for medium sized projects, since DataScript is
-very mature and deployed in many applications and the hitchhiker-tree
-implementation is heavily tested through generative testing. We are
-building on the two projects and the storage backends for the hitchhiker-tree
-through [konserve](https://github.com/replikativ/konserve). We would like to
-hear experience reports and are happy if you join us.
+**Branch databases, not just code.**
+
+[Datahike](https://datahike.io) is a durable [Datalog](https://en.wikipedia.org/wiki/Datalog) database with
+Datomic-compatible APIs and git-like semantics. Built on persistent data structures and structural sharing,
+database snapshots are immutable values that can be held, shared, and queried anywhere—without locks or copying.
+
+**Key capabilities:**
+- 🌐 **Distributed Index Space**: Read scaling without database connections—readers access persistent indices directly
+- 🗄️ **Flexible storage**: File, LMDB, S3, JDBC, Redis, IndexedDB via [konserve](https://github.com/replikativ/konserve)—[choose what fits](./doc/storage-backends.md)
+- 🌍 **Cross-platform**: JVM, Node.js, Browser (Clojure, ClojureScript, JavaScript, Java APIs)
+- ⚡ **Real-time sync**: WebSocket streaming with [Kabel](https://github.com/replikativ/kabel) for browser ↔ server
+- 🕰️ **Time-travel**: Query any historical state, full transaction audit trail ([versioning API](./doc/versioning.md) becoming stable)
+- 🔒 **GDPR-ready**: Complete data excision for regulatory compliance
+- 🚀 **Production-proven**: Tested with billions of datoms, [deployed in government services](https://gitlab.com/arbetsformedlingen/taxonomy-dev)
+
+**Distributed by design**: Datahike is part of the [replikativ](https://github.com/replikativ) ecosystem for decentralized data architectures.
+
+## Why Datalog?
+
+Modern applications model increasingly complex relationships—social networks, organizational hierarchies, supply chains, knowledge graphs. Traditional SQL forces you to express graph queries through explicit joins, accumulating complexity as relationships grow. Datalog uses **pattern matching over relationships**: describe what you're looking for, not how to join tables.
+
+As systems evolve, SQL schemas accumulate join complexity. What starts as simple tables becomes nested subqueries and ad-hoc graph features. Datalog treats relationships as first-class: transitive queries, recursive rules, and multi-database joins are natural to express. The result is maintainable queries that scale with relationship complexity. See [Why Datalog?](./doc/datalog-vs-sql.md) for detailed comparisons.
+
+**Time is fundamental to information**: Most value derives from how facts evolve over time. Datahike's immutable design treats the database as an append-only log of facts—queryable at any point in history, enabling audit trails, debugging through time-travel, and GDPR-compliant data excision. Immutability also powers Distributed Index Space: database snapshots are values that can be shared, cached, and queried without locks.
 
 You can find [API documentation on cljdoc](https://cljdoc.org/d/io.replikativ/datahike) and articles on Datahike on our company's [blog page](https://lambdaforge.io/articles).
 
@@ -113,18 +126,26 @@ be ported to core.async to coordinate IO in a platform-neutral manner.
 
 Refer to the docs for more information:
 
-- [backend development](./doc/backend-development.md)
-- [benchmarking](./doc/benchmarking.md)
-- [garbage collection](./doc/gc.md)
-- [contributing to Datahike](./doc/contributing.md)
-- [configuration](./doc/config.md)
-- [differences to Datomic](./doc/datomic_differences.md)
-- [entity spec](./doc/entity_spec.md)
-- [logging and error handling](./doc/logging_and_error_handling.md)
-- [schema flexibility](./doc/schema.md)
-- [time variance](./doc/time_variance.md)
-- [unstructured input support](./doc/unstructured.md) (experimental)
-- [versioning](./doc/versioning.md)
+- [Why Datalog?](./doc/datalog-vs-sql.md) - Query comparisons and when to use Datalog
+- [Storage backends](./doc/storage-backends.md) - choosing the right backend for your needs
+- [Distributed architecture](./doc/distributed.md) - Distributed Index Space and real-time sync
+- [Versioning](./doc/versioning.md) - git-like branching and merging (beta)
+- [Norms](./doc/norms.md) - database migration system
+- [Configuration](./doc/config.md)
+- [Schema flexibility](./doc/schema.md)
+- [Time Variance](./doc/time_variance.md) - time-travel queries (as-of, history, since), audit trails, and GDPR-compliant purging
+- [Garbage Collection](./doc/gc.md) - reclaim storage by removing old database snapshots
+- [JavaScript API](./doc/javascript-api.md) - Promise-based API for Node.js and browsers
+- [CLI](./doc/cli.md) - native command-line tool (dthk)
+- [Babashka pod](./doc/bb-pod.md) - shell scripting with Datahike
+- [libdatahike](./doc/libdatahike.md) - C/C++ native library
+- [Benchmarking](./doc/benchmarking.md)
+- [Differences to Datomic](./doc/datomic_differences.md)
+- [Entity spec](./doc/entity_spec.md)
+- [Logging and error handling](./doc/logging_and_error_handling.md)
+- [Unstructured input support](./doc/unstructured.md) (experimental)
+- [Backend development](./doc/backend-development.md)
+- [Contributing to Datahike](./doc/contributing.md)
 
 
 For simple examples have a look at the projects in the `examples` folder.
@@ -174,92 +195,138 @@ respect to the query engine are documented there.
 
 ### Datahike
 
-Pick Datahike if your app has modest requirements towards a typical durable
-database, e.g. a single machine and a few millions of entities at maximum.
-Similarly, if you want to have an open-source solution and be able to study and
-tinker with the codebase of your database, Datahike provides a comparatively
-small and well composed codebase to tweak it to your needs. You should also
-always be able to migrate to Datomic later easily.
+Pick Datahike when you need:
+- **Distributed read scaling**: Distributed Index Space enables massive read scalability without database connections
+- **Cross-platform deployment**: The only Datalog database running on JVM, Node.js, and browsers with the same API
+- **Flexible storage**: Switch backends (File, LMDB, S3, JDBC, Redis, IndexedDB) based on deployment needs
+- **Open source control**: Full access to study, modify, and deploy without vendor lock-in
+- **Proven scale**: Tested with billions of datoms in benchmarks and government production systems
+- **Browser capabilities**: Offline-first applications with IndexedDB and real-time WebSocket sync
+- **Git-like workflows**: Versioning, branching, and time-travel queries on your data
+- **GDPR compliance**: Complete data excision capabilities
+
+Datahike is Datomic-API compatible, making migration straightforward if your needs change.
 
 ### Datomic
 
-Pick Datomic if you already know that you will need scalability later or if you
-need a network API for your database. There is also plenty of material about
-Datomic online already. Most of it applies in some form or another to Datahike,
-but it might be easier to use Datomic directly when you first learn Datalog.
+Pick Datomic if you:
+- **Want proven patterns**: Extensive documentation, learning materials, and enterprise examples
+- **Need maximum performance**: Fastest query execution for complex joins
+- **Free is sufficient**: Binaries are free (Apache 2.0) though closed-source
+- **AWS-committed**: Planning Datomic Cloud deployment on AWS
+
+Note: Datomic has no ClojureScript support and uses proprietary storage backends.
 
 ### DataScript
 
-Pick DataScript if you want the fastest possible query performance and do not
-have a huge amount of data. You can easily persist the write operations
-separately and use the fast in-memory index data structure of DataScript then.
-Datahike also at the moment does not support ClojureScript anymore, although we
-plan to recover this functionality.
+Pick DataScript when you need:
+- **Browser-only**: No persistence needed, pure client-side state management
+- **Maximum speed**: In-memory queries with no I/O overhead
+- **Lightweight**: Minimal dependencies, "cheap as creating a Hashmap"
+- **Ephemeral data**: Application state that doesn't survive page reloads
 
-## ClojureScript Support
+DataScript is mature and battle-tested (Roam Research, Athens), but has no durable storage.
 
-ClojureScript support is planned and work in progress. Please see [Discussions](https://github.com/replikativ/datahike/discussions/categories/ideas).
+## ClojureScript & JavaScript Support
 
-## Migration & Backup
+Datahike has **beta ClojureScript support** for both **Node.js** (file backend) and **browsers** (IndexedDB with TieredStore for memory hierarchies).
 
-The database can be exported to a flat file with:
+**JavaScript API** (Promise-based):
+```javascript
+const d = require('datahike');
 
-```clojure
-(require '[datahike.migrate :refer [export-db import-db]])
-(export-db conn "/tmp/eavt-dump")
+const config = { store: { backend: ':mem', id: 'example' } };
+await d.createDatabase(config);
+const conn = await d.connect(config);
+
+await d.transact(conn, {
+  'tx-data': [{ ':name': 'Alice', ':age': 30 }]
+});
+
+const results = await d.q(
+  '[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]',
+  d.db(conn)
+);
+// => [['Alice', 30]]
 ```
 
-You must do so before upgrading to a Datahike version that has changed the
-on-disk format. This can happen as long as we are arriving at version `1.0.0`
-and will always be communicated through the Changelog. After you have bumped the
-Datahike version you can use
+**Browser with real-time sync**: Combine IndexedDB storage with [Kabel](https://github.com/replikativ/kabel) WebSocket middleware for offline-capable applications that sync to server when online.
 
-```clojure
-;; ... setup new-conn (recreate with correct schema)
+See [JavaScript API documentation](./doc/javascript-api.md) for details.
 
-(import-db new-conn "/tmp/eavt-dump")
+**npm package** (preview):
+```bash
+npm install datahike@next
 ```
 
-to reimport your data into the new format.
+**Native CLI tool** (`dthk`): Compiled with GraalVM native-image for instant startup. Ships with file backend support, scriptable for quick queries and automation. Available in [releases](https://github.com/replikativ/datahike/releases). See [CLI documentation](./doc/cli.md).
 
-The datoms are stored in the CBOR format, enabling migration of binary data, such as the byte array data type now supported by Datahike. You can also use the export as a backup.
+**Babashka pod**: Native-compiled pod available in the [Babashka pod registry](https://github.com/babashka/pod-registry) for shell scripting. See [Babashka pod documentation](./doc/bb-pod.md).
 
-If you are upgrading from pre `0.1.2` where we have not had the migration code
-yet, then just evaluate the `datahike.migrate` namespace manually in your
-project before exporting.
+**Java API** (`libdatahike`): C++ bindings enable embedding Datahike in non-JVM applications. Experimental Python bindings available: [pydatahike](https://github.com/replikativ/pydatahike). See [libdatahike documentation](./doc/libdatahike.md).
 
-Have a look at the [change log](./CHANGELOG.md) for recent updates.
-
-## Production use
+## Production Use
 
 ### Swedish Public Employment Service
 
-The Swedish Public Employment Service (Arbetsförmedlingen) has been using Datahike in production since 2024 to store and serve the Labour Market Taxonomy (Arbetsmarknadstaxonomin). This is a terminology consisting of more than 40,000 labour market concepts, primarily representing occupations and skills, used to encode labour market data both within Arbetsförmedlingen and externally.
+The [Swedish Public Employment Service](https://arbetsformedlingen.se) (Arbetsförmedlingen) has been using Datahike in production since 2024 to store and serve the [Labour Market Taxonomy](https://gitlab.com/arbetsformedlingen/taxonomy-dev) (Arbetsmarknadstaxonomin). This is a terminology consisting of more than 40,000 labour market concepts, primarily representing occupations and skills, used to encode labour market data both within Arbetsförmedlingen and externally.
 
-The terminology is continuously kept up to date to remain relevant to the current labour market, and its versioning system is implemented using Datahike’s transaction history. Every working day, thousands of case workers across Sweden indirectly access the Labour Market Taxonomy API, which uses Datahike to serve requests.
+**Key facts**:
+- **Scale**: 40,000+ concepts with complex relationships
+- **Usage**: Thousands of case workers access the taxonomy API daily across Sweden
+- **Versioning**: Transaction history provides full audit trail for regulatory compliance
+- **Updates**: Continuously maintained to reflect current labour market
+- **Open source**: [API source code](https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/jobtech-taxonomy-api) and [benchmark suite](https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/experimental/datahike-benchmark/) are publicly available
 
-The source code of the API is public and can be found here:
-https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/jobtech-taxonomy-api
+**Benchmarks**: The Swedish government published [performance benchmarks](https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/experimental/datahike-benchmark/) comparing Datahike to Datomic across a range of complex queries representative of real-world government workloads.
+
+## Proximum: Vector Search for Datahike
+
+**Coming soon**: [Proximum](https://datahike.io/proximum) is a high-performance HNSW vector index designed for Datahike's persistent data model. It brings semantic search and RAG capabilities to Datahike while maintaining immutability and full audit history.
+
+**Key features** (upcoming):
+- Fast HNSW (Hierarchical Navigable Small World) vector search
+- Immutable index snapshots—same git-like semantics as Datahike
+- Persistent data structures without mutation or locks
+- Dual-licensed: EPL-2.0 (open source) and commercial license
+
+See [datahike.io/proximum](https://datahike.io/proximum) for details. Publication pending completion of current work.
+
+## Composable Ecosystem
+
+Datahike is **compositional by design**—built from independent, reusable libraries that work together but can be used separately in your own systems. Each component is open source and maintained as part of the [replikativ](https://github.com/replikativ) project.
+
+**Core libraries:**
+- **[konserve](https://github.com/replikativ/konserve)**: Pluggable key-value store abstraction with backends for File, LMDB, S3, JDBC, Redis, IndexedDB, and more. Use it for any persistent storage needs beyond Datahike.
+- **[kabel](https://github.com/replikativ/kabel)**: WebSocket transport with middleware support. Build real-time communication layers for any application.
+- **[hasch](https://github.com/replikativ/hasch)**: Content-addressable hashing for Clojure data structures. Create immutable references to data.
+- **[incognito](https://github.com/replikativ/incognito)**: Extensible serialization for custom types. Serialize any Clojure data across networks or storage.
+- **[superv.async](https://github.com/replikativ/superv.async)**: Supervision and error handling for core.async. Build robust asynchronous systems.
+
+**Advanced:**
+- **[replikativ](https://github.com/replikativ/replikativ)**: CRDT-based data synchronization for eventually consistent systems. Build collaborative applications with automatic conflict resolution.
+- **[distributed-scope](https://github.com/simm-is/distributed-scope)**: Remote function invocation with Clojure semantics across processes.
+
+This modularity enables **custom solutions** across languages and runtimes: embed konserve in Python applications, use kabel for non-database real-time systems, or build entirely new databases on the same storage layer. Datahike demonstrates how these components work together, but you're not locked into our choices.
 
 ## Roadmap and Participation
 
-Instead of providing a static roadmap, we have moved to working closely with the community to decide what will be worked on next in a dynamic and interactive way.
+Instead of providing a static roadmap, we work closely with the community to decide what will be worked on next in a dynamic and interactive way.
 
-How it works?
+**How it works:**
 
-Go to [Discussions](https://github.com/replikativ/datahike/discussions/categories/ideas) and upvote all the _ideas_ of features you would like to be added to Datahike. As soon as we have someone free to work on a new feature, we will address one with the most upvotes. 
+Go to [GitHub Discussions](https://github.com/replikativ/datahike/discussions/categories/ideas) and upvote the _ideas_ you'd like to see in Datahike. When we have capacity for a new feature, we address the most upvoted items.
 
-Of course, you can also propose ideas yourself - either by adding them to the Discussions or even by creating a pull request yourself. Please note thought that due to considerations about incompatibilities to earlier Datahike versions it might sometimes take a bit more time until your PR is integrated.
+You can also propose ideas yourself—either by adding them to Discussions or by creating a pull request. Note that due to backward compatibility considerations, some PRs may take time to integrate.
 
 
 ## Commercial Support
 
-We are happy to provide commercial support with
-[lambdaforge](https://lambdaforge.io). If you are interested in a particular
-feature, please let us know.
+We are happy to provide commercial support. If you are interested in a particular
+feature, please contact us at [contact@datahike.io](mailto:contact@datahike.io).
 
 ## License
 
-Copyright © 2014–2023 Konrad Kühne, Christian Weilbach, Chrislain Razafimahefa, Timo Kramer, Judith Massa, Nikita Prokopov, Ryan Sundberg
+Copyright © 2014–2026 Christian Weilbach et al.
 
 Licensed under Eclipse Public License (see [LICENSE](LICENSE)).

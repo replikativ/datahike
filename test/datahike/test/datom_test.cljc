@@ -1,8 +1,8 @@
 (ns datahike.test.datom-test
   (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is deftest]]
-      :clj  [clojure.test :as t :refer [is deftest]])
-   [datahike.datom :refer [datom]]))
+   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer [is deftest testing]])
+   [datahike.datom :as d :refer [datom]]))
 
 (deftest datom-impl
   (let [d (datom 123 :foo/bar "foobar")]
@@ -13,3 +13,32 @@
             :v "foobar"}
            (select-keys d [:e :a :v])))
     (is (= 123 (d :e)))))
+
+(deftest prefix-comparators
+  (testing "Prefix comparators match on e,a,v ignoring tx"
+    (let [d1 (datom 1 :name "Alice" 100)
+          d2 (datom 1 :name "Alice" 200)  ; same e,a,v but different tx
+          d3 (datom 1 :name "Bob" 100)]    ; different v
+
+      (testing "eavt prefix"
+        (is (= 0 (d/cmp-datoms-eavt-prefix d1 d2))
+            "Should match datoms with same e,a,v but different tx")
+        (is (not= 0 (d/cmp-datoms-eavt-prefix d1 d3))
+            "Should not match datoms with different v"))
+
+      (testing "aevt prefix"
+        (is (= 0 (d/cmp-datoms-aevt-prefix d1 d2))
+            "Should match datoms with same a,e,v but different tx")
+        (is (not= 0 (d/cmp-datoms-aevt-prefix d1 d3))
+            "Should not match datoms with different v"))
+
+      (testing "avet prefix"
+        (is (= 0 (d/cmp-datoms-avet-prefix d1 d2))
+            "Should match datoms with same a,v,e but different tx")
+        (is (not= 0 (d/cmp-datoms-avet-prefix d1 d3))
+            "Should not match datoms with different v"))))
+
+  (testing "index-type->cmp-prefix returns correct comparator"
+    (is (= d/cmp-datoms-eavt-prefix (d/index-type->cmp-prefix :eavt)))
+    (is (= d/cmp-datoms-aevt-prefix (d/index-type->cmp-prefix :aevt)))
+    (is (= d/cmp-datoms-avet-prefix (d/index-type->cmp-prefix :avet)))))

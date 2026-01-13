@@ -5,15 +5,14 @@
    [clojure.set :as set]
    #?(:clj [clojure.string :as str])
    [clojure.walk :as walk]
+   [datahike.datom :as datom]
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
    [datahike.array :refer [wrap-comparable]]
    [datahike.impl.entity :as de]
    [datahike.lru]
-   [datahike.middleware.query]
    [datahike.pull-api :as dpa]
    [datahike.query-stats :as dqs]
-   [datahike.middleware.utils :as middleware-utils]
    [datahike.tools :as dt]
    [datalog.parser :refer [parse]]
    [datalog.parser.impl :as dpi]
@@ -27,6 +26,7 @@
   (:refer-clojure :exclude [seqable?])
 
   #?(:clj (:import [clojure.lang Reflector Seqable]
+                   [datahike.datom Datom]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                     FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                     RulesVar SrcVar Variable]
@@ -77,12 +77,7 @@
       (merge (select-keys query-input extra-ks)))))
 
 (defn q [query & inputs]
-  (let [{:keys [args] :as query-map} (normalize-q-input query inputs)]
-    (if-let [middleware (when (dbu/db? (first args))
-                          (get-in (dbi/-config (first args)) [:middleware :query]))]
-      (let [q-with-middleware (middleware-utils/apply-middlewares middleware raw-q)]
-        (q-with-middleware query-map))
-      (raw-q query-map))))
+  (raw-q (normalize-q-input query inputs)))
 
 (defn query-stats [query & inputs]
   (-> query
@@ -633,15 +628,40 @@
       search-pattern)))
 
 (defn relation-from-datoms-xform []
-  (comp (map (fn [[e a v tx added?]]
-               [e a v tx added?]))
+  (comp (map #?(:cljs (fn [datom]
+                        (if (and (some? datom)
+                                 (or (instance? datahike.datom/Datom datom)
+                                     (.-e datom)))
+                          (let [e (.-e ^datahike.datom.Datom datom)
+                                a (.-a ^datahike.datom.Datom datom)
+                                a-kw (keyword (.-fqn ^clj a))  ; Extract from Keyword object
+                                v (.-v ^datahike.datom.Datom datom)
+                                tx (.-tx ^datahike.datom.Datom datom)]
+                            (clj->js [e a-kw v tx (pos? tx)]))  ; JS array for goog.array/get
+                          datom))
+                :clj (fn [[e a v tx added?]]
+                       [e a v tx added?])))
         (distinct-tuples)))
 
 (defn relation-from-datoms [context orig-pattern datoms]
   (or (map-consts context orig-pattern datoms)
-      (Relation. (var-mapping orig-pattern
-                              (range))
-                 datoms)))
+      #?(:cljs (let [converted (mapv (fn [d]
+                                       (if (and (some? d)
+                                                (or (instance? datahike.datom/Datom d)
+                                                    (.-e d)))
+                                         (let [a (.-a ^datahike.datom.Datom d)
+                                               a-kw (keyword (.-fqn ^clj a))]
+                                           (clj->js [(.-e ^datahike.datom.Datom d)
+                                                     a-kw
+                                                     (.-v ^datahike.datom.Datom d)
+                                                     (.-tx ^datahike.datom.Datom d)
+                                                     (pos? (.-tx ^datahike.datom.Datom d))]))
+                                         d))
+                                     datoms)]
+                 (Relation. (var-mapping orig-pattern (range))
+                            converted))
+         :clj (Relation. (var-mapping orig-pattern (range))
+                         datoms))))
 
 (defn matches-pattern? [pattern tuple]
   (loop [tuple tuple
@@ -1782,7 +1802,9 @@
                     (let [res (aclone t1)]
                       (dotimes [i len]
                         (when-some [idx (aget copy-map i)]
-                          (aset res i (#?(:cljs da/aget :clj get) t2 idx))))
+                          (aset res i (get t2 idx))
+                          ;; TODO figure out why this array lookup does not work anymore (returns nil)
+                          #_(aset res i (#?(:cljs da/aget :clj get) t2 idx))))
                       res))
                   (next rels)
                   symbols))))

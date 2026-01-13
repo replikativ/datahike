@@ -14,21 +14,20 @@
 #?(:cljs (def Throwable js/Error))
 
 (def no-ref-cfg
-  {:store {:backend :mem}
+  {:store {:backend :memory :id (random-uuid)}
    :keep-history? true
    :attribute-refs? false
    :schema-flexibility :write})
 
 (def ref-cfg
-  {:store {:backend :mem}
+  {:store {:backend :memory :id (random-uuid)}
    :keep-history? true
    :attribute-refs? true
    :schema-flexibility :write})
 
 (defn init-cfgs []
-  (let [t (get-time)]
-    [(assoc-in no-ref-cfg [:store :id] (str t))
-     (assoc-in ref-cfg [:store :id] (str (inc t)))]))
+  [(assoc-in no-ref-cfg [:store :id] #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid)))
+   (assoc-in ref-cfg [:store :id] #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid)))])
 
 (def name-schema [{:db/ident :name
                    :db/cardinality :db.cardinality/one

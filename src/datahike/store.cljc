@@ -1,147 +1,80 @@
 (ns ^:no-doc datahike.store
-  (:require [clojure.spec.alpha :as s]
-            #?(:clj [konserve.filestore :as fs])
-            [konserve.memory :as mem]
-            [environ.core :refer [env]]
+  "Datahike-specific store utilities.
+
+   Most store lifecycle operations (create, connect, delete, release) are now
+   handled by konserve.store directly. This namespace provides:
+
+   - add-cache-and-handlers: Wraps konserve stores with LRU cache and BTSet handlers
+   - store-identity: Returns store UUID from config
+   - ready-store: Tiered-specific initialization (populate cache from backend)"
+  (:require [konserve.tiered :as kt]
             [datahike.index :as di]
-            [datahike.tools :as dt]
             [konserve.cache :as kc]
             #?(:clj [clojure.core.cache :as cache]
                :cljs [cljs.cache :as cache])
-            [taoensso.timbre :refer [info]]
-            [zufall.core :refer [rand-german-mammal]])
-  #?(:clj (:import [java.nio.file Paths])))
+            [konserve.utils :refer [#?(:clj async+sync) *default-sync-translation*]
+             #?@(:cljs [:refer-macros [async+sync]])]
+            [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?-]]
+            #?(:cljs [clojure.core.async :refer-macros [go]])))
 
-(defn add-cache-and-handlers [raw-store config]
-  (cond->> (kc/ensure-cache
-            raw-store
-            (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config))))
-    (not= :mem (get-in config [:backend :store]))
-    (di/add-konserve-handlers config)))
+;; =============================================================================
+;; Cache and Handlers
+;; =============================================================================
 
-(defmulti store-identity
-  "Value that identifies the underlying store."
-  {:arglist '([config])}
-  :backend)
+(defn add-cache-and-handlers
+  "Wrap a raw konserve store with LRU cache and Datahike BTSet handlers.
 
-(defmulti empty-store
-  "Creates an empty store"
-  {:arglists '([config])}
-  :backend)
+   The cache improves read performance by keeping frequently accessed keys
+   in memory. The handlers enable persistent-sorted-set serialization."
+  [raw-store config]
+  (di/add-konserve-handlers
+   config
+   (kc/ensure-cache
+    raw-store
+    (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config))))))
 
-(defmethod empty-store :default [{:keys [backend]}]
-  (throw (#?(:clj IllegalArgumentException. :cljs js/Error.) (str "Can't create a store with scheme: " backend))))
+;; =============================================================================
+;; Store Identity
+;; =============================================================================
 
-(defmulti delete-store
-  "Deletes an existing store"
-  {:arglists '([config])}
-  :backend)
+(defn store-identity
+  "Returns the UUID that identifies the store.
 
-(defmethod delete-store :default [{:keys [backend]}]
-  (throw (#?(:clj IllegalArgumentException. :cljs js/Error.) (str "Can't delete a store with scheme: " backend))))
+   All konserve stores require an :id field containing a UUID.
+   This is the stable identifier used for connection tracking,
+   distributed coordination, and store matching."
+  [config]
+  (:id config))
 
-(defmulti connect-store
-  "Makes a connection to an existing store"
-  {:arglists '([config])}
-  :backend)
+;; =============================================================================
+;; Ready Store (Tiered-Specific)
+;; =============================================================================
 
-(defmethod connect-store :default [{:keys [backend]}]
-  (throw (#?(:clj IllegalArgumentException. :cljs js/Error.) (str "Can't connect to store with scheme: " backend))))
+(defmulti ready-store
+  "Notify when the store is ready to use.
 
-(defmulti release-store
-  "Releases the connection to an existing store (optional)."
+   Most backends are ready immediately after connection. The :tiered backend
+   needs special handling to populate the memory frontend from the backend
+   before use."
   {:arglists '([config store])}
   (fn [{:keys [backend]} _store]
     backend))
 
-(defmethod release-store :default [_ _]
-  nil)
+(defmethod ready-store :default [{:keys [opts]} _]
+  (async+sync (:sync? opts) *default-sync-translation*
+              (go-try- true)))
 
-(defmulti default-config
-  "Defines default configuration"
-  {:arglists '([config])}
-  :backend)
+(defmethod ready-store :tiered [{:keys [opts frontend-config backend-config]} store]
+  "Populate tiered store frontend from backend and sync on connect.
 
-(defmethod default-config :default [{:keys [backend] :as config}]
-  (info "No default configuration found for" backend)
-  config)
-
-(defmulti config-spec
-  "Returns spec for the store configuration"
-  {:arglists '([config])}
-  :backend)
-
-(defmethod config-spec :default [{:keys [backend]}]
-  (info "No configuration spec found for" backend))
-
-;; memory
-
-(def memory (atom {}))
-
-(defmethod store-identity :mem
-  [config]
-  [:mem (:scope config) (:id config)])
-
-(defmethod empty-store :mem [{:keys [id]}]
-  (if-let [store (get @memory id)]
-    store
-    (let [store (mem/new-mem-store (atom {}) {:sync? true})]
-      (swap! memory assoc id store)
-      store)))
-
-(defmethod delete-store :mem [{:keys [id]}]
-  (swap! memory dissoc id)
-  nil)
-
-(defmethod connect-store :mem [{:keys [id]}]
-  (@memory id))
-
-(defmethod default-config :mem [config]
-  (merge
-   {:id (:datahike-store-id env (rand-german-mammal))
-    :scope (dt/get-hostname)}
-   config))
-
-(s/def :datahike.store.mem/backend #{:mem})
-(s/def :datahike.store.mem/id string?)
-(s/def ::mem (s/keys :req-un [:datahike.store.mem/backend
-                              :datahike.store.mem/id]))
-
-(defmethod config-spec :mem [_config] ::mem)
-
-;; file
-#?(:clj
-   (defmethod store-identity :file [config]
-     [:file (:scope config) (:path config)]))
-
-#?(:clj
-   (defmethod empty-store :file [{:keys [path config]}]
-     (fs/connect-fs-store path :opts {:sync? true} :config config)))
-
-#?(:clj
-   (defmethod delete-store :file [{:keys [path]}]
-     (fs/delete-store path)))
-
-#?(:clj
-   (defmethod connect-store :file [{:keys [path config]}]
-     (fs/connect-fs-store path :opts {:sync? true} :config config)))
-
-#?(:clj
-   (defn- get-working-dir []
-     (.toString (.toAbsolutePath (Paths/get "" (into-array String []))))))
-
-#?(:clj
-   (defmethod default-config :file [config]
-     (merge
-      {:path  (:datahike-store-path env (str (get-working-dir) "/datahike-db-" (rand-german-mammal)))
-       :scope (dt/get-hostname)}
-      config)))
-
-#?(:clj (s/def :datahike.store.file/path string?))
-#?(:clj (s/def :datahike.store.file/backend #{:file}))
-#?(:clj (s/def :datahike.store.file/scope string?))
-#?(:clj (s/def ::file (s/keys :req-un [:datahike.store.file/backend
-                                       :datahike.store.file/path
-                                       :datahike.store.file/scope])))
-
-#?(:clj  (defmethod config-spec :file [_] ::file))
+   This ensures:
+   1. Memory frontend has cached data for immediate queries
+   2. Subsequent sync handshakes send accurate timestamps (only fetch newer keys)"
+  (async+sync (:sync? (or opts {:sync? true})) *default-sync-translation*
+              (go-try-
+               ;; Config uses :frontend-config/:backend-config (avoids collision with :backend :tiered)
+               ;; Store record uses :frontend-store/:backend-store (field names in TieredStore)
+               (<?- (ready-store (assoc frontend-config :opts opts) (:frontend-store store)))
+               (<?- (ready-store (assoc backend-config :opts opts) (:backend-store store)))
+               (<?- (kt/sync-on-connect store kt/populate-missing-strategy opts))
+               true)))

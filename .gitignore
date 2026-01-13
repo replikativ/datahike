@@ -15,6 +15,15 @@ web/*.js
 release-js/datahike*.js
 release-js/npm-*
 web/target-cljs
+
+# npm-package compiled output (keep source files: test.js, typescript-test.ts, package.template.json, *.md)
+npm-package/*.js
+npm-package/*.js.map
+npm-package/*.d.ts
+npm-package/package.json
+!npm-package/test.js
+!npm-package/typescript-test.ts
+
 .idea
 *.iml
 .vscode
@@ -39,3 +48,5 @@ tmp.edn
 .shadow-cljs
 .claude
 repl-mcp.log
+/node_modules
+npm-package/output.txt

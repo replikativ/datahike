@@ -1,7 +1,9 @@
 (ns ^:no-doc datahike.integration-test
   "This namespace is the minimum test a Datahike backend needs to pass for compatibility assessment."
   (:require [clojure.test :refer [is]]
-            [datahike.api :as d]))
+            [datahike.api :as d]
+            ;; Load hitchhiker-tree for backwards compatibility with existing test databases
+            #?(:clj [datahike.index.hitchhiker-tree])))
 
 (defn integration-test-fixture [config]
   (d/delete-database config)

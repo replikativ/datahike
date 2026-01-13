@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is use-fixtures]]
             [datahike.api :as d]))
 
-(def config {:store {:backend :mem :id "return-map-test"}})
+(def config {:store {:backend :memory :id #uuid "0e7000a9-0000-0000-0000-000000000001"}})
 
 (defn return-map-test-fixture [f]
   (d/delete-database config)

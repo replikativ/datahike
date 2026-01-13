@@ -1,38 +1,26 @@
 # Schema
 
-In databases there are two approaches for imposing integrity constraints on
-structured data collections: _schema-on-read_ or _schema-on-write_.
-The _schema-on-read_ approach assumes an implicit structure of the data where
-the structure is only interpreted at read level. Document databases like
-[MongoDB](https://www.mongodb.com/) or key value stores like
-[Redis](https://redis.io/) are examples for this kind of schema flexibility. In
-contrast, the _schema-on-write_ approach has an explicit assumption of the data
-model where the database ensures that all data written is conform to a defined
-data model. The traditional relational databases like
-[PostgreSQL](https://www.postgresql.org/) as well as modern column-based
-databases like [Cassandra](https://cassandra.apache.org/) fall under this
-category.
+Datahike supports two approaches to data validation: **schema-on-read** (flexible, validate later) and **schema-on-write** (strict, validate immediately). Choose at database creation time - this cannot be changed later.
 
-Datahike supports both approaches which can be chosen at creation time but can
-not be changed afterwards.
+## When to Use Each Approach
 
-Have a look at the `core`-namespace in the `examples/store-intro` folder for
-example configuration and transactions.
+| Aspect | Schema-on-read (`:read`) | Schema-on-write (`:write`, default) |
+|--------|-------------------------|-------------------------------------|
+| **Validation** | None - accepts any data | Enforces types and structure |
+| **Use when** | Prototyping, evolving schemas, heterogeneous data | Production systems, data integrity critical |
+| **Similar to** | MongoDB, Redis, JSON documents | PostgreSQL, Datomic, traditional RDBMS |
+| **Trade-off** | Flexibility vs. runtime errors | Safety vs. schema migration complexity |
+
+**Default:** Datahike uses `:write` (schema-on-write) by default since version 0.2.0.
 
 ## Schema-on-read
 
-By inheriting most of the code from
-[Datascript](https://github.com/tonsky/datascript) the default approach was
-_schema-on-read_ where you could add any arbitrary Clojure data structures to
-the database with a small set of helper definitions that added information
-about references and cardinality. Even though Datahike's API moved to a
-_schema-on-write_ approach, the schema-less behavior is still supported. On
-database creation you may opt out by setting the `:schema-flexibility` parameter to `:read`.
+Schema-on-read accepts any data without validation. Set `:schema-flexibility :read` at database creation to enable this mode.
 
 ```clojure
 (require '[datahike.api :as d])
 
-(def cfg {:store {:backend :mem :id "schemaless"} :schema-flexibility :read})
+(def cfg {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440010"} :schema-flexibility :read})
 
 (d/create-database cfg)
 
@@ -44,16 +32,13 @@ database creation you may opt out by setting the `:schema-flexibility` parameter
 
 ## Schema-on-write
 
-With the release of version `0.2.0` Datahike enforces by default an explicit
-schema where you have to define your expected data shapes in advance. The
-schema itself is present in the database index, so you can simply transact it
-like any other datom.
+Schema-on-write (the default) enforces type safety and structure. Define your schema before adding data. The schema itself is stored in the database, so you transact it like any other data.
 
 ```clojure
 (require '[datahike.api :as d])
 
 ;; since the :write approach is the default value we may also skip the setting
-(def cfg {:store {:backend :mem :id "schema-on-write"} :schema-flexibility :write})
+(def cfg {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440011"} :schema-flexibility :write})
 
 (d/create-database cfg)
 
@@ -114,14 +99,189 @@ The following types are currently support in datahike:
 | `db.type/uuid`    | java.util.UUID       |
 | `db.type/tuple`   | clojure.lang.Vector  |
 
-The schema is validated using [clojure.spec](https://clojure.org/guides/spec).
-See `src/datahike/schema.cljc` for the implementation details.
+The schema is validated using [clojure.spec](https://clojure.org/guides/spec). For additional validation beyond schema, see [Entity Specs](entity_spec.md).
 
-### Migration
+### Tuple Examples
 
-Updating an existing schema is discouraged as it may lead to inconsistencies
-in your data. Therefore, only schema updates for `db.cardinality` and `db.unique`
-are supported. Rather than updating an existing attribute, it is recommended to create
-a new attribute and migrate data accordingly. Alternatively, if you want to maintain your
-old attribute names, export your data except the schema, transform it to the new
-schema, create a new database with the new schema, and import the transformed data.
+Tuples store multiple values together as a single attribute. Datahike supports three tuple types:
+
+#### Composite Tuples
+Composite tuples combine existing attributes into a compound key:
+
+```clojure
+;; Define the component attributes
+(def schema [{:db/ident :user/first-name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+             {:db/ident :user/last-name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+             ;; Composite tuple combining first and last name
+             {:db/ident :user/full-name
+              :db/valueType :db.type/tuple
+              :db/tupleAttrs [:user/first-name :user/last-name]
+              :db/cardinality :db.cardinality/one
+              :db/unique :db.unique/identity}])
+
+(d/transact conn {:tx-data schema})
+(d/transact conn {:tx-data [{:user/first-name "Alice" :user/last-name "Smith"}]})
+
+;; Query by the composite tuple
+(d/q '[:find ?e :where [?e :user/full-name ["Alice" "Smith"]]] @conn)
+```
+
+#### Heterogeneous Fixed-Length Tuples
+Fixed-length tuples with different types for each position:
+
+```clojure
+;; Geographic coordinate: [latitude longitude elevation]
+(def schema [{:db/ident :location/coordinates
+              :db/valueType :db.type/tuple
+              :db/tupleTypes [:db.type/double :db.type/double :db.type/long]
+              :db/cardinality :db.cardinality/one}])
+
+(d/transact conn {:tx-data schema})
+(d/transact conn {:tx-data [{:location/coordinates [37.7749 -122.4194 52]}]})
+```
+
+#### Homogeneous Variable-Length Tuples
+Variable-length tuples where all elements have the same type:
+
+```clojure
+;; RGB color values
+(def schema [{:db/ident :color/rgb
+              :db/valueType :db.type/tuple
+              :db/tupleType :db.type/long
+              :db/cardinality :db.cardinality/one}])
+
+(d/transact conn {:tx-data schema})
+(d/transact conn {:tx-data [{:color/rgb [255 128 0]}]})
+```
+
+### Schema Migration
+
+Updating existing schema is discouraged as it may cause data inconsistencies. Only updates to `:db/cardinality` and `:db/unique` are supported.
+
+**Recommended migration strategies:**
+
+1. **Add new attributes** - Create a new attribute and migrate data, deprecating the old one
+2. **Export and reimport** - Export data, create new database with updated schema, transform and import data
+3. **Use norms** - For systematic schema changes across environments, use [Norms (Database Migrations)](norms.md)
+
+## Common Schema Patterns
+
+### User Profile
+
+```clojure
+(def user-schema
+  [{:db/ident :user/id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity
+    :db/doc "Unique user identifier"}
+
+   {:db/ident :user/email
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity
+    :db/doc "User email address"}
+
+   {:db/ident :user/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+
+   {:db/ident :user/roles
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/many
+    :db/doc "User roles (admin, editor, viewer)"}
+
+   {:db/ident :user/created-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/index true}])
+```
+
+### Blog Post with References
+
+```clojure
+(def blog-schema
+  [{:db/ident :post/id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+
+   {:db/ident :post/title
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+
+   {:db/ident :post/content
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+
+   {:db/ident :post/author
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc "Reference to user entity"}
+
+   {:db/ident :post/tags
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/many}
+
+   {:db/ident :post/published-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/index true}])
+```
+
+### Hierarchical Data (Organization Chart)
+
+```clojure
+(def org-schema
+  [{:db/ident :employee/id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+
+   {:db/ident :employee/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+
+   {:db/ident :employee/manager
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc "Reference to manager (also an employee)"}
+
+   {:db/ident :employee/department
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc "Reference to department entity"}
+
+   {:db/ident :department/name
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}])
+```
+
+### Component Entities (Cascading Deletion)
+
+```clojure
+(def order-schema
+  [{:db/ident :order/id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+
+   {:db/ident :order/items
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/many
+    :db/isComponent true
+    :db/doc "Line items are components - deleted when order is deleted"}
+
+   {:db/ident :item/product-id
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+
+   {:db/ident :item/quantity
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+
+   {:db/ident :item/price
+    :db/valueType :db.type/bigdec
+    :db/cardinality :db.cardinality/one}])
+```

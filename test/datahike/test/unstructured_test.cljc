@@ -69,8 +69,8 @@
 
 (deftest test-basic-schema-on-read
   (testing "Basic operations with schema-on-read"
-    (let [cfg {:store {:backend :mem
-                       :id "test-basic-schema-on-read"}
+    (let [cfg {:store {:backend :memory
+                       :id #uuid "10000000-0000-0000-0000-000000000001"}
                :schema-flexibility :read}
           _ (d/delete-database cfg)
           _ (d/create-database cfg)
@@ -87,8 +87,8 @@
 
 (deftest test-unstructured-schema-on-read
   (testing "Using process-unstructured-data with schema-on-read"
-    (let [cfg {:store {:backend :mem
-                       :id "test-unstructured-schema-on-read"}
+    (let [cfg {:store {:backend :memory
+                       :id #uuid "20000000-0000-0000-0000-000000000002"}
                :schema-flexibility :read}
           _ (d/delete-database cfg)
           _ (d/create-database cfg)
@@ -116,8 +116,8 @@
 
 (deftest test-transact-unstructured-api
   (testing "Using the transact-unstructured API with schema-on-read"
-    (let [cfg {:store {:backend :mem
-                       :id "test-transact-unstructured-api-read"}
+    (let [cfg {:store {:backend :memory
+                       :id #uuid "30000000-0000-0000-0000-000000000003"}
                :schema-flexibility :read}
           _ (d/delete-database cfg)
           _ (d/create-database cfg)
@@ -149,8 +149,8 @@
 
 (deftest test-schema-on-write
   (testing "Using transact-unstructured with schema-on-write"
-    (let [cfg {:store {:backend :mem
-                       :id "test-schema-on-write"}}  ;; Default is schema-on-write
+    (let [cfg {:store {:backend :memory
+                       :id #uuid "40000000-0000-0000-0000-000000000004"}}  ;; Default is schema-on-write
           _ (d/delete-database cfg)
           _ (d/create-database cfg)
           conn (d/connect cfg)
@@ -215,8 +215,8 @@
 
 (deftest test-cardinality-many-inference
   (testing "Inferring cardinality/many from vector values"
-    (let [cfg {:store {:backend :mem
-                       :id "test-cardinality-many"}}
+    (let [cfg {:store {:backend :memory
+                       :id #uuid "50000000-0000-0000-0000-000000000005"}}
           _ (d/delete-database cfg)
           _ (d/create-database cfg)
           conn (d/connect cfg)
@@ -260,8 +260,8 @@
 
 (deftest test-schema-conflict
   (testing "Detecting schema conflicts"
-    (let [cfg {:store {:backend :mem
-                       :id "test-schema-conflict"}}
+    (let [cfg {:store {:backend :memory
+                       :id #uuid "60000000-0000-0000-0000-000000000006"}}
           _ (d/delete-database cfg)
           _ (d/create-database cfg)
           conn (d/connect cfg)]

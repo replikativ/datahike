@@ -10,8 +10,8 @@
   (d/connect cfg))
 
 (deftest test-history-cache-miss
-  (let [cfg {:store              {:backend :mem
-                                  :id      "cache-test"}
+  (let [cfg {:store              {:backend :memory
+                                  :id      #uuid "001a0000-0000-0000-0000-00000000001a"}
              :name               "cache-test"
              :keep-history?      true
              :schema-flexibility :write

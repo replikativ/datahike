@@ -18,7 +18,7 @@ The unstructured input feature automatically:
 (require '[datahike.experimental.unstructured :as du])
 
 ;; Initialize database (schema-on-read is best for unstructured data)
-(def cfg {:store {:backend :mem :id "my-db"}
+(def cfg {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
           :schema-flexibility :read})
 (d/create-database cfg)
 (def conn (d/connect cfg))
@@ -113,7 +113,7 @@ This makes the API particularly powerful for schema-on-write - you get the benef
 
 ```clojure
 ;; With a schema-on-write database
-(def cfg {:store {:backend :mem :id "my-strict-db"}})
+(def cfg {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440001"}})
 (d/create-database cfg) 
 (def conn (d/connect cfg))
 

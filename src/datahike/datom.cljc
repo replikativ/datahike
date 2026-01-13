@@ -1,10 +1,10 @@
 (ns ^:no-doc datahike.datom
-  #?(:cljs (:require-macros [datahike.datom :refer [combine-cmp]]))
   (:require  [clojure.walk]
              [clojure.data]
              [datahike.constants :refer [tx0]]
              [datahike.tools :refer [combine-hashes]]
-             #?(:cljs [goog.array :as garray])))
+             #?(:cljs [goog.array :as garray]))
+  #?(:cljs (:require-macros [datahike.datom :refer [combine-cmp]])))
 
 (declare hash-datom equiv-datom seq-datom nth-datom assoc-datom val-at-datom)
 
@@ -88,7 +88,7 @@
        (containsKey [e k] (#{:e :a :v :tx :added} k))
        (assoc [d k v] (assoc-datom d k v))]))
 
-#?(:cljs (goog/exportSymbol "datahike.db.Datom" Datom))
+#?(:cljs (goog/exportSymbol "datahike.datom.Datom" Datom))
 
 (defn ^Datom datom
   ([e a v] (Datom. e a v tx0 0))
@@ -186,53 +186,62 @@
       (if (nil? o2) 0
           (compare o1 o2))))
 
+(defn long-cmp [^long a ^long b]
+  #?(:clj  (Long/compare a b)
+     :cljs (- a b)))
+
+(defn boolean-cmp [a b]
+  #?(:clj  (Boolean/compare ^Boolean a ^Boolean b)
+     :cljs (- a b)))
+
+(comment
 ;; Slower cmp-* fns allows for datom fields to be nil.
 ;; Such datoms come from slice method where they are used as boundary markers.
 
-(defn cmp-datoms-eavt [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (cmp (.-a d1) (.-a d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+  (defn cmp-datoms-eavt [^Datom d1, ^Datom d2]
+    (combine-cmp
+     (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+     (cmp (.-a d1) (.-a d2))
+     (cmp (.-v d1) (.-v d2))
+     (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
-(defn cmp-datoms-aevt [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (cmp (.-a d1) (.-a d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+  (defn cmp-datoms-aevt [^Datom d1, ^Datom d2]
+    (combine-cmp
+     (cmp (.-a d1) (.-a d2))
+     (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+     (cmp (.-v d1) (.-v d2))
+     (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
-(defn cmp-datoms-avet [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (cmp (.-a d1) (.-a d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+  (defn cmp-datoms-avet [^Datom d1, ^Datom d2]
+    (combine-cmp
+     (cmp (.-a d1) (.-a d2))
+     (cmp (.-v d1) (.-v d2))
+     (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+     (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
 
-(defn cmp-temporal-datoms-eavt [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (cmp (.-a d1) (.-a d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
-   (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
+  (defn cmp-temporal-datoms-eavt [^Datom d1, ^Datom d2]
+    (combine-cmp
+     (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+     (cmp (.-a d1) (.-a d2))
+     (cmp (.-v d1) (.-v d2))
+     (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
+     (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
 
-(defn cmp-temporal-datoms-aevt [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (cmp (.-a d1) (.-a d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
-   (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
+  (defn cmp-temporal-datoms-aevt [^Datom d1, ^Datom d2]
+    (combine-cmp
+     (cmp (.-a d1) (.-a d2))
+     (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+     (cmp (.-v d1) (.-v d2))
+     (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
+     (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
 
-(defn cmp-temporal-datoms-avet [^Datom d1, ^Datom d2]
-  (combine-cmp
-   (cmp (.-a d1) (.-a d2))
-   (cmp (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
-   (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
+  (defn cmp-temporal-datoms-avet [^Datom d1, ^Datom d2]
+    (combine-cmp
+     (cmp (.-a d1) (.-a d2))
+     (cmp (.-v d1) (.-v d2))
+     (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+     (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
+     (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2)))))
 
 ;; fast versions without nil checks
 
@@ -249,9 +258,32 @@
   #?(:clj (.getName (class x))
      :cljs (type x)))
 
+(defn compare-value
+  "Compare two values with cross-platform UUID compatibility.
+   CLJS UUID comparison is adjusted to match CLJ's signed comparison,
+   ensuring consistent ordering when indices are built on CLJ and queried on CLJS."
+  [v1 v2]
+  #?(:clj (compare v1 v2)
+     :cljs
+     (if (and (uuid? v1) (uuid? v2))
+       ;; Match Java's signed UUID comparison where MSB is treated as signed
+       ;; In signed comparison: 0x8... is negative, so 0x8... < 0x0...
+       (let [s1 (.-uuid ^cljs.core/UUID v1)
+             s2 (.-uuid ^cljs.core/UUID v2)
+             c1 (.charCodeAt s1 0)
+             c2 (.charCodeAt s2 0)
+             ;; charCode 56 = "8", chars 8-F are "negative" in signed
+             neg1 (>= c1 56)
+             neg2 (>= c2 56)]
+         (cond
+           (and neg1 (not neg2)) -1  ;; v1 "negative", v2 "positive" → v1 < v2
+           (and neg2 (not neg1)) 1   ;; v2 "negative", v1 "positive" → v1 > v2
+           :else (compare s1 s2)))   ;; same sign → string compare works
+       (compare v1 v2))))
+
 (defn- safe-compare [a b]
   (try
-    (compare a b)
+    (compare-value a b)
     (catch #?(:clj Exception :cljs js/Error) _e
       (compare (class-name a)
                (class-name b)))))
@@ -266,64 +298,84 @@
 
 (defn cmp-val [val]
   (case val
-    :e (fn [^Datom d1 ^Datom d2] (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2)))
+    :e (fn [^Datom d1 ^Datom d2] (long-cmp (.-e d1) (.-e d2)))
     :a (fn [^Datom d1 ^Datom d2] (cmp-nil (.-a d1) (.-a d2)))
     :v (fn [^Datom d1 ^Datom d2] (cmp-nil (.-v d1) (.-v d2)))
-    :tx (fn [^Datom d1 ^Datom d2] (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2)))
-    :added (fn [^Datom d1 ^Datom d2] (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2)))))
+    :tx (fn [^Datom d1 ^Datom d2] (long-cmp (datom-tx d1) (datom-tx d2)))
+    :added (fn [^Datom d1 ^Datom d2] (long-cmp (datom-added d1) (datom-added d2)))))
 
 (defn cmp-val-expr [val d1 d2]
   (case val
-    :e `(#?(:clj Long/compare :cljs -) (.-e ~d1) (.-e ~d2))
+    :e `(long-cmp (.-e ~d1) (.-e ~d2))
     :a `(cmp-nil (.-a ~d1) (.-a ~d2))
     :v `(cmp-nil (.-v ~d1) (.-v ~d2))
-    :tx `(#?(:clj Long/compare :cljs -) (datom-tx ~d1) (datom-tx ~d2))
-    :added `(#?(:clj Boolean/compare :cljs -) (datom-added ~d1) (datom-added ~d2))))
+    :tx `(long-cmp (datom-tx ~d1) (datom-tx ~d2))
+    :added `(boolean-cmp (datom-added ~d1) (datom-added ~d2))))
 
 (defn cmp-datoms-eavt-quick [^Datom d1, ^Datom d2]
   (combine-cmp
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+   (long-cmp (.-e d1) (.-e d2))
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+   (compare-value (.-v d1) (.-v d2))
+   (long-cmp (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-aevt-quick [^Datom d1, ^Datom d2]
   (combine-cmp
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (compare (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+   (long-cmp (.-e d1) (.-e d2))
+   (compare-value (.-v d1) (.-v d2))
+   (long-cmp (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-datoms-avet-quick [^Datom d1, ^Datom d2]
   (combine-cmp
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))))
+   (compare-value (.-v d1) (.-v d2))
+   (long-cmp (.-e d1) (.-e d2))
+   (long-cmp (datom-tx d1) (datom-tx d2))))
 
 (defn cmp-temporal-datoms-eavt-quick [^Datom d1, ^Datom d2]
   (combine-cmp
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
+   (long-cmp (.-e d1) (.-e d2))
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
-   (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
+   (compare-value (.-v d1) (.-v d2))
+   (long-cmp (datom-tx d1) (datom-tx d2))
+   (boolean-cmp (datom-added d1) (datom-added d2))))
 
 (defn cmp-temporal-datoms-aevt-quick [^Datom d1, ^Datom d2]
   (combine-cmp
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (compare (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
-   (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
+   (long-cmp (.-e d1) (.-e d2))
+   (compare-value (.-v d1) (.-v d2))
+   (long-cmp (datom-tx d1) (datom-tx d2))
+   (boolean-cmp (datom-added d1) (datom-added d2))))
 
 (defn cmp-temporal-datoms-avet-quick [^Datom d1, ^Datom d2]
   (combine-cmp
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare (.-v d1) (.-v d2))
-   (#?(:clj Long/compare :cljs -) (.-e d1) (.-e d2))
-   (#?(:clj Long/compare :cljs -) (datom-tx d1) (datom-tx d2))
-   (#?(:clj Boolean/compare :cljs -) (datom-added d1) (datom-added d2))))
+   (compare-value (.-v d1) (.-v d2))
+   (long-cmp (.-e d1) (.-e d2))
+   (long-cmp (datom-tx d1) (datom-tx d2))
+   (boolean-cmp (datom-added d1) (datom-added d2))))
+
+;; Prefix comparators for existence checks (compare e,a,v only, ignoring tx)
+;; Used by insert to check if ANY datom with same e,a,v exists
+(defn cmp-datoms-eavt-prefix [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (long-cmp (.-e d1) (.-e d2))
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (compare-value (.-v d1) (.-v d2))))
+
+(defn cmp-datoms-aevt-prefix [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (long-cmp (.-e d1) (.-e d2))
+   (compare-value (.-v d1) (.-v d2))))
+
+(defn cmp-datoms-avet-prefix [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (compare-value (.-v d1) (.-v d2))
+   (long-cmp (.-e d1) (.-e d2))))
 
 (defn diff-sorted [a b cmp]
   (loop [only-a []
@@ -362,3 +414,12 @@
                              :aevt cmp-temporal-datoms-aevt-quick
                              :avet cmp-temporal-datoms-avet-quick
                              cmp-temporal-datoms-eavt-quick))))
+
+(defn index-type->cmp-prefix
+  "Get prefix comparator for (e,a,v) matching, ignoring tx.
+   Used for existence checks in insert operations."
+  [index-type]
+  (case index-type
+    :aevt cmp-datoms-aevt-prefix
+    :avet cmp-datoms-avet-prefix
+    cmp-datoms-eavt-prefix))

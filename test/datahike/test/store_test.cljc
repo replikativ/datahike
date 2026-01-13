@@ -22,16 +22,18 @@
       (is (d/database-exists? cfg)))))
 
 (deftest test-db-file-store
-  (test-store {:store {:backend :file :path (case (System/getProperty "os.name")
-                                              "Windows 10" (str (System/getProperty "java.io.tmpdir") "api-fs")
-                                              "/tmp/api-fs")}}))
+  (test-store {:store {:backend :file
+                       :path (case (System/getProperty "os.name")
+                               "Windows 10" (str (System/getProperty "java.io.tmpdir") "api-fs")
+                               "/tmp/api-fs")
+                       :id #uuid "f11e0000-0000-0000-0000-00000000000f"}}))
 
 (deftest test-db-mem-store
-  (test-store {:store {:backend :mem :id "test-mem"}}))
+  (test-store {:store {:backend :memory :id #uuid "e0000000-0000-0000-0000-00000000000e"}}))
 
 (deftest test-index
-  (let [config {:store {:backend :mem
-                        :id "test-index"}
+  (let [config {:store {:backend :memory
+                        :id #uuid "f0000000-0000-0000-0000-00000000000f"}
                 :schema-flexibility :read
                 :keep-history? false}]
     (d/delete-database config)
@@ -49,8 +51,8 @@
       (d/release conn))))
 
 (deftest test-binary-support
-  (let [config {:store {:backend :mem
-                        :id "test-binary-support"}
+  (let [config {:store {:backend :memory
+                        :id #uuid "00100000-0000-0000-0000-000000000010"}
                 :schema-flexibility :read
                 :keep-history? false}]
     (d/delete-database config)

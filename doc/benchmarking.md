@@ -43,7 +43,7 @@ Options:
 TIMBRE_LEVEL=':warn' clj -M:benchmark run -f :connection -d '[1000]' -c file -t feature -o edn feature.edn
 ```
 
-2) Benchmark *transaction* time for *integer* datoms and 10 entities (= 40 datoms) per transaction using *mem* backend and output as csv
+2) Benchmark *transaction* time for *integer* datoms and 10 entities (= 40 datoms) per transaction using *memory* backend and output as csv
 
 ```bash
 TIMBRE_LEVEL=':warn' clj -M:benchmark run -f :transaction -y '[:int]' -x '[10]' -c mem-set -o csv feature.csv
@@ -70,22 +70,26 @@ Implementations:
 ```clojure
 (def db-configs
   [{:config-name "mem-set"
-    :config {:store {:backend :mem :id "performance-set"}
+    :config {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
              :schema-flexibility :write
              :keep-history? false
              :index :datahike.index/persistent-set}}
    {:config-name "mem-hht"
-    :config {:store {:backend :mem :id "performance-hht"}
+    :config {:store {:backend :memory :id #uuid "550e8400-e29b-41d4-a716-446655440001"}
              :schema-flexibility :write
              :keep-history? false
              :index :datahike.index/hitchhiker-tree}}
    {:config-name "file-set"
-    :config {:store {:backend :file :path "/tmp/performance-hht"}
+    :config {:store {:backend :file
+                     :path "/tmp/performance-set"
+                     :id #uuid "550e8400-e29b-41d4-a716-446655440002"}
              :schema-flexibility :write
              :keep-history? false
-             :index :datahike.index/hitchhiker-tree}}
+             :index :datahike.index/persistent-set}}
    {:config-name "file-hht"
-    :config {:store {:backend :file :path "/tmp/performance-hht"}
+    :config {:store {:backend :file
+                     :path "/tmp/performance-hht"
+                     :id #uuid "550e8400-e29b-41d4-a716-446655440003"}
              :schema-flexibility :write
              :keep-history? false
              :index :datahike.index/hitchhiker-tree}}])
@@ -280,11 +284,11 @@ The edn output will look as follows:
 
 ```clojure
 [ ;; ...
- {:context {:dh-config {:schema-flexibility :write, 
-                        :keep-history? false, 
-                        :index :datahike.index/persistent-set, 
-                        :name "mem-set", 
-                        :backend :mem}, 
+ {:context {:dh-config {:schema-flexibility :write,
+                        :keep-history? false,
+                        :index :datahike.index/persistent-set,
+                        :name "mem-set",
+                        :backend :memory}, 
             :function :vector-arg-query, 
             :db-entities 2500, 
             :db-datoms 10000, 

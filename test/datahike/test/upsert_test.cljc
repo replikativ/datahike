@@ -221,19 +221,19 @@
     (d/release conn)))
 
 (deftest temporal-history-mem
-  (let [config {:store {:backend :mem :id "temp-hist-hht"}
+  (let [config {:store {:backend :memory :id #uuid "80000000-0000-0000-0000-000000000008"}
                 :schema-flexibility :write
                 :keep-history? true}]
     (temporal-history-test config)))
 
 (deftest temporal-history-file
-  (let [config {:store {:backend :file :path "/tmp/temp-hist-hht"}
+  (let [config {:store {:backend :file :path "/tmp/temp-hist-hht" :id #uuid "ab5e0000-0000-0000-0000-000000000001"}
                 :schema-flexibility :write
                 :keep-history? true}]
     (temporal-history-test config)))
 
 (deftest temporal-history-file-with-attr-refs
-  (let [config {:store {:backend :file :path "/tmp/temp-hist-attr-refs"}
+  (let [config {:store {:backend :file :path "/tmp/temp-hist-attr-refs" :id #uuid "ab5e0000-0000-0000-0000-000000000002"}
                 :schema-flexibility :write
                 :keep-history? true
                 :attribute-refs? true}]
@@ -242,12 +242,14 @@
 (deftest test-upsert-after-large-coll
   (let [ascii-ish (map char (concat (range 48 58) (range 65 91) (range 97 123)))
         file-cfg {:store {:backend :file
-                          :path "/tmp/upsert-large-test"}}
+                          :path "/tmp/upsert-large-test"
+                          :id #uuid "ab5e0000-0000-0000-0000-000000000003"}}
         file-pss-cfg {:store {:backend :file
                               :index :datahike.index/persistent-set
-                              :path    "/tmp/upsert-large-pss-test"}}
-        mem-cfg {:store {:backend :mem
-                         :id "upsert-large-test"}}
+                              :path    "/tmp/upsert-large-pss-test"
+                              :id #uuid "ab5e0000-0000-0000-0000-000000000004"}}
+        mem-cfg {:store {:backend :memory
+                         :id #uuid "90000000-0000-0000-0000-000000000009"}}
         _ (if (d/database-exists? file-cfg)
             (do
               (d/delete-database file-cfg)

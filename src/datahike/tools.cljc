@@ -1,11 +1,12 @@
 (ns ^:no-doc datahike.tools
-  #?(:cljs (:require-macros [datahike.tools :refer [raise]]))
   (:require
    [superv.async :refer [throw-if-exception-]]
    [clojure.core.async.impl.protocols :as async-impl]
+   [hasch.core :refer [uuid]]
    [clojure.core.async :as async]
    #?(:clj [clojure.java.io :as io])
    [taoensso.timbre :as log])
+  #?(:cljs (:require-macros [datahike.tools :refer [raise]]))
   #?(:clj (:import [java.util Properties UUID Date]
                    [java.util.concurrent CompletableFuture]
                    [java.net InetAddress])))
@@ -98,38 +99,45 @@
            (if-not (nil? x) (async/put! p x) (async/close! p))
            this)
          async-impl/ReadPort
-         (take! [_this handler] (async-impl/take! p handler)))))
+         (take! [_this handler] (async-impl/take! p handler))
+         async-impl/WritePort
+         (put! [_ val handler]
+           (if (instance? Throwable val)
+             (.completeExceptionally cf val)
+             (.complete cf val))
+           (async-impl/put! p val handler)))))
    :cljs (def throwable-promise async/promise-chan))
 
-(defn get-version
-  "Retrieves the current version of a dependency. Thanks to https://stackoverflow.com/a/33070806/10978897"
-  [dep]
-  #?(:clj
+#?(:clj
+   (defn get-version
+     "Retrieves the current version of a dependency. Thanks to https://stackoverflow.com/a/33070806/10978897"
+     [dep]
      (let [path (str "META-INF/maven/" (or (namespace dep) (name dep))
                      "/" (name dep) "/pom.properties")
            props (io/resource path)]
        (when props
          (with-open [stream (io/input-stream props)]
            (let [props (doto (Properties.) (.load stream))]
-             (.getProperty props "version")))))
-     :cljs
-     "JavaScript"))
+             (.getProperty props "version")))))))
 
-(def datahike-version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT"))
+#?(:clj (def datahike-version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT")))
 
-(def hitchhiker-tree-version (get-version 'io.replikativ/hitchhiker-tree))
+#?(:clj (def hitchhiker-tree-version
+          (try (get-version 'io.replikativ/hitchhiker-tree)
+               (catch Exception _ nil))))
 
-(def persistent-set-version (get-version 'persistent-sorted-set/persistent-sorted-set))
+#?(:clj (def persistent-set-version (get-version 'io.replikativ/persistent-sorted-set)))
 
-(def konserve-version (get-version 'io.replikativ/konserve))
+#?(:clj (def konserve-version (get-version 'io.replikativ/konserve)))
 
-(defn meta-data []
-  {:datahike/version datahike-version
-   :konserve/version konserve-version
-   :hitchhiker.tree/version hitchhiker-tree-version
-   :persistent.set/version persistent-set-version
-   :datahike/id #?(:clj (UUID/randomUUID) :cljs (random-uuid))
-   :datahike/created-at #?(:clj (Date.) :cljs (js/Date.))})
+#?(:clj
+   (defmacro meta-data []
+     `{:datahike/version ~datahike-version
+       :konserve/version ~konserve-version
+       :hitchhiker.tree/version ~hitchhiker-tree-version
+       :persistent.set/version ~persistent-set-version
+       :datahike/id (uuid)
+       :datahike/created-at (get-date)}))
 
 (defn deep-merge
   "Recursively merges maps together. If all the maps supplied have nested maps

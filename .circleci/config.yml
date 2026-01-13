@@ -5,6 +5,7 @@ setup: true
 orbs:
   tools: replikativ/clj-tools@0
   continuation: circleci/continuation@2.0
+  browser-tools: circleci/browser-tools@1.4
 
 jobs:
   setup:
@@ -157,6 +158,89 @@ jobs:
           paths:
             - /home/circleci/.m2
             - /home/circleci/.deps.clj
+  kabel-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run kabel tests
+          command: bb test kabel
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
+  browser-test:
+    docker:
+      - image: cimg/node:20.18-browsers
+    working_directory: /home/circleci/replikativ
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - browser-tools/install-chrome
+      - run:
+          name: Install Java 17
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y openjdk-17-jdk
+            sudo update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java
+      - run:
+          name: Install Clojure
+          command: |
+            curl -L -O https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh
+            chmod +x linux-install.sh
+            sudo ./linux-install.sh
+      - run:
+          name: Prepare dependencies
+          command: clojure -X:deps prep
+      - run:
+          name: Start test server
+          command: clojure -M:test -e "(require 'datahike.kabel.browser-test-server) (datahike.kabel.browser-test-server/start-test-server!) (Thread/sleep Long/MAX_VALUE)"
+          background: true
+      - run:
+          name: Wait for server startup
+          command: sleep 20
+      - run:
+          name: Compile ClojureScript for browser tests
+          command: npx shadow-cljs compile :browser-ci
+          no_output_timeout: 5m
+      - run:
+          name: Run Karma browser tests
+          command: npx karma start --single-run
+          no_output_timeout: 5m
+  node-cljs-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run CLJS node tests
+          command: bb node-cljs-test
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
+  npm-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Build npm package
+          command: bb npm-build
+          no_output_timeout: 5m
+      - run:
+          name: Run npm JS tests
+          command: bb npm-test
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   build:
     executor: tools/clojurecli
     steps:
@@ -208,7 +292,11 @@ workflows:
     jobs:
       - setup:
           context: dockerhub-deploy
-          setup_cljs: false
+          setup_cljs: true
+      - tools/tools:
+          context: dockerhub-deploy
+          requires:
+            - setup
       - build:
           context: dockerhub-deploy
           requires:
@@ -242,6 +330,22 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
+      - kabel-test:
+          context: dockerhub-deploy
+          requires:
+            - build
+      - browser-test:
+          context: dockerhub-deploy
+          requires:
+            - build
+      - node-cljs-test:
+          context: dockerhub-deploy
+          requires:
+            - build
+      - npm-test:
+          context: dockerhub-deploy
+          requires:
+            - build
       - deploy:
           context:
             - dockerhub-deploy
@@ -256,6 +360,10 @@ workflows:
             - hitchhiker-tree-test
             - backward-compatibility-test
             - integration-test
+            - kabel-test
+            - browser-test
+            - node-cljs-test
+            - npm-test
       - release-jar:
           context:
             - dockerhub-deploy
@@ -269,6 +377,10 @@ workflows:
             - hitchhiker-tree-test
             - backward-compatibility-test
             - integration-test
+            - kabel-test
+            - browser-test
+            - node-cljs-test
+            - npm-test
       - release-pod:
           context:
             - dockerhub-deploy
@@ -282,3 +394,7 @@ workflows:
             - hitchhiker-tree-test
             - backward-compatibility-test
             - integration-test
+            - kabel-test
+            - browser-test
+            - node-cljs-test
+            - npm-test

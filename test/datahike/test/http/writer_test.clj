@@ -13,14 +13,17 @@
                                 :dev-mode false
                                 :token    "securerandompassword"})]
       (try
-        (let [cfg    {:store              {:backend :file :path  "/tmp/distributed_writer"}
+        (let [cfg    {:store              {:backend :file
+                                           :path  "/tmp/distributed_writer"
+                                           :id #uuid "17100000-0000-0000-0000-000000000001"}
                       :keep-history?      true
                       :schema-flexibility :read
                       :writer             {:backend :datahike-server
                                            :url     (str "http://localhost:" port)
                                            :token   "securerandompassword"}}
               conn   (do
-                       (d/delete-database cfg)
+                       (when (d/database-exists? cfg)
+                         (d/delete-database cfg))
                        (d/create-database cfg)
                        (d/connect cfg))]
 
@@ -53,7 +56,7 @@
 (deftest test-http-writer-failure-without-server
   (testing "Db creation fails without writer connection."
     (let [port   38217
-          cfg    {:store              {:backend :mem :id "distributed_writer_create_db"}
+          cfg    {:store              {:backend :memory :id #uuid "00170000-0000-0000-0000-000000000017"}
                   :keep-history?      true
                   :schema-flexibility :read
                   :writer             {:backend :datahike-server
@@ -66,13 +69,13 @@
                      (d/connect cfg))))))
   (testing "Transact fails without writer connection."
     (let [port 38217
-          cfg  {:store              {:backend :mem :id "distributed_writer_transact"}
+          cfg  {:store              {:backend :memory :id #uuid "00180000-0000-0000-0000-000000000018"}
                 :keep-history?      true
                 :schema-flexibility :read
                 :writer             {:backend :datahike-server
                                      :url     (str "http://localhost:" port)
                                      :token   "securerandompassword"}}
-          server-cfg {:store              {:backend :mem :id "distributed_writer_transact"}
+          server-cfg {:store              {:backend :memory :id #uuid "00180000-0000-0000-0000-000000000018"}
                       :keep-history?      true
                       :schema-flexibility :read}]
         ;; make sure the database exists before testing transact

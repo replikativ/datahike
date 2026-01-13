@@ -1,15 +1,23 @@
 # Command line interface
 
-*This is work in progress and subject to change.*
+**Status: Stable** - The CLI is production-ready but may receive updates and improvements.
 
 We provide the `dthk` native executable to access Datahike databases from
 the command line.
 
+## Installation
 
-# Example usage
+1. Download the precompiled binary for your platform from the [Datahike releases page](https://github.com/replikativ/datahike/releases)
+2. Unzip the archive
+3. Add the `dthk` executable to your PATH
 
-First you need to download the precompiled binary, or build it yourself, and put
-it on your executable path.
+Supported platforms:
+- Linux (amd64, aarch64)
+- macOS (aarch64/Apple Silicon)
+
+For other platforms, build from source using GraalVM native-image (see project documentation).
+
+## Example usage
 
 To access a database you need to provide the usual configuration for Datahike.
 Put this into a file `myconfig.edn`.
@@ -17,6 +25,7 @@ Put this into a file `myconfig.edn`.
 ```clojure
 {:store  {:backend :file
           :path "/home/USERNAME/dh-shared-db"
+          :id #uuid "550e8400-e29b-41d4-a716-446655440000"
           :config {:in-place? true}}
  :keep-history? true
  :schema-flexibility :read}
@@ -101,8 +110,9 @@ extremely flexible and easy to start with.
 
 Forking is easy, it is enough to copy the folder of the store (even if the
 database is currently being written to). The only thing you need to take care of
-is to copy the DB root first and place it into the target directory last, it is
-the file `0594e3b6-9635-5c99-8142-412accf3023b.ksv`. Then you can use e.g.
+is to copy the DB root first and place it into the target directory last. The root
+file is a konserve internal storage file with a UUID name like `0594e3b6-9635-5c99-8142-412accf3023b.ksv`
+(the actual UUID will match your database's `:id` configuration). Then you can use e.g.
 `rsync` (or `git`) to copy all other (immutable) files into your new folder. In
 the end you copy the root file in there as well, making sure that all files it
 is referencing are reachable. Note that this will ensure that you only copy new

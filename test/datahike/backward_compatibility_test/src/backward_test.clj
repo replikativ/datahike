@@ -5,7 +5,9 @@
 (def schema [{:db/ident       :age
               :db/cardinality :db.cardinality/one
               :db/valueType   :db.type/long}])
-(def cfg {:store  {:backend :file :path "/tmp/datahike-backward-comp-test"}
+(def cfg {:store  {:backend :file
+                   :path "/tmp/datahike-backward-comp-test"
+                   :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
           :keep-history? true
           :schema-flexibility :write
           :initial-tx schema})

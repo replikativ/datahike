@@ -1,9 +1,10 @@
 (ns datahike.test.attribute-refs.utils
   (:require [datahike.api :as d]
-            [datahike.db.interface :as dbi]
-            [datahike.test.utils :refer [get-time]]))
+            [datahike.db.interface :as dbi])
+  #?(:clj (:import [java.util UUID])))
 
-(def ref-config {:store {:backend :mem :id "ref-config"}
+(def ref-config {:store {:backend :memory
+                         :id #?(:clj (UUID/randomUUID) :cljs (random-uuid))}
                  :writer {:backend :self}
                  :attribute-refs? true
                  :keep-history? false
@@ -84,7 +85,7 @@
     :db/valueType   :db.type/ref}])
 
 (defn setup-new-connection []
-  (let [ref-config (assoc-in ref-config [:store :id] (str (get-time)))]
+  (let [ref-config (assoc-in ref-config [:store :id] #?(:clj (UUID/randomUUID) :cljs (random-uuid)))]
     (d/delete-database ref-config)
     (d/create-database ref-config)
     (let [conn (d/connect ref-config)]

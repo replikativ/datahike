@@ -1,0 +1,26 @@
+{:cljdoc.doc/tree [["Readme" {:file "README.md"}]
+                   ["Getting Started" {}
+                    ["Why Datalog?" {:file "doc/datalog-vs-sql.md"}]
+                    ["Configuration" {:file "doc/config.md"}]
+                    ["Storage Backends" {:file "doc/storage-backends.md"}]
+                    ["Schema" {:file "doc/schema.md"}]]
+                   ["Core Features" {}
+                    ["Time Variance" {:file "doc/time_variance.md"}]
+                    ["Versioning (Beta)" {:file "doc/versioning.md"}]
+                    ["Distributed Architecture" {:file "doc/distributed.md"}]
+                    ["Garbage Collection" {:file "doc/gc.md"}]
+                    ["Norms (Database Migrations)" {:file "doc/norms.md"}]]
+                   ["Platform Support" {}
+                    ["JavaScript API" {:file "doc/javascript-api.md"}]
+                    ["Babashka Pod" {:file "doc/bb-pod.md"}]
+                    ["Command Line Interface" {:file "doc/cli.md"}]
+                    ["libdatahike (C/C++)" {:file "doc/libdatahike.md"}]]
+                   ["Advanced" {}
+                    ["Entity Specs" {:file "doc/entity_spec.md"}]
+                    ["Logging and Error Handling" {:file "doc/logging_and_error_handling.md"}]
+                    ["Unstructured Input (Experimental)" {:file "doc/unstructured.md"}]
+                    ["Backend Development" {:file "doc/backend-development.md"}]
+                    ["Benchmarking" {:file "doc/benchmarking.md"}]]
+                   ["Reference" {}
+                    ["Differences to Datomic" {:file "doc/datomic_differences.md"}]
+                    ["Contributing" {:file "doc/contributing.md"}]]]}

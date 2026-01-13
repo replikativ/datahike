@@ -5,6 +5,7 @@
   (:require
    [clojure.string :as str]
    [clojure.edn :as edn]
+   [clojure.core.async :as async]
    [datahike.connections :refer [*connections*]]
    [datahike.api.specification :refer [api-specification ->url]]
    [datahike.http.middleware :as middleware]
@@ -136,7 +137,7 @@
                                    (api/release (api/connect cfg) true)
                                    (catch Exception _))
                                  {:status 200
-                                  :body   (apply datahike.writing/delete-database cfg (rest body))}
+                                  :body   (async/<!! (apply datahike.writing/delete-database cfg (rest body)))}
                                  (catch Exception e
                                    {:status 500
                                     :body   {:msg (ex-message e)
@@ -152,9 +153,9 @@
                            (let [cfg (dissoc (first body) :remote-peer :writer)]
                              (try
                                {:status 200
-                                :body   (apply datahike.writing/create-database
-                                               cfg
-                                               (rest body))}
+                                :body   (async/<!! (apply datahike.writing/create-database
+                                                          cfg
+                                                          (rest body)))}
                                (catch Exception e
                                  {:status 500
                                   :body   {:msg (ex-message e)

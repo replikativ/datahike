@@ -8,7 +8,8 @@
   (let [{:keys [format]} client-config
         server (start-server server-config)]
     (try
-      (let [new-config (api/create-database {:schema-flexibility :read
+      (let [new-config (api/create-database {:store {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000001"}
+                                             :schema-flexibility :read
                                              :remote-peer        client-config})
             _          (is (map? new-config))
 
@@ -62,7 +63,8 @@
 
             _ (is (false? (api/database-exists? new-config)))
 
-            new-config (api/create-database {:schema-flexibility :write
+            new-config (api/create-database {:store {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000002"}
+                                             :schema-flexibility :write
                                              :remote-peer        client-config})
 
             conn (api/connect new-config)
@@ -129,7 +131,8 @@
                                 :token    "securerandompassword"})]
       (try
         (is (thrown-with-msg? Exception #"Exceptional status code: 401"
-                              (api/create-database {:schema-flexibility :read
+                              (api/create-database {:store {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000003"}
+                                                    :schema-flexibility :read
                                                     :remote-peer        {:backend :datahike-server
                                                                          :url    (str "http://localhost:" port)
                                                                          :token  "wrong"
@@ -141,14 +144,18 @@
           server (start-server {:port     port
                                 :join?    false
                                 :dev-mode true
-                                :token    "securerandompassword"})]
+                                :token    "securerandompassword"})
+          cfg {:store {:backend :memory :id #uuid "de110000-0000-0000-0000-000000000004"}
+               :schema-flexibility :read
+               :remote-peer        {:backend :datahike-server
+                                    :url    (str "http://localhost:" port)
+                                    :token  "wrong"
+                                    :format :edn}}]
       (try
-        (is (map? (api/create-database {:schema-flexibility :read
-                                        :remote-peer        {:backend :datahike-server
-                                                             :url    (str "http://localhost:" port)
-                                                             :token  "wrong"
-                                                             :format :edn}})))
+        (api/delete-database cfg)  ; Clean up any existing database
+        (is (map? (api/create-database cfg)))
         (finally
+          (api/delete-database cfg)
           (stop-server server))))))
 
 (deftest test-json-interface
@@ -161,10 +168,13 @@
           remote {:backend :datahike-server
                   :url     (str "http://localhost:" port)
                   :token   "securerandompassword"
-                  :format  :json}]
+                  :format  :json}
+          _ (try (api/request-json-raw :post "delete-database" remote
+                                       "[\"{:store {:backend :memory :id #uuid \\\"23196000-0000-0000-0000-000000000001\\\"}}\"]")
+                 (catch Exception _))]  ; Ignore if database doesn't exist
       (try
         (let [raw-cfg  (api/request-json-raw :post "create-database" remote
-                                             "[\"{:schema-flexibility :read}\"]")
+                                             "[\"{:store {:backend :memory :id #uuid \\\"23196000-0000-0000-0000-000000000001\\\"} :schema-flexibility :read}\"]")
               raw-conn (api/request-json-raw :post "connect" remote
                                              (str "[" raw-cfg "]"))
               _        (api/request-json-raw :post "transact" remote
@@ -176,4 +186,7 @@
                                             raw-db "]"))
                  "[\"!set\",[[\"Peter\",42]]]")))
         (finally
+          (try (api/request-json-raw :post "delete-database" remote
+                                     "[\"{:store {:backend :memory :id #uuid \\\"23196000-0000-0000-0000-000000000001\\\"}}\"]")
+               (catch Exception _))
           (stop-server server))))))

@@ -1,58 +1,78 @@
 # Backend Development
 
-Implementing a new backend to use for datahike does not require much effort as there are only a handful of methods for multimethods must be created. 
-In order to keep things tidy, we have agreed on some conventions:
+Datahike storage is built on top of [konserve](https://github.com/replikativ/konserve), a universal key-value store abstraction. To add a new storage backend to Datahike, you simply implement a konserve backend. Once your konserve backend is required and registered, Datahike will transparently work on top of it.
 
-1. Keep all implementations for a backend within one namespace.
-2. Name this namespace `datahike-{backendname}.core`.
-3. Make sure, all multimethods are defined for the new backend you are developing.
+## Implementation Steps
 
-As an example, you may have a look at the implementation of our [JDBC](https://docs.oracle.com/javase/8/docs/technotes/guides/jdbc/) backend, i.e.
-[datahike-jdbc](https://github.com/replikativ/datahike-jdbc).
+1. **Implement a konserve backend** following the [konserve documentation](https://github.com/replikativ/konserve)
+2. **Register your backend** by requiring it in your project
+3. **Use it with Datahike** by specifying the backend keyword in your configuration
 
-##  Template
+That's it! Datahike will automatically work with any konserve backend.
 
-We provide a basic template for a backend implementation [here](https://github.com/replikativ/datahike-backend-template). 
+## Konserve Backend Documentation
 
-Following are bracketed text pieces defining placeholder values, you should replace as follows:
-- **backendname** surprisingly should be the name of your backend.
-- **backendID** should be a `keyword` to identify your backend on request. At this moment, datahike ships with backends identified by `:mem` and `:file`, so do not use those.
-- **indexID** should be a `keyword` identifying an index to be used as default for your backend. So far, you can only use `:datahike.index/hitchhiker-tree` for your backend. In the future, we will support `:datahike.index/persistent-set` as well though.
-- **configSpec** optional `clojure.spec` definition for configuration validation
+See the [konserve documentation](https://github.com/replikativ/konserve) for:
+- How to implement a new backend
+- The konserve protocol specification
+- Examples of existing backends
 
-You may add any configuration attributes to the store configuration. Only `:backend` is mandatory which refers to **backendID**.
+## Optional: Additional Datahike-Specific Support
 
-In your *core.clj*:
+While konserve backends work out of the box with Datahike, you can optionally add Datahike-specific optimizations:
+
+### Serialization Handlers
+
+For performance optimization, you can add custom serialization handlers for Datahike's data structures. See [datahike-lmdb](https://github.com/replikativ/datahike-lmdb) as an example, which installs LMDB-specific Datahike serialization handlers.
+
+## Existing Backends
+
+Datahike ships with built-in support for:
+- `:memory` - In-memory storage (via konserve)
+- `:file` - File-based storage (via konserve)
+
+Additional backends available through konserve:
+- [datahike-lmdb](https://github.com/replikativ/datahike-lmdb) - LMDB backend with optimized serialization
+- [IndexedDB](https://github.com/replikativ/konserve-indexeddb) - Browser storage (via konserve)
+- [PostgreSQL](https://github.com/replikativ/konserve-pg) - PostgreSQL backend (via konserve)
+- Many more available in the [konserve ecosystem](https://github.com/replikativ/konserve)
+
+## Configuration
+
+Once your konserve backend is available, use it with Datahike by specifying the backend keyword:
+
 ```clojure
-(ns datahike-{backendname}.core
-  (:require [datahike.store :as s]
-            ;; your imports        
-  ))
+(require '[datahike.api :as d])
 
+;; Example: using a custom backend
+(def cfg {:store {:backend :your-backend-keyword
+                  :id #uuid "550e8400-e29b-41d4-a716-446655440000"
+                  ;; ... backend-specific configuration
+                  }})
 
-(defmethod s/empty-store {backendID} [config]
-  ;; your implementation
-  )
-
-(defmethod s/delete-store {backendID} [config]
-  ;; your implementation
-  )
-
-(defmethod connect-store {backendID} [config]
-  ;; your implementation
-  )
-
-(defmethod release-store {backendID} [config store]
-  ;; your implementation
-  )
-
-(defmethod scheme->index {backendID} [_]
-  {indexID}
-  )
-  
-(defmethod default-config {backendID} [config]
-  ;; your implementation for default values e.g. from env vars or values from best practices
- )
- 
-(defmethod config-spec {backendID} [_] {configSpec})
+(d/create-database cfg)
+(def conn (d/connect cfg))
 ```
+
+## Advanced: Custom Index Implementations
+
+While less common than implementing backends, you can also implement custom index data structures for Datahike. This allows exploring different index algorithms optimized for specific use cases.
+
+Datahike uses **persistent-set** as the default index. The **hitchhiker-tree** index (`:datahike.index/hitchhiker-tree`) is available for backwards compatibility and can be useful for certain workloads.
+
+To implement a custom index:
+
+1. Implement the index protocol (see existing implementations in `src/datahike/index/`)
+2. Register your index implementation
+3. Use it by specifying `:index :your-index-keyword` in the database configuration
+
+Example configuration with custom index:
+
+```clojure
+(def cfg {:store {:backend :memory
+                  :id #uuid "550e8400-e29b-41d4-a716-446655440000"}
+          :index :datahike.index/hitchhiker-tree  ; or your custom index
+          :schema-flexibility :write})
+```
+
+This is an advanced topic primarily useful for research or highly specialized performance requirements.
