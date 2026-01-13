@@ -112,7 +112,7 @@ const config = {
     backend: ':memory',
     id: crypto.randomUUID()
   },
-  schemaFlexibility: ':read'  // Allow schemaless data
+  'schema-flexibility': ':read'  // Allow schemaless data (use kebab-case)
 };
 
 await d.createDatabase(config);
