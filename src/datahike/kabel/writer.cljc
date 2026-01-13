@@ -30,14 +30,21 @@
   "Reconstruct a stored db map into a live DB.
    Returns nil if input is nil.
 
+   If input is already a DB object (reconstructed by Fressian read handler),
+   returns it as-is. Otherwise reconstructs from stored format.
+
    Parameters:
-   - stored-db: The stored db map (may have deferred indexes)
+   - stored-db: The stored db map (may have deferred indexes) OR a live DB
    - store: The prepared konserve store"
   [stored-db store]
   (when stored-db
-    (let [storage (:storage store)
-          processed (fh/reconstruct-deferred-indexes stored-db storage)]
-      (dw/stored->db processed store))))
+    (if (instance? datahike.db.DB stored-db)
+      ;; Already a live DB - Fressian read handler found the store and reconstructed it
+      stored-db
+      ;; Stored map - reconstruct it now
+      (let [storage (:storage store)
+            processed (fh/reconstruct-deferred-indexes stored-db storage)]
+        (dw/stored->db processed store)))))
 
 (defn- reconstruct-tx-report
   "Reconstruct a tx-report from stored format to live DBs.
@@ -61,7 +68,7 @@
 
 (defrecord KabelWriter
            [peer-id        ; UUID of the remote peer that owns the database
-            scope-id       ; UUID identifying the store/database (from store :id)
+            store-id       ; UUID identifying the store/database (from store :id)
             store-config   ; Store config for fressian handler registry cleanup
             pending-txs    ; atom: {expected-max-tx -> {:tx-report ... :ch promise-chan}}
             current-max-tx ; atom: current synced max-tx from konserve-sync
@@ -72,14 +79,14 @@
 
   (-dispatch! [_ {:keys [op args] :as arg-map}]
     (let [result-ch (promise-chan)
-          ;; Global dispatch handler - scope-id is passed in the request
+          ;; Global dispatch handler - store-id is passed in the request
           remote-fn 'datahike.kabel/dispatch]
       (go
         (try
           ;; 1. Send to remote peer via distributed-scope
           (let [remote-result (<! (ds/invoke-remote peer-id
                                                     remote-fn
-                                                    {:scope-id scope-id
+                                                    {:store-id store-id
                                                      :arg-map arg-map}))]
             (if (instance? #?(:clj Throwable :cljs js/Error) remote-result)
               ;; Remote error - return immediately
@@ -240,13 +247,13 @@
 
    Parameters:
    - peer-id: UUID of the remote peer that owns the database
-   - scope-id: UUID identifying the store/database (extracted from store :id)
+   - store-id: UUID identifying the store/database (extracted from store :id)
    - store-config: Store config for fressian handler registry cleanup on shutdown
 
    Returns a KabelWriter instance."
-  [peer-id scope-id store-config]
+  [peer-id store-id store-config]
   (->KabelWriter peer-id
-                 scope-id
+                 store-id
                  store-config
                  (atom {})   ; pending-txs
                  (atom 0)    ; current-max-tx
@@ -259,9 +266,9 @@
 
 (defmethod writer/create-writer :kabel
   [{:keys [peer-id store-config]} _connection]
-  ;; Extract scope-id from store config :id
-  (let [scope-id (:id store-config)]
-    (kabel-writer peer-id scope-id store-config)))
+  ;; Extract store-id from store config :id
+  (let [store-id (:id store-config)]
+    (kabel-writer peer-id store-id store-config)))
 
 (defmethod writer/create-database :kabel
   [config & _args]
@@ -272,7 +279,7 @@
         p (throwable-promise)]
     (go
       (try
-        ;; Global create-database handler - config contains scope-id
+        ;; Global create-database handler - config contains store-id
         (let [result (<! (ds/invoke-remote peer-id
                                            'datahike.kabel/create-database
                                            {:config remote-config}))]
@@ -290,7 +297,7 @@
         p (throwable-promise)]
     (go
       (try
-        ;; Global delete-database handler - config contains scope-id
+        ;; Global delete-database handler - config contains store-id
         (let [result (<! (ds/invoke-remote peer-id
                                            'datahike.kabel/delete-database
                                            {:config remote-config}))]

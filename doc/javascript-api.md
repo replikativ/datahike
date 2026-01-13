@@ -60,7 +60,7 @@ const d = require('datahike');
 async function example() {
   // Configuration
   const config = {
-    store: { backend: ':mem', id: 'my-db' }
+    store: { backend: ':memory', id: 'my-db' }
   };
   
   // Create database
@@ -151,7 +151,7 @@ const schema = [{
 ```javascript
 // In-memory backend
 const memConfig = {
-  store: { backend: ':mem', id: 'my-db' }
+  store: { backend: ':memory', id: 'my-db' }
 };
 
 // File backend (Node.js only)
@@ -218,7 +218,7 @@ interface Config {
 }
 
 const config: Config = {
-  store: { backend: ':mem', id: 'example' }
+  store: { backend: ':memory', id: 'example' }
 };
 
 async function example() {

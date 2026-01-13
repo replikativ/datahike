@@ -124,7 +124,7 @@
 
 #?(:clj (def hitchhiker-tree-version (get-version 'io.replikativ/hitchhiker-tree)))
 
-#?(:clj (def persistent-set-version (get-version 'persistent-sorted-set/persistent-sorted-set)))
+#?(:clj (def persistent-set-version (get-version 'io.replikativ/persistent-sorted-set)))
 
 #?(:clj (def konserve-version (get-version 'io.replikativ/konserve)))
 

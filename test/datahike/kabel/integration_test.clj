@@ -50,11 +50,12 @@
         (.close socket)))))
 
 (defn create-temp-dir
-  "Create a temporary directory for test stores."
+  "Generate a unique temporary directory path (konserve will create it)."
   [prefix]
   (let [temp-dir (io/file (System/getProperty "java.io.tmpdir")
                           (str prefix "-" (System/currentTimeMillis) "-" (rand-int 10000)))]
-    (.mkdirs temp-dir)
+    ;; Don't create the directory - let konserve handle it
+    ;; This prevents "File store already exists" errors
     (.getAbsolutePath temp-dir)))
 
 (defn delete-dir-recursive
@@ -93,7 +94,8 @@
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
           ;; Shared store ID for matching across client/server
-          store-id #uuid "7e570000-0000-0000-0000-000000000001"  ; test-full-flow-scope
+          store-id #uuid "7e570000-0000-0000-0000-000000000001"  ; test-full-flow-store
+          store-topic (keyword (str store-id))
           server-path (create-temp-dir "full-flow-server")
           client-path (create-temp-dir "full-flow-client")
 
@@ -236,7 +238,7 @@
 
       (release client-conn)
       (sync/unsubscribe-store! client-peer store-topic)
-      (handlers/unregister-store-for-remote-access! scope-id server-peer)
+      (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
       (release server-conn)
       (d/delete-database server-config)
@@ -247,9 +249,8 @@
   (testing "Multiple transactions maintain ordering through KabelWriter"
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
-          scope-id #uuid "80000000-0000-0000-0000-000000000008"
-          store-id #uuid "7e570000-0000-0000-0000-000000000002"  ; test-ordering-scope
-          store-topic (keyword (str scope-id))
+          store-id #uuid "7e570000-0000-0000-0000-000000000002"  ; test-ordering-store
+          store-topic (keyword (str store-id))
           server-path (create-temp-dir "ordering-server")
           client-path (create-temp-dir "ordering-client")
 
@@ -269,7 +270,7 @@
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
-          _ (handlers/register-store-for-remote-access! scope-id server-conn server-peer)
+          _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
 
           ;; Client setup - d/connect handles sync automatically
           client-peer (peer/client-peer S client-id
@@ -285,7 +286,7 @@
                          :keep-history? false
                          :writer {:backend :kabel
                                   :peer-id server-id
-                                  :scope-id scope-id
+                                  :store-id store-id
                                   :local-peer client-peer}}
           client-conn (<!! (d/connect client-config {:sync? false}))]
 
@@ -314,7 +315,7 @@
       ;; Cleanup
       (release client-conn)
       (sync/unsubscribe-store! client-peer store-topic)
-      (handlers/unregister-store-for-remote-access! scope-id server-peer)
+      (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
       (release server-conn)
       (d/delete-database server-config)
@@ -325,9 +326,8 @@
   (testing "d/listen! callbacks fire after sync completes"
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
-          scope-id #uuid "90000000-0000-0000-0000-000000000009"
-          store-id #uuid "7e570000-0000-0000-0000-000000000003"  ; test-listen-scope
-          store-topic (keyword (str scope-id))
+          store-id #uuid "7e570000-0000-0000-0000-000000000003"  ; test-listen-store
+          store-topic (keyword (str store-id))
           server-path (create-temp-dir "listen-server")
           client-path (create-temp-dir "listen-client")
 
@@ -347,7 +347,7 @@
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
-          _ (handlers/register-store-for-remote-access! scope-id server-conn server-peer)
+          _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
 
           ;; Client setup - d/connect handles sync automatically
           client-peer (peer/client-peer S client-id
@@ -363,7 +363,7 @@
                          :keep-history? false
                          :writer {:backend :kabel
                                   :peer-id server-id
-                                  :scope-id scope-id
+                                  :store-id store-id
                                   :local-peer client-peer}}
           client-conn (<!! (d/connect client-config {:sync? false}))
 
@@ -393,7 +393,7 @@
       (d/unlisten client-conn listener-key)
       (release client-conn)
       (sync/unsubscribe-store! client-peer store-topic)
-      (handlers/unregister-store-for-remote-access! scope-id server-peer)
+      (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
       (release server-conn)
       (d/delete-database server-config)
@@ -404,9 +404,8 @@
   (testing "Tiered store caches data locally and minimizes sync on reconnect"
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
-          scope-id #uuid "b0000000-0000-0000-0000-00000000000b"
-          store-id #uuid "7e570000-0000-0000-0000-000000000004"  ; test-tiered-scope
-          store-topic (keyword (str scope-id))
+          store-id #uuid "7e570000-0000-0000-0000-000000000004"  ; test-tiered-store
+          store-topic (keyword (str store-id))
           server-path (create-temp-dir "tiered-server")
           client-backend-path (create-temp-dir "tiered-client-backend")
 
@@ -431,7 +430,7 @@
           _ (<?? S (peer/start server-peer))
           _ (ds/invoke-on-peer server-peer)
           _ (handlers/register-global-handlers! server-peer)
-          _ (handlers/register-store-for-remote-access! scope-id server-conn server-peer)
+          _ (handlers/register-store-for-remote-access! store-id server-conn server-peer)
 
           ;; =====================================================================
           ;; FIRST CLIENT CONNECTION - Full sync to empty cache
@@ -444,20 +443,28 @@
           _ (<?? S (peer/connect S client-peer-1 url))
 
           ;; Client uses tiered store: memory frontend + file backend
+          ;; All components use the same :id for sync to work properly
           client-config-1 {:store {:backend :tiered
-                                   :frontend-store {:backend :memory :id #uuid "c1000000-0000-0000-0000-00000000000c"}
-                                   :backend-store {:backend :file :path client-backend-path :id store-id}
+                                   :frontend-config {:backend :memory :id store-id}
+                                   :backend-config {:backend :file :path client-backend-path :id store-id}
                                    :id store-id}
                            :index :datahike.index/persistent-set
                            :schema-flexibility :write
                            :keep-history? false
                            :writer {:backend :kabel
                                     :peer-id server-id
-                                    :scope-id scope-id
+                                    :store-id store-id
                                     :local-peer client-peer-1}}
           client-conn-1 (<!! (d/connect client-config-1 {:sync? false}))]
 
+      ;; Check if connection succeeded or returned error
+      (when (instance? Throwable client-conn-1)
+        (println "DEBUG: Connection failed with error:" (ex-message client-conn-1))
+        (println "DEBUG: Error data:" (ex-data client-conn-1))
+        (throw client-conn-1))
+
       (is (some? client-conn-1) "First client connection should succeed")
+      (is (not (instance? Throwable client-conn-1)) "Connection should not be an error")
 
       ;; Verify initial data synced
       (let [client-db (d/db client-conn-1)
@@ -513,15 +520,15 @@
 
             ;; Same backend path - should have cached data from first connection
             client-config-2 {:store {:backend :tiered
-                                     :frontend-store {:backend :memory :id #uuid "c2000000-0000-0000-0000-00000000000c"}
-                                     :backend-store {:backend :file :path client-backend-path :id store-id}
+                                     :frontend-config {:backend :memory :id store-id}
+                                     :backend-config {:backend :file :path client-backend-path :id store-id}
                                      :id store-id}
                              :index :datahike.index/persistent-set
                              :schema-flexibility :write
                              :keep-history? false
                              :writer {:backend :kabel
                                       :peer-id server-id
-                                      :scope-id scope-id
+                                      :store-id store-id
                                       :local-peer client-peer-2}}
             client-conn-2 (<!! (d/connect client-config-2 {:sync? false}))]
 
@@ -547,7 +554,7 @@
       ;; =====================================================================
       ;; FINAL CLEANUP
       ;; =====================================================================
-      (handlers/unregister-store-for-remote-access! scope-id server-peer)
+      (handlers/unregister-store-for-remote-access! store-id server-peer)
       (<?? S (peer/stop server-peer))
       (release server-conn)
       (d/delete-database server-config)
@@ -558,8 +565,7 @@
   (testing "Client can create and delete database on server via KabelWriter"
     (let [port (get-free-port)
           url (str "ws://localhost:" port)
-          scope-id #uuid "a0000000-0000-0000-0000-00000000000a"
-          store-id #uuid "7e570000-0000-0000-0000-000000000005"  ; test-remote-create-scope
+          store-id #uuid "7e570000-0000-0000-0000-000000000005"  ; test-remote-create-store
           server-path (create-temp-dir "remote-create-server")
 
           ;; Server peer setup (no database yet!)
@@ -572,7 +578,7 @@
           _ (ds/invoke-on-peer server-peer)
 
           ;; Register global handlers - no need for scope-specific handlers!
-          ;; Global handlers can create databases for any scope-id
+          ;; Global handlers can create databases for any store-id
           _ (handlers/register-global-handlers! server-peer)
 
           ;; Client peer setup
@@ -589,7 +595,7 @@
                            :keep-history? false
                            :writer {:backend :kabel
                                     :peer-id server-id
-                                    :scope-id scope-id}}
+                                    :store-id store-id}}
             create-result (d/create-database create-config)]
         (is (map? create-result) "create-database should return result map")
         (is (:success create-result) "create-database should succeed"))
@@ -613,7 +619,7 @@
       (let [delete-config {:store {:backend :file :path server-path :id store-id}
                            :writer {:backend :kabel
                                     :peer-id server-id
-                                    :scope-id scope-id}}
+                                    :store-id store-id}}
             delete-result (d/delete-database delete-config)]
         (is (map? delete-result) "delete-database should return result map")
         (is (:success delete-result) "delete-database should succeed"))

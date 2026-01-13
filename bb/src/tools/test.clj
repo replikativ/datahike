@@ -64,6 +64,9 @@
 (defn specs []
   (kaocha "--focus" "specs" "--plugin" "kaocha.plugin/orchestra"))
 
+(defn kabel []
+  (kaocha "--focus" "kabel"))
+
 (defn cljs-node-test []
   (p/shell "clj -M:cljs -m shadow.cljs.devtools.cli compile :node-test")
   (p/shell "node target/out/node-test.js"))
@@ -97,11 +100,13 @@
 (defn all [config]
   (kaocha "--skip" "specs")
   (specs)
+  (kabel)
   (back-compat config)
   (native-image)
   (libdatahike)
   (bb-pod)
-  (cljs-node-test))
+  (cljs-node-test)
+  (cljs-browser-test))
 
 (defn -main [config & args]
   (if (seq args)
@@ -111,6 +116,7 @@
       "bb-pod" (bb-pod)
       "back-compat" (back-compat config)
       "specs" (specs)
+      "kabel" (kabel)
       "cljs-node" (cljs-node-test)
       "cljs-browser" (cljs-browser-test)
       (apply kaocha "--focus" args))

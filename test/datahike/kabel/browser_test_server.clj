@@ -65,7 +65,7 @@
             peer-config))
 
 (defn server-store-config-fn
-  "Create server-side store config for a given scope-id.
+  "Create server-side store config for a given store-id.
    Uses file backend since client's TieredStore won't work on JVM.
    IMPORTANT: Must use client's :id for sync/fressian matching to work."
   [_scope-id client-config]

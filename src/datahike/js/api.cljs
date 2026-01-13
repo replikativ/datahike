@@ -113,7 +113,10 @@
 
 (defn maybe-chan->promise
   "Convert a core.async channel to a Promise, or return value directly if not a channel.
-  This handles the dynamic async/sync execution in Datahike API."
+  This handles the dynamic async/sync execution in Datahike API.
+
+  Errors returned on the channel (not thrown) are properly rejected by checking
+  if the result is a js/Error or ExceptionInfo."
   [x]
   (if (satisfies? cljs.core.async.impl.protocols/Channel x)
     (js/Promise.
@@ -121,8 +124,13 @@
        (go
          (try
            (let [result (<! x)]
-             (resolve result))
+             ;; Check if result is an error object - reject promise if so
+             (if (or (instance? js/Error result)
+                     (instance? ExceptionInfo result))
+               (reject result)
+               (resolve result)))
            (catch :default e
+             ;; Catch any exceptions thrown during channel operations
              (reject e))))))
     (js/Promise.resolve x)))
 

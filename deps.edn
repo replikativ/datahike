@@ -11,10 +11,7 @@
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/datalog-parser                {:mvn/version "0.2.30"}
         io.replikativ/zufall                        {:mvn/version "0.2.9"}
-        persistent-sorted-set/persistent-sorted-set {#_#_:local/root "../persistent-sorted-set"
-                                                     :git/url "https://github.com/replikativ/persistent-sorted-set"
-                                                     :git/sha "61e2a681503aec1183171132d0899534fa41c5b2" #_"7e5d31c27a8cc9a6a4fe7aa8a81656dcc8e96f5f" #_"62faeb45d2b286a7250f7de4ad60c540c615d0b4"
-                                                     #_#_:mvn/version "0.3.0"}
+        io.replikativ/persistent-sorted-set         {:mvn/version "0.3.114"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
         com.taoensso/timbre                         {:mvn/version "6.8.0"}

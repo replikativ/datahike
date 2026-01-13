@@ -124,9 +124,7 @@
 
 (defn ensure-stored-config-consistency [config stored-config]
   (let [config (dissoc config :name)
-        config (update config :store #(if (get-in stored-config [:store :scope])
-                                        %
-                                        (dissoc % :scope)))
+        config config  ;; No need for backwards compat with old :scope key
         stored-config (dissoc stored-config :initial-tx :name)
         stored-config (merge {:writer dc/self-writer} stored-config)
         stored-config (if (empty? (:index-config stored-config))
@@ -137,9 +135,16 @@
                                  [(dissoc config :writer)
                                   (dissoc stored-config :writer)]
                                  [config stored-config])
-        ;; replace store config with its identity                              
+        ;; replace store config with its identity
+        stored-store-id (ds/store-identity (:store stored-config))
         config (update config :store ds/store-identity)
-        stored-config (update stored-config :store ds/store-identity)]
+        stored-config (update stored-config :store ds/store-identity)
+        ;; Backwards compatibility: if stored config has no store :id (old database),
+        ;; allow connecting with any :id - user is providing one for an old database
+        [config stored-config] (if (nil? stored-store-id)
+                                 [(dissoc config :store)
+                                  (dissoc stored-config :store)]
+                                 [config stored-config])]
     (when-not (= config stored-config)
       (dt/raise "Configuration does not match stored configuration. In some cases this check is too restrictive. If you are sure you are loading the right database with the right configuration then you can disable this check by setting :allow-unsafe-config to true in your config."
                 {:type          :config-does-not-match-stored-db

@@ -116,10 +116,10 @@
          branch (or (:branch config) :db)
          conn-id [store-id branch]
          ;; Extract store UUID for kabel topic from store config
-         scope-id (:id store-config)
+         store-id (:id store-config)
          {:keys [peer-id local-peer]} (:writer config)
          is-tiered? (= :tiered (:backend store-config))
-         _ (log/trace "Connecting via KabelWriter" {:scope-id scope-id
+         _ (log/trace "Connecting via KabelWriter" {:store-id store-id
                                                     :peer-id peer-id
                                                     :branch branch
                                                     :tiered? is-tiered?})
@@ -129,7 +129,7 @@
              (dt/raise "KabelWriter requires :local-peer in writer config"
                        {:type :kabel-missing-local-peer
                         :config (:writer config)}))
-         _ (when-not scope-id
+         _ (when-not store-id
              (dt/raise "KabelWriter requires :id in store config"
                        {:type :kabel-missing-store-id
                         :store-config store-config}))
@@ -182,7 +182,7 @@
          stored-db-atom (atom cached-stored-db)  ;; Pre-fill with cached value if available
          conn-atom (atom nil)  ;; Set after connection is created
          ;; Use UUID directly as topic (kabel pubsub supports any EDN value)
-         store-topic scope-id
+         store-topic store-id
          _ (log/trace "Subscribing to store topic" {:store-topic store-topic})
 
          _ (log/trace "Calling subscribe-store!")
@@ -253,7 +253,7 @@
 
           ;; 5. Create writer and wire up ongoing sync
           ;; Pass store-config for cleanup on shutdown
-         _ (log/trace "Creating KabelWriter" {:peer-id peer-id :scope-id scope-id})
+         _ (log/trace "Creating KabelWriter" {:peer-id peer-id :store-id store-id})
          writer-config (assoc (:writer config) :store-config store-config)
          writer (w/create-writer writer-config conn)
          _ (log/trace "Writer created")
@@ -272,7 +272,7 @@
       ;; 7. Register connection
      (add-connection! conn-id conn)
 
-     (log/info "KabelWriter connection complete" {:scope-id scope-id :max-tx (:max-tx stored-db)})
+     (log/info "KabelWriter connection complete" {:store-id store-id :max-tx (:max-tx stored-db)})
       ;; Return connection - caller must take from channel
      conn)))
 

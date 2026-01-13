@@ -6,7 +6,7 @@
    - Client: subscribing to tx-reports for remote databases
 
    Architecture:
-   - Each database has a topic: :tx-report/<scope-id>
+   - Each database has a topic: :tx-report/<store-id>
    - Uses PubSubOnlyStrategy (no handshake, just receive publishes)
    - Deduplication via request-id (skip own transactions)"
   (:require [kabel.pubsub :as pubsub]
@@ -24,12 +24,12 @@
 (defn tx-report-topic
   "Returns the topic keyword for tx-reports of a database.
 
-   Example: (tx-report-topic \"a1b2c3d4-...\") => :tx-report/scope-a1b2c3d4-...
+   Example: (tx-report-topic \"a1b2c3d4-...\") => :tx-report/store-a1b2c3d4-...
 
-   Note: The 'scope-' prefix ensures EDN compatibility, as keywords
-   cannot start with a digit."
-  [scope-id]
-  (keyword "tx-report" (str "scope-" scope-id)))
+   Note: The 'store-' prefix (kept as 'scope-' for backwards compatibility)
+   ensures EDN compatibility, as keywords cannot start with a digit."
+  [store-id]
+  (keyword "tx-report" (str "scope-" store-id)))
 
 ;; =============================================================================
 ;; Server-Side API
@@ -40,13 +40,13 @@
 
    Parameters:
    - peer: The kabel peer atom
-   - scope-id: UUID identifying the database scope
+   - store-id: UUID identifying the database store
 
    Returns: The topic keyword"
-  [peer scope-id]
-  (let [topic (tx-report-topic scope-id)]
+  [peer store-id]
+  (let [topic (tx-report-topic store-id)]
     (info {:event ::register-tx-report-topic
-           :scope-id scope-id
+           :store-id store-id
            :topic topic})
     (pubsub/register-topic! peer topic
                             {:strategy (proto/pub-sub-only-strategy nil)})
@@ -57,13 +57,13 @@
 
    Parameters:
    - peer: The kabel peer atom
-   - scope-id: UUID identifying the database scope
+   - store-id: UUID identifying the database store
 
    Returns: The topic keyword"
-  [peer scope-id]
-  (let [topic (tx-report-topic scope-id)]
+  [peer store-id]
+  (let [topic (tx-report-topic store-id)]
     (info {:event ::unregister-tx-report-topic
-           :scope-id scope-id
+           :store-id store-id
            :topic topic})
     (pubsub/unregister-topic! peer topic)
     topic))
@@ -73,20 +73,20 @@
 
    Parameters:
    - peer: The kabel peer atom
-   - scope-id: UUID identifying the database scope
+   - store-id: UUID identifying the database store
    - tx-report: The transaction report (with :db-before, :db-after, :tx-data, etc.)
    - request-id: Optional request-id for deduplication
 
    Returns: Channel yielding {:ok true :sent-count N} or {:error ...}"
-  ([peer scope-id tx-report]
-   (publish-tx-report! peer scope-id tx-report nil))
-  ([peer scope-id tx-report request-id]
-   (let [topic (tx-report-topic scope-id)
+  ([peer store-id tx-report]
+   (publish-tx-report! peer store-id tx-report nil))
+  ([peer store-id tx-report request-id]
+   (let [topic (tx-report-topic store-id)
          payload {:tx-report tx-report
-                  :scope-id scope-id
+                  :store-id store-id
                   :request-id request-id}]
      (debug {:event ::publish-tx-report
-             :scope-id scope-id
+             :store-id store-id
              :request-id request-id
              :max-tx (get-in tx-report [:db-after :max-tx])})
      (pubsub/publish! peer topic payload))))
@@ -100,15 +100,15 @@
 
    Parameters:
    - peer: The kabel client peer atom
-   - scope-id: UUID identifying the database scope
-   - on-tx-report: (fn [payload]) callback receiving {:tx-report ... :scope-id ... :request-id ...}
+   - store-id: UUID identifying the database store
+   - on-tx-report: (fn [payload]) callback receiving {:tx-report ... :store-id ... :request-id ...}
 
    Returns: Channel yielding {:ok topics} or {:error ...}"
-  [peer scope-id on-tx-report]
-  (let [topic (tx-report-topic scope-id)
+  [peer store-id on-tx-report]
+  (let [topic (tx-report-topic store-id)
         strategy (proto/pub-sub-only-strategy on-tx-report)]
     (info {:event ::subscribe-tx-reports
-           :scope-id scope-id
+           :store-id store-id
            :topic topic})
     (pubsub/subscribe! peer #{topic}
                        {:strategies {topic strategy}})))
@@ -118,13 +118,13 @@
 
    Parameters:
    - peer: The kabel client peer atom
-   - scope-id: UUID identifying the database scope
+   - store-id: UUID identifying the database store
 
    Returns: Channel yielding {:ok true}"
-  [peer scope-id]
-  (let [topic (tx-report-topic scope-id)]
+  [peer store-id]
+  (let [topic (tx-report-topic store-id)]
     (info {:event ::unsubscribe-tx-reports
-           :scope-id scope-id
+           :store-id store-id
            :topic topic})
     (pubsub/unsubscribe! peer #{topic})))
 

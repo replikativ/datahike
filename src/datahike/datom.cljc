@@ -357,6 +357,26 @@
    (long-cmp (datom-tx d1) (datom-tx d2))
    (boolean-cmp (datom-added d1) (datom-added d2))))
 
+;; Prefix comparators for existence checks (compare e,a,v only, ignoring tx)
+;; Used by insert to check if ANY datom with same e,a,v exists
+(defn cmp-datoms-eavt-prefix [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (long-cmp (.-e d1) (.-e d2))
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (compare-value (.-v d1) (.-v d2))))
+
+(defn cmp-datoms-aevt-prefix [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (long-cmp (.-e d1) (.-e d2))
+   (compare-value (.-v d1) (.-v d2))))
+
+(defn cmp-datoms-avet-prefix [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (compare-value (.-v d1) (.-v d2))
+   (long-cmp (.-e d1) (.-e d2))))
+
 (defn diff-sorted [a b cmp]
   (loop [only-a []
          only-b []
@@ -394,3 +414,12 @@
                              :aevt cmp-temporal-datoms-aevt-quick
                              :avet cmp-temporal-datoms-avet-quick
                              cmp-temporal-datoms-eavt-quick))))
+
+(defn index-type->cmp-prefix
+  "Get prefix comparator for (e,a,v) matching, ignoring tx.
+   Used for existence checks in insert operations."
+  [index-type]
+  (case index-type
+    :aevt cmp-datoms-aevt-prefix
+    :avet cmp-datoms-avet-prefix
+    cmp-datoms-eavt-prefix))

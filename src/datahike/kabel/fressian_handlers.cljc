@@ -195,7 +195,7 @@
                     ;; Reconstruct deferred indexes before stored->db
                     processed (reconstruct-deferred-indexes stored storage)]
                 (dw/stored->db processed store))
-              ;; Fall back to stored map if no store registered with matching scope
+              ;; Fall back to stored map if no store registered with matching store-id
               stored))))
       :cljs
       (fn [reader _tag _component-count]
@@ -206,7 +206,7 @@
                   ;; Reconstruct deferred indexes before stored->db
                   processed (reconstruct-deferred-indexes stored storage)]
               (dw/stored->db processed store))
-            ;; Fall back to stored map if no store registered with matching scope
+            ;; Fall back to stored map if no store registered with matching store-id
             stored))))
 
    ;; TxReport is serialized as plain map with stored db-before/db-after.

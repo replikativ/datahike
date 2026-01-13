@@ -6,14 +6,14 @@
             [clojure.core.async :refer [<!! >!! chan go put! timeout alts!! promise-chan]]))
 
 (def test-peer-id #uuid "10000000-0000-0000-0000-000000000001")
-(def test-scope-id #uuid "20000000-0000-0000-0000-000000000002")
+(def test-store-id #uuid "20000000-0000-0000-0000-000000000002")
 
 (deftest test-kabel-writer-construction
   (testing "kabel-writer creates proper instance"
-    (let [w (kw/kabel-writer test-peer-id test-scope-id nil)]
+    (let [w (kw/kabel-writer test-peer-id test-store-id nil)]
       (is (instance? datahike.kabel.writer.KabelWriter w))
       (is (= test-peer-id (:peer-id w)))
-      (is (= test-scope-id (:scope-id w)))
+      (is (= test-store-id (:store-id w)))
       (is (= {} @(:pending-txs w)))
       (is (= 0 @(:current-max-tx w)))
       (is (= #{} @(:listeners w))))))
@@ -22,15 +22,15 @@
   (testing "create-writer :kabel dispatches correctly"
     (let [config {:backend :kabel
                   :peer-id test-peer-id
-                  :store-config {:id test-scope-id}}
+                  :store-config {:id test-store-id}}
           w (writer/create-writer config nil)]
       (is (instance? datahike.kabel.writer.KabelWriter w))
       (is (= test-peer-id (:peer-id w)))
-      (is (= test-scope-id (:scope-id w))))))
+      (is (= test-store-id (:store-id w))))))
 
 (deftest test-on-sync-update
   (testing "on-sync-update! resolves pending transactions"
-    (let [w (kw/kabel-writer test-peer-id test-scope-id nil)
+    (let [w (kw/kabel-writer test-peer-id test-store-id nil)
           wait-ch (promise-chan)]
 
       ;; Simulate a pending transaction waiting for max-tx 100
@@ -50,7 +50,7 @@
       (is (= 100 @(:current-max-tx w)))))
 
   (testing "on-sync-update! resolves multiple pending transactions"
-    (let [w (kw/kabel-writer test-peer-id test-scope-id nil)
+    (let [w (kw/kabel-writer test-peer-id test-store-id nil)
           wait-ch-1 (promise-chan)
           wait-ch-2 (promise-chan)
           wait-ch-3 (promise-chan)]
@@ -78,7 +78,7 @@
 
 (deftest test-listener-management
   (testing "add-listener! and remove-listener!"
-    (let [w (kw/kabel-writer test-peer-id test-scope-id nil)
+    (let [w (kw/kabel-writer test-peer-id test-store-id nil)
           callback-1 (fn [_])
           callback-2 (fn [_])]
 
@@ -98,7 +98,7 @@
 
 (deftest test-shutdown
   (testing "-shutdown cancels pending transactions"
-    (let [w (kw/kabel-writer test-peer-id test-scope-id nil)
+    (let [w (kw/kabel-writer test-peer-id test-store-id nil)
           wait-ch-1 (promise-chan)
           wait-ch-2 (promise-chan)]
 
@@ -123,5 +123,5 @@
 
 (deftest test-streaming
   (testing "-streaming? returns true"
-    (let [w (kw/kabel-writer test-peer-id test-scope-id nil)]
+    (let [w (kw/kabel-writer test-peer-id test-store-id nil)]
       (is (true? (writer/-streaming? w))))))

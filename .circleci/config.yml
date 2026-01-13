@@ -158,6 +158,20 @@ jobs:
           paths:
             - /home/circleci/.m2
             - /home/circleci/.deps.clj
+  kabel-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run kabel tests
+          command: bb test kabel
+          no_output_timeout: 5m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   browser-test:
     docker:
       - image: cimg/node:20.18-browsers
@@ -316,6 +330,10 @@ workflows:
           context: dockerhub-deploy
           requires:
             - build
+      - kabel-test:
+          context: dockerhub-deploy
+          requires:
+            - build
       - browser-test:
           context: dockerhub-deploy
           requires:
@@ -342,6 +360,7 @@ workflows:
             - hitchhiker-tree-test
             - backward-compatibility-test
             - integration-test
+            - kabel-test
             - browser-test
             - node-cljs-test
             - npm-test
@@ -358,6 +377,7 @@ workflows:
             - hitchhiker-tree-test
             - backward-compatibility-test
             - integration-test
+            - kabel-test
             - browser-test
             - node-cljs-test
             - npm-test
@@ -374,6 +394,7 @@ workflows:
             - hitchhiker-tree-test
             - backward-compatibility-test
             - integration-test
+            - kabel-test
             - browser-test
             - node-cljs-test
             - npm-test

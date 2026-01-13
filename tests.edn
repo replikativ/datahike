@@ -14,7 +14,10 @@
                                  {:id         :norm
                                   :test-paths ["test/datahike/norm"]}
                                  {:id         :integration
-                                  :test-paths ["test/datahike/integration_test"]}]
+                                  :test-paths ["test/datahike/integration_test"]}
+                                 {:id         :kabel
+                                  :test-paths ["test/datahike/kabel"]
+                                  :skip-meta  [:browser]}]
                       ;; More verbose than the default reporter, and with prettier errors
                       :reporter kaocha.report/documentation}
                      #include "tests.user.edn"]

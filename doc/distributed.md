@@ -39,7 +39,9 @@ The client setup is simple, you just add a `:writer` entry in the configuration
 for your database, e.g.
 
 ```clojure
-{:store  {:backend :file :scope "your.domain.com" :path "/shared/filesystem/store"}
+{:store  {:backend :file
+          :id #uuid "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+          :path "/shared/filesystem/store"}
  :keep-history?      true
  :schema-flexibility :read
  :writer             {:backend :datahike-server
@@ -105,12 +107,13 @@ backend and broadcasts updates to connected clients via konserve-sync.
    (atom fh/write-handlers)
    peer-config))
 
-;; Store config factory - maps client scope-id to server-side file store
+;; Store config factory - maps client store UUID to server-side file store
 ;; Browsers use TieredStore (memory + IndexedDB), but the server uses file backend
-(defn store-config-fn [scope-id _client-config]
+;; The store-id parameter is the UUID from the client's :store :id field
+(defn store-config-fn [store-id _client-config]
   {:backend :file
-   :path (str "/var/data/datahike/" scope-id)
-   :scope scope-id})
+   :path (str "/var/data/datahike/" store-id)
+   :id store-id})
 
 (defn start-server! []
   (let [;; Create kabel server peer with middleware stack:
@@ -140,6 +143,10 @@ backend and broadcasts updates to connected clients via konserve-sync.
 Browser clients use a TieredStore combining fast in-memory access with
 persistent IndexedDB storage. The KabelWriter sends transactions to the server,
 and konserve-sync replicates updates back to the client's store.
+
+**Store IDs**: Store IDs should be UUIDs for distributed coordination. Use a
+fixed UUID when multiple clients need to share the same database, or generate a
+unique UUID with `(random-uuid)` for ephemeral/test databases.
 
 ```clojure
 (ns my-app.client
@@ -177,16 +184,17 @@ and konserve-sync replicates updates back to the client's store.
     ;; Connect to server via distributed-scope
     (<? S (ds/connect-distributed-scope S @client-peer server-url))
 
-    (let [scope-id (random-uuid)
+    (let [store-id (random-uuid)
+          db-name (str "db-" store-id)
           ;; TieredStore: memory frontend for fast reads, IndexedDB for persistence
           ;; The server uses file backend - store-config-fn handles this translation
+          ;; Note: All :id values must match for konserve validation
           config {:store {:backend :tiered
-                          :frontend-store {:backend :mem :id (str "mem-" scope-id)}
-                          :backend-store {:backend :indexeddb :name (str "db-" scope-id)}
-                          :scope (str scope-id)}
+                          :frontend-config {:backend :memory :id store-id}
+                          :backend-config {:backend :indexeddb :name db-name :id store-id}
+                          :id store-id}
                   :writer {:backend :kabel
                            :peer-id server-id
-                           :scope-id scope-id
                            :local-peer @client-peer}
                   :schema-flexibility :write
                   :keep-history? false}]
@@ -233,7 +241,7 @@ supported. Given a server is setup (see below), you can interact with it by
 adding `:remote-peer` to the config you would otherwise with `datahike.api`:
 
 ```clojure
-{:store  {:backend :mem :id "distributed-datahike"}
+{:store  {:backend :memory :id "distributed-datahike"}
  :keep-history?      true
  :schema-flexibility :read
  :remote-peer        {:backend :datahike-server
@@ -330,10 +338,9 @@ cfg = {
   ],
   "store": {
     "id": "wiggly-field-vole",
-    "scope": "127.0.1.1",
     "backend": [
       "!kw",
-      "mem"
+      "memory"
     ]
   },
   "store-cache-size": 1000,
@@ -367,7 +374,7 @@ You can now use this cfg to connect to this database:
 The result will look like:
 
 ```javascript
-conn = ["!datahike/Connection",[[["!kw","mem"],"127.0.1.1","wiggly-field-vole"],["!kw","db"]]]
+conn = ["!datahike/Connection",[[["!kw","memory"],"wiggly-field-vole"],["!kw","db"]]]
 ```
 
 Finally let's add some data to the database:
@@ -390,9 +397,8 @@ The result is a comprehensive transaction record (feel free to ignore the detail
           [
             [
               "!kw",
-              "mem"
+              "memory"
             ],
-            "127.0.1.1",
             "wiggly-field-vole"
           ],
           [
@@ -415,9 +421,8 @@ The result is a comprehensive transaction record (feel free to ignore the detail
           [
             [
               "!kw",
-              "mem"
+              "memory"
             ],
-            "127.0.1.1",
             "wiggly-field-vole"
           ],
           [

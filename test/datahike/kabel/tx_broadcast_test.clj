@@ -10,7 +10,7 @@
 
 (def server-id #uuid "10000000-0000-0000-0000-000000000001")
 (def client-id #uuid "20000000-0000-0000-0000-000000000002")
-(def scope-id #uuid "30000000-0000-0000-0000-000000000003")
+(def store-id #uuid "30000000-0000-0000-0000-000000000003")
 
 (defn- get-free-port []
   (let [socket (java.net.ServerSocket. 0)]
@@ -22,7 +22,7 @@
 (deftest test-tx-report-topic-naming
   (testing "tx-report-topic creates correct keyword with scope- prefix"
     (is (= (keyword "tx-report" "scope-30000000-0000-0000-0000-000000000003")
-           (tx-broadcast/tx-report-topic scope-id)))
+           (tx-broadcast/tx-report-topic store-id)))
     (is (= :tx-report/scope-my-scope
            (tx-broadcast/tx-report-topic "my-scope")))))
 
@@ -41,7 +41,7 @@
           _ (<?? S (peer/start server))
 
           ;; Register tx-report topic
-          _ (tx-broadcast/register-tx-report-topic! server scope-id)
+          _ (tx-broadcast/register-tx-report-topic! server store-id)
 
           ;; Create client peer with pubsub middleware
           client (peer/client-peer S client-id
@@ -56,7 +56,7 @@
           on-tx-report (fn [payload]
                          (swap! received-reports conj payload)
                          (put! ready-ch :received))
-          _ (<?? S (tx-broadcast/subscribe-tx-reports! client scope-id on-tx-report))
+          _ (<?? S (tx-broadcast/subscribe-tx-reports! client store-id on-tx-report))
 
           ;; Give subscription time to establish
           _ (<?? S (timeout 200))
@@ -68,7 +68,7 @@
           request-id #uuid "40000000-0000-0000-0000-000000000004"]
 
       ;; Publish tx-report from server
-      (<?? S (tx-broadcast/publish-tx-report! server scope-id mock-tx-report request-id))
+      (<?? S (tx-broadcast/publish-tx-report! server store-id mock-tx-report request-id))
 
       ;; Wait for client to receive (with timeout)
       (let [[_ ch] (alts!! [ready-ch (timeout 5000)])]
@@ -77,12 +77,12 @@
       ;; Verify received data
       (is (= 1 (count @received-reports)))
       (let [received (first @received-reports)]
-        (is (= scope-id (:scope-id received)))
+        (is (= store-id (:store-id received)))
         (is (= request-id (:request-id received)))
         (is (= mock-tx-report (:tx-report received))))
 
       ;; Cleanup
-      (<?? S (tx-broadcast/unsubscribe-tx-reports! client scope-id))
+      (<?? S (tx-broadcast/unsubscribe-tx-reports! client store-id))
       (<?? S (peer/stop server)))))
 
 (deftest test-deduplication-handler

@@ -3,12 +3,12 @@
 
    This namespace provides GLOBAL handlers that are registered with distributed-scope
    to handle remote transaction requests. The handlers look up the local
-   connection by scope-id (passed in the request) and forward operations to its writer.
+   connection by store-id (passed in the request) and forward operations to its writer.
 
    Design:
    - Three global handlers: dispatch, create-database, delete-database
    - Scope-id is passed in the request payload, not in the handler name
-   - The scope-registry maps scope-id -> {:conn connection :peer peer-atom}
+   - The store-registry maps store-id -> {:conn connection :peer peer-atom}
 
    Usage (server-side):
    ```clojure
@@ -40,91 +40,90 @@
 ;; Connection Registry
 ;; =============================================================================
 
-;; Registry mapping scope-id -> {:conn connection :peer peer-atom}
+;; Registry mapping store-id -> {:conn connection :peer peer-atom}
 ;; Populated when stores are registered for remote access
-(defonce scope-registry (atom {}))
+(defonce store-registry (atom {}))
 
-(defn register-connection-for-scope!
-  "Register a connection for a scope-id.
+(defn register-connection-for-store!
+  "Register a connection for a store-id.
 
    Parameters:
-   - scope-id: UUID identifying the store
+   - store-id: UUID identifying the store
    - conn: The datahike connection
    - peer: The kabel peer atom (for tx-report publishing)"
-  [scope-id conn peer]
-  (swap! scope-registry assoc scope-id {:conn conn :peer peer}))
+  [store-id conn peer]
+  (swap! store-registry assoc store-id {:conn conn :peer peer}))
 
-(defn unregister-connection-for-scope!
-  "Unregister a connection for a scope-id."
-  [scope-id]
-  (swap! scope-registry dissoc scope-id))
+(defn unregister-connection-for-store!
+  "Unregister a connection for a store-id."
+  [store-id]
+  (swap! store-registry dissoc store-id))
 
-(defn get-connection-for-scope
-  "Get the connection for a scope-id, or nil if not registered."
-  [scope-id]
-  (get-in @scope-registry [scope-id :conn]))
+(defn get-connection-for-store
+  "Get the connection for a store-id, or nil if not registered."
+  [store-id]
+  (get-in @store-registry [store-id :conn]))
 
-(defn get-peer-for-scope
-  "Get the peer for a scope-id, or nil if not registered."
-  [scope-id]
-  (get-in @scope-registry [scope-id :peer]))
+(defn get-peer-for-store
+  "Get the peer for a store-id, or nil if not registered."
+  [store-id]
+  (get-in @store-registry [store-id :peer]))
 
 ;; =============================================================================
 ;; Global Dispatch Handler
 ;; =============================================================================
 
 (defn global-dispatch-handler
-  "Global dispatch handler that routes transactions by scope-id.
+  "Global dispatch handler that routes transactions by store-id.
 
    The handler:
-   1. Extracts scope-id from the request
-   2. Looks up the connection by scope-id
+   1. Extracts store-id from the request
+   2. Looks up the connection by store-id
    3. Forwards the operation to the connection's writer
    4. Publishes tx-report to subscribers
    5. Returns the tx-report
 
    Request format:
-   {:scope-id string :arg-map {:op 'transact! :args [...]}}"
-  [{:keys [scope-id arg-map request-id]}]
+   {:store-id UUID :arg-map {:op 'transact! :args [...]}}"
+  [{:keys [store-id arg-map request-id]}]
   (go-try S
-    ;; Normalize scope-id to string (store scopes are always strings)
-          (let [scope-id (if (uuid? scope-id) (str scope-id) scope-id)]
-            (log/trace "Global dispatch handler" {:scope-id scope-id :op (:op arg-map)})
-            (if-let [conn (get-connection-for-scope scope-id)]
-              (let [;; Get writer from connection
-                    writer (:writer @(:wrapped-atom conn))
+          (log/trace "Global dispatch handler" {:store-id store-id :op (:op arg-map)})
+          (if-let [conn (get-connection-for-store store-id)]
+            (let [;; Get writer from connection
+                  writer (:writer @(:wrapped-atom conn))
             ;; Dispatch to local writer
-                    tx-report (<? S (writer/dispatch! writer arg-map))]
+                  tx-report (<? S (writer/dispatch! writer arg-map))]
 
         ;; Publish tx-report to subscribers (if peer registered)
-                (when-let [peer (get-peer-for-scope scope-id)]
-                  (tx-broadcast/publish-tx-report! peer scope-id tx-report request-id))
+              (when-let [peer (get-peer-for-store store-id)]
+                (tx-broadcast/publish-tx-report! peer store-id tx-report request-id))
 
         ;; Return tx-report - Fressian handlers handle serialization
-                tx-report)
+              tx-report)
 
-              (throw (ex-info "Store not found for scope"
-                              {:scope-id scope-id
-                               :registered-scopes (keys @scope-registry)}))))))
+            (throw (ex-info "Store not found for store-id"
+                            {:store-id store-id
+                             :registered-stores (keys @store-registry)})))))
 
 ;; =============================================================================
 ;; Global Create/Delete Database Handlers
 ;; =============================================================================
 
 (defn default-store-config-fn
-  "Default store config factory - uses the client's store config with scope ensured.
+  "Default store config factory - uses the client's store config unchanged.
 
    This is suitable when client and server use the same store backend.
    Override by passing :store-config-fn to register-global-handlers!
    for deployments where server needs different store configuration.
 
    Parameters:
-   - scope-id: String identifier for this database
+   - store-id: UUID identifying the store (from client's :store :id)
    - client-config: The config sent by the client (schema-flexibility, keep-history?, etc.)
 
-   Returns: Store config map from client with :scope set to scope-id"
-  [scope-id client-config]
-  (assoc (:store client-config) :scope scope-id))
+   Returns: Store config map from client (preserves UUID :id from client)"
+  [store-id client-config]
+  ;; Return client's store config unchanged - :id is already a UUID
+  (:store client-config))
 
 (defn- make-create-database-handler
   "Create a create-database handler that closes over the peer and store-config-fn.
@@ -135,59 +134,55 @@
    3. Registers it for remote access (dispatch + sync)
 
    Request format:
-   {:config {:writer {:scope-id UUID :peer-id UUID}
+   {:config {:writer {:store-id UUID :peer-id UUID}
              :schema-flexibility :write/:read
              :keep-history? bool
              ...}}
 
    The client sends logical config (schema-flexibility, keep-history?, etc.)
-   and the scope-id. The server uses store-config-fn to determine the actual store backend."
+   and the store-id. The server uses store-config-fn to determine the actual store backend."
   [peer store-config-fn]
   (fn [{:keys [config]}]
     (go-try S
             #?(:clj (println "[SERVER] create-database handler invoked!" config)
                :cljs (.log js/console "[SERVER] create-database handler invoked!" config))
-            (let [scope-id (or (get-in config [:writer :scope-id])
-                               (-> config :store :id))  ;; Use :id (refactored from :scope)
-            ;; Normalize scope-id to string (store scopes are always strings)
-                  scope-id (if (uuid? scope-id) (str scope-id) scope-id)
+            (let [store-id (-> config :store :id)  ;; Extract UUID from store config
                   _ (do
-                      #?(:clj (println "[SERVER] Processing scope-id:" scope-id)
-                         :cljs (.log js/console "[SERVER] Processing scope-id:" scope-id))
-                      (log/info "Global create-database request" {:scope-id scope-id}))
+                      #?(:clj (println "[SERVER] Processing store-id:" store-id)
+                         :cljs (.log js/console "[SERVER] Processing store-id:" store-id))
+                      (log/info "Global create-database request" {:store-id store-id}))
 
             ;; Build server-side config using store-config-fn
             ;; Client's store config is ignored - server controls the backend
-                  store-config (store-config-fn scope-id config)
+                  store-config (store-config-fn store-id config)
                   server-config {:store store-config
                                  :writer {:backend :self}
                            ;; Preserve logical config from client
                                  :schema-flexibility (or (:schema-flexibility config) :write)
                                  :keep-history? (get config :keep-history? false)}
                   _ (<? S (w/create-database server-config))
-                  _ (log/trace "Database created" {:scope-id scope-id})
+                  _ (log/trace "Database created" {:store-id store-id})
 
             ;; Connect and register for remote access
             ;; Note: d/connect is synchronous in JVM Clojure
                   conn (d/connect server-config)
-                  _ (log/trace "Connected" {:scope-id scope-id})
+                  _ (log/trace "Connected" {:store-id store-id})
 
-            ;; Register connection in scope registry
-                  _ (register-connection-for-scope! scope-id conn peer)
+            ;; Register connection in store registry (use UUID directly)
+                  _ (register-connection-for-store! store-id conn peer)
 
-            ;; Register for konserve-sync (use UUID directly as topic to match client)
+            ;; Register for konserve-sync (use UUID as topic to match client)
                   store (:store @(:wrapped-atom conn))
-                  store-id (-> config :store :id)  ;; Use original UUID, not stringified scope-id
                   _ (sync/register-store! peer store-id store
                                           {:walk-fn dh-walker/datahike-walk-fn
                                            :key-sort-fn (fn [k] (if (= k :db) 1 0))})
-                  _ (log/trace "Registered for sync" {:scope-id scope-id :store-id store-id})
+                  _ (log/trace "Registered for sync" {:store-id store-id})
 
-            ;; Register tx-report topic for pubsub
-                  _ (tx-broadcast/register-tx-report-topic! peer scope-id)]
+            ;; Register tx-report topic for pubsub (use UUID directly)
+                  _ (tx-broadcast/register-tx-report-topic! peer store-id)]
 
-              (log/info "Database created and registered" {:scope-id scope-id})
-              {:success true :scope-id scope-id :config server-config}))))
+              (log/info "Database created and registered" {:store-id store-id})
+              {:success true :store-id store-id :config server-config}))))
 
 (defn- make-delete-database-handler
   "Create a delete-database handler that closes over the store-config-fn.
@@ -198,42 +193,38 @@
    3. Deletes the database
 
    Request format:
-   {:config {:writer {:scope-id UUID :peer-id UUID} ...}}
+   {:config {:writer {:store-id UUID :peer-id UUID} ...}}
 
-   The client sends scope-id. The server uses store-config-fn to determine
+   The client sends store-id. The server uses store-config-fn to determine
    which store to delete."
-  [_peer store-config-fn]  ;; peer looked up from scope-registry
+  [_peer store-config-fn]  ;; peer looked up from store-registry
   (fn [{:keys [config]}]
     (go-try S
-            (let [scope-id (or (get-in config [:writer :scope-id])
-                               (-> config :store :id))  ;; Use :id (refactored from :scope)
-            ;; Normalize scope-id to string (store scopes are always strings)
-                  scope-id (if (uuid? scope-id) (str scope-id) scope-id)
-                  _ (log/info "Global delete-database request" {:scope-id scope-id})
-                  {:keys [conn peer]} (get @scope-registry scope-id)
-                  store-id (-> config :store :id)  ;; Use original UUID for sync topic
+            (let [store-id (-> config :store :id)  ;; Extract UUID from store config
+                  _ (log/info "Global delete-database request" {:store-id store-id})
+                  {:keys [conn peer]} (get @store-registry store-id)
             ;; Build server-side config using store-config-fn
-                  store-config (store-config-fn scope-id config)
+                  store-config (store-config-fn store-id config)
                   server-config {:store store-config}]
 
               (when conn
-          ;; Unregister from sync (use UUID to match registration)
+          ;; Unregister from sync (use UUID directly)
                 (when peer
                   (sync/unregister-store! peer store-id)
-                  (tx-broadcast/unregister-tx-report-topic! peer scope-id))
+                  (tx-broadcast/unregister-tx-report-topic! peer store-id))
 
-          ;; Remove from registry
-                (unregister-connection-for-scope! scope-id)
+          ;; Remove from registry (use UUID directly)
+                (unregister-connection-for-store! store-id)
 
           ;; Release connection
                 (d/release conn)
-                (log/trace "Connection released" {:scope-id scope-id}))
+                (log/trace "Connection released" {:store-id store-id}))
 
         ;; Delete database using server-side config
               (<? S (w/delete-database server-config))
-              (log/info "Database deleted" {:scope-id scope-id})
+              (log/info "Database deleted" {:store-id store-id})
 
-              {:success true :scope-id scope-id}))))
+              {:success true :store-id store-id}))))
 
 ;; =============================================================================
 ;; Global Handler Registration
@@ -243,7 +234,7 @@
   "Register global handlers for datahike kabel operations.
 
    This registers three handlers that close over the provided peer:
-   - datahike.kabel/dispatch - routes transactions by scope-id
+   - datahike.kabel/dispatch - routes transactions by store-id
    - datahike.kabel/create-database - creates database and registers for access
    - datahike.kabel/delete-database - unregisters and deletes database
 
@@ -253,18 +244,18 @@
    Parameters:
    - peer: The kabel peer atom that will handle requests
    - opts: (optional) Options map
-     - :store-config-fn - (fn [scope-id client-config] -> store-config)
-       Function that returns the server-side store config for a given scope-id.
+     - :store-config-fn - (fn [store-id client-config] -> store-config)
+       Function that returns the server-side store config for a given store-id.
        Default: `default-store-config-fn` which uses the client's store config
-       with the scope-id ensured.
+       with the store-id ensured.
 
    Example with custom store config (e.g., for different backend on server):
    ```clojure
    (register-global-handlers! peer
-     {:store-config-fn (fn [scope-id _config]
+     {:store-config-fn (fn [store-id _config]
                          {:backend :file
-                          :path (str \"/var/data/datahike/\" scope-id)
-                          :scope scope-id})})
+                          :path (str \"/var/data/datahike/\" store-id)
+                          :id store-id})})
    ```"
   ([peer] (register-global-handlers! peer {}))
   ([peer opts]
@@ -287,17 +278,17 @@
 
    This function is kept for backwards compatibility but does nothing
    since global handlers are now used."
-  [scope-id]
+  [store-id]
   (log/warn "register-store-handlers! is deprecated. Use register-global-handlers! instead."
-            {:scope-id scope-id}))
+            {:store-id store-id}))
 
 (defn unregister-store-handlers!
   "DEPRECATED: Global handlers don't need per-scope unregistration.
 
    This function is kept for backwards compatibility but does nothing."
-  [scope-id]
+  [store-id]
   (log/warn "unregister-store-handlers! is deprecated. Global handlers are used."
-            {:scope-id scope-id}))
+            {:store-id store-id}))
 
 ;; =============================================================================
 ;; Convenience API
@@ -318,23 +309,23 @@
    for remote transactions.
 
    Parameters:
-   - scope-id: UUID identifying the store (from store :id)
+   - store-id: UUID identifying the store (from store :id)
    - conn: The datahike connection
    - peer: The kabel peer atom"
-  [scope-id conn peer]
-  (log/info "Registering store for remote access" {:scope-id scope-id})
+  [store-id conn peer]
+  (log/info "Registering store for remote access" {:store-id store-id})
 
   ;; Register connection lookup
-  (register-connection-for-scope! scope-id conn peer)
+  (register-connection-for-store! store-id conn peer)
 
   ;; Register for konserve-sync (use UUID directly as topic)
   (let [store (:store @(:wrapped-atom conn))]
-    (sync/register-store! peer scope-id store
+    (sync/register-store! peer store-id store
                           {:walk-fn dh-walker/datahike-walk-fn
                            :key-sort-fn (fn [k] (if (= k :db) 1 0))}))
 
   ;; Register tx-report topic for pubsub
-  (tx-broadcast/register-tx-report-topic! peer scope-id))
+  (tx-broadcast/register-tx-report-topic! peer store-id))
 
 (defn unregister-store-for-remote-access!
   "Unregister a datahike store from remote access.
@@ -342,16 +333,16 @@
    Cleans up all registrations made by register-store-for-remote-access!.
 
    Parameters:
-   - scope-id: UUID identifying the store (from store :id)
+   - store-id: UUID identifying the store (from store :id)
    - peer: The kabel peer atom"
-  [scope-id peer]
-  (log/info "Unregistering store from remote access" {:scope-id scope-id})
+  [store-id peer]
+  (log/info "Unregistering store from remote access" {:store-id store-id})
 
   ;; Unregister from sync (use UUID directly as topic)
-  (sync/unregister-store! peer scope-id)
+  (sync/unregister-store! peer store-id)
 
   ;; Unregister tx-report topic
-  (tx-broadcast/unregister-tx-report-topic! peer scope-id)
+  (tx-broadcast/unregister-tx-report-topic! peer store-id)
 
   ;; Remove from registry
-  (unregister-connection-for-scope! scope-id))
+  (unregister-connection-for-store! store-id))
