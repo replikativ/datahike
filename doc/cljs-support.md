@@ -118,8 +118,9 @@ const config = {
 await d.createDatabase(config);
 const conn = await d.connect(config);
 await d.transact(conn, [{ name: 'Alice' }]);
-const db = d.db(conn);
-console.log(await d.q('[:find ?n :where [?e :name ?n]]', db));
+const db = await d.db(conn);  // db() is async for async backends
+const results = await d.q('[:find ?n :where [?e :name ?n]]', db);
+console.log(results);
 // => [['Alice']]
 ```
 
