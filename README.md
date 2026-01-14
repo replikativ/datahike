@@ -52,16 +52,16 @@ Add to your dependencies:
 
 [![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
 
-We provide a small stable API for the JVM at the moment, but the on-disk schema
-is not fixed yet. We will provide a migration guide until we have reached a
-stable on-disk schema. _Take a look at the ChangeLog before upgrading_.
+We provide a stable API for the JVM that we extend by first providing experimental/beta features that then get merged into the API over time.
 
 ```clojure
 (require '[datahike.api :as d])
 
 
 ;; use the filesystem as storage medium
-(def cfg {:store {:backend :file :path "/tmp/example"}})
+(def cfg {:store {:backend :file 
+                  :id #uuid "550e8400-e29b-41d4-a716-446655440000"
+                  :path "/tmp/example"}})
 
 ;; create a database at this place, per default configuration we enforce a strict
 ;; schema and keep all historical data
