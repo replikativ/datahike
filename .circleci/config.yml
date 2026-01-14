@@ -174,9 +174,7 @@ jobs:
             - /home/circleci/.m2
             - /home/circleci/.deps.clj
   browser-test:
-    docker:
-      - image: tools/clojurecli
-    working_directory: /home/circleci/replikativ
+    executor: tools/clojurecli
     steps:
       - attach_workspace:
           at: /home/circleci
@@ -279,17 +277,15 @@ workflows:
   build-test-and-deploy:
     jobs:
       - setup:
-          context:
-            - dockerhub-deploy
-            - ghcr-read-package
+          context: ghcr-read-package
           setup_cljs: true
       - build:
-          context: dockerhub-deploy
+          context: ghcr-read-package
           requires:
             - setup
       - native-image:
           context:
-            - dockerhub-deploy
+            - ghcr-read-package
             - github-token
           filters:
             branches:
@@ -297,44 +293,44 @@ workflows:
           requires:
             - setup
       - format:
-          context: dockerhub-deploy
+          context: ghcr-read-package
           requires:
             - setup
       - persistent-set-test:
-          context: dockerhub-deploy
+          context: ghcr-read-package
           requires:
             - build
       - hitchhiker-tree-test:
-          context: dockerhub-deploy
+          context: ghcr-read-package
           requires:
             - build
       - backward-compatibility-test:
-          context: dockerhub-deploy
+          context: ghcr-read-package
           requires:
             - build
       - integration-test:
-          context: dockerhub-deploy
+          context: ghcr-read-package
           requires:
             - build
       - kabel-test:
-          context: dockerhub-deploy
+          context: ghcr-read-package
           requires:
             - build
       - browser-test:
-          context: dockerhub-deploy
+          context: ghcr-read-package
           requires:
             - build
       - node-cljs-test:
-          context: dockerhub-deploy
+          context: ghcr-read-package
           requires:
             - build
       - npm-test:
-          context: dockerhub-deploy
+          context: ghcr-read-package
           requires:
             - build
       - deploy:
           context:
-            - dockerhub-deploy
+            - ghcr-read-package
             - clojars-deploy
             - github-token
           filters:
@@ -352,7 +348,7 @@ workflows:
             - npm-test
       - release-jar:
           context:
-            - dockerhub-deploy
+            - ghcr-read-package
             - github-token
           filters:
             branches:
@@ -369,7 +365,7 @@ workflows:
             - npm-test
       - release-pod:
           context:
-            - dockerhub-deploy
+            - ghcr-read-package
             - github-pod-registry-token
           filters:
             branches:
