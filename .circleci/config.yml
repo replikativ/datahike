@@ -5,7 +5,6 @@ setup: true
 orbs:
   tools: replikativ/clj-tools@0
   continuation: circleci/continuation@2.0
-  browser-tools: circleci/browser-tools@1.4
 
 jobs:
   setup:
