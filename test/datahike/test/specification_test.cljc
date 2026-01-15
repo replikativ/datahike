@@ -2,21 +2,29 @@
   (:require
    #?(:cljs [cljs.test :as t :refer-macros [is are deftest testing]]
       :clj  [clojure.test :as t :refer [is are deftest testing]])
-   [datahike.api.specification :refer [spec-args->argslist]]))
+   [datahike.api.specification :refer [malli-schema->argslist]]
+   [datahike.api.types :as types]))
 
-(deftest spec-to-argslist-translation
-  (testing "Testing core cases of spec to argslist translator."
-    (is (= (spec-args->argslist '(s/alt :config (s/cat :config spec/SConfig)
-                                        :nil (s/cat)))
-           '[[config] []]))
+(deftest malli-to-argslist-translation
+  (testing "Testing core cases of malli to argslist translator."
+    ;; Multi-arity: [:function [:=> [:cat Type1] ret] [:=> [:cat] ret]]
+    (is (= (malli-schema->argslist '[:function
+                                     [:=> [:cat types/SConfig] :any]
+                                     [:=> [:cat] :any]])
+           '([arg0] [])))
 
-    (is (= (spec-args->argslist '(s/cat :conn spec/SConnection :txs spec/STransactions))
-           '[[conn txs]]))
+    ;; Single arity: [:=> [:cat Type1 Type2] ret]
+    (is (= (malli-schema->argslist '[:=> [:cat types/SConnection types/STransactions] :any])
+           '([arg0 arg1])))
 
-    (is (= (spec-args->argslist '(s/alt :argmap (s/cat :map spec/SQueryArgs)
-                                        :with-params (s/cat :q (s/or :vec vector? :map map?) :args (s/* any?))))
-           '[[map] [q & args]]))
+    ;; Multi-arity with rest args: [:function [:=> [:cat Type] ret] [:=> [:cat [:or ...] [:* :any]] ret]]
+    (is (= (malli-schema->argslist '[:function
+                                     [:=> [:cat types/SQueryArgs] :any]
+                                     [:=> [:cat [:or :vector :map] [:* :any]] :any]])
+           '([arg0] [arg0 arg1])))
 
-    (is (= (spec-args->argslist '(s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
-                                        :full (s/cat :db spec/SDB :selector coll? :eid spec/SEId)))
-           '[[db opts] [db selector eid]]))))
+    ;; Multi-arity simple: [:function [:=> [:cat Type1 Type2] ret] [:=> [:cat Type1 Type3 Type4] ret]]
+    (is (= (malli-schema->argslist '[:function
+                                     [:=> [:cat types/SDB types/SPullOptions] :any]
+                                     [:=> [:cat types/SDB :any types/SEId] :any]])
+           '([arg0 arg1] [arg0 arg1 arg2])))))

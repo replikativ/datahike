@@ -16,7 +16,7 @@
    [datahike.writing]
    [datahike.writer]
    [reitit.ring :as ring]
-   [reitit.coercion.spec]
+   [reitit.coercion.malli]
    [reitit.swagger :as swagger]
    [reitit.swagger-ui :as swagger-ui]
    [reitit.ring.coercion :as coercion]
@@ -26,13 +26,10 @@
    [reitit.ring.middleware.parameters :as parameters]
    [ring.middleware.cors :refer [wrap-cors]]
    [muuntaja.core :as m]
-   [clojure.spec.alpha :as s]
-   [datahike.spec :as spec]
    [datahike.tools :refer [datahike-version datahike-logo]]
    [datahike.impl.entity :as de]
    [taoensso.timbre :as log]
-   [ring.adapter.jetty :refer [run-jetty]]
-   [spec-tools.core :as st])
+   [ring.adapter.jetty :refer [run-jetty]])
   (:import [datahike.datom Datom]))
 
 (defn generic-handler [config f]
@@ -76,8 +73,7 @@
   (str (first (str/split doc #"\.\s")) "."))
 
 ;; This code expands and evals the server route construction given the
-;; API specification. 
-;; TODO This would not need macro-expansion if s/spec would not be a macro.
+;; API specification.
 (eval
  `(defn ~'create-routes [~'config]
     ~(vec
@@ -89,8 +85,7 @@
            {:operationId ~(str n)
             :summary     ~(extract-first-sentence doc)
             :description ~doc
-            :parameters  {:body (st/spec {:spec (s/spec ~args)
-                                          :name ~(str n)})}
+            :parameters  {:body ~args}
             :handler     (generic-handler ~'config ~(resolve n))}}]))))
 
 (def muuntaja-with-opts
@@ -108,7 +103,7 @@
                  {:handlers transit/write-handlers}))))
 
 (defn default-route-opts [muuntaja-with-opts]
-  {:data      {:coercion   reitit.coercion.spec/coercion
+  {:data      {:coercion   reitit.coercion.malli/coercion
                :muuntaja   muuntaja-with-opts
                :middleware [swagger/swagger-feature
                             parameters/parameters-middleware
@@ -125,8 +120,7 @@
 
 (defn internal-writer-routes [server-connections]
   [["/delete-database-writer"
-    {:post {:parameters  {:body (st/spec {:spec any?
-                                          :name "delete-database-writer"})},
+    {:post {:parameters  {:body [:sequential :any]},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
@@ -145,8 +139,7 @@
             :operationId "delete-database"},
      :swagger {:tags ["Internal"]}}]
    ["/create-database-writer"
-    {:post {:parameters  {:body (st/spec {:spec any?
-                                          :name "create-database-writer"})},
+    {:post {:parameters  {:body [:sequential :any]},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
@@ -163,8 +156,7 @@
             :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
    ["/transact!-writer"
-    {:post {:parameters  {:body (st/spec {:spec any?
-                                          :name "transact-writer"})},
+    {:post {:parameters  {:body [:sequential :any]},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]

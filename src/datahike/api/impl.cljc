@@ -4,12 +4,10 @@
   (:refer-clojure :exclude [filter])
   (:require [datahike.connector :as dc]
             [datahike.config :as config]
-            [clojure.spec.alpha :as s]
             [datahike.writer :as dw]
             [datahike.writing :as writing]
             [datahike.constants :as const]
             [datahike.core :as dcore]
-            [datahike.spec :as spec]
             [datahike.pull-api :as dp]
             [datahike.query :as dq]
             [datahike.schema :as ds]
