@@ -156,77 +156,6 @@ For simple examples have a look at the projects in the `examples` folder.
   demonstrated at the [Dutch Clojure
   Meetup](https://www.meetup.com/de-DE/The-Dutch-Clojure-Meetup/events/trmqnpyxjbrb/).
 
-## Relationship to Datomic and DataScript
-
-Datahike provides similar functionality to [Datomic](http://Datomic.com) and can
-be used as a drop-in replacement for a subset of it. The goal of Datahike is not
-to provide an open-source reimplementation of Datomic, but it is part of the
-[replikativ](https://github.com/replikativ) toolbox aimed to build distributed
-data management solutions. We have spoken to many backend engineers and Clojure
-developers, who tried to stay away from Datomic just because of its proprietary
-nature and we think in this regard Datahike should make an approach to Datomic
-easier and vice-versa people who only want to use the goodness of Datalog in
-small scale applications should not worry about setting up and depending on
-Datomic.
-
-Some differences are:
-
-- Datahike runs locally on one peer. A transactor might be provided in the
-  future and can also be realized through any linearizing write mechanism, e.g.
-  Apache Kafka. If you are interested, please contact us.
-- Datahike provides the database as a transparent value, i.e. you can directly
-  access the index datastructures (hitchhiker-tree) and leverage their
-  persistent nature for replication. These internals are not guaranteed to stay
-  stable, but provide useful insight into what is going on and can be optimized.
-- Datahike supports [GDPR](https://gdpr.eu/) compliance by allowing to [completely remove database entries](./doc/time_variance.md#data-purging).
-- Datomic has a REST interface and a Java API
-- Datomic provides timeouts
-
-Datomic is a full-fledged scalable database (as a service) built from the
-authors of Clojure and people with a lot of experience. If you need this kind
-of professional support, you should definitely stick to Datomic.
-
-Datahike's query engine and most of its codebase come from
-[DataScript](https://github.com/tonsky/DataScript). Without the work on
-DataScript, Datahike would not have been possible. Differences to Datomic with
-respect to the query engine are documented there.
-
-## When to Choose Datahike vs. Datomic vs. DataScript
-
-### Datahike
-
-Pick Datahike when you need:
-- **Distributed read scaling**: Distributed Index Space enables massive read scalability without database connections
-- **Cross-platform deployment**: The only Datalog database running on JVM, Node.js, and browsers with the same API
-- **Flexible storage**: Switch backends (File, LMDB, S3, JDBC, Redis, IndexedDB) based on deployment needs
-- **Open source control**: Full access to study, modify, and deploy without vendor lock-in
-- **Proven scale**: Tested with billions of datoms in benchmarks and government production systems
-- **Browser capabilities**: Offline-first applications with IndexedDB and real-time WebSocket sync
-- **Git-like workflows**: Versioning, branching, and time-travel queries on your data
-- **GDPR compliance**: Complete data excision capabilities
-
-Datahike is Datomic-API compatible, making migration straightforward if your needs change.
-
-### Datomic
-
-Pick Datomic if you:
-- **Want proven patterns**: Extensive documentation, learning materials, and enterprise examples
-- **Need maximum performance**: Fastest query execution for complex joins
-- **Free is sufficient**: Binaries are free (Apache 2.0) though closed-source
-- **AWS-committed**: Planning Datomic Cloud deployment on AWS
-
-Note: Datomic has no ClojureScript support and uses proprietary storage backends.
-
-### DataScript
-
-Pick DataScript when you need:
-- **Browser-only**: No persistence needed, pure client-side state management
-- **Maximum speed**: In-memory queries with no I/O overhead
-- **Lightweight**: Minimal dependencies, "cheap as creating a Hashmap"
-- **Ephemeral data**: Application state that doesn't survive page reloads
-
-DataScript is mature and battle-tested (Roam Research, Athens), but has no durable storage.
-
 ## ClojureScript & JavaScript Support
 
 Datahike has **beta ClojureScript support** for both **Node.js** (file backend) and **browsers** (IndexedDB with TieredStore for memory hierarchies).
@@ -234,20 +163,23 @@ Datahike has **beta ClojureScript support** for both **Node.js** (file backend) 
 **JavaScript API** (Promise-based):
 ```javascript
 const d = require('datahike');
+const crypto = require('crypto');
 
-const config = { store: { backend: ':mem', id: 'example' } };
+const config = {
+  store: {
+    backend: ':memory',
+    id: crypto.randomUUID()
+  },
+  'schema-flexibility': ':read'  // Allow schemaless data (use kebab-case)
+};
+
 await d.createDatabase(config);
 const conn = await d.connect(config);
-
-await d.transact(conn, {
-  'tx-data': [{ ':name': 'Alice', ':age': 30 }]
-});
-
-const results = await d.q(
-  '[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]',
-  d.db(conn)
-);
-// => [['Alice', 30]]
+await d.transact(conn, [{ name: 'Alice' }]);
+const db = await d.db(conn);  // db() is async for async backends
+const results = await d.q('[:find ?n :where [?e :name ?n]]', db);
+console.log(results);
+// => [['Alice']]
 ```
 
 **Browser with real-time sync**: Combine IndexedDB storage with [Kabel](https://github.com/replikativ/kabel) WebSocket middleware for offline-capable applications that sync to server when online.
@@ -263,7 +195,11 @@ npm install datahike@next
 
 **Babashka pod**: Native-compiled pod available in the [Babashka pod registry](https://github.com/babashka/pod-registry) for shell scripting. See [Babashka pod documentation](./doc/bb-pod.md).
 
-**Java API** (`libdatahike`): C++ bindings enable embedding Datahike in non-JVM applications. Experimental Python bindings available: [pydatahike](https://github.com/replikativ/pydatahike). See [libdatahike documentation](./doc/libdatahike.md).
+**Java API**: Shipped with the jar file is [Datahike.java](https://github.com/replikativ/datahike/blob/main/java/src/datahike/java/Datahike.java) (beta).
+
+**libdatahike**: *C++ bindings* enable embedding Datahike in non-JVM applications. See [libdatahike documentation](./doc/libdatahike.md).
+
+**Python bindings** (experimental): [pydatahike](https://github.com/replikativ/pydatahike). Please reach out if you have interest and we can make them work for you.
 
 ## Production Use
 
