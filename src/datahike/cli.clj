@@ -6,7 +6,6 @@
             [clojure.tools.cli :refer [parse-opts]]
             [datahike.api :as d]
             [datahike.pod :refer [run-pod]]
-            [datahike.tools :refer [datahike-logo]]
             [clojure.edn :as edn]
             [jsonista.core :as j]
             [datahike.json :as json]
@@ -25,8 +24,23 @@
                                (binding [*out* *err*]
                                  (println (force output_))))}}}))
 
+(defn get-version []
+  (or
+   ;; Try to read version from resource file (generated at build time)
+   (try
+     (some-> (io/resource "DATAHIKE_VERSION")
+             slurp
+             str/trim)
+     (catch Exception _ nil))
+   ;; Fallback for development builds
+   "development build"))
+
+(defn datahike-banner []
+  (str "▁▃▅▄▇▅▃▅▃▁  \033[1mdata\033[0mhike cli v" (get-version)))
+
 (defn usage [options-summary]
-  (->> [datahike-logo
+  (->> [(datahike-banner)
+        ""
         "This is the Datahike command line interface."
         ""
         "The commands mostly reflect the datahike.api Clojure API. To instantiate a specific database, you can use db:config_file to access the current database value, conn:config_file to create a mutable connection for manipulation, history:config_file for the historical database over all transactions, since:unix_time_in_ms:config_file to create a database with all facts since the time provided and asof:unix_time_in_ms:config_file to create an snapshot as-of the time provided. To pass in edn data use edn:edn_file and for JSON use json:json_file."
@@ -40,7 +54,7 @@
         "  create-database         Create database for a provided configuration file, e.g. create-database config_file"
         "  delete-database         Delete database for a provided configuration file, e.g. delete-database config_file"
         "  database-exists         Check whether database exists for a provided configuration file, e.g. database-exists config_file"
-        "  transact                Transact transactions, optionally from a file with --tx-file or from STDIN. Exampe: transact conn:config_file \"[{:name \"Peter\" :age 42}]\""
+        "  transact                Transact transactions, optionally from a file with --tx-file or from STDIN. Example: transact conn:config_file \"[{:name \"Peter\" :age 42}]\""
         "  query                   Query the database, e.g. query '[:find (count ?e) . :where [?e :name _]]' db:mydb.edn. You can pass an arbitrary number of data sources to the query."
         "  benchmark               Benchmarks write performance. The arguments are starting eid, ending eid and the batch partitioning of the added synthetic Datoms. The Datoms have the form [eid :name ?randomly-sampled-name]"
         "  pull                    Pull data in a map syntax for a specific entity: pull db:mydb.edn \"[:db/id, :name]\" \"1\"."
@@ -50,6 +64,15 @@
         "  schema                  Fetch schema for a db."
         "  reverse-schema          Fetch reverse schema for a db."
         "  metrics                 Fetch metrics for a db."
+        "  gc-storage              Remove old snapshots: gc-storage conn:mydb.edn \"edn:cutoff-date.edn\""
+        "  info                    Show database information: info db:mydb.edn"
+        ""
+        "Remote Databases:"
+        "  Use :writer or :remote-peer in your config file to connect via HTTP."
+        "  Example config with :writer for distributed writes:"
+        "    {:store {:backend :file :path \"/shared/db\"}"
+        "     :writer {:backend :datahike-server :url \"http://localhost:4444\" :token \"xyz\"}}"
+        "  See doc/distributed.md for details."
         ""
         "Please refer to the manual page for more information."]
        (str/join \newline)))
@@ -59,7 +82,7 @@
        (str/join \newline errors)))
 
 (def actions #{"create-database" "delete-database" "database-exists" "transact" "query" "benchmark"
-               "pull" "pull-many" "entity" "datoms" "schema" "reverse-schema" "metrics"})
+               "pull" "pull-many" "entity" "datoms" "schema" "reverse-schema" "metrics" "gc-storage" "info"})
 
 (def cli-options
   ;; An option with a required argument
@@ -81,7 +104,8 @@
       :default 0
       :update-fn inc]
      ;; A boolean option defaulting to nil
-     ["-h" "--help"]]))
+     ["-h" "--help"]
+     [nil "--version" "Show version"]]))
 
 (defn validate-args
   "Validate command line arguments. Either return a map indicating the program
@@ -96,6 +120,9 @@
 
       (:help options) ; help => exit OK with usage summary
       {:exit-message (usage summary) :ok? true :options options}
+
+      (:version options) ; version => exit OK with version string
+      {:exit-message (str "Datahike " (get-version)) :ok? true :options options}
 
       errors          ; errors => exit with description of errors
       {:exit-message (error-msg errors) :options options}
@@ -261,4 +288,19 @@
 
         :gc-storage
         (let [out (d/gc-storage (load-input (first arguments)) (load-input (second arguments)))]
+          (report (:format options) out))
+
+        :info
+        (let [db (load-input (first arguments))
+              config (:config db)
+              metrics (d/metrics db)
+              schema (d/schema db)
+              out {:datahike-version (get-version)
+                   :database-config (select-keys config [:index :keep-history? :schema-flexibility :attribute-refs?])
+                   :storage-backend (get-in config [:store :backend])
+                   :datom-count (or (:count metrics) 0)
+                   :entity-count (count (:per-entity-counts metrics))
+                   :schema-attributes (count (dissoc schema 0 1))
+                   :max-tx (:max-tx db)
+                   :max-eid (:max-eid db)}]
           (report (:format options) out))))))

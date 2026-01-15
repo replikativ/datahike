@@ -51,3 +51,9 @@ repl-mcp.log
 /node_modules
 npm-package/output.txt
 /.internal/
+resources/DATAHIKE_VERSION
+
+# clj-kondo: ignore external library imports (keep config.edn and babashka)
+.clj-kondo/*
+!.clj-kondo/config.edn
+!.clj-kondo/babashka/

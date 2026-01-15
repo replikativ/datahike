@@ -1,868 +1,666 @@
 (ns datahike.api.specification
-  "Shared specification for different bindings. This namespace holds all
-  information such that individual bindings can be automatically derived from
-  it."
-  (:require [clojure.spec.alpha :as s]
-            [datahike.spec :as spec]))
+  "Shared specification for different bindings.
+
+  This namespace holds all semantic information such that individual bindings
+  (Clojure API, Java API, JavaScript/TypeScript, HTTP routes, CLI) can be
+  automatically derived from it.
+
+  Following the Proximum pattern - the spec is purely declarative about semantics,
+  not about how each binding should look. Names, routes, and method signatures
+  are derived via conventions in the codegen modules.
+
+  Each operation has:
+    :args                     - malli function schema [:=> [:cat ...] ret] or [:function [...]]
+    :ret                      - malli schema for return value
+    :doc                      - documentation string
+    :impl                     - symbol pointing to implementation function
+    :categories               - semantic grouping tags (vector of keywords)
+    :stability                - API maturity (:alpha, :beta, :stable)
+    :accepts-stdin?           - true if CLI can read from stdin
+    :supports-remote?         - true if can be exposed via HTTP/remote API
+    :referentially-transparent? - true if pure (no side effects, deterministic)
+    :examples                 - structured usage examples (optional)
+    :params                   - detailed parameter documentation (optional)"
+  (:require [malli.core :as m]
+            [datahike.api.types :as types]))
+
+;; =============================================================================
+;; Name Derivation Helpers
+;; =============================================================================
 
 (defn ->url
-  "Turns an API endpoint name into a URL."
-  [name]
-  (.replace (str name) "?" ""))
+  "Turns an API endpoint name into a URL path segment.
+   Removes ? and ! suffixes, uses kebab-case as-is."
+  [op-name]
+  (-> (str op-name)
+      (clojure.string/replace #"[?!]$" "")))
 
-(defn spec-args->argslist
-  "This function is a helper to translate a spec into a list of arguments. It is only complete enough to deal with the specs in this namespace."
-  [s]
-  (if-not (seq? s)
-    (if (= :nil s) [] [(symbol (name s))])
-    (let [[op & args] s]
-      (cond
-        (= op 's/cat)
-        [(vec (mapcat (fn [[k v]]
-                        (if (and (seq? v) (= (first v) 's/*))
-                          (vec (concat ['&] (spec-args->argslist k)))
-                          (spec-args->argslist k)))
-                      (partition 2 args)))]
+(defn ->cli-command
+  "Derives CLI command from operation name.
+   Examples:
+     database-exists? → db-exists
+     create-database → db-create
+     transact → transact
+     q → query"
+  [op-name]
+  (-> (str op-name)
+      (clojure.string/replace #"^database-" "db-")
+      (clojure.string/replace #"[?!]$" "")))
 
-        (= op 's/alt)
-        (vec (mapcat (fn [[k v]]
-                       (if (seq? v)
-                         (spec-args->argslist v)
-                         [[(symbol (name k))]]))
-                     (partition 2 args)))
-        :else
-        []))))
+(defn malli-schema->argslist
+  "Extract argument list from malli function schema for defn metadata.
+   Handles [:=> [:cat ...] ret] and [:function [...]] schemas."
+  [schema]
+  (let [form (if (m/schema? schema) (m/form schema) schema)]
+    (cond
+      ;; [:function [:=> [:cat ...] ret] ...] - multi-arity
+      (and (vector? form) (= :function (first form)))
+      (for [arity-schema (rest form)]
+        (when (and (vector? arity-schema) (= :=> (first arity-schema)))
+          (let [[_ input-schema _] arity-schema]
+            (if (and (vector? input-schema) (= :cat (first input-schema)))
+              (vec (map-indexed (fn [i _] (symbol (str "arg" i)))
+                                (rest input-schema)))
+              []))))
+
+      ;; [:=> [:cat ...] ret] - single arity
+      (and (vector? form) (= :=> (first form)))
+      (let [[_ input-schema _] form]
+        (if (and (vector? input-schema) (= :cat (first input-schema)))
+          (list (vec (map-indexed (fn [i _] (symbol (str "arg" i)))
+                                  (rest input-schema))))
+          '([])))
+
+      :else
+      '([& args]))))
+
+;; =============================================================================
+;; API Specification
+;; =============================================================================
 
 (def api-specification
-  '{database-exists?
-    {:args             (s/alt :config (s/cat :config spec/SConfig)
-                              :nil (s/cat))
-     :ret              boolean?
+  "Complete API specification for Datahike.
+
+   Operation names become:
+   - Clojure function names (as-is)
+   - Java method names (kebab→camelCase, remove !?, via codegen)
+   - JavaScript function names (same as Java)
+   - HTTP routes (kebab-case path segments)
+   - CLI commands (via ->cli-command)"
+
+  '{;; =========================================================================
+    ;; Database Lifecycle
+    ;; =========================================================================
+
+    database-exists?
+    {:args [:function
+            [:=> [:cat types/SConfig] :boolean]
+            [:=> [:cat] :boolean]]
+     :ret :boolean
+     :categories [:database :lifecycle :query]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
-     :doc
-     "Checks if a database exists via configuration map.
-Usage:
-
-    (database-exists? {:store {:backend :memory :id \"example\"}})"
-     :impl             datahike.api.impl/database-exists?}
+     :doc "Checks if a database exists via configuration map."
+     :examples [{:desc "Check if in-memory database exists"
+                 :code "(database-exists? {:store {:backend :mem :id \"example\"}})"}
+                {:desc "Check with default config"
+                 :code "(database-exists?)"}]
+     :impl datahike.api.impl/database-exists?}
 
     create-database
-    {:args             (s/alt :config
-                              (s/cat :config spec/SConfig
-                                     :initial-tx (s/? (s/cat :k (s/? (s/and #(= % :initial-tx))) :v spec/STransactions))
-                                     :temporal-index (s/? (s/cat :k (s/? (s/and #(= % :temporal-index))) :v boolean?))
-                                     :schema-on-read (s/? (s/cat :k (s/? (s/and #(= % :schema-on-read))) :v boolean?)))
-                              :nil (s/cat))
-     :ret              #(s/valid? spec/SConfig [%])
+    {:args [:function
+            [:=> [:cat types/SConfig] types/SConfig]
+            [:=> [:cat] types/SConfig]]
+     :ret types/SConfig
+     :categories [:database :lifecycle :write]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
-     :doc
-     "Creates a database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
-
-The configuration is a hash-map with keys: `:store`, `:initial-tx`, `:keep-history?`, `:schema-flexibility`, `:index`
-
-- `:store` defines the backend configuration as hash-map with mandatory key: `:backend` and store dependent keys.
-Per default Datahike ships with `:memory` and `:file` backend.
-- `:initial-tx` defines the first transaction into the database, often setting default data like the schema.
-- `:keep-history?` is a boolean that toggles whether Datahike keeps historical data.
-- `:schema-flexibility` can be set to either `:read` or `:write` setting the validation method for the data.
-- `:read` validates the data when your read data from the database, `:write` validates the data when you transact new data.
-- `:index` defines the data type of the index. Available are `:datahike.index/hitchhiker-tree`, `:datahike.index/persistent-set` (only available with in-memory storage)
-- `:name` defines your database name optionally, if not set, a random name is created
-- `:writer` optionally configures a writer as a hash map. If not set, the default local writer is used.
-
-Default configuration has in-memory store, keeps history with write schema flexibility, and has no initial transaction:
-`{:store {:backend :memory :id \"default\"} :keep-history? true :schema-flexibility :write}`
-
-Usage:
-
-    ;; create an empty database:
-    (create-database {:store {:backend :memory :id \"example\"} :name \"my-favourite-database\"})
-
-    ;; Datahike has a strict schema validation (schema-flexibility `:write`) policy by default, that only allows transaction of data that has been pre-defined by a schema.
-    ;; You may influence this behaviour using the `:schema-flexibility` attribute:
-    (create-database {:store {:backend :memory :id \"example\"} :schema-flexibility :read})
-
-    ;; By writing historical data in a separate index, datahike has the capability of querying data from any point in time.
-    ;; You may control this feature using the `:keep-history?` attribute:
-    (create-database {:store {:backend :memory :id \"example\"} :keep-history? false})
-
-    ;; Initial data after creation may be added using the `:initial-tx` attribute, which in this example adds a schema:
-    (create-database {:store {:backend :memory :id \"example\"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})"
-     :impl             datahike.api.impl/create-database}
+     :doc "Creates a database via configuration map."
+     :examples [{:desc "Create empty database"
+                 :code "(create-database {:store {:backend :mem :id \"example\"}})"}
+                {:desc "Create with schema-flexibility :read"
+                 :code "(create-database {:store {:backend :mem :id \"example\"} :schema-flexibility :read})"}
+                {:desc "Create without history"
+                 :code "(create-database {:store {:backend :mem :id \"example\"} :keep-history? false})"}
+                {:desc "Create with initial schema"
+                 :code "(create-database {:store {:backend :mem :id \"example\"}
+                                          :initial-tx [{:db/ident :name
+                                                        :db/valueType :db.type/string
+                                                        :db/cardinality :db.cardinality/one}]})"}]
+     :impl datahike.api.impl/create-database}
 
     delete-database
-    {:args             (s/alt :config (s/cat :config spec/SConfig)
-                              :nil (s/cat))
-     :ret              any?
+    {:args [:function
+            [:=> [:cat types/SConfig] :any]
+            [:=> [:cat] :any]]
+     :ret :any
+     :categories [:database :lifecycle :write]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
-For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)"
+     :doc "Deletes a database given via configuration map."
+     :examples [{:desc "Delete database"
+                 :code "(delete-database {:store {:backend :mem :id \"example\"}})"}]
      :impl datahike.api.impl/delete-database}
 
+    ;; =========================================================================
+    ;; Connection Lifecycle
+    ;; =========================================================================
+
     connect
-    {:args             (s/alt :config (s/cat :config spec/SConfig)
-                              :config+opts (s/cat :config spec/SConfig :opts map?)
-                              :nil (s/cat))
-     :ret              spec/SConnection
+    {:args [:function
+            [:=> [:cat types/SConfig] types/SConnection]
+            [:=> [:cat types/SConfig :map] types/SConnection]
+            [:=> [:cat] types/SConnection]]
+     :ret types/SConnection
+     :categories [:connection :lifecycle]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
-
-The configuration for a connection is a subset of the Datahike configuration with only the store necessary: `:store`.
-
-`:store` defines the backend configuration as hash-map with mandatory key: `:backend` and store dependent keys.
-
-Per default Datahike ships with `:memory` and `:file` backend.
-
-The default configuration:
-`{:store {:backend :memory :id \"default\"}}`
-
-Usage:
-
-Connect to default in-memory configuration:
-`(connect)`
-
-Connect to a database with persistent store:
-`(connect {:store {:backend :file :path \"/tmp/example\"}})`"
-     :impl             datahike.connector/connect}
+     :doc "Connects to a Datahike database via configuration map."
+     :examples [{:desc "Connect to default in-memory database"
+                 :code "(connect)"}
+                {:desc "Connect to file-based database"
+                 :code "(connect {:store {:backend :file :path \"/tmp/example\"}})"}
+                {:desc "Connect with options"
+                 :code "(connect {:store {:backend :mem :id \"example\"}} {:validate? true})"}]
+     :impl datahike.connector/connect}
 
     db
-    {:args             (s/cat :conn spec/SConnection)
-     :ret              spec/SDB
+    {:args [:=> [:cat types/SConnection] types/SDB]
+     :ret types/SDB
+     :categories [:connection :query]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Returns the underlying immutable database value from a connection.
-
-Exists for Datomic API compatibility. Prefer using `@conn` directly if possible."
+     :doc "Returns the underlying immutable database value from a connection. Prefer using @conn directly."
+     :examples [{:desc "Get database from connection"
+                 :code "(db conn)"}
+                {:desc "Prefer direct deref"
+                 :code "@conn"}]
      :impl datahike.api.impl/db}
 
-    transact!
-    {:args (s/cat :conn spec/SConnection :txs spec/STransactions)
-     :ret  #(s/valid? spec/STransactionReport @%)
-     :doc  "Same as transact, but asynchronously returns a future."
-     :supports-remote? false
+    release
+    {:args [:=> [:cat types/SConnection] :nil]
+     :ret :nil
+     :categories [:connection :lifecycle]
+     :stability :stable
+     :accepts-stdin? false
+     :supports-remote? true
      :referentially-transparent? false
-     :impl datahike.api.impl/transact!}
+     :doc "Releases a database connection."
+     :examples [{:desc "Release connection"
+                 :code "(release conn)"}]
+     :impl datahike.connector/release}
+
+    ;; =========================================================================
+    ;; Transaction Operations
+    ;; =========================================================================
 
     transact
-    {:args             (s/cat :conn spec/SConnection :txs spec/STransactions)
-     :ret              spec/STransactionReport
+    {:args [:=> [:cat types/SConnection types/STransactions] types/STransactionReport]
+     :ret types/STransactionReport
+     :categories [:transaction :write]
+     :stability :stable
+     :accepts-stdin? true
      :supports-remote? true
      :referentially-transparent? false
-     :doc
-     "Applies transaction to the underlying database value and atomically updates the connection reference to point to the result of that transaction, the new db value.
-
-Accepts the connection and a map, vector or sequence as argument, specifying the transaction data.
-
-Returns transaction report, a map:
-
-    {:db-before ...       ; db value before transaction
-     :db-after  ...       ; db value after transaction
-     :tx-data   [...]     ; plain datoms that were added/retracted from db-before
-     :tempids   {...}     ; map of tempid from tx-data => assigned entid in db-after
-     :tx-meta   tx-meta } ; the exact value you passed as `tx-meta`
-
-Note! `conn` will be updated in-place and is not returned from [[transact]].
-
-Usage:
-
-    ;; add a single datom to an existing entity (1)
-    (transact conn [[:db/add 1 :name \"Ivan\"]])
-
-    ;; retract a single datom
-    (transact conn [[:db/retract 1 :name \"Ivan\"]])
-
-    ;; retract single entity attribute
-    (transact conn [[:db.fn/retractAttribute 1 :name]])
-
-    ;; retract all entity attributes (effectively deletes entity)
-    (transact conn [[:db.fn/retractEntity 1]])
-
-    ;; create a new entity (`-1`, as any other negative value, is a tempid
-    ;; that will be replaced by Datahike with the next unused eid)
-    (transact conn [[:db/add -1 :name \"Ivan\"]])
-
-    ;; check assigned id (here `*1` is a result returned from previous `transact` call)
-    (def report *1)
-    (:tempids report) ; => {-1 296, :db/current-tx 536870913}
-
-    ;; check actual datoms inserted
-    (:tx-data report) ; => [#datahike/Datom [296 :name \"Ivan\" 536870913]]
-
-    ;; tempid can also be a string
-    (transact conn [[:db/add \"ivan\" :name \"Ivan\"]])
-    (:tempids *1) ; => {\"ivan\" 5, :db/current-tx 536870920}
-
-    ;; reference another entity (must exist)
-    (transact conn [[:db/add -1 :friend 296]])
-
-    ;; create an entity and set multiple attributes (in a single transaction
-    ;; equal tempids will be replaced with the same unused yet entid)
-    (transact conn [[:db/add -1 :name \"Ivan\"]
-                    [:db/add -1 :likes \"fries\"]
-                    [:db/add -1 :likes \"pizza\"]
-                    [:db/add -1 :friend 296]])
-
-    ;; create an entity and set multiple attributes (alternative map form)
-    (transact conn [{:db/id  -1
-                     :name   \"Ivan\"
-                     :likes  [\"fries\" \"pizza\"]
-                     :friend 296}])
-
-    ;; update an entity (alternative map form). Can’t retract attributes in
-    ;; map form. For cardinality many attrs, value (fish in this example)
-    ;; will be added to the list of existing values
-    (transact conn [{:db/id  296
-                     :name   \"Oleg\"
-                     :likes  [\"fish\"]}])
-
-    ;; ref attributes can be specified as nested map, that will create a nested entity as well
-    (transact conn [{:db/id  -1
-                     :name   \"Oleg\"
-                     :friend {:db/id -2
-                     :name \"Sergey\"}}])
-
-    ;; schema is needed for using a reverse attribute
-    (is (transact conn [{:db/valueType :db.type/ref
-                         :db/cardinality :db.cardinality/one
-                         :db/ident :friend}]))
-
-    ;; reverse attribute name can be used if you want a created entity to become
-    ;; a value in another entity reference
-    (transact conn [{:db/id  -1
-                     :name   \"Oleg\"
-                     :_friend 296}])
-    ;; equivalent to
-    (transact conn [[:db/add  -1 :name   \"Oleg\"]
-                    [:db/add 296 :friend -1]])"
+     :doc "Applies transaction to the database and updates connection."
+     :examples [{:desc "Add single datom"
+                 :code "(transact conn [[:db/add 1 :name \"Ivan\"]])"}
+                {:desc "Retract datom"
+                 :code "(transact conn [[:db/retract 1 :name \"Ivan\"]])"}
+                {:desc "Create entity with tempid"
+                 :code "(transact conn [[:db/add -1 :name \"Ivan\"]])"}
+                {:desc "Create entity (map form)"
+                 :code "(transact conn [{:db/id -1 :name \"Ivan\" :likes [\"fries\" \"pizza\"]}])"}
+                {:desc "Read from stdin (CLI)"
+                 :cli "cat data.edn | dthk transact conn:config.edn -"}]
      :impl datahike.api.impl/transact}
 
-    q
-    {:args             (s/alt :argmap (s/cat :map spec/SQueryArgs)
-                              :with-params (s/cat :q (s/or :vec vector? :map map?) :args (s/* any?)))
-     :ret              any?
-     :supports-remote? true
-     :referentially-transparent? true
-     :doc
-     "Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
-
-Usage:
-
-Query as parameter with additional args:
-
-    (q '[:find ?value
-         :where [_ :likes ?value]]
-       #{[1 :likes \"fries\"]
-         [2 :likes \"candy\"]
-         [3 :likes \"pie\"]
-         [4 :likes \"pizza\"]}) ; => #{[\"fries\"] [\"candy\"] [\"pie\"] [\"pizza\"]}
-
-Or query passed in arg-map:
-
-    (q {:query '[:find ?value
-                 :where [_ :likes ?value]]
-        :offset 2
-        :limit 1
-        :args [#{[1 :likes \"fries\"]
-                 [2 :likes \"candy\"]
-                 [3 :likes \"pie\"]
-                 [4 :likes \"pizza\"]}]}) ; => #{[\"fries\"] [\"candy\"] [\"pie\"] [\"pizza\"]}
-
-Or query passed as map of vectors:
-
-     (q '{:find [?value] :where [[_ :likes ?value]]}
-        #{[1 :likes \"fries\"]
-          [2 :likes \"candy\"]
-          [3 :likes \"pie\"]
-          [4 :likes \"pizza\"]}) ; => #{[\"fries\"] [\"candy\"] [\"pie\"] [\"pizza\"]}
-
-Or query passed as string:
-
-     (q {:query \"[:find ?value :where [_ :likes ?value]]\"
-         :args [#{[1 :likes \"fries\"]
-                  [2 :likes \"candy\"]
-                  [3 :likes \"pie\"]
-                  [4 :likes \"pizza\"]}]})
-
-Query passed as map needs vectors as values. Query can not be passed as list. The 1-arity function takes a map with the arguments :query and :args and optionally the additional keys :offset and :limit."
-     :impl datahike.query/q}
+    transact!
+    {:args [:=> [:cat types/SConnection types/STransactions] :any]
+     :ret :any
+     :categories [:transaction :write :async]
+     :stability :stable
+     :accepts-stdin? true
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "Same as transact, but asynchronously returns a future."
+     :examples [{:desc "Async transaction"
+                 :code "@(transact! conn [{:db/id -1 :name \"Alice\"}])"}]
+     :impl datahike.api.impl/transact!}
 
     load-entities
-    {:args             (s/cat :conn spec/SConnection :txs spec/STransactions)
-     :ret              #(s/valid? spec/STransactionReport @%)
-     :doc "Load entities directly"
-     :impl datahike.writer/load-entities
+    {:args [:=> [:cat types/SConnection types/STransactions] :any]
+     :ret :any
+     :categories [:transaction :write :bulk]
+     :stability :stable
+     :accepts-stdin? true
      :supports-remote? true
-     :referentially-transparent? false}
+     :referentially-transparent? false
+     :doc "Load entities directly (bulk load)."
+     :examples [{:desc "Bulk load entities"
+                 :code "(load-entities conn entities)"}]
+     :impl datahike.writer/load-entities}
 
-    release
-    {:args             (s/cat :conn spec/SConnection)
-     :ret              nil?
-     :doc "Releases a database connection. You need to release a connection as many times as you connected to it for it to be completely released. Set release-all? to true to force its release."
-     :impl datahike.connector/release
+    with
+    {:args [:function
+            [:=> [:cat types/SDB types/SWithArgs] types/STransactionReport]
+            [:=> [:cat types/SDB types/STransactions] types/STransactionReport]
+            [:=> [:cat types/SDB types/STransactions types/STxMeta] types/STransactionReport]]
+     :ret types/STransactionReport
+     :categories [:transaction :immutable]
+     :stability :stable
+     :accepts-stdin? true
+     :supports-remote? false
+     :referentially-transparent? true
+     :doc "Applies transaction to immutable db value. Returns transaction report."
+     :examples [{:desc "Transaction on db value"
+                 :code "(with @conn [[:db/add 1 :name \"Ivan\"]])"}
+                {:desc "With metadata"
+                 :code "(with @conn {:tx-data [...] :tx-meta {:source :import}})"}]
+     :impl datahike.api.impl/with}
+
+    db-with
+    {:args [:=> [:cat types/SDB types/STransactions] types/SDB]
+     :ret types/SDB
+     :categories [:transaction :immutable]
+     :stability :stable
+     :accepts-stdin? true
+     :supports-remote? false
+     :referentially-transparent? true
+     :doc "Applies transaction to immutable db value, returns new db. Same as (:db-after (with db tx-data))."
+     :examples [{:desc "Get db after transaction"
+                 :code "(db-with @conn [[:db/add 1 :name \"Ivan\"]])"}]
+     :impl datahike.api.impl/db-with}
+
+    ;; =========================================================================
+    ;; Query Operations
+    ;; =========================================================================
+
+    q
+    {:args [:function
+            [:=> [:cat types/SQueryArgs] :any]
+            [:=> [:cat [:or :vector :map :string] [:* :any]] :any]]
+     :ret :any
+     :categories [:query]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
-     :referentially-transparent? false}
-
-    pull
-    {:args             (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
-                              :full (s/cat :db spec/SDB :selector coll? :eid spec/SEId))
-     :ret              (s/nilable map?)
-     :doc
-     "Fetches data from database using recursive declarative description. See [docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html).
-
-Unlike [[entity]], returns plain Clojure map (not lazy).
-
-Usage:
-
-    (pull db [:db/id, :name, :likes, {:friends [:db/id :name]}] 1) ; => {:db/id   1,
-                                                                         :name    \"Ivan\"
-                                                                         :likes   [:pizza]
-                                                                         :friends [{:db/id 2, :name \"Oleg\"}]}
-
-The arity-2 version takes :selector and :eid in arg-map."
-     :impl datahike.pull-api/pull
-     :supports-remote? true
-     :referentially-transparent? true}
-
-    pull-many
-    {:args             (s/alt :simple (s/cat :db spec/SDB :opts spec/SPullOptions)
-                              :full (s/cat :db spec/SDB :selector coll? :eid spec/SEId))
-     :ret              (s/coll-of map?)
-     :doc
-     "Same as [[pull]], but accepts sequence of ids and returns sequence of maps.
-
-Usage:
-
-    (pull-many db [:db/id :name] [1 2]) ; => [{:db/id 1, :name \"Ivan\"}
-                                              {:db/id 2, :name \"Oleg\"}]"
-     :impl datahike.pull-api/pull-many
-     :supports-remote? true
-     :referentially-transparent? true}
+     :referentially-transparent? true
+     :doc "Executes a datalog query."
+     :examples [{:desc "Query with vector syntax"
+                 :code "(q '[:find ?value :where [_ :likes ?value]] db)"}
+                {:desc "Query with map syntax"
+                 :code "(q '{:find [?value] :where [[_ :likes ?value]]} db)"}
+                {:desc "Query with pagination"
+                 :code "(q {:query '[:find ?value :where [_ :likes ?value]]
+                           :args [db]
+                           :offset 2
+                           :limit 10})"}]
+     :impl datahike.query/q}
 
     query-stats
-    {:args             (s/alt :argmap (s/cat :map spec/SQueryArgs)
-                              :with-params (s/cat :q (s/or :vec vector? :map map?) :args (s/* any?))) ;; TODO: the doc could show more examples with varargs
-     :ret              map?
+    {:args [:function
+            [:=> [:cat types/SQueryArgs] :map]
+            [:=> [:cat [:or :vector :map] [:* :any]] :map]]
+     :ret :map
+     :categories [:query :diagnostics]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
-     :doc "Executes a datalog query and returns the result as well as some execution details.
-Uses the same arguments as q does."
+     :doc "Executes query and returns execution statistics."
+     :examples [{:desc "Query with stats"
+                 :code "(query-stats '[:find ?e :where [?e :name]] db)"}]
      :impl datahike.query/query-stats}
 
-    datoms
-    {:args             (s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
-                              :key (s/cat :db spec/SDB :index keyword? :components (s/alt :coll (s/* any?)
-                                                                                          :nil nil?)))
-     :ret              (s/nilable spec/SDatoms)
-     :doc
-     "Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components
-(e, a, v) match passed arguments. Datoms are sorted in index sort order. Possible `index` values
-are: `:eavt`, `:aevt`, `:avet`.
-
-Accepts db and a map as arguments with the keys `:index` and `:components` provided within the
-map, or the arguments provided separately.
-
-
-Usage:
-
-Set up your database. Beware that for the `:avet` index the index needs to be set to true for
-the attribute `:likes`.
-
-    (d/transact db [{:db/ident :name
-                     :db/type :db.type/string
-                     :db/cardinality :db.cardinality/one}
-                    {:db/ident :likes
-                     :db/type :db.type/string
-                     :db/index true
-                     :db/cardinality :db.cardinality/many}
-                    {:db/ident :friends
-                     :db/type :db.type/ref
-                     :db/cardinality :db.cardinality/many}]
-
-    (d/transact db [{:db/id 4 :name \"Ivan\"
-                    {:db/id 4 :likes \"fries\"
-                    {:db/id 4 :likes \"pizza\"}
-                    {:db/id 4 :friends 5}])
-
-    (d/transact db [{:db/id 5 :name \"Oleg\"}
-                    {:db/id 5 :likes \"candy\"}
-                    {:db/id 5 :likes \"pie\"}
-                    {:db/id 5 :likes \"pizza\"}])
-
-Find all datoms for entity id == 1 (any attrs and values) sort by attribute, then value
-
-    (datoms @db {:index :eavt
-                 :components [1]}) ; => (#datahike/Datom [1 :friends 2]
-                                   ;     #datahike/Datom [1 :likes \"fries\"]
-                                   ;     #datahike/Datom [1 :likes \"pizza\"]
-                                   ;     #datahike/Datom [1 :name \"Ivan\"])
-
-Find all datoms for entity id == 1 and attribute == :likes (any values) sorted by value
-
-    (datoms @db {:index :eavt
-                 :components [1 :likes]}) ; => (#datahike/Datom [1 :likes \"fries\"]
-                                          ;     #datahike/Datom [1 :likes \"pizza\"])
-
-Find all datoms for entity id == 1, attribute == :likes and value == \"pizza\"
-
-    (datoms @db {:index :eavt
-                 :components [1 :likes \"pizza\"]}) ; => (#datahike/Datom [1 :likes \"pizza\"])
-
-Find all datoms for attribute == :likes (any entity ids and values) sorted by entity id, then value
-
-    (datoms @db {:index :aevt
-                 :components [:likes]}) ; => (#datahike/Datom [1 :likes \"fries\"]
-                                        ;     #datahike/Datom [1 :likes \"pizza\"]
-                                        ;     #datahike/Datom [2 :likes \"candy\"]
-                                        ;     #datahike/Datom [2 :likes \"pie\"]
-                                        ;     #datahike/Datom [2 :likes \"pizza\"])
-
-Find all datoms that have attribute == `:likes` and value == `\"pizza\"` (any entity id)
-`:likes` must be a unique attr, reference or marked as `:db/index true`
-
-    (datoms @db {:index :avet
-                 :components [:likes \"pizza\"]}) ; => (#datahike/Datom [1 :likes \"pizza\"]
-                                                  ;     #datahike/Datom [2 :likes \"pizza\"])
-
-Find all datoms sorted by entity id, then attribute, then value
-
-    (datoms @db {:index :eavt}) ; => (...)
-
-
-Useful patterns:
-
-Get all values of :db.cardinality/many attribute
-
-    (->> (datoms @db {:index :eavt
-                      :components [eid attr]})
-         (map :v))
-
-Lookup entity ids by attribute value
-
-    (->> (datoms @db {:index :avet
-                      :components [attr value]})
-         (map :e))
-
-Find all entities with a specific attribute
-
-    (->> (datoms @db {:index :aevt
-                      :components [attr]})
-         (map :e))
-
-Find “singleton” entity by its attr
-
-    (->> (datoms @db {:index :aevt
-                      :components [attr]})
-         first
-         :e)
-
-Find N entities with lowest attr value (e.g. 10 earliest posts)
-
-    (->> (datoms @db {:index :avet
-                      :components [attr]})
-         (take N))
-
-Find N entities with highest attr value (e.g. 10 latest posts)
-
-    (->> (datoms @db {:index :avet
-                      :components [attr]})
-         (reverse)
-         (take N))
-
-
-Gotchas:
-
-- Index lookup is usually more efficient than doing a query with a single clause.
-- Resulting iterator is calculated in constant time and small constant memory overhead.
-- Iterator supports efficient `first`, `next`, `reverse`, `seq` and is itself a sequence.
-- Will not return datoms that are not part of the index (e.g. attributes with no `:db/index` in schema when querying `:avet` index).
-  - `:eavt` and `:aevt` contain all datoms.
-  - `:avet` only contains datoms for references, `:db/unique` and `:db/index` attributes."
+    pull
+    {:args [:function
+            [:=> [:cat types/SDB types/SPullOptions] [:maybe :map]]
+            [:=> [:cat types/SDB :vector types/SEId] [:maybe :map]]]
+     :ret [:maybe :map]
+     :categories [:query :pull]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
+     :doc "Fetches data using recursive declarative pull pattern."
+     :examples [{:desc "Pull with pattern"
+                 :code "(pull db [:db/id :name :likes {:friends [:db/id :name]}] 1)"}
+                {:desc "Pull with arg-map"
+                 :code "(pull db {:selector [:db/id :name] :eid 1})"}]
+     :impl datahike.pull-api/pull}
+
+    pull-many
+    {:args [:function
+            [:=> [:cat types/SDB types/SPullOptions] [:sequential :map]]
+            [:=> [:cat types/SDB :vector types/SEId] [:sequential :map]]]
+     :ret [:sequential :map]
+     :categories [:query :pull]
+     :stability :stable
+     :accepts-stdin? false
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Same as pull, but accepts sequence of ids and returns sequence of maps."
+     :examples [{:desc "Pull multiple entities"
+                 :code "(pull-many db [:db/id :name] [1 2 3])"}]
+     :impl datahike.pull-api/pull-many}
+
+    entity
+    {:args [:=> [:cat types/SDB [:or types/SEId :any]] :any]
+     :ret :any
+     :categories [:query :entity]
+     :stability :stable
+     :accepts-stdin? false
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Retrieves an entity by its id. Returns lazy map-like structure."
+     :examples [{:desc "Get entity by id"
+                 :code "(entity db 1)"}
+                {:desc "Get entity by lookup ref"
+                 :code "(entity db [:email \"alice@example.com\"])"}
+                {:desc "Navigate entity attributes"
+                 :code "(:name (entity db 1))"}]
+     :impl datahike.impl.entity/entity}
+
+    entity-db
+    {:args [:=> [:cat :any] types/SDB]
+     :ret types/SDB
+     :categories [:query :entity]
+     :stability :stable
+     :accepts-stdin? false
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Returns database that entity was created from."
+     :examples [{:desc "Get entity's database"
+                 :code "(entity-db (entity db 1))"}]
+     :impl datahike.impl.entity/entity-db}
+
+    ;; =========================================================================
+    ;; Index Operations
+    ;; =========================================================================
+
+    datoms
+    {:args [:function
+            [:=> [:cat types/SDB types/SIndexLookupArgs] [:maybe types/SDatoms]]
+            [:=> [:cat types/SDB :keyword [:alt [:sequential :any] :nil]] [:maybe types/SDatoms]]]
+     :ret [:maybe types/SDatoms]
+     :categories [:query :index :advanced]
+     :stability :stable
+     :accepts-stdin? false
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Index lookup. Returns sequence of datoms matching index components."
+     :examples [{:desc "Find all datoms for entity"
+                 :code "(datoms db {:index :eavt :components [1]})"}
+                {:desc "Find datoms for entity and attribute"
+                 :code "(datoms db {:index :eavt :components [1 :likes]})"}
+                {:desc "Find by attribute and value (requires :db/index)"
+                 :code "(datoms db {:index :avet :components [:likes \"pizza\"]})"}]
      :impl datahike.api.impl/datoms}
 
     seek-datoms
-    {:args             (s/alt :map (s/cat :db spec/SDB :args spec/SIndexLookupArgs)
-                              :key (s/cat :db spec/SDB :index keyword? :components (s/* any?)))
-     :ret              (s/nilable spec/SDatoms)
-     :doc "Similar to [[datoms]], but will return datoms starting from specified components and including rest of the database until the end of the index.
-
-                             If no datom matches passed arguments exactly, iterator will start from first datom that could be considered “greater” in index order.
-
-                             Usage:
-
-                                 (seek-datoms @db {:index :eavt
-                                                   :components [1]}) ; => (#datahike/Datom [1 :friends 2]
-                                                                     ;     #datahike/Datom [1 :likes \"fries\"]
-                                                                     ;     #datahike/Datom [1 :likes \"pizza\"]
-                                                                     ;     #datahike/Datom [1 :name \"Ivan\"]
-                                                                     ;     #datahike/Datom [2 :likes \"candy\"]
-                                                                     ;     #datahike/Datom [2 :likes \"pie\"]
-                                                                     ;     #datahike/Datom [2 :likes \"pizza\"])
-
-                                 (seek-datoms @db {:index :eavt
-                                                   :components [1 :name]}) ; => (#datahike/Datom [1 :name \"Ivan\"]
-                                                                           ;     #datahike/Datom [2 :likes \"candy\"]
-                                                                           ;     #datahike/Datom [2 :likes \"pie\"]
-                                                                           ;     #datahike/Datom [2 :likes \"pizza\"])
-
-                                 (seek-datoms @db {:index :eavt
-                                                   :components [2]}) ; => (#datahike/Datom [2 :likes \"candy\"]
-                                                                     ;     #datahike/Datom [2 :likes \"pie\"]
-                                                                     ;     #datahike/Datom [2 :likes \"pizza\"])
-
-                             No datom `[2 :likes \"fish\"]`, so starts with one immediately following such in index
-
-                                 (seek-datoms @db {:index :eavt
-                                                   :components [2 :likes \"fish\"]}) ; => (#datahike/Datom [2 :likes \"pie\"]
-                                                                                     ;     #datahike/Datom [2 :likes \"pizza\"])"
+    {:args [:function
+            [:=> [:cat types/SDB types/SIndexLookupArgs] [:maybe types/SDatoms]]
+            [:=> [:cat types/SDB :keyword [:* :any]] [:maybe types/SDatoms]]]
+     :ret [:maybe types/SDatoms]
+     :categories [:query :index :advanced]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
+     :doc "Like datoms, but returns datoms starting from specified components through end of index."
+     :examples [{:desc "Seek from entity"
+                 :code "(seek-datoms db {:index :eavt :components [1]})"}]
      :impl datahike.api.impl/seek-datoms}
 
     index-range
-    {:args (s/cat :db spec/SDB :args spec/SIndexRangeArgs)
-     :ret spec/SDatoms
-     :doc
-     "Returns part of `:avet` index between `[_ attr start]` and `[_ attr end]` in AVET sort order.
-
-Same properties as [[datoms]].
-
-`attr` must be a reference, unique attribute or marked as `:db/index true`.
-
-Usage:
-
-
-(transact db {:tx-data [{:db/ident :name
-                         :db/type :db.type/string
-                         :db/cardinality :db.cardinality/one}
-                        {:db/ident :likes
-                         :db/index true
-                         :db/type :db.type/string
-                         :db/cardinality :db.cardinality/many}
-                        {:db/ident :age
-                         :db/unique :db.unique/identity
-                         :db/type :db.type/ref
-                         :db/cardinality :db.cardinality/many}]})
-
-(transact db {:tx-data [{:name \"Ivan\"}
-                        {:age 19}
-                        {:likes \"fries\"}
-                        {:likes \"pizza\"}
-                        {:likes \"candy\"}
-                        {:likes \"pie\"}
-                        {:likes \"pizza\"}]})
-
-(index-range db {:attrid :likes
-                 :start  \"a\"
-                 :end    \"zzzzzzzzz\"}) ; => '(#datahike/Datom [2 :likes \"candy\"]
-                                         ;      #datahike/Datom [1 :likes \"fries\"]
-                                         ;      #datahike/Datom [2 :likes \"pie\"]
-                                         ;      #datahike/Datom [1 :likes \"pizza\"]
-                                         ;      #datahike/Datom [2 :likes \"pizza\"])
-
-(index-range db {:attrid :likes
-                 :start  \"egg\"
-                 :end    \"pineapple\"}) ; => '(#datahike/Datom [1 :likes \"fries\"]
-                                         ;      #datahike/Datom [2 :likes \"pie\"])
-
-Useful patterns:
-
-    ; find all entities with age in a specific range (inclusive)
-    (->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))"
-     :impl datahike.api.impl/index-range
-     :supports-remote? true
-     :referentially-transparent? true}
-
-    tempid
-    {:args             (s/alt :part any? :full (s/cat :part any? :x int?))
-     :ret              neg-int?
-     :doc "Allocates and returns a unique temporary id (a negative integer). Ignores `part`. Returns `x` if it is specified.
-
-Exists for Datomic API compatibility. Prefer using negative integers directly if possible."
-     :impl datahike.core/tempid
-     :supports-remote? false
-     :referentially-transparent? true}
-
-    entity
-    {:args             (s/cat :db spec/SDB :eid (s/alt :eid spec/SEId :div any?))
-     :ret              (s/nilable de/entity?)
-     :doc "Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate Datahike database content.
-
-For `eid` pass entity id or lookup attr:
-
-    (entity db 1)
-    (entity db [:unique-attr :value])
-
-If entity does not exist, `nil` is returned:
-
-    (entity db -1) ; => nil
-
-Creating an entity by id is very cheap, almost no-op, as attr access is on-demand:
-
-    (entity db 1) ; => {:db/id 1}
-
-Entity attributes can be lazily accessed through key lookups:
-
-    (:attr (entity db 1)) ; => :value
-    (get (entity db 1) :attr) ; => :value
-
-Cardinality many attributes are returned sequences:
-
-    (:attrs (entity db 1)) ; => [:v1 :v2 :v3]
-
-Reference attributes are returned as another entities:
-
-    (:ref (entity db 1)) ; => {:db/id 2}
-    (:ns/ref (entity db 1)) ; => {:db/id 2}
-
-References can be walked backwards by prepending `_` to name part of an attribute:
-
-    (:_ref (entity db 2)) ; => [{:db/id 1}]
-    (:ns/_ref (entity db 2)) ; => [{:db/id 1}]
-
-Reverse reference lookup returns sequence of entities unless attribute is marked as `:db/component`:
-
-    (:_component-ref (entity db 2)) ; => {:db/id 1}
-
-Entity gotchas:
-
-- Entities print as map, but are not exactly maps (they have compatible get interface though).
-- Entities are effectively immutable “views” into a particular version of a database.
-- Entities retain reference to the whole database.
-- You can't change database through entities, only read.
-- Creating an entity by id is very cheap, almost no-op (attributes are looked up on demand).
-- Comparing entities just compares their ids. Be careful when comparing entities taken from different dbs or from different versions of the same db.
-- Accessed entity attributes are cached on entity itself (except backward references).
-- When printing, only cached attributes (the ones you have accessed before) are printed. See [[touch]]."
-     :impl datahike.impl.entity/entity
-     :supports-remote? true
-     :referentially-transparent? true}
-
-    entity-db
-    {:args             (s/cat :entity de/entity?)
-     :ret              spec/SDB
-     :doc "Returns a db that entity was created from."
-     :impl datahike.impl.entity/entity-db
-     :supports-remote? true
-     :referentially-transparent? true}
-
-    is-filtered
-    {:args (s/cat :db spec/SDB)
-     :ret  boolean?
-     :doc "Returns `true` if this database was filtered using [[filter]], `false` otherwise."
-     :impl datahike.core/is-filtered
-     :supports-remote? false
-     :referentially-transparent? true}
-
-    filter
-    {:args (s/cat :db spec/SDB :pred any?)
-     :ret  #(is-filtered %)
-     :doc "Returns a view over database that has same interface but only includes datoms for which the `(pred db datom)` is true. Can be applied multiple times.
-
-Filtered DB gotchas:
-
-- All operations on filtered database are proxied to original DB, then filter pred is applied.
-- Not cached. You pay filter penalty every time.
-- Supports entities, pull, queries, index access.
-- Does not support hashing of DB.
-- Does not support [[with]] and [[db-with]]."
-     :impl datahike.core/filter
-     :supports-remote? false
-     :referentially-transparent? true}
-
-    with
-    {:args (s/alt :with-map (s/cat :db spec/SDB :argmap spec/SWithArgs)
-                  :with-data (s/cat :db spec/SDB :tx-data spec/STransactions)
-                  :with-meta (s/cat :db spec/SDB :tx-data spec/STransactions :tx-meta spec/STxMeta))
-     :ret  spec/STransactionReport
-     :doc "Same as [[transact]]`, but applies to an immutable database value. Returns transaction report (see [[transact]]).
-
-             Accepts tx-data and tx-meta as a map.
-
-                 (with @conn {:tx-data [[:db/add 1 :name \"Ivan\"]]}) ; => {:db-before #datahike/DB {:max-tx 536870912 :max-eid 0},
-                                                                      ;     :db-after #datahike/DB {:max-tx 536870913 :max-eid 1},
-                                                                      ;     :tx-data [#datahike/Datom [1 :name \"Ivan\" 536870913]],
-                                                                      ;     :tempids #:db{:current-tx 536870913},
-                                                                      ;     :tx-meta nil}
-
-                 (with @conn {:tx-data [[:db/add 1 :name \"Ivan\"]]
-                              :tx-meta {:foo :bar}}) ; => {:db-before #datahike/DB {:max-tx 536870912 :max-eid 0},
-                                                     ;     :db-after #datahike/DB {:max-tx 536870913 :max-eid 1},
-                                                     ;     :tx-data [#datahike/Datom [1 :name \"Ivan\" 536870913]],
-                                                     ;     :tempids #:db{:current-tx 536870913},
-                                                     ;     :tx-meta {:foo :bar}}"
-     :impl datahike.api.impl/with
-     :supports-remote? false
-     :referentially-transparent? true}
-
-    db-with
-    {:args (s/cat :db spec/SDB :tx-data spec/STransactions)
-     :ret  spec/SDB
-     :doc "Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`."
-     :impl datahike.api.impl/db-with
-     :supports-remote? false
-     :referentially-transparent? true}
-
-    history
-    {:args             (s/cat :db spec/SDB)
-     :ret              coll?
+    {:args [:=> [:cat types/SDB types/SIndexRangeArgs] types/SDatoms]
+     :ret types/SDatoms
+     :categories [:query :index :advanced]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
-     :doc
-     "Returns the full historical state of the database you may interact with.
+     :doc "Returns part of :avet index between start and end values."
+     :examples [{:desc "Find datoms in value range"
+                 :code "(index-range db {:attrid :likes :start \"a\" :end \"z\"})"}
+                {:desc "Find entities with age in range"
+                 :code "(->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))"}]
+     :impl datahike.api.impl/index-range}
 
+    ;; =========================================================================
+    ;; Database Filtering
+    ;; =========================================================================
 
-(transact conn {:tx-data [{:db/ident :name
-                           :db/valueType :db.type/string
-                           :db/unique :db.unique/identity
-                           :db/index true
-                           :db/cardinality :db.cardinality/one}
-                          {:db/ident :age
-                           :db/valueType :db.type/long
-                           :db/cardinality :db.cardinality/one}]})
+    filter
+    {:args [:=> [:cat types/SDB :any] types/SDB]
+     :ret types/SDB
+     :categories [:query :filter]
+     :stability :stable
+     :accepts-stdin? false
+     :supports-remote? false
+     :referentially-transparent? true
+     :doc "Returns filtered view over database. Only includes datoms where (pred db datom) is true."
+     :examples [{:desc "Filter to recent datoms"
+                 :code "(filter db (fn [db datom] (> (:tx datom) recent-tx)))"}]
+     :impl datahike.core/filter}
 
-(transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
+    is-filtered
+    {:args [:=> [:cat types/SDB] :boolean]
+     :ret :boolean
+     :categories [:query :filter]
+     :stability :stable
+     :accepts-stdin? false
+     :supports-remote? false
+     :referentially-transparent? true
+     :doc "Returns true if database was filtered using filter, false otherwise."
+     :examples [{:desc "Check if filtered"
+                 :code "(is-filtered db)"}]
+     :impl datahike.core/is-filtered}
 
-(q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-    :args [(history @conn)]}) ; => #{[\"Alice\" 25] [\"Bob\" 30]}
+    ;; =========================================================================
+    ;; Temporal Queries
+    ;; =========================================================================
 
-(transact conn {:tx-data [{:db/id [:name \"Alice\"] :age 35}]})
-
-(q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-    :args [@conn]}) ; => #{[\"Alice\" 35] [\"Bob\" 30]}
-
-(q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-    :args [(history @conn)]}) ; => #{[\"Alice\" 25] [\"Bob\" 30]}"
+    history
+    {:args [:=> [:cat types/SDB] :any]
+     :ret :any
+     :categories [:temporal :query]
+     :stability :stable
+     :accepts-stdin? false
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Returns full historical state of database including all assertions and retractions."
+     :examples [{:desc "Query historical data"
+                 :code "(q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] (history @conn))"}]
      :impl datahike.api.impl/history}
 
     since
-    {:args             (s/cat :db spec/SDB :time-point spec/time-point?)
-     :ret              spec/SDB
-     :doc "Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
-Be aware: the database contains only the datoms that were added since the date.
-
-
-(transact conn {:tx-data [{:db/ident :name
-                           :db/valueType :db.type/string
-                           :db/unique :db.unique/identity
-                           :db/index true
-                           :db/cardinality :db.cardinality/one}
-                          {:db/ident :age
-                           :db/valueType :db.type/long
-                           :db/cardinality :db.cardinality/one}]})
-
-(transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
-
-(def date (java.util.Date.))
-
-(transact conn [{:db/id [:name \"Alice\"] :age 30}])
-
-(q '[:find ?n ?a
-     :in $ $since
-     :where
-     [$ ?e :name ?n]
-     [$since ?e :age ?a]]
-   @conn
-   (since @conn date)) ; => #{[\"Alice\" 30]}
-
-(q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-    :args [@conn]}) ; => #{[\"Alice\" 30] [\"Bob\" 30]}"
-     :impl datahike.api.impl/since
+    {:args [:=> [:cat types/SDB types/time-point?] types/SDB]
+     :ret types/SDB
+     :categories [:temporal :query]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
-     :referentially-transparent? true}
+     :referentially-transparent? true
+     :doc "Returns database state since given time point (Date or transaction ID). Contains only datoms added since that point."
+     :examples [{:desc "Query since date"
+                 :code "(since @conn (java.util.Date.))"}
+                {:desc "Query since transaction"
+                 :code "(since @conn 536870913)"}]
+     :impl datahike.api.impl/since}
 
     as-of
-    {:args             (s/cat :db spec/SDB :time-point spec/time-point?)
-     :ret              spec/SDB
-     :doc "Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long).
-
-(transact conn {:tx-data [{:db/ident :name
-                :db/valueType :db.type/string
-                :db/unique :db.unique/identity
-                :db/index true
-                :db/cardinality :db.cardinality/one}
-               {:db/ident :age
-                :db/valueType :db.type/long
-                :db/cardinality :db.cardinality/one}]})
-
-(transact conn {:tx-data [{:name \"Alice\" :age 25} {:name \"Bob\" :age 30}]})
-
-(def date (java.util.Date.))
-
-(transact conn {:tx-data [{:db/id [:name \"Alice\"] :age 35}]})
-
-(q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-    :args [(as-of @conn date)]}) ; => #{[\"Alice\" 25] [\"Bob\" 30]}
-
-(q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
-    :args [@conn]}) ; => #{[\"Alice\" 35] [\"Bob\" 30]}"
-     :impl datahike.api.impl/as-of
+    {:args [:=> [:cat types/SDB types/time-point?] types/SDB]
+     :ret types/SDB
+     :categories [:temporal :query]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
-     :referentially-transparent? true}
+     :referentially-transparent? true
+     :doc "Returns database state at given time point (Date or transaction ID)."
+     :examples [{:desc "Query as of date"
+                 :code "(q '[:find ?n :where [_ :name ?n]] (as-of @conn date))"}
+                {:desc "Query as of transaction"
+                 :code "(as-of @conn 536870913)"}]
+     :impl datahike.api.impl/as-of}
+
+    ;; =========================================================================
+    ;; Reactive Operations
+    ;; =========================================================================
 
     listen
-    {:args (s/alt :no-key (s/cat :conn spec/SConnection :callback fn?)
-                  :with-key (s/cat :conn spec/SConnection :key any? :callback fn?))
-     :ret  any?
-     :fn   #(if (= :with-key (-> % :args first))
-              (= (:ret %) (-> % :args second :key))
-              true)
-     :doc
-     "Listen for changes on the given connection. Whenever a transaction is applied to the database via
-[[transact]], the callback is called with the transaction report. `key` is any opaque unique value.
-
-Idempotent. Calling [[listen]] with the same twice will override old callback with the new value.
-
-Returns the key under which this listener is registered. See also [[unlisten]]."
-     :impl datahike.core/listen!
+    {:args [:function
+            [:=> [:cat types/SConnection :any] :any]
+            [:=> [:cat types/SConnection :any :any] :any]]
+     :ret :any
+     :categories [:connection :reactive]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? false
-     :referentially-transparent? false}
+     :referentially-transparent? false
+     :doc "Listen for changes on connection. Callback called with transaction report on each transact."
+     :examples [{:desc "Listen with callback"
+                 :code "(listen conn (fn [tx-report] (println \"Transaction:\" (:tx-data tx-report))))"}
+                {:desc "Listen with key"
+                 :code "(listen conn :my-listener (fn [tx-report] ...))"}]
+     :impl datahike.core/listen!}
 
     unlisten
-    {:args (s/cat :conn spec/SConnection :key any?)
-     :ret  map?
-     :doc "Removes registered listener from connection. See also [[listen]]."
-     :impl datahike.core/unlisten!
+    {:args [:=> [:cat types/SConnection :any] :map]
+     :ret :map
+     :categories [:connection :reactive]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? false
-     :referentially-transparent? false}
+     :referentially-transparent? false
+     :doc "Removes registered listener from connection."
+     :examples [{:desc "Remove listener"
+                 :code "(unlisten conn :my-listener)"}]
+     :impl datahike.core/unlisten!}
+
+    ;; =========================================================================
+    ;; Schema Operations
+    ;; =========================================================================
 
     schema
-    {:args             (s/cat :db spec/SDB)
-     :ret              spec/SSchema
-     :doc "Returns current schema definition."
-     :impl datahike.api.impl/schema
+    {:args [:=> [:cat types/SDB] types/SSchema]
+     :ret types/SSchema
+     :categories [:schema :query]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
-     :referentially-transparent? true}
+     :referentially-transparent? true
+     :doc "Returns current schema definition."
+     :examples [{:desc "Get schema"
+                 :code "(schema @conn)"}]
+     :impl datahike.api.impl/schema}
 
     reverse-schema
-    {:args             (s/cat :db spec/SDB)
-     :ret              map?
-     :doc "Returns current reverse schema definition."
-     :impl datahike.api.impl/reverse-schema
+    {:args [:=> [:cat types/SDB] :map]
+     :ret :map
+     :categories [:schema :query]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
-     :referentially-transparent? true}
+     :referentially-transparent? true
+     :doc "Returns reverse schema definition (attribute id to ident mapping)."
+     :examples [{:desc "Get reverse schema"
+                 :code "(reverse-schema @conn)"}]
+     :impl datahike.api.impl/reverse-schema}
+
+    ;; =========================================================================
+    ;; Diagnostics & Maintenance
+    ;; =========================================================================
 
     metrics
-    {:args             (s/cat :db spec/SDB)
-     :ret              spec/SMetrics
-     :doc  "Returns database metrics."
-     :impl datahike.db/metrics
+    {:args [:=> [:cat types/SDB] types/SMetrics]
+     :ret types/SMetrics
+     :categories [:diagnostics :query]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
-     :referentially-transparent? true}
+     :referentially-transparent? true
+     :doc "Returns database metrics (datom counts, index sizes, etc)."
+     :examples [{:desc "Get metrics"
+                 :code "(metrics @conn)"}]
+     :impl datahike.db/metrics}
 
     gc-storage
-    {:args             (s/alt :with-date (s/cat :conn spec/SConnection :remove-before spec/time-point?)
-                              :no-date (s/cat :conn spec/SConnection))
-     :ret              any?
-     :doc "Invokes garbage collection on the store of connection by whitelisting currently known branches.
-All db snapshots on these branches before remove-before date will also be
-erased (defaults to beginning of time [no erasure]). The branch heads will
-always be retained. Return the set of removed blobs from the store."
-     :impl datahike.writer/gc-storage!
+    {:args [:function
+            [:=> [:cat types/SConnection types/time-point?] :any]
+            [:=> [:cat types/SConnection] :any]]
+     :ret :any
+     :categories [:maintenance :lifecycle]
+     :stability :stable
+     :accepts-stdin? false
      :supports-remote? true
-     :referentially-transparent? false}})
+     :referentially-transparent? false
+     :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point."
+     :examples [{:desc "GC all old snapshots"
+                 :code "(gc-storage conn)"}
+                {:desc "GC snapshots before date"
+                 :code "(gc-storage conn (java.util.Date.))"}]
+     :impl datahike.writer/gc-storage!}
+
+    ;; =========================================================================
+    ;; Utility Operations
+    ;; =========================================================================
+
+    tempid
+    {:args [:function
+            [:=> [:cat :any] neg-int?]
+            [:=> [:cat :any :int] :int]]
+     :ret [:or neg-int? :int]
+     :categories [:utility]
+     :stability :stable
+     :accepts-stdin? false
+     :supports-remote? false
+     :referentially-transparent? true
+     :doc "Allocates temporary id (negative integer). Prefer using negative integers directly."
+     :examples [{:desc "Generate tempid"
+                 :code "(tempid :db.part/user)"}
+                {:desc "Prefer direct negative integers"
+                 :code "(transact conn [{:db/id -1 :name \"Alice\"}])"}]
+     :impl datahike.core/tempid}})
+
+;; =============================================================================
+;; Helper Functions
+;; =============================================================================
+
+(defn pure-operations
+  "Returns operations that are referentially transparent (pure functions)."
+  []
+  (filter (fn [[_ spec]] (:referentially-transparent? spec)) api-specification))
+
+(defn io-operations
+  "Returns operations with side effects (I/O operations)."
+  []
+  (remove (fn [[_ spec]] (:referentially-transparent? spec)) api-specification))
+
+(defn remote-operations
+  "Returns operations that support remote access (HTTP)."
+  []
+  (filter (fn [[_ spec]] (:supports-remote? spec)) api-specification))
+
+(defn local-only-operations
+  "Returns operations that must run locally."
+  []
+  (remove (fn [[_ spec]] (:supports-remote? spec)) api-specification))
+
+(defn operations-by-category
+  "Returns operations grouped by category."
+  [category]
+  (filter (fn [[_ spec]]
+            (some #(= % category) (:categories spec)))
+          api-specification))

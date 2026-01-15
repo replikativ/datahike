@@ -9,7 +9,7 @@
        :developerConnection "scm:git:git@github.com:replikativ/datahike.git"
        :url "https://github.com/replikativ/datahike"}
 
- :build {:clj {:src-dirs ["src"]
+ :build {:clj {:src-dirs ["src" "src-kabel" "src-hitchhiker-tree"]
                :resource-dir "resources"
                :java-src-dirs ["java"]
                :target-dir "target"

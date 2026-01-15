@@ -17,6 +17,14 @@
   (b/create-basis (cond-> {:project deps-file}
                     aliases (assoc :aliases aliases))))
 
+(defn write-version-resource
+  "Writes version string to resources/DATAHIKE_VERSION for embedding in builds"
+  [repo-config]
+  (print "Writing version resource file...")
+  (fs/create-dirs "resources")
+  (spit "resources/DATAHIKE_VERSION" (version/string repo-config))
+  (println "Done. Version:" (version/string repo-config)))
+
 (defn compile-java
   ([] (compile-java (read-edn-file "config.edn")))
   ([{:keys [class-dir java-src-dirs] :as project-config}]

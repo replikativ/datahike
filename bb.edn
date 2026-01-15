@@ -69,11 +69,14 @@
          ccompile {:doc "Compile clojure namespaces"
                    :task (build/compile-clojure (-> config :build :clj))}
 
+         version-resource {:doc "Generate version resource file for embedding in builds"
+                           :task (build/write-version-resource config)}
+
          pom {:doc "Create pom file"
               :task (build/pom config (-> config :build :clj))}
 
          jar {:doc "Build jar"
-              :depends [jcompile pom]
+              :depends [jcompile pom version-resource]
               :task (build/jar config (-> config :build :clj))}
 
          install {:doc "Install jar locally"
@@ -102,7 +105,7 @@
                           :task (build/pom config (-> config :build :http-server-clj))}
 
          http-server-uber {:doc     "Build jar"
-                           :depends [http-server-jcompile http-server-pom http-server-ccompile]
+                           :depends [http-server-jcompile http-server-pom http-server-ccompile version-resource]
                            :task    (build/uber config (-> config :build :http-server-clj))}
 
          http-server-install {:doc  "Install uber jar locally"
@@ -123,14 +126,15 @@
                                 (System/exit 1)))}
 
          ni-cli {:doc "Build native image cli"
-                 :depends [jcompile ni-check]
+                 :depends [jcompile ni-check version-resource]
                  :task (clojure "-M:native-cli")}
 
          ni-ccompile {:doc "Compile clojure namespaces for native-image"
+                      :depends [jcompile]
                       :task (build/compile-clojure (-> config :build :native))}
 
          ni-uber {:doc "Build native image uber jar"
-                  :depends [jcompile ccompile ni-ccompile]
+                  :depends [jcompile ccompile ni-ccompile version-resource]
                   :task (build/uber config (-> config :build :native))}
 
          ni-compile {:doc "Create native cpp library"

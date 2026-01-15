@@ -179,8 +179,6 @@
   #?(:clj (.getHostAddress (InetAddress/getLocalHost))
      :cljs "" #_(raise "Not supported." {:type :hostname-not-supported})))
 
-#?(:clj (def datahike-logo (slurp (io/resource "datahike-logo.txt"))))
-
 (defmacro with-destructured-vector [v & var-expr-pairs]
   {:pre [(even? (count var-expr-pairs))]}
   (let [pairs (partition 2 var-expr-pairs)

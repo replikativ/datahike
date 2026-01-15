@@ -15,6 +15,7 @@
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.6"}
+        metosin/malli                               {:mvn/version "0.20.0"}
         mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}
         org.babashka/http-client                    {:mvn/version "0.3.11"}
         metosin/jsonista                            {:mvn/version "0.3.7"}
@@ -48,7 +49,7 @@
                               hashp/hashp                 {:mvn/version "0.2.2"}
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
-           :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server"]
+           :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server" "src-hitchhiker-tree" "src-kabel"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.87.1366"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.5.154"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}
@@ -100,6 +101,7 @@
                                     "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
                                     "--no-fallback"
+                                    "-H:IncludeResources=DATAHIKE_VERSION"
                                     ; "--future-defaults=all"
                                     "-J-Xmx4g"
                                     "-o dthk"]
@@ -114,7 +116,9 @@
 
            :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
                               babashka/pods             {:git/url "https://github.com/babashka/pods"
-                                                         :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}}}
+                                                         :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}
+                                    
+                              }}
 
            ;; Checks
 

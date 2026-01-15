@@ -3,11 +3,12 @@
   #?(:clj (:import [java.util Arrays])))
 
 #?(:clj
-   (defonce ^:private hh-node-ns
-     (try
-       (require 'hitchhiker.tree.node)
-       (find-ns 'hitchhiker.tree.node)
-       (catch Exception _ nil))))
+   nil
+   #_(defonce ^:private hh-node-ns
+       (try
+         (require 'hitchhiker.tree.node)
+         (find-ns 'hitchhiker.tree.node)
+         (catch Exception _ nil))))
 
 #?(:clj
    (defn java8? []
@@ -58,11 +59,11 @@ prefix of another then it comes first."
        (try
          (compare a b)
          (catch ClassCastException _
-           (if hh-node-ns
-             (let [order-fn (ns-resolve hh-node-ns '-order-on-edn-types)]
-               (- (order-fn a) (order-fn b)))
+           #_(if hh-node-ns
+               (let [order-fn (ns-resolve hh-node-ns '-order-on-edn-types)]
+                 (- (order-fn a) (order-fn b)))
              ;; Fallback when hitchhiker-tree not available
-             (compare (class a) (class b)))))
+               (compare (class a) (class b)))))
        (raw-array-compare a b))))
 
 (defn string-from-bytes
