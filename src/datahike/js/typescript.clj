@@ -1,171 +1,171 @@
 (ns datahike.js.typescript
   "Generate TypeScript type definitions from api.specification.
-  
+
   This namespace provides tooling to generate .d.ts files that:
-  - Map Clojure specs to TypeScript types
+  - Map malli schemas to TypeScript types
   - Provide proper Promise<T> types for async operations
   - Include JSDoc comments with full documentation
   - Support IDE autocompletion and type checking"
-  (:require [datahike.api.specification :refer [api-specification spec-args->argslist]]
+  (:require [datahike.api.specification :refer [api-specification malli-schema->argslist]]
+            [datahike.api.types :as types]
             [datahike.js.naming :refer [js-skip-list clj-name->js-name]]
-            [clojure.string :as str]
-            [clojure.spec.alpha :as s]))
+            [clojure.string :as str]))
 
 ;; =============================================================================
-;; Spec -> TypeScript Type Mapping
+;; Malli -> TypeScript Type Mapping
 ;; =============================================================================
 
-(def spec-type-map
-  "Map of Clojure spec predicates to TypeScript types"
-  {'boolean? "boolean"
-   'string? "string"
-   'number? "number"
-   'int? "number"
-   'keyword? "string"  ;; Keywords represented as strings in JS
-   'symbol? "string"
-   'map? "object"
-   'vector? "Array<any>"
-   'coll? "Array<any>"
-   'seq? "Array<any>"
-   'any? "any"
-   'nil? "null"
-   'fn? "Function"})
-
-(defn spec->ts-type
-  "Convert a Clojure spec to a TypeScript type string.
-  This is a simplified conversion - full spec->TS would be more complex."
-  [spec-form]
+(defn malli->ts-type
+  "Convert a malli schema to a TypeScript type string."
+  [schema]
   (cond
-    ;; Direct spec predicates
-    (contains? spec-type-map spec-form)
-    (get spec-type-map spec-form)
+    ;; Keyword schemas (primitives)
+    (keyword? schema)
+    (case schema
+      :boolean "boolean"
+      :string "string"
+      :int "number"
+      :long "number"
+      :double "number"
+      :number "number"
+      :keyword "string"
+      :symbol "string"
+      :any "any"
+      :nil "null"
+      :map "object"
+      :vector "Array<any>"
+      :sequential "Array<any>"
+      :set "Set<any>"
+      "any")
 
-    ;; Custom specs (from datahike.spec namespace)
-    (and (symbol? spec-form) (str/starts-with? (name spec-form) "S"))
-    (case (name spec-form)
-      "SConfig" "DatabaseConfig"
-      "SConnection" "Connection"
-      "SDB" "Database"
-      "STransactions" "Transaction[]"
-      "STransactionReport" "TransactionReport"
-      "SEId" "number | string"
-      "SSchema" "Schema"
-      "SMetrics" "Metrics"
-      "SDatom" "Datom"
-      "SDatoms" "Datom[]"
-      "SWithArgs" "{ 'tx-data': Transaction[], 'tx-meta'?: any }"
-      "SQueryArgs" "{ query: string | any[], args?: any[], limit?: number, offset?: number }"
-      "SPullOptions" "{ selector: any[], eid: number | string }"
-      "SIndexLookupArgs" "{ index: string, components?: any[] }"
-      "SIndexRangeArgs" "{ attrid: string, start: any, end: any }"
-      "any")  ;; fallback
+    ;; Symbols (type references)
+    (symbol? schema)
+    (let [schema-name (name schema)]
+      (cond
+        ;; types/SConfig → DatabaseConfig
+        (str/starts-with? schema-name "types/")
+        (get types/malli->typescript-type
+             (keyword (subs schema-name 6))
+             "any")
 
-    ;; s/alt (union types) - extract the actual types
-    (and (seq? spec-form) (= (first spec-form) 's/alt))
-    (let [types (take-nth 2 (rest spec-form))
-          ts-types (set (map spec->ts-type types))]
-      (str/join " | " (remove #{"null"} ts-types)))  ;; Remove null from unions
+        ;; Direct type names
+        :else
+        (get types/malli->typescript-type
+             (keyword schema-name)
+             "any")))
 
-    ;; s/cat (single type for now, would need tuple support)
-    (and (seq? spec-form) (= (first spec-form) 's/cat))
-    "any"
+    ;; Vector schemas
+    (vector? schema)
+    (let [[op & args] schema]
+      (case op
+        ;; [:or Type1 Type2] → Type1 | Type2
+        :or
+        (str/join " | " (map malli->ts-type args))
 
-    ;; s/or (union types)
-    (and (seq? spec-form) (= (first spec-form) 's/or))
-    (let [types (take-nth 2 (rest spec-form))
-          ts-types (set (map spec->ts-type types))]
-      (str/join " | " ts-types))
+        ;; [:maybe Type] → Type | null
+        :maybe
+        (str (malli->ts-type (first args)) " | null")
 
-    ;; s/coll-of (array of type)
-    (and (seq? spec-form) (= (first spec-form) 's/coll-of))
-    (str "Array<" (spec->ts-type (second spec-form)) ">")
+        ;; [:sequential Type] → Array<Type>
+        :sequential
+        (str "Array<" (malli->ts-type (first args)) ">")
 
-    ;; s/? (optional)
-    (and (seq? spec-form) (= (first spec-form) 's/?))
-    (str (spec->ts-type (second spec-form)) " | undefined")
+        ;; [:vector Type] → Array<Type>
+        :vector
+        (str "Array<" (malli->ts-type (first args)) ">")
 
-    ;; s/* (array)
-    (and (seq? spec-form) (= (first spec-form) 's/*))
-    (str "Array<" (spec->ts-type (second spec-form)) ">")
+        ;; [:map ...] → object
+        :map
+        "object"
 
-    ;; Function predicate
-    (and (seq? spec-form) (= (first spec-form) 'fn?))
-    "Function"
+        ;; [:function ...] or [:=> ...] - extract return type
+        (:function :=>)
+        "any"
+
+        ;; [:cat ...] - tuple, represent as array for now
+        :cat
+        "Array<any>"
+
+        ;; [:alt ...] - union
+        :alt
+        "any"
+
+        ;; [:* Type] - rest params
+        :*
+        (str "..." (malli->ts-type (first args)) "[]")
+
+        ;; [:enum ...] - union of literals
+        :enum
+        (str/join " | " (map #(str "'" % "'") args))
+
+        ;; [:fn ...] - function type
+        :fn
+        "Function"
+
+        ;; Default
+        "any"))
 
     ;; Default
     :else "any"))
 
-(defn extract-params-with-types
-  "Extract parameter names and types from spec args.
-  Returns vector of maps with :name, :type, and :optional keys."
-  [args-spec]
-  (if-not (seq? args-spec)
-    []
-    (let [[op & args] args-spec]
-      (cond
-        ;; s/alt represents optional variants (e.g., with config or without)
-        (= op 's/alt)
-        (let [variants (partition 2 args)
-              ;; Take the most complete variant (usually first non-nil one)
-              main-variant (or (first (filter #(not= :nil (first %)) variants))
-                               (first variants))]
-          (if main-variant
-            (extract-params-with-types (second main-variant))
-            []))
+(defn extract-params-from-malli
+  "Extract parameter information from malli function schema.
+   Returns vector of maps with :name, :type, and :optional keys."
+  [args-schema]
+  (cond
+    ;; [:=> [:cat Type1 Type2] Return]
+    (and (vector? args-schema) (= :=> (first args-schema)))
+    (let [[_ input-schema _] args-schema]
+      (when (and (vector? input-schema) (= :cat (first input-schema)))
+        (vec
+         (map-indexed
+          (fn [idx type-schema]
+            {:name (str "arg" idx)
+             :type (malli->ts-type type-schema)
+             :optional false})
+          (rest input-schema)))))
 
-        ;; s/cat represents a sequence of parameters
-        (= op 's/cat)
-        (let [params (partition 2 args)]
-          (vec
-           (for [[param-key param-spec] params
-                 :when (not (and (seq? param-spec)
-                                 (= (first param-spec) 's/?)
-                                 (seq? (second param-spec))
-                                 (= (first (second param-spec)) 's/cat)
-                                 (= (second (second param-spec)) :k)))] ;; Skip keyword-only params
-             (let [optional? (and (seq? param-spec) (= (first param-spec) 's/?))
-                   inner-spec (if optional? (second param-spec) param-spec)
-                   ts-type (spec->ts-type inner-spec)]
-               {:name (clj-name->js-name param-key)  ; Use shared naming function
-                :type ts-type
-                :optional (or optional? true)}))))  ;; Make all params optional for flexibility
+    ;; [:function [:=> ...] [:=> ...]] - multi-arity, use first
+    (and (vector? args-schema) (= :function (first args-schema)))
+    (let [first-arity (second args-schema)]
+      (extract-params-from-malli first-arity))
 
-        :else []))))
+    ;; Default
+    :else []))
 
 (defn generate-function-signature
   "Generate TypeScript function signature from specification entry."
   [[fn-name {:keys [args ret doc]}]]
-  (let [ts-name (clj-name->js-name fn-name)  ; Use shared naming function
-        params (extract-params-with-types args)
+  (let [ts-name (clj-name->js-name fn-name)
+        params (extract-params-from-malli args)
         params-str (str/join ", "
                              (map (fn [{:keys [name type optional]}]
                                     (str name (if optional "?" "") ": " type))
                                   params))
-        return-type (cond
-                      (= ret 'boolean?) "boolean"
-                      (= ret 'string?) "string"
-                      (= ret 'number?) "number"
-                      (symbol? ret) (spec->ts-type ret)
-                      (seq? ret) (spec->ts-type ret)
-                      :else "any")
-        ;; Wrap in Promise if it's an async operation
+        return-type (malli->ts-type ret)
+        ;; Wrap in Promise for async operations
         final-return (str "Promise<" return-type ">")]
     {:name ts-name
      :signature (str "export function " ts-name "(" params-str "): " final-return ";")
      :doc doc}))
 
 (defn generate-jsdoc
-  "Generate JSDoc comment from docstring."
-  [doc]
+  "Generate JSDoc comment from docstring and examples."
+  [doc examples]
   (when doc
-    (let [lines (str/split-lines doc)
-          ;; Format multi-line doc
-          formatted (if (> (count lines) 1)
-                      (str "/**\n"
-                           " * " (str/join "\n * " lines)
-                           "\n */")
-                      (str "/** " (first lines) " */"))]
-      formatted)))
+    (let [;; Extract first sentence for summary
+          summary (first (str/split doc #"\.\s"))
+          ;; Add examples if available
+          example-text (when (seq examples)
+                        (str "\n *\n * Examples:\n"
+                             (str/join "\n"
+                                       (map (fn [{:keys [desc code]}]
+                                              (str " * - " desc "\n"
+                                                   " *   " code))
+                                            (take 2 examples)))))]
+      (str "/**\n * " summary "."
+           example-text
+           "\n */"))))
 
 (defn generate-type-definitions
   "Generate complete TypeScript type definitions from api-specification."
@@ -200,7 +200,7 @@ export interface Database {
   [key: string]: any;
 }
 
-export type Transaction = 
+export type Transaction =
   | [':db/add', number | string, string, any]
   | [':db/retract', number | string, string, any]
   | { [key: string]: any };
@@ -236,12 +236,13 @@ export interface Metrics {
 }
 
 "
-        ;; Generate function signatures (filter using shared js-skip-list)
+        ;; Generate function signatures
         functions (str/join "\n\n"
                             (for [entry (sort-by first api-specification)
                                   :when (not (contains? js-skip-list (first entry)))
-                                  :let [{:keys [name signature doc]} (generate-function-signature entry)
-                                        jsdoc (generate-jsdoc doc)]]
+                                  :let [[fn-name spec-data] entry
+                                        {:keys [name signature doc]} (generate-function-signature entry)
+                                        jsdoc (generate-jsdoc doc (:examples spec-data))]]
                               (str jsdoc "\n" signature)))]
     (str header types "\n// API Functions\n\n" functions "\n")))
 
