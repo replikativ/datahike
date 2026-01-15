@@ -16,7 +16,6 @@
     :impl                     - symbol pointing to implementation function
     :categories               - semantic grouping tags (vector of keywords)
     :stability                - API maturity (:alpha, :beta, :stable)
-    :accepts-stdin?           - true if CLI can read from stdin
     :supports-remote?         - true if can be exposed via HTTP/remote API
     :referentially-transparent? - true if pure (no side effects, deterministic)
     :examples                 - structured usage examples (optional)
@@ -99,7 +98,6 @@
      :ret :boolean
      :categories [:database :lifecycle :query]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
      :doc "Checks if a database exists via configuration map."
@@ -116,7 +114,6 @@
      :ret :datahike/SConfig
      :categories [:database :lifecycle :write]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
      :doc "Creates a database via configuration map."
@@ -140,7 +137,6 @@
      :ret :any
      :categories [:database :lifecycle :write]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
      :doc "Deletes a database given via configuration map."
@@ -160,7 +156,6 @@
      :ret :datahike/SConnection
      :categories [:connection :lifecycle]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
      :doc "Connects to a Datahike database via configuration map."
@@ -177,7 +172,6 @@
      :ret :datahike/SDB
      :categories [:connection :query]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
      :doc "Returns the underlying immutable database value from a connection. Prefer using @conn directly."
@@ -192,7 +186,6 @@
      :ret :nil
      :categories [:connection :lifecycle]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
      :doc "Releases a database connection."
@@ -209,7 +202,6 @@
      :ret :datahike/STransactionReport
      :categories [:transaction :write]
      :stability :stable
-     :accepts-stdin? true
      :supports-remote? true
      :referentially-transparent? false
      :doc "Applies transaction to the database and updates connection."
@@ -230,7 +222,6 @@
      :ret :any
      :categories [:transaction :write :async]
      :stability :stable
-     :accepts-stdin? true
      :supports-remote? false
      :referentially-transparent? false
      :doc "Same as transact, but asynchronously returns a future."
@@ -243,7 +234,6 @@
      :ret :any
      :categories [:transaction :write :bulk]
      :stability :stable
-     :accepts-stdin? true
      :supports-remote? true
      :referentially-transparent? false
      :doc "Load entities directly (bulk load)."
@@ -259,7 +249,6 @@
      :ret :datahike/STransactionReport
      :categories [:transaction :immutable]
      :stability :stable
-     :accepts-stdin? true
      :supports-remote? false
      :referentially-transparent? true
      :doc "Applies transaction to immutable db value. Returns transaction report."
@@ -274,7 +263,6 @@
      :ret :datahike/SDB
      :categories [:transaction :immutable]
      :stability :stable
-     :accepts-stdin? true
      :supports-remote? false
      :referentially-transparent? true
      :doc "Applies transaction to immutable db value, returns new db. Same as (:db-after (with db tx-data))."
@@ -293,7 +281,6 @@
      :ret :any
      :categories [:query]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Executes a datalog query."
@@ -315,7 +302,6 @@
      :ret :map
      :categories [:query :diagnostics]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Executes query and returns execution statistics."
@@ -330,7 +316,6 @@
      :ret [:maybe :map]
      :categories [:query :pull]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Fetches data using recursive declarative pull pattern."
@@ -347,7 +332,6 @@
      :ret [:sequential :map]
      :categories [:query :pull]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Same as pull, but accepts sequence of ids and returns sequence of maps."
@@ -360,7 +344,6 @@
      :ret :any
      :categories [:query :entity]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Retrieves an entity by its id. Returns lazy map-like structure."
@@ -377,7 +360,6 @@
      :ret :datahike/SDB
      :categories [:query :entity]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Returns database that entity was created from."
@@ -396,7 +378,6 @@
      :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Index lookup. Returns sequence of datoms matching index components."
@@ -415,7 +396,6 @@
      :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Like datoms, but returns datoms starting from specified components through end of index."
@@ -428,7 +408,6 @@
      :ret :datahike/SDatoms
      :categories [:query :index :advanced]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Returns part of :avet index between start and end values."
@@ -447,7 +426,6 @@
      :ret :datahike/SDB
      :categories [:query :filter]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? false
      :referentially-transparent? true
      :doc "Returns filtered view over database. Only includes datoms where (pred db datom) is true."
@@ -460,7 +438,6 @@
      :ret :boolean
      :categories [:query :filter]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? false
      :referentially-transparent? true
      :doc "Returns true if database was filtered using filter, false otherwise."
@@ -477,7 +454,6 @@
      :ret :any
      :categories [:temporal :query]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Returns full historical state of database including all assertions and retractions."
@@ -490,7 +466,6 @@
      :ret :datahike/SDB
      :categories [:temporal :query]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Returns database state since given time point (Date or transaction ID). Contains only datoms added since that point."
@@ -505,7 +480,6 @@
      :ret :datahike/SDB
      :categories [:temporal :query]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Returns database state at given time point (Date or transaction ID)."
@@ -526,7 +500,6 @@
      :ret :any
      :categories [:connection :reactive]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? false
      :referentially-transparent? false
      :doc "Listen for changes on connection. Callback called with transaction report on each transact."
@@ -541,7 +514,6 @@
      :ret :map
      :categories [:connection :reactive]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? false
      :referentially-transparent? false
      :doc "Removes registered listener from connection."
@@ -558,7 +530,6 @@
      :ret :datahike/SSchema
      :categories [:schema :query]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Returns current schema definition."
@@ -571,7 +542,6 @@
      :ret :map
      :categories [:schema :query]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Returns reverse schema definition (attribute id to ident mapping)."
@@ -588,7 +558,6 @@
      :ret :datahike/SMetrics
      :categories [:diagnostics :query]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? true
      :doc "Returns database metrics (datom counts, index sizes, etc)."
@@ -603,7 +572,6 @@
      :ret :any
      :categories [:maintenance :lifecycle]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? true
      :referentially-transparent? false
      :doc "Invokes garbage collection on connection's store. Removes old snapshots before given time point."
@@ -624,7 +592,6 @@
      :ret [:or neg-int? :int]
      :categories [:utility]
      :stability :stable
-     :accepts-stdin? false
      :supports-remote? false
      :referentially-transparent? true
      :doc "Allocates temporary id (negative integer). Prefer using negative integers directly."
