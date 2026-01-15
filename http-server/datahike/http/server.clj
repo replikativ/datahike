@@ -74,13 +74,21 @@
 (defn extract-first-sentence [doc]
   (str (first (str/split doc #"\.\s")) "."))
 
+(defn has-cat-operators?
+  "Check if args list contains :cat-specific operators like [:* ...], [:+ ...], [:alt ...], etc.
+   These operators are only valid in :cat schemas, not in :tuple schemas."
+  [args]
+  (some #(and (vector? %) (#{:* :+ :? :alt :altn} (first %))) args))
+
 (defn extract-input-schema
   "Extract input schema from malli function schema for HTTP body validation.
    Converts [:=> [:cat Type1 Type2] ret] to [:tuple Type1 Type2]
    or [:function [:=> [:cat T1] ret] [:=> [:cat T1 T2] ret]] to [:or [:tuple T1] [:tuple T1 T2]]
 
    The HTTP body is a tuple/vector of arguments that matches the function signature.
-   For zero-arity functions, we use [:= []] to match an empty vector."
+   For zero-arity functions, we use [:= []] to match an empty vector.
+   For functions with :cat operators ([:* ...], [:alt ...], etc), we use [:sequential :any]
+   since tuples can't express these dynamic patterns."
   [schema]
   (cond
     ;; Multi-arity: [:function [:=> [:cat ...] ret] ...]
@@ -92,9 +100,10 @@
                                     args (when (and (vector? input-schema)
                                                     (= :cat (first input-schema)))
                                            (rest input-schema))]]
-                          (if (seq args)
-                            (vec (cons :tuple args))
-                            [:= []]))]  ;; Empty vector for zero-arity
+                          (cond
+                            (not (seq args)) [:= []]  ;; Zero-arity
+                            (has-cat-operators? args) [:sequential :any]  ;; Has :cat operators - can't use tuple
+                            :else (vec (cons :tuple args))))]  ;; Fixed arity
       (if (> (count input-schemas) 1)
         (vec (cons :or input-schemas))
         (first input-schemas)))
@@ -104,9 +113,10 @@
     (let [[_ input-schema _] schema]
       (if (and (vector? input-schema) (= :cat (first input-schema)))
         (let [args (rest input-schema)]
-          (if (seq args)
-            (vec (cons :tuple args))
-            [:= []]))  ;; Empty vector for zero-arity
+          (cond
+            (not (seq args)) [:= []]  ;; Zero-arity
+            (has-cat-operators? args) [:sequential :any]  ;; Has :cat operators
+            :else (vec (cons :tuple args))))  ;; Fixed arity
         [:sequential :any]))
 
     ;; Fallback
