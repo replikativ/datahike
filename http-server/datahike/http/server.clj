@@ -26,7 +26,7 @@
    [reitit.ring.middleware.parameters :as parameters]
    [ring.middleware.cors :refer [wrap-cors]]
    [muuntaja.core :as m]
-   [datahike.tools :refer [datahike-version datahike-logo]]
+   [datahike.tools :refer [datahike-version]]
    [datahike.impl.entity :as de]
    [taoensso.timbre :as log]
    [ring.adapter.jetty :refer [run-jetty]])
@@ -209,13 +209,7 @@
   (let [{:keys [level token] :as config} (edn/read-string (slurp (first args)))]
     (when level (log/set-level! level))
     (when (#{:trace :debug :info nil} level)
-      (println)
-      (println "Welcome to datahike.http.server!")
-      (println "For more information visit https://datahike.io,")
-      (println "or if you encounter any problem feel free to open an issue at https://github.com/replikativ/datahike.")
-      (println (str "\n" datahike-logo))
-      (println))
+      (println "Datahike HTTP Server" datahike-version "- https://datahike.io"))
     (log/info "Config:" (if token (assoc config :token "REDACTED") config))
-    (log/info "Datahike version:" datahike-version)
     (start-server config)
     (log/info "Server started.")))
