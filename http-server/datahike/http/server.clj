@@ -86,7 +86,7 @@
            {:operationId ~(str n)
             :summary     ~(extract-first-sentence doc)
             :description ~doc
-            :parameters  {:body ~args}
+            :parameters  {:body [:vector :any]}
             :handler     (generic-handler ~'config ~(resolve n))}}]))))
 
 (def muuntaja-with-opts
