@@ -55,7 +55,7 @@
   - Number (entity ID)
   - Sequential (lookup ref [:attr value])
   - Keyword (for schema entities)"
-  [:or :number
+  [:or [:fn number?]
    [:sequential :any]
    :keyword])
 
@@ -95,13 +95,13 @@
 (def SPullOptions
   "Pull pattern options map."
   [:map
-   [:selector :vector]
+   [:selector [:vector :any]]
    [:eid SEId]])
 
 (def SQueryArgs
   "Query arguments map."
   [:map
-   [:query [:or :string :vector :map]]
+   [:query [:or :string [:vector :any] :map]]
    [:args {:optional true} [:sequential :any]]
    [:limit {:optional true} :int]
    [:offset {:optional true} :int]])

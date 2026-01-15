@@ -289,7 +289,7 @@
     q
     {:args [:function
             [:=> [:cat :datahike/SQueryArgs] :any]
-            [:=> [:cat [:or :vector :map :string] [:* :any]] :any]]
+            [:=> [:cat [:or [:vector :any] :map :string] [:* :any]] :any]]
      :ret :any
      :categories [:query]
      :stability :stable
@@ -311,7 +311,7 @@
     query-stats
     {:args [:function
             [:=> [:cat :datahike/SQueryArgs] :map]
-            [:=> [:cat [:or :vector :map] [:* :any]] :map]]
+            [:=> [:cat [:or [:vector :any] :map] [:* :any]] :map]]
      :ret :map
      :categories [:query :diagnostics]
      :stability :stable
@@ -326,7 +326,7 @@
     pull
     {:args [:function
             [:=> [:cat :datahike/SDB :datahike/SPullOptions] [:maybe :map]]
-            [:=> [:cat :datahike/SDB :vector :datahike/SEId] [:maybe :map]]]
+            [:=> [:cat :datahike/SDB [:vector :any] :datahike/SEId] [:maybe :map]]]
      :ret [:maybe :map]
      :categories [:query :pull]
      :stability :stable
@@ -343,7 +343,7 @@
     pull-many
     {:args [:function
             [:=> [:cat :datahike/SDB :datahike/SPullOptions] [:sequential :map]]
-            [:=> [:cat :datahike/SDB :vector :datahike/SEId] [:sequential :map]]]
+            [:=> [:cat :datahike/SDB [:vector :any] :datahike/SEId] [:sequential :map]]]
      :ret [:sequential :map]
      :categories [:query :pull]
      :stability :stable
