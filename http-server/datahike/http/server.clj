@@ -18,6 +18,7 @@
    [datahike.writer]
    [reitit.ring :as ring]
    [reitit.coercion.malli]
+   [malli.util :as mu]
    [reitit.swagger :as swagger]
    [reitit.swagger-ui :as swagger-ui]
    [reitit.ring.coercion :as coercion]
@@ -73,6 +74,44 @@
 (defn extract-first-sentence [doc]
   (str (first (str/split doc #"\.\s")) "."))
 
+(defn extract-input-schema
+  "Extract input schema from malli function schema for HTTP body validation.
+   Converts [:=> [:cat Type1 Type2] ret] to [:tuple Type1 Type2]
+   or [:function [:=> [:cat T1] ret] [:=> [:cat T1 T2] ret]] to [:or [:tuple T1] [:tuple T1 T2]]
+
+   The HTTP body is a tuple/vector of arguments that matches the function signature.
+   For zero-arity functions, we use [:= []] to match an empty vector."
+  [schema]
+  (cond
+    ;; Multi-arity: [:function [:=> [:cat ...] ret] ...]
+    (and (vector? schema) (= :function (first schema)))
+    (let [input-schemas (for [arity-schema (rest schema)
+                              :when (and (vector? arity-schema)
+                                         (= :=> (first arity-schema)))
+                              :let [[_ input-schema _] arity-schema
+                                    args (when (and (vector? input-schema)
+                                                    (= :cat (first input-schema)))
+                                           (rest input-schema))]]
+                          (if (seq args)
+                            (vec (cons :tuple args))
+                            [:= []]))]  ;; Empty vector for zero-arity
+      (if (> (count input-schemas) 1)
+        (vec (cons :or input-schemas))
+        (first input-schemas)))
+
+    ;; Single arity: [:=> [:cat Type1 Type2] ret]
+    (and (vector? schema) (= :=> (first schema)))
+    (let [[_ input-schema _] schema]
+      (if (and (vector? input-schema) (= :cat (first input-schema)))
+        (let [args (rest input-schema)]
+          (if (seq args)
+            (vec (cons :tuple args))
+            [:= []]))  ;; Empty vector for zero-arity
+        [:sequential :any]))
+
+    ;; Fallback
+    :else [:sequential :any]))
+
 ;; This code expands and evals the server route construction given the
 ;; API specification.
 (eval
@@ -86,7 +125,7 @@
            {:operationId ~(str n)
             :summary     ~(extract-first-sentence doc)
             :description ~doc
-            :parameters  {:body [:vector :any]}
+            :parameters  {:body ~(extract-input-schema args)}
             :handler     (generic-handler ~'config ~(resolve n))}}]))))
 
 (def muuntaja-with-opts
@@ -104,7 +143,11 @@
                  {:handlers transit/write-handlers}))))
 
 (defn default-route-opts [muuntaja-with-opts]
-  {:data      {:coercion   reitit.coercion.malli/coercion
+  {:data      {:coercion   (reitit.coercion.malli/create
+                            {:compile mu/closed-schema
+                             :strip-extra-keys true
+                             :default-values true
+                             :options {:registry types/registry}})
                :muuntaja   muuntaja-with-opts
                :middleware [swagger/swagger-feature
                             parameters/parameters-middleware

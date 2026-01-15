@@ -94,7 +94,7 @@
 
     database-exists?
     {:args [:function
-            [:=> [:cat types/SConfig] :boolean]
+            [:=> [:cat :datahike/SConfig] :boolean]
             [:=> [:cat] :boolean]]
      :ret :boolean
      :categories [:database :lifecycle :query]
@@ -111,9 +111,9 @@
 
     create-database
     {:args [:function
-            [:=> [:cat types/SConfig] types/SConfig]
-            [:=> [:cat] types/SConfig]]
-     :ret types/SConfig
+            [:=> [:cat :datahike/SConfig] :datahike/SConfig]
+            [:=> [:cat] :datahike/SConfig]]
+     :ret :datahike/SConfig
      :categories [:database :lifecycle :write]
      :stability :stable
      :accepts-stdin? false
@@ -135,7 +135,7 @@
 
     delete-database
     {:args [:function
-            [:=> [:cat types/SConfig] :any]
+            [:=> [:cat :datahike/SConfig] :any]
             [:=> [:cat] :any]]
      :ret :any
      :categories [:database :lifecycle :write]
@@ -154,10 +154,10 @@
 
     connect
     {:args [:function
-            [:=> [:cat types/SConfig] types/SConnection]
-            [:=> [:cat types/SConfig :map] types/SConnection]
-            [:=> [:cat] types/SConnection]]
-     :ret types/SConnection
+            [:=> [:cat :datahike/SConfig] :datahike/SConnection]
+            [:=> [:cat :datahike/SConfig :map] :datahike/SConnection]
+            [:=> [:cat] :datahike/SConnection]]
+     :ret :datahike/SConnection
      :categories [:connection :lifecycle]
      :stability :stable
      :accepts-stdin? false
@@ -173,8 +173,8 @@
      :impl datahike.connector/connect}
 
     db
-    {:args [:=> [:cat types/SConnection] types/SDB]
-     :ret types/SDB
+    {:args [:=> [:cat :datahike/SConnection] :datahike/SDB]
+     :ret :datahike/SDB
      :categories [:connection :query]
      :stability :stable
      :accepts-stdin? false
@@ -188,7 +188,7 @@
      :impl datahike.api.impl/db}
 
     release
-    {:args [:=> [:cat types/SConnection] :nil]
+    {:args [:=> [:cat :datahike/SConnection] :nil]
      :ret :nil
      :categories [:connection :lifecycle]
      :stability :stable
@@ -205,8 +205,8 @@
     ;; =========================================================================
 
     transact
-    {:args [:=> [:cat types/SConnection types/STransactions] types/STransactionReport]
-     :ret types/STransactionReport
+    {:args [:=> [:cat :datahike/SConnection :datahike/STransactions] :datahike/STransactionReport]
+     :ret :datahike/STransactionReport
      :categories [:transaction :write]
      :stability :stable
      :accepts-stdin? true
@@ -226,7 +226,7 @@
      :impl datahike.api.impl/transact}
 
     transact!
-    {:args [:=> [:cat types/SConnection types/STransactions] :any]
+    {:args [:=> [:cat :datahike/SConnection :datahike/STransactions] :any]
      :ret :any
      :categories [:transaction :write :async]
      :stability :stable
@@ -239,7 +239,7 @@
      :impl datahike.api.impl/transact!}
 
     load-entities
-    {:args [:=> [:cat types/SConnection types/STransactions] :any]
+    {:args [:=> [:cat :datahike/SConnection :datahike/STransactions] :any]
      :ret :any
      :categories [:transaction :write :bulk]
      :stability :stable
@@ -253,10 +253,10 @@
 
     with
     {:args [:function
-            [:=> [:cat types/SDB types/SWithArgs] types/STransactionReport]
-            [:=> [:cat types/SDB types/STransactions] types/STransactionReport]
-            [:=> [:cat types/SDB types/STransactions types/STxMeta] types/STransactionReport]]
-     :ret types/STransactionReport
+            [:=> [:cat :datahike/SDB :datahike/SWithArgs] :datahike/STransactionReport]
+            [:=> [:cat :datahike/SDB :datahike/STransactions] :datahike/STransactionReport]
+            [:=> [:cat :datahike/SDB :datahike/STransactions :datahike/STxMeta] :datahike/STransactionReport]]
+     :ret :datahike/STransactionReport
      :categories [:transaction :immutable]
      :stability :stable
      :accepts-stdin? true
@@ -270,8 +270,8 @@
      :impl datahike.api.impl/with}
 
     db-with
-    {:args [:=> [:cat types/SDB types/STransactions] types/SDB]
-     :ret types/SDB
+    {:args [:=> [:cat :datahike/SDB :datahike/STransactions] :datahike/SDB]
+     :ret :datahike/SDB
      :categories [:transaction :immutable]
      :stability :stable
      :accepts-stdin? true
@@ -288,7 +288,7 @@
 
     q
     {:args [:function
-            [:=> [:cat types/SQueryArgs] :any]
+            [:=> [:cat :datahike/SQueryArgs] :any]
             [:=> [:cat [:or :vector :map :string] [:* :any]] :any]]
      :ret :any
      :categories [:query]
@@ -310,7 +310,7 @@
 
     query-stats
     {:args [:function
-            [:=> [:cat types/SQueryArgs] :map]
+            [:=> [:cat :datahike/SQueryArgs] :map]
             [:=> [:cat [:or :vector :map] [:* :any]] :map]]
      :ret :map
      :categories [:query :diagnostics]
@@ -325,8 +325,8 @@
 
     pull
     {:args [:function
-            [:=> [:cat types/SDB types/SPullOptions] [:maybe :map]]
-            [:=> [:cat types/SDB :vector types/SEId] [:maybe :map]]]
+            [:=> [:cat :datahike/SDB :datahike/SPullOptions] [:maybe :map]]
+            [:=> [:cat :datahike/SDB :vector :datahike/SEId] [:maybe :map]]]
      :ret [:maybe :map]
      :categories [:query :pull]
      :stability :stable
@@ -342,8 +342,8 @@
 
     pull-many
     {:args [:function
-            [:=> [:cat types/SDB types/SPullOptions] [:sequential :map]]
-            [:=> [:cat types/SDB :vector types/SEId] [:sequential :map]]]
+            [:=> [:cat :datahike/SDB :datahike/SPullOptions] [:sequential :map]]
+            [:=> [:cat :datahike/SDB :vector :datahike/SEId] [:sequential :map]]]
      :ret [:sequential :map]
      :categories [:query :pull]
      :stability :stable
@@ -356,7 +356,7 @@
      :impl datahike.pull-api/pull-many}
 
     entity
-    {:args [:=> [:cat types/SDB [:or types/SEId :any]] :any]
+    {:args [:=> [:cat :datahike/SDB [:or :datahike/SEId :any]] :any]
      :ret :any
      :categories [:query :entity]
      :stability :stable
@@ -373,8 +373,8 @@
      :impl datahike.impl.entity/entity}
 
     entity-db
-    {:args [:=> [:cat :any] types/SDB]
-     :ret types/SDB
+    {:args [:=> [:cat :any] :datahike/SDB]
+     :ret :datahike/SDB
      :categories [:query :entity]
      :stability :stable
      :accepts-stdin? false
@@ -391,9 +391,9 @@
 
     datoms
     {:args [:function
-            [:=> [:cat types/SDB types/SIndexLookupArgs] [:maybe types/SDatoms]]
-            [:=> [:cat types/SDB :keyword [:alt [:sequential :any] :nil]] [:maybe types/SDatoms]]]
-     :ret [:maybe types/SDatoms]
+            [:=> [:cat :datahike/SDB :datahike/SIndexLookupArgs] [:maybe :datahike/SDatoms]]
+            [:=> [:cat :datahike/SDB :keyword [:alt [:sequential :any] :nil]] [:maybe :datahike/SDatoms]]]
+     :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :stable
      :accepts-stdin? false
@@ -410,9 +410,9 @@
 
     seek-datoms
     {:args [:function
-            [:=> [:cat types/SDB types/SIndexLookupArgs] [:maybe types/SDatoms]]
-            [:=> [:cat types/SDB :keyword [:* :any]] [:maybe types/SDatoms]]]
-     :ret [:maybe types/SDatoms]
+            [:=> [:cat :datahike/SDB :datahike/SIndexLookupArgs] [:maybe :datahike/SDatoms]]
+            [:=> [:cat :datahike/SDB :keyword [:* :any]] [:maybe :datahike/SDatoms]]]
+     :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :stable
      :accepts-stdin? false
@@ -424,8 +424,8 @@
      :impl datahike.api.impl/seek-datoms}
 
     index-range
-    {:args [:=> [:cat types/SDB types/SIndexRangeArgs] types/SDatoms]
-     :ret types/SDatoms
+    {:args [:=> [:cat :datahike/SDB :datahike/SIndexRangeArgs] :datahike/SDatoms]
+     :ret :datahike/SDatoms
      :categories [:query :index :advanced]
      :stability :stable
      :accepts-stdin? false
@@ -443,8 +443,8 @@
     ;; =========================================================================
 
     filter
-    {:args [:=> [:cat types/SDB :any] types/SDB]
-     :ret types/SDB
+    {:args [:=> [:cat :datahike/SDB :any] :datahike/SDB]
+     :ret :datahike/SDB
      :categories [:query :filter]
      :stability :stable
      :accepts-stdin? false
@@ -456,7 +456,7 @@
      :impl datahike.core/filter}
 
     is-filtered
-    {:args [:=> [:cat types/SDB] :boolean]
+    {:args [:=> [:cat :datahike/SDB] :boolean]
      :ret :boolean
      :categories [:query :filter]
      :stability :stable
@@ -473,7 +473,7 @@
     ;; =========================================================================
 
     history
-    {:args [:=> [:cat types/SDB] :any]
+    {:args [:=> [:cat :datahike/SDB] :any]
      :ret :any
      :categories [:temporal :query]
      :stability :stable
@@ -486,8 +486,8 @@
      :impl datahike.api.impl/history}
 
     since
-    {:args [:=> [:cat types/SDB types/time-point?] types/SDB]
-     :ret types/SDB
+    {:args [:=> [:cat :datahike/SDB types/time-point?] :datahike/SDB]
+     :ret :datahike/SDB
      :categories [:temporal :query]
      :stability :stable
      :accepts-stdin? false
@@ -501,8 +501,8 @@
      :impl datahike.api.impl/since}
 
     as-of
-    {:args [:=> [:cat types/SDB types/time-point?] types/SDB]
-     :ret types/SDB
+    {:args [:=> [:cat :datahike/SDB types/time-point?] :datahike/SDB]
+     :ret :datahike/SDB
      :categories [:temporal :query]
      :stability :stable
      :accepts-stdin? false
@@ -521,8 +521,8 @@
 
     listen
     {:args [:function
-            [:=> [:cat types/SConnection :any] :any]
-            [:=> [:cat types/SConnection :any :any] :any]]
+            [:=> [:cat :datahike/SConnection :any] :any]
+            [:=> [:cat :datahike/SConnection :any :any] :any]]
      :ret :any
      :categories [:connection :reactive]
      :stability :stable
@@ -537,7 +537,7 @@
      :impl datahike.core/listen!}
 
     unlisten
-    {:args [:=> [:cat types/SConnection :any] :map]
+    {:args [:=> [:cat :datahike/SConnection :any] :map]
      :ret :map
      :categories [:connection :reactive]
      :stability :stable
@@ -554,8 +554,8 @@
     ;; =========================================================================
 
     schema
-    {:args [:=> [:cat types/SDB] types/SSchema]
-     :ret types/SSchema
+    {:args [:=> [:cat :datahike/SDB] :datahike/SSchema]
+     :ret :datahike/SSchema
      :categories [:schema :query]
      :stability :stable
      :accepts-stdin? false
@@ -567,7 +567,7 @@
      :impl datahike.api.impl/schema}
 
     reverse-schema
-    {:args [:=> [:cat types/SDB] :map]
+    {:args [:=> [:cat :datahike/SDB] :map]
      :ret :map
      :categories [:schema :query]
      :stability :stable
@@ -584,8 +584,8 @@
     ;; =========================================================================
 
     metrics
-    {:args [:=> [:cat types/SDB] types/SMetrics]
-     :ret types/SMetrics
+    {:args [:=> [:cat :datahike/SDB] :datahike/SMetrics]
+     :ret :datahike/SMetrics
      :categories [:diagnostics :query]
      :stability :stable
      :accepts-stdin? false
@@ -598,8 +598,8 @@
 
     gc-storage
     {:args [:function
-            [:=> [:cat types/SConnection types/time-point?] :any]
-            [:=> [:cat types/SConnection] :any]]
+            [:=> [:cat :datahike/SConnection types/time-point?] :any]
+            [:=> [:cat :datahike/SConnection] :any]]
      :ret :any
      :categories [:maintenance :lifecycle]
      :stability :stable

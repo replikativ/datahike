@@ -146,6 +146,34 @@
     date?]])
 
 ;; =============================================================================
+;; Malli Registry
+;; =============================================================================
+
+(def registry
+  "Malli registry containing all Datahike type schemas.
+   This allows schemas to reference each other by keyword and enables
+   proper integration with reitit coercion."
+  (merge
+   (m/default-schemas)
+   {:datahike/SDB SDB
+    :datahike/SConfig SConfig
+    :datahike/SConnection SConnection
+    :datahike/SEId SEId
+    :datahike/SDatom SDatom
+    :datahike/SDatoms SDatoms
+    :datahike/STxMeta STxMeta
+    :datahike/STransactionReport STransactionReport
+    :datahike/STransactions STransactions
+    :datahike/SPullOptions SPullOptions
+    :datahike/SQueryArgs SQueryArgs
+    :datahike/SWithArgs SWithArgs
+    :datahike/SIndexLookupArgs SIndexLookupArgs
+    :datahike/SIndexRangeArgs SIndexRangeArgs
+    :datahike/SSchema SSchema
+    :datahike/SMetrics SMetrics
+    :datahike/time-point? time-point?}))
+
+;; =============================================================================
 ;; Type Mappings for Code Generation
 ;; =============================================================================
 
