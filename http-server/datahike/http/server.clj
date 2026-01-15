@@ -8,6 +8,7 @@
    [clojure.core.async :as async]
    [datahike.connections :refer [*connections*]]
    [datahike.api.specification :refer [api-specification ->url]]
+   [datahike.api.types :as types]
    [datahike.http.middleware :as middleware]
    [datahike.readers :refer [edn-readers]]
    [datahike.transit :as transit]
