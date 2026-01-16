@@ -109,6 +109,9 @@
                    :depends [clean codegen-java]
                    :task (build/compile-java (-> config :build :clj))}
 
+         javadoc {:doc "Generate Javadoc for Java API (published to javadoc.io)"
+                  :task (build/javadoc {})}
+
          ccompile {:doc "Compile clojure namespaces"
                    :task (build/compile-clojure (-> config :build :clj))}
 

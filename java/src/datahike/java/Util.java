@@ -64,8 +64,10 @@ public class Util {
      * - Numbers, booleans, null → as-is
      * - Maps → recursively convert
      * - Lists/Arrays → recursively convert
+     *
+     * This is public to allow reuse from Clojure interop layer.
      */
-    private static Object convertValue(Object value) {
+    public static Object convertValue(Object value) {
         if (value == null) {
             return null;
         }
@@ -141,6 +143,73 @@ public class Util {
             keyVals[i++] = convertValue(entry.getValue());
         }
         return (APersistentMap) hashMapFn.applyTo(RT.seq(keyVals));
+    }
+
+    /**
+     * Convert Clojure persistent map to Java HashMap.
+     * Used for return values that need to be Java-friendly.
+     *
+     * @param clojureMap Clojure persistent map
+     * @return Java HashMap with string keys
+     */
+    public static java.util.Map<String, Object> clojureMapToJavaMap(APersistentMap clojureMap) {
+        if (clojureMap == null) {
+            return null;
+        }
+        java.util.Map<String, Object> javaMap = new java.util.HashMap<>();
+        for (Object entry : clojureMap) {
+            java.util.Map.Entry<?, ?> e = (java.util.Map.Entry<?, ?>) entry;
+            String key = e.getKey().toString();
+            javaMap.put(key, e.getValue());
+        }
+        return javaMap;
+    }
+
+    /**
+     * Normalize Java collections to Clojure collections for API processing.
+     *
+     * <p><b>Escape hatch (automatic):</b> If data is already a Clojure persistent
+     * collection, returns immediately with O(1) instanceof check. Advanced users
+     * can use {@link #vec} and {@link #map} for zero-overhead calls.</p>
+     *
+     * <p><b>Conversion rules (applied recursively):</b></p>
+     * <ul>
+     *   <li>java.util.List → clojure.lang.PersistentVector</li>
+     *   <li>java.util.Map → clojure.lang.PersistentHashMap</li>
+     *   <li>Map keys (String) → keywords ("name" → :name, ":name" → :name)</li>
+     *   <li>Values (String) → keywords only if prefixed with ":"</li>
+     *   <li>Primitives, Clojure types → unchanged</li>
+     * </ul>
+     *
+     * <p>This function is general and consistent - applied uniformly to all
+     * Java API method parameters that accept collections.</p>
+     *
+     * @param data The data to normalize (List, Map, or other types)
+     * @return Clojure-compatible data structure
+     */
+    public static Object normalizeCollections(Object data) {
+        // Escape hatch: already Clojure persistent collection - O(1) check
+        if (data instanceof clojure.lang.IPersistentCollection) {
+            return data;
+        }
+
+        // Java List → Clojure vector with recursive conversion
+        if (data instanceof java.util.List) {
+            java.util.List<?> list = (java.util.List<?>) data;
+            Object[] converted = new Object[list.size()];
+            for (int i = 0; i < list.size(); i++) {
+                converted[i] = convertValue(list.get(i));
+            }
+            return vecRaw(converted);
+        }
+
+        // Java Map → Clojure map with recursive conversion
+        if (data instanceof java.util.Map && !(data instanceof APersistentMap)) {
+            return mapToPersistentMap((java.util.Map<String, Object>) data);
+        }
+
+        // Other types → apply EDN value conversion rules
+        return convertValue(data);
     }
 
     /** Read string into edn data structure. */

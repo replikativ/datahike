@@ -245,46 +245,53 @@
 ;; Method Body Generation
 ;; =============================================================================
 
+(defn needs-normalization?
+  "Check if a parameter type needs Java→Clojure collection normalization."
+  [param-type]
+  (or (= param-type "List")
+      (= param-type "List<?>")
+      (= param-type "Map<?,?>")
+      (= param-type "Map<String,Object>")))
+
+(defn convert-arg
+  "Generate conversion code for an argument.
+   Applies normalization to Java collection types automatically."
+  [{:keys [type name]}]
+  (if (needs-normalization? type)
+    (str "Util.normalizeCollections(" name ")")
+    name))
+
 (defn generate-method-body
   "Generate method body that invokes Clojure function."
   [op-name params return-type]
   (let [fn-var-name (str (clj-name->java-method op-name) "Fn")
         ;; Determine if we need varargs handling
         has-varargs? (some #(str/includes? (:name %) "...") params)
-        ;; Build argument list
-        arg-names (map :name params)]
+        ;; Convert arguments (auto-normalize Java collections)
+        converted-args (map convert-arg params)
+        arg-str (str/join ", " converted-args)]
     (cond
       ;; Void return
       (= return-type "void")
-      (str "        " fn-var-name ".invoke("
-           (str/join ", " arg-names) ");\n")
+      (str "        " fn-var-name ".invoke(" arg-str ");\n")
 
-      ;; Config parameter needs conversion
-      (and (seq params)
-           (= (:type (first params)) "Map<String,Object>"))
-      (let [converted-first "Util.mapToPersistentMap(arg0)"
-            rest-args (rest arg-names)
-            all-args (cons converted-first rest-args)]
-        (str "        return (" return-type ") " fn-var-name ".invoke("
-             (str/join ", " all-args) ");\n"))
-
-      ;; Transaction report needs conversion
+      ;; Transaction report needs conversion back to Java Map
       (= return-type "Map<String,Object>")
       (str "        APersistentMap result = (APersistentMap) " fn-var-name ".invoke("
-           (str/join ", " arg-names) ");\n"
+           arg-str ");\n"
            "        return Util.clojureMapToJavaMap(result);\n")
 
       ;; Varargs handling (like q, datoms)
       has-varargs?
       (str "        List<Object> args = new ArrayList<>();\n"
-           (str/join "\n" (map #(str "        args.add(" % ");") arg-names))
+           (str/join "\n" (map #(str "        args.add(" % ");") converted-args))
            "\n"
            "        return (" return-type ") " fn-var-name ".applyTo(RT.seq(args));\n")
 
       ;; Simple return with cast
       :else
       (str "        return (" return-type ") " fn-var-name ".invoke("
-           (str/join ", " arg-names) ");\n"))))
+           arg-str ");\n"))))
 
 ;; =============================================================================
 ;; Method Generation
