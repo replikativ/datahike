@@ -1,6 +1,6 @@
 # Datahike Python Bindings
 
-**Status: Beta** - API is stable and tested, but may receive breaking changes as we refine the bindings.
+**Status: Beta** - API is functional and tested, but may receive breaking changes as we refine the bindings.
 
 Python bindings for [Datahike](https://github.com/replikativ/datahike), a durable Datalog database powered by an efficient Datalog query engine.
 

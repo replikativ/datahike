@@ -1,6 +1,6 @@
 # Datahike Java API
 
-**Status: Beta** - The Java API is stable and tested, but may receive refinements as we gather feedback from production use.
+**Status: Beta** - The Java API is functional and tested, but may receive breaking changes as we gather feedback from production use.
 
 Datahike provides a comprehensive Java API that enables you to use the full power of Datalog databases from Java applications without writing Clojure code. The API offers both high-level convenience methods and low-level access for advanced use cases.
 

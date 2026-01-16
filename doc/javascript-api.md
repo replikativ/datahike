@@ -1,6 +1,6 @@
 # Datahike JavaScript API
 
-**Status: Beta** - API is stable and tested. Published as `datahike@next` on npm.
+**Status: Beta** - API is functional and tested, but may receive breaking changes. Published as `datahike@next` on npm.
 
 ## Overview
 
