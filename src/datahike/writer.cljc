@@ -95,9 +95,9 @@
                                 (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
                                   (log/warn "Commit queue buffer more than 50% full, "
                                             (count commit-queue-buffer) "of" commit-queue-size  " filled."
-                                            "Throttling transaction processing. Reduce transaction frequency and check your storage throughput.")
-                                  (<! (timeout 50)))
-                                (put! commit-queue [res callback])
+                                            "Backpressure may slow down transaction processing. Check your storage throughput."))
+                                ;; Use >! for natural backpressure - parks when buffer is full
+                                (>! commit-queue [res callback])
                                 (recur (:db-after res)))
                               :else
                               (recur old))))
