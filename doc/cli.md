@@ -19,22 +19,22 @@ For other platforms, build from source using GraalVM native-image (see project d
 
 ## Commands
 
-The CLI provides hierarchical commands organized by category. All commands mirror the Clojure API functions. To see all available commands, run:
+The CLI provides flat commands that mirror the Clojure API functions. To see all available commands, run:
 
 ```bash
 $ dthk --help
 ```
 
-Key command categories:
-- **Database Operations**: `db create-database`, `db delete-database`, `db exists`
-- **Connection Operations**: `conn connect`
-- **Transaction Operations**: `tx transact`, `tx load-entities`, `tx db-with`, `tx with`
-- **Query Operations**: `q`, `pull`, `pull-many`, `entity`, `datoms`, `seek-datoms`, `index-range`, `is-filtered`, `query-stats`
-- **Schema Operations**: `schema schema`, `schema reverse-schema`
+Common commands by category:
+- **Database Operations**: `create-database`, `delete-database`, `database-exists`
+- **Connection Operations**: `connect`
+- **Transaction Operations**: `transact`, `load-entities`, `db-with`, `with`
+- **Query Operations**: `query`, `pull`, `pull-many`, `entity`, `datoms`, `seek-datoms`, `index-range`, `is-filtered`, `query-stats`
+- **Schema Operations**: `schema`, `reverse-schema`
 - **Diagnostics**: `metrics`
 - **Maintenance**: `gc-storage`
 
-Commands use prefix syntax for database access:
+Prefix syntax for database access:
 - `db:config.edn` - Dereferences a connection to get the current database value
 - `conn:config.edn` - Creates a connection for transacting
 - `edn:file.edn` - Reads EDN data from a file
@@ -62,13 +62,13 @@ fact to the database (be careful to use single ' if you do not want your shell
 to substitute parts of your Datalog ;) ):
 
 ```bash
-$ dthk tx transact conn:myconfig.edn '[[:db/add -1 :name "Linus"]]'
+$ dthk transact conn:myconfig.edn '[[:db/add -1 :name "Linus"]]'
  ```
 
 And retrieve it:
 
 ```bash
-$ dthk q '[:find ?n . :where [?e :name ?n]]' db:myconfig.edn
+$ dthk query '[:find ?n . :where [?e :name ?n]]' db:myconfig.edn
 "Linus" # prints the name
 ```
 
@@ -80,7 +80,7 @@ many databases or data files with "edn:" or "json:". Everything non-prefixed is
 read in as `edn` and passed to the query engine as well:
 
 ```bash
-$ dthk q '[:find ?e . :in $ ?name :where [?e :name ?name]]' db:myconfig.edn '"Linus"'
+$ dthk query '[:find ?e . :in $ ?name :where [?e :name ?name]]' db:myconfig.edn '"Linus"'
 123
 ```
 
@@ -92,17 +92,17 @@ to the same database without a dedicated daemon from different shells:
 
 ```bash
 # In the first shell
-$ dthk tx transact conn:myconfig.edn '[[:db/add -1 :name "Alice"]]'
+$ dthk transact conn:myconfig.edn '[[:db/add -1 :name "Alice"]]'
 
 # In a second shell simultaneously
-$ dthk tx transact conn:myconfig.edn '[[:db/add -2 :name "Bob"]]'
+$ dthk transact conn:myconfig.edn '[[:db/add -2 :name "Bob"]]'
 ```
 
 To check that everything has been added and no write operations have overwritten
 each other:
 
 ```bash
-$ dthk q '[:find (count ?e) . :in $ :where [?e :name ?n]]' db:myconfig.edn
+$ dthk query '[:find (count ?e) . :in $ :where [?e :name ?n]]' db:myconfig.edn
 2 # check :)
 ```
 
@@ -140,7 +140,7 @@ Datalog itself. You can use a query like this to extract all new facts that are
 in `db1` but not in `db2` like this:
 
 ```bash
-dthk q '[:find ?e ?a ?v ?t :in $ $2 :where [$ ?e ?a ?v ?t] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn
+dthk query '[:find ?e ?a ?v ?t :in $ $2 :where [$ ?e ?a ?v ?t] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn
 ```
 
 Since we cannot update transaction metadata, we should filter out
@@ -149,7 +149,7 @@ the results, yielding valid transactions that we can then feed into `db2`.
 
 
 ```bash
-dthk q '[:find ?db-add ?e ?a ?v ?t :in $ $2 ?db-add :where [$ ?e ?a ?v ?t] [(not= :db/txInstant ?a)] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn ":db/add" | dthk tx transact db:config2.edn
+dthk query '[:find ?db-add ?e ?a ?v ?t :in $ $2 ?db-add :where [$ ?e ?a ?v ?t] [(not= :db/txInstant ?a)] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn ":db/add" | dthk transact db:config2.edn
 ```
 
 Note that this very simple strategy assumes that the entity ids that have been

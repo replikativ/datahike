@@ -66,39 +66,29 @@
 ;; =============================================================================
 
 (defn ->cli-command
-  "Derive CLI command from operation name and categories.
-   Returns a vector of command parts: [group? subcommand]
+  "Derive CLI command from operation name - flat structure.
+   Returns a single-element vector with the command name.
 
    Examples:
-     'database-exists? [:database ...] => [\"db\" \"exists\"]
-     'transact [:transaction ...] => [\"tx\" \"transact\"]
-     'q [:query ...] => [\"query\"]"
+     'database-exists? => [\"database-exists\"]
+     'transact => [\"transact\"]
+     'q => [\"query\"]
+     'pull => [\"pull\"]"
   [op-name categories]
-  (let [primary-category (first categories)
-        op-str (-> (name op-name)
+  (let [op-str (-> (name op-name)
                    (str/replace #"[?!]$" ""))]  ; Remove ? and !
-    (case primary-category
-      :database     ["db" (str/replace op-str #"^database-" "")]
-      :transaction  ["tx" op-str]
-      :connection   ["conn" op-str]  ; Avoid collision with "db" prefix
-      :query        [op-str]  ; Flat for queries
-      :index        ["index" op-str]
-      :pull         [op-str]  ; Flat
-      :lifecycle    ["db" op-str]
-      :schema       ["schema" op-str]
-      :advanced     ["advanced" op-str]
-      ;; Default: flat command
-      [op-str])))
+    ;; Special case: expand 'q to "query" for clarity
+    [(if (= op-str "q") "query" op-str)]))
 
 (defn command->string
-  "Convert command vector to string: [\"db\" \"exists\"] => \"db exists\""
+  "Convert command vector to string: [\"query\"] => \"query\""
   [cmd-vec]
   (str/join " " cmd-vec))
 
 (defn build-command-index
   "Build a lookup map from command string to operation name.
 
-   Returns: {\"db exists\" 'database-exists?, \"tx transact\" 'transact, ...}"
+   Returns: {\"database-exists\" 'database-exists?, \"transact\" 'transact, ...}"
   []
   (into {}
         (for [[op-name {:keys [categories]}] api-specification
