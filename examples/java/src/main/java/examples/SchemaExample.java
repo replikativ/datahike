@@ -143,5 +143,6 @@ public class SchemaExample {
         Datahike.deleteDatabase(config);
 
         System.out.println("\n=== Example completed successfully! ===");
+        System.exit(0);
     }
 }

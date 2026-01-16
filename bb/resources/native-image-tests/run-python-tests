@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+echo "Setting up Python test environment..."
+
+# Set library paths so Python can find libdatahike.so
+export LD_LIBRARY_PATH=./libdatahike/target
+export DYLD_LIBRARY_PATH=./libdatahike/target
+
+# Install pytest if not already installed
+if ! command -v pytest &> /dev/null; then
+    echo "Installing pytest..."
+    pip install --user pytest || pip3 install --user pytest
+fi
+
+# Run Python tests
+echo "Running Python tests..."
+cd pydatahike
+pytest -v tests/
+
+echo "Python tests completed successfully!"

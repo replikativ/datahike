@@ -226,6 +226,28 @@ jobs:
           paths:
             - /home/circleci/.m2
             - /home/circleci/.deps.clj
+  java-examples-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run QuickStart example
+          command: cd examples/java && mvn compile exec:java -Dexec.mainClass="examples.QuickStart"
+          no_output_timeout: 3m
+      - run:
+          name: Run SchemaExample
+          command: cd examples/java && mvn compile exec:java -Dexec.mainClass="examples.SchemaExample"
+          no_output_timeout: 3m
+      - run:
+          name: Run TimeTravelExample
+          command: cd examples/java && mvn compile exec:java -Dexec.mainClass="examples.TimeTravelExample"
+          no_output_timeout: 3m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   build:
     executor: tools/clojurecli
     steps:
@@ -327,6 +349,10 @@ workflows:
           context: ghcr-read-package
           requires:
             - build
+      - java-examples-test:
+          context: ghcr-read-package
+          requires:
+            - build
       - deploy:
           context:
             - ghcr-read-package
@@ -345,6 +371,7 @@ workflows:
             - browser-test
             - node-cljs-test
             - npm-test
+            - java-examples-test
       - release-jar:
           context:
             - ghcr-read-package
@@ -362,6 +389,7 @@ workflows:
             - browser-test
             - node-cljs-test
             - npm-test
+            - java-examples-test
       - release-pod:
           context:
             - ghcr-read-package
@@ -379,3 +407,4 @@ workflows:
             - browser-test
             - node-cljs-test
             - npm-test
+            - java-examples-test
