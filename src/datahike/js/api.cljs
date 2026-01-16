@@ -16,6 +16,12 @@
 
 ;; =============================================================================
 ;; Data Conversion Helpers
+;;
+;; Universal EDN Conversion Rules (consistent across Python, JavaScript, Java):
+;; - Keys: always keywordized
+;; - Values: ":" prefix = keyword, else literal
+;; - Escape: "\\:" for literal colon strings
+;; - Bonus: UUID auto-detection for convenience
 ;; =============================================================================
 
 (def ^:private uuid-regex
@@ -28,14 +34,20 @@
   (and (string? s) (re-matches uuid-regex s)))
 
 (defn- convert-string
-  "Convert a string to appropriate Clojure type:
+  "Convert a string to appropriate Clojure type following universal EDN rules:
+  - '\\:literal' -> ':literal' (escaped colon becomes literal string with :)
   - ':keyword' -> keyword
-  - UUID format -> UUID object
+  - UUID format -> UUID object (convenience)
   - otherwise -> string"
   [s]
   (cond
+    ;; Escaped colon - strip backslash and return literal string
+    (str/starts-with? s "\\:") (subs s 1)
+    ;; Colon prefix - convert to keyword
     (str/starts-with? s ":") (keyword (subs s 1))
+    ;; UUID auto-detection (convenience feature)
     (uuid-string? s) (uuid s)
+    ;; Regular string
     :else s))
 
 (defn js->clj-recursive

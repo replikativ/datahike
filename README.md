@@ -160,7 +160,7 @@ For simple examples have a look at the projects in the `examples` folder.
 
 Datahike has **beta ClojureScript support** for both **Node.js** (file backend) and **browsers** (IndexedDB with TieredStore for memory hierarchies).
 
-**JavaScript API** (Promise-based):
+**JavaScript API** (beta, Promise-based):
 ```javascript
 const d = require('datahike');
 const crypto = require('crypto');
@@ -191,15 +191,15 @@ See [JavaScript API documentation](./doc/javascript-api.md) for details.
 npm install datahike@next
 ```
 
-**Native CLI tool** (`dthk`): Compiled with GraalVM native-image for instant startup. Ships with file backend support, scriptable for quick queries and automation. Available in [releases](https://github.com/replikativ/datahike/releases). See [CLI documentation](./doc/cli.md).
+**Native CLI tool** (`dthk`) (beta): Compiled with GraalVM native-image for instant startup. Ships with file backend support, scriptable for quick queries and automation. Available in [releases](https://github.com/replikativ/datahike/releases). See [CLI documentation](./doc/cli.md).
 
-**Babashka pod**: Native-compiled pod available in the [Babashka pod registry](https://github.com/babashka/pod-registry) for shell scripting. See [Babashka pod documentation](./doc/bb-pod.md).
+**Babashka pod** (beta): Native-compiled pod available in the [Babashka pod registry](https://github.com/babashka/pod-registry) for shell scripting. See [Babashka pod documentation](./doc/bb-pod.md).
 
-**Java API**: Shipped with the jar file is [Datahike.java](https://github.com/replikativ/datahike/blob/main/java/src/datahike/java/Datahike.java) (beta).
+**Java API** (beta): Shipped with the jar file is [Datahike.java](https://github.com/replikativ/datahike/blob/main/java/src/datahike/java/Datahike.java) with auto-generated bindings and EDN conversion helpers.
 
-**libdatahike**: *C++ bindings* enable embedding Datahike in non-JVM applications. See [libdatahike documentation](./doc/libdatahike.md).
+**libdatahike** (beta): *C/C++ native bindings* enable embedding Datahike in non-JVM applications. See [libdatahike documentation](./doc/libdatahike.md).
 
-**Python bindings** (experimental): [pydatahike](https://github.com/replikativ/pydatahike). Please reach out if you have interest and we can make them work for you.
+**Python bindings** (beta): High-level Pythonic API with automatic EDN conversion. See [Python documentation](./pydatahike/README.md).
 
 ## Production Use
 

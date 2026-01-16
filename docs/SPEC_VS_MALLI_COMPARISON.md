@@ -157,7 +157,7 @@ New:
 
 **Current (manual in each generator):**
 ```clojure
-;; In datahike.js.typescript
+;; In datahike.codegen.typescript
 (def spec-type-map
   {'boolean? "boolean"
    'string? "string"

@@ -1,4 +1,4 @@
-(ns datahike.js.typescript
+(ns datahike.codegen.typescript
   "Generate TypeScript type definitions from api.specification.
 
   This namespace provides tooling to generate .d.ts files that:
@@ -8,7 +8,7 @@
   - Support IDE autocompletion and type checking"
   (:require [datahike.api.specification :refer [api-specification malli-schema->argslist]]
             [datahike.api.types :as types]
-            [datahike.js.naming :refer [js-skip-list clj-name->js-name]]
+            [datahike.codegen.naming :refer [js-skip-list clj-name->js-name]]
             [clojure.string :as str]))
 
 ;; =============================================================================

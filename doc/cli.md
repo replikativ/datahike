@@ -1,6 +1,6 @@
 # Command line interface
 
-**Status: Stable** - The CLI is production-ready but may receive updates and improvements.
+**Status: Beta** - The CLI is functional and tested, but the command structure may change as we refine the interface.
 
 We provide the `dthk` native executable to access Datahike databases from
 the command line.

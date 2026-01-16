@@ -1,7 +1,7 @@
 (ns datahike.js.api-macros
   "Macros for generating JavaScript API."
   (:require [datahike.api.specification :refer [api-specification]]
-            [datahike.js.naming :refer [js-skip-list clj-name->js-name]]))
+            [datahike.codegen.naming :refer [js-skip-list clj-name->js-name]]))
 
 (defmacro emit-js-api
   "Generate JavaScript API functions from api-specification.

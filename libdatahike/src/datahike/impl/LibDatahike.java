@@ -1,121 +1,48 @@
 package datahike.impl;
 
 import org.graalvm.nativeimage.c.function.CEntryPoint;
-import org.graalvm.nativeimage.c.function.CFunctionPointer;
-import org.graalvm.nativeimage.c.function.InvokeCFunctionPointer;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CCharPointerPointer;
 import org.graalvm.nativeimage.c.type.CConst;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
-import org.graalvm.word.PointerBase;
 import datahike.java.Datahike;
 import datahike.java.Util;
 import datahike.impl.libdatahike;
-import clojure.lang.IPersistentVector;
-import clojure.lang.APersistentMap;
-import clojure.lang.Keyword;
-import java.io.StringWriter;
-import java.io.PrintWriter;
 import java.util.Date;
-import java.util.List;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import java.nio.charset.StandardCharsets;
 
-public final class LibDatahike {
-
-    // C representations
-
-    private static @CConst CCharPointer toException(Exception e) {
-        StringWriter sw = new StringWriter();
-        e.printStackTrace(new PrintWriter(sw));
-        String st = sw.toString();
-        return toCCharPointer("exception:".concat(e.toString()).concat("\nStacktrace:\n").concat(st));
-    }
-
-    public static APersistentMap readConfig(CCharPointer db_config) {
-        return (APersistentMap)Util.ednFromString(CTypeConversion.toJavaString(db_config));
-    }
-
-    public static @CConst CCharPointer toCCharPointer(String result) {
-        CTypeConversion.CCharPointerHolder holder = CTypeConversion.toCString(result);
-        CCharPointer value = holder.get();
-        return value;
-    }
-
-    public static @CConst CCharPointer toCCharPointer(byte[] result) {
-        CTypeConversion.CCharPointerHolder holder = CTypeConversion.toCBytes(Base64.getEncoder().encode(result));
-        CCharPointer value = holder.get();
-        return value;
-    }
-
-    private static Object loadInput(@CConst CCharPointer input_format,
-                                    @CConst CCharPointer raw_input) {
-        String format = CTypeConversion.toJavaString(input_format);
-        String formats[] = format.split(":");
-        switch (formats[0]) {
-        case "db": return Datahike.deref(Datahike.connect(readConfig(raw_input)));
-        case "history": return Datahike.history(Datahike.deref(Datahike.connect(readConfig(raw_input))));
-        case "since": return Datahike.since(Datahike.deref(Datahike.connect(readConfig(raw_input))),
-                                            new Date(Long.parseLong(formats[1])));
-        case "asof": return Datahike.asOf(Datahike.deref(Datahike.connect(readConfig(raw_input))),
-                                          new Date(Long.parseLong(formats[1])));
-        case "json": return libdatahike.parseJSON(CTypeConversion.toJavaString(raw_input));
-        case "edn": return libdatahike.parseEdn(CTypeConversion.toJavaString(raw_input));
-        case "cbor": return libdatahike.parseCBOR(CTypeConversion.toJavaString(raw_input).getBytes());
-        default: throw new IllegalArgumentException("Input format not supported: " + format);
-        }
-    }
-
-    private static Object[] loadInputs(@CConst long num_inputs,
-                                       @CConst CCharPointerPointer input_formats,
-                                       @CConst CCharPointerPointer raw_inputs) {
-        Object[] inputs = new Object[(int)num_inputs];
-        for (int i=0; i<num_inputs; i++){
-            inputs[i] = loadInput(input_formats.read(i), raw_inputs.read(i));
-        }
-        return inputs;
-    }
-
-    private static @CConst CCharPointer toOutput(@CConst CCharPointer output_format,
-                                                 Object output) {
-        String format = CTypeConversion.toJavaString(output_format);
-        switch (format) {
-        case "json": return toCCharPointer(libdatahike.toJSONString(output));
-        case "edn": return toCCharPointer(libdatahike.toEdnString(output));
-        case "cbor": return toCCharPointer(libdatahike.toCBOR(output));
-        default: throw new IllegalArgumentException("Input format not supported: " + format);
-        }
-    }
-
-    // callback function to read return value
-    interface OutputReader extends CFunctionPointer {
-        @InvokeCFunctionPointer
-        void call(@CConst CCharPointer output);
-    }
-
-    // core API
-
-    @CEntryPoint(name = "database_exists")
-    public static void database_exists (@CEntryPoint.IsolateThreadContext long isolateId,
-                                        @CConst CCharPointer db_config,
-                                        @CConst CCharPointer output_format,
-                                        @CConst OutputReader output_reader) {
-        try {
-            output_reader.call(toOutput(output_format,
-                                        Datahike.databaseExists(readConfig(db_config))));
-        } catch (Exception e) {
-            output_reader.call(toException(e));
-        }
-    }
-
+/**
+ * Generated C entry points for libdatahike.
+ *
+ * This file is auto-generated from datahike.api.specification.
+ * DO NOT EDIT MANUALLY - changes will be overwritten.
+ *
+ * To regenerate: bb codegen-native
+ *
+ * All entry points use callback-based return (OutputReader) to:
+ * - Avoid shared mutable memory between native and JVM
+ * - Support multiple output formats (json, edn, cbor)
+ * - Enable proper exception handling
+ *
+ * Input format strings for temporal queries:
+ * - "db" : Current database state
+ * - "history" : Full history including retractions
+ * - "since:{timestamp_ms}" : Database since timestamp
+ * - "asof:{timestamp_ms}" : Database as-of timestamp
+ */
+public final class LibDatahike extends LibDatahikeBase {
+    /**
+     * Deletes a database given via configuration map.
+   * 
+   * Examples:
+   *   Delete database:
+   *     (delete-database {:store {:backend :mem :id "example"}})
+     */
     @CEntryPoint(name = "delete_database")
-    public static void delete_database (@CEntryPoint.IsolateThreadContext long isolateId,
-                                        @CConst CCharPointer db_config,
-                                        @CConst CCharPointer output_format,
-                                        @CConst OutputReader output_reader) {
+    public static void delete_database(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
         try {
             Datahike.deleteDatabase(readConfig(db_config));
             output_reader.call(toOutput(output_format, ""));
@@ -123,12 +50,260 @@ public final class LibDatahike {
             output_reader.call(toException(e));
         }
     }
-
+    /**
+     * Fetches data using recursive declarative pull pattern.
+   * 
+   * Examples:
+   *   Pull with pattern:
+   *     (pull db [:db/id :name :likes {:friends [:db/id :name]}] 1)
+   *   Pull with arg-map:
+   *     (pull db {:selector [:db/id :name] :eid 1})
+     */
+    @CEntryPoint(name = "pull")
+    public static void pull(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            @CConst CCharPointer selector_edn,
+            long eid,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.pull(loadInput(input_format, raw_input), CTypeConversion.toJavaString(selector_edn), eid)));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Retrieves an entity by its id. Returns lazy map-like structure.
+   * 
+   * Examples:
+   *   Get entity by id:
+   *     (entity db 1)
+   *   Get entity by lookup ref:
+   *     (entity db [:email "alice@example.com"])
+   *   Navigate entity attributes:
+   *     (:name (entity db 1))
+     */
+    @CEntryPoint(name = "entity")
+    public static void entity(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            long eid,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, entityToMap(Datahike.entity(loadInput(input_format, raw_input), eid))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Returns database metrics (datom counts, index sizes, etc).
+   * 
+   * Examples:
+   *   Get metrics:
+   *     (metrics @conn)
+     */
+    @CEntryPoint(name = "metrics")
+    public static void metrics(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.metrics(loadInput(input_format, raw_input))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Returns reverse schema definition (attribute id to ident mapping).
+   * 
+   * Examples:
+   *   Get reverse schema:
+   *     (reverse-schema @conn)
+     */
+    @CEntryPoint(name = "reverse_schema")
+    public static void reverse_schema(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.reverseSchema(loadInput(input_format, raw_input))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Index lookup. Returns sequence of datoms matching index components.
+   * 
+   * Examples:
+   *   Find all datoms for entity:
+   *     (datoms db {:index :eavt :components [1]})
+   *   Find datoms for entity and attribute:
+   *     (datoms db {:index :eavt :components [1 :likes]})
+   *   Find by attribute and value (requires :db/index):
+   *     (datoms db {:index :avet :components [:likes "pizza"]})
+     */
+    @CEntryPoint(name = "datoms")
+    public static void datoms(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            @CConst CCharPointer index_edn,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, datomsToVecs((Iterable<?>)Datahike.datoms(loadInput(input_format, raw_input), parseKeyword(index_edn)))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Executes a datalog query.
+   * 
+   * Examples:
+   *   Query with vector syntax:
+   *     (q '[:find ?value :where [_ :likes ?value]] db)
+   *   Query with map syntax:
+   *     (q '{:find [?value] :where [[_ :likes ?value]]} db)
+   *   Query with pagination:
+   *     (q {:query '[:find ?value :where [_ :likes ?value]]
+                           :args [db]
+                           :offset 2
+                           :limit 10})
+     */
+    @CEntryPoint(name = "q")
+    public static void q(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer query_edn,
+            long num_inputs,
+            @CConst CCharPointerPointer input_formats,
+            @CConst CCharPointerPointer raw_inputs,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.q(CTypeConversion.toJavaString(query_edn), loadInputs(num_inputs, input_formats, raw_inputs))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Returns current schema definition.
+   * 
+   * Examples:
+   *   Get schema:
+   *     (schema @conn)
+     */
+    @CEntryPoint(name = "schema")
+    public static void schema(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.schema(loadInput(input_format, raw_input))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Returns part of :avet index between start and end values.
+   * 
+   * Examples:
+   *   Find datoms in value range:
+   *     (index-range db {:attrid :likes :start "a" :end "z"})
+   *   Find entities with age in range:
+   *     (->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))
+     */
+    @CEntryPoint(name = "index_range")
+    public static void index_range(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            @CConst CCharPointer attrid_edn,
+            @CConst CCharPointer start_edn,
+            @CConst CCharPointer end_edn,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, datomsToVecs((Iterable<?>)Datahike.indexRange(loadInput(input_format, raw_input), Util.map(Util.kwd(":attrid"), parseKeyword(attrid_edn), Util.kwd(":start"), libdatahike.parseEdn(CTypeConversion.toJavaString(start_edn)), Util.kwd(":end"), libdatahike.parseEdn(CTypeConversion.toJavaString(end_edn)))))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Same as pull, but accepts sequence of ids and returns sequence of maps.
+   * 
+   * Examples:
+   *   Pull multiple entities:
+   *     (pull-many db [:db/id :name] [1 2 3])
+     */
+    @CEntryPoint(name = "pull_many")
+    public static void pull_many(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            @CConst CCharPointer selector_edn,
+            @CConst CCharPointer eids_edn,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.pullMany(loadInput(input_format, raw_input), CTypeConversion.toJavaString(selector_edn), parseIterable(eids_edn))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Invokes garbage collection on connection's store. Removes old snapshots before given time point.
+   * 
+   * Examples:
+   *   GC all old snapshots:
+   *     (gc-storage conn)
+   *   GC snapshots before date:
+   *     (gc-storage conn (java.util.Date.))
+     */
+    @CEntryPoint(name = "gc_storage")
+    public static void gc_storage(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            long before_tx_unix_time_ms,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.gcStorage(Datahike.connect(readConfig(db_config)), new Date(before_tx_unix_time_ms))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Creates a database via configuration map.
+   * 
+   * Examples:
+   *   Create empty database:
+   *     (create-database {:store {:backend :mem :id "example"}})
+   *   Create with schema-flexibility :read:
+   *     (create-database {:store {:backend :mem :id "example"} :schema-flexibility :read})
+   *   Create without history:
+   *     (create-database {:store {:backend :mem :id "example"} :keep-history? false})
+   *   Create with initial schema:
+   *     (create-database {:store {:backend :mem :id "example"}
+                                          :initial-tx [{:db/ident :name
+                                                        :db/valueType :db.type/string
+                                                        :db/cardinality :db.cardinality/one}]})
+     */
     @CEntryPoint(name = "create_database")
-    public static void create_database (@CEntryPoint.IsolateThreadContext long isolateId,
-                                        @CConst CCharPointer db_config,
-                                        @CConst CCharPointer output_format,
-                                        @CConst OutputReader output_reader) {
+    public static void create_database(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
         try {
             Datahike.createDatabase(readConfig(db_config));
             output_reader.call(toOutput(output_format, ""));
@@ -136,164 +311,80 @@ public final class LibDatahike {
             output_reader.call(toException(e));
         }
     }
-
-    @CEntryPoint(name = "query")
-    public static void query (@CEntryPoint.IsolateThreadContext long isolateId,
-                              @CConst CCharPointer query_edn,
-                              long num_inputs,
-                              @CConst CCharPointerPointer input_formats,
-                              @CConst CCharPointerPointer raw_inputs,
-                              @CConst CCharPointer output_format,
-                              @CConst OutputReader output_reader) {
+    /**
+     * Checks if a database exists via configuration map.
+   * 
+   * Examples:
+   *   Check if in-memory database exists:
+   *     (database-exists? {:store {:backend :mem :id "example"}})
+   *   Check with default config:
+   *     (database-exists?)
+     */
+    @CEntryPoint(name = "database_exists")
+    public static void database_exists(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
         try {
-            Object[] inputs = loadInputs(num_inputs, input_formats, raw_inputs);
-            output_reader.call(toOutput(output_format, Datahike.q(CTypeConversion.toJavaString(query_edn), inputs)));
+            output_reader.call(toOutput(output_format, Datahike.databaseExists(readConfig(db_config))));
         } catch (Exception e) {
             output_reader.call(toException(e));
         }
     }
-
+    /**
+     * Applies transaction to the database and updates connection.
+   * 
+   * Examples:
+   *   Add single datom:
+   *     (transact conn [[:db/add 1 :name "Ivan"]])
+   *   Retract datom:
+   *     (transact conn [[:db/retract 1 :name "Ivan"]])
+   *   Create entity with tempid:
+   *     (transact conn [[:db/add -1 :name "Ivan"]])
+   *   Create entity (map form):
+   *     (transact conn [{:db/id -1 :name "Ivan" :likes ["fries" "pizza"]}])
+   *   Read from stdin (CLI):
+   *     
+     */
     @CEntryPoint(name = "transact")
-    public static void transact (@CEntryPoint.IsolateThreadContext long isolateId,
-                                 @CConst CCharPointer db_config,
-                                 @CConst CCharPointer tx_format,
-                                 @CConst CCharPointer tx_data,
-                                 @CConst CCharPointer output_format,
-                                 @CConst OutputReader output_reader) {
+    public static void transact(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer tx_format,
+            @CConst CCharPointer tx_data,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
         try {
-            Object conn = Datahike.connect(readConfig(db_config));
-            Iterable txData = (Iterable)loadInput(tx_format, tx_data);
-            output_reader.call(toOutput(output_format, Datahike.transact(conn, txData).get(Util.kwd(":tx-meta"))));
+            output_reader.call(toOutput(output_format, ((java.util.Map)Datahike.transact(Datahike.connect(readConfig(db_config)), (java.util.List)loadInput(tx_format, tx_data))).get(Util.kwd(":tx-meta"))));
         } catch (Exception e) {
             output_reader.call(toException(e));
         }
     }
-
-    @CEntryPoint(name = "pull")
-    public static void pull (@CEntryPoint.IsolateThreadContext long isolateId,
-                             @CConst CCharPointer input_format,
-                             @CConst CCharPointer raw_input,
-                             @CConst CCharPointer selector_edn,
-                             long eid,
-                             @CConst CCharPointer output_format,
-                             @CConst OutputReader output_reader) {
+    /**
+     * Like datoms, but returns datoms starting from specified components through end of index.
+   * 
+   * Examples:
+   *   Seek from entity:
+   *     (seek-datoms db {:index :eavt :components [1]})
+     */
+    @CEntryPoint(name = "seek_datoms")
+    public static void seek_datoms(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            @CConst CCharPointer index_edn,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
         try {
-            Object db = loadInput(input_format, raw_input);
-            String selector = CTypeConversion.toJavaString(selector_edn);
-            output_reader.call(toOutput(output_format, Datahike.pull(db, selector, eid)));
+            output_reader.call(toOutput(output_format, datomsToVecs((Iterable<?>)Datahike.seekDatoms(loadInput(input_format, raw_input), parseKeyword(index_edn)))));
         } catch (Exception e) {
             output_reader.call(toException(e));
         }
     }
+    // Note: history/since/as-of are handled via input format strings
+    // e.g., input_format="history" or "since:1234567890"
 
-    @CEntryPoint(name = "pull_many")
-    public static void pull_many (@CEntryPoint.IsolateThreadContext long isolateId,
-                                  @CConst CCharPointer input_format,
-                                  @CConst CCharPointer raw_input,
-                                  @CConst CCharPointer selector_edn,
-                                  @CConst CCharPointer eids_edn,
-                                  @CConst CCharPointer output_format,
-                                  @CConst OutputReader output_reader) {
-        try {
-            Object db = loadInput(input_format, raw_input);
-            String selector = CTypeConversion.toJavaString(selector_edn);
-            Iterable eids = (Iterable)libdatahike.parseEdn(CTypeConversion.toJavaString(eids_edn));
-            output_reader.call(toOutput(output_format, Datahike.pullMany(db, selector, eids)));
-        } catch (Exception e) {
-            output_reader.call(toException(e));
-        }
-    }
-
-    @CEntryPoint(name = "entity")
-    public static void entity (@CEntryPoint.IsolateThreadContext long isolateId,
-                               @CConst CCharPointer input_format,
-                               @CConst CCharPointer raw_input,
-                               long eid,
-                               @CConst CCharPointer output_format,
-                               @CConst OutputReader output_reader) {
-        try {
-            Object db = loadInput(input_format, raw_input);
-            output_reader.call(toOutput(output_format, libdatahike.intoMap(Datahike.entity(db, eid))));
-        } catch (Exception e) {
-            output_reader.call(toException(e));
-        }
-    }
-
-    @CEntryPoint(name = "datoms")
-    public static void datoms(@CEntryPoint.IsolateThreadContext long isolateId,
-                              @CConst CCharPointer input_format,
-                              @CConst CCharPointer raw_input,
-                              @CConst CCharPointer index_edn,
-                              @CConst CCharPointer output_format,
-                              @CConst OutputReader output_reader) {
-        try {
-            Object db = loadInput(input_format, raw_input);
-            Keyword index = Util.kwd(CTypeConversion.toJavaString(index_edn));
-            // convert datoms to flat clojure vectors for better serialization
-            Iterable datoms = libdatahike.datomsToVecs(Datahike.datoms(db, index));
-            output_reader.call(toOutput(output_format, datoms));
-        } catch (Exception e) {
-            output_reader.call(toException(e));
-        }
-    }
-
-    @CEntryPoint(name = "schema")
-    public static void schema(@CEntryPoint.IsolateThreadContext long isolateId,
-                              @CConst CCharPointer input_format,
-                              @CConst CCharPointer raw_input,
-                              @CConst CCharPointer output_format,
-                              @CConst OutputReader output_reader) {
-        try {
-            Object db = loadInput(input_format, raw_input);
-            output_reader.call(toOutput(output_format, Datahike.schema(db)));
-        } catch (Exception e) {
-            output_reader.call(toException(e));
-        }
-    }
-
-    @CEntryPoint(name = "reverse_schema")
-    public static void reverse_schema(@CEntryPoint.IsolateThreadContext long isolateId,
-                              @CConst CCharPointer input_format,
-                              @CConst CCharPointer raw_input,
-                              @CConst CCharPointer output_format,
-                              @CConst OutputReader output_reader) {
-        try {
-            Object db = loadInput(input_format, raw_input);
-            output_reader.call(toOutput(output_format, Datahike.reverseSchema(db)));
-        } catch (Exception e) {
-            output_reader.call(toException(e));
-        }
-    }
-
-    @CEntryPoint(name = "metrics")
-    public static void metrics(@CEntryPoint.IsolateThreadContext long isolateId,
-                              @CConst CCharPointer input_format,
-                              @CConst CCharPointer raw_input,
-                              @CConst CCharPointer output_format,
-                              @CConst OutputReader output_reader) {
-        try {
-            Object db = loadInput(input_format, raw_input);
-            output_reader.call(toOutput(output_format, Datahike.metrics(db)));
-        } catch (Exception e) {
-            output_reader.call(toException(e));
-        }
-    }
-
-    @CEntryPoint(name = "gc_storage")
-    public static void gc_storage(@CEntryPoint.IsolateThreadContext long isolateId,
-                                 @CConst CCharPointer db_config,
-                                 long before_tx_unix_time_ms,
-                                 @CConst CCharPointer output_format,
-                                 @CConst OutputReader output_reader) {
-        try {
-            Object db = Datahike.connect(readConfig(db_config));
-            output_reader.call(toOutput(output_format, Datahike.gcStorage(db, new Date(before_tx_unix_time_ms))));
-        } catch (Exception e) {
-            output_reader.call(toException(e));
-        }
-    }
-
-    // seekdatoms not supported yet because we would always realize the iterator until the end
-
-    // release we do not expose connection objects yet, but create them internally on the fly
+    // seekdatoms returns lazy sequence - results are fully realized
+    // release not exposed - connections are created internally per call
 }

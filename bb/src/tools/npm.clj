@@ -35,7 +35,7 @@
   "Generate TypeScript definitions for npm package"
   [output-path]
   (println "Generating TypeScript definitions...")
-  (let [clj-code (str "(require '[datahike.js.typescript :as ts]) "
+  (let [clj-code (str "(require '[datahike.codegen.typescript :as ts]) "
                       "(ts/write-type-definitions! \"" output-path "\")")
         result (p/shell {:out :string
                          :err :string}

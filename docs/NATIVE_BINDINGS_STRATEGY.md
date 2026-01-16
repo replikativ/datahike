@@ -1,0 +1,458 @@
+# Native Bindings Strategy Discussion
+
+## Current Architecture Analysis
+
+### 1. libdatahike (Current Implementation)
+
+**Location**: `libdatahike/src/datahike/impl/LibDatahike.java`
+
+**Pattern**: GraalVM Native Image + Callback-based FFI
+
+```
+Python/C/C++ Application
+        ↓
+libdatahike.so (GraalVM Native Image)
+        ↓
+LibDatahike.java (@CEntryPoint methods)
+        ↓
+Datahike Clojure API
+        ↓
+Database Storage
+```
+
+**Key Characteristics**:
+
+1. **Callback-based results** - All functions use function pointers
+   ```java
+   @CEntryPoint(name = "database_exists")
+   public static void database_exists(
+       @CEntryPoint.IsolateThreadContext long isolateId,
+       @CConst CCharPointer db_config,
+       @CConst CCharPointer output_format,
+       @CConst OutputReader output_reader)  // Callback!
+   ```
+
+2. **String-only data exchange** - EDN/JSON/CBOR strings
+   - Avoids shared mutable memory
+   - Serialization overhead on every call
+   - Thread-safe by design
+
+3. **No persistent connections** - Fresh connection per operation
+   - Safe but potentially inefficient
+   - No connection pooling
+
+4. **13 manually written entry points**:
+   - database_exists, delete_database, create_database
+   - query, transact, pull, pull_many, entity
+   - datoms, schema, reverse_schema, metrics, gc_storage
+
+### 2. pydatahike (Current Python Bindings)
+
+**Location**: `../pydatahike/src/datahike/datahike.py`
+
+**Pattern**: ctypes FFI with callbacks
+
+```python
+# Current approach - manual bindings
+dll = CDLL("../../libdatahike.so")
+
+def query(query, inputs, output_format="cbor"):
+    res = None
+    def callback(s):
+        nonlocal res
+        res = __parse_return__(s, output_format)
+
+    dll.query(isolatethread, query, N, input_types, input_values,
+              bytes(output_format, "utf8"), CBFUNC(callback))
+    return res
+```
+
+**Issues**:
+- Manually written (not code-generated)
+- Not aligned with api.specification
+- Duplicates logic from TypeScript/Java generators
+
+### 3. Comparison: PostgreSQL libpq
+
+**Pattern**: Pure C with opaque structs + manual memory management
+
+```c
+// PostgreSQL approach
+PGconn *conn = PQconnectdb("...");
+PGresult *res = PQexec(conn, "SELECT ...");
+// ... use result ...
+PQclear(res);
+PQfinish(conn);
+```
+
+**Characteristics**:
+- Persistent connection objects
+- Manual memory management (malloc/free pattern)
+- No codegen - all language bindings manually maintained
+- Very mature, but high maintenance burden
+
+### 4. Comparison: Datalevin
+
+**Pattern**: JavaCPP for direct LMDB bindings + GraalVM native-image
+
+```java
+// JavaCPP direct memory access
+public class BufVal {
+    private DTLV.MDB_val ptr;  // Direct native struct access
+    private ByteBuffer inBuf;   // Direct memory buffer
+}
+```
+
+**Characteristics**:
+- Direct native memory access via sun.misc.Unsafe
+- Buffer pooling with thread-local reuse
+- High performance but complex memory model
+- Different use case (storage layer, not API)
+
+## Analysis: What's Working Well
+
+1. **Memory Safety** - No shared mutable memory = no segfaults
+2. **Multi-format Support** - EDN/JSON/CBOR flexibility
+3. **Thread Isolation** - Isolate pattern prevents race conditions
+4. **Simple C Interface** - Easy to call from any language with FFI
+
+## Analysis: Areas for Improvement
+
+### 1. Manual Entry Points in LibDatahike.java
+
+**Problem**: 13 manually written `@CEntryPoint` methods don't leverage api.specification
+
+**Current** (`LibDatahike.java`):
+```java
+// Hand-written for each operation
+@CEntryPoint(name = "database_exists")
+public static void database_exists(...) {
+    output_reader.call(toOutput(output_format,
+        Datahike.databaseExists(readConfig(db_config))));
+}
+
+@CEntryPoint(name = "create_database")
+public static void create_database(...) {
+    output_reader.call(toOutput(output_format,
+        Datahike.createDatabase(readConfig(db_config))));
+}
+// ... repeat for 11 more operations ...
+```
+
+**Opportunity**: Generate from api.specification like Java/TypeScript
+
+### 2. Manual Python Bindings
+
+**Problem**: pydatahike manually duplicates what we generate for other languages
+
+**Current** (`pydatahike/datahike.py`):
+```python
+# Hand-written Python wrapper
+def database_exists(config, output_format="cbor"):
+    res = None
+    def callback(s):
+        nonlocal res
+        res = __parse_return__(s, output_format)
+    dll.database_exists(isolatethread, bytes(config, "utf8"),
+                        bytes(output_format, "utf8"), CBFUNC(callback))
+    return res
+```
+
+**Opportunity**: Generate Python bindings from api.specification
+
+### 3. Connection Per Call Overhead
+
+**Problem**: Fresh connection on every transact/query
+
+**Current**:
+```java
+// In LibDatahike.java transact()
+Object conn = Datahike.connect(readConfig(db_config));
+Datahike.transact(conn, txData);
+// Connection not reused
+```
+
+**Trade-off**:
+- Pro: Simple, stateless, thread-safe
+- Con: Connection overhead on every call
+
+### 4. No Generated C Header Documentation
+
+**Problem**: C header is auto-generated by GraalVM but lacks semantic docs
+
+**Opportunity**: Generate documented header from api.specification
+
+## Proposed Strategy
+
+### Phase 1: Generate LibDatahike Entry Points
+
+**Goal**: Use api.specification to generate `LibDatahike.java`
+
+**New file**: `src/datahike/codegen/native.clj`
+
+```clojure
+(ns datahike.codegen.native
+  "Generate GraalVM C entry points from api.specification"
+  (:require [datahike.api.specification :refer [api-specification]]))
+
+(defn generate-entry-point [{:keys [op-name args ret doc]}]
+  (format "
+    @CEntryPoint(name = \"%s\")
+    public static void %s(
+        @CEntryPoint.IsolateThreadContext long isolateId,
+        %s
+        @CConst CCharPointer output_format,
+        @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, %s));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }"
+    (c-name op-name)
+    (c-name op-name)
+    (generate-c-params args)
+    (generate-invocation op-name args)))
+```
+
+**Output**: `libdatahike/src-generated/datahike/impl/LibDatahikeGenerated.java`
+
+**Benefits**:
+- Always in sync with api.specification
+- New API operations automatically available
+- Consistent parameter handling
+
+### Phase 2: Generate Python Bindings
+
+**Goal**: Generate pydatahike from api.specification
+
+**New file**: `src/datahike/codegen/python.clj`
+
+```clojure
+(ns datahike.codegen.python
+  "Generate Python ctypes bindings from api.specification"
+  (:require [datahike.api.specification :refer [api-specification]]
+            [datahike.codegen.naming :refer [clj-name->python-name]]))
+
+(defn generate-python-function [{:keys [op-name args ret doc]}]
+  (format "
+def %s(%s, output_format='cbor'):
+    '''%s'''
+    res = None
+    def callback(s):
+        nonlocal res
+        res = __parse_return__(s, output_format)
+
+    dll.%s(isolatethread, %s,
+           bytes(output_format, 'utf8'), CBFUNC(callback))
+    return res
+"
+    (clj-name->python-name op-name)
+    (generate-python-params args)
+    doc
+    (c-name op-name)
+    (generate-python-args args)))
+```
+
+**Output**: `../pydatahike/src/datahike/generated.py`
+
+**Benefits**:
+- Always in sync with api.specification
+- Consistent with Java/TypeScript generators
+- Includes docstrings from specification
+
+### Phase 3: Naming Convention Unification
+
+**Extend** `src/datahike/codegen/naming.cljc`:
+
+```clojure
+;; Add Python naming
+(defn clj-name->python-name [clj-name]
+  "Convert kebab-case to snake_case for Python"
+  (-> (name clj-name)
+      (str/replace #"[!?]$" "")
+      (str/replace #"-" "_")))
+
+;; Add C naming
+(defn clj-name->c-name [clj-name]
+  "Convert kebab-case to snake_case for C"
+  (-> (name clj-name)
+      (str/replace #"[!?]$" "")
+      (str/replace #"-" "_")))
+```
+
+### Phase 4: Type Mapping for Native
+
+**Add to** `src/datahike/api/types.cljc`:
+
+```clojure
+(def malli->c-type
+  "Malli schema to C parameter type mapping"
+  {:SConfig     "@CConst CCharPointer"   ; EDN/JSON string
+   :SConnection "@CConst CCharPointer"   ; db:config reference
+   :SDB         "@CConst CCharPointer"   ; db:config reference
+   :boolean     "int"                     ; C boolean
+   :string      "@CConst CCharPointer"
+   :int         "long"
+   :any         "@CConst CCharPointer"}) ; Serialized data
+
+(def malli->python-type
+  "Malli schema to Python type hint mapping"
+  {:SConfig     "str"
+   :SConnection "str"
+   :SDB         "str"
+   :boolean     "bool"
+   :string      "str"
+   :int         "int"
+   :any         "Any"})
+```
+
+### Phase 5: Build Task Integration
+
+**Add to** `bb.edn`:
+
+```clojure
+codegen-native {:doc "Generate native C entry points from specification"
+                :task (clojure "-M" "-m" "datahike.codegen.native"
+                               "libdatahike/src-generated")}
+
+codegen-python {:doc "Generate Python bindings from specification"
+                :task (clojure "-M" "-m" "datahike.codegen.python"
+                               "../pydatahike/src/datahike")}
+
+codegen-all {:doc "Generate all language bindings"
+             :depends [codegen-ts codegen-java codegen-native codegen-python]}
+```
+
+## Alternative Approaches Considered
+
+### A. Direct Return Values (Not Recommended)
+
+**Idea**: Return values directly instead of callbacks
+
+```java
+// Hypothetical direct return
+@CEntryPoint(name = "database_exists")
+public static CCharPointer database_exists_sync(...) {
+    return toOutput(Datahike.databaseExists(...));
+}
+```
+
+**Problems**:
+- Memory ownership unclear (who frees the string?)
+- Would need to track allocated strings
+- Current callback approach is safer
+
+**Decision**: Keep callback pattern - it's working well
+
+### B. Connection Pooling (Evaluate Later)
+
+**Idea**: Return connection handles instead of connecting per call
+
+```java
+// Hypothetical connection handle
+@CEntryPoint(name = "connect")
+public static long connect(...) {
+    Object conn = Datahike.connect(...);
+    return connectionRegistry.put(conn);
+}
+
+@CEntryPoint(name = "transact")
+public static void transact(long connHandle, ...) {
+    Object conn = connectionRegistry.get(connHandle);
+    Datahike.transact(conn, ...);
+}
+```
+
+**Trade-offs**:
+- Pro: Better performance for repeated operations
+- Con: Introduces state, resource cleanup complexity
+
+**Decision**: Defer - current approach works, optimize if needed
+
+### C. Direct Buffer Sharing (Not Recommended)
+
+**Idea**: Like Datalevin, use direct memory buffers
+
+**Problems**:
+- Requires careful memory management
+- GraalVM isolate boundaries complicate this
+- Higher risk of memory corruption
+
+**Decision**: Keep string-based serialization - safety over performance
+
+## Recommended Implementation Order
+
+### Immediate (Phase 1-2)
+
+1. **Create `codegen/native.clj`** - Generate LibDatahike entry points
+2. **Create `codegen/python.clj`** - Generate Python bindings
+3. **Extend `codegen/naming.cljc`** - Add C and Python naming
+4. **Add type mappings** - C and Python types in types.cljc
+5. **Add build tasks** - codegen-native, codegen-python
+
+### Follow-up (Phase 3-4)
+
+6. **Update libdatahike build** - Use generated entry points
+7. **Update pydatahike** - Use generated bindings
+8. **Generate C header docs** - From api.specification docstrings
+9. **Add Ruby/Go/etc.** - If demand exists
+
+### Future (Phase 5)
+
+10. **Connection pooling** - If performance requires it
+11. **Streaming results** - For large query results
+12. **Async API** - Non-blocking operations
+
+## File Structure After Implementation
+
+```
+src/datahike/codegen/
+  ├── naming.cljc           # Shared naming (existing)
+  ├── typescript.clj        # TypeScript generator (existing)
+  ├── java.clj              # Java generator (existing)
+  ├── native.clj            # NEW: C entry point generator
+  └── python.clj            # NEW: Python binding generator
+
+src/datahike/api/
+  ├── specification.cljc    # API specification (existing)
+  └── types.cljc            # Type schemas + mappings (enhanced)
+
+libdatahike/
+  ├── src/datahike/impl/
+  │   ├── LibDatahike.java      # Hand-written base class
+  │   └── libdatahike.clj       # Serialization helpers
+  └── src-generated/datahike/impl/
+      └── LibDatahikeGenerated.java  # NEW: Generated entry points
+
+../pydatahike/src/datahike/
+  ├── __init__.py
+  ├── datahike.py           # Manual (deprecated after migration)
+  └── generated.py          # NEW: Generated from specification
+```
+
+## Benefits Summary
+
+| Benefit | Description |
+|---------|-------------|
+| **Single Source of Truth** | api.specification drives all bindings |
+| **Consistency** | Same patterns across Java, TS, Python, native |
+| **Reduced Maintenance** | New operations auto-available everywhere |
+| **Documentation** | Docstrings from specification in all bindings |
+| **Type Safety** | Malli schemas validate before codegen |
+| **Testing** | Test specification once, bindings follow |
+
+## Questions to Resolve
+
+1. **pydatahike ownership** - Should generated code go in pydatahike or datahike?
+2. **LibDatahike inheritance** - Extend generated class or replace entirely?
+3. **Backward compatibility** - Keep old API function names?
+4. **Version sync** - How to coordinate datahike + pydatahike versions?
+
+## Next Steps
+
+1. Review this strategy document
+2. Decide on implementation order
+3. Start with codegen/native.clj prototype
+4. Test with existing libdatahike tests
+5. Iterate based on feedback

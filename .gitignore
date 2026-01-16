@@ -53,6 +53,11 @@ npm-package/output.txt
 /.internal/
 resources/DATAHIKE_VERSION
 
+# Auto-generated code (regenerate with bb codegen-*)
+java/src-generated/
+libdatahike/src/datahike/impl/LibDatahikeBase.java
+.clj-kondo/datahike/
+
 # clj-kondo: ignore external library imports (keep config.edn and babashka)
 .clj-kondo/*
 !.clj-kondo/config.edn

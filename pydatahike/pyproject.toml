@@ -1,0 +1,91 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datahike"
+dynamic = ["version"]
+description = "Python bindings for Datahike - a durable Datalog database"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "EPL-1.0"}
+authors = [
+    {name = "Datahike Team", email = "info@replikativ.io"}
+]
+keywords = ["datalog", "database", "datomic", "datascript", "query"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Eclipse Public License 1.0 (EPL-1.0)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "cbor2>=5.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "mypy>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/replikativ/datahike"
+Documentation = "https://github.com/replikativ/datahike/blob/main/doc/index.md"
+Repository = "https://github.com/replikativ/datahike"
+Issues = "https://github.com/replikativ/datahike/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+datahike = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = {attr = "datahike._version.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+
+[tool.coverage.run]
+source = ["src/datahike"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

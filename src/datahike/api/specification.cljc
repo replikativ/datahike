@@ -102,7 +102,7 @@
      :referentially-transparent? false
      :doc "Checks if a database exists via configuration map."
      :examples [{:desc "Check if in-memory database exists"
-                 :code "(database-exists? {:store {:backend :mem :id \"example\"}})"}
+                 :code "(database-exists? {:store {:backend :memory :id \"example\"}})"}
                 {:desc "Check with default config"
                  :code "(database-exists?)"}]
      :impl datahike.api.impl/database-exists?}
@@ -118,13 +118,13 @@
      :referentially-transparent? false
      :doc "Creates a database via configuration map."
      :examples [{:desc "Create empty database"
-                 :code "(create-database {:store {:backend :mem :id \"example\"}})"}
+                 :code "(create-database {:store {:backend :memory :id \"example\"}})"}
                 {:desc "Create with schema-flexibility :read"
-                 :code "(create-database {:store {:backend :mem :id \"example\"} :schema-flexibility :read})"}
+                 :code "(create-database {:store {:backend :memory :id \"example\"} :schema-flexibility :read})"}
                 {:desc "Create without history"
-                 :code "(create-database {:store {:backend :mem :id \"example\"} :keep-history? false})"}
+                 :code "(create-database {:store {:backend :memory :id \"example\"} :keep-history? false})"}
                 {:desc "Create with initial schema"
-                 :code "(create-database {:store {:backend :mem :id \"example\"}
+                 :code "(create-database {:store {:backend :memory :id \"example\"}
                                           :initial-tx [{:db/ident :name
                                                         :db/valueType :db.type/string
                                                         :db/cardinality :db.cardinality/one}]})"}]
@@ -141,7 +141,7 @@
      :referentially-transparent? false
      :doc "Deletes a database given via configuration map."
      :examples [{:desc "Delete database"
-                 :code "(delete-database {:store {:backend :mem :id \"example\"}})"}]
+                 :code "(delete-database {:store {:backend :memory :id \"example\"}})"}]
      :impl datahike.api.impl/delete-database}
 
     ;; =========================================================================
@@ -164,7 +164,7 @@
                 {:desc "Connect to file-based database"
                  :code "(connect {:store {:backend :file :path \"/tmp/example\"}})"}
                 {:desc "Connect with options"
-                 :code "(connect {:store {:backend :mem :id \"example\"}} {:validate? true})"}]
+                 :code "(connect {:store {:backend :memory :id \"example\"}} {:validate? true})"}]
      :impl datahike.connector/connect}
 
     db
