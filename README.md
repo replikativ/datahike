@@ -5,7 +5,7 @@
 </p>
 <p align="center">
 <a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://badgen.net/badge/-/slack?icon=slack&label"/></a>
-<a href="https://clojars.org/io.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/io.replikativ/datahike.svg" /></a>
+<a href="https://clojars.org/org.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/org.replikativ/datahike.svg" /></a>
 <a href="https://circleci.com/gh/replikativ/datahike"><img src="https://circleci.com/gh/replikativ/datahike.svg?style=shield"/></a>
 <a href="https://github.com/replikativ/datahike/tree/main"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/main"/></a>
 </p>
@@ -35,9 +35,9 @@ As systems evolve, SQL schemas accumulate join complexity. What starts as simple
 
 **Time is fundamental to information**: Most value derives from how facts evolve over time. Datahike's immutable design treats the database as an append-only log of facts—queryable at any point in history, enabling audit trails, debugging through time-travel, and GDPR-compliant data excision. Immutability also powers Distributed Index Space: database snapshots are values that can be shared, cached, and queried without locks.
 
-You can find [API documentation on cljdoc](https://cljdoc.org/d/io.replikativ/datahike) and articles on Datahike on our company's [blog page](https://datahike.io/notes/).
+You can find [API documentation on cljdoc](https://cljdoc.org/d/org.replikativ/datahike) and articles on Datahike on our company's [blog page](https://datahike.io/notes/).
 
-[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/org.replikativ/datahike)
 
 We presented Datahike also at meetups,for example at:
 
@@ -50,7 +50,7 @@ We presented Datahike also at meetups,for example at:
 
 Add to your dependencies:
 
-[![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
+[![Clojars Project](http://clojars.org/org.replikativ/datahike/latest-version.svg)](http://clojars.org/org.replikativ/datahike)
 
 We provide a stable API for the JVM that we extend by first providing experimental/beta features that then get merged into the API over time.
 

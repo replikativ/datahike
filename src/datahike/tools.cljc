@@ -120,15 +120,15 @@
            (let [props (doto (Properties.) (.load stream))]
              (.getProperty props "version")))))))
 
-#?(:clj (def datahike-version (or (get-version 'io.replikativ/datahike) "DEVELOPMENT")))
+#?(:clj (def datahike-version (or (get-version 'org.replikativ/datahike) "DEVELOPMENT")))
 
 #?(:clj (def hitchhiker-tree-version
           (try (get-version 'io.replikativ/hitchhiker-tree)
                (catch Exception _ nil))))
 
-#?(:clj (def persistent-set-version (get-version 'io.replikativ/persistent-sorted-set)))
+#?(:clj (def persistent-set-version (get-version 'org.replikativ/persistent-sorted-set)))
 
-#?(:clj (def konserve-version (get-version 'io.replikativ/konserve)))
+#?(:clj (def konserve-version (get-version 'org.replikativ/konserve)))
 
 #?(:clj
    (defmacro meta-data []
