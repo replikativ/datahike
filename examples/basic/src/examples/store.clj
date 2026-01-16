@@ -1,6 +1,5 @@
 (ns examples.store
-  (:require [datahike.api :as d]
-            [datahike-jdbc.core]))
+  (:require [datahike.api :as d]))
 
 (def schema [{:db/ident :name
               :db/valueType :db.type/string
@@ -21,8 +20,8 @@
   (d/q query @conn))
 
 ;; first let's have a look at the memory store which uses an atom internally to store data
-;; only a simple identifier is needed, we use
-(def mem-cfg {:store {:backend :mem :id "mem-example"}})
+;; memory backend requires a UUID identifier for distributed tracking
+(def mem-cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}})
 
 ;; create it
 (def mem-conn (cleanup-and-create-conn mem-cfg))
@@ -39,37 +38,23 @@
 (transact-and-find file-conn "Bob");; => #{["Bob"]}
 
 ;; External backends
-;; make sure you add `datahike-jdbc`  as dependency
-;; for a more robust and remote store you can connect to a postgresql instance
-;; you can create a simple instance using docker and docker-compose with `docker-compose.yml` in this project
-;; See README for infos on starting
-;; we connect to a postgresql instance with username datahike, password clojure, at the localhost with port 5437 and a datahike database
-(def pg-cfg {:store {:backend :jdbc
-                     :dbtype "postgresql"
-                     :dbname "pg-example"
-                     :user "datahike"
-                     :password "clojure"
-                     :host "localhost"
-                     :port 5437}})
+;; Datahike supports additional backends via plugins:
+;; - PostgreSQL (via datahike-jdbc)
+;; - S3 (via datahike-s3)
+;; - Redis, LevelDB, etc.
+;; See https://github.com/replikativ/datahike for available backends
 
-(def pg-conn (cleanup-and-create-conn pg-cfg))
-
-(transact-and-find pg-conn "Charlie")
-
-;; of course we can combine the data from all databases using queries with multiple inputs
-(d/q '[:find ?mem ?file ?pg
-       :in $mem-db $file-db $pg-db
+;; We can query across multiple databases
+(d/q '[:find ?mem ?file
+       :in $mem-db $file-db
        :where
        [$mem-db ?e0 :name ?mem]
-       [$file-db ?e1 :name ?file]
-       [$pg-db ?e3 :name ?pg]]
+       [$file-db ?e1 :name ?file]]
      (d/db mem-conn)
-     (d/db file-conn)
-     (d/db pg-conn));; => #{["Alice" "Bob" "Charlie"]}
+     (d/db file-conn)) ;; => #{["Alice" "Bob"]}
 
 ;; cleanup
 (do
   (d/delete-database mem-cfg)
-  (d/delete-database file-cfg)
-  (d/delete-database pg-cfg))
+  (d/delete-database file-cfg))
 

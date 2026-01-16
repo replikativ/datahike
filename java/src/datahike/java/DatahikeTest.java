@@ -256,6 +256,102 @@ public class DatahikeTest {
     //     assertTrue(res.size() == 0);
     // }
 
+    @Test
+    public void databaseBuilderMemoryWithUUID() {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> config = Database.memory(id)
+            .keepHistory(true)
+            .build();
+
+        assertNotNull(config);
+        assertTrue(config.containsKey("store"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> store = (Map<String, Object>) config.get("store");
+        assertEquals(":memory", store.get("backend"));
+        assertEquals(id, store.get("id"));
+        assertEquals(true, config.get("keep-history?"));
+    }
+
+    @Test
+    public void databaseBuilderMemoryWithString() {
+        UUID id = UUID.randomUUID();
+        String idString = id.toString();
+
+        Map<String, Object> config = Database.memory(idString)
+            .schemaFlexibility(SchemaFlexibility.READ)
+            .build();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> store = (Map<String, Object>) config.get("store");
+        assertEquals(id, store.get("id"));
+        assertEquals(":read", config.get("schema-flexibility"));
+    }
+
+    @Test
+    public void databaseBuilderFile() {
+        Map<String, Object> config = Database.file("/tmp/test-db")
+            .keepHistory(false)
+            .name("test-database")
+            .build();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> store = (Map<String, Object>) config.get("store");
+        assertEquals(":file", store.get("backend"));
+        assertEquals("/tmp/test-db", store.get("path"));
+        assertEquals(false, config.get("keep-history?"));
+        assertEquals("test-database", config.get("name"));
+    }
+
+    @Test
+    public void databaseBuilderWithInitialTx() {
+        Object schema = vec(
+            map(kwd(":db/ident"), kwd(":test/attr"),
+                kwd(":db/valueType"), kwd(":db.type/string"),
+                kwd(":db/cardinality"), kwd(":db.cardinality/one"))
+        );
+
+        Map<String, Object> config = Database.memory(UUID.randomUUID())
+            .initialTx(schema)
+            .build();
+
+        assertNotNull(config.get("initial-tx"));
+    }
+
+    @Test
+    public void databaseBuilderCustomOption() {
+        Map<String, Object> config = Database.memory(UUID.randomUUID())
+            .option("temporal-index", true)
+            .option("attribute-refs?", false)
+            .build();
+
+        assertEquals(true, config.get("temporal-index"));
+        assertEquals(false, config.get("attribute-refs?"));
+    }
+
+    @Test
+    public void databaseBuilderIntegration() {
+        // Test that the builder output works with actual Datahike API
+        Map<String, Object> config = Database.memory(UUID.randomUUID())
+            .schemaFlexibility(SchemaFlexibility.READ)
+            .keepHistory(true)
+            .build();
+
+        Datahike.createDatabase(config);
+        assertTrue(Datahike.databaseExists(config));
+
+        Object conn = Datahike.connect(config);
+        assertNotNull(conn);
+
+        // Transact and query to verify the database works
+        Datahike.transact(conn, vec(map(kwd(":name"), "Test")));
+        Object result = Datahike.q("[:find ?n :where [?e :name ?n]]", deref(conn));
+        assertNotNull(result);
+
+        Datahike.deleteDatabase(config);
+        assertFalse(Datahike.databaseExists(config));
+    }
+
     /**
      * Called by Datahike's Clojure tests and runs the above Junit tests.
      */
