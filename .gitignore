@@ -62,3 +62,11 @@ libdatahike/src/datahike/impl/LibDatahikeBase.java
 .clj-kondo/*
 !.clj-kondo/config.edn
 !.clj-kondo/babashka/
+
+# Development symlinks (not needed in repo)
+distributed-scope
+fress
+kabel
+konserve
+konserve-sync
+persistent-sorted-set
