@@ -16,7 +16,7 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <datahike.version>0.7.1647</datahike.version>
+        <datahike.version>0.7.1659</datahike.version>
     </properties>
 
     <repositories>

@@ -256,6 +256,9 @@ jobs:
       - run:
           name: Build jar
           command: bb jar
+      - run:
+          name: Install jar to local Maven repository
+          command: bb install
       - persist_to_workspace:
           root: /home/circleci/
           paths:
