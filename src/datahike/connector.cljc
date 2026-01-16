@@ -212,8 +212,9 @@
                          _ (when-not (:allow-unsafe-config config)
                              (ensure-stored-config-consistency config (:config stored-db)))
                          conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
-                     (swap! (:wrapped-atom conn) assoc :writer
-                            (w/create-writer (:writer config) conn))
+                     (let [writer (w/create-writer (:writer config) conn)]
+                       (swap! (:wrapped-atom conn) assoc :writer writer)
+                       (w/signal-writer-ready! writer))
                      (add-connection! conn-id conn)
                      conn))))))
 
