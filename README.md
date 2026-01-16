@@ -147,7 +147,14 @@ For simple examples have a look at the projects in the `examples` folder.
 
 Datahike has **beta ClojureScript support** for both **Node.js** (file backend) and **browsers** (IndexedDB with TieredStore for memory hierarchies).
 
-**JavaScript API** (beta, Promise-based):
+**JavaScript API** (beta):
+
+Install from npm:
+```bash
+npm install datahike@next
+```
+
+Example usage:
 ```javascript
 const d = require('datahike');
 const crypto = require('crypto');
@@ -157,26 +164,21 @@ const config = {
     backend: ':memory',
     id: crypto.randomUUID()
   },
-  'schema-flexibility': ':read'  // Allow schemaless data (use kebab-case)
+  'schema-flexibility': ':read'
 };
 
 await d.createDatabase(config);
 const conn = await d.connect(config);
 await d.transact(conn, [{ name: 'Alice' }]);
-const db = await d.db(conn);  // db() is async for async backends
+const db = await d.db(conn);
 const results = await d.q('[:find ?n :where [?e :name ?n]]', db);
 console.log(results);
 // => [['Alice']]
 ```
 
-**Browser with real-time sync**: Combine IndexedDB storage with [Kabel](https://github.com/replikativ/kabel) WebSocket middleware for offline-capable applications that sync to server when online.
-
 See [JavaScript API documentation](./doc/javascript-api.md) for details.
 
-**npm package** (preview):
-```bash
-npm install datahike@next
-```
+**Browser with real-time sync**: Combine IndexedDB storage with [Kabel](https://github.com/replikativ/kabel) WebSocket middleware for offline-capable applications.
 
 **Native CLI tool** (`dthk`) (beta): Compiled with GraalVM native-image for instant startup. Ships with file backend support, scriptable for quick queries and automation. Available in [releases](https://github.com/replikativ/datahike/releases). See [CLI documentation](./doc/cli.md).
 

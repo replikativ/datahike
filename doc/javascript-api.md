@@ -47,7 +47,7 @@ Output is generated in `npm-package/datahike.js.api.js` with advanced compilatio
 ## Installation
 
 ```bash
-npm install datahike
+npm install datahike@next
 ```
 
 ## Usage
