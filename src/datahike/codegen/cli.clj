@@ -51,9 +51,13 @@
    - tempid: Only useful within transactions, not standalone
    - entity-db: Returns DB an entity came from, limited utility in CLI
    - as-of/since/history/filter: Return DB objects that can't be serialized/deserialized,
-     use prefix syntax instead (e.g., asof:timestamp:config.edn)"
+     use prefix syntax instead (e.g., asof:timestamp:config.edn)
+   - connect: Redundant with conn: prefix syntax
+   - db-with: Returns db value that can't be used in subsequent commands
+   - is-filtered: Requires filtered db input, which can't exist in CLI (filter excluded)"
   #{'listen 'unlisten 'release 'db 'tempid 'entity-db
-    'as-of 'since 'history 'filter})
+    'as-of 'since 'history 'filter
+    'connect 'db-with 'is-filtered})
 
 (defn cli-spec
   "Get merged specification with CLI-specific config."
