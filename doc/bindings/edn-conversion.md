@@ -43,15 +43,17 @@ Values are converted based on their type and content:
 
 ```python
 # Configuration
+import uuid
+
 config = {
     "store": {
         "backend": ":memory",              # Keyword
-        "id": "test"                    # String
+        "id": str(uuid.uuid4())         # String (memory backend requires UUID)
     },
     "schema-flexibility": ":read",      # Keyword
     "keep-history?": True               # Boolean
 }
-# → {:store {:backend :memory :id "test"}
+# → {:store {:backend :memory :id "<uuid-string>"}
 #    :schema-flexibility :read
 #    :keep-history? true}
 
@@ -80,15 +82,16 @@ schema = [
 
 ```javascript
 // Configuration
+const crypto = require('crypto');
 const config = {
     store: {
         backend: ':memory',                // Keyword
-        id: 'test'                      // String
+        id: crypto.randomUUID()         // String (memory backend requires UUID)
     },
     'schema-flexibility': ':read',      // Keyword
     'keep-history?': true               // Boolean
 };
-// → {:store {:backend :memory :id "test"}
+// → {:store {:backend :memory :id "<uuid-string>"}
 //    :schema-flexibility :read
 //    :keep-history? true}
 
@@ -105,18 +108,21 @@ const data = [
 
 ```java
 // Configuration
+import java.util.UUID;
+
 Map<String, Object> config = Map.of(
     "store", Map.of(
         "backend", ":memory",              // Keyword
-        "id", "test"                    // String
+        "id", UUID.randomUUID().toString() // String (memory backend requires UUID)
     ),
     "schema-flexibility", ":read"       // Keyword
 );
-// → {:store {:backend :memory :id "test"}
+// → {:store {:backend :memory :id "<uuid-string>"}
 //    :schema-flexibility :read}
 
 // Or use builders (convenience)
-Database db = Database.memory("test")
+// Note: memory backend requires UUID identifier
+Database db = Database.memory(UUID.randomUUID().toString())
     .schemaFlexibility(SchemaFlexibility.READ)
     .build();
 ```
@@ -328,49 +334,55 @@ The `:` prefix makes the distinction unambiguous and works consistently across a
 
 **Old Syntax (v0.6 and earlier):**
 ```javascript
+const crypto = require('crypto');
 const config = {
     store: {
         backend: 'memory',      // String → keyword (implicit)
-        id: 'test'
+        id: crypto.randomUUID() // Memory backend requires UUID
     }
 };
 ```
 
 **New Syntax (v0.7+):**
 ```javascript
+const crypto = require('crypto');
 const config = {
     store: {
         backend: ':memory',     // Explicit : required
-        id: 'test'
+        id: crypto.randomUUID() // Memory backend requires UUID
     }
 };
 ```
 
-**Migration:** Add `:` prefix to all values that should be keywords.
+**Migration:** Add `:` prefix to all values that should be keywords. Note that memory backend requires UUID identifiers.
 
 ### Java (Enhancement)
 
 **Old Syntax (still works):**
 ```java
+import java.util.UUID;
+
 Map<String, Object> config = Map.of(
     "store", Map.of(
         "backend", "mem",       // String passed through
-        "id", "test"
+        "id", UUID.randomUUID().toString() // Memory backend requires UUID
     )
 );
 ```
 
 **New Syntax (recommended):**
 ```java
+import java.util.UUID;
+
 Map<String, Object> config = Map.of(
     "store", Map.of(
         "backend", ":memory",      // Explicit : for keyword
-        "id", "test"
+        "id", UUID.randomUUID().toString() // Memory backend requires UUID
     )
 );
 
-// Or use builders
-Database.memory("test").build();
+// Or use builders (memory backend requires UUID)
+Database.memory(UUID.randomUUID().toString()).build();
 ```
 
 **Migration:** Both syntaxes work. Update to `:` prefix for consistency with other languages.

@@ -46,11 +46,14 @@ export LIBDATAHIKE_PATH=/path/to/datahike/libdatahike/target/libdatahike.so
 
 ## Quick Start
 
+> **Note:** Memory backend requires UUID identifiers. Use `str(uuid.uuid4())` to generate unique IDs. This is required by the underlying konserve store and is essential for distributed database tracking.
+
 ```python
+import uuid
 from datahike import Database
 
 # Create database
-db = Database.memory("quickstart")
+db = Database.memory(str(uuid.uuid4()))
 db.create()
 
 # Transact data
@@ -78,10 +81,11 @@ The high-level API provides a Pythonic interface using native Python data struct
 ### Database Class
 
 ```python
+import uuid
 from datahike import Database
 
 # Create in-memory database
-db = Database.memory("mydb")
+db = Database.memory(str(uuid.uuid4()))
 db.create()
 
 # Create file-based database
@@ -106,10 +110,11 @@ db.delete()
 ### Context Manager (Auto-Cleanup)
 
 ```python
+import uuid
 from datahike import database
 
 # Database automatically created and deleted
-with database(backend=':memory', id='test') as db:
+with database(backend=':memory', id=str(uuid.uuid4())) as db:
     db.transact([{"name": "Alice"}])
     result = db.q('[:find ?name :where [?e :name ?name]]')
     print(result)  # [['Alice']]
@@ -152,7 +157,7 @@ result = db.q(
 )
 
 # Query multiple databases
-other_db = Database.memory("other")
+other_db = Database.memory(str(uuid.uuid4()))
 result = db.q(
     '[:find ?name :in $ $2 :where [$ ?e :name ?name] [$2 ?e :active true]]',
     other_db
@@ -258,9 +263,10 @@ For complete EDN conversion rules and edge cases, see [EDN Conversion Documentat
 ### Schema Definition
 
 ```python
+import uuid
 from datahike import Database, edn, kw
 
-db = Database.memory("schema-example")
+db = Database.memory(str(uuid.uuid4()))
 db.create()
 
 # Define schema using Python dicts and EDN helpers
@@ -340,9 +346,10 @@ range_data = db.index_range(':name', '"A"', '"M"')
 ### Error Handling
 
 ```python
+import uuid
 from datahike import Database, DatahikeException
 
-db = Database.memory("errors")
+db = Database.memory(str(uuid.uuid4()))
 db.create()
 
 try:
@@ -401,7 +408,7 @@ result = q(query, inputs, output_format='edn')
 #### Database Class
 
 **Factory Methods:**
-- `Database.memory(id)` - Create in-memory database config
+- `Database.memory(id)` - Create in-memory database config. **Important:** `id` must be a UUID string (use `str(uuid.uuid4())`)
 - `Database.file(path)` - Create file-based database config
 - `Database(config_dict)` - Create from Python dict
 - `Database(edn_string)` - Create from EDN string
@@ -530,9 +537,10 @@ delete_database(config)
 
 **After:**
 ```python
+import uuid
 from datahike import Database
 
-db = Database.memory("mydb")
+db = Database.memory(str(uuid.uuid4()))
 db.create()
 db.transact({"name": "Alice"})
 result = db.q('[:find ?name :where [?e :name ?name]]')
@@ -541,9 +549,10 @@ db.delete()
 
 **Or with context manager:**
 ```python
+import uuid
 from datahike import database
 
-with database(backend=':memory', id='mydb') as db:
+with database(backend=':memory', id=str(uuid.uuid4())) as db:
     db.transact({"name": "Alice"})
     result = db.q('[:find ?name :where [?e :name ?name]]')
 ```

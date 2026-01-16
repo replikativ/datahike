@@ -234,13 +234,16 @@ class Database:
         Convenience factory for the most common use case.
 
         Args:
-            id: Database identifier
+            id: Database identifier. **Must be a UUID string** (use str(uuid.uuid4())).
+                This is required by the konserve store and is essential for distributed
+                database tracking.
 
         Returns:
             Database instance with memory backend
 
         Example:
-            >>> db = Database.memory('test')
+            >>> import uuid
+            >>> db = Database.memory(str(uuid.uuid4()))
             >>> db.create()
         """
         return Database({"store": {"backend": ":memory", "id": id}})
