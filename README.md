@@ -135,10 +135,12 @@ Refer to the docs for more information:
 - [Schema flexibility](./doc/schema.md)
 - [Time Variance](./doc/time_variance.md) - time-travel queries (as-of, history, since), audit trails, and GDPR-compliant purging
 - [Garbage Collection](./doc/gc.md) - reclaim storage by removing old database snapshots
-- [JavaScript API](./doc/javascript-api.md) - Promise-based API for Node.js and browsers
-- [CLI](./doc/cli.md) - native command-line tool (dthk)
-- [Babashka pod](./doc/bb-pod.md) - shell scripting with Datahike
-- [libdatahike](./doc/libdatahike.md) - C/C++ native library
+- [Java API](./doc/java-api.md) - fluent builder API and comprehensive bindings (beta)
+- [JavaScript API](./doc/javascript-api.md) - Promise-based API for Node.js and browsers (beta)
+- [ClojureScript Support](./doc/cljs-support.md) - async operations, Node.js, IndexedDB, and browser backends (beta)
+- [CLI](./doc/cli.md) - native command-line tool (dthk) (beta)
+- [Babashka pod](./doc/bb-pod.md) - shell scripting with Datahike (beta)
+- [libdatahike](./doc/libdatahike.md) - C/C++ native library (beta)
 - [Benchmarking](./doc/benchmarking.md)
 - [Differences to Datomic](./doc/datomic_differences.md)
 - [Entity spec](./doc/entity_spec.md)
@@ -195,7 +197,7 @@ npm install datahike@next
 
 **Babashka pod** (beta): Native-compiled pod available in the [Babashka pod registry](https://github.com/babashka/pod-registry) for shell scripting. See [Babashka pod documentation](./doc/bb-pod.md).
 
-**Java API** (beta): Shipped with the jar file is [Datahike.java](https://github.com/replikativ/datahike/blob/main/java/src/datahike/java/Datahike.java) with auto-generated bindings and EDN conversion helpers.
+**Java API** (beta): Comprehensive bindings with fluent builder pattern and automatic collection conversion. See [Java API documentation](./doc/java-api.md) for the full API guide and [examples](./examples/java/).
 
 **libdatahike** (beta): *C/C++ native bindings* enable embedding Datahike in non-JVM applications. See [libdatahike documentation](./doc/libdatahike.md).
 

@@ -49,7 +49,7 @@ This feature is not used in production so far. Please try it and [open issues on
 (ns pod
   (:require [babashka.pods :as pods]))
 
-(pods/load-pod 'replikativ/datahike "0.7.1628") ;; Please check for the latest version
+(pods/load-pod 'replikativ/datahike "CURRENT") ;; Check https://github.com/babashka/pod-registry for latest version
 
 (require '[datahike.pod :as d])
 

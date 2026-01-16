@@ -33,7 +33,7 @@ Add the Clojars repository and Datahike dependency to your `pom.xml`:
     <dependency>
         <groupId>org.replikativ</groupId>
         <artifactId>datahike</artifactId>
-        <version>0.7.1620</version>
+        <version>CURRENT</version> <!-- Check https://clojars.org/org.replikativ/datahike for latest -->
     </dependency>
 </dependencies>
 ```
@@ -49,7 +49,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'org.replikativ:datahike:0.7.1620'
+    implementation 'org.replikativ:datahike:CURRENT' // Check https://clojars.org/org.replikativ/datahike for latest
 }
 ```
 

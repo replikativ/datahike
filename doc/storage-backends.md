@@ -44,7 +44,7 @@ Datahike provides pluggable storage through [konserve](https://github.com/replik
 **Key advantage**: Lightning-fast memory-mapped database with ACID transactions, optimized for read-heavy workloads.
 
 ```clojure
-;; Requires: io.replikativ/datahike-lmdb
+;; Requires: org.replikativ/datahike-lmdb
 {:store {:backend :lmdb
          :path "/var/lib/myapp/db"}}
 ```
@@ -88,7 +88,7 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 **Key advantage**: Leverage existing SQL database skills, backup procedures, and monitoring tools.
 
 ```clojure
-;; Requires: io.replikativ/datahike-jdbc
+;; Requires: org.replikativ/datahike-jdbc
 {:store {:backend :jdbc
          :dbtype "postgresql"
          :host "db.example.com"
@@ -114,7 +114,7 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 **Key advantage**: Excellent write performance with in-memory speed.
 
 ```clojure
-;; Requires: io.replikativ/konserve-redis
+;; Requires: org.replikativ/konserve-redis
 {:store {:backend :redis
          :host "redis.example.com"
          :port 6379}}
@@ -134,7 +134,7 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 **Key advantage**: Extremely scalable, pay-per-use pricing, natural fit for cloud-native architectures.
 
 ```clojure
-;; Requires: io.replikativ/konserve-s3
+;; Requires: org.replikativ/konserve-s3
 {:store {:backend :s3
          :bucket "my-datahike-bucket"
          :region "us-east-1"}}
@@ -158,7 +158,7 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 **Key advantage**: Similar to S3 but optimized for GCP infrastructure.
 
 ```clojure
-;; Requires: io.replikativ/konserve-gcs
+;; Requires: org.replikativ/konserve-gcs
 {:store {:backend :gcs
          :bucket "my-datahike-bucket"
          :project-id "my-project"}}
@@ -177,7 +177,7 @@ All distributed backends support **Distributed Index Space (DIS)**: multiple rea
 **Key advantage**: Single-digit millisecond latency with strong consistency options.
 
 ```clojure
-;; Requires: io.replikativ/konserve-dynamodb
+;; Requires: org.replikativ/konserve-dynamodb
 {:store {:backend :dynamodb
          :table "datahike"
          :region "us-east-1"}}
