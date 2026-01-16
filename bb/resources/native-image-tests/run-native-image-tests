@@ -9,29 +9,32 @@ ATTR_REF_CONFIG=bb/resources/native-image-tests/testconfig.attr-refs.edn
 
 trap "rm -rf $TMPSTORE" EXIT
 
-./dthk delete-database $ATTR_REF_CONFIG
-./dthk create-database $ATTR_REF_CONFIG
+./dthk db delete-database edn:$ATTR_REF_CONFIG
+./dthk db create-database edn:$ATTR_REF_CONFIG
 
-./dthk database-exists $ATTR_REF_CONFIG
+./dthk db exists edn:$ATTR_REF_CONFIG
 
 # test that warnings etc. get logged to stderr
-LOG_OUTPUT="$(./dthk query '[:find ?e . :where [?e :nonexistent _]]' db:$ATTR_REF_CONFIG 2>&1 >/dev/null | grep ':nonexistent has not been found')"
+LOG_OUTPUT="$(./dthk q '[:find ?e . :where [?e :nonexistent _]]' db:$ATTR_REF_CONFIG 2>&1 >/dev/null | grep ':nonexistent has not been found')"
 if [ -z "$LOG_OUTPUT" ]
 then
   echo "Exception: binary did not log to stderr"
   exit 1
 fi
 
-./dthk delete-database $CONFIG
-./dthk create-database $CONFIG
+./dthk db delete-database edn:$CONFIG
+./dthk db create-database edn:$CONFIG
 
-./dthk database-exists $CONFIG
+./dthk db exists edn:$CONFIG
 
-./dthk benchmark conn:$CONFIG 0 100000 10000
-./dthk transact conn:$CONFIG '[[:db/add -1 :name "Judea"]]'
-QUERY_OUT=`./dthk query '[:find (count ?e) . :where [?e :name _]]' db:$CONFIG`
+# Add test data with tx transact (benchmark command no longer available)
+for i in {1..100}; do
+  ./dthk tx transact conn:$CONFIG "[[:db/add -$i :name \"User-$i\"]]"
+done
+./dthk tx transact conn:$CONFIG '[[:db/add -1 :name "Judea"]]'
+QUERY_OUT=`./dthk q '[:find (count ?e) . :where [?e :name _]]' db:$CONFIG`
 
-if [ $QUERY_OUT -eq 100001 ]
+if [ $QUERY_OUT -eq 101 ]
 then
   echo "Test successful."
 else
@@ -40,26 +43,26 @@ else
 fi
 
 # test history input parsing
-./dthk query '[:find (count ?e) . :where [?e :name _]]' history:$CONFIG
-./dthk query '[:find (count ?e) . :where [?e :name _]]' since:0:$CONFIG
-./dthk query '[:find (count ?e) . :where [?e :name _]]' asof:0:$CONFIG
+./dthk q '[:find (count ?e) . :where [?e :name _]]' history:$CONFIG
+./dthk q '[:find (count ?e) . :where [?e :name _]]' since:0:$CONFIG
+./dthk q '[:find (count ?e) . :where [?e :name _]]' asof:0:$CONFIG
 
 # other calls
 ./dthk pull db:$CONFIG "[:db/id, :name]" "1"
 ./dthk pull-many db:$CONFIG "[:db/id, :name]" "[1]"
 ./dthk entity db:$CONFIG "1"
 ./dthk datoms db:$CONFIG "{:index :eavt :components [1]}"
-./dthk schema db:$CONFIG
-./dthk reverse-schema db:$CONFIG
+./dthk schema schema db:$CONFIG
+./dthk schema reverse-schema db:$CONFIG
 ./dthk metrics db:$CONFIG
 
 # test serialization
-./dthk query '[:find ?e . :where [?e :name ?n]]' db:$CONFIG --format cbor >> /tmp/test
-./dthk query '[:find ?i :in $ ?i . :where [?e :name ?n]]' db:$CONFIG cbor:/tmp/test # => 1
+./dthk q '[:find ?e . :where [?e :name ?n]]' db:$CONFIG --format cbor >> /tmp/test
+./dthk q '[:find ?i :in $ ?i . :where [?e :name ?n]]' db:$CONFIG cbor:/tmp/test # => 1
 
 # test arbitrary :in[puts] as positional args
-QUERY_OUT=`./dthk query '[:find (pull ?e [*]) . :in $ ?name :where [?e :name ?name]]' db:$CONFIG '"Judea"'`
-if [ "$QUERY_OUT" = '{:db/id 100001, :name "Judea"}' ]
+QUERY_OUT=`./dthk q '[:find (pull ?e [*]) . :in $ ?name :where [?e :name ?name]]' db:$CONFIG '"Judea"'`
+if [ "$QUERY_OUT" = '{:db/id 101, :name "Judea"}' ]
 then
   echo "Positional input test successful."
 else
@@ -67,5 +70,5 @@ else
   exit 1
 fi
 
-./dthk delete-database $CONFIG
-./dthk delete-database $ATTR_REF_CONFIG
+./dthk db delete-database edn:$CONFIG
+./dthk db delete-database edn:$ATTR_REF_CONFIG

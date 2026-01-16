@@ -17,6 +17,32 @@ Supported platforms:
 
 For other platforms, build from source using GraalVM native-image (see project documentation).
 
+## Commands
+
+The CLI provides hierarchical commands organized by category. All commands mirror the Clojure API functions. To see all available commands, run:
+
+```bash
+$ dthk --help
+```
+
+Key command categories:
+- **Database Operations**: `db create-database`, `db delete-database`, `db exists`
+- **Connection Operations**: `conn connect`
+- **Transaction Operations**: `tx transact`, `tx load-entities`, `tx db-with`, `tx with`
+- **Query Operations**: `q`, `pull`, `pull-many`, `entity`, `datoms`, `seek-datoms`, `index-range`, `is-filtered`, `query-stats`
+- **Schema Operations**: `schema schema`, `schema reverse-schema`
+- **Diagnostics**: `metrics`
+- **Maintenance**: `gc-storage`
+
+Commands use prefix syntax for database access:
+- `db:config.edn` - Dereferences a connection to get the current database value
+- `conn:config.edn` - Creates a connection for transacting
+- `edn:file.edn` - Reads EDN data from a file
+- `json:file.json` - Reads JSON data from a file
+- `asof:timestamp:config.edn` - Creates a database snapshot as-of timestamp
+- `since:timestamp:config.edn` - Creates a database view since timestamp
+- `history:config.edn` - Returns the history database
+
 ## Example usage
 
 To access a database you need to provide the usual configuration for Datahike.
@@ -36,25 +62,25 @@ fact to the database (be careful to use single ' if you do not want your shell
 to substitute parts of your Datalog ;) ):
 
 ```bash
-$ dthk transact conn:myconfig.edn '[[:db/add -1 :name "Linus"]]'
+$ dthk tx transact conn:myconfig.edn '[[:db/add -1 :name "Linus"]]'
  ```
 
 And retrieve it:
 
 ```bash
-$ dthk query '[:find ?n . :where [?e :name ?n]]' db:myconfig.edn
+$ dthk q '[:find ?n . :where [?e :name ?n]]' db:myconfig.edn
 "Linus" # prints the name
 ```
 
-Note that the `conn:<file>` argument to `transact` comes before the transaction
-value(s), whereas the `db:<file>` argument to `query` comes after the query
+Note that the `conn:<file>` argument to `tx transact` comes before the transaction
+value(s), whereas the `db:<file>` argument to `q` comes after the query
 value, mirroring the Clojure API. As an added benefit, this also allows passing
 multiple db configuration files prefixed with `db:` for joining over arbitrary
 many databases or data files with "edn:" or "json:". Everything non-prefixed is
 read in as `edn` and passed to the query engine as well:
 
 ```bash
-$ dthk query '[:find ?e . :in $ ?name :where [?e :name ?name]]' db:myconfig.edn '"Linus"'
+$ dthk q '[:find ?e . :in $ ?name :where [?e :name ?name]]' db:myconfig.edn '"Linus"'
 123
 ```
 
@@ -64,31 +90,20 @@ command-line arg value. Otherwise it will be parsed as a symbol.
 Provided the filestore is configured with `{:in-place? true}` you can even write
 to the same database without a dedicated daemon from different shells:
 
-
 ```bash
-$ dthk benchmark db:myconfig.edn 0 50000 100
-"Elapsed time: 116335.589411 msecs"
+# In the first shell
+$ dthk tx transact conn:myconfig.edn '[[:db/add -1 :name "Alice"]]'
+
+# In a second shell simultaneously
+$ dthk tx transact conn:myconfig.edn '[[:db/add -2 :name "Bob"]]'
 ```
-
-Here we use a provided benchmark helper which transacts facts of the form `[eid
-:name (random-team-member)]` for `eid=0,...,50000` into the store. `100` denotes
-the batch size for each transaction, so here we chunk the 50000 facts into 500
-transactions.
-
-In a second shell you can now simultaneously add facts in a different range:
-
-```bash
-$ dthk benchmark db:myconfig.edn 50000 100000 100
-```
-
 
 To check that everything has been added and no write operations have overwritten
-each other.
-
+each other:
 
 ```bash
-$ dthk query '[:find (count ?e) . :in $ :where [?e :name ?n]]' db:myconfig.edn
-100000 # check :)
+$ dthk q '[:find (count ?e) . :in $ :where [?e :name ?n]]' db:myconfig.edn
+2 # check :)
 ```
 
 # Memory model
@@ -125,7 +140,7 @@ Datalog itself. You can use a query like this to extract all new facts that are
 in `db1` but not in `db2` like this:
 
 ```bash
-dthk query '[:find ?e ?a ?v ?t :in $ $2 :where [$ ?e ?a ?v ?t] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn
+dthk q '[:find ?e ?a ?v ?t :in $ $2 :where [$ ?e ?a ?v ?t] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn
 ```
 
 Since we cannot update transaction metadata, we should filter out
@@ -134,7 +149,7 @@ the results, yielding valid transactions that we can then feed into `db2`.
 
 
 ```bash
-dthk query '[:find ?db-add ?e ?a ?v ?t :in $ $2 ?db-add :where [$ ?e ?a ?v ?t] [(not= :db/txInstant ?a)] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn ":db/add" | transact db:config2.edn
+dthk q '[:find ?db-add ?e ?a ?v ?t :in $ $2 ?db-add :where [$ ?e ?a ?v ?t] [(not= :db/txInstant ?a)] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn ":db/add" | dthk tx transact db:config2.edn
 ```
 
 Note that this very simple strategy assumes that the entity ids that have been
