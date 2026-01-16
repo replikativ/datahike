@@ -7,10 +7,46 @@
             [datahike.tools :as dt :refer [throwable-promise get-time-ms]]
             [clojure.core.async :refer [chan close! promise-chan put! go go-loop <! >! poll! buffer timeout]]
             #?(:cljs [cljs.core.async.impl.channels :refer [ManyToManyChannel]]))
-  #?(:clj (:import [clojure.core.async.impl.channels ManyToManyChannel])))
+  #?(:clj (:import [clojure.core.async.impl.channels ManyToManyChannel]
+                   [java.util.concurrent Executors ScheduledExecutorService TimeUnit ThreadFactory])))
 
 (defn chan? [x]
   (instance? ManyToManyChannel x))
+
+;; ============================================================
+;; GraalVM-safe commit scheduling
+;; ============================================================
+;;
+;; core.async/timeout uses a shared daemon thread that causes issues
+;; with GraalVM native-image. We use ScheduledExecutorService instead,
+;; which is lazily initialized only when commit-wait-time > 0.
+
+#?(:clj
+   (def ^:private commit-scheduler
+     "Lazy scheduler for commit delays. Only initialized when actually used."
+     (delay
+       (Executors/newSingleThreadScheduledExecutor
+         (reify ThreadFactory
+           (newThread [_ r]
+             (doto (Thread. r "datahike-commit-scheduler")
+               (.setDaemon true))))))))
+
+#?(:clj
+   (defn- schedule-wait
+     "Returns a channel that closes after ms milliseconds.
+      Uses ScheduledExecutorService to avoid core.async timer daemon."
+     [ms]
+     (let [ch (promise-chan)]
+       (.schedule ^ScheduledExecutorService @commit-scheduler
+                  ^Runnable #(close! ch)
+                  (long ms)
+                  TimeUnit/MILLISECONDS)
+       ch))
+   :cljs
+   (defn- schedule-wait
+     "Returns a channel that closes after ms milliseconds."
+     [ms]
+     (timeout ms)))
 
 (defprotocol PWriter
   (-dispatch! [_ arg-map] "Returns a channel that resolves when the transaction finalizes.")
@@ -37,7 +73,7 @@
 (def ^:const DEFAULT_COMMIT_WAIT_TIME 0) ;; in ms
 
 (defn create-thread
-  "Creates new transaction thread"
+  "Creates new transaction thread."
   [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time]
   (let [transaction-queue-buffer    (buffer transaction-queue-size)
         transaction-queue           (chan transaction-queue-buffer)
@@ -132,7 +168,8 @@
                             (log/error "Writer thread shutting down because of commit error." e)
                             (close! commit-queue)
                             (close! transaction-queue)))
-                        (<! (timeout commit-wait-time))
+                        (when (pos? commit-wait-time)
+                          (<! (schedule-wait commit-wait-time)))
                         (recur (<?- commit-queue)))))))))]))
 
 ;; public API to internal mapping
