@@ -272,8 +272,8 @@ def %s(
         %s
     '''
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         config.encode('utf8'),
         output_format.encode('utf8'),
         callback
@@ -299,8 +299,8 @@ def %s(
         output_format: Output format ('json', 'edn', or 'cbor')
     '''
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         config.encode('utf8'),
         output_format.encode('utf8'),
         callback
@@ -341,8 +341,8 @@ def %s(
     '''
     n, formats, values = prepare_query_inputs(inputs)
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         query.encode('utf8'),
         n,
         formats,
@@ -381,8 +381,8 @@ def %s(
         >>> transact(config, '[{\"name\": \"Alice\", \"age\": 30}]')
     '''
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         config.encode('utf8'),
         input_format.encode('utf8'),
         tx_data.encode('utf8'),
@@ -415,8 +415,8 @@ def %s(
         %s
     '''
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         input_format.encode('utf8'),
         config.encode('utf8'),
         output_format.encode('utf8'),
@@ -450,8 +450,8 @@ def %s(
         %s
     '''
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         input_format.encode('utf8'),
         config.encode('utf8'),
         eid,
@@ -492,8 +492,8 @@ def %s(
         {':db/id': 1, ':name': 'Alice', ':age': 30}
     '''
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         input_format.encode('utf8'),
         config.encode('utf8'),
         selector.encode('utf8'),
@@ -532,8 +532,8 @@ def %s(
     '''
     eids_edn = '[' + ' '.join(str(e) for e in eids) + ']'
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         input_format.encode('utf8'),
         config.encode('utf8'),
         selector.encode('utf8'),
@@ -569,8 +569,8 @@ def %s(
         %s (list of [e a v tx added?] vectors)
     '''
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         input_format.encode('utf8'),
         config.encode('utf8'),
         index.encode('utf8'),
@@ -620,8 +620,8 @@ def %s(
             return str(v)
 
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         input_format.encode('utf8'),
         config.encode('utf8'),
         attrid.encode('utf8'),
@@ -660,8 +660,8 @@ def %s(
         before_timestamp_ms = int(time.time() * 1000)
 
     callback, get_result = make_callback(output_format)
-    _dll.%s(
-        _isolatethread,
+    get_dll().%s(
+        get_isolatethread(),
         config.encode('utf8'),
         before_timestamp_ms,
         output_format.encode('utf8'),
@@ -767,8 +767,8 @@ Temporal query variants via input_format parameter:
 \"\"\"
 from typing import Any, Dict, List, Tuple, Optional
 from ._native import (
-    _dll,
-    _isolatethread,
+    get_dll,
+    get_isolatethread,
     make_callback,
     prepare_query_inputs,
     DatahikeException,

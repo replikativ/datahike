@@ -119,10 +119,13 @@ def test_transact_with_explicit_schema():
         db_schema = schema(config, output_format='json')
         print(f"Schema: {db_schema}")
 
-        # Transact data using EDN (to preserve Long type for :age)
+        # Transact data using JSON - schema validates types
         print("Transacting data...")
-        tx_data = '[{:name "Charlie" :age 35} {:name "Diana" :age 28}]'
-        transact(config, tx_data, input_format='edn')
+        tx_data = json.dumps([
+            {"name": "Charlie", "age": 35},
+            {"name": "Diana", "age": 28}
+        ])
+        transact(config, tx_data, input_format='json')
 
         # Query
         print("Querying...")

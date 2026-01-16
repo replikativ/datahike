@@ -248,8 +248,3 @@ def get_dll() -> CDLL:
     _ensure_initialized()
     assert _dll is not None
     return _dll
-
-
-# Export public symbols
-_isolatethread = get_isolatethread
-_dll = get_dll

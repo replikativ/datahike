@@ -356,7 +356,17 @@ public final class LibDatahike extends LibDatahikeBase {
             @CConst CCharPointer output_format,
             @CConst OutputReader output_reader) {
         try {
-            output_reader.call(toOutput(output_format, ((java.util.Map)Datahike.transact(Datahike.connect(readConfig(db_config)), (java.util.List)loadInput(tx_format, tx_data))).get(Util.kwd(":tx-meta"))));
+            Object conn = Datahike.connect(readConfig(db_config));
+            Object txData = loadInput(tx_format, tx_data);
+
+            // Apply schema-aware type conversions for JSON format
+            // (e.g., Integer → Long for :db.type/long attributes)
+            String format = CTypeConversion.toJavaString(tx_format);
+            if ("json".equals(format)) {
+                txData = libdatahike.transformJSONForTx(txData, conn);
+            }
+
+            output_reader.call(toOutput(output_format, ((java.util.Map)Datahike.transact(conn, (java.util.List)txData)).get(Util.kwd(":tx-meta"))));
         } catch (Exception e) {
             output_reader.call(toException(e));
         }
