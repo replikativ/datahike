@@ -124,9 +124,9 @@
     (let [;; Convert arities to clj-kondo format: {arity {:args [...] :ret ...}}
           arities-map (into {}
                             (map-indexed
-                              (fn [idx {:keys [args ret]}]
-                                [(count args) {:args args :ret ret}])
-                              arities))]
+                             (fn [idx {:keys [args ret]}]
+                               [(count args) {:args args :ret ret}])
+                             arities))]
       {:arities arities-map})))
 
 ;; =============================================================================

@@ -157,12 +157,12 @@
           summary (first (str/split doc #"\.\s"))
           ;; Add examples if available
           example-text (when (seq examples)
-                        (str "\n *\n * Examples:\n"
-                             (str/join "\n"
-                                       (map (fn [{:keys [desc code]}]
-                                              (str " * - " desc "\n"
-                                                   " *   " code))
-                                            (take 2 examples)))))]
+                         (str "\n *\n * Examples:\n"
+                              (str/join "\n"
+                                        (map (fn [{:keys [desc code]}]
+                                               (str " * - " desc "\n"
+                                                    " *   " code))
+                                             (take 2 examples)))))]
       (str "/**\n * " summary "."
            example-text
            "\n */"))))
