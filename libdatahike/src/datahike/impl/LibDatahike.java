@@ -35,7 +35,7 @@ public final class LibDatahike extends LibDatahikeBase {
    * 
    * Examples:
    *   Delete database:
-   *     (delete-database {:store {:backend :mem :id "example"}})
+   *     (delete-database {:store {:backend :memory :id "example"}})
      */
     @CEntryPoint(name = "delete_database")
     public static void delete_database(
@@ -287,13 +287,13 @@ public final class LibDatahike extends LibDatahikeBase {
    * 
    * Examples:
    *   Create empty database:
-   *     (create-database {:store {:backend :mem :id "example"}})
+   *     (create-database {:store {:backend :memory :id "example"}})
    *   Create with schema-flexibility :read:
-   *     (create-database {:store {:backend :mem :id "example"} :schema-flexibility :read})
+   *     (create-database {:store {:backend :memory :id "example"} :schema-flexibility :read})
    *   Create without history:
-   *     (create-database {:store {:backend :mem :id "example"} :keep-history? false})
+   *     (create-database {:store {:backend :memory :id "example"} :keep-history? false})
    *   Create with initial schema:
-   *     (create-database {:store {:backend :mem :id "example"}
+   *     (create-database {:store {:backend :memory :id "example"}
                                           :initial-tx [{:db/ident :name
                                                         :db/valueType :db.type/string
                                                         :db/cardinality :db.cardinality/one}]})
@@ -316,7 +316,7 @@ public final class LibDatahike extends LibDatahikeBase {
    * 
    * Examples:
    *   Check if in-memory database exists:
-   *     (database-exists? {:store {:backend :mem :id "example"}})
+   *     (database-exists? {:store {:backend :memory :id "example"}})
    *   Check with default config:
    *     (database-exists?)
      */
