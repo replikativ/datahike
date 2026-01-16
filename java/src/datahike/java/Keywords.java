@@ -153,8 +153,8 @@ public class Keywords {
     // Storage Backends
     // =========================================================================
 
-    /** Memory backend: :mem */
-    public static final Keyword BACKEND_MEM = Keyword.intern("mem");
+    /** Memory backend: :memory */
+    public static final Keyword BACKEND_MEMORY = Keyword.intern("memory");
 
     /** File backend: :file */
     public static final Keyword BACKEND_FILE = Keyword.intern("file");
