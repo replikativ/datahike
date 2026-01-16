@@ -41,6 +41,20 @@
                    :stdin-arg 1  ; entities argument
                    :batch-size 5000}})
 
+(def cli-excluded-operations
+  "Operations excluded from CLI because they don't make sense in single-shot execution.
+
+   Reasons for exclusion:
+   - listen/unlisten: Require persistent connection with callbacks, CLI exits immediately
+   - release: Connection automatically released on CLI exit
+   - db (function): Redundant with db: prefix syntax
+   - tempid: Only useful within transactions, not standalone
+   - entity-db: Returns DB an entity came from, limited utility in CLI
+   - as-of/since/history/filter: Return DB objects that can't be serialized/deserialized,
+     use prefix syntax instead (e.g., asof:timestamp:config.edn)"
+  #{'listen 'unlisten 'release 'db 'tempid 'entity-db
+    'as-of 'since 'history 'filter})
+
 (defn cli-spec
   "Get merged specification with CLI-specific config."
   [op-name]
@@ -66,6 +80,7 @@
     (case primary-category
       :database     ["db" (str/replace op-str #"^database-" "")]
       :transaction  ["tx" op-str]
+      :connection   ["conn" op-str]  ; Avoid collision with "db" prefix
       :query        [op-str]  ; Flat for queries
       :index        ["index" op-str]
       :pull         [op-str]  ; Flat
@@ -87,6 +102,7 @@
   []
   (into {}
         (for [[op-name {:keys [categories]}] api-specification
+              :when (not (contains? cli-excluded-operations op-name))
               :let [cmd (->cli-command op-name categories)]]
           [(command->string cmd) op-name])))
 
@@ -180,14 +196,17 @@
   []
   (reduce
    (fn [acc [op-name {:keys [categories]}]]
-     (let [primary-cat (first categories)]
-       (update acc primary-cat (fnil conj []) op-name)))
+     (if (contains? cli-excluded-operations op-name)
+       acc
+       (let [primary-cat (first categories)]
+         (update acc primary-cat (fnil conj []) op-name))))
    {}
    api-specification))
 
 (def category-titles
   "Human-readable titles for categories."
   {:database "Database Operations"
+   :connection "Connection Operations"
    :transaction "Transaction Operations"
    :query "Query Operations"
    :pull "Pull Operations"
@@ -197,11 +216,12 @@
    :advanced "Advanced Operations"
    :write "Write Operations"
    :read "Read Operations"
-   :diagnostics "Diagnostics"})
+   :diagnostics "Diagnostics"
+   :maintenance "Maintenance"})
 
 (def category-order
   "Order for displaying categories in help."
-  [:database :transaction :query :pull :schema :index :advanced])
+  [:database :connection :transaction :query :pull :schema :diagnostics :maintenance])
 
 (defn generate-help
   "Generate hierarchical help text from API specification."
@@ -233,19 +253,20 @@
        ""]
 
       ;; Generate hierarchical command listing
-      (for [category category-order
-            :when (contains? grouped category)]
-        (concat
-         [(str "  " (get category-titles category category) ":")]
-         (for [op-name (get grouped category)
-               :let [{:keys [args doc]} (cli-spec op-name)
-                     cmd (->cli-command op-name (list category))
-                     cmd-str (command->string cmd)
-                     args-str (args-help args)]]
-           (format "    %-25s %s"
-                   (str cmd-str " " args-str)
-                   (first-sentence doc)))
-         [""]))
+      (mapcat
+       (fn [category]
+         (concat
+          [(str "  " (get category-titles category category) ":")]
+          (for [op-name (get grouped category)
+                :let [{:keys [args doc]} (cli-spec op-name)
+                      cmd (->cli-command op-name (list category))
+                      cmd-str (command->string cmd)
+                      args-str (args-help args)]]
+            (format "    %-25s %s"
+                    (str cmd-str " " args-str)
+                    (first-sentence doc)))
+          [""]))
+       (filter #(contains? grouped %) category-order))
 
       ["Remote Databases:"
        "  Use :writer or :remote-peer in your config file to connect via HTTP."
@@ -382,7 +403,8 @@
 
         (if (:ok validation)
           ;; Success - call implementation
-          (apply impl parsed-args)
+          ;; impl is a symbol, need to resolve it to a var
+          (apply (resolve impl) parsed-args)
 
           ;; Validation failed - show error
           (do
