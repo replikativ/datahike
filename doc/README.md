@@ -28,35 +28,35 @@ Datahike supports multiple languages and platforms:
 ### JVM Languages
 - **[Java API](./java-api.md)** - Fluent builder API, automatic collection conversion, comprehensive bindings
   - Examples: [`examples/java/`](../examples/java/)
-  - Status: **Beta** - API is stable and tested
+  - Status: **Beta** - Functional and tested, but may receive breaking changes
 
 ### JavaScript/TypeScript
 - **[JavaScript API](./javascript-api.md)** - Promise-based API for Node.js and browsers
   - npm: `npm install datahike@next`
-  - Status: **Beta** - API is stable and tested
+  - Status: **Beta** - Functional and tested, but may receive breaking changes
 
 ### ClojureScript
 - **[ClojureScript Support](./cljs-support.md)** - Async operations, Node.js, IndexedDB, and browser backends
   - Backends: Memory, IndexedDB, TieredStore, File (Node.js)
-  - Status: **Beta** - Please try it out
+  - Status: **Beta** - Functional, please try it out and provide feedback
 
 ### Python
 - **[Python Bindings](../pydatahike/README.md)** - High-level Pythonic API with automatic EDN conversion
-  - Status: **Beta** - API stable, may receive breaking changes
+  - Status: **Beta** - Functional and tested, but may receive breaking changes
 
 ### CLI & Shell
 - **[CLI (dthk)](./cli.md)** - Native command-line tool compiled with GraalVM
   - Features: Instant startup, file backend, scriptable
-  - Status: **Beta** - Command structure may change
+  - Status: **Beta** - Functional and tested, but command structure may change
 
 - **[Babashka Pod](./bb-pod.md)** - Shell scripting with Datahike
   - Integration: Native pod for Babashka
-  - Status: **Beta** - Not used in production so far
+  - Status: **Beta** - Functional but not yet used in production
 
 ### Native Libraries
 - **[libdatahike](./libdatahike.md)** - C/C++ native bindings for embedding in non-JVM applications
   - Use cases: Embedding in C/C++/Rust/Go applications
-  - Status: **Beta** - API may change
+  - Status: **Beta** - Functional and tested, but API may change
 
 - **[EDN Conversion Rules](./bindings/edn-conversion.md)** - How data types map between languages
 
