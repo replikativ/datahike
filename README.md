@@ -18,12 +18,12 @@ database snapshots are immutable values that can be held, shared, and queried an
 
 **Key capabilities:**
 - 🌐 **[Distributed Index Space](./doc/distributed.md)**: Read scaling without database connections—readers access persistent indices directly
-- 🗄️ **Flexible storage**: File, LMDB, S3, JDBC, Redis, IndexedDB via [konserve](https://github.com/replikativ/konserve)—[choose what fits](./doc/storage-backends.md)
+- 🗄️ **[Flexible storage](./doc/storage-backends.md)**: File, LMDB, S3, JDBC, Redis, IndexedDB via konserve
 - 🌍 **[Cross-platform](./doc/README.md#language-bindings-beta)**: JVM, Node.js, Browser (Clojure, ClojureScript, JavaScript, Java APIs)
-- ⚡ **Real-time sync**: WebSocket streaming with [Kabel](https://github.com/replikativ/kabel) for browser ↔ server
-- 🕰️ **[Time-travel](./doc/time_variance.md)**: Query any historical state, full transaction audit trail ([versioning API](./doc/versioning.md) becoming stable)
+- ⚡ **[Real-time sync](./doc/distributed.md)**: WebSocket streaming with Kabel for browser ↔ server
+- 🕰️ **[Time-travel](./doc/time_variance.md)**: Query any historical state, full transaction audit trail
 - 🔒 **[GDPR-ready](./doc/time_variance.md#data-purging)**: Complete data excision for regulatory compliance
-- 🚀 **Production-proven**: Tested with billions of datoms, [deployed in government services](https://gitlab.com/arbetsformedlingen/taxonomy-dev)
+- 🚀 **[Production-proven](https://gitlab.com/arbetsformedlingen/taxonomy-dev)**: Tested with billions of datoms, deployed in government services
 
 **Distributed by design**: Datahike is part of the [replikativ](https://github.com/replikativ) ecosystem for decentralized data architectures.
 
