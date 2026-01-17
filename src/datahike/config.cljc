@@ -171,9 +171,15 @@
                          (apply from-deprecated config-as-arg (first opts))
                          config-as-arg)
          ;; Store config now provided by user - konserve validates :id requirement
-         store-config (merge
-                       {:backend (keyword (:datahike-store-backend env *default-store*))}
-                       (:store config-as-arg))
+         raw-store-config (merge
+                           {:backend (keyword (:datahike-store-backend env *default-store*))}
+                           (:store config-as-arg))
+         ;; Normalize :mem to :memory for backward compatibility
+         store-config (if (= (:backend raw-store-config) :mem)
+                        (do
+                          (log/warn "DEPRECATION: :mem backend is deprecated, use :memory instead. Support for :mem will be removed in a future version.")
+                          (assoc raw-store-config :backend :memory))
+                        raw-store-config)
          index (if (:datahike-index env)
                  (keyword "datahike.index" (:datahike-index env))
                  *default-index*)

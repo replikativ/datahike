@@ -31,7 +31,7 @@ The `package.json` specifies which files to include:
    Alternatively, run individual steps:
    ```bash
    bb npm-version        # Update package.json version only
-   bb npm-types          # Generate TypeScript definitions only
+   bb codegen-ts         # Generate TypeScript definitions only
    npx shadow-cljs compile npm-release  # Compile ClojureScript only
    ```
 

@@ -26,7 +26,7 @@ export interface Database {
   [key: string]: any;
 }
 
-export type Transaction = 
+export type Transaction =
   | [':db/add', number | string, string, any]
   | [':db/retract', number | string, string, any]
   | { [key: string]: any };
@@ -65,596 +65,310 @@ export interface Metrics {
 // API Functions
 
 /**
- * Returns the database state at given point in time (you may use either java.util.Date or transaction ID as long).
- * 
- * (transact conn {:tx-data [{:db/ident :name
- *                 :db/valueType :db.type/string
- *                 :db/unique :db.unique/identity
- *                 :db/index true
- *                 :db/cardinality :db.cardinality/one}
- *                {:db/ident :age
- *                 :db/valueType :db.type/long
- *                 :db/cardinality :db.cardinality/one}]})
- * 
- * (transact conn {:tx-data [{:name "Alice" :age 25} {:name "Bob" :age 30}]})
- * 
- * (def date (java.util.Date.))
- * 
- * (transact conn {:tx-data [{:db/id [:name "Alice"] :age 35}]})
- * 
- * (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
- *     :args [(as-of @conn date)]}) ; => #{["Alice" 25] ["Bob" 30]}
- * 
- * (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
- *     :args [@conn]}) ; => #{["Alice" 35] ["Bob" 30]}
+ * Returns database state at given time point (Date or transaction ID)..
+ *
+ * Examples:
+ * - Query as of date
+ *   (q '[:find ?n :where [_ :name ?n]] (as-of @conn date))
+ * - Query as of transaction
+ *   (as-of @conn 536870913)
  */
-export function asOf(db?: Database, timePoint?: any): Promise<Database>;
+export function asOf(arg0: any, arg1: any): Promise<any>;
 
 /**
- * Connects to a datahike database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
- * 
- * The configuration for a connection is a subset of the Datahike configuration with only the store necessary: `:store`.
- * 
- * `:store` defines the backend configuration as hash-map with mandatory key: `:backend` and store dependent keys.
- * 
- * Per default Datahike ships with `:memory` and `:file` backend.
- * 
- * The default configuration:
- * `{:store {:backend :memory :id "default"}}`
- * 
- * Usage:
- * 
- * Connect to default in-memory configuration:
- * `(connect)`
- * 
- * Connect to a database with persistent store:
- * `(connect {:store {:backend :file :path "/tmp/example"}})`
+ * Connects to a Datahike database via configuration map..
+ *
+ * Examples:
+ * - Connect to default in-memory database
+ *   (connect)
+ * - Connect to file-based database
+ *   (connect {:store {:backend :file :path "/tmp/example"}})
  */
-export function connect(config?: DatabaseConfig): Promise<Connection>;
+export function connect(arg0: any): Promise<any>;
 
 /**
- * Creates a database via configuration map. For more information on the configuration refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md).
- * 
- * The configuration is a hash-map with keys: `:store`, `:initial-tx`, `:keep-history?`, `:schema-flexibility`, `:index`
- * 
- * - `:store` defines the backend configuration as hash-map with mandatory key: `:backend` and store dependent keys.
- * Per default Datahike ships with `:memory` and `:file` backend.
- * - `:initial-tx` defines the first transaction into the database, often setting default data like the schema.
- * - `:keep-history?` is a boolean that toggles whether Datahike keeps historical data.
- * - `:schema-flexibility` can be set to either `:read` or `:write` setting the validation method for the data.
- * - `:read` validates the data when your read data from the database, `:write` validates the data when you transact new data.
- * - `:index` defines the data type of the index. Available are `:datahike.index/hitchhiker-tree`, `:datahike.index/persistent-set` (only available with in-memory storage)
- * - `:name` defines your database name optionally, if not set, a random name is created
- * - `:writer` optionally configures a writer as a hash map. If not set, the default local writer is used.
- * 
- * Default configuration has in-memory store, keeps history with write schema flexibility, and has no initial transaction:
- * `{:store {:backend :memory :id "default"} :keep-history? true :schema-flexibility :write}`
- * 
- * Usage:
- * 
- *     ;; create an empty database:
- *     (create-database {:store {:backend :memory :id "example"} :name "my-favourite-database"})
- * 
- *     ;; Datahike has a strict schema validation (schema-flexibility `:write`) policy by default, that only allows transaction of data that has been pre-defined by a schema.
- *     ;; You may influence this behaviour using the `:schema-flexibility` attribute:
- *     (create-database {:store {:backend :memory :id "example"} :schema-flexibility :read})
- * 
- *     ;; By writing historical data in a separate index, datahike has the capability of querying data from any point in time.
- *     ;; You may control this feature using the `:keep-history?` attribute:
- *     (create-database {:store {:backend :memory :id "example"} :keep-history? false})
- * 
- *     ;; Initial data after creation may be added using the `:initial-tx` attribute, which in this example adds a schema:
- *     (create-database {:store {:backend :memory :id "example"} :initial-tx [{:db/ident :name :db/valueType :db.type/string :db.cardinality/one}]})
+ * Creates a database via configuration map..
+ *
+ * Examples:
+ * - Create empty database
+ *   (create-database {:store {:backend :mem :id "example"}})
+ * - Create with schema-flexibility :read
+ *   (create-database {:store {:backend :mem :id "example"} :schema-flexibility :read})
  */
-export function createDatabase(config?: DatabaseConfig): Promise<any>;
+export function createDatabase(arg0: any): Promise<any>;
 
 /**
- * Checks if a database exists via configuration map.
- * Usage:
- * 
- *     (database-exists? {:store {:backend :memory :id "example"}})
+ * Checks if a database exists via configuration map..
+ *
+ * Examples:
+ * - Check if in-memory database exists
+ *   (database-exists? {:store {:backend :mem :id "example"}})
+ * - Check with default config
+ *   (database-exists?)
  */
-export function databaseExists(config?: DatabaseConfig): Promise<boolean>;
+export function databaseExists(arg0: any): Promise<boolean>;
 
 /**
- * Index lookup. Returns a sequence of datoms (lazy iterator over actual DB index) which components
- * (e, a, v) match passed arguments. Datoms are sorted in index sort order. Possible `index` values
- * are: `:eavt`, `:aevt`, `:avet`.
- * 
- * Accepts db and a map as arguments with the keys `:index` and `:components` provided within the
- * map, or the arguments provided separately.
- * 
- * 
- * Usage:
- * 
- * Set up your database. Beware that for the `:avet` index the index needs to be set to true for
- * the attribute `:likes`.
- * 
- *     (d/transact db [{:db/ident :name
- *                      :db/type :db.type/string
- *                      :db/cardinality :db.cardinality/one}
- *                     {:db/ident :likes
- *                      :db/type :db.type/string
- *                      :db/index true
- *                      :db/cardinality :db.cardinality/many}
- *                     {:db/ident :friends
- *                      :db/type :db.type/ref
- *                      :db/cardinality :db.cardinality/many}]
- * 
- *     (d/transact db [{:db/id 4 :name "Ivan"
- *                     {:db/id 4 :likes "fries"
- *                     {:db/id 4 :likes "pizza"}
- *                     {:db/id 4 :friends 5}])
- * 
- *     (d/transact db [{:db/id 5 :name "Oleg"}
- *                     {:db/id 5 :likes "candy"}
- *                     {:db/id 5 :likes "pie"}
- *                     {:db/id 5 :likes "pizza"}])
- * 
- * Find all datoms for entity id == 1 (any attrs and values) sort by attribute, then value
- * 
- *     (datoms @db {:index :eavt
- *                  :components [1]}) ; => (#datahike/Datom [1 :friends 2]
- *                                    ;     #datahike/Datom [1 :likes "fries"]
- *                                    ;     #datahike/Datom [1 :likes "pizza"]
- *                                    ;     #datahike/Datom [1 :name "Ivan"])
- * 
- * Find all datoms for entity id == 1 and attribute == :likes (any values) sorted by value
- * 
- *     (datoms @db {:index :eavt
- *                  :components [1 :likes]}) ; => (#datahike/Datom [1 :likes "fries"]
- *                                           ;     #datahike/Datom [1 :likes "pizza"])
- * 
- * Find all datoms for entity id == 1, attribute == :likes and value == "pizza"
- * 
- *     (datoms @db {:index :eavt
- *                  :components [1 :likes "pizza"]}) ; => (#datahike/Datom [1 :likes "pizza"])
- * 
- * Find all datoms for attribute == :likes (any entity ids and values) sorted by entity id, then value
- * 
- *     (datoms @db {:index :aevt
- *                  :components [:likes]}) ; => (#datahike/Datom [1 :likes "fries"]
- *                                         ;     #datahike/Datom [1 :likes "pizza"]
- *                                         ;     #datahike/Datom [2 :likes "candy"]
- *                                         ;     #datahike/Datom [2 :likes "pie"]
- *                                         ;     #datahike/Datom [2 :likes "pizza"])
- * 
- * Find all datoms that have attribute == `:likes` and value == `"pizza"` (any entity id)
- * `:likes` must be a unique attr, reference or marked as `:db/index true`
- * 
- *     (datoms @db {:index :avet
- *                  :components [:likes "pizza"]}) ; => (#datahike/Datom [1 :likes "pizza"]
- *                                                   ;     #datahike/Datom [2 :likes "pizza"])
- * 
- * Find all datoms sorted by entity id, then attribute, then value
- * 
- *     (datoms @db {:index :eavt}) ; => (...)
- * 
- * 
- * Useful patterns:
- * 
- * Get all values of :db.cardinality/many attribute
- * 
- *     (->> (datoms @db {:index :eavt
- *                       :components [eid attr]})
- *          (map :v))
- * 
- * Lookup entity ids by attribute value
- * 
- *     (->> (datoms @db {:index :avet
- *                       :components [attr value]})
- *          (map :e))
- * 
- * Find all entities with a specific attribute
- * 
- *     (->> (datoms @db {:index :aevt
- *                       :components [attr]})
- *          (map :e))
- * 
- * Find “singleton” entity by its attr
- * 
- *     (->> (datoms @db {:index :aevt
- *                       :components [attr]})
- *          first
- *          :e)
- * 
- * Find N entities with lowest attr value (e.g. 10 earliest posts)
- * 
- *     (->> (datoms @db {:index :avet
- *                       :components [attr]})
- *          (take N))
- * 
- * Find N entities with highest attr value (e.g. 10 latest posts)
- * 
- *     (->> (datoms @db {:index :avet
- *                       :components [attr]})
- *          (reverse)
- *          (take N))
- * 
- * 
- * Gotchas:
- * 
- * - Index lookup is usually more efficient than doing a query with a single clause.
- * - Resulting iterator is calculated in constant time and small constant memory overhead.
- * - Iterator supports efficient `first`, `next`, `reverse`, `seq` and is itself a sequence.
- * - Will not return datoms that are not part of the index (e.g. attributes with no `:db/index` in schema when querying `:avet` index).
- *   - `:eavt` and `:aevt` contain all datoms.
- *   - `:avet` only contains datoms for references, `:db/unique` and `:db/index` attributes.
+ * Index lookup.
+ *
+ * Examples:
+ * - Find all datoms for entity
+ *   (datoms db {:index :eavt :components [1]})
+ * - Find datoms for entity and attribute
+ *   (datoms db {:index :eavt :components [1 :likes]})
  */
-export function datoms(db?: Database, args?: { index: string, components?: any[] }): Promise<any>;
+export function datoms(arg0: any, arg1: any): Promise<any | null>;
 
 /**
  * Returns the underlying immutable database value from a connection.
- * 
- * Exists for Datomic API compatibility. Prefer using `@conn` directly if possible.
+ *
+ * Examples:
+ * - Get database from connection
+ *   (db conn)
+ * - Prefer direct deref
+ *   @conn
  */
-export function db(conn?: Connection): Promise<Database>;
-
-/** Applies transaction to an immutable db value, returning new immutable db value. Same as `(:db-after (with db tx-data))`. */
-export function dbWith(db?: Database, txData?: Transaction[]): Promise<Database>;
+export function db(arg0: any): Promise<any>;
 
 /**
- * Deletes a database given via configuration map. Storage configuration `:store` is mandatory.
- * For more information refer to the [docs](https://github.com/replikativ/datahike/blob/master/doc/config.md)
+ * Applies transaction to immutable db value, returns new db.
+ *
+ * Examples:
+ * - Get db after transaction
+ *   (db-with @conn [[:db/add 1 :name "Ivan"]])
  */
-export function deleteDatabase(config?: DatabaseConfig): Promise<any>;
+export function dbWith(arg0: any, arg1: any): Promise<any>;
 
 /**
- * Retrieves an entity by its id from database. Entities are lazy map-like structures to navigate Datahike database content.
- * 
- * For `eid` pass entity id or lookup attr:
- * 
- *     (entity db 1)
- *     (entity db [:unique-attr :value])
- * 
- * If entity does not exist, `nil` is returned:
- * 
- *     (entity db -1) ; => nil
- * 
- * Creating an entity by id is very cheap, almost no-op, as attr access is on-demand:
- * 
- *     (entity db 1) ; => {:db/id 1}
- * 
- * Entity attributes can be lazily accessed through key lookups:
- * 
- *     (:attr (entity db 1)) ; => :value
- *     (get (entity db 1) :attr) ; => :value
- * 
- * Cardinality many attributes are returned sequences:
- * 
- *     (:attrs (entity db 1)) ; => [:v1 :v2 :v3]
- * 
- * Reference attributes are returned as another entities:
- * 
- *     (:ref (entity db 1)) ; => {:db/id 2}
- *     (:ns/ref (entity db 1)) ; => {:db/id 2}
- * 
- * References can be walked backwards by prepending `_` to name part of an attribute:
- * 
- *     (:_ref (entity db 2)) ; => [{:db/id 1}]
- *     (:ns/_ref (entity db 2)) ; => [{:db/id 1}]
- * 
- * Reverse reference lookup returns sequence of entities unless attribute is marked as `:db/component`:
- * 
- *     (:_component-ref (entity db 2)) ; => {:db/id 1}
- * 
- * Entity gotchas:
- * 
- * - Entities print as map, but are not exactly maps (they have compatible get interface though).
- * - Entities are effectively immutable “views” into a particular version of a database.
- * - Entities retain reference to the whole database.
- * - You can't change database through entities, only read.
- * - Creating an entity by id is very cheap, almost no-op (attributes are looked up on demand).
- * - Comparing entities just compares their ids. Be careful when comparing entities taken from different dbs or from different versions of the same db.
- * - Accessed entity attributes are cached on entity itself (except backward references).
- * - When printing, only cached attributes (the ones you have accessed before) are printed. See [[touch]].
+ * Deletes a database given via configuration map..
+ *
+ * Examples:
+ * - Delete database
+ *   (delete-database {:store {:backend :mem :id "example"}})
  */
-export function entity(db?: Database, eid?: any): Promise<any>;
-
-/** Returns a db that entity was created from. */
-export function entityDb(entity?: any): Promise<Database>;
+export function deleteDatabase(arg0: any): Promise<any>;
 
 /**
- * Returns a view over database that has same interface but only includes datoms for which the `(pred db datom)` is true. Can be applied multiple times.
- * 
- * Filtered DB gotchas:
- * 
- * - All operations on filtered database are proxied to original DB, then filter pred is applied.
- * - Not cached. You pay filter penalty every time.
- * - Supports entities, pull, queries, index access.
- * - Does not support hashing of DB.
- * - Does not support [[with]] and [[db-with]].
+ * Retrieves an entity by its id.
+ *
+ * Examples:
+ * - Get entity by id
+ *   (entity db 1)
+ * - Get entity by lookup ref
+ *   (entity db [:email "alice@example.com"])
  */
-export function filter(db?: Database, pred?: any): Promise<any>;
+export function entity(arg0: any, arg1: any | any): Promise<any>;
 
 /**
- * Invokes garbage collection on the store of connection by whitelisting currently known branches.
- * All db snapshots on these branches before remove-before date will also be
- * erased (defaults to beginning of time [no erasure]). The branch heads will
- * always be retained. Return the set of removed blobs from the store.
+ * Returns database that entity was created from..
+ *
+ * Examples:
+ * - Get entity's database
+ *   (entity-db (entity db 1))
  */
-export function gcStorage(conn?: Connection, removeBefore?: any): Promise<any>;
+export function entityDb(arg0: any): Promise<any>;
 
 /**
- * Returns the full historical state of the database you may interact with.
- * 
- * 
- * (transact conn {:tx-data [{:db/ident :name
- *                            :db/valueType :db.type/string
- *                            :db/unique :db.unique/identity
- *                            :db/index true
- *                            :db/cardinality :db.cardinality/one}
- *                           {:db/ident :age
- *                            :db/valueType :db.type/long
- *                            :db/cardinality :db.cardinality/one}]})
- * 
- * (transact conn {:tx-data [{:name "Alice" :age 25} {:name "Bob" :age 30}]})
- * 
- * (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
- *     :args [(history @conn)]}) ; => #{["Alice" 25] ["Bob" 30]}
- * 
- * (transact conn {:tx-data [{:db/id [:name "Alice"] :age 35}]})
- * 
- * (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
- *     :args [@conn]}) ; => #{["Alice" 35] ["Bob" 30]}
- * 
- * (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
- *     :args [(history @conn)]}) ; => #{["Alice" 25] ["Bob" 30]}
+ * Returns filtered view over database.
+ *
+ * Examples:
+ * - Filter to recent datoms
+ *   (filter db (fn [db datom] (> (:tx datom) recent-tx)))
  */
-export function history(db?: Database): Promise<Array<any>>;
+export function filter(arg0: any, arg1: any): Promise<any>;
 
 /**
- * Returns part of `:avet` index between `[_ attr start]` and `[_ attr end]` in AVET sort order.
- * 
- * Same properties as [[datoms]].
- * 
- * `attr` must be a reference, unique attribute or marked as `:db/index true`.
- * 
- * Usage:
- * 
- * 
- * (transact db {:tx-data [{:db/ident :name
- *                          :db/type :db.type/string
- *                          :db/cardinality :db.cardinality/one}
- *                         {:db/ident :likes
- *                          :db/index true
- *                          :db/type :db.type/string
- *                          :db/cardinality :db.cardinality/many}
- *                         {:db/ident :age
- *                          :db/unique :db.unique/identity
- *                          :db/type :db.type/ref
- *                          :db/cardinality :db.cardinality/many}]})
- * 
- * (transact db {:tx-data [{:name "Ivan"}
- *                         {:age 19}
- *                         {:likes "fries"}
- *                         {:likes "pizza"}
- *                         {:likes "candy"}
- *                         {:likes "pie"}
- *                         {:likes "pizza"}]})
- * 
- * (index-range db {:attrid :likes
- *                  :start  "a"
- *                  :end    "zzzzzzzzz"}) ; => '(#datahike/Datom [2 :likes "candy"]
- *                                          ;      #datahike/Datom [1 :likes "fries"]
- *                                          ;      #datahike/Datom [2 :likes "pie"]
- *                                          ;      #datahike/Datom [1 :likes "pizza"]
- *                                          ;      #datahike/Datom [2 :likes "pizza"])
- * 
- * (index-range db {:attrid :likes
- *                  :start  "egg"
- *                  :end    "pineapple"}) ; => '(#datahike/Datom [1 :likes "fries"]
- *                                          ;      #datahike/Datom [2 :likes "pie"])
- * 
- * Useful patterns:
- * 
- *     ; find all entities with age in a specific range (inclusive)
- *     (->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))
+ * Invokes garbage collection on connection's store.
+ *
+ * Examples:
+ * - GC all old snapshots
+ *   (gc-storage conn)
+ * - GC snapshots before date
+ *   (gc-storage conn (java.util.Date.))
  */
-export function indexRange(db?: Database, args?: { attrid: string, start: any, end: any }): Promise<Datom[]>;
-
-/** Returns `true` if this database was filtered using [[filter]], `false` otherwise. */
-export function isFiltered(db?: Database): Promise<boolean>;
+export function gcStorage(arg0: any, arg1: any): Promise<any>;
 
 /**
- * Listen for changes on the given connection. Whenever a transaction is applied to the database via
- * [[transact]], the callback is called with the transaction report. `key` is any opaque unique value.
- * 
- * Idempotent. Calling [[listen]] with the same twice will override old callback with the new value.
- * 
- * Returns the key under which this listener is registered. See also [[unlisten]].
+ * Returns full historical state of database including all assertions and retractions..
+ *
+ * Examples:
+ * - Query historical data
+ *   (q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] (history @conn))
  */
-export function listen(conn?: Connection, callback?: Function): Promise<any>;
-
-/** Load entities directly */
-export function loadEntities(conn?: Connection, txs?: Transaction[]): Promise<any>;
-
-/** Returns database metrics. */
-export function metrics(db?: Database): Promise<Metrics>;
+export function history(arg0: any): Promise<any>;
 
 /**
- * Fetches data from database using recursive declarative description. See [docs.datomic.com/on-prem/pull.html](https://docs.datomic.com/on-prem/pull.html).
- * 
- * Unlike [[entity]], returns plain Clojure map (not lazy).
- * 
- * Usage:
- * 
- *     (pull db [:db/id, :name, :likes, {:friends [:db/id :name]}] 1) ; => {:db/id   1,
- *                                                                          :name    "Ivan"
- *                                                                          :likes   [:pizza]
- *                                                                          :friends [{:db/id 2, :name "Oleg"}]}
- * 
- * The arity-2 version takes :selector and :eid in arg-map.
+ * Returns part of :avet index between start and end values..
+ *
+ * Examples:
+ * - Find datoms in value range
+ *   (index-range db {:attrid :likes :start "a" :end "z"})
+ * - Find entities with age in range
+ *   (->> (index-range db {:attrid :age :start 18 :end 60}) (map :e))
  */
-export function pull(db?: Database, opts?: { selector: any[], eid: number | string }): Promise<any>;
+export function indexRange(arg0: any, arg1: any): Promise<any>;
 
 /**
- * Same as [[pull]], but accepts sequence of ids and returns sequence of maps.
- * 
- * Usage:
- * 
- *     (pull-many db [:db/id :name] [1 2]) ; => [{:db/id 1, :name "Ivan"}
- *                                               {:db/id 2, :name "Oleg"}]
+ * Returns true if database was filtered using filter, false otherwise..
+ *
+ * Examples:
+ * - Check if filtered
+ *   (is-filtered db)
  */
-export function pullMany(db?: Database, opts?: { selector: any[], eid: number | string }): Promise<Array<object>>;
+export function isFiltered(arg0: any): Promise<boolean>;
 
 /**
- * Executes a datalog query. See [docs.datomic.com/on-prem/query.html](https://docs.datomic.com/on-prem/query.html).
- * 
- * Usage:
- * 
- * Query as parameter with additional args:
- * 
- *     (q '[:find ?value
- *          :where [_ :likes ?value]]
- *        #{[1 :likes "fries"]
- *          [2 :likes "candy"]
- *          [3 :likes "pie"]
- *          [4 :likes "pizza"]}) ; => #{["fries"] ["candy"] ["pie"] ["pizza"]}
- * 
- * Or query passed in arg-map:
- * 
- *     (q {:query '[:find ?value
- *                  :where [_ :likes ?value]]
- *         :offset 2
- *         :limit 1
- *         :args [#{[1 :likes "fries"]
- *                  [2 :likes "candy"]
- *                  [3 :likes "pie"]
- *                  [4 :likes "pizza"]}]}) ; => #{["fries"] ["candy"] ["pie"] ["pizza"]}
- * 
- * Or query passed as map of vectors:
- * 
- *      (q '{:find [?value] :where [[_ :likes ?value]]}
- *         #{[1 :likes "fries"]
- *           [2 :likes "candy"]
- *           [3 :likes "pie"]
- *           [4 :likes "pizza"]}) ; => #{["fries"] ["candy"] ["pie"] ["pizza"]}
- * 
- * Or query passed as string:
- * 
- *      (q {:query "[:find ?value :where [_ :likes ?value]]"
- *          :args [#{[1 :likes "fries"]
- *                   [2 :likes "candy"]
- *                   [3 :likes "pie"]
- *                   [4 :likes "pizza"]}]})
- * 
- * Query passed as map needs vectors as values. Query can not be passed as list. The 1-arity function takes a map with the arguments :query and :args and optionally the additional keys :offset and :limit.
+ * Listen for changes on connection.
+ *
+ * Examples:
+ * - Listen with callback
+ *   (listen conn (fn [tx-report] (println "Transaction:" (:tx-data tx-report))))
+ * - Listen with key
+ *   (listen conn :my-listener (fn [tx-report] ...))
  */
-export function q(map?: { query: string | any[], args?: any[], limit?: number, offset?: number }): Promise<any>;
+export function listen(arg0: any, arg1: any): Promise<any>;
 
 /**
- * Executes a datalog query and returns the result as well as some execution details.
- * Uses the same arguments as q does.
+ * Load entities directly (bulk load)..
+ *
+ * Examples:
+ * - Bulk load entities
+ *   (load-entities conn entities)
  */
-export function queryStats(map?: { query: string | any[], args?: any[], limit?: number, offset?: number }): Promise<object>;
-
-/** Releases a database connection. You need to release a connection as many times as you connected to it for it to be completely released. Set release-all? to true to force its release. */
-export function release(conn?: Connection): Promise<null>;
-
-/** Returns current reverse schema definition. */
-export function reverseSchema(db?: Database): Promise<object>;
-
-/** Returns current schema definition. */
-export function schema(db?: Database): Promise<Schema>;
+export function loadEntities(arg0: any, arg1: any): Promise<any>;
 
 /**
- * Similar to [[datoms]], but will return datoms starting from specified components and including rest of the database until the end of the index.
- * 
- *                              If no datom matches passed arguments exactly, iterator will start from first datom that could be considered “greater” in index order.
- * 
- *                              Usage:
- * 
- *                                  (seek-datoms @db {:index :eavt
- *                                                    :components [1]}) ; => (#datahike/Datom [1 :friends 2]
- *                                                                      ;     #datahike/Datom [1 :likes "fries"]
- *                                                                      ;     #datahike/Datom [1 :likes "pizza"]
- *                                                                      ;     #datahike/Datom [1 :name "Ivan"]
- *                                                                      ;     #datahike/Datom [2 :likes "candy"]
- *                                                                      ;     #datahike/Datom [2 :likes "pie"]
- *                                                                      ;     #datahike/Datom [2 :likes "pizza"])
- * 
- *                                  (seek-datoms @db {:index :eavt
- *                                                    :components [1 :name]}) ; => (#datahike/Datom [1 :name "Ivan"]
- *                                                                            ;     #datahike/Datom [2 :likes "candy"]
- *                                                                            ;     #datahike/Datom [2 :likes "pie"]
- *                                                                            ;     #datahike/Datom [2 :likes "pizza"])
- * 
- *                                  (seek-datoms @db {:index :eavt
- *                                                    :components [2]}) ; => (#datahike/Datom [2 :likes "candy"]
- *                                                                      ;     #datahike/Datom [2 :likes "pie"]
- *                                                                      ;     #datahike/Datom [2 :likes "pizza"])
- * 
- *                              No datom `[2 :likes "fish"]`, so starts with one immediately following such in index
- * 
- *                                  (seek-datoms @db {:index :eavt
- *                                                    :components [2 :likes "fish"]}) ; => (#datahike/Datom [2 :likes "pie"]
- *                                                                                      ;     #datahike/Datom [2 :likes "pizza"])
+ * Returns database metrics (datom counts, index sizes, etc)..
+ *
+ * Examples:
+ * - Get metrics
+ *   (metrics @conn)
  */
-export function seekDatoms(db?: Database, args?: { index: string, components?: any[] }): Promise<any>;
+export function metrics(arg0: any): Promise<any>;
 
 /**
- * Returns the database state since a given point in time (you may use either java.util.Date or a transaction ID as long).
- * Be aware: the database contains only the datoms that were added since the date.
- * 
- * 
- * (transact conn {:tx-data [{:db/ident :name
- *                            :db/valueType :db.type/string
- *                            :db/unique :db.unique/identity
- *                            :db/index true
- *                            :db/cardinality :db.cardinality/one}
- *                           {:db/ident :age
- *                            :db/valueType :db.type/long
- *                            :db/cardinality :db.cardinality/one}]})
- * 
- * (transact conn {:tx-data [{:name "Alice" :age 25} {:name "Bob" :age 30}]})
- * 
- * (def date (java.util.Date.))
- * 
- * (transact conn [{:db/id [:name "Alice"] :age 30}])
- * 
- * (q '[:find ?n ?a
- *      :in $ $since
- *      :where
- *      [$ ?e :name ?n]
- *      [$since ?e :age ?a]]
- *    @conn
- *    (since @conn date)) ; => #{["Alice" 30]}
- * 
- * (q {:query '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]
- *     :args [@conn]}) ; => #{["Alice" 30] ["Bob" 30]}
+ * Fetches data using recursive declarative pull pattern..
+ *
+ * Examples:
+ * - Pull with pattern
+ *   (pull db [:db/id :name :likes {:friends [:db/id :name]}] 1)
+ * - Pull with arg-map
+ *   (pull db {:selector [:db/id :name] :eid 1})
  */
-export function since(db?: Database, timePoint?: any): Promise<Database>;
+export function pull(arg0: any, arg1: any): Promise<object | null>;
 
 /**
- * Allocates and returns a unique temporary id (a negative integer). Ignores `part`. Returns `x` if it is specified.
- * 
- * Exists for Datomic API compatibility. Prefer using negative integers directly if possible.
+ * Same as pull, but accepts sequence of ids and returns sequence of maps..
+ *
+ * Examples:
+ * - Pull multiple entities
+ *   (pull-many db [:db/id :name] [1 2 3])
  */
-export function tempid(): Promise<any>;
-
-/** Same as transact, but asynchronously returns a future. */
-export function transact(conn?: Connection, txs?: Transaction[]): Promise<any>;
-
-/** Removes registered listener from connection. See also [[listen]]. */
-export function unlisten(conn?: Connection, key?: any): Promise<object>;
+export function pullMany(arg0: any, arg1: any): Promise<Array<object>>;
 
 /**
- * Same as [[transact]]`, but applies to an immutable database value. Returns transaction report (see [[transact]]).
- * 
- *              Accepts tx-data and tx-meta as a map.
- * 
- *                  (with @conn {:tx-data [[:db/add 1 :name "Ivan"]]}) ; => {:db-before #datahike/DB {:max-tx 536870912 :max-eid 0},
- *                                                                       ;     :db-after #datahike/DB {:max-tx 536870913 :max-eid 1},
- *                                                                       ;     :tx-data [#datahike/Datom [1 :name "Ivan" 536870913]],
- *                                                                       ;     :tempids #:db{:current-tx 536870913},
- *                                                                       ;     :tx-meta nil}
- * 
- *                  (with @conn {:tx-data [[:db/add 1 :name "Ivan"]]
- *                               :tx-meta {:foo :bar}}) ; => {:db-before #datahike/DB {:max-tx 536870912 :max-eid 0},
- *                                                      ;     :db-after #datahike/DB {:max-tx 536870913 :max-eid 1},
- *                                                      ;     :tx-data [#datahike/Datom [1 :name "Ivan" 536870913]],
- *                                                      ;     :tempids #:db{:current-tx 536870913},
- *                                                      ;     :tx-meta {:foo :bar}}
+ * Executes a datalog query..
+ *
+ * Examples:
+ * - Query with vector syntax
+ *   (q '[:find ?value :where [_ :likes ?value]] db)
+ * - Query with map syntax
+ *   (q '{:find [?value] :where [[_ :likes ?value]]} db)
  */
-export function withDb(db?: Database, argmap?: { 'tx-data': Transaction[], 'tx-meta'?: any }): Promise<TransactionReport>;
+export function q(arg0: any): Promise<any>;
+
+/**
+ * Executes query and returns execution statistics..
+ *
+ * Examples:
+ * - Query with stats
+ *   (query-stats '[:find ?e :where [?e :name]] db)
+ */
+export function queryStats(arg0: any): Promise<object>;
+
+/**
+ * Releases a database connection..
+ *
+ * Examples:
+ * - Release connection
+ *   (release conn)
+ */
+export function release(arg0: any): Promise<null>;
+
+/**
+ * Returns reverse schema definition (attribute id to ident mapping)..
+ *
+ * Examples:
+ * - Get reverse schema
+ *   (reverse-schema @conn)
+ */
+export function reverseSchema(arg0: any): Promise<object>;
+
+/**
+ * Returns current schema definition..
+ *
+ * Examples:
+ * - Get schema
+ *   (schema @conn)
+ */
+export function schema(arg0: any): Promise<any>;
+
+/**
+ * Like datoms, but returns datoms starting from specified components through end of index..
+ *
+ * Examples:
+ * - Seek from entity
+ *   (seek-datoms db {:index :eavt :components [1]})
+ */
+export function seekDatoms(arg0: any, arg1: any): Promise<any | null>;
+
+/**
+ * Returns database state since given time point (Date or transaction ID).
+ *
+ * Examples:
+ * - Query since date
+ *   (since @conn (java.util.Date.))
+ * - Query since transaction
+ *   (since @conn 536870913)
+ */
+export function since(arg0: any, arg1: any): Promise<any>;
+
+/**
+ * Allocates temporary id (negative integer).
+ *
+ * Examples:
+ * - Generate tempid
+ *   (tempid :db.part/user)
+ * - Prefer direct negative integers
+ *   (transact conn [{:db/id -1 :name "Alice"}])
+ */
+export function tempid(arg0: any): Promise<any | number>;
+
+/**
+ * Same as transact, but asynchronously returns a future..
+ *
+ * Examples:
+ * - Async transaction
+ *   @(transact! conn [{:db/id -1 :name "Alice"}])
+ */
+export function transact(arg0: any, arg1: any): Promise<any>;
+
+/**
+ * Removes registered listener from connection..
+ *
+ * Examples:
+ * - Remove listener
+ *   (unlisten conn :my-listener)
+ */
+export function unlisten(arg0: any, arg1: any): Promise<object>;
+
+/**
+ * Applies transaction to immutable db value.
+ *
+ * Examples:
+ * - Transaction on db value
+ *   (with @conn [[:db/add 1 :name "Ivan"]])
+ * - With metadata
+ *   (with @conn {:tx-data [...] :tx-meta {:source :import}})
+ */
+export function withDb(arg0: any, arg1: any): Promise<any>;

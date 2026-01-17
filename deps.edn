@@ -1,20 +1,21 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.11.1"}
-        io.replikativ/hasch                         {:mvn/version "0.3.94"
+        org.replikativ/hasch                        {:mvn/version "0.3.96"
                                                      :exclusions [org.clojure/clojurescript]}
-        io.replikativ/konserve                      {:mvn/version "0.9.340"
+        org.replikativ/konserve                     {:mvn/version "0.9.342"
                                                      :exclusions [org.clojure/clojurescript
                                                                   org.clojars.mmb90/cljs-cache]
                                                      }
-        io.replikativ/superv.async                  {:mvn/version "0.3.48"
+        org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/datalog-parser                {:mvn/version "0.2.30"}
-        io.replikativ/persistent-sorted-set         {:mvn/version "0.3.116"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.3.117"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
         com.taoensso/timbre                         {:mvn/version "6.8.0"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.6"}
+        metosin/malli                               {:mvn/version "0.20.0"}
         mvxcvi/clj-cbor                             {:mvn/version "1.1.1"}
         org.babashka/http-client                    {:mvn/version "0.3.11"}
         metosin/jsonista                            {:mvn/version "0.3.7"}
@@ -48,7 +49,7 @@
                               hashp/hashp                 {:mvn/version "0.2.2"}
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
-           :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server"]
+           :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server" "src-hitchhiker-tree" "src-kabel"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.87.1366"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.5.154"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}
@@ -56,7 +57,8 @@
 
                                ;; hitchhiker-tree index (optional, for testing)
                                io.replikativ/hitchhiker-tree {:mvn/version "0.2.222"
-                                                              :exclusions [org.clojure/clojurescript]}
+                                                              :exclusions [org.clojure/clojurescript
+                                                                           io.replikativ/konserve]}
 
                                ;; http server
                                buddy/buddy-auth              {:mvn/version "3.0.323"}
@@ -66,9 +68,9 @@
                                ring-cors/ring-cors           {:mvn/version "0.1.13"}
 
                                ;; kabel integration for distributed datahike
-                               io.replikativ/kabel           {:mvn/version "0.3.91"}
+                               org.replikativ/kabel           {:mvn/version "0.3.93"}
                                is.simm/distributed-scope     {:mvn/version "0.1.2"}
-                               io.replikativ/konserve-sync   {:mvn/version "0.1.9"}
+                               org.replikativ/konserve-sync   {:mvn/version "0.1.11"}
                                http-kit/http-kit             {:mvn/version "2.8.0"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}
@@ -100,6 +102,7 @@
                                     "-m" "clj.native-image" "datahike.cli"
                                     "--initialize-at-build-time"
                                     "--no-fallback"
+                                    "-H:IncludeResources=DATAHIKE_VERSION"
                                     ; "--future-defaults=all"
                                     "-J-Xmx4g"
                                     "-o dthk"]
@@ -114,7 +117,9 @@
 
            :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
                               babashka/pods             {:git/url "https://github.com/babashka/pods"
-                                                         :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}}}
+                                                         :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}
+                                    
+                              }}
 
            ;; Checks
 

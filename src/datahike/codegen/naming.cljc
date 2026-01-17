@@ -1,4 +1,4 @@
-(ns datahike.js.naming
+(ns datahike.codegen.naming
   "Shared naming conventions for JavaScript API.
   Used by both api_macros.clj and typescript.clj to ensure consistency."
   (:require [clojure.string :as str]))

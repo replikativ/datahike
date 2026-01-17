@@ -6,10 +6,8 @@
             [hasch.core :refer [uuid]]
             [datahike.api.specification :as api]
             [clojure.edn :as edn]
-            [clojure.spec.alpha :as s]
             [datahike.datom :as dd]
             [datahike.remote :as remote]
-            [datahike.spec :as spec]
             [datahike.impl.entity :as de]
             [taoensso.timbre :as log])
   (:import [java.io ByteArrayOutputStream]))
@@ -171,7 +169,7 @@
   (eval
    `(def
       ~(with-meta n
-         {:arglists `(api/spec-args->argslist (quote ~args))
+         {:arglists `(api/malli-schema->argslist (quote ~args))
           :doc      doc})
       (fn [& ~'args]
         ~(if-not supports-remote?

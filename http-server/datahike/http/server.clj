@@ -8,6 +8,7 @@
    [clojure.core.async :as async]
    [datahike.connections :refer [*connections*]]
    [datahike.api.specification :refer [api-specification ->url]]
+   [datahike.api.types :as types]
    [datahike.http.middleware :as middleware]
    [datahike.readers :refer [edn-readers]]
    [datahike.transit :as transit]
@@ -16,7 +17,8 @@
    [datahike.writing]
    [datahike.writer]
    [reitit.ring :as ring]
-   [reitit.coercion.spec]
+   [reitit.coercion.malli]
+   [malli.util :as mu]
    [reitit.swagger :as swagger]
    [reitit.swagger-ui :as swagger-ui]
    [reitit.ring.coercion :as coercion]
@@ -26,13 +28,10 @@
    [reitit.ring.middleware.parameters :as parameters]
    [ring.middleware.cors :refer [wrap-cors]]
    [muuntaja.core :as m]
-   [clojure.spec.alpha :as s]
-   [datahike.spec :as spec]
-   [datahike.tools :refer [datahike-version datahike-logo]]
+   [datahike.tools :refer [datahike-version]]
    [datahike.impl.entity :as de]
    [taoensso.timbre :as log]
-   [ring.adapter.jetty :refer [run-jetty]]
-   [spec-tools.core :as st])
+   [ring.adapter.jetty :refer [run-jetty]])
   (:import [datahike.datom Datom]))
 
 (defn generic-handler [config f]
@@ -75,9 +74,56 @@
 (defn extract-first-sentence [doc]
   (str (first (str/split doc #"\.\s")) "."))
 
+(defn has-cat-operators?
+  "Check if args list contains :cat-specific operators like [:* ...], [:+ ...], [:alt ...], etc.
+   These operators are only valid in :cat schemas, not in :tuple schemas."
+  [args]
+  (some #(and (vector? %) (#{:* :+ :? :alt :altn} (first %))) args))
+
+(defn extract-input-schema
+  "Extract input schema from malli function schema for HTTP body validation.
+   Converts [:=> [:cat Type1 Type2] ret] to [:tuple Type1 Type2]
+   or [:function [:=> [:cat T1] ret] [:=> [:cat T1 T2] ret]] to [:or [:tuple T1] [:tuple T1 T2]]
+
+   The HTTP body is a tuple/vector of arguments that matches the function signature.
+   For zero-arity functions, we use [:= []] to match an empty vector.
+   For functions with :cat operators ([:* ...], [:alt ...], etc), we use [:sequential :any]
+   since tuples can't express these dynamic patterns."
+  [schema]
+  (cond
+    ;; Multi-arity: [:function [:=> [:cat ...] ret] ...]
+    (and (vector? schema) (= :function (first schema)))
+    (let [input-schemas (for [arity-schema (rest schema)
+                              :when (and (vector? arity-schema)
+                                         (= :=> (first arity-schema)))
+                              :let [[_ input-schema _] arity-schema
+                                    args (when (and (vector? input-schema)
+                                                    (= :cat (first input-schema)))
+                                           (rest input-schema))]]
+                          (cond
+                            (not (seq args)) [:= []]  ;; Zero-arity
+                            (has-cat-operators? args) [:sequential :any]  ;; Has :cat operators - can't use tuple
+                            :else (vec (cons :tuple args))))]  ;; Fixed arity
+      (if (> (count input-schemas) 1)
+        (vec (cons :or input-schemas))
+        (first input-schemas)))
+
+    ;; Single arity: [:=> [:cat Type1 Type2] ret]
+    (and (vector? schema) (= :=> (first schema)))
+    (let [[_ input-schema _] schema]
+      (if (and (vector? input-schema) (= :cat (first input-schema)))
+        (let [args (rest input-schema)]
+          (cond
+            (not (seq args)) [:= []]  ;; Zero-arity
+            (has-cat-operators? args) [:sequential :any]  ;; Has :cat operators
+            :else (vec (cons :tuple args))))  ;; Fixed arity
+        [:sequential :any]))
+
+    ;; Fallback
+    :else [:sequential :any]))
+
 ;; This code expands and evals the server route construction given the
-;; API specification. 
-;; TODO This would not need macro-expansion if s/spec would not be a macro.
+;; API specification.
 (eval
  `(defn ~'create-routes [~'config]
     ~(vec
@@ -89,8 +135,7 @@
            {:operationId ~(str n)
             :summary     ~(extract-first-sentence doc)
             :description ~doc
-            :parameters  {:body (st/spec {:spec (s/spec ~args)
-                                          :name ~(str n)})}
+            :parameters  {:body ~(extract-input-schema args)}
             :handler     (generic-handler ~'config ~(resolve n))}}]))))
 
 (def muuntaja-with-opts
@@ -108,7 +153,11 @@
                  {:handlers transit/write-handlers}))))
 
 (defn default-route-opts [muuntaja-with-opts]
-  {:data      {:coercion   reitit.coercion.spec/coercion
+  {:data      {:coercion   (reitit.coercion.malli/create
+                            {:compile mu/closed-schema
+                             :strip-extra-keys true
+                             :default-values true
+                             :options {:registry types/registry}})
                :muuntaja   muuntaja-with-opts
                :middleware [swagger/swagger-feature
                             parameters/parameters-middleware
@@ -125,8 +174,7 @@
 
 (defn internal-writer-routes [server-connections]
   [["/delete-database-writer"
-    {:post {:parameters  {:body (st/spec {:spec any?
-                                          :name "delete-database-writer"})},
+    {:post {:parameters  {:body [:sequential :any]},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
@@ -145,8 +193,7 @@
             :operationId "delete-database"},
      :swagger {:tags ["Internal"]}}]
    ["/create-database-writer"
-    {:post {:parameters  {:body (st/spec {:spec any?
-                                          :name "create-database-writer"})},
+    {:post {:parameters  {:body [:sequential :any]},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
@@ -163,8 +210,7 @@
             :operationId "create-database"},
      :swagger {:tags ["Internal"]}}]
    ["/transact!-writer"
-    {:post {:parameters  {:body (st/spec {:spec any?
-                                          :name "transact-writer"})},
+    {:post {:parameters  {:body [:sequential :any]},
             :summary     "Internal endpoint. DO NOT USE!"
             :no-doc      true
             :handler     (fn [{{:keys [body]} :parameters}]
@@ -217,13 +263,7 @@
   (let [{:keys [level token] :as config} (edn/read-string (slurp (first args)))]
     (when level (log/set-level! level))
     (when (#{:trace :debug :info nil} level)
-      (println)
-      (println "Welcome to datahike.http.server!")
-      (println "For more information visit https://datahike.io,")
-      (println "or if you encounter any problem feel free to open an issue at https://github.com/replikativ/datahike.")
-      (println (str "\n" datahike-logo))
-      (println))
+      (println "Datahike HTTP Server" datahike-version "- https://datahike.io"))
     (log/info "Config:" (if token (assoc config :token "REDACTED") config))
-    (log/info "Datahike version:" datahike-version)
     (start-server config)
     (log/info "Server started.")))

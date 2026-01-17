@@ -4,6 +4,7 @@
     [babashka.fs :as fs]
     [babashka.process :as p]
     [cheshire.core :as json]
+    [clojure.string :as str]
     [clojure.tools.build.api :as b]
     [selmer.parser :refer [render]]
     [tools.version :as version :refer [read-edn-file]]))
@@ -16,6 +17,14 @@
 (defn basis [{:keys [deps-file aliases] :as _project-config}]
   (b/create-basis (cond-> {:project deps-file}
                     aliases (assoc :aliases aliases))))
+
+(defn write-version-resource
+  "Writes version string to resources/DATAHIKE_VERSION for embedding in builds"
+  [repo-config]
+  (print "Writing version resource file...")
+  (fs/create-dirs "resources")
+  (spit "resources/DATAHIKE_VERSION" (version/string repo-config))
+  (println "Done. Version:" (version/string repo-config)))
 
 (defn compile-java
   ([] (compile-java (read-edn-file "config.edn")))
@@ -86,9 +95,13 @@
 (defn native-compile [repo-config {:keys [project-target-dir class-path project-name java-interface] :as project-config}]
   (if-let [graalvm-dir (System/getenv "GRAALVM_HOME")]
     (let [native-jar (jar-path repo-config project-config)
-          svm-jar (str graalvm-dir "/lib/svm/builder/svm.jar")]
-      (println "Compiling native bindings Java class.")
-      (p/shell (str graalvm-dir "/bin/javac") "-cp" (str native-jar ":" svm-jar) java-interface)
+          svm-jar (str graalvm-dir "/lib/svm/builder/svm.jar")
+          java-base-file (str/replace java-interface #"LibDatahike\.java$" "LibDatahikeBase.java")]
+      (println "Compiling native bindings Java classes.")
+      (p/shell (str graalvm-dir "/bin/javac")
+               "-cp" (str native-jar ":" svm-jar)
+               "-d" class-path
+               java-base-file java-interface)
       (println "Compiling shared library through native image.")
       (p/shell (str graalvm-dir "/bin/native-image")
                "-jar" native-jar

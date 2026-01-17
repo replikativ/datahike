@@ -82,6 +82,11 @@ bb test bb-pod")
       (run "Test libdatahike"
            "cd /home/circleci/replikativ
 bb test libdatahike")
+      (run "Install Python dependencies"
+           "pip install --user pytest")
+      (run "Test Python bindings"
+           "cd /home/circleci/replikativ
+bb test python")
       {:persist_to_workspace
        {:root "/home/circleci/"
         :paths ["replikativ/dthk" "replikativ/libdatahike/target" "replikativ/graalvm"]}}

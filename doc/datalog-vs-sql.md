@@ -207,4 +207,4 @@ Most developers become productive within hours. The conceptual shift from impera
 - [Datalog Wikipedia](https://en.wikipedia.org/wiki/Datalog) - Academic background
 - [Learn Datalog Today](http://www.learndatalogtoday.org/) - Interactive tutorial
 - [Datomic Query Documentation](https://docs.datomic.com/query/query.html) - Datahike uses compatible query syntax
-- [Datahike Query Guide](https://cljdoc.org/d/io.replikativ/datahike/CURRENT/doc/query) - Full query capabilities
+- [Datahike Query Guide](https://cljdoc.org/d/org.replikativ/datahike/CURRENT/doc/query) - Full query capabilities

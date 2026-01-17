@@ -61,6 +61,11 @@
     (do (println "Native image cli missing. Please run 'bb ni-cli' and try again.")
         (System/exit 1))))
 
+(defn python []
+  (if (fs/exists? "./libdatahike/target")
+    (p/shell "./bb/resources/native-image-tests/run-python-tests")
+    (println "libdatahike binaries missing. Please run 'bb ni-compile' and try again.")))
+
 (defn specs []
   (kaocha "--focus" "specs" "--plugin" "kaocha.plugin/orchestra"))
 
@@ -104,6 +109,7 @@
   (back-compat config)
   (native-image)
   (libdatahike)
+  (python)
   (bb-pod)
   (cljs-node-test)
   (cljs-browser-test))
@@ -113,6 +119,7 @@
     (case (first args)
       "native-image" (native-image)
       "libdatahike" (libdatahike)
+      "python" (python)
       "bb-pod" (bb-pod)
       "back-compat" (back-compat config)
       "specs" (specs)

@@ -4,7 +4,7 @@ Although Datahike supports a part of [Datomic's
 API](https://docs.datomic.com/client-api/datomic.client.api.html), some
 behavior is different using the different functions. Datahike supports part of the `datomic.client.api`:
 
-[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/org.replikativ/datahike)
 
 Without differences in the signature you may use the following like in Datomic:
 
@@ -25,17 +25,17 @@ The following functions from the `datahike.api` namespace are different from Dat
 - [connect](#connect)
 - [create-database](#create-database)
 - [database-exists?](#database-exists)
-- [db-with](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#db-with)
+- [db-with](https://cljdoc.org/d/org.replikativ/datahike/0.3.6/api/datahike.api#db-with)
 - [delete-database](#delete-database)
-- [entity](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#entity)
-- [entity-db](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#entity-db)
-- [filter](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#filter)
-- [is-filtered](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#is-filtered)
-- [load-entities](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#load-entities)
-- [pull-many](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#pull-many)
-- [release](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#release)
-- [seek-datoms](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#seek-datoms)
-- [tempid](https://cljdoc.org/d/io.replikativ/datahike/0.3.6/api/datahike.api#tempid)
+- [entity](https://cljdoc.org/d/org.replikativ/datahike/0.3.6/api/datahike.api#entity)
+- [entity-db](https://cljdoc.org/d/org.replikativ/datahike/0.3.6/api/datahike.api#entity-db)
+- [filter](https://cljdoc.org/d/org.replikativ/datahike/0.3.6/api/datahike.api#filter)
+- [is-filtered](https://cljdoc.org/d/org.replikativ/datahike/0.3.6/api/datahike.api#is-filtered)
+- [load-entities](https://cljdoc.org/d/org.replikativ/datahike/0.3.6/api/datahike.api#load-entities)
+- [pull-many](https://cljdoc.org/d/org.replikativ/datahike/0.3.6/api/datahike.api#pull-many)
+- [release](https://cljdoc.org/d/org.replikativ/datahike/0.3.6/api/datahike.api#release)
+- [seek-datoms](https://cljdoc.org/d/org.replikativ/datahike/0.3.6/api/datahike.api#seek-datoms)
+- [tempid](https://cljdoc.org/d/org.replikativ/datahike/0.3.6/api/datahike.api#tempid)
 - [with](#with)
 
 Additionally, datahike supports most functions from [datascript](https://github.com/tonsky/datascript)
@@ -62,7 +62,7 @@ Connects to an existing database given the configuration hash-map where Datomic
 takes a client as argument. The specification for the configuration can be found
 [here](./config.md).
 
-[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/org.replikativ/datahike)
 
 ## create-database
 
@@ -70,7 +70,7 @@ Creates a new database with the given configuration hash-map where Datomic takes
 arg-map as arguments. Additional optional parameters are `schema-flexibility`, `keep-history?`
 and `initial-tx`. Have a look at the [configuration documentation](./config.md) for details.
 
-[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/org.replikativ/datahike)
 
 ## delete-database
 
@@ -99,7 +99,7 @@ Returns a hash map different from Datomics' as a report. The `:tx-meta` is not p
 of Datomics' transaction report but apart from that the same keys are present. The
 values are different records though.
 
-[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/org.replikativ/datahike)
 
 ## with
 

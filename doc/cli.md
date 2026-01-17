@@ -1,6 +1,6 @@
 # Command line interface
 
-**Status: Stable** - The CLI is production-ready but may receive updates and improvements.
+**Status: Beta** - The CLI is functional and tested, but the command structure may change as we refine the interface.
 
 We provide the `dthk` native executable to access Datahike databases from
 the command line.
@@ -16,6 +16,31 @@ Supported platforms:
 - macOS (aarch64/Apple Silicon)
 
 For other platforms, build from source using GraalVM native-image (see project documentation).
+
+## Commands
+
+The CLI provides flat commands that mirror the Clojure API functions. To see all available commands, run:
+
+```bash
+$ dthk --help
+```
+
+Common commands by category:
+- **Database Operations**: `create-database`, `delete-database`, `database-exists`
+- **Transaction Operations**: `transact`, `load-entities`, `db-with`, `with`
+- **Query Operations**: `query`, `pull`, `pull-many`, `entity`, `datoms`, `seek-datoms`, `index-range`, `is-filtered`, `query-stats`
+- **Schema Operations**: `schema`, `reverse-schema`
+- **Diagnostics**: `metrics`
+- **Maintenance**: `gc-storage`
+
+Prefix syntax for database access:
+- `db:config.edn` - Dereferences a connection to get the current database value
+- `conn:config.edn` - Creates a connection for transacting
+- `edn:file.edn` - Reads EDN data from a file
+- `json:file.json` - Reads JSON data from a file
+- `asof:timestamp:config.edn` - Creates a database snapshot as-of timestamp
+- `since:timestamp:config.edn` - Creates a database view since timestamp
+- `history:config.edn` - Returns the history database
 
 ## Example usage
 
@@ -47,7 +72,7 @@ $ dthk query '[:find ?n . :where [?e :name ?n]]' db:myconfig.edn
 ```
 
 Note that the `conn:<file>` argument to `transact` comes before the transaction
-value(s), whereas the `db:<file>` argument to `query` comes after the query
+value(s), whereas the `db:<file>` argument to `q` comes after the query
 value, mirroring the Clojure API. As an added benefit, this also allows passing
 multiple db configuration files prefixed with `db:` for joining over arbitrary
 many databases or data files with "edn:" or "json:". Everything non-prefixed is
@@ -64,31 +89,20 @@ command-line arg value. Otherwise it will be parsed as a symbol.
 Provided the filestore is configured with `{:in-place? true}` you can even write
 to the same database without a dedicated daemon from different shells:
 
-
 ```bash
-$ dthk benchmark db:myconfig.edn 0 50000 100
-"Elapsed time: 116335.589411 msecs"
+# In the first shell
+$ dthk transact conn:myconfig.edn '[[:db/add -1 :name "Alice"]]'
+
+# In a second shell simultaneously
+$ dthk transact conn:myconfig.edn '[[:db/add -2 :name "Bob"]]'
 ```
-
-Here we use a provided benchmark helper which transacts facts of the form `[eid
-:name (random-team-member)]` for `eid=0,...,50000` into the store. `100` denotes
-the batch size for each transaction, so here we chunk the 50000 facts into 500
-transactions.
-
-In a second shell you can now simultaneously add facts in a different range:
-
-```bash
-$ dthk benchmark db:myconfig.edn 50000 100000 100
-```
-
 
 To check that everything has been added and no write operations have overwritten
-each other.
-
+each other:
 
 ```bash
 $ dthk query '[:find (count ?e) . :in $ :where [?e :name ?n]]' db:myconfig.edn
-100000 # check :)
+2 # check :)
 ```
 
 # Memory model
@@ -134,7 +148,7 @@ the results, yielding valid transactions that we can then feed into `db2`.
 
 
 ```bash
-dthk query '[:find ?db-add ?e ?a ?v ?t :in $ $2 ?db-add :where [$ ?e ?a ?v ?t] [(not= :db/txInstant ?a)] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn ":db/add" | transact db:config2.edn
+dthk query '[:find ?db-add ?e ?a ?v ?t :in $ $2 ?db-add :where [$ ?e ?a ?v ?t] [(not= :db/txInstant ?a)] (not [$2 ?e ?a ?v ?t])]' db:config1.edn db:config2.edn ":db/add" | dthk transact db:config2.edn
 ```
 
 Note that this very simple strategy assumes that the entity ids that have been

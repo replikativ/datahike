@@ -5,7 +5,7 @@
 </p>
 <p align="center">
 <a href="https://clojurians.slack.com/archives/CB7GJAN0L"><img src="https://badgen.net/badge/-/slack?icon=slack&label"/></a>
-<a href="https://clojars.org/io.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/io.replikativ/datahike.svg" /></a>
+<a href="https://clojars.org/org.replikativ/datahike"> <img src="https://img.shields.io/clojars/v/org.replikativ/datahike.svg" /></a>
 <a href="https://circleci.com/gh/replikativ/datahike"><img src="https://circleci.com/gh/replikativ/datahike.svg?style=shield"/></a>
 <a href="https://github.com/replikativ/datahike/tree/main"><img src="https://img.shields.io/github/last-commit/replikativ/datahike/main"/></a>
 </p>
@@ -17,13 +17,13 @@ Datomic-compatible APIs and git-like semantics. Built on persistent data structu
 database snapshots are immutable values that can be held, shared, and queried anywhere—without locks or copying.
 
 **Key capabilities:**
-- 🌐 **Distributed Index Space**: Read scaling without database connections—readers access persistent indices directly
-- 🗄️ **Flexible storage**: File, LMDB, S3, JDBC, Redis, IndexedDB via [konserve](https://github.com/replikativ/konserve)—[choose what fits](./doc/storage-backends.md)
-- 🌍 **Cross-platform**: JVM, Node.js, Browser (Clojure, ClojureScript, JavaScript, Java APIs)
-- ⚡ **Real-time sync**: WebSocket streaming with [Kabel](https://github.com/replikativ/kabel) for browser ↔ server
-- 🕰️ **Time-travel**: Query any historical state, full transaction audit trail ([versioning API](./doc/versioning.md) becoming stable)
-- 🔒 **GDPR-ready**: Complete data excision for regulatory compliance
-- 🚀 **Production-proven**: Tested with billions of datoms, [deployed in government services](https://gitlab.com/arbetsformedlingen/taxonomy-dev)
+- 🌐 **[Distributed Index Space](./doc/distributed.md)**: Read scaling without database connections—readers access persistent indices directly
+- 🗄️ **[Flexible storage](./doc/storage-backends.md)**: File, LMDB, S3, JDBC, Redis, IndexedDB via konserve
+- 🌍 **[Cross-platform](./doc/README.md#language-bindings-beta)**: JVM, Node.js, Browser (Clojure, ClojureScript, JavaScript, Java APIs)
+- ⚡ **[Real-time sync](./doc/distributed.md)**: WebSocket streaming with Kabel for browser ↔ server
+- 🕰️ **[Time-travel](./doc/time_variance.md)**: Query any historical state, full transaction audit trail
+- 🔒 **[GDPR-ready](./doc/time_variance.md#data-purging)**: Complete data excision for regulatory compliance
+- 🚀 **[Production-proven](https://gitlab.com/arbetsformedlingen/taxonomy-dev)**: Tested with billions of datoms, deployed in government services
 
 **Distributed by design**: Datahike is part of the [replikativ](https://github.com/replikativ) ecosystem for decentralized data architectures.
 
@@ -35,9 +35,9 @@ As systems evolve, SQL schemas accumulate join complexity. What starts as simple
 
 **Time is fundamental to information**: Most value derives from how facts evolve over time. Datahike's immutable design treats the database as an append-only log of facts—queryable at any point in history, enabling audit trails, debugging through time-travel, and GDPR-compliant data excision. Immutability also powers Distributed Index Space: database snapshots are values that can be shared, cached, and queried without locks.
 
-You can find [API documentation on cljdoc](https://cljdoc.org/d/io.replikativ/datahike) and articles on Datahike on our company's [blog page](https://datahike.io/notes/).
+You can find [API documentation on cljdoc](https://cljdoc.org/d/org.replikativ/datahike) and articles on Datahike on our company's [blog page](https://datahike.io/notes/).
 
-[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/io.replikativ/datahike)
+[![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/org.replikativ/datahike)
 
 We presented Datahike also at meetups,for example at:
 
@@ -50,7 +50,7 @@ We presented Datahike also at meetups,for example at:
 
 Add to your dependencies:
 
-[![Clojars Project](http://clojars.org/io.replikativ/datahike/latest-version.svg)](http://clojars.org/io.replikativ/datahike)
+[![Clojars Project](http://clojars.org/org.replikativ/datahike/latest-version.svg)](http://clojars.org/org.replikativ/datahike)
 
 We provide a stable API for the JVM that we extend by first providing experimental/beta features that then get merged into the API over time.
 
@@ -124,28 +124,15 @@ The API namespace provides compatibility to a subset of Datomic functionality
 and should work as a drop-in replacement on the JVM. The rest of Datahike will
 be ported to core.async to coordinate IO in a platform-neutral manner.
 
-Refer to the docs for more information:
+## Documentation
 
+**[📖 Complete Documentation Index](./doc/README.md)** - Organized by topic and skill level
+
+**Quick links:**
+- [Configuration](./doc/config.md) - Database setup and backend options
 - [Why Datalog?](./doc/datalog-vs-sql.md) - Query comparisons and when to use Datalog
-- [Storage backends](./doc/storage-backends.md) - choosing the right backend for your needs
-- [Distributed architecture](./doc/distributed.md) - Distributed Index Space and real-time sync
-- [Versioning](./doc/versioning.md) - git-like branching and merging (beta)
-- [Norms](./doc/norms.md) - database migration system
-- [Configuration](./doc/config.md)
-- [Schema flexibility](./doc/schema.md)
-- [Time Variance](./doc/time_variance.md) - time-travel queries (as-of, history, since), audit trails, and GDPR-compliant purging
-- [Garbage Collection](./doc/gc.md) - reclaim storage by removing old database snapshots
-- [JavaScript API](./doc/javascript-api.md) - Promise-based API for Node.js and browsers
-- [CLI](./doc/cli.md) - native command-line tool (dthk)
-- [Babashka pod](./doc/bb-pod.md) - shell scripting with Datahike
-- [libdatahike](./doc/libdatahike.md) - C/C++ native library
-- [Benchmarking](./doc/benchmarking.md)
-- [Differences to Datomic](./doc/datomic_differences.md)
-- [Entity spec](./doc/entity_spec.md)
-- [Logging and error handling](./doc/logging_and_error_handling.md)
-- [Unstructured input support](./doc/unstructured.md) (experimental)
-- [Backend development](./doc/backend-development.md)
-- [Contributing to Datahike](./doc/contributing.md)
+- [Language Bindings](./doc/README.md#language-bindings-beta) - Java, JavaScript, Python, CLI, and more (beta)
+- [Time Variance](./doc/time_variance.md) - Time-travel queries and GDPR-compliant purging
 
 
 For simple examples have a look at the projects in the `examples` folder.
@@ -160,7 +147,14 @@ For simple examples have a look at the projects in the `examples` folder.
 
 Datahike has **beta ClojureScript support** for both **Node.js** (file backend) and **browsers** (IndexedDB with TieredStore for memory hierarchies).
 
-**JavaScript API** (Promise-based):
+**JavaScript API** (beta):
+
+Install from npm:
+```bash
+npm install datahike@next
+```
+
+Example usage:
 ```javascript
 const d = require('datahike');
 const crypto = require('crypto');
@@ -170,36 +164,31 @@ const config = {
     backend: ':memory',
     id: crypto.randomUUID()
   },
-  'schema-flexibility': ':read'  // Allow schemaless data (use kebab-case)
+  'schema-flexibility': ':read'
 };
 
 await d.createDatabase(config);
 const conn = await d.connect(config);
 await d.transact(conn, [{ name: 'Alice' }]);
-const db = await d.db(conn);  // db() is async for async backends
+const db = await d.db(conn);
 const results = await d.q('[:find ?n :where [?e :name ?n]]', db);
 console.log(results);
 // => [['Alice']]
 ```
 
-**Browser with real-time sync**: Combine IndexedDB storage with [Kabel](https://github.com/replikativ/kabel) WebSocket middleware for offline-capable applications that sync to server when online.
-
 See [JavaScript API documentation](./doc/javascript-api.md) for details.
 
-**npm package** (preview):
-```bash
-npm install datahike@next
-```
+**Browser with real-time sync**: Combine IndexedDB storage with [Kabel](https://github.com/replikativ/kabel) WebSocket middleware for offline-capable applications.
 
-**Native CLI tool** (`dthk`): Compiled with GraalVM native-image for instant startup. Ships with file backend support, scriptable for quick queries and automation. Available in [releases](https://github.com/replikativ/datahike/releases). See [CLI documentation](./doc/cli.md).
+**Native CLI tool** (`dthk`) (beta): Compiled with GraalVM native-image for instant startup. Ships with file backend support, scriptable for quick queries and automation. Available in [releases](https://github.com/replikativ/datahike/releases). See [CLI documentation](./doc/cli.md).
 
-**Babashka pod**: Native-compiled pod available in the [Babashka pod registry](https://github.com/babashka/pod-registry) for shell scripting. See [Babashka pod documentation](./doc/bb-pod.md).
+**Babashka pod** (beta): Native-compiled pod available in the [Babashka pod registry](https://github.com/babashka/pod-registry) for shell scripting. See [Babashka pod documentation](./doc/bb-pod.md).
 
-**Java API**: Shipped with the jar file is [Datahike.java](https://github.com/replikativ/datahike/blob/main/java/src/datahike/java/Datahike.java) (beta).
+**Java API** (beta): Comprehensive bindings with fluent builder pattern and automatic collection conversion. See [Java API documentation](./doc/java-api.md) for the full API guide and [examples](./examples/java/).
 
-**libdatahike**: *C++ bindings* enable embedding Datahike in non-JVM applications. See [libdatahike documentation](./doc/libdatahike.md).
+**libdatahike** (beta): *C/C++ native bindings* enable embedding Datahike in non-JVM applications. See [libdatahike documentation](./doc/libdatahike.md).
 
-**Python bindings** (experimental): [pydatahike](https://github.com/replikativ/pydatahike). Please reach out if you have interest and we can make them work for you.
+**Python bindings** (beta): High-level Pythonic API with automatic EDN conversion. See [Python documentation](./pydatahike/README.md).
 
 ## Production Use
 

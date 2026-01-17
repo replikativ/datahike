@@ -9,10 +9,10 @@ ATTR_REF_CONFIG=bb/resources/native-image-tests/testconfig.attr-refs.edn
 
 trap "rm -rf $TMPSTORE" EXIT
 
-./dthk delete-database $ATTR_REF_CONFIG
-./dthk create-database $ATTR_REF_CONFIG
+./dthk delete-database edn:$ATTR_REF_CONFIG
+./dthk create-database edn:$ATTR_REF_CONFIG
 
-./dthk database-exists $ATTR_REF_CONFIG
+./dthk database-exists edn:$ATTR_REF_CONFIG
 
 # test that warnings etc. get logged to stderr
 LOG_OUTPUT="$(./dthk query '[:find ?e . :where [?e :nonexistent _]]' db:$ATTR_REF_CONFIG 2>&1 >/dev/null | grep ':nonexistent has not been found')"
@@ -22,16 +22,19 @@ then
   exit 1
 fi
 
-./dthk delete-database $CONFIG
-./dthk create-database $CONFIG
+./dthk delete-database edn:$CONFIG
+./dthk create-database edn:$CONFIG
 
-./dthk database-exists $CONFIG
+./dthk database-exists edn:$CONFIG
 
-./dthk benchmark conn:$CONFIG 0 100000 10000
+# Add test data with tx transact (benchmark command no longer available)
+for i in {1..100}; do
+  ./dthk transact conn:$CONFIG "[[:db/add -$i :name \"User-$i\"]]"
+done
 ./dthk transact conn:$CONFIG '[[:db/add -1 :name "Judea"]]'
 QUERY_OUT=`./dthk query '[:find (count ?e) . :where [?e :name _]]' db:$CONFIG`
 
-if [ $QUERY_OUT -eq 100001 ]
+if [ $QUERY_OUT -eq 101 ]
 then
   echo "Test successful."
 else
@@ -59,7 +62,7 @@ fi
 
 # test arbitrary :in[puts] as positional args
 QUERY_OUT=`./dthk query '[:find (pull ?e [*]) . :in $ ?name :where [?e :name ?name]]' db:$CONFIG '"Judea"'`
-if [ "$QUERY_OUT" = '{:db/id 100001, :name "Judea"}' ]
+if [ "$QUERY_OUT" = '{:db/id 101, :name "Judea"}' ]
 then
   echo "Positional input test successful."
 else
@@ -67,5 +70,5 @@ else
   exit 1
 fi
 
-./dthk delete-database $CONFIG
-./dthk delete-database $ATTR_REF_CONFIG
+./dthk delete-database edn:$CONFIG
+./dthk delete-database edn:$ATTR_REF_CONFIG

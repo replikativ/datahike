@@ -6,10 +6,14 @@
  :tasks {:requires [[babashka.fs :as fs]
                     [babashka.process :as process]
                     [clojure.edn :as edn]
+                    [clojure.string :as str]
                     [pod.borkdude.clj-kondo :as clj-kondo]
                     [tools.build :as build]
+                    [tools.clj-kondo :as clj-kondo-tools]
                     [tools.deploy :as deploy]
+                    [tools.examples :as examples]
                     [tools.npm :as npm]
+                    [tools.python :as python]
                     [tools.release :as release]
                     [tools.test :as test]
                     [tools.version :as version]]
@@ -62,18 +66,67 @@
          prep {:doc "Prepare git dependencies (compile Java sources)"
                :task (clojure "-X:deps prep")}
 
+         codegen-java {:doc "Generate Java API bindings from specification"
+                       :depends [prep]
+                       :task (let [cp (str/trim (:out (shell {:out :string} "clojure" "-Spath")))]
+                               ;; First compile Java dependencies (Util, IEntity) so Clojure can load them
+                               (println "Compiling Java dependencies...")
+                               (shell "javac" "-cp" cp "-d" "target/classes"
+                                      "java/src/datahike/java/IEntity.java"
+                                      "java/src/datahike/java/Util.java")
+                               ;; Now generate the Java API
+                               (println "Generating Java API from specification...")
+                               (clojure "-M" "-m" "datahike.codegen.java" "java/src-generated"))}
+
+         codegen-ts {:doc "Generate TypeScript type definitions from specification"
+                     :task (npm/generate-typescript-definitions! "npm-package/index.d.ts")}
+
+         codegen-native {:doc "Generate native C entry points from specification"
+                         :depends [prep]
+                         :task (clojure "-M" "-m" "datahike.codegen.native" "libdatahike/src")}
+
+         python-version {:doc "Update Python package version from config.edn"
+                         :task (python/update-python-version! config "pydatahike")}
+
+         codegen-python {:doc "Generate Python bindings from specification"
+                         :depends [prep python-version]
+                         :task (clojure "-M" "-m" "datahike.codegen.python" "pydatahike/src/datahike")}
+
+         java-examples-version {:doc "Update Java examples pom.xml version to match current version"
+                                :task (examples/update-java-examples-version! config)}
+
+         codegen-clj-kondo {:doc "Generate clj-kondo config from API specification"
+                            :depends [prep]
+                            :task (clj-kondo-tools/generate-clj-kondo-config!
+                                    "resources/clj-kondo.exports/io.replikativ/datahike/config.edn"
+                                    ".clj-kondo/datahike/datahike/config.edn"
+                                    ".clj-kondo/config.edn")}
+
+         codegen-all {:doc "Generate all language bindings (TypeScript, Java, Native, Python)"
+                      :depends [codegen-ts codegen-java codegen-native codegen-python]}
+
+         codegen-report {:doc "Show code generation coverage across all bindings"
+                         :depends [prep]
+                         :task (clojure "-M" "-m" "datahike.codegen.report")}
+
          jcompile {:doc "Compile java classes"
-                   :depends [clean prep]
+                   :depends [clean codegen-java]
                    :task (build/compile-java (-> config :build :clj))}
+
+         javadoc {:doc "Generate Javadoc for Java API (published to javadoc.io)"
+                  :task (build/javadoc {})}
 
          ccompile {:doc "Compile clojure namespaces"
                    :task (build/compile-clojure (-> config :build :clj))}
+
+         version-resource {:doc "Generate version resource file for embedding in builds"
+                           :task (build/write-version-resource config)}
 
          pom {:doc "Create pom file"
               :task (build/pom config (-> config :build :clj))}
 
          jar {:doc "Build jar"
-              :depends [jcompile pom]
+              :depends [jcompile pom version-resource]
               :task (build/jar config (-> config :build :clj))}
 
          install {:doc "Install jar locally"
@@ -102,7 +155,7 @@
                           :task (build/pom config (-> config :build :http-server-clj))}
 
          http-server-uber {:doc     "Build jar"
-                           :depends [http-server-jcompile http-server-pom http-server-ccompile]
+                           :depends [http-server-jcompile http-server-pom http-server-ccompile version-resource]
                            :task    (build/uber config (-> config :build :http-server-clj))}
 
          http-server-install {:doc  "Install uber jar locally"
@@ -123,14 +176,15 @@
                                 (System/exit 1)))}
 
          ni-cli {:doc "Build native image cli"
-                 :depends [jcompile ni-check]
+                 :depends [jcompile ni-check version-resource]
                  :task (clojure "-M:native-cli")}
 
          ni-ccompile {:doc "Compile clojure namespaces for native-image"
+                      :depends [jcompile]
                       :task (build/compile-clojure (-> config :build :native))}
 
          ni-uber {:doc "Build native image uber jar"
-                  :depends [jcompile ccompile ni-ccompile]
+                  :depends [jcompile ni-ccompile version-resource]
                   :task (build/uber config (-> config :build :native))}
 
          ni-compile {:doc "Create native cpp library"
@@ -141,9 +195,6 @@
 
          npm-version {:doc "Update npm package.json version from config.edn"
                       :task (npm/update-package-json-version! config "npm-package")}
-
-         npm-types {:doc "Generate TypeScript definitions for npm package"
-                    :task (npm/generate-typescript-definitions! "npm-package/index.d.ts")}
 
          npm-clean {:doc "Clean compiled files from npm package directory"
                     :task (npm/clean-npm-package! "npm-package")}

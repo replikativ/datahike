@@ -2,7 +2,9 @@
   (:require [datahike.api :as d]))
 
 (def cfg {:store {:backend :file
-                  :path "/tmp/example"}})
+                  :path "/tmp/example"}
+          :keep-history? true
+          :schema-flexibility :read})
 
 ;; create a database at this place, per default configuration we enforce a strict
 ;; schema and keep all historical data
@@ -54,8 +56,5 @@
   (d/history @conn))
 ;; => #{[20] [25]}
 
-;; you might need to release the connection for specific stores like leveldb
-(d/release conn)
-
-;; clean up the database if it is not need any more
+;; clean up the database if it is not needed any more
 (d/delete-database cfg)

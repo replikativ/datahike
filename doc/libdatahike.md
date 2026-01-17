@@ -1,10 +1,8 @@
 # Libdatahike - C/C++ Native Library
 
+**Status: Beta** - The native library is functional and tested, but the API may change as we refine the bindings.
+
 Libdatahike provides a C/C++ interface to Datahike, allowing you to use Datahike databases from native applications. This library is built using GraalVM Native Image.
-
-## Maturity
-
-This feature of Datahike is still early and is subject to change.
 
 ## Building
 

@@ -1,21 +1,95 @@
+;; clj-kondo configuration for Datahike
+;; Type definitions for datahike.api are AUTO-GENERATED
+;; To regenerate: bb codegen-clj-kondo
 
-{:lint-as {datahike.db/defrecord-updatable clojure.core/deftype
-           datahike.lru/defcache clojure.core/deftype
-           datalog.parser.type/deftrecord clojure.core/defrecord}
- :linters {;; For some reason not detected as resolved
-           :unresolved-var {:exclude [babashka.fs
-                                      datahike.http.client
-                                      datahike.api]}
-           ;; Used by bb.edn, but not detected as used 
-           :clojure-lsp/unused-public-var {:exclude [tools.build/clean
-                                                     tools.build/compile-clojure
-                                                     tools.build/jar
-                                                     tools.build/native-compile
-                                                     tools.build/pom
-                                                     tools.build/uber
-                                                     tools.cljdoc/preview
-                                                     tools.deploy/local
-                                                     tools.deploy/remote
-                                                     tools.release/gh-release
-                                                     tools.version/as-tag
-                                                     tools.version/inc]}}}
+{:config-paths ["datahike/datahike"],
+ :lint-as
+ {datahike.db/defrecord-updatable clojure.core/deftype,
+  datahike.lru/defcache clojure.core/deftype,
+  datalog.parser.type/deftrecord clojure.core/defrecord},
+ :linters
+ {:unresolved-var {:exclude [babashka.fs datahike.http.client]},
+  :clojure-lsp/unused-public-var
+  {:exclude
+   [tools.build/clean
+    tools.build/compile-clojure
+    tools.build/jar
+    tools.build/native-compile
+    tools.build/pom
+    tools.build/uber
+    tools.cljdoc/preview
+    tools.deploy/local
+    tools.deploy/remote
+    tools.release/gh-release
+    tools.version/as-tag
+    tools.version/inc]},
+  :type-mismatch
+  {:namespaces
+   {datahike.api
+    {unlisten {:arities {2 {:args [:any :any], :ret :any}}},
+     delete-database
+     {:arities {1 {:args [:any], :ret :any}, 0 {:args [], :ret :any}}},
+     pull
+     {:arities
+      {2 {:args [:any :any], :ret :any},
+       3 {:args [:any :vector :any], :ret :any}}},
+     entity {:arities {2 {:args [:any :any], :ret :any}}},
+     metrics {:arities {1 {:args [:any], :ret :any}}},
+     reverse-schema {:arities {1 {:args [:any], :ret :any}}},
+     datoms
+     {:arities
+      {2 {:args [:any :any], :ret :any},
+       3 {:args [:any :keyword :any], :ret :any}}},
+     load-entities {:arities {2 {:args [:any :any], :ret :any}}},
+     is-filtered {:arities {1 {:args [:any], :ret :boolean}}},
+     q
+     {:arities
+      {1 {:args [:any], :ret :any}, 2 {:args [:any :any], :ret :any}}},
+     schema {:arities {1 {:args [:any], :ret :any}}},
+     index-range {:arities {2 {:args [:any :any], :ret :any}}},
+     pull-many
+     {:arities
+      {2 {:args [:any :any], :ret :seqable},
+       3 {:args [:any :vector :any], :ret :seqable}}},
+     since {:arities {2 {:args [:any :any], :ret :any}}},
+     query-stats
+     {:arities
+      {1 {:args [:any], :ret :any}, 2 {:args [:any :any], :ret :any}}},
+     entity-db {:arities {1 {:args [:any], :ret :any}}},
+     gc-storage
+     {:arities
+      {2 {:args [:any :any], :ret :any}, 1 {:args [:any], :ret :any}}},
+     create-database
+     {:arities {1 {:args [:any], :ret :any}, 0 {:args [], :ret :any}}},
+     db {:arities {1 {:args [:any], :ret :any}}},
+     connect
+     {:arities
+      {1 {:args [:any], :ret :any},
+       2 {:args [:any :any], :ret :any},
+       0 {:args [], :ret :any}}},
+     release {:arities {1 {:args [:any], :ret :nil}}},
+     history {:arities {1 {:args [:any], :ret :any}}},
+     transact! {:arities {2 {:args [:any :any], :ret :any}}},
+     database-exists?
+     {:arities
+      {1 {:args [:any], :ret :boolean}, 0 {:args [], :ret :boolean}}},
+     transact {:arities {2 {:args [:any :any], :ret :any}}},
+     as-of {:arities {2 {:args [:any :any], :ret :any}}},
+     seek-datoms
+     {:arities
+      {2 {:args [:any :any], :ret :any},
+       3 {:args [:any :keyword :any], :ret :any}}},
+     filter {:arities {2 {:args [:any :any], :ret :any}}},
+     listen
+     {:arities
+      {2 {:args [:any :any], :ret :any},
+       3 {:args [:any :any :any], :ret :any}}},
+     db-with {:arities {2 {:args [:any :any], :ret :any}}},
+     with
+     {:arities
+      {2 {:args [:any :any], :ret :any},
+       3 {:args [:any :any :any], :ret :any}}},
+     tempid
+     {:arities
+      {1 {:args [:any], :ret :any},
+       2 {:args [:any :int], :ret :int}}}}}}}}

@@ -226,6 +226,47 @@ jobs:
           paths:
             - /home/circleci/.m2
             - /home/circleci/.deps.clj
+  java-examples-test:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Update examples pom.xml to current version
+          command: bb java-examples-version
+      - run:
+          name: Verify local Datahike jar exists
+          command: |
+            echo "Checking .m2 directory structure:"
+            ls -la /home/circleci/.m2/repository/org/replikativ/ || echo ".m2/repository/org/replikativ not found"
+            echo ""
+            echo "Checking datahike versions:"
+            ls -la /home/circleci/.m2/repository/org/replikativ/datahike/ || echo "datahike directory not found"
+            echo ""
+            echo "Current version directory:"
+            CURRENT_VERSION=$(grep -oP '<datahike.version>\K[^<]+' examples/java/pom.xml)
+            echo "Looking for version: $CURRENT_VERSION"
+            ls -la /home/circleci/.m2/repository/org/replikativ/datahike/$CURRENT_VERSION/ || echo "$CURRENT_VERSION directory not found"
+      - run:
+          name: Download Maven dependencies
+          command: cd examples/java && mvn dependency:resolve dependency:resolve-plugins
+      - run:
+          name: Run QuickStart example
+          command: cd examples/java && mvn compile exec:java -Dexec.mainClass="examples.QuickStart"
+          no_output_timeout: 3m
+      - run:
+          name: Run SchemaExample
+          command: cd examples/java && mvn compile exec:java -Dexec.mainClass="examples.SchemaExample"
+          no_output_timeout: 3m
+      - run:
+          name: Run TimeTravelExample
+          command: cd examples/java && mvn compile exec:java -Dexec.mainClass="examples.TimeTravelExample"
+          no_output_timeout: 3m
+      - save_cache:
+          key: deps-{{ checksum "deps.edn" }}
+          paths:
+            - /home/circleci/.m2
+            - /home/circleci/.deps.clj
   build:
     executor: tools/clojurecli
     steps:
@@ -234,6 +275,9 @@ jobs:
       - run:
           name: Build jar
           command: bb jar
+      - run:
+          name: Install jar to local Maven repository
+          command: bb install
       - persist_to_workspace:
           root: /home/circleci/
           paths:
@@ -327,6 +371,10 @@ workflows:
           context: ghcr-read-package
           requires:
             - build
+      - java-examples-test:
+          context: ghcr-read-package
+          requires:
+            - build
       - deploy:
           context:
             - ghcr-read-package
@@ -345,6 +393,7 @@ workflows:
             - browser-test
             - node-cljs-test
             - npm-test
+            - java-examples-test
       - release-jar:
           context:
             - ghcr-read-package
@@ -362,6 +411,7 @@ workflows:
             - browser-test
             - node-cljs-test
             - npm-test
+            - java-examples-test
       - release-pod:
           context:
             - ghcr-read-package
@@ -379,3 +429,4 @@ workflows:
             - browser-test
             - node-cljs-test
             - npm-test
+            - java-examples-test

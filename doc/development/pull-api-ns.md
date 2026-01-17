@@ -80,7 +80,7 @@ Map with keys
 
 ## Pull API Usage
 
-See also the official [Datahike documentation](https://cljdoc.org/d/io.replikativ/datahike/0.3.2/api/datahike.api#pull).
+See also the official [Datahike documentation](https://cljdoc.org/d/org.replikativ/datahike/0.3.2/api/datahike.api#pull).
 
 Setup for examples:
 

@@ -1,6 +1,6 @@
 # Datahike JavaScript API
 
-**Status: Beta** - API is stable and tested. Published as `datahike@next` on npm.
+**Status: Beta** - API is functional and tested, but may receive breaking changes. Published as `datahike@next` on npm.
 
 ## Overview
 
@@ -36,7 +36,7 @@ bb npm-build
 
 # Individual steps:
 bb npm-version    # Generate package.json from template with version from config.edn
-bb npm-types      # Generate TypeScript definitions
+bb codegen-ts     # Generate TypeScript definitions
 bb npm-test       # Run npm package tests
 ```
 
@@ -47,7 +47,7 @@ Output is generated in `npm-package/datahike.js.api.js` with advanced compilatio
 ## Installation
 
 ```bash
-npm install datahike
+npm install datahike@next
 ```
 
 ## Usage
@@ -117,50 +117,67 @@ async function example() {
 
 ## Data Conversion
 
+Datahike uses universal EDN conversion rules that are consistent across Python, JavaScript, and Java bindings:
+
+> **Keys are always keywordized. Values starting with `:` become keywords, everything else remains literal.**
+
 ### JavaScript → ClojureScript
 
-- JS objects → CLJ maps with keyword keys
-- Arrays → CLJ vectors
-- Strings starting with `:` → keywords (for values only)
-- Other values pass through unchanged
+- **Object keys**: Always converted to keywords (`:` prefix added automatically)
+- **String values starting with `:`**: Converted to keywords (e.g., `":memory"` → `:memory`)
+- **String values starting with `\\:`**: Literal colon string (e.g., `"\\:literal"` → `":literal"`)
+- **Other string values**: Remain as strings
+- **Arrays**: Converted to CLJ vectors
+- **Numbers, booleans, null**: Pass through unchanged
+- **UUID strings**: Auto-detected and converted to UUID objects (convenience feature)
 
 ### ClojureScript → JavaScript
 
-- Keywords → strings with `:` prefix
-- CLJ maps → JS objects (keyword keys become strings without `:`)
-- Vectors/Lists → Arrays
-- Sets → Arrays
+- **Keywords**: Converted to strings with `:` prefix
+- **CLJ maps**: Converted to JS objects (keyword keys become strings)
+- **Vectors/Lists**: Converted to Arrays
+- **Sets**: Converted to Arrays
 - **Special**: DB values, datoms, and connections pass through unchanged
+
+For complete conversion rules and edge cases, see [EDN Conversion Documentation](bindings/edn-conversion.md).
 
 ## Important Notes
 
 ### Keyword Syntax
 
-**⚠️ Note:** The JavaScript keyword syntax translation may change in future versions to simplify the API.
+The universal EDN conversion rules make keyword syntax simple and predictable:
 
-**Current syntax (critical distinction):**
-- **Schema/config keys**: Plain strings WITHOUT `:` prefix
-- **Schema/config values**: Strings WITH `:` prefix (keywords)
-- **Data keys**: Plain strings WITHOUT `:` prefix
-- **Pull patterns**: Strings WITH `:` prefix (keywords)
+**Simple rule: Keys never need `:`, values that should be keywords need `:`**
 
 ```javascript
-// ✅ Correct
+// ✅ Schema definition
 const schema = [{
-  'db/ident': ':name',              // Key: no colon, Value: with colon
-  'db/valueType': ':db.type/string' // Key: no colon, Value: with colon
+  'db/ident': ':name',              // Key auto-keywordized, value is keyword
+  'db/valueType': ':db.type/string', // Both become keywords
+  'db/cardinality': ':db.cardinality/one'
 }];
 
+// ✅ Data insertion
 const data = [
-  { name: 'Alice', age: 30 }        // Data keys: no colons
+  { name: 'Alice', age: 30 }        // Keys auto-keywordized, values are literals
 ];
 
-const pattern = [':name', ':age'];   // Pattern: with colons
+// ✅ Configuration
+const config = {
+  store: {
+    backend: ':memory',                // ":memory" becomes :memory keyword
+    id: 'test'                      // "test" stays as string
+  },
+  'schema-flexibility': ':read',    // ":read" becomes :read keyword
+  'keep-history?': true             // boolean passes through
+};
 
-// ❌ Wrong
-const schema = [{
-  ':db/ident': ':name',             // Bad - key has colon
-  'db/valueType': 'db.type/string'  // Bad - value missing colon
+// ✅ Pull patterns (array of keyword strings)
+const pattern = [':name', ':age'];   // Strings with : become keywords
+
+// ✅ Literal colon strings (rare)
+const data = [{
+  description: '\\:starts-with-colon'  // Escaped → ":starts-with-colon" (string)
 }];
 ```
 
@@ -391,11 +408,11 @@ npm install datahike@next
 
 ## Future Improvements
 
-- Simplify keyword syntax (auto-detect vs requiring `:` prefix)
 - Add transaction builder helpers for common patterns
 - Fluent/chainable API for queries
 - Convenience wrappers for common query patterns
 - Improved error messages for JavaScript users
+- Helper module with EDN type constructors (similar to Python's `edn.keyword()`, `kw.DB_ID` constants)
 
 ## See Also
 
