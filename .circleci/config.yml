@@ -233,7 +233,15 @@ jobs:
           at: /home/circleci
       - run:
           name: Verify local Datahike jar exists
-          command: ls -la /home/circleci/.m2/repository/org/replikativ/datahike/
+          command: |
+            echo "Checking .m2 directory structure:"
+            ls -la /home/circleci/.m2/repository/org/replikativ/ || echo ".m2/repository/org/replikativ not found"
+            echo ""
+            echo "Checking datahike versions:"
+            ls -la /home/circleci/.m2/repository/org/replikativ/datahike/ || echo "datahike directory not found"
+            echo ""
+            echo "Checking 0.7.1659 files:"
+            ls -la /home/circleci/.m2/repository/org/replikativ/datahike/0.7.1659/ || echo "0.7.1659 directory not found"
       - run:
           name: Download Maven dependencies
           command: cd examples/java && mvn dependency:resolve dependency:resolve-plugins
