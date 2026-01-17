@@ -235,16 +235,19 @@ jobs:
           name: Verify local Datahike jar exists
           command: ls -la /home/circleci/.m2/repository/org/replikativ/datahike/
       - run:
+          name: Download Maven dependencies
+          command: cd examples/java && mvn dependency:resolve dependency:resolve-plugins
+      - run:
           name: Run QuickStart example
-          command: cd examples/java && mvn -o compile exec:java -Dexec.mainClass="examples.QuickStart"
+          command: cd examples/java && mvn compile exec:java -Dexec.mainClass="examples.QuickStart"
           no_output_timeout: 3m
       - run:
           name: Run SchemaExample
-          command: cd examples/java && mvn -o compile exec:java -Dexec.mainClass="examples.SchemaExample"
+          command: cd examples/java && mvn compile exec:java -Dexec.mainClass="examples.SchemaExample"
           no_output_timeout: 3m
       - run:
           name: Run TimeTravelExample
-          command: cd examples/java && mvn -o compile exec:java -Dexec.mainClass="examples.TimeTravelExample"
+          command: cd examples/java && mvn compile exec:java -Dexec.mainClass="examples.TimeTravelExample"
           no_output_timeout: 3m
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
