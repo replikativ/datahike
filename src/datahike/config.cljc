@@ -160,6 +160,25 @@
               x))]
     (postwalk f m)))
 
+(defn- validate-store-backend
+  "Validate that the store backend is compatible with Datahike's sync query engine.
+   Throws an informative error for async-only backends like IndexedDB."
+  [store-config]
+  (when (= :indexeddb (:backend store-config))
+    (throw (ex-info
+            (str "The :indexeddb backend cannot be used directly.\n\n"
+                 "Datahike's query engine requires synchronous reads, but "
+                 "IndexedDB is async-only.\n\n"
+                 "Use a TieredStore with memory frontend instead:\n\n"
+                 "{:store {:backend :tiered\n"
+                 "         :id <your-uuid>\n"
+                 "         :frontend-config {:backend :memory :id <your-uuid>}\n"
+                 "         :backend-config {:backend :indexeddb :id <your-uuid>}}}\n\n"
+                 "See: https://github.com/replikativ/datahike/blob/main/doc/cljs-support.md")
+            {:type :async-only-backend
+             :backend :indexeddb
+             :config store-config}))))
+
 (defn load-config
   "Load and validate configuration with defaults from the store."
   ([]
@@ -180,6 +199,7 @@
                           (log/warn "DEPRECATION: :mem backend is deprecated, use :memory instead. Support for :mem will be removed in a future version.")
                           (assoc raw-store-config :backend :memory))
                         raw-store-config)
+         _ (validate-store-backend store-config)
          index (if (:datahike-index env)
                  (keyword "datahike.index" (:datahike-index env))
                  *default-index*)

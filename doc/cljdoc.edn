@@ -11,6 +11,7 @@
                     ["Garbage Collection" {:file "doc/gc.md"}]
                     ["Norms (Database Migrations)" {:file "doc/norms.md"}]]
                    ["Platform Support" {}
+                    ["ClojureScript Support" {:file "doc/cljs-support.md"}]
                     ["JavaScript API" {:file "doc/javascript-api.md"}]
                     ["Babashka Pod" {:file "doc/bb-pod.md"}]
                     ["Command Line Interface" {:file "doc/cli.md"}]
