@@ -1,7 +1,7 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.11.1"}
         org.replikativ/hasch                        {:mvn/version "0.3.96"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:mvn/version "0.9.342"
+        org.replikativ/konserve                     {:mvn/version "0.9.343"
                                                      :exclusions [org.clojure/clojurescript
                                                                   org.clojars.mmb90/cljs-cache]
                                                      }
