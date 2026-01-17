@@ -358,19 +358,7 @@ const config = {
 
 ### Java (Enhancement)
 
-**Old Syntax (still works):**
-```java
-import java.util.UUID;
-
-Map<String, Object> config = Map.of(
-    "store", Map.of(
-        "backend", "mem",       // String passed through
-        "id", UUID.randomUUID().toString() // Memory backend requires UUID
-    )
-);
-```
-
-**New Syntax (recommended):**
+**Syntax:**
 ```java
 import java.util.UUID;
 
@@ -385,7 +373,7 @@ Map<String, Object> config = Map.of(
 Database.memory(UUID.randomUUID().toString()).build();
 ```
 
-**Migration:** Both syntaxes work. Update to `:` prefix for consistency with other languages.
+**Migration:** Add `:` prefix to all values that should be keywords for consistency with other languages.
 
 ## See Also
 

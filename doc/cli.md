@@ -27,7 +27,6 @@ $ dthk --help
 
 Common commands by category:
 - **Database Operations**: `create-database`, `delete-database`, `database-exists`
-- **Connection Operations**: `connect`
 - **Transaction Operations**: `transact`, `load-entities`, `db-with`, `with`
 - **Query Operations**: `query`, `pull`, `pull-many`, `entity`, `datoms`, `seek-datoms`, `index-range`, `is-filtered`, `query-stats`
 - **Schema Operations**: `schema`, `reverse-schema`
@@ -72,7 +71,7 @@ $ dthk query '[:find ?n . :where [?e :name ?n]]' db:myconfig.edn
 "Linus" # prints the name
 ```
 
-Note that the `conn:<file>` argument to `tx transact` comes before the transaction
+Note that the `conn:<file>` argument to `transact` comes before the transaction
 value(s), whereas the `db:<file>` argument to `q` comes after the query
 value, mirroring the Clojure API. As an added benefit, this also allows passing
 multiple db configuration files prefixed with `db:` for joining over arbitrary

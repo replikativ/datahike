@@ -747,8 +747,7 @@ Datahike is Datomic-compatible with similar semantics:
 - ✅ Similar schema system
 - ✅ Open source and free
 - ✅ Multiple storage backends
-- ⚠️ Smaller community and ecosystem
-- ⚠️ Single-node only (distributed features in development)
+- ⚠️ Smaller community and ecosystem, but API compatible
 
 ### vs SQL Databases
 
