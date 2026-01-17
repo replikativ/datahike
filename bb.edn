@@ -188,7 +188,7 @@
                   :task (build/uber config (-> config :build :native))}
 
          ni-compile {:doc "Create native cpp library"
-                     :depends [ni-uber]
+                     :depends [codegen-native ni-uber]
                      :task (build/native-compile config (-> config :build :native))}
 
         ;; npm package
