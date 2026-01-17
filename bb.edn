@@ -11,6 +11,7 @@
                     [tools.build :as build]
                     [tools.clj-kondo :as clj-kondo-tools]
                     [tools.deploy :as deploy]
+                    [tools.examples :as examples]
                     [tools.npm :as npm]
                     [tools.python :as python]
                     [tools.release :as release]
@@ -90,6 +91,9 @@
          codegen-python {:doc "Generate Python bindings from specification"
                          :depends [prep python-version]
                          :task (clojure "-M" "-m" "datahike.codegen.python" "pydatahike/src/datahike")}
+
+         java-examples-version {:doc "Update Java examples pom.xml version to match current version"
+                                :task (examples/update-java-examples-version! config)}
 
          codegen-clj-kondo {:doc "Generate clj-kondo config from API specification"
                             :depends [prep]

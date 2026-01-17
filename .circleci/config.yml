@@ -232,6 +232,9 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
+          name: Update examples pom.xml to current version
+          command: bb java-examples-version
+      - run:
           name: Verify local Datahike jar exists
           command: |
             echo "Checking .m2 directory structure:"
@@ -240,8 +243,10 @@ jobs:
             echo "Checking datahike versions:"
             ls -la /home/circleci/.m2/repository/org/replikativ/datahike/ || echo "datahike directory not found"
             echo ""
-            echo "Checking 0.7.1659 files:"
-            ls -la /home/circleci/.m2/repository/org/replikativ/datahike/0.7.1659/ || echo "0.7.1659 directory not found"
+            echo "Current version directory:"
+            CURRENT_VERSION=$(grep -oP '<datahike.version>\K[^<]+' examples/java/pom.xml)
+            echo "Looking for version: $CURRENT_VERSION"
+            ls -la /home/circleci/.m2/repository/org/replikativ/datahike/$CURRENT_VERSION/ || echo "$CURRENT_VERSION directory not found"
       - run:
           name: Download Maven dependencies
           command: cd examples/java && mvn dependency:resolve dependency:resolve-plugins
