@@ -171,7 +171,7 @@
   [arity-schema]
   (let [;; Check if last element is variadic
         has-variadic? (and (seq arity-schema)
-                          (variadic-schema? (last arity-schema)))
+                           (variadic-schema? (last arity-schema)))
         ;; Fixed args are all but the variadic marker
         fixed-schema (if has-variadic?
                        (butlast arity-schema)
