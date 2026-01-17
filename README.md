@@ -139,9 +139,9 @@ For simple examples have a look at the projects in the `examples` folder.
 
 ## Example Projects
 
-- [Invoice creation](https://gitlab.com/replikativ/datahike-invoice)
-  demonstrated at the [Dutch Clojure
-  Meetup](https://www.meetup.com/de-DE/The-Dutch-Clojure-Meetup/events/trmqnpyxjbrb/).
+### Applications
+
+- **[Beleg](https://github.com/replikativ/beleg)** - Invoice and CRM system with web UI, LaTeX PDF generation, and Datahike persistence. Works as both an example project demonstrating Datahike patterns and a practical solution for contractors and small businesses. Features customers, tasks, offers, and invoices. Successor to the [original Datahike invoice demo](https://www.youtube.com/watch?v=W6Z1mkvqp3g) from Dutch Clojure Meetup 2018.
 
 ## ClojureScript & JavaScript Support
 
@@ -194,28 +194,44 @@ See [JavaScript API documentation](./doc/javascript-api.md) for details.
 
 ### Swedish Public Employment Service
 
-The [Swedish Public Employment Service](https://arbetsformedlingen.se) (Arbetsförmedlingen) has been using Datahike in production since 2024 to store and serve the [Labour Market Taxonomy](https://gitlab.com/arbetsformedlingen/taxonomy-dev) (Arbetsmarknadstaxonomin). This is a terminology consisting of more than 40,000 labour market concepts, primarily representing occupations and skills, used to encode labour market data both within Arbetsförmedlingen and externally.
+The [Swedish Public Employment Service](https://arbetsformedlingen.se) (Arbetsförmedlingen) has been using Datahike in production since 2024 to serve the [JobTech Taxonomy](https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/jobtech-taxonomy-api) (Arbetsmarknadstaxonomin) - a labour market terminology database with 40,000+ concepts representing occupations, skills, and education standards, accessed daily by thousands of case workers across Sweden.
 
-**Key facts**:
-- **Scale**: 40,000+ concepts with complex relationships
-- **Usage**: Thousands of case workers access the taxonomy API daily across Sweden
-- **Versioning**: Transaction history provides full audit trail for regulatory compliance
-- **Updates**: Continuously maintained to reflect current labour market
-- **Open source**: [API source code](https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/jobtech-taxonomy-api) and [benchmark suite](https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/experimental/datahike-benchmark/) are publicly available
+**Technical Highlights**:
+- **Scale**: 60+ schema attributes with multi-language support (Swedish, English)
+- **Architecture**: Multi-backend abstraction supporting both Datomic and Datahike
+- **API**: GraphQL interface with Apache Lucene full-text search
+- **Compliance**: Full transaction history for regulatory audit trail
+- **Resilience**: S3-based backup/restore for disaster recovery
+- **Migration**: Successfully migrated from Datomic after extensive testing (U1 → I1 → Production)
 
-**Benchmarks**: The Swedish government published [performance benchmarks](https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/experimental/datahike-benchmark/) comparing Datahike to Datomic across a range of complex queries representative of real-world government workloads.
+**Resources**:
+- **Source Code**: [jobtech-taxonomy-api](https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/jobtech-taxonomy-api) (2,851+ commits)
+- **Benchmarks**: [Performance comparison suite](https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/experimental/datahike-benchmark) (Datahike vs Datomic)
+- **Migration Story**: [Plan.md](https://gitlab.com/arbetsformedlingen/taxonomy-dev/backend/jobtech-taxonomy-api/-/blob/develop/test/datahike/Plan.md) - detailed deployment journey
+
+This represents one of the most comprehensive open-source Datahike deployments, demonstrating production-readiness at government scale.
+
+### Stub - Accounting for African Entrepreneurs
+
+[Stub](https://stub.africa/) is a comprehensive accounting and invoicing platform serving 5,000+ small businesses across South Africa. Built by [Alexander Oloo](https://github.com/alekcz) with Datahike powering the core data layer.
+
+**Features**: Invoicing with payment integration, double-entry bookkeeping, bank sync (Capitec, FNB, Absa, Nedbank), VAT tracking, inventory management, and financial reporting.
+
+### Heidelberg University - Emotion Tracking
+
+Heidelberg University uses Datahike in an internal emotion tracking application for psychological research (source not publicly available).
 
 ## Proximum: Vector Search for Datahike
 
-**Coming soon**: [Proximum](https://datahike.io/proximum) is a high-performance HNSW vector index designed for Datahike's persistent data model. It brings semantic search and RAG capabilities to Datahike while maintaining immutability and full audit history.
+[Proximum](https://datahike.io/proximum) is a high-performance HNSW vector index designed for Datahike's persistent data model. It brings semantic search and RAG capabilities to Datahike while maintaining immutability and full audit history.
 
-**Key features** (upcoming):
+**Key features**:
 - Fast HNSW (Hierarchical Navigable Small World) vector search
 - Immutable index snapshots—same git-like semantics as Datahike
 - Persistent data structures without mutation or locks
 - Dual-licensed: EPL-2.0 (open source) and commercial license
 
-See [datahike.io/proximum](https://datahike.io/proximum) for details. Publication pending completion of current work.
+See [datahike.io/proximum](https://datahike.io/proximum) for details. Integration as secondary index into Datahike coming soon.
 
 ## Composable Ecosystem
 
