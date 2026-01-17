@@ -55,7 +55,7 @@ resources/DATAHIKE_VERSION
 
 # Auto-generated code (regenerate with bb codegen-*)
 java/src-generated/
-libdatahike/src/datahike/impl/LibDatahikeBase.java
+libdatahike/src/datahike/impl/LibDatahike.java
 pydatahike/src/datahike/generated.py
 .clj-kondo/datahike/
 
