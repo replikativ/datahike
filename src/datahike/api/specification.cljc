@@ -374,7 +374,7 @@
     datoms
     {:args [:function
             [:=> [:cat :datahike/SDB :datahike/SIndexLookupArgs] [:maybe :datahike/SDatoms]]
-            [:=> [:cat :datahike/SDB :keyword [:alt [:sequential :any] :nil]] [:maybe :datahike/SDatoms]]]
+            [:=> [:cat :datahike/SDB :keyword [:* :any]] [:maybe :datahike/SDatoms]]]
      :ret [:maybe :datahike/SDatoms]
      :categories [:query :index :advanced]
      :stability :stable
