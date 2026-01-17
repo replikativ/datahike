@@ -44,7 +44,7 @@
 
   (let [conn (d/connect config)]
     (testing "connect"
-      (is (= "conn:2061701040"
+      (is (= "conn:1646489894"
              conn)))
     (testing "transact"
       (is (= [:tempids :db-before :db-after :tx-meta :tx-data]
