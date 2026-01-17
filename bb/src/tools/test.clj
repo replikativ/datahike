@@ -29,8 +29,26 @@
     (fs/delete-tree old-version-dir)
     (git {:dir "."}
          "clone" "--depth" "1" (:git-url config) old-version-dir)
+
+    ;; Generate Java API bindings before compiling
+    (println "Generating Java API for old version...")
+    (let [old-dir old-version-dir
+          cp (:out (p/shell {:out :string :dir old-dir}
+                           "clojure" "-Spath"))]
+      ;; First compile Java dependencies
+      (println "Compiling Java dependencies...")
+      (p/shell {:dir old-dir}
+               "javac" "-cp" cp "-d" "target/classes"
+               "java/src/datahike/java/IEntity.java"
+               "java/src/datahike/java/Util.java")
+      ;; Generate DatahikeGenerated.java
+      (println "Generating DatahikeGenerated.java...")
+      (p/shell {:dir old-dir}
+               "clojure" "-M" "-m" "datahike.codegen.java" "java/src-generated"))
+
     (build/compile-java {:class-dir (str old-version-dir "/target/classes")
-                         :java-src-dirs [(str old-version-dir "/java")]
+                         :java-src-dirs [(str old-version-dir "/java")
+                                         (str old-version-dir "/java/src-generated")]
                          :deps-file (str old-version-dir "/deps.edn")})
 
     (clj {:dir old-version-dir}
