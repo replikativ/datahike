@@ -104,9 +104,9 @@ To use Datahike in your own Maven project, add to your `pom.xml`:
 
 <dependencies>
     <dependency>
-        <groupId>org.replikativ</groupId>
+        <groupId>io.replikativ</groupId>
         <artifactId>datahike</artifactId>
-        <version>0.7.1620</version>
+        <version>LATEST_VERSION</version>
     </dependency>
 </dependencies>
 ```
@@ -119,9 +119,11 @@ repositories {
 }
 
 dependencies {
-    implementation 'org.replikativ:datahike:0.7.1620'
+    implementation 'io.replikativ:datahike:LATEST_VERSION'
 }
 ```
+
+**Note:** Replace `LATEST_VERSION` with the latest published version from [Clojars](https://clojars.org/io.replikativ/datahike).
 
 ## Key Java API Classes
 
