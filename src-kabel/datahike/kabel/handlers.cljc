@@ -1,4 +1,4 @@
-(ns datahike.kabel.handlers
+(ns ^:no-doc datahike.kabel.handlers
   "Server-side handlers for remote datahike operations via kabel.
 
    This namespace provides GLOBAL handlers that are registered with distributed-scope
