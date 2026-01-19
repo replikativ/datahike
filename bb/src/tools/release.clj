@@ -81,7 +81,7 @@
       (->> (s/replace (slurp "../pod-registry/examples/datahike.clj") #"0\.6\.1607" version)
            (spit "../pod-registry/examples/datahike.clj")))
     (println "Committing and pushing changes to fork")
-    (b/git-process {:git-args ["add" "manifests/replikativ/datahike"] :dir "../pod-registry"})
+    (b/git-process {:git-args ["add" "."] :dir "../pod-registry"})
     (b/git-process {:git-args ["commit" "-m" (str "Update Datahike pod to " version)] :dir "../pod-registry"})
     (b/git-process {:git-args ["push" "origin" branch-name] :dir "../pod-registry"})
     (println "Creating PR on pod-registry")
