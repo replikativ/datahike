@@ -14,6 +14,8 @@
             [taoensso.timbre :as log]
             [hasch.core :refer [uuid squuid]]
             [hasch.platform]
+            [clojure.core.async :as async :refer [go put!]] ;; <-- Needed by go-try- macro.
+            
             [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?- <??-]]
             [konserve.utils :refer [#?(:clj async+sync) multi-key-capable? *default-sync-translation*]
              #?@(:cljs [:refer-macros [async+sync]])]))
