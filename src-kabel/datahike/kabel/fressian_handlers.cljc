@@ -1,4 +1,4 @@
-(ns datahike.kabel.fressian-handlers
+(ns ^:no-doc datahike.kabel.fressian-handlers
   "Fressian handlers for Datahike types over kabel.
 
    Provides read/write handlers for:

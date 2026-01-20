@@ -1,4 +1,4 @@
-(ns datahike.kabel.tx-broadcast
+(ns ^:no-doc datahike.kabel.tx-broadcast
   "Tx-report broadcasting via kabel.pubsub.
 
    This namespace provides functions for:

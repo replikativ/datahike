@@ -1,4 +1,4 @@
-(ns datahike.kabel.connector
+(ns ^:no-doc datahike.kabel.connector
   "Client-side connection for remote Datahike databases via KabelWriter.
 
    This namespace provides the internal connection logic for :kabel writer backends.

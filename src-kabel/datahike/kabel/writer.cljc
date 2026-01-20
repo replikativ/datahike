@@ -1,4 +1,4 @@
-(ns datahike.kabel.writer
+(ns ^:no-doc datahike.kabel.writer
   "KabelWriter for remote transactions via kabel/distributed-scope.
 
    The KabelWriter sends transactions to a remote peer that owns the database,
