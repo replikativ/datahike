@@ -210,20 +210,23 @@
 (defn -database-exists?* [config]
   (let [p (dt/throwable-promise)]
     (go-try-
-     (let [config (dc/load-config config)
-           store-config (:store config)
-           ;; First check if store exists (avoids exception when store not in registry)
-           store-exists? (<?- (ks/store-exists? store-config {:sync? false}))]
-       (if store-exists?
-         ;; Store exists, now check if it contains a database
-         (let [raw-store (<?- (ks/connect-store store-config {:sync? false}))
-               store (ds/add-cache-and-handlers raw-store config)
-               stored-db (<?- (k/get store :db nil {:sync? false}))]
-           ;; Release store and await completion
-           (<?- (ks/release-store store-config store {:sync? false}))
-           (put! p (some? stored-db)))
-         ;; Store doesn't exist, so database doesn't exist
-         (put! p false))))
+     (try
+       (let [config (dc/load-config config)
+             store-config (:store config)
+             ;; First check if store exists (avoids exception when store not in registry)
+             store-exists? (<?- (ks/store-exists? store-config {:sync? false}))]
+         (if store-exists?
+           ;; Store exists, now check if it contains a database
+           (let [raw-store (<?- (ks/connect-store store-config {:sync? false}))
+                 store (ds/add-cache-and-handlers raw-store config)
+                 stored-db (<?- (k/get store :db nil {:sync? false}))]
+             ;; Release store and await completion
+             (<?- (ks/release-store store-config store {:sync? false}))
+             (p (some? stored-db)))
+           ;; Store doesn't exist, so database doesn't exist
+           (p false)))
+       (catch #?(:clj Throwable :cljs :default) e
+         (p e))))
     p))
 
 (defn -create-database* [config deprecated-config]
