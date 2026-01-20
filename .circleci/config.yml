@@ -394,6 +394,7 @@ workflows:
             - node-cljs-test
             - npm-test
             - java-examples-test
+            - native-image
       - release-jar:
           context:
             - ghcr-read-package
@@ -412,6 +413,7 @@ workflows:
             - node-cljs-test
             - npm-test
             - java-examples-test
+            - native-image
       - release-pod:
           context:
             - ghcr-read-package
@@ -430,3 +432,4 @@ workflows:
             - node-cljs-test
             - npm-test
             - java-examples-test
+            - native-image
