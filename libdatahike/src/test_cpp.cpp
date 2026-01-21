@@ -2,7 +2,7 @@
 #include <libdatahike.h>
 #include <assert.h>
 
-const char* config_str = "{:store {:backend :file :path \"/tmp/libdatahike-test\"} :schema-flexibility :write}";
+const char* config_str = "{:store {:backend :file :path \"/tmp/libdatahike-test\" :id #uuid \"f11e0000-0000-0000-0000-000000000001\"} :schema-flexibility :write}";
 const char* schema_str = "[{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]";
 const char* tx_str = "[{:name \"Alice\"}]";
 const char* query_str = "[:find ?e ?v :where [?e :name ?v]]";
