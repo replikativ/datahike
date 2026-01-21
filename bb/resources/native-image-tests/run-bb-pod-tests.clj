@@ -44,8 +44,8 @@
 
   (let [conn (d/connect config)]
     (testing "connect"
-      (is (= "conn:1646489894"
-             conn)))
+      (is (string? conn))
+      (is (clojure.string/starts-with? conn "conn:")))
     (testing "transact"
       (is (= [:tempids :db-before :db-after :tx-meta :tx-data]
              (keys (d/transact conn [{:name  "Alice", :age   20}

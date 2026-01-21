@@ -55,7 +55,7 @@ int main(int argc, char* argv[]) {
   const char *output_format = "edn";
   void (*query_reader_pointer)(char*);
   query_reader_pointer = &query_reader;
-  query((long)thread, query_str, num_inputs, &input_format, &config_str,
+  q((long)thread, query_str, num_inputs, &input_format, &config_str,
         output_format, (const void*)query_reader_pointer);
   return 0;
 }
