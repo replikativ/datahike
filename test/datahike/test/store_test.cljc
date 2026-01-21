@@ -1,7 +1,7 @@
 (ns datahike.test.store-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [is are deftest testing]]
-      :clj  [clojure.test :as t :refer        [is are deftest testing]])
+   #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d])
   (:import [java.lang System]))
 
@@ -69,3 +69,10 @@
                   @conn
                   (byte-array [0 2 3]))))
       (d/release conn))))
+
+(deftest test-database-exists-with-invalid-store
+  (testing "Store with missing :id"
+    (is (thrown-with-msg? #?(:clj Exception :cljs js/Error)
+                          #"\s+:id\s+"
+                          (d/database-exists?
+                           {:store {:backend :memory}})))))
