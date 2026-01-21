@@ -54,6 +54,10 @@
           (System/exit 1))
       (println (:url ret)))))
 
+(comment
+  (def version "0.7.1635")
+  (def branch-name (str "datahike-" version)))
+
 (defn pod-release
   "Create a PR on babashka pod-registry"
   [repo-config]
@@ -63,10 +67,11 @@
         github-token (System/getenv "GITHUB_TOKEN")]
     (println "Checking out pod-registry")
     (spit (str home "/.ssh/known_hosts") (slurp (io/resource "github-fingerprints")) :append true)
-    (b/git-process {:git-args ["clone" "git@github.com:replikativ/pod-registry.git"] :dir "../"})
+    (b/git-process {:git-args ["clone" "git@github.com:babashka/pod-registry.git"] :dir "../"})
     (b/git-process {:git-args ["checkout" "-b" branch-name] :dir "../pod-registry"})
-    (b/git-process {:git-args ["config" "user.email" "info@lambdaforge.io"] :dir "../pod-registry"})
+    (b/git-process {:git-args ["config" "user.email" "contact@datahike.io"] :dir "../pod-registry"})
     (b/git-process {:git-args ["config" "user.name" "Datahike CI"] :dir "../pod-registry"})
+    (b/git-process {:git-args ["remote" "add" "fork" "git@github.com:replikativ/pod-registry.git"] :dir "../pod-registry"})
     (println "Changing manifest")
     (let [manifest (slurp "../pod-registry/manifests/replikativ/datahike/0.6.1607/manifest.edn")]
       (try (fs/create-dir (str "../pod-registry/manifests/replikativ/datahike/" version))
@@ -76,14 +81,18 @@
             (System/exit 1))))
       (->> (s/replace manifest #"0\.6\.1607" version)
            (spit (str "../pod-registry/manifests/replikativ/datahike/" version "/manifest.edn")))
-      (->> (s/replace (slurp "../pod-registry/README.md") #"0\.6\.1607" version)
+      (->> (s/replace (slurp "../pod-registry/README.md")
+                      #"(?m)^\| \[replikativ/datahike\].*$"
+                      (str "| [replikativ/datahike](https://github.com/replikativ/datahike) | A fast, immutable, distributed & compositional Datalog engine for everyone. | " version " | [link](https://raw.githubusercontent.com/babashka/pod-registry/master/examples/datahike.clj) | [<img src=\"https://upload.wikimedia.org/wikipedia/commons/5/5d/Clojure_logo.svg\" alt=\"clojure\" width=\"24\" height=\"24\">](https://clojure.org/) |"))
            (spit "../pod-registry/README.md"))
-      (->> (s/replace (slurp "../pod-registry/examples/datahike.clj") #"0\.6\.1607" version)
+      (->> (s/replace (slurp "../pod-registry/examples/datahike.clj")
+                      #"(?m)^\(pods/load-pod .*$"
+                      (str "(pods/load-pod 'replikativ/datahike \"" version "\")"))
            (spit "../pod-registry/examples/datahike.clj")))
     (println "Committing and pushing changes to fork")
     (b/git-process {:git-args ["add" "."] :dir "../pod-registry"})
     (b/git-process {:git-args ["commit" "-m" (str "Update Datahike pod to " version)] :dir "../pod-registry"})
-    (b/git-process {:git-args ["push" "origin" branch-name] :dir "../pod-registry"})
+    (b/git-process {:git-args ["push" "fork" branch-name] :dir "../pod-registry"})
     (println "Creating PR on pod-registry")
     (try
       (http/post "https://api.github.com/repos/babashka/pod-registry/pulls"
