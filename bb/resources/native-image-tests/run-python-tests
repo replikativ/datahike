@@ -10,15 +10,13 @@ echo "Setting up Python test environment..."
 export LD_LIBRARY_PATH=./libdatahike/target
 export DYLD_LIBRARY_PATH=./libdatahike/target
 
-# Install pytest if not already installed
-if ! command -v pytest &> /dev/null; then
-    echo "Installing pytest..."
-    pip install --user pytest || pip3 install --user pytest
-fi
+# Install pytest (use pip3 explicitly to avoid Python 2.7)
+echo "Installing pytest..."
+pip3 install --user pytest
 
-# Run Python tests
+# Run Python tests using python3 -m pytest to avoid PATH issues
 echo "Running Python tests..."
 cd pydatahike
-pytest -v tests/
+python3 -m pytest -v tests/
 
 echo "Python tests completed successfully!"
