@@ -6,7 +6,8 @@
    - Managing connection and database caching
    - Generating describe-map for pod protocol
    - Handling argument resolution and result transforms"
-  (:require [clojure.string :as str]
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
             [datahike.api.specification :refer [api-specification]]))
 
 ;; =============================================================================
@@ -189,22 +190,6 @@
 ;; Code Generation - Simplified Approach
 ;; =============================================================================
 
-(defn make-resolver-bindings
-  "Generate let bindings for resolving arguments.
-   Returns a vector of [original-sym resolved-sym resolver-call] tuples."
-  [resolve-config arg-names]
-  (when (and resolve-config (map? resolve-config))
-    (for [[pos resolver] resolve-config
-          :when (number? pos)
-          :let [arg-sym (nth arg-names pos nil)]
-          :when arg-sym]
-      (let [resolved-sym (symbol (str (name arg-sym) "-resolved"))
-            resolve-fn (case resolver
-                         :conn 'resolve-conn
-                         :db 'resolve-db
-                         nil)]
-        [arg-sym resolved-sym (when resolve-fn (list resolve-fn arg-sym))]))))
-
 (defn wrap-with-transform
   "Wrap result expression with transform if specified."
   [transform result-expr]
@@ -353,9 +338,7 @@
 (defn generate-var-entry
   "Generate a describe-map entry for an operation."
   [op-name]
-  (let [spec (get api-specification op-name)
-        overlay (get pod-operations op-name)]
-    {"name" (name op-name)}))
+  {"name" (name op-name)})
 
 (defn generate-describe-map
   "Generate the complete describe-map for pod protocol."
@@ -412,13 +395,6 @@
       (or (get-in @dbs [db-id :db])
           (throw (ex-info "Database not found" {:db-id db-id}))))
 
-    (defn resolve-db-in-args [args]
-      (mapv (fn [arg]
-              (if (and (string? arg) (get @dbs arg))
-                (get-in @dbs [arg :db])
-                arg))
-            args))
-
     (defn release-db [db-id]
       (swap! dbs dissoc db-id)
       {})))
@@ -451,8 +427,8 @@
   (let [all-ops (set (keys api-specification))
         implemented (set (keys pod-operations))
         excluded (set (keys pod-excluded-operations))
-        covered (clojure.set/union implemented excluded)
-        missing (clojure.set/difference all-ops covered)]
+        covered (set/union implemented excluded)
+        missing (set/difference all-ops covered)]
     (when (seq missing)
       (println "WARNING: Operations missing from pod overlay:")
       (doseq [op missing]
