@@ -69,9 +69,116 @@ Examples of long-running readers:
 
 **Branch heads are always kept** regardless of the grace period—only intermediate snapshots are removed.
 
+## Online Garbage Collection (Incremental GC)
+
+**Available starting with Datahike 0.8.0**: Online GC automatically deletes freed index nodes during transaction commits, preventing garbage accumulation during bulk imports and high-write workloads.
+
+### How Online GC Works
+
+When PSS (Persistent Sorted Set) index trees are modified during transactions, old index nodes become unreachable. Online GC tracks these freed addresses with timestamps and deletes them incrementally:
+
+1. **During transaction** (transient mode): PSS calls `markFreed()` for each replaced index node
+2. **At commit time**: Freed addresses older than the grace period are batch-deleted
+3. **No full tree walk**: Only freed addresses are deleted, not requiring expensive tree traversal
+
+**Key benefits:**
+- **Prevents unbounded storage growth** during bulk imports
+- **Incremental deletion**: Small batches per commit, low overhead
+- **Grace period support**: Safe for concurrent readers accessing old snapshots
+- **Configurable**: Can be disabled, tuned, or run in background
+
+### Configuration
+
+Enable online GC in your database config:
+
+```clojure
+;; For bulk imports (no concurrent readers)
+{:online-gc {:enabled? true
+             :grace-period-ms 0          ;; Delete immediately
+             :max-batch 10000}}          ;; Large batches for efficiency
+
+;; For production (concurrent readers)
+{:online-gc {:enabled? true
+             :grace-period-ms 300000     ;; 5 minutes
+             :max-batch 1000}}           ;; Smaller batches
+
+;; Disabled (default)
+{:online-gc {:enabled? false}}
+```
+
+**Configuration options:**
+
+- `:enabled?` - Enable/disable online GC (default: `false`)
+- `:grace-period-ms` - Minimum age in milliseconds before deletion (default: `60000` = 1 minute)
+- `:max-batch` - Maximum addresses to delete per commit (default: `1000`)
+- `:sync?` - Synchronous deletion (always `false` inside commits for async operation)
+
+### Background GC Mode
+
+For production systems, run GC in a background thread instead of blocking commits:
+
+```clojure
+(require '[datahike.online-gc :as online-gc])
+
+;; Start background GC
+(def stop-ch (online-gc/start-background-gc!
+               (:store @conn)
+               {:grace-period-ms 60000    ;; 1 minute
+                :interval-ms 10000        ;; Run every 10 seconds
+                :max-batch 1000}))
+
+;; Later, stop background GC
+(clojure.core.async/close! stop-ch)
+```
+
+**Background mode advantages:**
+- Non-blocking: Doesn't slow down commits
+- Periodic cleanup: Runs every N milliseconds
+- Graceful shutdown: Close channel to stop
+
+### Freed Address Counts
+
+Understanding how many addresses are freed helps detect memory issues:
+
+**Pattern:** `3 + 2n` addresses for n data transactions
+- **Schema transaction**: 3 addresses (EAVT, AEVT, AVET index roots)
+- **Data transaction**: 2 addresses per transaction (EAVT, AEVT roots)
+  - AVET only changes for **indexed** attributes (`:db/index true`)
+  - Non-indexed attributes don't update AVET, so only 2 freed per tx
+
+**Examples:**
+- Schema + 1 data tx: 3 + 2 = 5 freed addresses
+- Schema + 10 data txs: 3 + 20 = 23 freed addresses
+- Schema + 1000 data txs: 3 + 2000 = 2003 freed addresses
+
+**Why this matters:** If freed counts deviate from this pattern, it may indicate:
+- Double-freeing (too many addresses)
+- Missing frees (too few addresses)
+- Index structure changes
+- Memory leaks
+
+### Online GC vs Offline GC
+
+**Online GC** (incremental):
+- Runs during commits
+- Deletes only **freed index nodes** from recent transactions
+- Fast: No tree traversal required
+- Best for: Bulk imports, high-write workloads
+
+**Offline GC** (`d/gc-storage`):
+- Runs manually
+- Deletes **entire old snapshots** by walking all branches
+- Slower: Full tree traversal and marking
+- Best for: Periodic maintenance, deleting old branches
+
+**Use both:** Online GC for incremental cleanup, offline GC for periodic deep cleaning.
+
 ## Automatic Garbage Collection
 
-**Coming soon:** Datahike will support automatic GC with configurable grace periods, eliminating manual maintenance.
+With online GC enabled, garbage collection becomes largely automatic during normal operation. Manual `d/gc-storage` runs are only needed for:
+- Deleting old branches
+- Periodic deep cleaning (monthly/quarterly)
+- Compliance-driven snapshot removal
 
 ## When to Run GC
 

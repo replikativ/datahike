@@ -1,11 +1,16 @@
 (ns datahike.test.online-gc-test
+  "Comprehensive tests for online garbage collection.
+
+   Tests verify exact freed address counts to detect subtle memory issues.
+   Pattern: 3 + 2n addresses for n data transactions
+   - Schema tx: 3 (EAVT, AEVT, AVET roots)
+   - Data tx: 2 (EAVT, AEVT only - AVET empty for non-indexed attrs)"
   (:require
-   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing use-fixtures]]
-      :clj  [clojure.test :as t :refer [is deftest testing use-fixtures]])
+   #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
+      :clj  [clojure.test :as t :refer [is deftest testing]])
    [datahike.api :as d]
    [datahike.online-gc :as online-gc]
    [konserve.core :as k]
-   [superv.async :refer [<?? S]]
    #?(:clj [clojure.core.async :as async]
       :cljs [cljs.core.async :as async]))
   #?(:clj (:import [java.util Date])))
@@ -15,9 +20,12 @@
 (defn- count-store [db]
   (count (k/keys (:store db) {:sync? true})))
 
+(defn- get-freed-addresses [db]
+  "Get current freed addresses vector"
+  @(-> db :store :storage :freed-addresses))
+
 (defn- get-freed-count [db]
-  (when-let [freed-atom (-> db :store :storage :freed-addresses)]
-    (count @freed-atom)))
+  (count (get-freed-addresses db)))
 
 (def base-cfg {:store              {:backend :file
                                     :path "/tmp/online-gc-test"
@@ -33,8 +41,189 @@
               :db/cardinality :db.cardinality/one
               :db/valueType   :db.type/long}])
 
+;;; ============================================================================
+;;; Exact Freed Count Tests (Most Important)
+;;; ============================================================================
+
+(deftest precise-freed-count-tracking-test
+  (testing "Track exact number of freed addresses per transaction"
+    (let [cfg (-> base-cfg
+                  (assoc-in [:store :path] "/tmp/online-gc-precise-freed-test")
+                  (assoc :online-gc {:enabled? false}))  ;; Disabled to accumulate
+          conn (do
+                 (d/delete-database cfg)
+                 (d/create-database cfg)
+                 (d/connect cfg))]
+
+      ;; Initially should be zero
+      (is (= 0 (get-freed-count @conn))
+          "Initially no freed addresses")
+
+      ;; Transact schema
+      (d/transact conn schema)
+      (is (= 3 (get-freed-count @conn))
+          "Schema transaction frees 3 addresses (EAVT, AEVT, AVET roots)")
+
+      ;; First data transaction
+      (d/transact conn [{:name "Alice" :age 30}])
+      (is (= 5 (get-freed-count @conn))
+          "Alice tx frees 2 more addresses (EAVT, AEVT roots). Total: 3+2=5")
+
+      ;; Second transaction
+      (d/transact conn [{:name "Bob" :age 25}])
+      (is (= 7 (get-freed-count @conn))
+          "Bob tx frees 2 more addresses (EAVT, AEVT roots). Total: 5+2=7")
+
+      ;; Third transaction
+      (d/transact conn [{:name "Charlie" :age 35}])
+      (is (= 9 (get-freed-count @conn))
+          "Charlie tx frees 2 more addresses (EAVT, AEVT roots). Total: 7+2=9")
+
+      ;; Note: Only 2 per data tx, not 3, because AVET only stores indexed attributes.
+      ;; Since :name and :age are not indexed, AVET stays empty and doesn't change.
+
+      ;; Verify data is still queryable
+      (let [result (d/q '[:find ?name ?age
+                          :where [?e :name ?name]
+                                 [?e :age ?age]]
+                        @conn)]
+        (is (= 3 (count result))
+            "All entities should be queryable despite freed addresses"))
+
+      (d/release conn))))
+
+(deftest precise-gc-deletion-test
+  (testing "Verify freed addresses are actually deleted from storage"
+    (let [cfg (-> base-cfg
+                  (assoc-in [:store :path] "/tmp/online-gc-precise-deletion-test")
+                  (assoc :online-gc {:enabled? true
+                                     :grace-period-ms 0
+                                     :max-batch 1000}))
+          conn (do
+                 (d/delete-database cfg)
+                 (d/create-database cfg)
+                 (d/connect cfg))
+          initial-store-count (count-store @conn)]
+
+      ;; Transact schema and data
+      (d/transact conn schema)
+      (d/transact conn [{:name "Alice" :age 30}])
+      (d/transact conn [{:name "Bob" :age 25}])
+      (d/transact conn [{:name "Charlie" :age 35}])
+
+      ;; Freed count should be 0 (all deleted by online GC)
+      (is (= 0 (get-freed-count @conn))
+          "Online GC should have deleted all freed addresses")
+
+      ;; Store should not have garbage
+      (let [final-store-count (count-store @conn)
+            growth (- final-store-count initial-store-count)]
+        ;; With online GC, growth should be controlled
+        ;; We have 3 entities + schema + branch metadata + indices
+        ;; Should be much less than without GC
+        (is (< growth 50)
+            (str "Store growth should be controlled with online GC. Growth: " growth)))
+
+      ;; Verify data integrity after releasing and reconnecting
+      (d/release conn)
+      (let [conn2 (d/connect cfg)
+            result (d/q '[:find ?name ?age
+                          :where [?e :name ?name]
+                                 [?e :age ?age]]
+                        @conn2)]
+        (is (= 3 (count result))
+            "All 3 entities should be queryable after GC and reconnect")
+        (is (= #{["Alice" 30] ["Bob" 25] ["Charlie" 35]} (set result))
+            "All data should be intact")
+        (d/release conn2)))))
+
+(deftest manual-gc-freed-count-test
+  (testing "Manual GC invocation returns exact deletion count"
+    (let [cfg (-> base-cfg
+                  (assoc-in [:store :path] "/tmp/online-gc-manual-count-test")
+                  (assoc :online-gc {:enabled? false}))  ;; Disabled for manual control
+          conn (do
+                 (d/delete-database cfg)
+                 (d/create-database cfg)
+                 (d/connect cfg))]
+
+      (d/transact conn schema)
+      (d/transact conn [{:name "Alice" :age 30}])
+      (d/transact conn [{:name "Bob" :age 25}])
+
+      ;; Check how many freed addresses accumulated
+      ;; Schema (3) + Alice (2) + Bob (2) = 7
+      (let [freed-before-gc (get-freed-count @conn)]
+        (is (= 7 freed-before-gc)
+            "Should have 7 freed addresses (schema:3 + Alice:2 + Bob:2)")
+
+        ;; Manually run GC
+        (let [deleted-count (online-gc/online-gc! (:store @conn)
+                                                  {:enabled? true
+                                                   :grace-period-ms 0
+                                                   :max-batch 1000
+                                                   :sync? true})]
+          (is (= 7 deleted-count)
+              "GC should delete exactly 7 addresses"))
+
+        ;; After GC, freed count should be 0
+        (is (= 0 (get-freed-count @conn))
+            "After manual GC, freed addresses should be cleared"))
+
+      ;; Data should still be queryable
+      (d/release conn)
+      (let [conn2 (d/connect cfg)
+            result (d/q '[:find (count ?e) .
+                          :where [?e :name _]]
+                        @conn2)]
+        (is (= 2 result)
+            "Data should be intact after manual GC")
+        (d/release conn2)))))
+
+(deftest batch-size-limit-precise-test
+  (testing "Batch size limit causes incremental deletion"
+    (let [cfg (-> base-cfg
+                  (assoc-in [:store :path] "/tmp/online-gc-batch-precise-test")
+                  (assoc :online-gc {:enabled? false}))  ;; Start disabled
+          conn (do
+                 (d/delete-database cfg)
+                 (d/create-database cfg)
+                 (d/connect cfg))]
+
+      (d/transact conn schema)
+      ;; Generate many freed addresses
+      (dotimes [i 20]
+        (d/transact conn [{:name (str "Person-" i) :age (+ 20 i)}]))
+
+      ;; Check accumulated freed count
+      ;; Schema (3) + 20 data transactions × 2 = 43 total
+      (let [total-freed (get-freed-count @conn)
+            batch-size 5]
+        (is (= 43 total-freed)
+            "Should have 43 freed addresses (schema:3 + 20×2=40)")
+
+        ;; Run GC with small batch size
+        (let [deleted (online-gc/online-gc! (:store @conn)
+                                            {:enabled? true
+                                             :grace-period-ms 0
+                                             :max-batch batch-size
+                                             :sync? true})]
+          (is (= 5 deleted)
+              "Should delete exactly 5 addresses (batch size limit)"))
+
+        ;; Remaining freed addresses
+        (let [remaining (get-freed-count @conn)]
+          (is (= 38 remaining)
+              "Should have 38 remaining addresses (43 - 5)")))
+
+      (d/release conn))))
+
+;;; ============================================================================
+;;; Integration Tests
+;;; ============================================================================
+
 (deftest online-gc-disabled-test
-  (testing "Online GC disabled by default"
+  (testing "Online GC disabled by default - addresses accumulate"
     (let [cfg (assoc-in base-cfg [:store :path] "/tmp/online-gc-disabled-test")
           conn (do
                  (d/delete-database cfg)
@@ -42,7 +231,6 @@
                  (d/connect cfg))]
       (d/transact conn schema)
       (d/transact conn [{:name "Alice" :age 30}])
-      ;; Freed addresses should accumulate
       (let [freed-before (get-freed-count @conn)]
         (d/transact conn [{:name "Bob" :age 25}])
         (d/transact conn [{:name "Charlie" :age 35}])
@@ -52,47 +240,29 @@
           (is (pos? freed-after))))
       (d/release conn))))
 
-(deftest online-gc-enabled-zero-grace-period-test
-  (testing "Online GC enabled with zero grace period (bulk import mode)"
+(deftest online-gc-with-reconnect-test
+  (testing "Data integrity verified via reconnect after GC"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] "/tmp/online-gc-zero-grace-test")
+                  (assoc-in [:store :path] "/tmp/online-gc-reconnect-test")
                   (assoc :online-gc {:enabled? true
                                      :grace-period-ms 0
                                      :max-batch 1000}))
           conn (do
                  (d/delete-database cfg)
                  (d/create-database cfg)
-                 (d/connect cfg))
-          initial-count (count-store @conn)]
+                 (d/connect cfg))]
 
-      ;; Transact schema
+      ;; Insert data
       (d/transact conn schema)
-      (let [after-schema-count (count-store @conn)]
-        (is (>= after-schema-count initial-count)
-            "Store should grow after schema transaction"))
-
-      ;; First data transaction
       (d/transact conn [{:name "Alice" :age 30}])
-      (is (= 0 (get-freed-count @conn))
-          "Freed addresses should be cleaned up immediately with grace-period 0")
-      (is (> (count-store @conn) initial-count)
-          "Store should grow with new data")
-
-      ;; Second data transaction - should free old index nodes
       (d/transact conn [{:name "Bob" :age 25}])
-      (is (= 0 (get-freed-count @conn))
-          "Freed addresses should be cleaned up immediately")
-      (is (> (count-store @conn) initial-count)
-          "Store should continue growing")
-
-      ;; Third transaction
       (d/transact conn [{:name "Charlie" :age 35}])
-      (is (= 0 (get-freed-count @conn))
-          "All freed addresses should be deleted")
-      (is (> (count-store @conn) initial-count)
-          "Store should continue growing")
 
-      ;; Verify data integrity by releasing and reconnecting
+      ;; All freed addresses should be cleaned up
+      (is (= 0 (get-freed-count @conn))
+          "Online GC should have cleaned up all freed addresses")
+
+      ;; Release and reconnect
       (d/release conn)
       (let [conn2 (d/connect cfg)
             result (d/q '[:find ?name ?age
@@ -100,15 +270,15 @@
                                  [?e :age ?age]]
                         @conn2)]
         (is (= 3 (count result))
-            "All 3 entities should be queryable after reconnect")
+            "All 3 entities queryable after reconnect")
         (is (= #{["Alice" 30] ["Bob" 25] ["Charlie" 35]} (set result))
-            "All data should be intact after online GC")
+            "All data intact after GC and reconnect")
         (d/release conn2)))))
 
-(deftest online-gc-with-grace-period-test
-  (testing "Online GC with grace period preserves recent addresses"
+(deftest grace-period-accumulation-test
+  (testing "Grace period causes freed addresses to accumulate"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] "/tmp/online-gc-grace-test")
+                  (assoc-in [:store :path] "/tmp/online-gc-grace-accumulation-test")
                   (assoc :online-gc {:enabled? true
                                      :grace-period-ms 300000  ;; 5 minutes
                                      :max-batch 1000}))
@@ -116,70 +286,26 @@
                  (d/delete-database cfg)
                  (d/create-database cfg)
                  (d/connect cfg))]
-      (d/transact conn schema)
-      (d/transact conn [{:name "Alice" :age 30}])
 
-      ;; Freed addresses should remain (within grace period)
-      (let [freed-count (get-freed-count @conn)]
-        ;; Should accumulate during grace period
-        (is (>= freed-count 0)
-            (str "Freed addresses preserved during grace period. Count: " freed-count)))
-
-      (d/release conn))))
-
-(deftest online-gc-batch-size-limit-test
-  (testing "Online GC respects max-batch limit"
-    (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] "/tmp/online-gc-batch-test")
-                  (assoc :online-gc {:enabled? true
-                                     :grace-period-ms 0
-                                     :max-batch 5}))  ;; Small batch
-          conn (do
-                 (d/delete-database cfg)
-                 (d/create-database cfg)
-                 (d/connect cfg))]
-      (d/transact conn schema)
-      ;; Make multiple transactions to generate many freed addresses
-      (dotimes [i 10]
-        (d/transact conn [{:name (str "Person-" i) :age (+ 20 i)}]))
-
-      ;; Some freed addresses may remain if batch size was exceeded
-      (let [freed-count (get-freed-count @conn)]
-        ;; This is acceptable - GC runs incrementally
-        (is (>= freed-count 0)
-            (str "Batch size limit causes incremental GC. Remaining: " freed-count)))
-
-      (d/release conn))))
-
-(deftest online-gc-delete-function-test
-  (testing "Online GC delete functions work correctly"
-    (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] "/tmp/online-gc-delete-test")
-                  (assoc :online-gc {:enabled? false}))  ;; Disabled for manual testing
-          conn (do
-                 (d/delete-database cfg)
-                 (d/create-database cfg)
-                 (d/connect cfg))]
       (d/transact conn schema)
       (d/transact conn [{:name "Alice" :age 30}])
       (d/transact conn [{:name "Bob" :age 25}])
 
-      ;; Manually run online GC with zero grace period
-      (let [deleted (online-gc/online-gc! (:store @conn)
-                                          {:enabled? true
-                                           :grace-period-ms 0
-                                           :max-batch 1000
-                                           :sync? true})]
-        (is (>= deleted 0) "Should delete some addresses or zero"))
-
-      ;; Freed addresses should be cleared
+      ;; With long grace period, freed addresses should accumulate
       (let [freed-count (get-freed-count @conn)]
-        (is (= 0 freed-count)
-            (str "Freed addresses should be cleaned up after manual GC. Remaining: " freed-count)))
+        (is (pos? freed-count)
+            (str "Freed addresses should accumulate during grace period. Count: " freed-count)))
+
+      ;; Data should be queryable
+      (let [result (d/q '[:find (count ?e) .
+                          :where [?e :name _]]
+                        @conn)]
+        (is (= 2 result)
+            "Data should be queryable with accumulated freed addresses"))
 
       (d/release conn))))
 
-(deftest online-gc-integration-test
+(deftest online-gc-large-dataset-test
   (testing "Online GC integration with larger dataset"
     (let [cfg (-> base-cfg
                   (assoc-in [:store :path] "/tmp/online-gc-integration-test")
@@ -208,9 +334,13 @@
       (is (= 1000 (d/q '[:find (count ?e) .
                          :where [?e :name _]]
                        @conn))
-          "All data should be accessible")
+          "All 1000 entities should be accessible")
 
       (d/release conn))))
+
+;;; ============================================================================
+;;; Timestamp Filtering Tests
+;;; ============================================================================
 
 (deftest get-and-clear-eligible-freed-test
   (testing "get-and-clear-eligible-freed! correctly filters by timestamp"
@@ -243,6 +373,10 @@
         (is (>= (count to-delete) 0) "Should find eligible addresses with zero grace period"))
 
       (d/release conn))))
+
+;;; ============================================================================
+;;; Background GC Tests
+;;; ============================================================================
 
 (deftest background-gc-test
   (testing "Background GC runs periodically"
