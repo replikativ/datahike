@@ -195,7 +195,7 @@
 
                   ;; Online GC: delete freed addresses after writes are committed
                   (when (get-in config [:online-gc :enabled?])
-                    (<?- (online-gc/online-gc! store (:online-gc config))))
+                    (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
 
                   db)))))
 
