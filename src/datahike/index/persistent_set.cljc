@@ -208,7 +208,7 @@
       (uuid (mapv (comp vec seq) (.keys node))))
     (squuid)))  ;; Sequential UUID for better index locality
 
-(defrecord CachedStorage [store config cache stats pending-writes cost-center-fn]
+(defrecord CachedStorage [store config cache stats pending-writes freed-addresses cost-center-fn]
   IStorage
   (store [_ node #?(:cljs opts)]
     (@cost-center-fn :store)
@@ -236,7 +236,12 @@
                                                   :store store}))
         (swap! stats update :reads inc)
         (wrapped/miss cache address node)
-        node))))
+        node)))
+  (markFreed [_ address]
+    (when address
+      (let [now #?(:clj (java.util.Date.) :cljs (js/Date.))]
+        (trace "marking address as freed: " address)
+        (swap! freed-addresses conj [address now])))))
 
 (def init-stats {:writes   0
                  :reads    0
@@ -247,6 +252,7 @@
                   (atom (cache/lru-cache-factory {} :threshold (:store-cache-size config)))
                   (atom init-stats)
                   (atom [])
+                  (atom [])  ;; freed-addresses: vector of [address timestamp] pairs
                   (atom (fn [_] nil))))
 
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
