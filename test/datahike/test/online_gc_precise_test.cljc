@@ -48,33 +48,26 @@
 
       ;; Transact schema
       (d/transact conn schema)
-      (is (= 0 (get-freed-count @conn))
-          "Schema transaction shouldn't free addresses (no prior index)")
+      (is (= 3 (get-freed-count @conn))
+          "Schema transaction frees 3 addresses (EAVT, AEVT, AVET roots)")
 
-      ;; First data transaction - no freed addresses yet
+      ;; First data transaction
       (d/transact conn [{:name "Alice" :age 30}])
-      (let [freed-tx1 (get-freed-count @conn)]
-        (is (>= freed-tx1 0)
-            "First data tx may free some addresses from schema changes"))
+      (is (= 5 (get-freed-count @conn))
+          "Alice tx frees 2 more addresses (EAVT, AEVT roots). Total: 3+2=5")
 
-      ;; Second transaction - should free addresses from previous index version
+      ;; Second transaction
       (d/transact conn [{:name "Bob" :age 25}])
-      (let [freed-tx2 (get-freed-count @conn)
-            freed-tx1 (get-freed-count @conn)]
-        (is (> freed-tx2 freed-tx1)
-            (str "Second tx should accumulate more freed addresses. "
-                 "Freed after tx2: " freed-tx2 ", after tx1: " freed-tx1)))
+      (is (= 7 (get-freed-count @conn))
+          "Bob tx frees 2 more addresses (EAVT, AEVT roots). Total: 5+2=7")
 
-      ;; Third transaction - more freed addresses
+      ;; Third transaction
       (d/transact conn [{:name "Charlie" :age 35}])
-      (let [freed-tx3 (get-freed-count @conn)]
-        (is (pos? freed-tx3)
-            (str "Should have accumulated freed addresses. Count: " freed-tx3))
-        ;; Each transaction modifies 3 indices (EAVT, AEVT, AVET)
-        ;; Each index is a PSS tree - root + possibly branch nodes
-        ;; Minimum: 3 freed root addresses per transaction after the first
-        (is (>= freed-tx3 3)
-            (str "Should have at least 3 freed addresses (3 index roots). Got: " freed-tx3)))
+      (is (= 9 (get-freed-count @conn))
+          "Charlie tx frees 2 more addresses (EAVT, AEVT roots). Total: 7+2=9")
+
+      ;; Note: Only 2 per data tx, not 3, because AVET only stores indexed attributes.
+      ;; Since :name and :age are not indexed, AVET stays empty and doesn't change.
 
       ;; Verify data is still queryable
       (let [result (d/q '[:find ?name ?age
@@ -146,9 +139,10 @@
       (d/transact conn [{:name "Bob" :age 25}])
 
       ;; Check how many freed addresses accumulated
+      ;; Schema (3) + Alice (2) + Bob (2) = 7
       (let [freed-before-gc (get-freed-count @conn)]
-        (is (pos? freed-before-gc)
-            (str "Should have freed addresses accumulated. Count: " freed-before-gc))
+        (is (= 7 freed-before-gc)
+            "Should have 7 freed addresses (schema:3 + Alice:2 + Bob:2)")
 
         ;; Manually run GC
         (let [deleted-count (online-gc/online-gc! (:store @conn)
@@ -156,9 +150,8 @@
                                                    :grace-period-ms 0
                                                    :max-batch 1000
                                                    :sync? true})]
-          (is (= freed-before-gc deleted-count)
-              (str "GC should delete exactly the freed count. "
-                   "Freed: " freed-before-gc ", Deleted: " deleted-count)))
+          (is (= 7 deleted-count)
+              "GC should delete exactly 7 addresses"))
 
         ;; After GC, freed count should be 0
         (is (= 0 (get-freed-count @conn))
@@ -220,25 +213,24 @@
         (d/transact conn [{:name (str "Person-" i) :age (+ 20 i)}]))
 
       ;; Check accumulated freed count
-      (let [total-freed (get-freed-count @conn)]
-        (is (pos? total-freed)
-            (str "Should have accumulated freed addresses. Count: " total-freed))
+      ;; Schema (3) + 20 data transactions × 2 = 43 total
+      (let [total-freed (get-freed-count @conn)
+            batch-size 5]
+        (is (= 43 total-freed)
+            "Should have 43 freed addresses (schema:3 + 20×2=40)")
 
         ;; Run GC with small batch size
-        (let [batch-size 5
-              deleted (online-gc/online-gc! (:store @conn)
+        (let [deleted (online-gc/online-gc! (:store @conn)
                                             {:enabled? true
                                              :grace-period-ms 0
                                              :max-batch batch-size
                                              :sync? true})]
-          (is (= batch-size deleted)
-              (str "Should delete exactly batch-size addresses. "
-                   "Expected: " batch-size ", Got: " deleted)))
+          (is (= 5 deleted)
+              "Should delete exactly 5 addresses (batch size limit)"))
 
         ;; Remaining freed addresses
         (let [remaining (get-freed-count @conn)]
-          (is (= (- total-freed batch-size) remaining)
-              (str "Should have remaining freed addresses. "
-                   "Total: " total-freed ", Deleted: " batch-size ", Remaining: " remaining))))
+          (is (= 38 remaining)
+              "Should have 38 remaining addresses (43 - 5)")))
 
       (d/release conn))))
