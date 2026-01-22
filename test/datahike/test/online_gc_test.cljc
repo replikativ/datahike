@@ -64,23 +64,53 @@
                  (d/create-database cfg)
                  (d/connect cfg))
           initial-count (count-store @conn)]
+
+      ;; Transact schema
       (d/transact conn schema)
+      (let [after-schema-count (count-store @conn)]
+        (is (>= after-schema-count initial-count)
+            "Store should grow after schema transaction"))
+
+      ;; First data transaction
       (d/transact conn [{:name "Alice" :age 30}])
+      (let [freed-after-tx1 (get-freed-count @conn)
+            store-after-tx1 (count-store @conn)]
+        (is (= 0 freed-after-tx1)
+            "Freed addresses should be cleaned up immediately with grace-period 0")
+        (is (> store-after-tx1 initial-count)
+            "Store should grow with new data"))
+
+      ;; Second data transaction - should free old index nodes
       (d/transact conn [{:name "Bob" :age 25}])
+      (let [freed-after-tx2 (get-freed-count @conn)
+            store-after-tx2 (count-store @conn)]
+        (is (= 0 freed-after-tx2)
+            "Freed addresses should be cleaned up immediately")
+        ;; Store should grow but by a limited amount (old nodes freed)
+        (is (> store-after-tx2 store-after-tx1)
+            "Store should grow with more data"))
+
+      ;; Third transaction
       (d/transact conn [{:name "Charlie" :age 35}])
+      (let [freed-after-tx3 (get-freed-count @conn)
+            store-after-tx3 (count-store @conn)]
+        (is (= 0 freed-after-tx3)
+            "All freed addresses should be deleted")
+        (is (> store-after-tx3 store-after-tx2)
+            "Store should continue growing"))
 
-      ;; With online GC, freed addresses should be cleaned up
-      (let [freed-count (get-freed-count @conn)]
-        ;; Should be zero or very small (recently freed in last tx)
-        (is (< freed-count 10) "Freed addresses should be cleaned up by online GC"))
-
-      ;; Store should not grow unboundedly
-      (let [final-count (count-store @conn)]
-        ;; Growth should be reasonable (mostly live data)
-        (is (< final-count (+ initial-count 100))
-            "Store size should not accumulate garbage"))
-
-      (d/release conn))))
+      ;; Verify data integrity by releasing and reconnecting
+      (d/release conn)
+      (let [conn2 (d/connect cfg)
+            result (d/q '[:find ?name ?age
+                          :where [?e :name ?name]
+                                 [?e :age ?age]]
+                        @conn2)]
+        (is (= 3 (count result))
+            "All 3 entities should be queryable after reconnect")
+        (is (= #{["Alice" 30] ["Bob" 25] ["Charlie" 35]} (set result))
+            "All data should be intact after online GC")
+        (d/release conn2)))))
 
 (deftest online-gc-with-grace-period-test
   (testing "Online GC with grace period preserves recent addresses"
@@ -99,8 +129,8 @@
       ;; Freed addresses should remain (within grace period)
       (let [freed-count (get-freed-count @conn)]
         ;; Should accumulate during grace period
-        (is (or (nil? freed-count) (>= freed-count 0))
-            "Freed addresses preserved during grace period"))
+        (is (>= freed-count 0)
+            (str "Freed addresses preserved during grace period. Count: " freed-count)))
 
       (d/release conn))))
 
@@ -123,8 +153,8 @@
       ;; Some freed addresses may remain if batch size was exceeded
       (let [freed-count (get-freed-count @conn)]
         ;; This is acceptable - GC runs incrementally
-        (is (or (nil? freed-count) (>= freed-count 0))
-            "Batch size limit causes incremental GC"))
+        (is (>= freed-count 0)
+            (str "Batch size limit causes incremental GC. Remaining: " freed-count)))
 
       (d/release conn))))
 
@@ -151,8 +181,8 @@
 
       ;; Freed addresses should be cleared
       (let [freed-count (get-freed-count @conn)]
-        (is (or (nil? freed-count) (< freed-count 5))
-            "Freed addresses should be cleaned up"))
+        (is (= 0 freed-count)
+            (str "Freed addresses should be cleaned up after manual GC. Remaining: " freed-count)))
 
       (d/release conn))))
 
@@ -208,7 +238,7 @@
                                    1000)]
         ;; All should be in remaining (within grace period)
         (is (empty? to-delete) "Nothing should be eligible with long grace period")
-        (is (or (nil? remaining) (coll? remaining)) "Remaining should be a collection"))
+        (is (coll? remaining) "Remaining should be a collection"))
 
       ;; Check with zero grace period
       (d/transact conn [{:name "Bob" :age 25}])  ;; Generate more freed addresses
@@ -257,7 +287,7 @@
 
         ;; Freed addresses should be cleaned up by background GC
         (let [freed-count (get-freed-count @conn)]
-          (is (or (nil? freed-count) (< freed-count 10))
-              "Background GC should clean up freed addresses")))
+          (is (< freed-count 10)
+              (str "Background GC should clean up freed addresses. Remaining: " freed-count))))
 
       (d/release conn))))
