@@ -5,7 +5,9 @@
    [datahike.api :as d]
    [datahike.online-gc :as online-gc]
    [konserve.core :as k]
-   [superv.async :refer [<?? S]])
+   [superv.async :refer [<?? S]]
+   #?(:clj [clojure.core.async :as async]
+      :cljs [cljs.core.async :as async]))
   #?(:clj (:import [java.util Date])))
 
 #?(:cljs (def Throwable js/Error))
