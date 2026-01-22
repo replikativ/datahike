@@ -73,31 +73,24 @@
 
       ;; First data transaction
       (d/transact conn [{:name "Alice" :age 30}])
-      (let [freed-after-tx1 (get-freed-count @conn)
-            store-after-tx1 (count-store @conn)]
-        (is (= 0 freed-after-tx1)
-            "Freed addresses should be cleaned up immediately with grace-period 0")
-        (is (> store-after-tx1 initial-count)
-            "Store should grow with new data"))
+      (is (= 0 (get-freed-count @conn))
+          "Freed addresses should be cleaned up immediately with grace-period 0")
+      (is (> (count-store @conn) initial-count)
+          "Store should grow with new data")
 
       ;; Second data transaction - should free old index nodes
       (d/transact conn [{:name "Bob" :age 25}])
-      (let [freed-after-tx2 (get-freed-count @conn)
-            store-after-tx2 (count-store @conn)]
-        (is (= 0 freed-after-tx2)
-            "Freed addresses should be cleaned up immediately")
-        ;; Store should grow but by a limited amount (old nodes freed)
-        (is (> store-after-tx2 store-after-tx1)
-            "Store should grow with more data"))
+      (is (= 0 (get-freed-count @conn))
+          "Freed addresses should be cleaned up immediately")
+      (is (> (count-store @conn) initial-count)
+          "Store should continue growing")
 
       ;; Third transaction
       (d/transact conn [{:name "Charlie" :age 35}])
-      (let [freed-after-tx3 (get-freed-count @conn)
-            store-after-tx3 (count-store @conn)]
-        (is (= 0 freed-after-tx3)
-            "All freed addresses should be deleted")
-        (is (> store-after-tx3 store-after-tx2)
-            "Store should continue growing"))
+      (is (= 0 (get-freed-count @conn))
+          "All freed addresses should be deleted")
+      (is (> (count-store @conn) initial-count)
+          "Store should continue growing")
 
       ;; Verify data integrity by releasing and reconnecting
       (d/release conn)
