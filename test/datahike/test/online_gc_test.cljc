@@ -218,3 +218,44 @@
         (is (>= (count to-delete) 0) "Should find eligible addresses with zero grace period"))
 
       (d/release conn))))
+
+(deftest background-gc-test
+  (testing "Background GC runs periodically"
+    (let [cfg (-> base-cfg
+                  (assoc-in [:store :path] "/tmp/online-gc-background-test")
+                  (assoc :online-gc {:enabled? false}))  ;; Disable automatic GC in commit
+          conn (do
+                 (d/delete-database cfg)
+                 (d/create-database cfg)
+                 (d/connect cfg))]
+      (d/transact conn schema)
+
+      ;; Start background GC with short interval
+      (let [stop-ch (online-gc/start-background-gc!
+                     (:store @conn)
+                     {:grace-period-ms 0
+                      :interval-ms 100    ;; Run every 100ms
+                      :max-batch 1000})]
+
+        ;; Generate some freed addresses
+        (d/transact conn [{:name "Alice" :age 30}])
+        (d/transact conn [{:name "Bob" :age 25}])
+        (d/transact conn [{:name "Charlie" :age 35}])
+
+        ;; Wait for background GC to run a few times
+        #?(:clj (Thread/sleep 500)
+           :cljs (async/<! (async/timeout 500)))
+
+        ;; Stop background GC
+        (async/close! stop-ch)
+
+        ;; Wait a bit for cleanup
+        #?(:clj (Thread/sleep 100)
+           :cljs (async/<! (async/timeout 100)))
+
+        ;; Freed addresses should be cleaned up by background GC
+        (let [freed-count (get-freed-count @conn)]
+          (is (or (nil? freed-count) (< freed-count 10))
+              "Background GC should clean up freed addresses")))
+
+      (d/release conn))))

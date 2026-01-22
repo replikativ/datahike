@@ -20,6 +20,7 @@
      (def stop-ch (start-background-gc! store {...opts...}))
      ;; Later: (async/close! stop-ch)"
   (:require [konserve.core :as k]
+            [konserve.utils :refer [multi-key-capable?]]
             [clojure.core.cache.wrapped :as wrapped]
             [taoensso.timbre :refer [debug trace warn]]
             #?(:clj [clojure.core.async :as async]
@@ -85,13 +86,25 @@
       (doseq [addr addresses]
         (wrapped/evict cache addr))
       ;; Batch delete from store
-      (if sync?
-        (do
-          (k/multi-dissoc store (vec addresses) {:sync? true})
-          (count addresses))
-        (go-try-
-         (<?- (k/multi-dissoc store (vec addresses) {:sync? false}))
-         (count addresses))))))
+      (if (multi-key-capable? store)
+        ;; Use batch delete if supported
+        (if sync?
+          (do
+            (k/multi-dissoc store (vec addresses) {:sync? true})
+            (count addresses))
+          (go-try-
+           (<?- (k/multi-dissoc store (vec addresses) {:sync? false}))
+           (count addresses)))
+        ;; Fallback to individual deletes for stores without multi-key support
+        (if sync?
+          (do
+            (doseq [addr addresses]
+              (k/dissoc store addr {:sync? true}))
+            (count addresses))
+          (go-try-
+           (doseq [addr addresses]
+             (<?- (k/dissoc store addr {:sync? false})))
+           (count addresses)))))))
 
 (defn online-gc!
   "Perform online GC during commit.
