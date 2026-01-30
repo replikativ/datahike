@@ -83,6 +83,28 @@
       (is (d/transact conn [{:reg/course   "BIO-101"
                              :reg/semester "2018-fall"
                              :reg/student  "johndoe@university.edu"}]))
+      (d/release conn)))
+
+  (testing "composite tuple with :db/ident last (issue #754)"
+    (let [conn (connect)
+          reg-schema [{:db/ident       :reg/course
+                       :db/valueType   :db.type/string
+                       :db/cardinality :db.cardinality/one}
+                      {:db/ident       :reg/semester
+                       :db/valueType   :db.type/string
+                       :db/cardinality :db.cardinality/one}
+                      {:db/ident       :reg/student
+                       :db/valueType   :db.type/string
+                       :db/cardinality :db.cardinality/one}]]
+      (d/transact conn reg-schema)
+      ;; Same schema as above but with :db/ident LAST to test attribute ordering
+      (is (d/transact conn [{:db/valueType   :db.type/tuple
+                             :db/tupleAttrs  [:reg/course :reg/semester :reg/student]
+                             :db/cardinality :db.cardinality/one
+                             :db/ident       :reg/semester+course+student-2}]))
+      (is (d/transact conn [{:reg/course   "MATH-201"
+                             :reg/semester "2019-spring"
+                             :reg/student  "janedoe@university.edu"}]))
       (d/release conn))))
 
 (deftest test-transact-and-query-non-composite

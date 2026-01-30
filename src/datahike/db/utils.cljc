@@ -318,7 +318,7 @@
       (fn [m attr idx]
         (update m attr assoc tuple-attr idx))
       m
-      (-> schema tuple-attr :db/tupleAttrs)))
+      (get-in schema [tuple-attr :db/tupleAttrs])))
    {}
    (:db.type/tuple rschema)))
 
