@@ -26,7 +26,7 @@
 
 (defn validate-pattern
   "Checks if database pattern is valid"
-  [pattern can-have-vars]
+  [db pattern can-have-vars]
   (let [bound-var? (if can-have-vars symbol? (fn [_] false))
         [e a v tx added?] pattern]
 
@@ -44,10 +44,14 @@
       (raise "Bad format for attribute in pattern, must be a number, nil or a keyword."
              {:error :search/pattern :a a :pattern pattern}))
 
+    ;; Value validation: allow vectors of any length for tuple attributes
     (when-not (or (not (vector? v))
                   (nil? v)
                   (bound-var? v)
-                  (and (vector? v) (= 2 (count v))))
+                  ;; Allow 2-element vectors for lookup refs (when attr is ref type)
+                  (and (vector? v) (= 2 (count v)))
+                  ;; Allow any-length vectors for tuple values
+                  (and (vector? v) a (dbu/tuple? db a)))
       (raise "Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
              {:error :search/pattern :v v :pattern pattern}))
 
@@ -157,8 +161,8 @@
   ([_db-index [_e _a _v _tx] _batch-fn]
    []))
 
-(defn- get-search-strategy [pattern indexed? temporal-db?]
-  (validate-pattern pattern true)
+(defn- get-search-strategy [db pattern indexed? temporal-db?]
+  (validate-pattern db pattern true)
   (let [[e a v tx added?] pattern]
     (when-not (and (not temporal-db?) (false? added?))
       (get-search-strategy-impl
@@ -179,8 +183,9 @@
     (dbu/indexing? db a)))
 
 (defn search-strategy-with-index [db pattern temporal?]
-  (-> pattern
-      (get-search-strategy (indexing-for-pattern? db pattern)
+  (-> (get-search-strategy db
+                           pattern
+                           (indexing-for-pattern? db pattern)
                            temporal?)
       (resolve-db-index (if temporal?
                           {:eavt (:temporal-eavt db)
@@ -221,7 +226,7 @@
 
 (defn search-temporal-indices
   ([db pattern]
-   (validate-pattern pattern false)
+   (validate-pattern db pattern false)
    (memoize-for db [:temporal-search pattern]
                 #(if-let [{:keys [db-index lookup-fn]}
                           (search-strategy-with-index
@@ -230,7 +235,7 @@
                      (filter-by-added pattern result))
                    [])))
   ([db pattern batch-fn]
-   (validate-pattern pattern true)
+   (validate-pattern db pattern true)
    (if-let [{:keys [db-index strategy-vec backend-fn]}
             (search-strategy-with-index
              db pattern true)]
@@ -240,8 +245,8 @@
 
 (defn index-type [db pattern]
   (let [idx (indexing-for-pattern? db pattern)
-        a (:index-key (get-search-strategy pattern idx false))
-        b (:index-key (get-search-strategy pattern idx true))]
+        a (:index-key (get-search-strategy db pattern idx false))
+        b (:index-key (get-search-strategy db pattern idx true))]
     (assert (or (nil? a) (keyword? a)))
     (assert (or (nil? b) (keyword? b)))
     (when (= a b)
@@ -249,14 +254,14 @@
 
 (defn temporal-search
   ([db pattern]
-   (validate-pattern pattern false)
+   (validate-pattern db pattern false)
    (dbu/distinct-datoms
     db
     (index-type db pattern)
     (search-current-indices db pattern)
     (search-temporal-indices db pattern)))
   ([db pattern batch-fn]
-   (validate-pattern pattern true)
+   (validate-pattern db pattern true)
    (dbu/distinct-datoms
     db
     (index-type db pattern)

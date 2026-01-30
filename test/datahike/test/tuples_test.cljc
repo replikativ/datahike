@@ -133,6 +133,80 @@
                   @conn)))
       (d/release conn))))
 
+(deftest test-retract-entity-with-tuples
+  (testing "retractEntity with homogeneous tuple (3+ elements)"
+    (let [conn (connect)]
+      (d/transact conn [{:db/ident       :taglist
+                         :db/valueType   :db.type/tuple
+                         :db/tupleType   :db.type/string
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident       :expense/id
+                         :db/valueType   :db.type/string
+                         :db/unique      :db.unique/identity
+                         :db/cardinality :db.cardinality/one}])
+      ;; Add entity with 3-element tuple
+      (d/transact conn [{:expense/id "exp-123"
+                         :taglist ["" "tag139878778372080000" "tag139879675144920000"]}])
+      ;; Verify it was added
+      (is (= #{[["" "tag139878778372080000" "tag139879675144920000"]]}
+             (d/q '[:find ?v
+                    :where [_ :taglist ?v]]
+                  @conn)))
+      ;; Retract the entity - this previously failed with validation error
+      (is (d/transact conn [[:db.fn/retractEntity [:expense/id "exp-123"]]]))
+      ;; Verify it was retracted
+      (is (= #{}
+             (d/q '[:find ?v
+                    :where [_ :taglist ?v]]
+                  @conn)))
+      (d/release conn)))
+
+  (testing "retractEntity with heterogeneous tuple (3 elements)"
+    (let [conn (connect)]
+      (d/transact conn [{:db/ident       :driver/live-location
+                         :db/valueType   :db.type/tuple
+                         :db/tupleTypes  [:db.type/instant :db.type/float :db.type/float]
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident       :driver/uuid
+                         :db/valueType   :db.type/uuid
+                         :db/unique      :db.unique/identity
+                         :db/cardinality :db.cardinality/one}])
+      ;; Add entity with heterogeneous tuple
+      (let [uuid (java.util.UUID/fromString "1530d376-2df8-4318-a51d-8db173c03876")
+            timestamp #inst "2025-12-15T05:39:53.898-00:00"]
+        (d/transact conn [{:driver/uuid uuid
+                           :driver/live-location [timestamp 15.6683 73.7185]}])
+        ;; Verify it was added
+        (is (= #{[[timestamp 15.6683 73.7185]]}
+               (d/q '[:find ?v
+                      :where [_ :driver/live-location ?v]]
+                    @conn)))
+        ;; Retract the entity
+        (is (d/transact conn [[:db.fn/retractEntity [:driver/uuid uuid]]]))
+        ;; Verify it was retracted
+        (is (= #{}
+               (d/q '[:find ?v
+                      :where [_ :driver/live-location ?v]]
+                    @conn))))
+      (d/release conn)))
+
+  (testing "retract specific tuple value"
+    (let [conn (connect)]
+      (d/transact conn [{:db/ident       :coords
+                         :db/valueType   :db.type/tuple
+                         :db/tupleTypes  [:db.type/float :db.type/float :db.type/float]
+                         :db/cardinality :db.cardinality/one}])
+      ;; Add entity
+      (d/transact conn [[:db/add 100 :coords [1.0 2.0 3.0]]])
+      ;; Retract specific tuple value - this previously failed
+      (is (d/transact conn [[:db/retract 100 :coords [1.0 2.0 3.0]]]))
+      ;; Verify it was retracted
+      (is (= #{}
+             (d/q '[:find ?v
+                    :where [100 :coords ?v]]
+                  @conn)))
+      (d/release conn))))
+
 (deftest test-transact-and-query-composite
   (let [conn (connect)]
     (d/transact conn [{:db/ident       :a
