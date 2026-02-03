@@ -1,5 +1,6 @@
 (ns ^:no-doc datahike.index.persistent-set
-  (:require [me.tonsky.persistent-sorted-set :as psset]
+  (:require [clojure.string]
+            [me.tonsky.persistent-sorted-set :as psset]
             #?(:cljs [me.tonsky.persistent-sorted-set.btset :refer [BTSet]])
             #?(:cljs [me.tonsky.persistent-sorted-set.branch :refer [Branch]])
             #?(:cljs [me.tonsky.persistent-sorted-set.leaf :refer [Leaf]])
@@ -208,13 +209,33 @@
       (uuid (mapv (comp vec seq) (.keys node))))
     (squuid)))  ;; Sequential UUID for better index locality
 
-(defrecord CachedStorage [store config cache stats pending-writes freed-addresses cost-center-fn]
+(defn- freelist-pop!
+  "Atomically pop an address from the freelist. Returns nil if empty."
+  [freelist-atom]
+  (loop []
+    (let [current @freelist-atom]
+      (if (empty? current)
+        nil
+        (let [addr (peek current)
+              new-list (pop current)]
+          (if (compare-and-set! freelist-atom current new-list)
+            addr
+            (recur)))))))
+
+(defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freed-stacks freelist cost-center-fn]
   IStorage
   (store [_ node #?(:cljs opts)]
     (@cost-center-fn :store)
     (swap! stats update :writes inc)
-    (let [address (gen-address node (:crypto-hash? config))
-          _ (trace "writing storage: " address " crypto: " (:crypto-hash? config))]
+    (let [;; Only reuse addresses when not using crypto-hash (content-addressed storage
+          ;; requires the address to match the content)
+          reused (when-not (:crypto-hash? config)
+                   (freelist-pop! freelist))
+          address (or reused (gen-address node (:crypto-hash? config)))
+          _ (trace "writing storage: " address " reused: " (boolean reused) " crypto: " (:crypto-hash? config))]
+      ;; Evict old cached value when reusing an address
+      (when reused
+        (wrapped/evict cache address))
       (swap! pending-writes conj [address node])
       (wrapped/miss cache address node)
       address))
@@ -241,7 +262,20 @@
     (when address
       (let [now #?(:clj (java.util.Date.) :cljs (js/Date.))]
         (trace "marking address as freed: " address)
-        (swap! freed-addresses conj [address now])))))
+        (swap! freed-set conj address)
+        #?(:clj (swap! freed-stacks assoc address
+                       (let [frames (.getStackTrace (Thread/currentThread))]
+                         (->> frames
+                              (filter #(or (.contains (.getClassName %) "persistent_sorted_set")
+                                           (.contains (.getClassName %) "datahike")))
+                              (take 5)
+                              (mapv #(str (.getClassName %) "." (.getMethodName %) ":" (.getLineNumber %)))))))
+        (swap! freed-addresses conj [address now]))))
+  (isFreed [_ address]
+    (contains? @freed-set address))
+  (freedInfo [_ address]
+    (when-let [stack (get @freed-stacks address)]
+      (str "Freed by: " (clojure.string/join " <- " stack)))))
 
 (def init-stats {:writes   0
                  :reads    0
@@ -253,6 +287,9 @@
                   (atom init-stats)
                   (atom [])
                   (atom [])  ;; freed-addresses: vector of [address timestamp] pairs
+                  (atom #{}) ;; freed-set: HashSet for O(1) isFreed lookups
+                  (atom {})  ;; freed-stacks: map of address -> call stack (debug)
+                  (atom [])  ;; freelist: vector of reusable addresses (used as stack via peek/pop)
                   (atom (fn [_] nil))))
 
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)

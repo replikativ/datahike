@@ -180,10 +180,10 @@
             "Data should be intact after manual GC")
         (d/release conn2)))))
 
-(deftest batch-size-limit-precise-test
-  (testing "Batch size limit causes incremental deletion"
+(deftest recycling-all-at-once-test
+  (testing "Address recycling processes all eligible addresses at once"
     (let [cfg (-> base-cfg
-                  (assoc-in [:store :path] "/tmp/online-gc-batch-precise-test")
+                  (assoc-in [:store :path] "/tmp/online-gc-recycle-all-test")
                   (assoc :online-gc {:enabled? false}))  ;; Start disabled
           conn (do
                  (d/delete-database cfg)
@@ -197,24 +197,23 @@
 
       ;; Check accumulated freed count
       ;; Schema (3) + 20 data transactions × 2 = 43 total
-      (let [total-freed (get-freed-count @conn)
-            batch-size 5]
+      (let [total-freed (get-freed-count @conn)]
         (is (= 43 total-freed)
             "Should have 43 freed addresses (schema:3 + 20×2=40)")
 
-        ;; Run GC with small batch size
-        (let [deleted (online-gc/online-gc! (:store @conn)
-                                            {:enabled? true
-                                             :grace-period-ms 0
-                                             :max-batch batch-size
-                                             :sync? true})]
-          (is (= 5 deleted)
-              "Should delete exactly 5 addresses (batch size limit)"))
+        ;; Run GC - with recycling, all eligible addresses are processed at once
+        (let [recycled (online-gc/online-gc! (:store @conn)
+                                             {:enabled? true
+                                              :grace-period-ms 0
+                                              :max-batch 5  ;; This only affects delete mode, not recycling
+                                              :sync? true})]
+          (is (= 43 recycled)
+              "Should recycle all 43 addresses at once (recycling is not limited by max-batch)"))
 
-        ;; Remaining freed addresses
+        ;; All addresses should be recycled (moved to freelist)
         (let [remaining (get-freed-count @conn)]
-          (is (= 38 remaining)
-              "Should have 38 remaining addresses (43 - 5)")))
+          (is (= 0 remaining)
+              "Should have 0 remaining freed addresses (all recycled)")))
 
       (d/release conn))))
 
@@ -357,8 +356,7 @@
       ;; Manually check filtering with very long grace period
       (let [[to-delete remaining] (online-gc/get-and-clear-eligible-freed!
                                    (:store @conn)
-                                   300000  ;; 5 minutes
-                                   1000)]
+                                   300000)]  ;; 5 minutes
         ;; All should be in remaining (within grace period)
         (is (empty? to-delete) "Nothing should be eligible with long grace period")
         (is (coll? remaining) "Remaining should be a collection"))
@@ -367,8 +365,7 @@
       (d/transact conn [{:name "Bob" :age 25}])  ;; Generate more freed addresses
       (let [[to-delete _remaining] (online-gc/get-and-clear-eligible-freed!
                                     (:store @conn)
-                                    0  ;; Zero grace period
-                                    1000)]
+                                    0)]  ;; Zero grace period
         ;; Should have eligible addresses
         (is (>= (count to-delete) 0) "Should find eligible addresses with zero grace period"))
 
