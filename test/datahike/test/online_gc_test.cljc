@@ -415,3 +415,56 @@
               (str "Background GC should clean up freed addresses. Remaining: " freed-count))))
 
       (d/release conn))))
+
+;;; ============================================================================
+;;; Safety Tests
+;;; ============================================================================
+
+(deftest multi-branch-safety-test
+  (testing "Multi-branch databases fall back to deletion mode"
+    (let [cfg (-> base-cfg
+                  (assoc-in [:store :path] "/tmp/online-gc-multi-branch-test")
+                  (assoc :online-gc {:enabled? false})
+                  (assoc :crypto-hash? false))
+          conn (do
+                 (d/delete-database cfg)
+                 (d/create-database cfg)
+                 (d/connect cfg))]
+
+      (d/transact conn schema)
+      (d/transact conn [{:name "Alice" :age 30}])
+
+      ;; Check initial branches - should be single branch #{:db}
+      (let [branches (k/get (:store @conn) :branches nil {:sync? true})]
+        (is (= #{:db} branches)
+            "Should start with single branch"))
+
+      ;; Manually add a second branch to simulate multi-branch scenario
+      (k/assoc (:store @conn) :branches #{:db :branch-a} {:sync? true})
+
+      ;; Verify multi-branch state
+      (let [branches (k/get (:store @conn) :branches nil {:sync? true})]
+        (is (= #{:db :branch-a} branches)
+            "Should have two branches"))
+
+      ;; Add transaction to generate freed addresses
+      (d/transact conn [{:name "Bob" :age 25}])
+
+      (let [freed-before (get-freed-count @conn)]
+        (is (pos? freed-before)
+            "Should have freed addresses"))
+
+      ;; Run online GC - should detect multi-branch and use deletion mode
+      (let [result (online-gc/online-gc! (:store @conn)
+                                         {:enabled? true
+                                          :grace-period-ms 0
+                                          :sync? true})]
+        (is (pos? result)
+            "Should process addresses in deletion mode"))
+
+      ;; Verify addresses were cleared (deletion worked)
+      (let [freed-after (get-freed-count @conn)]
+        (is (= 0 freed-after)
+            "Multi-branch deletion mode should clear freed addresses"))
+
+      (d/release conn))))

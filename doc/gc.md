@@ -92,10 +92,12 @@ When PSS (Persistent Sorted Set) index trees are modified during transactions, o
 Enable online GC in your database config:
 
 ```clojure
-;; For bulk imports (no concurrent readers)
+;; For bulk imports (no concurrent readers, single-branch)
+;; See "Address Recycling" section below for details
 {:online-gc {:enabled? true
-             :grace-period-ms 0          ;; Delete immediately
-             :max-batch 10000}}          ;; Large batches for efficiency
+             :grace-period-ms 0          ;; Recycle immediately
+             :max-batch 10000}           ;; Large batches for efficiency
+ :crypto-hash? false}                   ;; Required for address recycling
 
 ;; For production (concurrent readers)
 {:online-gc {:enabled? true
@@ -157,21 +159,86 @@ Understanding how many addresses are freed helps detect memory issues:
 - Index structure changes
 - Memory leaks
 
+### Address Recycling (Bulk Import Optimization)
+
+Starting with Datahike 0.8.0, online GC includes **address recycling**—freed addresses are reused for new index nodes instead of being deleted from storage. This optimization is particularly powerful for bulk imports.
+
+**How it works:**
+1. When index trees are modified, old root addresses are marked as freed
+2. Online GC moves eligible addresses to a freelist (grace period applies)
+3. New index nodes reuse addresses from the freelist instead of generating new UUIDs
+4. LMDB overwrites the recycled address with new data
+
+**Benefits:**
+- **Zero delete operations**: Converts O(freed_nodes) deletes to O(1) freelist append
+- **Reduces LMDB fragmentation**: Addresses are reused rather than accumulating
+- **Perfect for bulk imports**: With `:grace-period-ms 0`, recycling happens immediately
+- **Minimal overhead**: No tree traversal or complex reachability analysis
+
+**Safety limitations:**
+
+⚠️ **Address recycling is ONLY safe for:**
+- **Single-branch databases** (shared nodes across branches would be corrupted)
+- **No long-lived readers** (or grace period exceeds reader lifetime)
+- **Bulk import scenarios** (write-only, no concurrent queries)
+
+⚠️ **Address recycling is automatically disabled when:**
+- Multiple branches exist (falls back to deletion mode)
+- Using `:crypto-hash? true` (content-addressing requires fresh UUIDs)
+
+### Bulk Import Configuration
+
+For maximum performance during bulk imports where no concurrent readers exist:
+
+```clojure
+;; Optimal bulk import configuration
+{:online-gc {:enabled? true
+             :grace-period-ms 0        ;; Recycle immediately (no readers)
+             :max-batch 10000}         ;; Large batch (only for delete fallback)
+ :crypto-hash? false                  ;; Required for recycling
+ :branch :db}                         ;; Single branch only
+
+;; Example bulk import
+(let [cfg {:store {:backend :file :path "/data/bulk-import"}
+           :online-gc {:enabled? true :grace-period-ms 0}
+           :crypto-hash? false}
+      conn (d/connect cfg)]
+  ;; Import millions of entities
+  (doseq [batch entity-batches]
+    (d/transact conn batch))
+  ;; Storage stays bounded - addresses are recycled
+  (d/release conn))
+```
+
+**Bulk import best practices:**
+1. Set `:grace-period-ms 0` (no concurrent readers to protect)
+2. Use `:crypto-hash? false` (enables address recycling)
+3. Stay on single branch (`:branch :db`)
+4. Increase `:max-batch` for efficiency (only affects delete fallback)
+5. Monitor freed address counts to verify recycling is working
+
+**Verifying address recycling:**
+- Check logs for `"Online GC: recycling N addresses to freelist"`
+- If you see `"multi-branch detected, using deletion mode"`, ensure single branch
+- Freed address counts should drop to zero after each transaction
+
 ### Online GC vs Offline GC
 
 **Online GC** (incremental):
 - Runs during commits
 - Deletes only **freed index nodes** from recent transactions
 - Fast: No tree traversal required
-- Best for: Bulk imports, high-write workloads
+- **With recycling**: No delete operations at all, just freelist management
+- Best for: Bulk imports, high-write workloads, single-branch databases
 
 **Offline GC** (`d/gc-storage`):
 - Runs manually
 - Deletes **entire old snapshots** by walking all branches
 - Slower: Full tree traversal and marking
-- Best for: Periodic maintenance, deleting old branches
+- Handles **multi-branch databases** safely through reachability analysis
+- Best for: Periodic maintenance, deleting old branches, multi-branch cleanup
 
-**Use both:** Online GC for incremental cleanup, offline GC for periodic deep cleaning.
+**Use both:** Online GC for incremental cleanup during writes, offline GC for periodic deep cleaning and multi-branch scenarios.
 
 ## Automatic Garbage Collection
 
