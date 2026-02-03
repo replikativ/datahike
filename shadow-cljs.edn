@@ -15,7 +15,7 @@
            :main datahike.test.nodejs-test/-main
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto}}
-          
+
           :browser-integration-test
           {:target :browser-test
            :test-dir "target/browser-integration-test"

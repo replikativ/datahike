@@ -71,6 +71,15 @@ Examples of long-running readers:
 
 ## Online Garbage Collection (Incremental GC)
 
+> ⚠️ **EXPERIMENTAL FEATURE** (Datahike 0.8.0+)
+>
+> Online GC is currently an experimental feature. While it has been tested extensively in Clojure/JVM and includes safety mechanisms for multi-branch databases, use with caution in production. We recommend:
+> - Thorough testing in your specific use case before production deployment
+> - Monitoring freed address counts to verify expected behavior
+> - Using it primarily for bulk imports and high-write workloads where it's most beneficial
+> - **ClojureScript**: Online GC functionality is available in CLJS but has limited test coverage due to async complexity. JVM testing is more comprehensive.
+> - Reporting any issues at https://github.com/replikativ/datahike/issues
+
 **Available starting with Datahike 0.8.0**: Online GC automatically deletes freed index nodes during transaction commits, preventing garbage accumulation during bulk imports and high-write workloads.
 
 ### How Online GC Works
@@ -160,6 +169,10 @@ Understanding how many addresses are freed helps detect memory issues:
 - Memory leaks
 
 ### Address Recycling (Bulk Import Optimization)
+
+> ⚠️ **EXPERIMENTAL FEATURE**
+>
+> Address recycling is an experimental optimization. It has been designed with safety checks (multi-branch detection, grace periods), but should be thoroughly tested in your environment before production use.
 
 Starting with Datahike 0.8.0, online GC includes **address recycling**—freed addresses are reused for new index nodes instead of being deleted from storage. This optimization is particularly powerful for bulk imports.
 

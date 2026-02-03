@@ -21,7 +21,8 @@
      ;; Later: (async/close! stop-ch)"
   (:require [konserve.core :as k]
             [konserve.utils :refer [multi-key-capable?]]
-            [clojure.core.cache.wrapped :as wrapped]
+            #?@(:clj  [[clojure.core.cache.wrapped :as wrapped]]
+                :cljs [[cljs.cache.wrapped :as wrapped]])
             [taoensso.timbre :refer [debug trace warn]]
             #?(:clj [clojure.core.async :as async]
                :cljs [cljs.core.async :as async])
