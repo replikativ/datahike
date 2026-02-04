@@ -433,12 +433,12 @@
    (long-cmp (.-e d1) (.-e d2))))
 
 (defn cmp-datoms-avet-replace
-  "Compare datoms by (a,v) only, ignoring e and tx.
-   Used for replace operations in AVET index."
+  "Compare datoms by (a,e) only, ignoring v and tx.
+   Used for replace operations in AVET index where value changes."
   [^Datom d1, ^Datom d2]
   (combine-cmp
    (cmp-attr-quick (.-a d1) (.-a d2))
-   (compare-value (.-v d1) (.-v d2))))
+   (long-cmp (.-e d1) (.-e d2))))
 
 (defn index-type->cmp-replace
   "Get comparator for replace operations.
