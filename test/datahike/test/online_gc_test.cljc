@@ -85,7 +85,7 @@
       ;; Verify data is still queryable
       (let [result (d/q '[:find ?name ?age
                           :where [?e :name ?name]
-                                 [?e :age ?age]]
+                          [?e :age ?age]]
                         @conn)]
         (is (= 3 (count result))
             "All entities should be queryable despite freed addresses"))
@@ -129,7 +129,7 @@
       (let [conn2 (d/connect cfg)
             result (d/q '[:find ?name ?age
                           :where [?e :name ?name]
-                                 [?e :age ?age]]
+                          [?e :age ?age]]
                         @conn2)]
         (is (= 3 (count result))
             "All 3 entities should be queryable after GC and reconnect")
@@ -266,7 +266,7 @@
       (let [conn2 (d/connect cfg)
             result (d/q '[:find ?name ?age
                           :where [?e :name ?name]
-                                 [?e :age ?age]]
+                          [?e :age ?age]]
                         @conn2)]
         (is (= 3 (count result))
             "All 3 entities queryable after reconnect")

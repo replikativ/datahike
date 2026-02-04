@@ -53,11 +53,11 @@
         (swap! freed-atom
                (fn [freed-pairs]
                  (let [eligible (filterv (fn [[_addr ts]]
-                                          (<= (get-time ts) cutoff-time))
-                                        freed-pairs)
+                                           (<= (get-time ts) cutoff-time))
+                                         freed-pairs)
                        remaining (filterv (fn [[_addr ts]]
-                                           (> (get-time ts) cutoff-time))
-                                         freed-pairs)]
+                                            (> (get-time ts) cutoff-time))
+                                          freed-pairs)]
                    (reset! result [(mapv first eligible) remaining])
                    remaining)))
         ;; Also clear the freed-set and freed-stacks of eligible addresses
