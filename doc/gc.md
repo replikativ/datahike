@@ -181,7 +181,7 @@ Understanding how many addresses are freed helps detect memory issues:
 >
 > Address recycling is an experimental optimization. It has been designed with safety checks (multi-branch detection, grace periods), but should be thoroughly tested in your environment before production use.
 
-Starting with Datahike 0.8.0, online GC includes **address recycling**—freed addresses are reused for new index nodes instead of being deleted from storage. This optimization is particularly powerful for bulk imports.
+Online GC includes **address recycling**—freed addresses are reused for new index nodes instead of being deleted from storage. This optimization is particularly powerful for bulk imports.
 
 **How it works:**
 1. When index trees are modified, old root addresses are marked as freed
