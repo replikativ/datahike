@@ -1,6 +1,8 @@
 (ns datahike.test.nodejs-test
   (:require [cljs.test :refer [deftest is async] :as t]
             [datahike.api :as d]
+            [datahike.online-gc :as online-gc]
+            [konserve.core :as k]
             [konserve.node-filestore] ;; Register :file backend for Node.js
             [cljs.core.async :refer [go <!] :include-macros true]
             [cljs.nodejs :as nodejs]))
@@ -141,12 +143,117 @@
                (catch js/Error e
                  (is false (str "Error: " (.-message e))))
                (finally
-                 (done)
-            ;; Force immediate exit on next tick
-            ;; Background operations in konserve/core.async keep event loop alive
-                 (js/process.nextTick
-                  (fn []
-                    (.exit js/process 0)))))))))
+                 (done)))))))
+
+(deftest online-gc-basic-test
+  (async done
+         (go
+           (try
+             (let [dir (tmp-dir)
+                   cfg-no-gc {:store {:backend :file :path dir :id (random-uuid)}
+                              :online-gc {:enabled? false}
+                              :crypto-hash? false
+                              :keep-history? false
+                              :schema-flexibility :write}]
+
+               ;; Create database without online GC initially
+               (<! (d/create-database cfg-no-gc))
+               (let [conn (d/connect cfg-no-gc)]
+
+                 ;; Add schema
+                 (<! (d/transact! conn [{:db/ident :name
+                                         :db/valueType :db.type/string
+                                         :db/cardinality :db.cardinality/one}]))
+
+                 ;; Add data to create freed addresses
+                 (<! (d/transact! conn [{:name "Alice"}]))
+                 (<! (d/transact! conn [{:name "Bob"}]))
+
+                 ;; Get freed count (should have freed addresses from schema + data txs)
+                 (let [freed-atom (-> @conn :store :storage :freed-addresses)
+                       initial-freed (count @freed-atom)]
+                   (is (> initial-freed 0) "Should have freed addresses with GC disabled"))
+
+                 ;; Run online GC explicitly
+                 (let [gc-result (<! (online-gc/online-gc! (:store @conn)
+                                                           {:enabled? true
+                                                            :grace-period-ms 0
+                                                            :sync? false}))]
+                   (is (number? gc-result) "GC returned a count"))
+
+                 ;; Check that freed addresses were cleared
+                 (let [freed-atom (-> @conn :store :storage :freed-addresses)
+                       final-freed (count @freed-atom)]
+                   (is (= 0 final-freed) "Freed addresses should be cleared after GC"))
+
+                 (d/release conn))
+
+               ;; Cleanup
+               (<! (d/delete-database cfg-no-gc)))
+
+             (catch js/Error e
+               (is false (str "Error in online-gc-basic-test: " (.-message e))))
+             (finally
+               (done))))))
+
+(deftest online-gc-multi-branch-test
+  (async done
+         (go
+           (try
+             (let [dir (tmp-dir)
+                   cfg-no-gc {:store {:backend :file :path dir :id (random-uuid)}
+                              :online-gc {:enabled? false}
+                              :crypto-hash? false
+                              :keep-history? false
+                              :schema-flexibility :write}]
+
+               ;; Create database without online GC initially
+               (<! (d/create-database cfg-no-gc))
+               (let [conn (d/connect cfg-no-gc)]
+
+                 ;; Add schema and data
+                 (<! (d/transact! conn [{:db/ident :name
+                                         :db/valueType :db.type/string
+                                         :db/cardinality :db.cardinality/one}]))
+                 (<! (d/transact! conn [{:name "Alice"}]))
+
+                 ;; Simulate multi-branch scenario by adding a second branch
+                 (<! (k/assoc (:store @conn) :branches #{:db :branch-a}))
+
+                 ;; Verify multi-branch state
+                 (let [branches (<! (k/get (:store @conn) :branches))]
+                   (is (= 2 (count branches)) "Should have two branches"))
+
+                 ;; Add more data to generate freed addresses
+                 (<! (d/transact! conn [{:name "Bob"}]))
+
+                 (let [freed-before (count @(-> @conn :store :storage :freed-addresses))]
+                   (is (> freed-before 0) "Should have freed addresses with GC disabled"))
+
+                 ;; Run online GC - should detect multi-branch and use deletion mode
+                 (let [gc-result (<! (online-gc/online-gc! (:store @conn)
+                                                           {:enabled? true
+                                                            :grace-period-ms 0
+                                                            :sync? false}))]
+                   (is (number? gc-result) "GC should still work in deletion mode")
+                   (is (>= gc-result 0) "GC should process addresses"))
+
+                 ;; Freed addresses should be cleared even in deletion mode
+                 (let [freed-after (count @(-> @conn :store :storage :freed-addresses))]
+                   (is (= 0 freed-after) "Multi-branch GC should clear freed addresses"))
+
+                 (d/release conn))
+
+               ;; Cleanup
+               (<! (d/delete-database cfg-no-gc)))
+
+             (catch js/Error e
+               (is false (str "Error in online-gc-multi-branch-test: " (.-message e))))
+             (finally
+               (done)
+               (js/process.nextTick
+                (fn []
+                  (.exit js/process 0))))))))
 
 (defn -main []
   (t/run-tests 'datahike.test.nodejs-test))

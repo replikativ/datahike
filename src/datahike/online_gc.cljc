@@ -24,10 +24,9 @@
             #?@(:clj  [[clojure.core.cache.wrapped :as wrapped]]
                 :cljs [[cljs.cache.wrapped :as wrapped]])
             [taoensso.timbre :refer [debug trace warn]]
-            #?(:clj [clojure.core.async :as async]
-               :cljs [cljs.core.async :as async])
-            #?(:clj [superv.async :refer [go-try- <?-]]
-               :cljs [superv.async :refer [go-try- <?-]]))
+            [clojure.core.async :as async]
+            [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?-]]
+            #?(:cljs [clojure.core.async :refer-macros [go]]))
   #?(:clj (:import [java.util Date])))
 
 (defn get-time [d]
