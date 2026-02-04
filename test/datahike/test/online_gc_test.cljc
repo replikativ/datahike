@@ -421,7 +421,7 @@
 ;;; ============================================================================
 
 (deftest multi-branch-safety-test
-  (testing "Multi-branch databases fall back to deletion mode"
+  (testing "Multi-branch databases skip online GC entirely for safety"
     (let [cfg (-> base-cfg
                   (assoc-in [:store :path] "/tmp/online-gc-multi-branch-test")
                   (assoc :online-gc {:enabled? false})
@@ -454,17 +454,22 @@
         (is (pos? freed-before)
             "Should have freed addresses"))
 
-      ;; Run online GC - should detect multi-branch and use deletion mode
+      ;; Run online GC - should detect multi-branch and SKIP entirely
       (let [result (online-gc/online-gc! (:store @conn)
                                          {:enabled? true
                                           :grace-period-ms 0
                                           :sync? true})]
-        (is (pos? result)
-            "Should process addresses in deletion mode"))
+        (is (= 0 result)
+            "Multi-branch GC should be skipped (return 0)"))
 
-      ;; Verify addresses were cleared (deletion worked)
+      ;; Freed addresses should remain (not deleted, left for offline GC)
       (let [freed-after (get-freed-count @conn)]
-        (is (= 0 freed-after)
-            "Multi-branch deletion mode should clear freed addresses"))
+        (is (pos? freed-after)
+            "Multi-branch GC should leave freed addresses for offline GC"))
+
+      ;; Verify database is still functional
+      (let [result (d/q '[:find ?e ?n :where [?e :name ?n]] @conn)]
+        (is (= 2 (count result))
+            "Both Alice and Bob should still exist"))
 
       (d/release conn))))
