@@ -50,6 +50,7 @@
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
            :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server" "src-hitchhiker-tree" "src-kabel"]
+                  :jvm-opts ["-ea"]  ;; Enable Java assertions to catch bugs early
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.87.1366"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.5.154"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}
