@@ -222,7 +222,7 @@
             addr
             (recur)))))))
 
-(defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freed-stacks freelist cost-center-fn]
+(defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freelist cost-center-fn]
   IStorage
   (store [_ node #?(:cljs opts)]
     (@cost-center-fn :store)
@@ -263,19 +263,12 @@
       (let [now #?(:clj (java.util.Date.) :cljs (js/Date.))]
         (trace "marking address as freed: " address)
         (swap! freed-set conj address)
-        #?(:clj (swap! freed-stacks assoc address
-                       (let [frames (.getStackTrace (Thread/currentThread))]
-                         (->> frames
-                              (filter #(or (.contains (.getClassName %) "persistent_sorted_set")
-                                           (.contains (.getClassName %) "datahike")))
-                              (take 5)
-                              (mapv #(str (.getClassName %) "." (.getMethodName %) ":" (.getLineNumber %)))))))
         (swap! freed-addresses conj [address now]))))
   (isFreed [_ address]
     (contains? @freed-set address))
   (freedInfo [_ address]
-    (when-let [stack (get @freed-stacks address)]
-      (str "Freed by: " (clojure.string/join " <- " stack)))))
+    (when (contains? @freed-set address)
+      "Address has been marked as freed")))
 
 (def init-stats {:writes   0
                  :reads    0
@@ -288,7 +281,6 @@
                   (atom [])
                   (atom [])  ;; freed-addresses: vector of [address timestamp] pairs
                   (atom #{}) ;; freed-set: HashSet for O(1) isFreed lookups
-                  (atom {})  ;; freed-stacks: map of address -> call stack (debug)
                   (atom [])  ;; freelist: vector of reusable addresses (used as stack via peek/pop)
                   (atom (fn [_] nil))))
 
