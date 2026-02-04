@@ -154,27 +154,6 @@ For production systems, run GC in a background thread instead of blocking commit
 - Periodic cleanup: Runs every N milliseconds
 - Graceful shutdown: Close channel to stop
 
-### Freed Address Counts
-
-Understanding how many addresses are freed helps detect memory issues:
-
-**Pattern:** `3 + 2n` addresses for n data transactions
-- **Schema transaction**: 3 addresses (EAVT, AEVT, AVET index roots)
-- **Data transaction**: 2 addresses per transaction (EAVT, AEVT roots)
-  - AVET only changes for **indexed** attributes (`:db/index true`)
-  - Non-indexed attributes don't update AVET, so only 2 freed per tx
-
-**Examples:**
-- Schema + 1 data tx: 3 + 2 = 5 freed addresses
-- Schema + 10 data txs: 3 + 20 = 23 freed addresses
-- Schema + 1000 data txs: 3 + 2000 = 2003 freed addresses
-
-**Why this matters:** If freed counts deviate from this pattern, it may indicate:
-- Double-freeing (too many addresses)
-- Missing frees (too few addresses)
-- Index structure changes
-- Memory leaks
-
 ### Address Recycling (Bulk Import Optimization)
 
 > ⚠️ **EXPERIMENTAL FEATURE**
