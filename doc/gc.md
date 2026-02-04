@@ -79,12 +79,12 @@ Online GC automatically deletes freed index nodes during transaction commits, pr
 > - Thorough testing in your specific use case before production deployment
 > - Monitoring freed address counts to verify expected behavior
 > - Using it primarily for bulk imports and high-write workloads where it's most beneficial
-> - **ClojureScript**: Online GC functionality is available in CLJS but has limited test coverage due to async complexity. JVM testing is more comprehensive.
+> - **ClojureScript**: Online GC functionality is available in CLJS but has not been tested in big bulk loads yet. JVM testing is more comprehensive.
 > - Reporting any issues at https://github.com/replikativ/datahike/issues
 
 ### How Online GC Works
 
-> ⚠️ **CRITICAL LIMITATION**: Online GC is **ONLY safe for single-branch databases**.
+> Online GC is **ONLY safe for single-branch databases**.
 > For multi-branch databases, online GC is automatically disabled because freed nodes
 > from one branch may still be referenced by other branches through structural sharing.
 > Use offline GC (`d/gc-storage`) for multi-branch cleanup instead.
@@ -176,12 +176,12 @@ Online GC includes **address recycling**—freed addresses are reused for new in
 
 **Safety limitations:**
 
-⚠️ **Address recycling is ONLY safe for:**
+**Address recycling is ONLY safe for:**
 - **Single-branch databases** (shared nodes across branches would be corrupted)
 - **No long-lived readers** (or grace period exceeds reader lifetime)
 - **Bulk import scenarios** (write-only, no concurrent queries)
 
-⚠️ **Online GC is automatically disabled when:**
+**Online GC is automatically disabled when:**
 - Multiple branches exist (online GC completely skipped - use offline GC instead)
   Reason: Freed nodes from one branch may still be referenced by other branches
   through structural sharing
