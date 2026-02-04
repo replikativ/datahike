@@ -142,8 +142,9 @@
 (defn upsert [pset ^Datom datom index-type old-datom]
   (if old-datom
     ;; Use single-traversal replace instead of remove + insert (2x faster)
-    #?(:clj (.replace ^PersistentSortedSet pset old-datom datom (index-type->cmp-quick index-type))
-       :cljs (psset/replace pset old-datom datom (index-type->cmp-quick index-type)))
+    ;; Replace comparator only compares key parts (e,a), allowing value/tx to differ
+    #?(:clj (.replace ^PersistentSortedSet pset old-datom datom (dd/index-type->cmp-replace index-type))
+       :cljs (psset/replace pset old-datom datom (dd/index-type->cmp-replace index-type)))
     (psset/conj pset datom (index-type->cmp-quick index-type))))
 
 (defn temporal-upsert [pset ^Datom datom index-type {old-val :v}]

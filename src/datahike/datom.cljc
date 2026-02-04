@@ -415,6 +415,40 @@
                              :avet cmp-temporal-datoms-avet-quick
                              cmp-temporal-datoms-eavt-quick))))
 
+;; Comparators for replace operations - only compare key parts, not values
+(defn cmp-datoms-eavt-replace
+  "Compare datoms by (e,a) only, ignoring v and tx.
+   Used for replace operations where value changes."
+  [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (long-cmp (.-e d1) (.-e d2))
+   (cmp-attr-quick (.-a d1) (.-a d2))))
+
+(defn cmp-datoms-aevt-replace
+  "Compare datoms by (a,e) only, ignoring v and tx.
+   Used for replace operations where value changes."
+  [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (long-cmp (.-e d1) (.-e d2))))
+
+(defn cmp-datoms-avet-replace
+  "Compare datoms by (a,v) only, ignoring e and tx.
+   Used for replace operations in AVET index."
+  [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (compare-value (.-v d1) (.-v d2))))
+
+(defn index-type->cmp-replace
+  "Get comparator for replace operations.
+   Only compares the logical key parts, allowing value/tx to differ."
+  [index-type]
+  (case index-type
+    :aevt cmp-datoms-aevt-replace
+    :avet cmp-datoms-avet-replace
+    cmp-datoms-eavt-replace))
+
 (defn index-type->cmp-prefix
   "Get prefix comparator for (e,a,v) matching, ignoring tx.
    Used for existence checks in insert operations."
