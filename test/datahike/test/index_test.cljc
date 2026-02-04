@@ -6,7 +6,9 @@
    [datahike.constants :refer [e0 tx0 emax txmax]]
    [datahike.datom :as dd]
    [datahike.db :as db]
-   [datahike.index :as di]))
+   [datahike.index :as di]
+   [datahike.index.persistent-set :as pset]
+   [me.tonsky.persistent-sorted-set :as psset]))
 
 (deftest test-datoms
   (let [dvec #(vector (:e %) (:a %) (:v %))
@@ -240,3 +242,73 @@
               [2 :age 20]
               [5 :age 20]
               [4 :age 45]])))))
+
+(deftest test-upsert-replace-comparators
+  (testing "Replace comparators return 0 for old/new datom pairs"
+    (let [old-datom (dd/datom 1 :name "Ivan" 100 true)
+          new-datom (dd/datom 1 :name "Petr" 101 true)]
+
+      (testing "EAVT replace comparator"
+        (let [cmp (dd/index-type->cmp-replace :eavt)]
+          (is (= 0 (cmp old-datom new-datom))
+              "EAVT replace should compare only (e,a), ignoring v and tx")))
+
+      (testing "AEVT replace comparator"
+        (let [cmp (dd/index-type->cmp-replace :aevt)]
+          (is (= 0 (cmp old-datom new-datom))
+              "AEVT replace should compare only (a,e), ignoring v and tx")))
+
+      (testing "AVET replace comparator"
+        (let [cmp (dd/index-type->cmp-replace :avet)]
+          (is (= 0 (cmp old-datom new-datom))
+              "AVET replace should compare only (a,e), ignoring v and tx - not (a,v)!")))))
+
+  (testing "Upsert operations work correctly when values change"
+    (let [old-datom (dd/datom 1 :age 25 100 true)
+          new-datom (dd/datom 1 :age 26 101 true)]
+
+      (testing "EAVT index upsert"
+        (let [index (psset/sorted-set* {:cmp (dd/index-type->cmp-quick :eavt)})
+              index-with-old (pset/insert index old-datom :eavt)
+              updated (pset/upsert index-with-old new-datom :eavt old-datom)
+              datoms (seq updated)]
+          (is (= 1 (count datoms))
+              "Should have exactly 1 datom after upsert")
+          (is (= new-datom (first datoms))
+              "Should contain the new datom, not the old one")))
+
+      (testing "AEVT index upsert"
+        (let [index (psset/sorted-set* {:cmp (dd/index-type->cmp-quick :aevt)})
+              index-with-old (pset/insert index old-datom :aevt)
+              updated (pset/upsert index-with-old new-datom :aevt old-datom)
+              datoms (seq updated)]
+          (is (= 1 (count datoms))
+              "Should have exactly 1 datom after upsert")
+          (is (= new-datom (first datoms))
+              "Should contain the new datom, not the old one")))
+
+      (testing "AVET index upsert"
+        (let [index (psset/sorted-set* {:cmp (dd/index-type->cmp-quick :avet)})
+              index-with-old (pset/insert index old-datom :avet)
+              updated (pset/upsert index-with-old new-datom :avet old-datom)
+              datoms (seq updated)]
+          (is (= 1 (count datoms))
+              "Should have exactly 1 datom after upsert")
+          (is (= new-datom (first datoms))
+              "Should contain the new datom, not the old one")))))
+
+  (testing "Upsert with different entity IDs does not use replace"
+    (let [datom1 (dd/datom 1 :age 25 100 true)
+          datom2 (dd/datom 2 :age 26 101 true)]
+
+      (testing "AVET index - different entities, same attribute"
+        (let [index (psset/sorted-set* {:cmp (dd/index-type->cmp-quick :avet)})
+              index-with-d1 (pset/insert index datom1 :avet)
+              updated (pset/upsert index-with-d1 datom2 :avet nil)  ; nil old-datom means insert
+              datoms (seq updated)]
+          (is (= 2 (count datoms))
+              "Should have 2 datoms when upserting different entities")
+          (is (some #(= datom1 %) datoms)
+              "Should still contain the first datom")
+          (is (some #(= datom2 %) datoms)
+              "Should also contain the second datom"))))))

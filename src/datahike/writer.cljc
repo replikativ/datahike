@@ -67,9 +67,9 @@
                             op-fn (write-fn-map op)
                             res   (try
                                     (apply op-fn old args)
-                            ;; Only catch ExceptionInfo here (intentionally rejected transactions).
-                            ;; Any other exceptions should crash the writer and signal the supervisor.
-                                    (catch #?(:clj Exception :cljs js/Error) e
+                            ;; Catch all Throwables to handle AssertionError and other Errors
+                            ;; These should crash the writer, but we deliver to callback first to prevent hangs
+                                    (catch #?(:clj Throwable :cljs js/Error) e
                                       (log/error "Error during invocation" invocation e args)
                               ;; take a guess that a NPE was triggered by an invalid connection
                               ;; short circuit on errors
@@ -83,6 +83,10 @@
                                                            :connection connection
                                                            :error      e})
                                                  e)))
+                              ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
+                              ;; Only Exceptions should be handled and allow the writer to continue
+                                      #?(:clj (when (instance? Error e)
+                                                (throw e)))
                                       :error))]
                         (cond (chan? res)
                               ;; async op, run in parallel in background, no sequential commit handling needed
@@ -125,13 +129,16 @@
                               (let [tx-report (-> tx-report
                                                   (assoc-in [:tx-meta :db/commitId] commit-id)
                                                   (assoc :db-after commit-db))]
-                                (put! callback tx-report))))
-                          (catch #?(:clj Exception :cljs js/Error) e
+                                (>! callback tx-report))))
+                          (catch #?(:clj Throwable :cljs js/Error) e
                             (doseq [[_ callback] txs]
                               (put! callback e))
                             (log/error "Writer thread shutting down because of commit error." e)
                             (close! commit-queue)
-                            (close! transaction-queue)))
+                            (close! transaction-queue)
+                            ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer
+                            #?(:clj (when (instance? Error e)
+                                      (throw e)))))
                         (<! (timeout commit-wait-time))
                         (recur (<?- commit-queue)))))))))]))
 

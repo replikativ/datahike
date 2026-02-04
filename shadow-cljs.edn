@@ -14,14 +14,16 @@
            :output-to "target/out/node-test.js"
            :main datahike.test.nodejs-test/-main
            :compiler-options {:optimizations :advanced
-                              :infer-externs :auto}}
-          
+                              :infer-externs :auto
+                              :elide-asserts false}}  ;; Keep assertions enabled to catch bugs
+
           :browser-integration-test
           {:target :browser-test
            :test-dir "target/browser-integration-test"
            :ns-regexp "datahike.kabel.browser-integration-test"
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
+                              :elide-asserts false  ;; Keep assertions enabled to catch bugs
                               :warnings-as-errors false
                               :warnings {:fn-deprecated false}}}
           
@@ -31,6 +33,7 @@
            :ns-regexp "datahike.kabel.browser-integration-test"
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
+                              :elide-asserts false  ;; Keep assertions enabled to catch bugs
                               :warnings-as-errors false
                               :warnings {:fn-deprecated false}}}
           

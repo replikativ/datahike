@@ -9,6 +9,7 @@
             [datahike.core :as core]
             [datahike.config :as dc]
             [datahike.schema-cache :as sc]
+            [datahike.online-gc :as online-gc]
             [konserve.core :as k]
             [konserve.store :as ks]
             [taoensso.timbre :as log]
@@ -191,6 +192,11 @@
                       (when-not sync?
                         (<?- commit-log-written)
                         (<?- branch-written))))
+
+                  ;; Online GC: delete freed addresses after writes are committed
+                  (when (get-in config [:online-gc :enabled?])
+                    (<?- (online-gc/online-gc! store (assoc (:online-gc config) :sync? false))))
+
                   db)))))
 
 (defn complete-db-update [old tx-report]
