@@ -71,8 +71,10 @@ Examples of long-running readers:
 
 ## Online Garbage Collection (Incremental GC)
 
-> ⚠️ **EXPERIMENTAL FEATURE** (Datahike 0.8.0+)
->
+> ⚠️ **EXPERIMENTAL FEATURE**
+
+Online GC automatically deletes freed index nodes during transaction commits, preventing garbage accumulation during bulk imports and high-write workloads.
+
 > Online GC is currently an experimental feature. While it has been tested extensively in Clojure/JVM and includes safety mechanisms for multi-branch databases, use with caution in production. We recommend:
 > - Thorough testing in your specific use case before production deployment
 > - Monitoring freed address counts to verify expected behavior
@@ -80,20 +82,25 @@ Examples of long-running readers:
 > - **ClojureScript**: Online GC functionality is available in CLJS but has limited test coverage due to async complexity. JVM testing is more comprehensive.
 > - Reporting any issues at https://github.com/replikativ/datahike/issues
 
-**Available starting with Datahike 0.8.0**: Online GC automatically deletes freed index nodes during transaction commits, preventing garbage accumulation during bulk imports and high-write workloads.
-
 ### How Online GC Works
+
+> ⚠️ **CRITICAL LIMITATION**: Online GC is **ONLY safe for single-branch databases**.
+> For multi-branch databases, online GC is automatically disabled because freed nodes
+> from one branch may still be referenced by other branches through structural sharing.
+> Use offline GC (`d/gc-storage`) for multi-branch cleanup instead.
 
 When PSS (Persistent Sorted Set) index trees are modified during transactions, old index nodes become unreachable. Online GC tracks these freed addresses with timestamps and deletes them incrementally:
 
 1. **During transaction** (transient mode): PSS calls `markFreed()` for each replaced index node
 2. **At commit time**: Freed addresses older than the grace period are batch-deleted
-3. **No full tree walk**: Only freed addresses are deleted, not requiring expensive tree traversal
+3. **Multi-branch safety check**: If multiple branches detected, GC is skipped entirely
+4. **No full tree walk**: Only freed addresses are deleted, not requiring expensive tree traversal
 
 **Key benefits:**
-- **Prevents unbounded storage growth** during bulk imports
+- **Prevents unbounded storage growth** during bulk imports (single-branch only)
 - **Incremental deletion**: Small batches per commit, low overhead
 - **Grace period support**: Safe for concurrent readers accessing old snapshots
+- **Multi-branch safety**: Automatically disabled to prevent corruption
 - **Configurable**: Can be disabled, tuned, or run in background
 
 ### Configuration
@@ -195,9 +202,11 @@ Starting with Datahike 0.8.0, online GC includes **address recycling**—freed a
 - **No long-lived readers** (or grace period exceeds reader lifetime)
 - **Bulk import scenarios** (write-only, no concurrent queries)
 
-⚠️ **Address recycling is automatically disabled when:**
-- Multiple branches exist (falls back to deletion mode)
-- Using `:crypto-hash? true` (content-addressing requires fresh UUIDs)
+⚠️ **Online GC is automatically disabled when:**
+- Multiple branches exist (online GC completely skipped - use offline GC instead)
+  Reason: Freed nodes from one branch may still be referenced by other branches
+  through structural sharing
+- Using `:crypto-hash? true` with recycling (falls back to deletion mode)
 
 ### Bulk Import Configuration
 
@@ -232,7 +241,8 @@ For maximum performance during bulk imports where no concurrent readers exist:
 
 **Verifying address recycling:**
 - Check logs for `"Online GC: recycling N addresses to freelist"`
-- If you see `"multi-branch detected, using deletion mode"`, ensure single branch
+- If you see `"Online GC: skipped (multi-branch detected)"`, ensure single branch
+  (multi-branch databases require offline GC instead)
 - Freed address counts should drop to zero after each transaction
 
 ### Online GC vs Offline GC
@@ -242,16 +252,18 @@ For maximum performance during bulk imports where no concurrent readers exist:
 - Deletes only **freed index nodes** from recent transactions
 - Fast: No tree traversal required
 - **With recycling**: No delete operations at all, just freelist management
-- Best for: Bulk imports, high-write workloads, single-branch databases
+- **ONLY for single-branch databases** - automatically disabled for multi-branch
+- Best for: Bulk imports, high-write workloads
 
 **Offline GC** (`d/gc-storage`):
 - Runs manually
 - Deletes **entire old snapshots** by walking all branches
 - Slower: Full tree traversal and marking
 - Handles **multi-branch databases** safely through reachability analysis
+- **Required for multi-branch databases** (online GC doesn't work)
 - Best for: Periodic maintenance, deleting old branches, multi-branch cleanup
 
-**Use both:** Online GC for incremental cleanup during writes, offline GC for periodic deep cleaning and multi-branch scenarios.
+**Use both:** Online GC for incremental cleanup during single-branch writes, offline GC for periodic deep cleaning and all multi-branch scenarios.
 
 ## Automatic Garbage Collection
 

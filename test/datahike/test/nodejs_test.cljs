@@ -196,7 +196,7 @@
              (finally
                (done))))))
 
-(deftest online-gc-multi-branch-test
+(deftest online-gc-multi-branch-safety-test
   (async done
          (go
            (try
@@ -230,17 +230,20 @@
                  (let [freed-before (count @(-> @conn :store :storage :freed-addresses))]
                    (is (> freed-before 0) "Should have freed addresses with GC disabled"))
 
-                 ;; Run online GC - should detect multi-branch and use deletion mode
+                 ;; Run online GC - should detect multi-branch and SKIP entirely
                  (let [gc-result (<! (online-gc/online-gc! (:store @conn)
                                                            {:enabled? true
                                                             :grace-period-ms 0
                                                             :sync? false}))]
-                   (is (number? gc-result) "GC should still work in deletion mode")
-                   (is (>= gc-result 0) "GC should process addresses"))
+                   (is (= 0 gc-result) "Multi-branch GC should be skipped (return 0)"))
 
-                 ;; Freed addresses should be cleared even in deletion mode
+                 ;; Freed addresses should remain (not deleted, re-marked for offline GC)
                  (let [freed-after (count @(-> @conn :store :storage :freed-addresses))]
-                   (is (= 0 freed-after) "Multi-branch GC should clear freed addresses"))
+                   (is (> freed-after 0) "Multi-branch GC should leave freed addresses for offline GC"))
+
+                 ;; Verify database is still functional
+                 (let [result (d/q '[:find ?e ?n :where [?e :name ?n]] @conn)]
+                   (is (= 2 (count result)) "Both Alice and Bob should still exist"))
 
                  (d/release conn))
 
@@ -248,7 +251,7 @@
                (<! (d/delete-database cfg-no-gc)))
 
              (catch js/Error e
-               (is false (str "Error in online-gc-multi-branch-test: " (.-message e))))
+               (is false (str "Error in online-gc-multi-branch-safety-test: " (.-message e))))
              (finally
                (done)
                (js/process.nextTick

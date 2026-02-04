@@ -138,9 +138,12 @@
   "Perform online GC during commit.
    Clears ALL eligible freed addresses each cycle.
 
-   SAFETY WARNINGS:
-   - Address recycling is ONLY safe for single-branch databases
-   - Multi-branch databases will fall back to deletion mode
+   CRITICAL SAFETY WARNINGS:
+   - Online GC is ONLY safe for single-branch databases
+   - Multi-branch databases SKIP online GC entirely (returns 0)
+     Reason: Freed nodes from one branch may still be referenced by other branches
+     through structural sharing. Only offline GC can safely handle multi-branch
+     cleanup via full reachability analysis.
    - Long-lived readers can be corrupted if grace period is too short
    - For bulk imports with no readers, set :grace-period-ms 0
 
@@ -150,9 +153,9 @@
    deletes to O(1) append.
 
    MULTI-BRANCH LIMITATION:
-   Address recycling is disabled when multiple branches exist, as freed nodes
-   may still be reachable from other branches. Use offline GC (d/gc-storage)
-   for multi-branch cleanup.
+   Online GC is completely disabled when multiple branches exist. Freed addresses
+   remain in the freed-addresses tracking for offline GC (d/gc-storage) to handle
+   safely through full reachability analysis.
 
    Options:
      :grace-period-ms - Minimum age before deletion (default 60000 = 1 minute)
@@ -168,26 +171,46 @@
                sync? true}}]
   (if-not enabled?
     (if sync? 0 (go-try- 0))
-    (let [[to-recycle _remaining] (get-and-clear-eligible-freed! store grace-period-ms)]
-      (if (seq to-recycle)
-        (let [freelist (-> store :storage :freelist)
-              crypto-hash? (-> store :storage :config :crypto-hash?)
-              ;; Safety check: only recycle for single-branch databases
-              branches (k/get store :branches nil {:sync? true})
-              multi-branch? (> (count branches) 1)]
-          (if (and freelist (not crypto-hash?) (not multi-branch?))
-            ;; Freelist mode: recycle addresses for reuse (no LMDB deletes)
-            (do
-              (debug "Online GC: recycling" (count to-recycle) "addresses to freelist")
-              (let [n (recycle-freed-addresses! store to-recycle)]
-                (if sync? n (go-try- n))))
-            ;; Fallback: delete from store (multi-branch or crypto-hash)
-            (do
-              (when multi-branch?
-                (debug "Online GC: multi-branch detected, using deletion mode instead of recycling"))
-              (debug "Online GC: deleting" (count to-recycle) "addresses")
-              (delete-freed-addresses! store to-recycle max-batch sync?))))
-        (if sync? 0 (go-try- 0))))))
+    (if sync?
+      ;; Synchronous mode
+      (let [branches (k/get store :branches nil {:sync? true})
+            multi-branch? (> (count branches) 1)]
+        (if multi-branch?
+          (do
+            (debug "Online GC: skipped (multi-branch detected - use offline GC instead)")
+            0)
+          (let [[to-recycle _remaining] (get-and-clear-eligible-freed! store grace-period-ms)]
+            (if (seq to-recycle)
+              (let [freelist (-> store :storage :freelist)
+                    crypto-hash? (-> store :storage :config :crypto-hash?)]
+                (if (and freelist (not crypto-hash?))
+                  (do
+                    (debug "Online GC: recycling" (count to-recycle) "addresses to freelist")
+                    (recycle-freed-addresses! store to-recycle))
+                  (do
+                    (debug "Online GC: deleting" (count to-recycle) "addresses")
+                    (delete-freed-addresses! store to-recycle max-batch true))))
+              0))))
+      ;; Asynchronous mode
+      (go-try-
+       (let [branches (<?- (k/get store :branches nil {:sync? false}))
+             multi-branch? (> (count branches) 1)]
+         (if multi-branch?
+           (do
+             (debug "Online GC: skipped (multi-branch detected - use offline GC instead)")
+             0)
+           (let [[to-recycle _remaining] (get-and-clear-eligible-freed! store grace-period-ms)]
+             (if (seq to-recycle)
+               (let [freelist (-> store :storage :freelist)
+                     crypto-hash? (-> store :storage :config :crypto-hash?)]
+                 (if (and freelist (not crypto-hash?))
+                   (do
+                     (debug "Online GC: recycling" (count to-recycle) "addresses to freelist")
+                     (recycle-freed-addresses! store to-recycle))
+                   (do
+                     (debug "Online GC: deleting" (count to-recycle) "addresses")
+                     (<?- (delete-freed-addresses! store to-recycle max-batch false)))))
+               0))))))))
 
 (defn start-background-gc!
   "Start a background process that periodically runs online GC.
