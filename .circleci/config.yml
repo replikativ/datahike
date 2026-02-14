@@ -73,6 +73,10 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
+          name: Add GitHub to known hosts
+          command: mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+          no_output_timeout: 1m
+      - run:
           name: Generate config
           command: |
             bb --version
