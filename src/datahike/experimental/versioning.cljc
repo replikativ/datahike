@@ -66,7 +66,7 @@
                       {:type :from-branch-does-not-point-to-existing-branch-or-commit
                        :from from})))
     (k/assoc store new-branch (assoc-in db [:config :branch] new-branch) {:sync? true})
-    (k/update store :branches #(conj % new-branch) {:sync? true})))
+    (k/update store :branches #(conj (set %) new-branch) {:sync? true})))
 
 (defn delete-branch!
   "Removes this branch from set of known branches. The branch will still be
@@ -81,7 +81,7 @@
       (dt/raise "Branch does not exist." {:type :branch-does-not-exist
                                           :branch branch}))
     (delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
-    (k/update store :branches #(disj % branch) {:sync? true})))
+    (k/update store :branches #(disj (set %) branch) {:sync? true})))
 
 (defn force-branch!
   "Force the branch to point to the provided db value. Branch will be created if
@@ -107,7 +107,7 @@
         pending-kvs (get-and-clear-pending-kvs! store)]
 
     ;; Update the set of known branches
-    (k/update store :branches #(conj % branch) {:sync? true})
+    (k/update store :branches #(conj (set %) branch) {:sync? true})
 
     ;; Write all data synchronously
     (if (multi-key-capable? store)
