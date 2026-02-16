@@ -6,7 +6,7 @@
    [konserve.indexeddb :as idb]
    [datahike.store :as ds]
    [konserve.tiered :as kt]
-   [me.tonsky.persistent-sorted-set :as pss]
+   [org.replikativ.persistent-sorted-set :as pss]
    [clojure.core.async :refer [<! >! chan put! close!]])
   (:require-macros [clojure.core.async :refer [go]]))
 

@@ -8,7 +8,7 @@
    [datahike.db :as db]
    [datahike.index :as di]
    [datahike.index.persistent-set :as pset]
-   [me.tonsky.persistent-sorted-set :as psset]))
+   [org.replikativ.persistent-sorted-set :as psset]))
 
 (deftest test-datoms
   (let [dvec #(vector (:e %) (:a %) (:v %))

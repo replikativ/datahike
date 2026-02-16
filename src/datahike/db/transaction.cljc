@@ -11,7 +11,7 @@
    [datahike.constants :refer [tx0]]
    [datahike.tools :refer [get-date raise]]
    [datahike.schema :as ds]
-   [me.tonsky.persistent-sorted-set.arrays :as arrays])
+   [org.replikativ.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]
                             [datahike.tools :refer [raise]]))
   #?(:clj (:import [clojure.lang ExceptionInfo]

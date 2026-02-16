@@ -42,7 +42,7 @@
       (testing "root node type"
         (d/transact conn [{:db/id 1, :name "Alice"}])
         (is (= (if (= :datahike.index/persistent-set (-> @conn :config :index))
-                 me.tonsky.persistent_sorted_set.PersistentSortedSet
+                 org.replikativ.persistent_sorted_set.PersistentSortedSet
                  hitchhiker.tree.DataNode)
                (-> @conn :eavt type))))
       (testing "upsert"

@@ -14,7 +14,7 @@
    [datahike.schema :as ds]
    [datahike.store :as store]
    [datahike.tools :as tools :refer [raise group-by-step #?(:clj meta-data)]]
-   [me.tonsky.persistent-sorted-set.arrays :as arrays]
+   [org.replikativ.persistent-sorted-set.arrays :as arrays]
    [medley.core :as m]
    [taoensso.timbre :refer [warn]])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable]]
