@@ -21,7 +21,7 @@
    #?(:cljs [datalog.parser.type :refer [Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                                          FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                                          RulesVar SrcVar Variable]])
-   [me.tonsky.persistent-sorted-set.arrays :as da]
+   [org.replikativ.persistent-sorted-set.arrays :as da]
    [taoensso.timbre :as log])
   (:refer-clojure :exclude [seqable?])
 

@@ -8,7 +8,7 @@
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/datalog-parser                {:mvn/version "0.2.30"}
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.3.118"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.119"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
         com.taoensso/timbre                         {:mvn/version "6.8.0"}
