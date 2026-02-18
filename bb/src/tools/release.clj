@@ -56,7 +56,8 @@
 
 (comment
   (def version "0.7.1635")
-  (def branch-name (str "datahike-" version)))
+  (def branch-name (str "datahike-" version))
+  (def home (str (fs/home))))
 
 (defn pod-release
   "Create a PR on babashka pod-registry"
@@ -66,6 +67,8 @@
         home (str (fs/home))
         github-token (System/getenv "GITHUB_TOKEN")]
     (println "Checking out pod-registry")
+    (fs/create-dirs (str home "/.ssh/"))
+    (try (fs/create-file (str home "/.ssh/known_hosts")) (catch FileAlreadyExistsException _))
     (spit (str home "/.ssh/known_hosts") (slurp (io/resource "github-fingerprints")) :append true)
     (b/git-process {:git-args ["clone" "git@github.com:babashka/pod-registry.git"] :dir "../"})
     (b/git-process {:git-args ["checkout" "-b" branch-name] :dir "../pod-registry"})
