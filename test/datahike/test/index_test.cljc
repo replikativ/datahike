@@ -312,3 +312,34 @@
               "Should still contain the first datom")
           (is (some #(= datom2 %) datoms)
               "Should also contain the second datom"))))))
+
+(deftest test-avet-upsert-replace-ordering-inconsistency
+  (testing "AVET upsert must handle case where (a,v,e) and (a,e) orderings differ"
+    (let [index (psset/sorted-set* {:cmp (dd/index-type->cmp-quick :avet)})
+          datom-e2-v50 (dd/datom 2 42 50 100 true)
+          datom-e3-v75 (dd/datom 3 42 75 100 true)
+          datom-e1-v100 (dd/datom 1 42 100 100 true)
+          index-with-three (-> index
+                               (pset/insert datom-e2-v50 :avet)
+                               (pset/insert datom-e3-v75 :avet)
+                               (pset/insert datom-e1-v100 :avet))]
+      (is (= 3 (count (seq index-with-three)))
+          "Should have 3 datoms")
+      (is (some #(= datom-e1-v100 %) (seq index-with-three))
+          "Datom [e=1, a=42, v=100] should exist")
+      (is (some #(= datom-e2-v50 %) (seq index-with-three))
+          "Datom [e=2, a=42, v=50] should exist")
+      (is (some #(= datom-e3-v75 %) (seq index-with-three))
+          "Datom [e=3, a=42, v=75] should exist")
+      (let [new-datom-e1-v25 (dd/datom 1 42 25 101 true)
+            updated (pset/upsert index-with-three new-datom-e1-v25 :avet datom-e1-v100)]
+        (is (= 3 (count (seq updated)))
+            "Should still have 3 datoms after upsert")
+        (is (some #(= datom-e2-v50 %) (seq updated))
+            "Datom [e=2, a=42, v=50] should STILL exist after replacing [e=1, a=42, v=100]")
+        (is (some #(= datom-e3-v75 %) (seq updated))
+            "Datom [e=3, a=42, v=75] should STILL exist after replacing [e=1, a=42, v=100]")
+        (is (some #(= new-datom-e1-v25 %) (seq updated))
+            "Datom [e=1, a=42, v=25] should exist after replacement")
+        (is (not (some #(= datom-e1-v100 %) (seq updated)))
+            "Old datom [e=1, a=42, v=100] should NOT exist after replacement")))))
