@@ -18,7 +18,7 @@
   (-streaming? [_] "Returns whether the transactor is streaming updates directly into the connection, so it does not need to fetch from store on read."))
 
 (defrecord LocalWriter [thread streaming? transaction-queue-size commit-queue-size
-                        transaction-queue commit-queue]
+                        transaction-queue commit-queue writer-ready-ch]
   PWriter
   (-dispatch! [_ arg-map]
     (let [p (promise-chan)]
@@ -38,7 +38,7 @@
 
 (defn create-thread
   "Creates new transaction thread"
-  [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time]
+  [connection write-fn-map transaction-queue-size commit-queue-size commit-wait-time writer-ready-ch]
   (let [transaction-queue-buffer    (buffer transaction-queue-size)
         transaction-queue           (chan transaction-queue-buffer)
         commit-queue-buffer         (buffer commit-queue-size)
@@ -49,9 +49,8 @@
       (do
         ;; processing loop
         (go-try S
-         ;; delay processing until the writer we are part of in connection is set
-                (while (not (:writer @(:wrapped-atom connection)))
-                  (<! (timeout 10)))
+         ;; wait until the writer we are part of in connection is set
+                (<! writer-ready-ch)
                 (loop [old @(:wrapped-atom connection)]
                   (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
                     (do
@@ -157,20 +156,23 @@
   (let [transaction-queue-size (or transaction-queue-size DEFAULT_QUEUE_SIZE)
         commit-queue-size (or commit-queue-size DEFAULT_QUEUE_SIZE)
         commit-wait-time (or commit-wait-time DEFAULT_COMMIT_WAIT_TIME)
+        writer-ready-ch (promise-chan)
         [transaction-queue commit-queue thread]
         (create-thread connection
                        (merge default-write-fn-map
                               write-fn-map)
                        transaction-queue-size
                        commit-queue-size
-                       commit-wait-time)]
+                       commit-wait-time
+                       writer-ready-ch)]
     (map->LocalWriter
      {:transaction-queue transaction-queue
       :transaction-queue-size transaction-queue-size
       :commit-queue commit-queue
       :commit-queue-size commit-queue-size
       :thread thread
-      :streaming? true})))
+      :streaming? true
+      :writer-ready-ch writer-ready-ch})))
 
 ;; Note: :kabel backend is implemented in datahike.kabel.writer
 ;; Require that namespace to register the defmethod
@@ -183,6 +185,13 @@
 
 (defn streaming? [writer]
   (-streaming? writer))
+
+(defn signal-writer-ready!
+  "Signals that the writer has been attached to the connection.
+   Must be called after the writer is set on the connection's wrapped-atom."
+  [writer]
+  (when-let [ch (:writer-ready-ch writer)]
+    (close! ch)))
 
 (defn backend-dispatch [& args]
   (get-in (first args) [:writer :backend] :self))
