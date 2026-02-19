@@ -63,7 +63,7 @@
                ]
           :let [cmp-quick (d/index-type->cmp-quick idx)
                 cmp-replace (d/index-type->cmp-replace idx)]
-          [e0 a0 v0 t0 e1 a1 v1 t1] (combinations 8 [0 1 2]) 
+          [e0 a0 v0 t0 e1 a1 v1 t1] (combinations 8 [0 1 2])
           :let [datom0 (datom e0 a0 v0 t0)
                 datom1 (datom e1 a1 v1 t1)
 
