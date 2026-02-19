@@ -79,6 +79,10 @@
                       [= =]}
                    [cmp-quick-01 cmp-replace-01]))
 
+    ;; cmp-quick indicates equality iff the datoms are in fact equal.
+    (is (= (= cmp-quick-01 '=)
+           (= [e0 a0 v0 t0] [e1 a1 v1 t1])))
+
     ;; Swapping the arguments swaps the relation.
     (is (= cmp-quick-01 (order (- (cmp-quick datom1 datom0)))))
     (is (= cmp-replace-01 (order (- (cmp-replace datom1 datom0)))))))
