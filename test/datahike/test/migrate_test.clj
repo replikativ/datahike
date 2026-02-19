@@ -297,7 +297,6 @@
     (d/release conn)
     (d/release import-conn)))
 
-
 (def taxonomy-data0
   [[76 :db/ident :relation/id 13194139533318 true]
    [77 :db/ident :concept/id 13194139533318 true]
@@ -372,8 +371,7 @@
                      :id (UUID/randomUUID)}}]
     (try
       (d/create-database cfg)
-      (let [
-            conn (d/connect cfg)
+      (let [conn (d/connect cfg)
             _ @(d/load-entities conn taxonomy-data0)
             db (d/db conn)
             raw-eavt-datoms (d/datoms db {:index :eavt :limit -1})
