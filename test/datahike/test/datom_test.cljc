@@ -65,7 +65,10 @@
                 cmp-replace (d/index-type->cmp-replace idx)]
           [e0 a0 v0 t0 e1 a1 v1 t1] (combinations 8 [0 1 2]) 
           :let [datom0 (datom e0 a0 v0 t0)
-                datom1 (datom e1 a1 v1 t1)]]
+                datom1 (datom e1 a1 v1 t1)
+
+                cmp-quick-01 (order (cmp-quick datom0 datom1))
+                cmp-replace-01 (order (cmp-replace datom0 datom1))]]
     ;; Whenever `cmp-quick` indicates strict inequality, we expect
     ;; `cmp-replace` to indicate indicate either (i) the same inequality or (ii) equality.
     ;; If `cmp-quick` indicates equality, `cmp-replace` must indicate equality too.
@@ -74,5 +77,8 @@
                       [> >]
                       [> =]
                       [= =]}
-                   [(order (cmp-quick datom0 datom1))
-                    (order (cmp-replace datom0 datom1))]))))
+                   [cmp-quick-01 cmp-replace-01]))
+
+    ;; Swapping the arguments swaps the relation.
+    (is (= cmp-quick-01 (order (- (cmp-quick datom1 datom0)))))
+    (is (= cmp-replace-01 (order (- (cmp-replace datom1 datom0)))))))
