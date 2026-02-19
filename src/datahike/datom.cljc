@@ -437,8 +437,8 @@
    Used for replace operations in AVET index where value changes."
   [^Datom d1, ^Datom d2]
   (combine-cmp
-   (cmp-attr-quick (.-a d1) (.-a d2))
-   (long-cmp (.-e d1) (.-e d2))))
+    (cmp-attr-quick (.-a d1) (.-a d2))
+    (long-cmp (.-e d1) (.-e d2))))
 
 (defn index-type->cmp-replace
   "Get comparator for replace operations.

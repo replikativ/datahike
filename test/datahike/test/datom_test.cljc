@@ -42,3 +42,37 @@
     (is (= d/cmp-datoms-eavt-prefix (d/index-type->cmp-prefix :eavt)))
     (is (= d/cmp-datoms-aevt-prefix (d/index-type->cmp-prefix :aevt)))
     (is (= d/cmp-datoms-avet-prefix (d/index-type->cmp-prefix :avet)))))
+
+(defn combinations [len items]
+  (if (= 0 len)
+    [[]]
+    (for [x (combinations (dec len) items)
+          i items]
+      (conj x i))))
+
+(defn order [i]
+  (cond
+    (neg? i) '<
+    (pos? i) '>
+    :else '=))
+
+(deftest combinatorial-comparator-test
+  (doseq [idx [:eavt ;; Works
+               :aevt ;; Works
+               ;;:avet ;; Broken
+               ]
+          :let [cmp-quick (d/index-type->cmp-quick idx)
+                cmp-replace (d/index-type->cmp-replace idx)]
+          [e0 a0 v0 t0 e1 a1 v1 t1] (combinations 8 [0 1 2]) 
+          :let [datom0 (datom e0 a0 v0 t0)
+                datom1 (datom e1 a1 v1 t1)]]
+    ;; Whenever `cmp-quick` indicates strict inequality, we expect
+    ;; `cmp-replace` to indicate indicate either (i) the same inequality or (ii) equality.
+    ;; If `cmp-quick` indicates equality, `cmp-replace` must indicate equality too.
+    (is (contains? '#{[< <]
+                      [< =]
+                      [> >]
+                      [> =]
+                      [= =]}
+                   [(order (cmp-quick datom0 datom1))
+                    (order (cmp-replace datom0 datom1))]))))
