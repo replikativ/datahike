@@ -64,13 +64,7 @@
   [repo-config]
   (let [version (version/string repo-config)
         branch-name (str "datahike-" version)
-        home (str (fs/home))
         github-token (System/getenv "GITHUB_TOKEN")]
-    (println "Checking out pod-registry")
-    (fs/create-dirs (str home "/.ssh/"))
-    (try (fs/create-file (str home "/.ssh/known_hosts")) (catch FileAlreadyExistsException _))
-    (spit (str home "/.ssh/known_hosts") (slurp (io/resource "github-fingerprints")) :append true)
-    (b/git-process {:git-args ["clone" "git@github.com:babashka/pod-registry.git"] :dir "../"})
     (b/git-process {:git-args ["checkout" "-b" branch-name] :dir "../pod-registry"})
     (b/git-process {:git-args ["config" "user.email" "contact@datahike.io"] :dir "../pod-registry"})
     (b/git-process {:git-args ["config" "user.name" "Datahike CI"] :dir "../pod-registry"})
