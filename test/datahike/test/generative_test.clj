@@ -330,16 +330,16 @@ equation: e^(-x/T) = y"
                :temporal :temporal-aevt}])
 
 (def queries-to-test [{:make-query (fn [[_e a v]]
-                                     (conj '[:find ?e
-                                             :in $
-                                             :where]
-                                           ['?e a v]))
+                                     [:find '?e
+                                      :in '$
+                                      :where
+                                      ['?e a v]])
                        :free-inds [0]}
                       {:make-query (fn [[e a _v]]
-                                     (conj '[:find ?v
-                                             :in $
-                                             :where]
-                                           [e a '?v]))
+                                     [:find '?v
+                                      :in '$
+                                      :where
+                                      [e a '?v]])
                        :free-inds [2]}])
 
 (defn transaction-entity-ids [datoms]
