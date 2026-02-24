@@ -356,12 +356,12 @@ equation: e^(-x/T) = y"
 (deftest basic-test
   (is (= #{} (remove-pattern #{} [1 :a 2 3])))
   (is (= #{} (remove-pattern #{[1 :a 2 3]} [1 :a 2 3])))
-  
+
   (is (= #{[1 :a 2 3]} (remove-pattern #{[1 :a 2 3]} [2 :a 2 3])))
   (is (= #{[1 :a 2 3]} (remove-pattern #{[1 :a 2 3]} [1 :b 2 3])))
   (is (= #{[1 :a 2 3]} (remove-pattern #{[1 :a 2 3]} [1 :a 200 3])))
   (is (= #{[1 :a 2 3]} (remove-pattern #{[1 :a 2 3]} [1 :a 2 3000])))
-  
+
   (is (= #{} (remove-pattern #{[1 :a 2 3]} [nil :a 2 3])))
   (is (= #{} (remove-pattern #{[1 :a 2 3]} [1 nil 2 3])))
   (is (= #{} (remove-pattern #{[1 :a 2 3]} [1 :a nil 3])))
@@ -415,10 +415,10 @@ equation: e^(-x/T) = y"
                    [k (into [] (take datom-count) (sample-datoms setup))]))
 
         temp-file (File/createTempFile "sample_datoms" ".edn")
-        
+
         _ (spit temp-file (pr-str random-test-data))
         _ (println "Random test data saved to" temp-file)
-        
+
         ;; Assemble all datoms to be transacted along with
         ;; their schema derived from the setup.
         all-datoms (into (schema-datoms setup) datoms)]
@@ -457,23 +457,21 @@ equation: e^(-x/T) = y"
             ;; from the previous transaction.
             partitioned-datoms (partition-select-tx mapped-datoms tx-ids-to-test)
 
-
-            ;; Given the partitions, return the datoms expected to exist in the final
+;; Given the partitions, return the datoms expected to exist in the final
             ;; current state of the database, and a map that maps the transaction id
             ;; to the set of datoms expected to be contained in the as-of-database
             ;; of that transaction.
             [positive-datom-examples tx->acc-datoms]
             (accumulate-partitioned-datoms setup partitioned-datoms)
 
-
-            ;; Construct a set of all eav-triplets for the datoms expected to exist
+;; Construct a set of all eav-triplets for the datoms expected to exist
             ;; in the current database ...
             current-eav (into #{} (map (fn [[e a v]] [e a v])) positive-datom-examples)
 
             ;; ... and use that set to filter away datoms so that we obtain a set
             ;; of negative examples that are guaranteed to not exist in the current database.
             negative-datom-examples (into []
-                                          (comp cat 
+                                          (comp cat
                                                 (remove (fn [[e a v]] (contains? current-eav [e a v]))))
                                           [mapped-datoms
                                            (map-ids setup old->assigned {} neg-candidate-datoms true)])
@@ -485,13 +483,13 @@ equation: e^(-x/T) = y"
                                                      [false negative-datom-examples]]
                                  datom datom-set]
                              [exists datom])
-            
+
             db (d/db conn)]
 
         (testing (format "Verify existence of %d datoms and the non-existence of %d datoms in all indices"
                          (count positive-datom-examples)
                          (count negative-datom-examples))
-          (doseq [ ;; Iterate over every datom whose existence we are testing
+          (doseq [;; Iterate over every datom whose existence we are testing
                   [exists [e a-key v tx :as datom]] datoms-to-test
                   :when (not (built-in-datom? datom))
 
@@ -510,9 +508,9 @@ equation: e^(-x/T) = y"
 
             ;; The index should contain the datom
             (is (= exists (contains? db-index datom-obj)))))
-        
+
         (testing "Check that the indexes are sorted"
-          (doseq [ ;; Iterate over the indexes (:eavt :avet :aevt)
+          (doseq [;; Iterate over the indexes (:eavt :avet :aevt)
                   current-and-temporal indexes
                   :let [index (:current current-and-temporal)
                         cmp (dd/index-type->cmp-quick index true)]
@@ -520,9 +518,8 @@ equation: e^(-x/T) = y"
             ;; The relation between any consecutive pair of datoms is <=
             (is (not (pos? (cmp a b))))))
 
-        
         (testing "Simple queries against current and past indexes"
-          (doseq [ ;; Iterate over the databases (current and past ones), along with
+          (doseq [;; Iterate over the databases (current and past ones), along with
                   ;; their respective expected datoms
                   [_tx db-to-test existing-datoms] (into [[:current db positive-datom-examples]]
                                                          (map (fn [tx]
@@ -537,7 +534,7 @@ equation: e^(-x/T) = y"
                   ;; Iterate over the queries to test
                   {:keys [make-query free-inds]} queries-to-test
 
-                  :let [ ;; Populate the query with constant values from the datom
+                  :let [;; Populate the query with constant values from the datom
                         query (make-query datom)
 
                         ;; Run the query
