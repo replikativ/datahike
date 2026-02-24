@@ -99,7 +99,7 @@ Returns a hash map different from Datomics' as a report. The `:tx-meta` is not p
 of Datomics' transaction report but apart from that the same keys are present. The
 values are different records though.
 
-When forming transaction data, datomic can directly use a :db/ident keyword in the :db/id
+When forming transaction data, datomic can directly use a `:db/ident` keyword in the `:db/id`
 position. In datahike, wrap the keyword using the vector lookup ref syntax to resolve it.
 
 This works in Datomic but throws an error in Datahike:
