@@ -99,6 +99,22 @@ Returns a hash map different from Datomics' as a report. The `:tx-meta` is not p
 of Datomics' transaction report but apart from that the same keys are present. The
 values are different records though.
 
+When forming transaction data, datomic can directly use a :db/ident keyword in the :db/id
+position. In datahike, wrap the keyword using the vector lookup ref syntax to resolve it.
+
+This works in Datomic but throws an error in Datahike:
+```
+(d/transact conn [{:db/id :my.specific/ident :specific/value "Hello World!"}])
+; ERROR [datahike.db.transaction:592] - Expected number, string or lookup ref for :db/id,
+; got :my.specific/ident {:error :entity-id/syntax, :entity {:db/id :my.specific/ident, :specific/value "Hello World!"}}
+```
+
+Use this syntax instead:
+```
+(d/transact conn [{:db/id [:db/ident :my.specific/ident] :specific/value "Hello World!"}])
+;                         ^  Replace with lookup ref   ^
+```
+
 [![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/org.replikativ/datahike)
 
 ## with
