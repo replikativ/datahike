@@ -564,5 +564,5 @@ equation: e^(-x/T) = y"
                             :store {:backend :memory
                                     :id (UUID/randomUUID)}}
                            setup0
-                           1000
+                           10000
                            [0.3 0.5 0.7]))
