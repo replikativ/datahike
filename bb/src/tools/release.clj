@@ -1,18 +1,12 @@
 (ns tools.release
   (:require
    [babashka.fs :as fs]
-   [babashka.http-client :as http]
    [borkdude.gh-release-artifact :as gh]
-   [cheshire.core :as json]
-   [clojure.java.io :as io]
-   [clojure.string :as s]
-   [clojure.tools.build.api :as b]
    [selmer.parser :refer [render]]
    [tools.build :as build]
    [tools.version :as version])
   (:import
-   [clojure.lang ExceptionInfo]
-   [java.nio.file FileAlreadyExistsException]))
+   [clojure.lang ExceptionInfo]))
 
 (defn fib [a b]
   (lazy-seq (cons a (fib b (+ a b)))))
@@ -54,58 +48,6 @@
           (System/exit 1))
       (println (:url ret)))))
 
-(comment
-  (def version "0.7.1635")
-  (def branch-name (str "datahike-" version))
-  (def home (str (fs/home))))
-
-(defn pod-release
-  "Create a PR on babashka pod-registry"
-  [repo-config]
-  (let [version (version/string repo-config)
-        branch-name (str "datahike-" version)
-        github-token (System/getenv "GITHUB_TOKEN")]
-    (b/git-process {:git-args ["checkout" "-b" branch-name] :dir "../pod-registry"})
-    (b/git-process {:git-args ["config" "user.email" "contact@datahike.io"] :dir "../pod-registry"})
-    (b/git-process {:git-args ["config" "user.name" "Datahike CI"] :dir "../pod-registry"})
-    (b/git-process {:git-args ["remote" "add" "fork" "git@github.com:replikativ/pod-registry.git"] :dir "../pod-registry"})
-    (println "Changing manifest")
-    (let [manifest (slurp "../pod-registry/manifests/replikativ/datahike/0.6.1607/manifest.edn")]
-      (try (fs/create-dir (str "../pod-registry/manifests/replikativ/datahike/" version))
-        (catch FileAlreadyExistsException _
-          (do
-            (println "It seems there is already a release with that number")
-            (System/exit 1))))
-      (->> (s/replace manifest #"0\.6\.1607" version)
-           (spit (str "../pod-registry/manifests/replikativ/datahike/" version "/manifest.edn")))
-      (->> (s/replace (slurp "../pod-registry/README.md")
-                      #"(?m)^\| \[replikativ/datahike\].*$"
-                      (str "| [replikativ/datahike](https://github.com/replikativ/datahike) | A fast, immutable, distributed & compositional Datalog engine for everyone. | " version " | [link](https://raw.githubusercontent.com/babashka/pod-registry/master/examples/datahike.clj) | [<img src=\"https://upload.wikimedia.org/wikipedia/commons/5/5d/Clojure_logo.svg\" alt=\"clojure\" width=\"24\" height=\"24\">](https://clojure.org/) |"))
-           (spit "../pod-registry/README.md"))
-      (->> (s/replace (slurp "../pod-registry/examples/datahike.clj")
-                      #"(?m)^\(pods/load-pod .*$"
-                      (str "(pods/load-pod 'replikativ/datahike \"" version "\")"))
-           (spit "../pod-registry/examples/datahike.clj")))
-    (println "Committing and pushing changes to fork")
-    (b/git-process {:git-args ["add" "."] :dir "../pod-registry"})
-    (b/git-process {:git-args ["commit" "-m" (str "Update Datahike pod to " version)] :dir "../pod-registry"})
-    (b/git-process {:git-args ["push" "fork" branch-name] :dir "../pod-registry"})
-    (println "Creating PR on pod-registry")
-    (try
-      (http/post "https://api.github.com/repos/babashka/pod-registry/pulls"
-                 {:headers {"Accept" "application/vnd.github+json"
-                            "Authorization" (str "Bearer " github-token)
-                            "X-GitHub-Api-Version" "2022-11-28"
-                            "Content-Type" "application/json"}
-                  :body (json/generate-string {:title (str "Update Datahike pod to " version)
-                                               :body "Automated update of Datahike pod"
-                                               :head (str "replikativ:" branch-name)
-                                               :base "master"})})
-      (catch ExceptionInfo e
-        (do
-          (println "Failed creating PR on babashka/pod-registry: " (ex-message e))
-          (System/exit 1))))))
-
 (defn zip-path [lib version target-dir zip-pattern]
   (let [platform (System/getenv "DTHK_PLATFORM")
         arch (System/getenv "DTHK_ARCH")]
@@ -146,7 +88,6 @@
                  (gh-release config))
       "native-image" (->> (zip-cli config :native-cli)
                           (gh-release config))
-      "pod" (pod-release config)
       "libdatahike" (->> (zip-lib config :libdatahike)
                          (gh-release config))
       (do (println "ERROR: Command not found: " cmd)
