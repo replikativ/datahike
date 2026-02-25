@@ -11,7 +11,7 @@
 
 (deftest test-with-validation
   (let [db (db/empty-db {:profile {:db/valueType :db.type/ref}})]
-    (are [tx] (thrown-with-msg? Throwable #"Expected number, string or lookup ref for :db/id" (d/db-with db tx))
+    (are [tx] (thrown-with-msg? Throwable #"Expected number, string, keyword or lookup ref for :db/id" (d/db-with db tx))
       [{:db/id #"" :name "Ivan"}])
 
     (are [tx] (thrown-with-msg? Throwable #"Bad entity attribute" (d/db-with db tx))

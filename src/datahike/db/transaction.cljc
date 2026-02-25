@@ -574,6 +574,7 @@
         tx? (tx-id? old-eid) ;; :db/current-tx / "datomic.tx"
         resolved-eid (cond tx?                   (current-tx report)
                            (sequential? old-eid) (dbu/entid-strict db old-eid)
+                           (keyword? old-eid)    (dbu/entid-strict db [:db/ident old-eid])
                            :else                 old-eid)
         updated-entity (assoc entity :db/id resolved-eid)
         updated-report (cond-> report
@@ -589,7 +590,7 @@
                       (nil? resolved-eid)    (next-eid db)
                       (tempid? resolved-eid) (or resolved-tempid (next-eid db))
                       (number? resolved-eid) resolved-eid
-                      :else (raise "Expected number, string or lookup ref for :db/id, got " old-eid
+                      :else (raise "Expected number, string, keyword or lookup ref for :db/id, got " old-eid
                                    {:error :entity-id/syntax, :entity updated-entity}))
             new-entity (assoc updated-entity :db/id new-eid)]
         (check-schema-update db updated-entity new-eid)

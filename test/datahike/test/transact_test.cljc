@@ -505,3 +505,14 @@
               :db/txInstant
               inst?))
       (d/release conn))))
+
+(deftest test-db-id-ident-keyword
+  (testing "Using :db/ident keyword directly in :db/id (Datomic compatibility)"
+    (let [db (-> (db/empty-db {:name {:db/cardinality :db.cardinality/one}})
+                 (d/db-with [{:db/ident :my.entity
+                              :name "Initial"}]))]
+      (is (= "Initial" (-> (d/entity db :my.entity) :name)))
+      (let [db (d/db-with db [{:db/id :my.entity
+                               :name "Updated"}])]
+        (is (= "Updated" (-> (d/entity db :my.entity) :name)))
+        (is (= "Updated" (-> (d/entity db [:db/ident :my.entity]) :name)))))))
