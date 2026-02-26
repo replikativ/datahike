@@ -89,23 +89,23 @@
 
 (def index-integrity-prop
   (prop/for-all [seed seed-gen]
-    (let [rng (rng/create seed)
-          model-state (model/create-model schema-map)
-          {:keys [conn]} (create-test-db)]
-      (loop [i 0
-             model-state model-state]
-        (if (>= i 50)
-          true
-          (let [tx-ops (model/generate-tx-batch rng schema-map entity-range 10)
-                model-state' (model/apply-tx model-state {:tx-data tx-ops})
-                db (apply-tx-to-conn conn tx-ops)
-                result (inv/check-all
-                        (inv/all-index-invariants user-attrs)
-                        model-state'
-                        db)]
-            (if (:valid? result)
-              (recur (inc i) model-state')
-              false)))))))
+                (let [rng (rng/create seed)
+                      model-state (model/create-model schema-map)
+                      {:keys [conn]} (create-test-db)]
+                  (loop [i 0
+                         model-state model-state]
+                    (if (>= i 50)
+                      true
+                      (let [tx-ops (model/generate-tx-batch rng schema-map entity-range 10)
+                            model-state' (model/apply-tx model-state {:tx-data tx-ops})
+                            db (apply-tx-to-conn conn tx-ops)
+                            result (inv/check-all
+                                    (inv/all-index-invariants user-attrs)
+                                    model-state'
+                                    db)]
+                        (if (:valid? result)
+                          (recur (inc i) model-state')
+                          false)))))))
 
 (def historical-consistency-prop
   (prop/for-all [seed seed-gen]
