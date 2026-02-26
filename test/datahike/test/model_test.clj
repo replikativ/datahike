@@ -96,7 +96,7 @@
                          model-state model-state]
                     (if (>= i 50)
                       true
-                      (let [tx-ops (model/generate-tx-batch rng schema-map entity-range 10)
+                      (let [tx-ops (model/generate-transaction rng schema-map entity-range model-state 10)
                             model-state' (model/apply-tx model-state {:tx-data tx-ops})
                             db (apply-tx-to-conn conn tx-ops)
                             result (inv/check-all
@@ -116,7 +116,7 @@
                          model-state model-state]
                     (if (>= i 20)
                       true
-                      (let [tx-ops (model/generate-tx-batch rng schema-map entity-range 3)
+                      (let [tx-ops (model/generate-transaction rng schema-map entity-range model-state 3)
                             model-state' (model/apply-tx model-state {:tx-data tx-ops})
                             db (apply-tx-to-conn conn tx-ops)
                             model-tx-ids (model/get-transaction-ids model-state')
