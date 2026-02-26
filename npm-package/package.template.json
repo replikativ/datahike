@@ -11,7 +11,8 @@
   "homepage" : "https://github.com/replikativ/datahike",
   "name" : "datahike",
   "scripts" : {
-    "test" : "node test.js"
+    "test" : "node test.js",
+    "test:browser" : "karma start karma.conf.js --single-run"
   },
   "bugs" : {
     "url" : "https://github.com/replikativ/datahike/issues"
@@ -19,7 +20,15 @@
   "keywords" : [ "database", "datalog", "datomic", "clojurescript", "immutable", "functional" ],
   "types" : "index.d.ts",
   "author" : "Christian Weilbach",
-  "files" : [ "*.js", "*.js.map", "index.d.ts", "README.md", "LICENSE" ],
+  "files" : [ "*.js", "*.js.map", "browser/main.js", "browser/cljs-runtime", "index.d.ts", "README.md", "LICENSE" ],
   "version" : "{{VERSION}}",
-  "main" : "datahike.js.api.js"
+  "main" : "datahike.js.api.js",
+  "exports" : {
+    ".": {
+      "browser": "./browser/main.js",
+      "node": "./datahike.js.api.js",
+      "default": "./datahike.js.api.js"
+    }
+  },
+  "browser" : "./browser/main.js"
 }

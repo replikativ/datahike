@@ -15,7 +15,7 @@
            :main datahike.test.nodejs-test/-main
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
-                              :elide-asserts false}}  ;; Keep assertions enabled to catch bugs
+                              :elide-asserts false}}
 
           :browser-integration-test
           {:target :browser-test
@@ -23,7 +23,7 @@
            :ns-regexp "datahike.kabel.browser-integration-test"
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
-                              :elide-asserts false  ;; Keep assertions enabled to catch bugs
+                              :elide-asserts false
                               :warnings-as-errors false
                               :warnings {:fn-deprecated false}}}
           
@@ -33,15 +33,24 @@
            :ns-regexp "datahike.kabel.browser-integration-test"
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
-                              :elide-asserts false  ;; Keep assertions enabled to catch bugs
+                              :elide-asserts false
                               :warnings-as-errors false
                               :warnings {:fn-deprecated false}}}
+          
+          :browser-release
+          {:target :browser
+           :output-to "npm-package/browser/datahike.js"
+           :output-dir "npm-package/browser"
+           :modules {:main {:entries [datahike.js.api]}}
+           :compiler-options {:optimizations :advanced
+                              :infer-externs :auto
+                              :output-feature-set :es2020}}
           
           :npm-release
           {:target :npm-module
            :output-dir "npm-package"
-           :entries [datahike.js.api]
+           :entries [datahike.js.api
+                     konserve.node-filestore]
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
-                              :output-feature-set :es6}}
- }}
+                              :output-feature-set :es6}}}}

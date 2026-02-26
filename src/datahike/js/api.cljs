@@ -4,7 +4,6 @@
   (:require [datahike.api.specification :refer [api-specification]]
             [datahike.api.impl]
             [datahike.store] ;; Register :mem backend
-            [konserve.node-filestore] ;; Register :file backend for Node.js
             [datahike.db.interface]
             [datahike.datom]
             [cljs.core.async :refer [<!]]
@@ -13,6 +12,15 @@
             [goog.object :as gobj])
   (:require-macros [cljs.core.async.macros :refer [go]]
                    [datahike.js.api-macros :refer [emit-js-api]]))
+
+;; Register Node.js file backend - conditional require
+;; For Node.js: konserve.node-filestore is added to shadow-cljs :entries
+;; For browser: module is excluded from build
+(when (and (exists? js/require)
+           (fn? js/require))
+  (try
+    (js/require "./konserve.node_filestore")
+    (catch :default _ nil)))
 
 ;; =============================================================================
 ;; Data Conversion Helpers
@@ -62,8 +70,10 @@
          (not (nil? x)))
     (into {} (for [k (js-keys x)]
                (let [v (gobj/get x k)
-                     ;; Always convert keys to keywords (not just if they start with ":")
-                     k-kw (keyword k)]
+                     ;; Convert keys to keywords, stripping leading : if present
+                     k-kw (if (str/starts-with? k ":")
+                            (keyword (subs k 1))
+                            (keyword k))]
                  [k-kw (js->clj-recursive v)])))
 
     ;; Arrays become vectors

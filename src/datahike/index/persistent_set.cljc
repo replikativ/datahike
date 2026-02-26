@@ -1,11 +1,11 @@
 (ns ^:no-doc datahike.index.persistent-set
   (:require [clojure.string]
-            [me.tonsky.persistent-sorted-set :as psset]
-            #?(:cljs [me.tonsky.persistent-sorted-set.btset :refer [BTSet]])
-            #?(:cljs [me.tonsky.persistent-sorted-set.branch :refer [Branch]])
-            #?(:cljs [me.tonsky.persistent-sorted-set.leaf :refer [Leaf]])
-            #?(:cljs [me.tonsky.persistent-sorted-set.impl.storage :refer [IStorage]])
-            [me.tonsky.persistent-sorted-set.arrays :as arrays]
+            [org.replikativ.persistent-sorted-set :as psset]
+            #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
+            #?(:cljs [org.replikativ.persistent-sorted-set.branch :refer [Branch]])
+            #?(:cljs [org.replikativ.persistent-sorted-set.leaf :refer [Leaf]])
+            #?(:cljs [org.replikativ.persistent-sorted-set.impl.storage :refer [IStorage]])
+            [org.replikativ.persistent-sorted-set.arrays :as arrays]
             #?@(:clj  [[clojure.core.cache :as cache]
                        [clojure.core.cache.wrapped :as wrapped]]
                 :cljs [[cljs.cache :as cache]
@@ -22,7 +22,7 @@
   #?(:cljs (:require-macros [datahike.index.persistent-set :refer [generate-slice-comparator-constructor]]))
   #?(:clj (:import [datahike.datom Datom]
                    [org.fressian.handlers WriteHandler ReadHandler]
-                   [me.tonsky.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode Settings]
+                   [org.replikativ.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode Settings]
                    [java.util List])))
 
 (def index-type->kwseq
@@ -366,19 +366,19 @@
                                      :cljs
                                      (fn [reader _tag _component-count]
                                        (let [{:keys [keys _level]} (fress/read-object reader)]
-                                       ;; CLJS Leaf deftype: [keys settings]
-                                         (Leaf. (clj->js keys) settings))))
+                                       ;; CLJS Leaf deftype: [keys settings _measure]
+                                         (Leaf. (clj->js keys) settings nil))))
                                   "datahike.index.PersistentSortedSet.Branch"
                                   #?(:clj
                                      (reify ReadHandler
                                        (read [_ reader _tag _component-count]
-                                         (let [{:keys [keys level addresses]} (.readObject reader)]
-                                           (Branch. (int level) ^List keys ^List (seq addresses) settings))))
+                                         (let [{:keys [keys level addresses subtree-count]} (.readObject reader)]
+                                           (Branch. (int level) (count keys) (into-array Object keys) (into-array Object (seq addresses)) nil (long (or subtree-count -1)) settings))))
                                      :cljs
                                      (fn [reader _tag _component-count]
-                                       (let [{:keys [keys level addresses]} (fress/read-object reader)]
-                                       ;; CLJS Branch deftype: [level keys children addresses settings]
-                                         (Branch. (int level) (clj->js keys) nil (clj->js addresses) settings))))
+                                       (let [{:keys [keys level addresses subtree-count]} (fress/read-object reader)]
+                                       ;; CLJS Branch deftype: [level keys children addresses subtree-count _measure settings]
+                                         (Branch. (int level) (clj->js keys) nil (clj->js addresses) (or subtree-count -1) nil settings))))
                                   "datahike.datom.Datom"
                                   #?(:clj
                                      (reify ReadHandler
@@ -392,7 +392,7 @@
                                ;; CLJ format: nested {Type {"tag" handler}} for clojure.data.fressian
                                ;; CLJS format: flat {Type handler-fn} for fress library
                                  #?(:clj
-                                    {me.tonsky.persistent_sorted_set.PersistentSortedSet
+                                    {org.replikativ.persistent_sorted_set.PersistentSortedSet
                                      {"datahike.index.PersistentSortedSet"
                                       (reify WriteHandler
                                         (write [_ writer pset]
@@ -404,7 +404,7 @@
                                                                 :address (.-_address ^PersistentSortedSet pset)
                                                                 :count   (count pset)})))}
 
-                                     me.tonsky.persistent_sorted_set.Leaf
+                                     org.replikativ.persistent_sorted_set.Leaf
                                      {"datahike.index.PersistentSortedSet.Leaf"
                                       (reify WriteHandler
                                         (write [_ writer leaf]
@@ -412,14 +412,15 @@
                                           (.writeObject writer {:level (.level ^Leaf leaf)
                                                                 :keys  (.keys ^Leaf leaf)})))}
 
-                                     me.tonsky.persistent_sorted_set.Branch
+                                     org.replikativ.persistent_sorted_set.Branch
                                      {"datahike.index.PersistentSortedSet.Branch"
                                       (reify WriteHandler
                                         (write [_ writer node]
                                           (.writeTag writer "datahike.index.PersistentSortedSet.Branch" 1)
                                           (.writeObject writer {:level     (.level ^Branch node)
                                                                 :keys      (.keys ^Branch node)
-                                                                :addresses (.addresses ^Branch node)})))}
+                                                                :addresses (.addresses ^Branch node)
+                                                                :subtree-count (.subtreeCount ^Branch node)})))}
 
                                      datahike.datom.Datom
                                      {"datahike.datom.Datom"
@@ -450,7 +451,8 @@
                                        (fress/write-tag writer "datahike.index.PersistentSortedSet.Branch" 1)
                                        (fress/write-object writer {:level     (.-level ^Branch node)
                                                                    :keys      (vec (.-keys ^Branch node))
-                                                                   :addresses (vec (.-addresses ^Branch node))}))
+                                                                   :addresses (vec (.-addresses ^Branch node))
+                                                                   :subtree-count (.-subtree-count ^Branch node)}))
 
                                      datahike.datom.Datom
                                      (fn [writer datom]

@@ -8,7 +8,7 @@
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
         io.replikativ/datalog-parser                {:mvn/version "0.2.30"}
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.3.118"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.4.119"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
         com.taoensso/timbre                         {:mvn/version "6.8.0"}
@@ -69,9 +69,9 @@
                                ring-cors/ring-cors           {:mvn/version "0.1.13"}
 
                                ;; kabel integration for distributed datahike
-                               org.replikativ/kabel           {:mvn/version "0.3.93"}
+                               org.replikativ/kabel          {:mvn/version "0.3.93"}
                                is.simm/distributed-scope     {:mvn/version "0.1.2"}
-                               org.replikativ/konserve-sync   {:mvn/version "0.1.11"}
+                               org.replikativ/konserve-sync  {:mvn/version "0.1.13"}
                                http-kit/http-kit             {:mvn/version "2.8.0"}}}
 
            :datomic {:extra-deps {com.datomic/datomic-free {:mvn/version "0.9.5703"}}}

@@ -21,7 +21,7 @@
    #?(:cljs [datalog.parser.type :refer [Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                                          FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                                          RulesVar SrcVar Variable]])
-   [me.tonsky.persistent-sorted-set.arrays :as da]
+   [org.replikativ.persistent-sorted-set.arrays :as da]
    [taoensso.timbre :as log])
   (:refer-clojure :exclude [seqable?])
 
@@ -637,7 +637,7 @@
                                 a-kw (keyword (.-fqn ^clj a))  ; Extract from Keyword object
                                 v (.-v ^datahike.datom.Datom datom)
                                 tx (.-tx ^datahike.datom.Datom datom)]
-                            (clj->js [e a-kw v tx (pos? tx)]))  ; JS array for goog.array/get
+                            #js [e a-kw v tx (pos? tx)])  ; JS array for goog.array/get
                           datom))
                 :clj (fn [[e a v tx added?]]
                        [e a v tx added?])))
@@ -651,11 +651,11 @@
                                                     (.-e d)))
                                          (let [a (.-a ^datahike.datom.Datom d)
                                                a-kw (keyword (.-fqn ^clj a))]
-                                           (clj->js [(.-e ^datahike.datom.Datom d)
-                                                     a-kw
-                                                     (.-v ^datahike.datom.Datom d)
-                                                     (.-tx ^datahike.datom.Datom d)
-                                                     (pos? (.-tx ^datahike.datom.Datom d))]))
+                                           #js [(.-e ^datahike.datom.Datom d)
+                                                a-kw
+                                                (.-v ^datahike.datom.Datom d)
+                                                (.-tx ^datahike.datom.Datom d)
+                                                (pos? (.-tx ^datahike.datom.Datom d))])
                                          d))
                                      datoms)]
                  (Relation. (var-mapping orig-pattern (range))
