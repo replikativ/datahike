@@ -13,12 +13,13 @@
   (:require-macros [cljs.core.async.macros :refer [go]]
                    [datahike.js.api-macros :refer [emit-js-api]]))
 
-;; Conditionally load Node.js filestore (only in Node.js environment)
-;; In browsers, this will fail silently
+;; Register Node.js file backend - conditional require
+;; For Node.js: konserve.node-filestore is added to shadow-cljs :entries
+;; For browser: module is excluded from build
 (when (and (exists? js/require)
            (fn? js/require))
   (try
-    (js/require "konserve.node-filestore")
+    (js/require "./konserve.node_filestore")
     (catch :default _ nil)))
 
 ;; =============================================================================

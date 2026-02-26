@@ -49,8 +49,8 @@
           :npm-release
           {:target :npm-module
            :output-dir "npm-package"
-           :entries [datahike.js.api]
+           :entries [datahike.js.api
+                     konserve.node-filestore]
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
-                              :output-feature-set :es6}}
- }}
+                              :output-feature-set :es6}}}}

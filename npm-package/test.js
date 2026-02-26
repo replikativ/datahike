@@ -1,6 +1,4 @@
 // Comprehensive test for reorganized JS API - covers all nodejs_test.cljs functionality
-// Register Node.js file backend before loading datahike
-require('./konserve.node_filestore.js');
 const d = require('./datahike.js.api.js');
 const crypto = require('crypto');
 const fs = require('fs');
