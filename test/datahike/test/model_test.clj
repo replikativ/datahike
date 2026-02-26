@@ -93,50 +93,50 @@
   "Property that checks index integrity with given config options."
   [opts]
   (prop/for-all [seed seed-gen]
-    (let [rng (rng/create seed)
-          model-state (model/create-model schema-map)
-          {:keys [conn]} (create-test-db opts)]
-      (loop [i 0
-             model-state model-state]
-        (if (>= i 50)
-          true
-          (let [tx-ops (model/generate-transaction rng schema-map entity-range model-state 10)
-                model-state' (model/apply-tx model-state {:tx-data tx-ops})
-                db (apply-tx-to-conn conn tx-ops)
-                result (inv/check-all
-                        (inv/all-index-invariants user-attrs)
-                        model-state'
-                        db)]
-            (if (:valid? result)
-              (recur (inc i) model-state')
-              false)))))))
+                (let [rng (rng/create seed)
+                      model-state (model/create-model schema-map)
+                      {:keys [conn]} (create-test-db opts)]
+                  (loop [i 0
+                         model-state model-state]
+                    (if (>= i 50)
+                      true
+                      (let [tx-ops (model/generate-transaction rng schema-map entity-range model-state 10)
+                            model-state' (model/apply-tx model-state {:tx-data tx-ops})
+                            db (apply-tx-to-conn conn tx-ops)
+                            result (inv/check-all
+                                    (inv/all-index-invariants user-attrs)
+                                    model-state'
+                                    db)]
+                        (if (:valid? result)
+                          (recur (inc i) model-state')
+                          false)))))))
 
 (defn historical-consistency-prop
   "Property that checks historical consistency with given config options."
   [opts]
   (prop/for-all [seed seed-gen]
-    (let [rng (rng/create seed)
-          model-state (model/create-model schema-map)
-          {:keys [conn tx-offset]} (create-test-db opts)]
-      (loop [i 0
-             model-state model-state]
-        (if (>= i 20)
-          true
-          (let [tx-ops (model/generate-transaction rng schema-map entity-range model-state 3)
-                model-state' (model/apply-tx model-state {:tx-data tx-ops})
-                db (apply-tx-to-conn conn tx-ops)
-                model-tx-ids (model/get-transaction-ids model-state')
-                actual-tx-ids (map #(+ % tx-offset) (take 3 model-tx-ids))
-                hist-result (inv/check-all
-                             [(inv/historical-consistency
-                               actual-tx-ids
-                               tx-offset
-                               user-attrs)]
-                             model-state'
-                             db)]
-            (if (:valid? hist-result)
-              (recur (inc i) model-state')
-              false)))))))
+                (let [rng (rng/create seed)
+                      model-state (model/create-model schema-map)
+                      {:keys [conn tx-offset]} (create-test-db opts)]
+                  (loop [i 0
+                         model-state model-state]
+                    (if (>= i 20)
+                      true
+                      (let [tx-ops (model/generate-transaction rng schema-map entity-range model-state 3)
+                            model-state' (model/apply-tx model-state {:tx-data tx-ops})
+                            db (apply-tx-to-conn conn tx-ops)
+                            model-tx-ids (model/get-transaction-ids model-state')
+                            actual-tx-ids (map #(+ % tx-offset) (take 3 model-tx-ids))
+                            hist-result (inv/check-all
+                                         [(inv/historical-consistency
+                                           actual-tx-ids
+                                           tx-offset
+                                           user-attrs)]
+                                         model-state'
+                                         db)]
+                        (if (:valid? hist-result)
+                          (recur (inc i) model-state')
+                          false)))))))
 
 ;; With :attribute-refs? true (default)
 (defspec index-integrity-with-attribute-refs 100

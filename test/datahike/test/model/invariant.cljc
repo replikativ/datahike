@@ -35,8 +35,8 @@
                           (comp user-attrs #(dbi/-ident-for db %) :a)
                           (comp user-attrs :a)))
                 (map (if attr-refs?
-                        (juxt :e #(dbi/-ident-for db (:a %)) :v)
-                        (juxt :e :a :v))))
+                       (juxt :e #(dbi/-ident-for db (:a %)) :v)
+                       (juxt :e :a :v))))
           datoms)))
 
 ;; =============================================================================
