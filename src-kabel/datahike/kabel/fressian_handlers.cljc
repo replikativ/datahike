@@ -1,30 +1,30 @@
 (ns ^:no-doc datahike.kabel.fressian-handlers
   "Fressian handlers for Datahike types over kabel.
-
-   Provides read/write handlers for:
-   - PersistentSortedSet / BTSet
-   - Leaf / Branch nodes
-   - Datom
-   - DB (via db->stored format)
-   - TxReport
-
-   These handlers enable Datahike index structures to be serialized over
-   kabel (WebSocket) using Fressian, which is the same format used for
-   konserve storage - avoiding remarshalling overhead.
-
-   CLJS uses a store registry pattern: register the TieredStore on app start,
-   then the read handler looks up storage from the registry to construct BTSets."
+ 
+  Provides read/write handlers for:
+  - PersistentSortedSet / BTSet
+  - Leaf / Branch nodes
+  - Datom
+  - DB (via db->stored format)
+  - TxReport
+ 
+  These handlers enable Datahike index structures to be serialized over
+  kabel (WebSocket) using Fressian, which is the same format used for
+  konserve storage - avoiding remarshalling overhead.
+ 
+  CLJS uses a store registry pattern: register the TieredStore on app start,
+  then the read handler looks up storage from the registry to construct BTSets."
   (:require [datahike.datom :as dd :refer [index-type->cmp-quick]]
             [datahike.writing :as dw]
             [kabel.middleware.fressian :refer [fressian]]
             #?(:clj [clojure.data.fressian :as fress]
                :cljs [fress.api :as fress])
-            #?(:cljs [me.tonsky.persistent-sorted-set.btset :refer [BTSet]])
-            #?(:cljs [me.tonsky.persistent-sorted-set.branch :refer [Branch]])
-            #?(:cljs [me.tonsky.persistent-sorted-set.leaf :refer [Leaf]])
+            #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
+            #?(:cljs [org.replikativ.persistent-sorted-set.branch :refer [Branch]])
+            #?(:cljs [org.replikativ.persistent-sorted-set.leaf :refer [Leaf]])
             #?(:cljs [datahike.db :refer [DB TxReport]]))
   #?(:clj (:import [org.fressian.handlers WriteHandler ReadHandler]
-                   [me.tonsky.persistent_sorted_set PersistentSortedSet Leaf Branch Settings]
+                   [org.replikativ.persistent_sorted_set PersistentSortedSet Leaf Branch Settings]
                    [datahike.datom Datom]
                    [datahike.db DB TxReport]
                    [java.util List])))
@@ -227,11 +227,11 @@
 
 (def write-handlers
   "Fressian write handlers for Datahike types.
-   CLJ format: nested {Type {\"tag\" handler}} for clojure.data.fressian
-   CLJS format: flat {Type handler-fn} for fress library"
+  CLJ format: nested {Type {\"tag\" handler}} for clojure.data.fressian
+  CLJS format: flat {Type handler-fn} for fress library"
   #?(:clj
      ;; CLJ: nested format with tag -> handler mapping
-     {me.tonsky.persistent_sorted_set.PersistentSortedSet
+     {org.replikativ.persistent_sorted_set.PersistentSortedSet
       {"datahike.index.PersistentSortedSet"
        (reify WriteHandler
          (write [_ writer pset]
@@ -243,7 +243,7 @@
                                  :address (.-_address ^PersistentSortedSet pset)
                                  :count (count pset)})))}
 
-      me.tonsky.persistent_sorted_set.Leaf
+      org.replikativ.persistent_sorted_set.Leaf
       {"datahike.index.PersistentSortedSet.Leaf"
        (reify WriteHandler
          (write [_ writer leaf]
@@ -251,7 +251,7 @@
            (.writeObject writer {:level (.level ^Leaf leaf)
                                  :keys (.keys ^Leaf leaf)})))}
 
-      me.tonsky.persistent_sorted_set.Branch
+      org.replikativ.persistent_sorted_set.Branch
       {"datahike.index.PersistentSortedSet.Branch"
        (reify WriteHandler
          (write [_ writer node]
