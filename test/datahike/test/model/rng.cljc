@@ -25,22 +25,26 @@
      (wrap-splittable-random (SplittableRandom. (long seed)))))
 
 #?(:cljs
+   (defn- step-state
+     "Linear congruential generator step function."
+     [s]
+     (mod (+ (* s 1103515245) 12345) (js/Math.pow 2 31))))
+
+#?(:cljs
    (defn create
      [seed]
      (let [state (atom (long seed))]
        (reify PRNG
          (next-double [_]
-           (swap! state (fn [s] (mod (+ (* s 1103515245) 12345) (js/Math.pow 2 31))))
-           (/ (double @state) (js/Math.pow 2 31)))
+           (/ (double (swap! state step-state)) (js/Math.pow 2 31)))
          (next-long [_]
-           (swap! state (fn [s] (mod (+ (* s 1103515245) 12345) (js/Math.pow 2 31))))
-           @state)
+           (swap! state step-state))
          (next-int [_ bound]
-           (mod (next-long _) bound))
+           (mod (swap! state step-state) bound))
          (next-boolean [_]
-           (even? (next-long _)))
+           (even? (swap! state step-state)))
          (fork [_]
-           (create (next-long _)))))))
+           (create (swap! state step-state)))))))
 
 (defn should-trigger?
   [rng rate]

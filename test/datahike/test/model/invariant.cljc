@@ -18,6 +18,18 @@
       {:valid? false :violations (vec violations)})))
 
 ;; =============================================================================
+;; Helper Functions
+;; =============================================================================
+
+(defn- eav-triplet-set
+  "Convert datoms to a set of [e a v] tuples, filtering to user-attrs."
+  [user-attrs datoms]
+  (into #{}
+        (comp (filter (comp user-attrs :a))
+              (map (juxt :e :a :v)))
+        datoms))
+
+;; =============================================================================
 ;; Index Sortedness Invariant
 ;; =============================================================================
 
@@ -43,10 +55,7 @@
 (defrecord IndexContentInvariant [index-type user-attrs]
   PInvariant
   (check [_this model-state actual-db]
-    (let [actual-datoms (into #{}
-                              (map (fn [d] [(:e d) (:a d) (:v d)]))
-                              (filter (fn [d] (contains? user-attrs (:a d)))
-                                      (d/datoms actual-db index-type)))
+    (let [actual-datoms (eav-triplet-set user-attrs (d/datoms actual-db index-type))
           expected-datoms (case index-type
                             :eavt (set (model/compute-eavt model-state))
                             :aevt (set (model/compute-aevt model-state))
@@ -74,10 +83,7 @@
                 :let [model-tx (- actual-tx tx-offset)
                       expected (model/get-datoms-at-tx model-state model-tx)
                       actual (try
-                               (into #{}
-                                     (map (fn [d] [(:e d) (:a d) (:v d)]))
-                                     (filter (fn [d] (contains? user-attrs (:a d)))
-                                             (d/datoms (d/as-of actual-db actual-tx) :eavt)))
+                               (eav-triplet-set user-attrs (d/datoms (d/as-of actual-db actual-tx) :eavt))
                                (catch Exception _ nil))
                       missing (when actual (set/difference expected actual))
                       extra (when actual (set/difference actual expected))]
