@@ -3,6 +3,7 @@
   (:require [clojure.set :as set]
             [datahike.api :as d]
             [datahike.datom :as dd]
+            [datahike.db.interface :as dbi]
             [datahike.test.model.core :as model]))
 
 (defprotocol PInvariant
@@ -22,12 +23,21 @@
 ;; =============================================================================
 
 (defn- eav-triplet-set
-  "Convert datoms to a set of [e a v] tuples, filtering to user-attrs."
-  [user-attrs datoms]
-  (into #{}
-        (comp (filter (comp user-attrs :a))
-              (map (juxt :e :a :v)))
-        datoms))
+  "Convert datoms to a set of [e a v] tuples, filtering to user-attrs.
+   
+   Handles both :attribute-refs? true and false:
+   - When true, :a is entity ID, uses dbi/-ident-for to convert
+   - When false, :a is already a keyword ident"
+  [db user-attrs datoms]
+  (let [attr-refs? (:attribute-refs? (.-config db))]
+    (into #{}
+          (comp (filter (if attr-refs?
+                          (comp user-attrs #(dbi/-ident-for db %) :a)
+                          (comp user-attrs :a)))
+                (map (if attr-refs?
+                        (juxt :e #(dbi/-ident-for db (:a %)) :v)
+                        (juxt :e :a :v))))
+          datoms)))
 
 ;; =============================================================================
 ;; Index Sortedness Invariant
@@ -55,7 +65,7 @@
 (defrecord IndexContentInvariant [index-type user-attrs]
   PInvariant
   (check [_this model-state actual-db]
-    (let [actual-datoms (eav-triplet-set user-attrs (d/datoms actual-db index-type))
+    (let [actual-datoms (eav-triplet-set actual-db user-attrs (d/datoms actual-db index-type))
           expected-datoms (case index-type
                             :eavt (set (model/compute-eavt model-state))
                             :aevt (set (model/compute-aevt model-state))
@@ -83,7 +93,7 @@
                 :let [model-tx (- actual-tx tx-offset)
                       expected (model/get-datoms-at-tx model-state model-tx)
                       actual (try
-                               (eav-triplet-set user-attrs (d/datoms (d/as-of actual-db actual-tx) :eavt))
+                               (eav-triplet-set (d/as-of actual-db actual-tx) user-attrs (d/datoms (d/as-of actual-db actual-tx) :eavt))
                                (catch Exception _ nil))
                       missing (when actual (set/difference expected actual))
                       extra (when actual (set/difference actual expected))]

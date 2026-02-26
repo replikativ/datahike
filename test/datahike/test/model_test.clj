@@ -56,21 +56,23 @@
    - First user tx will be at 536870914
    - So offset = 536870914 - 536870912 = 2
    
-   This means: model-tx-id + tx-offset = actual-tx-id"
-  []
-  (let [cfg {:store {:backend :memory :id (UUID/randomUUID)}
-             :keep-history? true
-             :schema-flexibility :write}]
-    (d/delete-database cfg)
-    (d/create-database cfg)
-    (let [conn (d/connect cfg)
-          _ (d/transact conn test-schema)
-          db-after-schema (d/db conn)
-          ;; Schema tx is at max-tx, first user tx will be at max-tx + 1
-          ;; Model first tx is at 536870912
-          ;; So offset = (max-tx + 1) - 536870912 = max-tx - 536870911
-          tx-offset (- (:max-tx db-after-schema) 536870911)]
-      {:conn conn :db (d/db conn) :cfg cfg :tx-offset tx-offset})))
+   This means: model-tx-id + tx-offset = actual-tx-id
+   
+   opts: optional map to override default config (e.g., {:attribute-refs? false})"
+  ([]
+   (create-test-db {}))
+  ([opts]
+   (let [cfg (merge {:store {:backend :memory :id (UUID/randomUUID)}
+                     :keep-history? true
+                     :schema-flexibility :write}
+                    opts)]
+     (d/delete-database cfg)
+     (d/create-database cfg)
+     (let [conn (d/connect cfg)
+           _ (d/transact conn test-schema)
+           db-after-schema (d/db conn)
+           tx-offset (- (:max-tx db-after-schema) 536870911)]
+       {:conn conn :db (d/db conn) :cfg cfg :tx-offset tx-offset}))))
 
 (defn apply-tx-to-conn
   "Apply transaction to connection, returning updated db."
@@ -87,56 +89,68 @@
 
 (def seed-gen (gen/choose 0 9223372036854775807))
 
-(def index-integrity-prop
+(defn index-integrity-prop
+  "Property that checks index integrity with given config options."
+  [opts]
   (prop/for-all [seed seed-gen]
-                (let [rng (rng/create seed)
-                      model-state (model/create-model schema-map)
-                      {:keys [conn]} (create-test-db)]
-                  (loop [i 0
-                         model-state model-state]
-                    (if (>= i 50)
-                      true
-                      (let [tx-ops (model/generate-transaction rng schema-map entity-range model-state 10)
-                            model-state' (model/apply-tx model-state {:tx-data tx-ops})
-                            db (apply-tx-to-conn conn tx-ops)
-                            result (inv/check-all
-                                    (inv/all-index-invariants user-attrs)
-                                    model-state'
-                                    db)]
-                        (if (:valid? result)
-                          (recur (inc i) model-state')
-                          false)))))))
+    (let [rng (rng/create seed)
+          model-state (model/create-model schema-map)
+          {:keys [conn]} (create-test-db opts)]
+      (loop [i 0
+             model-state model-state]
+        (if (>= i 50)
+          true
+          (let [tx-ops (model/generate-transaction rng schema-map entity-range model-state 10)
+                model-state' (model/apply-tx model-state {:tx-data tx-ops})
+                db (apply-tx-to-conn conn tx-ops)
+                result (inv/check-all
+                        (inv/all-index-invariants user-attrs)
+                        model-state'
+                        db)]
+            (if (:valid? result)
+              (recur (inc i) model-state')
+              false)))))))
 
-(def historical-consistency-prop
+(defn historical-consistency-prop
+  "Property that checks historical consistency with given config options."
+  [opts]
   (prop/for-all [seed seed-gen]
-                (let [rng (rng/create seed)
-                      model-state (model/create-model schema-map)
-                      {:keys [conn tx-offset]} (create-test-db)]
-                  (loop [i 0
-                         model-state model-state]
-                    (if (>= i 20)
-                      true
-                      (let [tx-ops (model/generate-transaction rng schema-map entity-range model-state 3)
-                            model-state' (model/apply-tx model-state {:tx-data tx-ops})
-                            db (apply-tx-to-conn conn tx-ops)
-                            model-tx-ids (model/get-transaction-ids model-state')
-                            actual-tx-ids (map #(+ % tx-offset) (take 3 model-tx-ids))
-                            hist-result (inv/check-all
-                                         [(inv/historical-consistency
-                                           actual-tx-ids
-                                           tx-offset
-                                           user-attrs)]
-                                         model-state'
-                                         db)]
-                        (if (:valid? hist-result)
-                          (recur (inc i) model-state')
-                          false)))))))
+    (let [rng (rng/create seed)
+          model-state (model/create-model schema-map)
+          {:keys [conn tx-offset]} (create-test-db opts)]
+      (loop [i 0
+             model-state model-state]
+        (if (>= i 20)
+          true
+          (let [tx-ops (model/generate-transaction rng schema-map entity-range model-state 3)
+                model-state' (model/apply-tx model-state {:tx-data tx-ops})
+                db (apply-tx-to-conn conn tx-ops)
+                model-tx-ids (model/get-transaction-ids model-state')
+                actual-tx-ids (map #(+ % tx-offset) (take 3 model-tx-ids))
+                hist-result (inv/check-all
+                             [(inv/historical-consistency
+                               actual-tx-ids
+                               tx-offset
+                               user-attrs)]
+                             model-state'
+                             db)]
+            (if (:valid? hist-result)
+              (recur (inc i) model-state')
+              false)))))))
 
-(defspec index-integrity 100
-  index-integrity-prop)
+;; With :attribute-refs? true (default)
+(defspec index-integrity-with-attribute-refs 100
+  (index-integrity-prop {:attribute-refs? true}))
 
-(defspec historical-queries-match-model 30
-  historical-consistency-prop)
+(defspec historical-with-attribute-refs 30
+  (historical-consistency-prop {:attribute-refs? true}))
+
+;; Without :attribute-refs? 
+(defspec index-integrity-without-attribute-refs 100
+  (index-integrity-prop {:attribute-refs? false}))
+
+(defspec historical-without-attribute-refs 30
+  (historical-consistency-prop {:attribute-refs? false}))
 
 ;; =============================================================================
 ;; Unit Tests
