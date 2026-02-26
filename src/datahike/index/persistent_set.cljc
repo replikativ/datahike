@@ -372,13 +372,13 @@
                                   #?(:clj
                                      (reify ReadHandler
                                        (read [_ reader _tag _component-count]
-                                         (let [{:keys [keys level addresses]} (.readObject reader)]
-                                           (Branch. (int level) ^List keys ^List (seq addresses) settings))))
+                                         (let [{:keys [keys level addresses subtree-count]} (.readObject reader)]
+                                           (Branch. (int level) (count keys) (into-array Object keys) (into-array Object (seq addresses)) nil (long (or subtree-count -1)) settings))))
                                      :cljs
                                      (fn [reader _tag _component-count]
-                                       (let [{:keys [keys level addresses]} (fress/read-object reader)]
+                                       (let [{:keys [keys level addresses subtree-count]} (fress/read-object reader)]
                                        ;; CLJS Branch deftype: [level keys children addresses subtree-count _measure settings]
-                                         (Branch. (int level) (clj->js keys) nil (clj->js addresses) -1 nil settings))))
+                                         (Branch. (int level) (clj->js keys) nil (clj->js addresses) (or subtree-count -1) nil settings))))
                                   "datahike.datom.Datom"
                                   #?(:clj
                                      (reify ReadHandler
@@ -419,7 +419,8 @@
                                           (.writeTag writer "datahike.index.PersistentSortedSet.Branch" 1)
                                           (.writeObject writer {:level     (.level ^Branch node)
                                                                 :keys      (.keys ^Branch node)
-                                                                :addresses (.addresses ^Branch node)})))}
+                                                                :addresses (.addresses ^Branch node)
+                                                                :subtree-count (.subtreeCount ^Branch node)})))}
 
                                      datahike.datom.Datom
                                      {"datahike.datom.Datom"
@@ -450,7 +451,8 @@
                                        (fress/write-tag writer "datahike.index.PersistentSortedSet.Branch" 1)
                                        (fress/write-object writer {:level     (.-level ^Branch node)
                                                                    :keys      (vec (.-keys ^Branch node))
-                                                                   :addresses (vec (.-addresses ^Branch node))}))
+                                                                   :addresses (vec (.-addresses ^Branch node))
+                                                                   :subtree-count (.-subtree-count ^Branch node)}))
 
                                      datahike.datom.Datom
                                      (fn [writer datom]
