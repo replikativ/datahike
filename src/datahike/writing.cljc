@@ -45,8 +45,8 @@
   [db flush?]
   (when-not (dbu/db? db)
     (log/raise "Argument is not a database."
-              {:type     :argument-is-not-a-db
-               :argument db}))
+               {:type     :argument-is-not-a-db
+                :argument db}))
   (let [{:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
                 schema rschema system-entities ident-ref-map ref-ident-map config
                 max-tx max-eid op-count hash meta store]} db
@@ -124,14 +124,14 @@
                 (do
                   (when (nil? p)
                     (log/raise "Parent cannot be nil." {:type :parent-cannot-be-nil
-                                                       :parent p}))
+                                                        :parent p}))
                   (if-not (keyword? p) p
                           (let [{{:keys [datahike/commit-id]} :meta :as old-db}
                                 (k/get store p nil {:sync? true})]
                             (when-not old-db
                               (log/raise "Parent does not exist in store."
-                                        {:type   :parent-does-not-exist-in-store
-                                         :parent p}))
+                                         {:type   :parent-does-not-exist-in-store
+                                          :parent p}))
                             commit-id)))))))
 
 (defn create-commit-id [db]
@@ -244,7 +244,7 @@
          stored-db (<?- (k/get store :db nil opts))
          _ (when stored-db
              (log/raise "Database already exists."
-                       {:type :db-already-exists :config store-config}))
+                        {:type :db-already-exists :config store-config}))
          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
                  schema rschema system-entities ref-ident-map ident-ref-map
                  config max-tx max-eid op-count hash meta] :as db}

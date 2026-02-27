@@ -185,7 +185,7 @@
 
       (not (same-keys? attrs-a attrs-b))
       (log/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
-                {:error :query/where})
+                 {:error :query/where})
 
       (every? number? (vals attrs-a))                       ;; can’t conj into BTSetIter
       (let [idxb->idxa (vec (for [[sym idx-b] attrs-b]
@@ -459,7 +459,7 @@
     (cond
       (not (seqable? coll))
       (log/raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
-                {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
+                 {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (empty? coll)
       (empty-rel binding)
       :else
@@ -472,10 +472,10 @@
     (cond
       (not (seqable? coll))
       (log/raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
-                {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
+                 {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (< (count coll) (count (:bindings binding)))
       (log/raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
-                {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
+                 {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       :else
       (reduce prod-rel
               (map #(in->rel %1 %2) (:bindings binding) coll)))))
@@ -773,7 +773,7 @@
                  (resolve-method f)
                  (when (nil? (rel-with-attr context f))
                    (log/raise "Unknown predicate '" f " in " clause
-                             {:error :query/where, :form clause, :var f})))
+                              {:error :query/where, :form clause, :var f})))
         [context production] (rel-prod-by-attrs context (filter symbol? args))
         new-rel (if pred
                   (let [tuple-pred (-call-fn context production pred args)]
@@ -791,7 +791,7 @@
                 (resolve-method f)
                 (when (nil? (rel-with-attr context f))
                   (log/raise "Unknown function '" f " in " clause
-                            {:error :query/where, :form clause, :var f})))
+                             {:error :query/where, :form clause, :var f})))
         attrs (filter symbol? args)
         [context production] (rel-prod-by-attrs context attrs)
         symbols-with-values (into #{}
@@ -1068,17 +1068,17 @@
     (when-not (set/subset? vars bound)
       (let [missing (set/difference (set vars) bound)]
         (log/raise "Insufficient bindings: " missing " not bound in " form
-                  {:error :query/where
-                   :form form
-                   :vars missing})))))
+                   {:error :query/where
+                    :form form
+                    :vars missing})))))
 
 (defn check-some-bound [context vars form]
   (let [bound (set (concat (mapcat #(keys (:attrs %)) (:rels context))
                            (keys (:consts context))))]
     (when (empty? (set/intersection vars bound))
       (log/raise "Insufficient bindings: none of " vars " is bound in " form
-                {:error :query/where
-                 :form form}))))
+                 {:error :query/where
+                  :form form}))))
 
 (defn resolve-context [context clauses]
   (dt/resolve-clauses resolve-clause context clauses))

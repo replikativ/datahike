@@ -75,7 +75,7 @@
 
     :else
     (log/raise "Bad attribute type: " ident ", expected keyword or string"
-           {:error :transact/syntax, :attribute ident})))
+               {:error :transact/syntax, :attribute ident})))
 
 (defn reverse-ref [ident]
   (cond
@@ -92,7 +92,7 @@
 
     :else
     (log/raise "Bad attribute type: " ident ", expected keyword or string"
-           {:error :transact/syntax, :attribute ident})))
+               {:error :transact/syntax, :attribute ident})))
 
 (defn db? [x]
   (and (satisfies? dbi/ISearch x)
@@ -114,11 +114,11 @@
          (not= (count eid) 2)
          (or error-code
              (log/raise "Lookup ref should contain 2 elements: " eid
-                    {:error :lookup-ref/syntax, :entity-id eid}))
+                        {:error :lookup-ref/syntax, :entity-id eid}))
          (not (is-attr? db attr :db/unique))
          (or error-code
              (log/raise "Lookup ref attribute should be marked as :db/unique: " eid
-                    {:error :lookup-ref/unique, :entity-id eid}))
+                        {:error :lookup-ref/unique, :entity-id eid}))
          (nil? value)
          nil
          :else
@@ -132,7 +132,7 @@
      :else
      (or error-code
          (log/raise "Expected number or lookup ref for entity id, got " eid
-                {:error :entity-id/syntax, :entity-id eid})))))
+                    {:error :entity-id/syntax, :entity-id eid})))))
 
 (defn entid-strict
   ([db eid] (entid-strict db eid nil))
@@ -140,8 +140,8 @@
    (or (entid db eid error-code)
        error-code
        (log/raise "Nothing found for entity id " eid
-              {:error :entity-id/missing
-               :entity-id eid}))))
+                  {:error :entity-id/missing
+                   :entity-id eid}))))
 
 (defn entid-some [db eid]
   (when eid
@@ -172,7 +172,7 @@
 (defn validate-attr-ident [a-ident at db]
   (when-not (ident-name? a-ident)
     (log/raise "Bad entity attribute " a-ident " at " at ", expected keyword or string"
-           {:error :transact/syntax, :attribute a-ident, :context at}))
+               {:error :transact/syntax, :attribute a-ident, :context at}))
   (when (and (= :write (:schema-flexibility (dbi/-config db)))
              (not (or (ds/meta-attr? a-ident) (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident))))
     (if-let [db-idents (:db/ident (dbi/-rschema db))]
@@ -181,9 +181,9 @@
                    a-ident)]
         (when-not (db-idents attr)
           (log/raise "Bad entity attribute " a-ident " at " at ", not defined in current schema"
-                 {:error :transact/schema :attribute a-ident :context at})))
+                     {:error :transact/schema :attribute a-ident :context at})))
       (log/raise "No schema found in db."
-             {:error :transact/schema :attribute a-ident :context at}))))
+                 {:error :transact/schema :attribute a-ident :context at}))))
 
 (defn resolve-datom [db e a v t default-e default-tx]
   (let [{a-ident :ident a-db :ref} (attr-info db a)]
@@ -260,11 +260,11 @@
   (if (:attribute-refs? (dbi/-config db))
     (do (when-not (number? attr)
           (log/raise "Bad entity attribute " attr " at " at ", expected reference number"
-                 {:error :transact/syntax, :attribute attr, :context at}))
+                     {:error :transact/syntax, :attribute attr, :context at}))
         (if-let [a-ident (get-in db [:ref-ident-map attr])]
           (validate-attr-ident a-ident at db)
           (log/raise "Bad entity attribute " attr " at " at ", not defined in current schema"
-                 {:error :transact/schema :attribute attr :context at})))
+                     {:error :transact/schema :attribute attr :context at})))
     (validate-attr-ident attr at db)))
 
 (defn normalize-and-validate-attr [attr at db]

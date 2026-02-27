@@ -36,14 +36,14 @@
                   (bound-var? e)
                   (and (vector? e) (= 2 (count e))))
       (log/raise "Bad format for entity-id in pattern, must be a number, nil or vector of two elements."
-             {:error :search/pattern :e e :pattern pattern}))
+                 {:error :search/pattern :e e :pattern pattern}))
 
     (when-not (or (number? a)
                   (keyword? a)
                   (bound-var? a)
                   (nil? a))
       (log/raise "Bad format for attribute in pattern, must be a number, nil or a keyword."
-             {:error :search/pattern :a a :pattern pattern}))
+                 {:error :search/pattern :a a :pattern pattern}))
 
     ;; Value validation: allow vectors of any length for tuple attributes
     (when-not (or (not (vector? v))
@@ -54,19 +54,19 @@
                   ;; Allow any-length vectors for tuple values
                   (and (vector? v) a (dbu/tuple? db a)))
       (log/raise "Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
-             {:error :search/pattern :v v :pattern pattern}))
+                 {:error :search/pattern :v v :pattern pattern}))
 
     (when-not (or (nil? tx)
                   (bound-var? tx)
                   (number? tx))
       (log/raise "Bad format for transaction ID in pattern, must be a number or nil."
-             {:error :search/pattern :tx tx :pattern pattern}))
+                 {:error :search/pattern :tx tx :pattern pattern}))
 
     (when-not (or (nil? added?)
                   (boolean? added?)
                   (bound-var? added?))
       (log/raise "Bad format for added? in pattern, must be a boolean value or nil."
-             {:error :search/pattern :added? added? :pattern pattern}))))
+                 {:error :search/pattern :added? added? :pattern pattern}))))
 
 (defn short-hand->strat-symbol [x]
   (case x

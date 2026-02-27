@@ -24,12 +24,12 @@
 (defn- parent-check [parents]
   (when-not (pos? (count parents))
     (log/raise "You must provide at least one parent."
-              {:type :must-provide-at-least-one-parent :parents parents})))
+               {:type :must-provide-at-least-one-parent :parents parents})))
 
 (defn- commit-id-check [commit-id]
   (when-not (uuid? commit-id)
     (log/raise "Commit-id must be a uuid."
-              {:type :commit-id-must-be-uuid :commit-id commit-id})))
+               {:type :commit-id-must-be-uuid :commit-id commit-id})))
 
 ;; ========================= public API =========================
 
@@ -60,7 +60,7 @@
         branches (k/get store :branches nil {:sync? true})
         _ (when (branches new-branch)
             (log/raise "Branch already exists." {:type :branch-already-exists
-                                                :new-branch new-branch}))
+                                                 :new-branch new-branch}))
         db (k/get store from nil {:sync? true})]
     (when-not (stored-db? db)
       (throw (ex-info "From does not point to an existing branch or commit."
@@ -75,12 +75,12 @@
   [conn branch]
   (when (= branch :db)
     (log/raise "Cannot delete main :db branch. Delete database instead."
-              {:type :cannot-delete-main-db-branch}))
+               {:type :cannot-delete-main-db-branch}))
   (let [store (:store @conn)
         branches (k/get store :branches nil {:sync? true})]
     (when-not (branches branch)
       (log/raise "Branch does not exist." {:type :branch-does-not-exist
-                                          :branch branch}))
+                                           :branch branch}))
     (delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
     (k/update store :branches #(disj (set %) branch) {:sync? true})))
 

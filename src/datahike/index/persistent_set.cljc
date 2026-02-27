@@ -256,8 +256,8 @@
       (let [node (k/get store address nil {:sync? true})]
         (when (nil? node)
           (log/raise "Node not found in storage." {:type :node-not-found
-                                                  :address address
-                                                  :store store}))
+                                                   :address address
+                                                   :store store}))
         (swap! stats update :reads inc)
         (wrapped/miss cache address node)
         node)))
@@ -398,7 +398,7 @@
                                         (write [_ writer pset]
                                           (when (nil? (.-_address ^PersistentSortedSet pset))
                                             (log/raise "Must be flushed." {:type :must-be-flushed
-                                                                          :pset pset}))
+                                                                           :pset pset}))
                                           (.writeTag writer "datahike.index.PersistentSortedSet" 1)
                                           (.writeObject writer {:meta    (meta pset)
                                                                 :address (.-_address ^PersistentSortedSet pset)
@@ -434,7 +434,7 @@
                                      (fn [writer pset]
                                        (when (nil? (.-address ^BTSet pset))
                                          (log/raise "Must be flushed." {:type :must-be-flushed
-                                                                       :pset pset}))
+                                                                        :pset pset}))
                                        (fress/write-tag writer "datahike.index.PersistentSortedSet" 1)
                                        (fress/write-object writer {:meta    (meta pset)
                                                                    :address (.-address ^BTSet pset)

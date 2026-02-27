@@ -99,29 +99,29 @@
                   (= dh-stored "DEVELOPMENT")
                   (>= (compare dh-now dh-stored) 0))
       (log/raise "Database was written with newer Datahike version."
-                {:type :db-was-written-with-newer-datahike-version
-                 :stored dh-stored
-                 :now dh-now
-                 :config config}))
+                 {:type :db-was-written-with-newer-datahike-version
+                  :stored dh-stored
+                  :now dh-now
+                  :config config}))
     (when (and hh-stored hh-now
                (not (>= (compare hh-now hh-stored) 0)))
       (log/raise "Database was written with newer hitchhiker-tree version."
-                {:type :db-was-written-with-newer-hht-version
-                 :stored hh-stored
-                 :now hh-now
-                 :config config}))
+                 {:type :db-was-written-with-newer-hht-version
+                  :stored hh-stored
+                  :now hh-now
+                  :config config}))
     (when-not (>= (compare pss-now pss-stored) 0)
       (log/raise "Database was written with newer persistent-sorted-set version."
-                {:type :db-was-written-with-newer-pss-version
-                 :stored pss-stored
-                 :now pss-now
-                 :config config}))
+                 {:type :db-was-written-with-newer-pss-version
+                  :stored pss-stored
+                  :now pss-now
+                  :config config}))
     (when-not (>= (compare ksv-now ksv-stored) 0)
       (log/raise "Database was written with newer konserve version."
-                {:type   :db-was-written-with-newer-konserve-version
-                 :stored ksv-stored
-                 :now    ksv-now
-                 :config config}))))
+                 {:type   :db-was-written-with-newer-konserve-version
+                  :stored ksv-stored
+                  :now    ksv-now
+                  :config config}))))
 
 (defn ensure-stored-config-consistency [config stored-config]
   (let [;; Remove runtime parameters and creation-time parameters
@@ -144,11 +144,11 @@
         _ (when (and stored-store-id connect-store-id
                      (not= stored-store-id connect-store-id))
             (log/raise "Store identity mismatch: connecting to wrong database."
-                      {:type :store-identity-mismatch
-                       :stored-id stored-store-id
-                       :connect-id connect-store-id
-                       :config config
-                       :stored-config stored-config}))
+                       {:type :store-identity-mismatch
+                        :stored-id stored-store-id
+                        :connect-id connect-store-id
+                        :config config
+                        :stored-config stored-config}))
 
         ;; Remove entire :store from comparison (backend, path, credentials can change)
         ;; Only the :id needs to match (checked above)
@@ -157,10 +157,10 @@
 
     (when-not (= config stored-config)
       (log/raise "Configuration does not match stored configuration. In some cases this check is too restrictive. If you are sure you are loading the right database with the right configuration then you can disable this check by setting :allow-unsafe-config to true in your config."
-                {:type          :config-does-not-match-stored-db
-                 :config        config
-                 :stored-config stored-config
-                 :diff          (diff config stored-config)}))))
+                 {:type          :config-does-not-match-stored-db
+                  :config        config
+                  :stored-config stored-config
+                  :diff          (diff config stored-config)}))))
 
 (defn- normalize-config [cfg]
   (-> cfg
@@ -180,22 +180,22 @@
                          conn-cfg (normalize-config conn-config)]
                      (when-not (= cfg conn-cfg)
                        (log/raise "Configuration does not match existing connections."
-                                 {:type :config-does-not-match-existing-connections
-                                  :config cfg
-                                  :existing-connections-config conn-cfg
-                                  :diff (diff cfg conn-cfg)}))
+                                  {:type :config-does-not-match-existing-connections
+                                   :config cfg
+                                   :existing-connections-config conn-cfg
+                                   :diff (diff cfg conn-cfg)}))
                      conn)
                    (let [raw-store (<?- (ks/connect-store store-config opts))
                          _         (when-not raw-store
                                      (log/raise "Backend does not exist." {:type   :backend-does-not-exist
-                                                                          :config store-config}))
+                                                                           :config store-config}))
                          store     (ds/add-cache-and-handlers raw-store config)
                          _ (<?- (ds/ready-store (assoc store-config :opts opts) store))
                          stored-db (<?- (k/get store (:branch config) nil opts))
                          _         (when-not stored-db
                                      (ks/release-store store-config store opts)
                                      (log/raise "Database does not exist." {:type   :db-does-not-exist
-                                                                           :config config}))
+                                                                            :config config}))
                          [config store stored-db]
                          (let [intended-index (:index config)
                                stored-index   (get-in stored-db [:config :index])]

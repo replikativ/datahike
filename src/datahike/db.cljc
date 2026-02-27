@@ -257,7 +257,7 @@
           true (dbs/temporal-index-range db current-db attr start end)
           false (do (when-not (dbu/indexing? db attr)
                       (log/raise "Attribute"
-                                attr "should be marked as :db/index true" {}))
+                                 attr "should be marked as :db/index true" {}))
 
                     (dbu/validate-attr
                      attr (list '-index-range 'db attr start end) db)
@@ -775,7 +775,7 @@
 (defn- validate-write-schema [schema]
   (when-not (ds/old-schema-valid? schema)
     (log/raise "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
-           (ds/explain-old-schema schema))))
+               (ds/explain-old-schema schema))))
 
 (defn init-max-eid [eavt]
   ;; solved with reverse slice first in datascript

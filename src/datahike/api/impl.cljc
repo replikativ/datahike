@@ -30,13 +30,13 @@
               (map? arg-map)      (if (contains? arg-map :tx-data)
                                     arg-map
                                     (log/raise "Bad argument to transact, map missing key :tx-data."
-                                              {:error         :transact/syntax
-                                               :argument-keys (keys arg-map)}))
+                                               {:error         :transact/syntax
+                                                :argument-keys (keys arg-map)}))
               (or (vector? arg-map)
                   (seq? arg-map)) {:tx-data arg-map}
               :else               (log/raise "Bad argument to transact, expected map, vector or sequence."
-                                            {:error         :transact/syntax
-                                             :argument-type (type arg-map)}))]
+                                             {:error         :transact/syntax
+                                              :argument-type (type arg-map)}))]
     (dw/transact! connection arg)))
 
 (defn transact [connection arg-map]
@@ -137,7 +137,7 @@
       (if (<= const/tx0 time-point)
         (AsOfDB. db time-point)
         (log/raise (str "Invalid transaction ID. Must be bigger than " const/tx0 ".")
-                  {:time-point time-point}))
+                   {:time-point time-point}))
       (AsOfDB. db time-point))
     (log/raise "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
