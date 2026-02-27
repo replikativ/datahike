@@ -7,7 +7,13 @@
             [clojure.string :refer [join]]
             [datahike.store :as ds]
             [datahike.config :as dc]
-            [datahike.index :as di]))
+            [datahike.index :as di]
+            [taoensso.trove :as trove]
+            [taoensso.trove.console :as trove-console]))
+
+(def log-level (-> (System/getEnv "LOG_LEVEL") keyword))
+
+(trove/set-log-fn! (trove-console/get-log-fn {:min-level log-level}))
 
 (def output-formats (set (keys (methods save))))
 (def config-names (set (map :config-name c/named-db-configs)))
@@ -170,8 +176,8 @@
           (println "Please, define URL, database name, and token to save the data on a remote datahike server."))
       (let [measurements (cond->> (get-measurements options)
                                   (seq tag) (map (fn [entity] (assoc entity :tag (join " " tag))))
-                                  true      vec) ]
-    (save options paths measurements)))))
+                                  true      vec)]
+       (save options paths measurements)))))
 
 (defn -main [& args]
   (let [{:keys [arguments options errors summary]} (cli/parse-opts args cli-options)
@@ -189,7 +195,7 @@
   (shutdown-agents))
 
 (comment
-  (-main "measure" "-x" "[0 10000 5000]" "-t" "test-bench" "-o" "edn" "bench.edn")
-  )
+  (-main "measure" "-x" "[0 10000 5000]" "-t" "test-bench" "-o" "edn" "bench.edn"))
+  
 
-;TIMBRE_LEVEL=":info" clj -M:benchmark measure --backend :file --index :datahike.index/persistent-set -t pss -o edn pss.edn --schema :write --history false
+;LOG_LEVEL="info" clj -M:benchmark measure --backend :file --index :datahike.index/persistent-set -t pss -o edn pss.edn --schema :write --history false
