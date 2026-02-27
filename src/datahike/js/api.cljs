@@ -97,9 +97,17 @@
     (satisfies? datahike.db.interface/IDB x)
     x
 
-    ;; Datoms - pass through unchanged
+    ;; Datoms - convert to plain JS objects with stable property names.
+    ;; Passing datoms through unchanged causes field renaming under advanced
+    ;; compilation (e.g. :v becomes "ca"), breaking JS callers who access .e/.a/.v.
     (= (type x) datahike.datom.Datom)
-    x
+    (let [obj (js-obj)]
+      (gobj/set obj "e" (.-e x))
+      (gobj/set obj "a" (clj->js-recursive (.-a x)))
+      (gobj/set obj "v" (clj->js-recursive (.-v x)))
+      (gobj/set obj "tx" (.-tx x))
+      (gobj/set obj "added" (.-added x))
+      obj)
 
     ;; Connections (check for typical connection keys)
     (and (map? x) (:conn-atom x))

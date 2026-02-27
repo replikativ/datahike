@@ -91,9 +91,9 @@ export function connect(arg0: any): Promise<any>;
  *
  * Examples:
  * - Create empty database
- *   (create-database {:store {:backend :mem :id "example"}})
+ *   (create-database {:store {:backend :memory :id "example"}})
  * - Create with schema-flexibility :read
- *   (create-database {:store {:backend :mem :id "example"} :schema-flexibility :read})
+ *   (create-database {:store {:backend :memory :id "example"} :schema-flexibility :read})
  */
 export function createDatabase(arg0: any): Promise<any>;
 
@@ -102,7 +102,7 @@ export function createDatabase(arg0: any): Promise<any>;
  *
  * Examples:
  * - Check if in-memory database exists
- *   (database-exists? {:store {:backend :mem :id "example"}})
+ *   (database-exists? {:store {:backend :memory :id "example"}})
  * - Check with default config
  *   (database-exists?)
  */
@@ -144,7 +144,7 @@ export function dbWith(arg0: any, arg1: any): Promise<any>;
  *
  * Examples:
  * - Delete database
- *   (delete-database {:store {:backend :mem :id "example"}})
+ *   (delete-database {:store {:backend :memory :id "example"}})
  */
 export function deleteDatabase(arg0: any): Promise<any>;
 

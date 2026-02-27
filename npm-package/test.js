@@ -16,8 +16,9 @@ async function findEntityByName(db, name) {
   if (!datoms) return null;
   
   // Find datom where attribute is :name and value matches
+  // Use String(datom.a) since ClojureScript keyword internals get renamed by advanced compilation
   for (const datom of datoms) {
-    if (datom.a && datom.a.fqn === 'name' && datom.v === name) {
+    if (datom.a && String(datom.a) === ':name' && datom.v === name) {
       return datom.e;
     }
   }
@@ -143,7 +144,7 @@ async function testDatomsAPI() {
   
   console.log('  Finding name datoms from EAVT...');
   const eavtForNames = await d.datoms(db, ':eavt');
-  const nameDatoms = eavtForNames.filter(d => d.a && d.a.fqn === 'name');
+  const nameDatoms = eavtForNames.filter(d => d.a && String(d.a) === ':name');
   if (nameDatoms.length !== 2) {
     throw new Error(`Expected 2 name datoms, got ${nameDatoms.length}`);
   }
@@ -401,7 +402,7 @@ async function testMultipleTransactions() {
   
   const db = await d.db(conn);
   const datoms = await d.datoms(db, ':eavt');
-  const counterDatoms = datoms.filter(d => d.a && d.a.fqn === 'counter');
+  const counterDatoms = datoms.filter(d => d.a && String(d.a) === ':counter');
   
   if (!counterDatoms || counterDatoms.length < 5) {
     throw new Error(`Expected at least 5 counter values, got ${counterDatoms ? counterDatoms.length : 0}`);

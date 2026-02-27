@@ -41,10 +41,10 @@
           {:target :browser
            :output-to "npm-package/browser/datahike.js"
            :output-dir "npm-package/browser"
-           :modules {:main {:entries [datahike.js.api]}}
+           :modules {:datahike {:entries [datahike.js.api]}}
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
-                              :output-feature-set :es2020}}
+                              :output-feature-set :es-next}}
           
           :npm-release
           {:target :npm-module
@@ -53,4 +53,5 @@
                      konserve.node-filestore]
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
-                              :output-feature-set :es6}}}}
+                              :output-feature-set :es2020
+                              :externs ["externs/node_fs.js"]}}}}
