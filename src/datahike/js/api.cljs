@@ -122,7 +122,7 @@
     (let [obj (js-obj)]
       (doseq [[k v] x]
         (gobj/set obj
-                  (if (keyword? k) (name k) (str k))
+                  (if (keyword? k) (subs (str k) 1) (str k))
                   (clj->js-recursive v)))
       obj)
 
