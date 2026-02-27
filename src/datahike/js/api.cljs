@@ -29,38 +29,27 @@
 ;; - Keys: always keywordized
 ;; - Values: ":" prefix = keyword, else literal
 ;; - Escape: "\\:" for literal colon strings
-;; - Bonus: UUID auto-detection for convenience
+;; - UUIDs: no auto-detection; use d.uuid(str) or d.randomUuid() explicitly
 ;; =============================================================================
-
-(def ^:private uuid-regex
-  "Regex pattern for UUID strings (8-4-4-4-12 hex digits)"
-  #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-
-(defn- uuid-string?
-  "Check if a string is a valid UUID format"
-  [s]
-  (and (string? s) (re-matches uuid-regex s)))
 
 (defn- convert-string
   "Convert a string to appropriate Clojure type following universal EDN rules:
   - '\\:literal' -> ':literal' (escaped colon becomes literal string with :)
   - ':keyword' -> keyword
-  - UUID format -> UUID object (convenience)
-  - otherwise -> string"
+  - otherwise -> string (use d.uuid() / d.randomUuid() for UUID values)"
   [s]
   (cond
     ;; Escaped colon - strip backslash and return literal string
     (str/starts-with? s "\\:") (subs s 1)
     ;; Colon prefix - convert to keyword
     (str/starts-with? s ":") (keyword (subs s 1))
-    ;; UUID auto-detection (convenience feature)
-    (uuid-string? s) (uuid s)
-    ;; Regular string
+    ;; Regular string - pass through unchanged
     :else s))
 
 (defn js->clj-recursive
   "Recursively convert JS objects to Clojure data with keyword keys.
-  Also converts strings like ':keyword' to keywords and UUID strings to UUIDs."
+  Converts strings like ':keyword' to keywords.
+  UUID values must be created explicitly with d.uuid() or d.randomUuid()."
   [x]
   (cond
     ;; Check for JS object first (but not arrays, functions, or null)
@@ -80,7 +69,7 @@
     (array? x)
     (mapv js->clj-recursive x)
 
-    ;; Strings: convert keywords, UUIDs, or pass through
+    ;; Strings: convert keywords or pass through
     (string? x)
     (convert-string x)
 
@@ -112,6 +101,10 @@
     ;; Connections (check for typical connection keys)
     (and (map? x) (:conn-atom x))
     x
+
+    ;; UUID objects become plain strings (round-trip friendly)
+    (instance? UUID x)
+    (str x)
 
     ;; Keywords become strings with ":"
     (keyword? x)
@@ -178,3 +171,29 @@
   "Check if a value is a Promise."
   [x]
   (instance? js/Promise x))
+
+(defn ^:export uuid
+  "Create a Datahike UUID value from a string.
+  Use this when transacting or querying :db.type/uuid attributes, and
+  for the store config :id field.
+
+  UUID strings are never auto-detected — wrap them explicitly.
+  UUID values read back from the database are returned as plain strings.
+
+  Examples:
+    // Store config
+    { store: { backend: ':memory', id: d.uuid('00000000-0000-0000-0000-000000000001') } }
+    // Data attribute
+    await d.transact(conn, [{ ':item/id': d.uuid('550e8400-e29b-41d4-a716-446655440000') }])
+    // Query returns plain string: '550e8400-e29b-41d4-a716-446655440000'"
+  [s]
+  (cljs.core/uuid s))
+
+(defn ^:export randomUuid
+  "Generate a random UUID value, suitable for use as a store config :id
+  or any :db.type/uuid attribute.
+
+  Example:
+    { store: { backend: ':memory', id: d.randomUuid() } }"
+  []
+  (random-uuid))

@@ -1,14 +1,8 @@
 // Comprehensive test for reorganized JS API - covers all nodejs_test.cljs functionality
 const d = require('./datahike.js.api.js');
-const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-
-// Helper to generate UUID for store :id
-function generateUUID() {
-  return crypto.randomUUID();
-}
 
 // Helper to find entity ID by name
 async function findEntityByName(db, name) {
@@ -34,7 +28,7 @@ async function testBasicOperations() {
   console.log('\n=== Test 1: Basic Database Operations ===');
 
   const config = {
-    store: { backend: ':memory', id: generateUUID() }
+    store: { backend: ':memory', id: d.randomUuid() }
   };
   
   console.log('  Creating database...');
@@ -66,7 +60,7 @@ async function testSchemaAndTransactions() {
   console.log('\n=== Test 2: Schema and Transactions ===');
 
   const config = {
-    store: { backend: ':memory', id: generateUUID() }
+    store: { backend: ':memory', id: d.randomUuid() }
   };
   
   await d.createDatabase(config);
@@ -115,7 +109,7 @@ async function testDatomsAPI() {
   console.log('\n=== Test 3: Datoms API ===');
 
   const config = {
-    store: { backend: ':memory', id: generateUUID() }
+    store: { backend: ':memory', id: d.randomUuid() }
   };
   
   await d.createDatabase(config);
@@ -158,7 +152,7 @@ async function testPullAPI() {
   console.log('\n=== Test 4: Pull API ===');
 
   const config = {
-    store: { backend: ':memory', id: generateUUID() }
+    store: { backend: ':memory', id: d.randomUuid() }
   };
   
   await d.createDatabase(config);
@@ -211,7 +205,7 @@ async function testEntityAPI() {
   console.log('\n=== Test 5: Entity API ===');
 
   const config = {
-    store: { backend: ':memory', id: generateUUID() }
+    store: { backend: ':memory', id: d.randomUuid() }
   };
   
   await d.createDatabase(config);
@@ -257,7 +251,7 @@ async function testTemporalDatabases() {
   console.log('\n=== Test 6: Temporal Databases (History, as-of) ===');
 
   const config = {
-    store: { backend: ':memory', id: generateUUID() },
+    store: { backend: ':memory', id: d.randomUuid() },
     'keep-history?': true
   };
   
@@ -309,7 +303,7 @@ async function testFilePersistence() {
 
   const dir = tmpDir();
   const config = {
-    store: { backend: ':file', path: dir, id: generateUUID() }
+    store: { backend: ':file', path: dir, id: d.randomUuid() }
   };
   
   console.log(`  Using temp directory: ${dir}`);
@@ -355,7 +349,7 @@ async function testSchemaRetrieval() {
   console.log('\n=== Test 8: Schema Retrieval ===');
 
   const config = {
-    store: { backend: ':memory', id: generateUUID() }
+    store: { backend: ':memory', id: d.randomUuid() }
   };
   
   await d.createDatabase(config);
@@ -384,7 +378,7 @@ async function testMultipleTransactions() {
   console.log('\n=== Test 9: Multiple Sequential Transactions ===');
 
   const config = {
-    store: { backend: ':memory', id: generateUUID() }
+    store: { backend: ':memory', id: d.randomUuid() }
   };
   
   await d.createDatabase(config);
@@ -417,7 +411,7 @@ async function testQueryAPI() {
   console.log('\n=== Test 10: Query API (Datalog queries as EDN strings) ===');
 
   const config = {
-    store: { backend: ':memory', id: generateUUID() }
+    store: { backend: ':memory', id: d.randomUuid() }
   };
   
   await d.createDatabase(config);
