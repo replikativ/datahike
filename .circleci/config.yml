@@ -136,10 +136,6 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: Retrieve ssh-fingerprints
-          command: mkdir ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
-          no_output_timeout: 1m
-      - run:
           name: Run backward compatibility test
           command: bb test back-compat
           no_output_timeout: 5m
