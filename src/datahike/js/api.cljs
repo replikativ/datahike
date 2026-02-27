@@ -69,6 +69,14 @@
     (array? x)
     (mapv js->clj-recursive x)
 
+    ;; JS functions: wrap to convert Clojure args to JS before calling
+    ;; This ensures filter/listen callbacks receive plain JS objects, not raw
+    ;; ClojureScript data (e.g. Datom records with renamed fields under advanced
+    ;; compilation, Clojure persistent maps inaccessible via JS property access).
+    (fn? x)
+    (fn [& args]
+      (apply x (map clj->js-recursive args)))
+
     ;; Strings: convert keywords or pass through
     (string? x)
     (convert-string x)

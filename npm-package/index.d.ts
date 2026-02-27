@@ -7,11 +7,11 @@
 export interface DatabaseConfig {
   store: {
     backend: string;
-    id?: any; // Use d.uuid() or d.randomUuid() to create a UUID value
+    id?: string;
     path?: string;
     [key: string]: any;
   };
-  'keep-history?'?: boolean;
+  'keep-history'?: boolean;
   'schema-flexibility'?: 'read' | 'write';
   'initial-tx'?: Transaction[];
   name?: string;
@@ -255,8 +255,7 @@ export function metrics(arg0: any): Promise<any>;
  * - Pull with arg-map
  *   (pull db {:selector [:db/id :name] :eid 1})
  */
-export function pull(db: Database, pattern: any[], eid: number | string): Promise<object | null>;
-export function pull(db: Database, argMap: { selector: any[]; eid: number | string }): Promise<object | null>;
+export function pull(arg0: any, arg1: any): Promise<object | null>;
 
 /**
  * Same as pull, but accepts sequence of ids and returns sequence of maps..
@@ -265,8 +264,7 @@ export function pull(db: Database, argMap: { selector: any[]; eid: number | stri
  * - Pull multiple entities
  *   (pull-many db [:db/id :name] [1 2 3])
  */
-export function pullMany(db: Database, pattern: any[], eids: Array<number | string>): Promise<Array<object>>;
-export function pullMany(db: Database, argMap: { selector: any[]; eids: Array<number | string> }): Promise<Array<object>>;
+export function pullMany(arg0: any, arg1: any): Promise<Array<object>>;
 
 /**
  * Executes a datalog query..
@@ -374,22 +372,3 @@ export function unlisten(arg0: any, arg1: any): Promise<object>;
  *   (with @conn {:tx-data [...] :tx-meta {:source :import}})
  */
 export function withDb(arg0: any, arg1: any): Promise<any>;
-
-/**
- * Creates a Datahike UUID value from a string.
- * Use for store config :id and :db.type/uuid attributes.
- * UUID values read back from the database are returned as plain strings.
- *
- * Example:
- *   { store: { backend: ':memory', id: uuid('00000000-0000-0000-0000-000000000001') } }
- */
-export function uuid(s: string): any;
-
-/**
- * Generates a random UUID value.
- * Suitable for use as a store config id or any :db.type/uuid attribute.
- *
- * Example:
- *   { store: { backend: ':memory', id: randomUuid() } }
- */
-export function randomUuid(): any;
