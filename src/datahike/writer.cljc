@@ -1,6 +1,6 @@
 (ns ^:no-doc datahike.writer
   (:require [superv.async :refer [S thread-try <?- go-try]]
-            [taoensso.timbre :as log]
+            [replikativ.logging :as log]
             [datahike.core]
             [datahike.writing :as w]
             [datahike.gc :as gc]
@@ -56,9 +56,7 @@
                   (if-let [{:keys [op args callback] :as invocation} (<?- transaction-queue)]
                     (do
                       (when (> (count transaction-queue-buffer) (* 0.9 transaction-queue-size))
-                        (log/warn "Transaction queue buffer more than 90% full, "
-                                  (count transaction-queue-buffer) "of" transaction-queue-size  " filled."
-                                  "Reduce transaction frequency."))
+                        (log/warn :datahike/tx-queue-pressure "Transaction queue buffer >90% full" {:count (count transaction-queue-buffer) :size transaction-queue-size}))
                       (let [;; TODO remove this after import is ported to writer API
                             old (if-not (= (:max-tx old) (:max-tx @(:wrapped-atom connection)))
                                   (assoc old :max-tx (:max-tx @(:wrapped-atom connection)))
@@ -70,7 +68,7 @@
                             ;; Catch all Throwables to handle AssertionError and other Errors
                             ;; These should crash the writer, but we deliver to callback first to prevent hangs
                                     (catch #?(:clj Throwable :cljs js/Error) e
-                                      (log/error "Error during invocation" invocation e args)
+                                      (log/error :datahike/write-error {:invocation invocation :error e :args args})
                               ;; take a guess that a NPE was triggered by an invalid connection
                               ;; short circuit on errors
                                       #?(:cljs (put! callback e)
@@ -97,9 +95,7 @@
                               (not= res :error)
                               (do
                                 (when (> (count commit-queue-buffer) (/ commit-queue-size 2))
-                                  (log/warn "Commit queue buffer more than 50% full, "
-                                            (count commit-queue-buffer) "of" commit-queue-size  " filled."
-                                            "Throttling transaction processing. Reduce transaction frequency and check your storage throughput.")
+                                  (log/warn :datahike/commit-queue-pressure "Commit queue buffer >50% full" {:count (count commit-queue-buffer) :size commit-queue-size})
                                   (<! (timeout 50)))
                                 (put! commit-queue [res callback])
                                 (recur (:db-after res)))
@@ -107,14 +103,14 @@
                               (recur old))))
                     (do
                       (close! commit-queue)
-                      (log/debug "Writer thread gracefully closed")))))
+                      (log/debug :datahike/writer-closed "Writer thread gracefully closed")))))
         ;; commit loop
         (go-try S
                 (loop [tx (<?- commit-queue)]
                   (when tx
                     (let [txs (into [tx] (take-while some?) (repeatedly #(poll! commit-queue)))]
               ;; empty channel of pending transactions
-                      (log/trace "Batched transaction count: " (count txs))
+                      (log/trace :datahike/batch-commit {:batch-size (count txs)})
               ;; commit latest tx to disk
                       (let [db (:db-after (first (peek txs)))]
                         (try
@@ -122,7 +118,7 @@
                                 {{:keys [datahike/commit-id]} :meta
                                  :as commit-db} (<?- (w/commit! db nil false))
                                 commit-time (- (get-time-ms) start-ts)]
-                            (log/trace "Commit time (ms): " commit-time)
+                            (log/trace :datahike/commit-time {:duration-ms commit-time})
                             (reset! connection commit-db)
                     ;; notify all processes that transaction is complete
                             (doseq [[tx-report callback] txs]
@@ -133,7 +129,7 @@
                           (catch #?(:clj Throwable :cljs js/Error) e
                             (doseq [[_ callback] txs]
                               (put! callback e))
-                            (log/error "Writer thread shutting down because of commit error." e)
+                            (log/error :datahike/writer-shutdown {:error e})
                             (close! commit-queue)
                             (close! transaction-queue)
                             ;; Re-throw Errors (AssertionError, OutOfMemoryError, etc.) to crash the writer

@@ -12,7 +12,7 @@
             [datahike.online-gc :as online-gc]
             [konserve.core :as k]
             [konserve.store :as ks]
-            [taoensso.timbre :as log]
+            [replikativ.logging :as log]
             [hasch.core :refer [uuid squuid]]
             [hasch.platform]
             [clojure.core.async :as async :refer [go put!]]
@@ -44,7 +44,7 @@
   "Maps memory db to storage layout. Index flushes will add [k v] pairs to pending-writes."
   [db flush?]
   (when-not (dbu/db? db)
-    (dt/raise "Argument is not a database."
+    (log/raise "Argument is not a database."
               {:type     :argument-is-not-a-db
                :argument db}))
   (let [{:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
@@ -123,13 +123,13 @@
   (set (doall (for [p parents]
                 (do
                   (when (nil? p)
-                    (dt/raise "Parent cannot be nil." {:type :parent-cannot-be-nil
+                    (log/raise "Parent cannot be nil." {:type :parent-cannot-be-nil
                                                        :parent p}))
                   (if-not (keyword? p) p
                           (let [{{:keys [datahike/commit-id]} :meta :as old-db}
                                 (k/get store p nil {:sync? true})]
                             (when-not old-db
-                              (dt/raise "Parent does not exist in store."
+                              (log/raise "Parent does not exist in store."
                                         {:type   :parent-does-not-exist-in-store
                                          :parent p}))
                             commit-id)))))))
@@ -243,7 +243,7 @@
          store (ds/add-cache-and-handlers (<?- (ks/create-store store-config opts)) config)
          stored-db (<?- (k/get store :db nil opts))
          _ (when stored-db
-             (dt/raise "Database already exists."
+             (log/raise "Database already exists."
                        {:type :db-already-exists :config store-config}))
          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
                  schema rschema system-entities ref-ident-map ident-ref-map
@@ -298,8 +298,7 @@
                               (keys @*connections*))]
      (sc/clear-write-cache (:store config))
      (doseq [conn active-conns]
-       (log/warn "Deleting database without releasing all connections first: " conn "."
-                 "All connections will be released now, but this cannot be ensured for remote readers.")
+       (log/warn :datahike/delete-unreleased-connections {:connection conn})
        (delete-connection! conn))
      (ks/delete-store (:store config)))))
 
@@ -353,10 +352,10 @@
    (-database-exists? config)))
 
 (defn transact! [old {:keys [tx-data tx-meta]}]
-  (log/debug "Transacting" (count tx-data) "objects")
-  (log/trace "Transaction data" tx-data  "with meta:" tx-meta)
+  (log/debug :datahike/transact {:tx-count (count tx-data)})
+  (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
   (complete-db-update old (core/with old tx-data tx-meta)))
 
 (defn load-entities [old entities]
-  (log/debug "Loading" (count entities) " entities.")
+  (log/debug :datahike/load-entities {:entity-count (count entities)})
   (complete-db-update old (core/load-entities-with old entities nil)))

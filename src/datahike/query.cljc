@@ -22,7 +22,7 @@
                                          FindColl FindRel FindScalar FindTuple PlainSymbol Pull
                                          RulesVar SrcVar Variable]])
    [org.replikativ.persistent-sorted-set.arrays :as da]
-   [taoensso.timbre :as log])
+   [replikativ.logging :as log])
   (:refer-clojure :exclude [seqable?])
 
   #?(:clj (:import [clojure.lang Reflector Seqable]
@@ -66,8 +66,7 @@
                   (#(if (sequential? %) (dpi/query->map %) %)))
         args (if (and (map? query-input) (contains? query-input :args))
                (do (when (seq arg-inputs)
-                     (log/warn (str "Query-map '" query "' already defines query input."
-                                    " Additional arguments to q will be ignored!")))
+                     (log/warn :datahike/query-input-ignored {:query query}))
                    (:args query-input))
                arg-inputs)
         extra-ks [:offset :limit :stats? :settings]]
@@ -185,7 +184,7 @@
       (Relation. attrs-a (into (vec tuples-a) tuples-b))
 
       (not (same-keys? attrs-a attrs-b))
-      (dt/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
+      (log/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
                 {:error :query/where})
 
       (every? number? (vals attrs-a))                       ;; can’t conj into BTSetIter
@@ -243,7 +242,7 @@
 (defn- -get-else
   [db e a else-val]
   (when (nil? else-val)
-    (dt/raise "get-else: nil default value is not supported" {:error :query/where}))
+    (log/raise "get-else: nil default value is not supported" {:error :query/where}))
   (if-some [datom (first (dbi/search db [e (translate-for db a)]))]
     (:v datom)
     else-val))
@@ -459,7 +458,7 @@
   (in->rel [binding coll]
     (cond
       (not (seqable? coll))
-      (dt/raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
+      (log/raise "Cannot bind value " coll " to collection " (dpi/get-source binding)
                 {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (empty? coll)
       (empty-rel binding)
@@ -472,10 +471,10 @@
   (in->rel [binding coll]
     (cond
       (not (seqable? coll))
-      (dt/raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
+      (log/raise "Cannot bind value " coll " to tuple " (dpi/get-source binding)
                 {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       (< (count coll) (count (:bindings binding)))
-      (dt/raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
+      (log/raise "Not enough elements in a collection " coll " to bind tuple " (dpi/get-source binding)
                 {:error :query/binding, :value coll, :binding (dpi/get-source binding)})
       :else
       (reduce prod-rel
@@ -773,7 +772,7 @@
                  (resolve-sym f)
                  (resolve-method f)
                  (when (nil? (rel-with-attr context f))
-                   (dt/raise "Unknown predicate '" f " in " clause
+                   (log/raise "Unknown predicate '" f " in " clause
                              {:error :query/where, :form clause, :var f})))
         [context production] (rel-prod-by-attrs context (filter symbol? args))
         new-rel (if pred
@@ -791,7 +790,7 @@
                 (resolve-sym f)
                 (resolve-method f)
                 (when (nil? (rel-with-attr context f))
-                  (dt/raise "Unknown function '" f " in " clause
+                  (log/raise "Unknown function '" f " in " clause
                             {:error :query/where, :form clause, :var f})))
         attrs (filter symbol? args)
         [context production] (rel-prod-by-attrs context attrs)
@@ -984,7 +983,7 @@
                                         ;(entid? e) e
     (keyword? e) e
     (symbol? e) e
-    :else (or error-code (dt/raise "Invalid entid" {:error :entity-id/syntax :entity-id e}))))
+    :else (or error-code (log/raise "Invalid entid" {:error :entity-id/syntax :entity-id e}))))
 
 (defn resolve-pattern-lookup-refs
   "Translate pattern entries before using pattern for database search"
@@ -1068,7 +1067,7 @@
                            (keys (:consts context))))]
     (when-not (set/subset? vars bound)
       (let [missing (set/difference (set vars) bound)]
-        (dt/raise "Insufficient bindings: " missing " not bound in " form
+        (log/raise "Insufficient bindings: " missing " not bound in " form
                   {:error :query/where
                    :form form
                    :vars missing})))))
@@ -1077,7 +1076,7 @@
   (let [bound (set (concat (mapcat #(keys (:attrs %)) (:rels context))
                            (keys (:consts context))))]
     (when (empty? (set/intersection vars bound))
-      (dt/raise "Insufficient bindings: none of " vars " is bound in " form
+      (log/raise "Insufficient bindings: none of " vars " is bound in " form
                 {:error :query/where
                  :form form}))))
 

@@ -4,7 +4,7 @@
             [incanter.core :as ic]
             [incanter.charts :as charts]
             [benchmark.config :as c]
-            [taoensso.timbre :as log]
+            [replikativ.logging :as log]
             [clojure.java.io :as io])
   (:import [java.awt Color]))
 
@@ -92,7 +92,7 @@
   (doall (for [function (distinct (map #(get-in % [:context :function]) data))
                config (distinct (map #(get-in % [:context :dh-config]) data))
                execution-details (distinct (map #(get-in % [:context :execution]) data))]
-           (let [_ (log/debug (str "Processing " function " " config " " execution-details))
+           (let [_ (log/debug :benchmark/compare {:function function :config config :execution-details execution-details})
                  {:keys [tx-entities data-type data-in-db?]} execution-details
                  filename (str (name function)
                                "_config-" config

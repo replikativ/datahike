@@ -3,7 +3,7 @@
 
 
 (comment
-  (log/set-level! :warn)
+  (trove/set-log-fn! (trove-console/get-log-fn {:min-level :warn}))
 
     ;; if profiling
     ;;(require '[clj-async-profiler.core :as prof])

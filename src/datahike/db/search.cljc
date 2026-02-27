@@ -8,8 +8,9 @@
    [datahike.db.utils :as dbu]
    [datahike.index :as di]
    [datahike.lru :refer [lru-datom-cache-factory]]
-   [datahike.tools :refer [raise match-vector]]
-   [environ.core :refer [env]])
+   [datahike.tools :refer [match-vector]]
+   [environ.core :refer [env]]
+   [replikativ.logging :as log])
   #?(:cljs (:require-macros [datahike.db.search :refer [lookup-strategy]]))
   #?(:clj (:import [datahike.datom Datom])))
 
@@ -34,14 +35,14 @@
                   (nil? e)
                   (bound-var? e)
                   (and (vector? e) (= 2 (count e))))
-      (raise "Bad format for entity-id in pattern, must be a number, nil or vector of two elements."
+      (log/raise "Bad format for entity-id in pattern, must be a number, nil or vector of two elements."
              {:error :search/pattern :e e :pattern pattern}))
 
     (when-not (or (number? a)
                   (keyword? a)
                   (bound-var? a)
                   (nil? a))
-      (raise "Bad format for attribute in pattern, must be a number, nil or a keyword."
+      (log/raise "Bad format for attribute in pattern, must be a number, nil or a keyword."
              {:error :search/pattern :a a :pattern pattern}))
 
     ;; Value validation: allow vectors of any length for tuple attributes
@@ -52,19 +53,19 @@
                   (and (vector? v) (= 2 (count v)))
                   ;; Allow any-length vectors for tuple values
                   (and (vector? v) a (dbu/tuple? db a)))
-      (raise "Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
+      (log/raise "Bad format for value in pattern, must be a scalar, nil or a vector of two elements."
              {:error :search/pattern :v v :pattern pattern}))
 
     (when-not (or (nil? tx)
                   (bound-var? tx)
                   (number? tx))
-      (raise "Bad format for transaction ID in pattern, must be a number or nil."
+      (log/raise "Bad format for transaction ID in pattern, must be a number or nil."
              {:error :search/pattern :tx tx :pattern pattern}))
 
     (when-not (or (nil? added?)
                   (boolean? added?)
                   (bound-var? added?))
-      (raise "Bad format for added? in pattern, must be a boolean value or nil."
+      (log/raise "Bad format for added? in pattern, must be a boolean value or nil."
              {:error :search/pattern :added? added? :pattern pattern}))))
 
 (defn short-hand->strat-symbol [x]
@@ -293,7 +294,7 @@
 
 (defn temporal-index-range [db current-db attr start end]
   (when-not (dbu/indexing? db attr)
-    (raise "Attribute" attr "should be marked as :db/index true" {}))
+    (log/raise "Attribute" attr "should be marked as :db/index true" {}))
   (dbu/validate-attr attr (list '-index-range 'db attr start end) db)
   (let [from (dbu/resolve-datom current-db nil attr start nil e0 tx0)
         to (dbu/resolve-datom current-db nil attr end nil emax txmax)]

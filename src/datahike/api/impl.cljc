@@ -16,6 +16,7 @@
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
             [datahike.impl.entity :as de]
+            [replikativ.logging :as log]
             #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!]]))
   #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]
                             [clojure.core.async :refer [go]]))
@@ -28,12 +29,12 @@
   (let [arg (cond
               (map? arg-map)      (if (contains? arg-map :tx-data)
                                     arg-map
-                                    (dt/raise "Bad argument to transact, map missing key :tx-data."
+                                    (log/raise "Bad argument to transact, map missing key :tx-data."
                                               {:error         :transact/syntax
                                                :argument-keys (keys arg-map)}))
               (or (vector? arg-map)
                   (seq? arg-map)) {:tx-data arg-map}
-              :else               (dt/raise "Bad argument to transact, expected map, vector or sequence."
+              :else               (log/raise "Bad argument to transact, expected map, vector or sequence."
                                             {:error         :transact/syntax
                                              :argument-type (type arg-map)}))]
     (dw/transact! connection arg)))
@@ -111,7 +112,7 @@
      (with db tx-data tx-meta)))
   ([db tx-data tx-meta]
    (if (dcore/is-filtered db)
-     (dt/raise "Filtered DB cannot be modified" {:error :transaction/filtered})
+     (log/raise "Filtered DB cannot be modified" {:error :transaction/filtered})
      (dbt/transact-tx-data (db/map->TxReport
                             {:db-before db
                              :db-after  db
@@ -128,22 +129,22 @@
 (defn since [db time-point]
   (if (dbi/-temporal-index? db)
     (SinceDB. db time-point)
-    (dt/raise "since is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
+    (log/raise "since is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
 (defn as-of [db time-point]
   (if (dbi/-temporal-index? db)
     (if (int? time-point)
       (if (<= const/tx0 time-point)
         (AsOfDB. db time-point)
-        (dt/raise (str "Invalid transaction ID. Must be bigger than " const/tx0 ".")
+        (log/raise (str "Invalid transaction ID. Must be bigger than " const/tx0 ".")
                   {:time-point time-point}))
       (AsOfDB. db time-point))
-    (dt/raise "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
+    (log/raise "as-of is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
 (defn history [db]
   (if (dbi/-temporal-index? db)
     (HistoricalDB. db)
-    (dt/raise "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
+    (log/raise "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
 (defn index-range [db {:keys [attrid start end]}]
   (dbi/index-range db attrid start end))

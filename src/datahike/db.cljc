@@ -13,13 +13,13 @@
    [datahike.index :as di]
    [datahike.schema :as ds]
    [datahike.store :as store]
-   [datahike.tools :as tools :refer [raise group-by-step #?(:clj meta-data)]]
+   [datahike.tools :as tools :refer [group-by-step #?(:clj meta-data)]]
    [org.replikativ.persistent-sorted-set.arrays :as arrays]
    [medley.core :as m]
-   [taoensso.timbre :refer [warn]])
+   [replikativ.logging :as log])
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable]]
                             [datahike.datom :refer [combine-cmp datom]]
-                            [datahike.tools :refer [raise meta-data]]))
+                            [datahike.tools :refer [meta-data]]))
   #?(:clj (:import [clojure.lang AMapEntry ITransientCollection IEditableCollection IPersistentCollection Seqable
                     IHashEq Associative IKeywordLookup ILookup]
                    [datahike.datom Datom]
@@ -256,8 +256,8 @@
     (-> (case temporal?
           true (dbs/temporal-index-range db current-db attr start end)
           false (do (when-not (dbu/indexing? db attr)
-                      (raise "Attribute"
-                             attr "should be marked as :db/index true" {}))
+                      (log/raise "Attribute"
+                                attr "should be marked as :db/index true" {}))
 
                     (dbu/validate-attr
                      attr (list '-index-range 'db attr start end) db)
@@ -316,14 +316,14 @@
             (if (:attribute-refs? (.-config db))
               (let [ref (get (.-ident-ref-map db) a-ident)]
                 (when (nil? ref)
-                  (warn (str "Attribute " a-ident " has not been found in database")))
+                  (log/warn :datahike/attribute-not-found {:attribute a-ident}))
                 ref)
               a-ident))
   (-ident-for [db a-ref]
               (if (:attribute-refs? (.-config db))
                 (let [a-ident (get (.-ref-ident-map db) a-ref)]
                   (when (nil? a-ident)
-                    (warn (str "Attribute with reference number " a-ref " has not been found in database")))
+                    (log/warn :datahike/attribute-ref-not-found {:ref a-ref}))
                   a-ident)
                 a-ref))
 
@@ -774,7 +774,7 @@
 
 (defn- validate-write-schema [schema]
   (when-not (ds/old-schema-valid? schema)
-    (raise "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
+    (log/raise "Incomplete schema attributes, expected at least :db/valueType, :db/cardinality"
            (ds/explain-old-schema schema))))
 
 (defn init-max-eid [eavt]
