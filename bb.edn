@@ -1,6 +1,6 @@
 {:min-bb-version "0.8.0"
  :pods {org.babashka/tools-deps-native {:version "0.1.7"}
-        clj-kondo/clj-kondo {:version "2025.07.28"}}
+        clj-kondo/clj-kondo {:version "2026.01.19"}}
  :deps {datahike/bb {:local/root "bb"}
         org.babashka/http-client {:mvn/version "0.4.22"}}
  :tasks {:requires [[babashka.fs :as fs]
