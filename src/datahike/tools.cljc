@@ -6,6 +6,7 @@
    [clojure.core.async :as async]
    #?(:clj [clojure.java.io :as io])
    [replikativ.logging :as log])
+  #?(:cljs (:require-macros [datahike.tools :refer [match-vector]]))
   #?(:clj (:import [java.util Properties UUID Date]
                    [java.util.concurrent CompletableFuture]
                    [java.net InetAddress])))
