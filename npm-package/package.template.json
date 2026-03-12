@@ -25,6 +25,7 @@
   "main" : "datahike.js.api.js",
   "exports" : {
     ".": {
+      "types": "./index.d.ts",
       "browser": {
         "import": "./browser/index.mjs",
         "require": "./browser/index.js",
