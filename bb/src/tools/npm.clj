@@ -48,22 +48,40 @@
       (throw (ex-info "TypeScript generation failed" result)))
     (println (str "TypeScript definitions written to: " output-path))))
 
+(defn generate-esm-wrapper!
+  "Generate ESM browser wrapper from api-specification via codegen.
+   Modern bundlers (vite, rollup, esbuild) resolve the 'browser' exports
+   condition to this file, avoiding CJS require() shims that confuse
+   environ's runtime detection."
+  [output-path]
+  (println "Generating ESM browser wrapper...")
+  (let [tmp-file (str (fs/create-temp-file {:prefix "esm-codegen-" :suffix ".clj"}))
+        _ (spit tmp-file (str "(require '[datahike.codegen.esm :as esm])\n"
+                              "(esm/write-esm-wrapper! \"" output-path "\")\n"))
+        result (p/shell {:out :string
+                         :err :string}
+                        "clojure" "-M" tmp-file)]
+    (fs/delete tmp-file)
+    (when-not (zero? (:exit result))
+      (println "Error generating ESM wrapper:")
+      (println (:err result))
+      (throw (ex-info "ESM wrapper generation failed" result)))
+    (println (str "ESM browser wrapper written to: " output-path))))
+
 (defn write-browser-index!
-  "Write browser/index.js — a thin CJS wrapper around the IIFE bundle.
-   Bundlers (webpack, vite, rollup) resolve the 'browser' exports condition
-   to this file and get proper require()/module.exports semantics.
-   The IIFE attaches the API to globalThis; we re-export it as a CJS module.
-   The dynamic require of konserve.node_filestore in api.cljs is DCE'd by
-   the :target :browser advanced build, so no Node built-ins leak in."
+  "Write browser entry points: ESM (index.mjs) via codegen, CJS (index.js) as fallback.
+   The ESM wrapper is generated from api-specification to stay in sync with
+   the API automatically. The CJS wrapper is kept for backwards compatibility."
   [npm-package-path]
-  (let [path (str npm-package-path "/browser/index.js")
-        content (str "// CJS wrapper for browser bundlers (webpack, vite, rollup).\n"
-                     "// Loads the self-contained IIFE bundle then re-exports the API.\n"
-                     "require('./datahike.js');\n"
-                     "module.exports = (typeof self !== 'undefined' ? self : global)"
-                     "['datahike']['js']['api'];\n")]
-    (spit path content)
-    (println (str "Wrote " path))))
+  (generate-esm-wrapper! (str npm-package-path "/browser/index.mjs"))
+  (let [cjs-path (str npm-package-path "/browser/index.js")
+        cjs-content (str "// CJS wrapper for legacy bundlers.\n"
+                         "// Modern bundlers should resolve to index.mjs via the exports field.\n"
+                         "require('./datahike.js');\n"
+                         "module.exports = (typeof self !== 'undefined' ? self : global)"
+                         "['datahike']['js']['api'];\n")]
+    (spit cjs-path cjs-content)
+    (println (str "Wrote " cjs-path))))
 
 (defn build-npm-package!
   "Build npm package: clean, update version, generate types, compile ClojureScript for Node and Browser"
@@ -112,7 +130,8 @@
     (println (str "  Version: " (version/string config)))
     (println (str "  Node.js:  " npm-package-path "/datahike.js.api.js  (CJS, includes file backend)"))
     (println (str "  Browser:  " npm-package-path "/browser/datahike.js  (<script> tag / CDN)"))
-    (println (str "  Bundlers: " npm-package-path "/browser/index.js     (webpack/vite/rollup)"))
+    (println (str "  Bundlers: " npm-package-path "/browser/index.mjs    (vite/rollup/esbuild, ESM)"))
+    (println (str "           " npm-package-path "/browser/index.js     (webpack/legacy, CJS)"))
     (println "")
     (println "Next steps:")
     (println (str "  1. Verify: cd " npm-package-path " && npm pack --dry-run"))

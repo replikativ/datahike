@@ -20,12 +20,17 @@
   "keywords" : [ "database", "datalog", "datomic", "clojurescript", "immutable", "functional" ],
   "types" : "index.d.ts",
   "author" : "Christian Weilbach",
-  "files" : [ "*.js", "*.js.map", "browser/datahike.js", "browser/index.js", "index.d.ts", "README.md", "LICENSE" ],
+  "files" : [ "*.js", "*.js.map", "browser/datahike.js", "browser/index.mjs", "browser/index.js", "index.d.ts", "README.md", "LICENSE" ],
   "version" : "{{VERSION}}",
   "main" : "datahike.js.api.js",
   "exports" : {
     ".": {
-      "browser": "./browser/index.js",
+      "types": "./index.d.ts",
+      "browser": {
+        "import": "./browser/index.mjs",
+        "require": "./browser/index.js",
+        "default": "./browser/index.mjs"
+      },
       "node": "./datahike.js.api.js",
       "default": "./datahike.js.api.js"
     }
