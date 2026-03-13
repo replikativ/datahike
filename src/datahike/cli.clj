@@ -11,19 +11,21 @@
             [jsonista.core :as j]
             [datahike.json :as json]
             [clj-cbor.core :as cbor]
-            [taoensso.timbre :as log])
+            [replikativ.logging :as log]
+            [taoensso.trove :as trove]
+            [taoensso.trove.console :as trove-console])
   (:import [java.util Date]))
 
 ;; This file is following https://github.com/clojure/tools.cli
 
+(defn- make-stderr-log-fn [min-level]
+  (let [console-fn (trove-console/get-log-fn {:min-level min-level})]
+    (fn [ns coords level id lazy_]
+      (binding [*out* *err*]
+        (console-fn ns coords level id lazy_)))))
+
 (when-not (= "true" (System/getenv "BABASHKA_POD"))
-  (log/merge-config!
-   {:appenders {:println {:enabled? false} ;; leave a "paper trail"
-                :stderr {:doc "Always prints to *err*"
-                         :enabled? true
-                         :fn (fn log-to-stderr [{:keys [output_]}]
-                               (binding [*out* *err*]
-                                 (println (force output_))))}}}))
+  (trove/set-log-fn! (make-stderr-log-fn :info)))
 
 (defn get-version []
   (or
@@ -132,10 +134,10 @@
         (validate-args args)]
     ;; Set logging level
     (case (int (:verbosity options))
-      0 (log/set-level! :warn)
-      1 (log/set-level! :info)
-      2 (log/set-level! :debug)
-      3 (log/set-level! :trace)
+      0 (trove/set-log-fn! (make-stderr-log-fn :warn))
+      1 (trove/set-log-fn! (make-stderr-log-fn :info))
+      2 (trove/set-log-fn! (make-stderr-log-fn :debug))
+      3 (trove/set-log-fn! (make-stderr-log-fn :trace))
       (exit 1 (str "Verbosity level not supported: " (:verbosity options))))
 
     (cond

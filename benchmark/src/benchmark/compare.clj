@@ -4,7 +4,7 @@
             [incanter.core :as ic]
             [incanter.charts :as charts]
             [benchmark.config :as c]
-            [taoensso.timbre :as log]
+            [replikativ.logging :as log]
             [clojure.java.io :as io])
   (:import [java.awt Color]))
 
@@ -89,55 +89,55 @@
         colors [Color/red Color/blue Color/green Color/cyan Color/magenta Color/orange Color/yellow]
         directory (str "plots-" tags)]
     
-  (doall (for [function (distinct (map #(get-in % [:context :function]) data))
-               config (distinct (map #(get-in % [:context :dh-config]) data))
-               execution-details (distinct (map #(get-in % [:context :execution]) data))]
-           (let [_ (log/debug (str "Processing " function " " config " " execution-details))
-                 {:keys [tx-entities data-type data-in-db?]} execution-details
-                 filename (str (name function)
-                               "_config-" config
-                               (when tx-entities
-                                (str "_tx-ents-" tx-entities))
-                               (when data-type
-                                (str "_type-" (name data-type)))
-                               (when data-in-db?
-                                 (str "_found-" data-in-db?))
-                               "_tags-" tags
-                               ".png")
+   (doall (for [function (distinct (map #(get-in % [:context :function]) data))
+                config (distinct (map #(get-in % [:context :dh-config]) data))
+                execution-details (distinct (map #(get-in % [:context :execution]) data))]
+            (let [_ (log/debug :benchmark/compare {:function function :config config :execution-details execution-details})
+                  {:keys [tx-entities data-type data-in-db?]} execution-details
+                  filename (str (name function)
+                                "_config-" config
+                                (when tx-entities
+                                 (str "_tx-ents-" tx-entities))
+                                (when data-type
+                                 (str "_type-" (name data-type)))
+                                (when data-in-db?
+                                  (str "_found-" data-in-db?))
+                                "_tags-" tags
+                                ".png")
 
-                 plot-data (->> data
-                                (filter #(and (= (get-in % [:context :function]) function)
-                                              (= (get-in % [:context :dh-config]) config)
-                                              (= (get-in % [:context :execution]) execution-details)))
-                                (map #(assoc % :x (get-in % [:context :db-entities]))))]
-              (when (seq plot-data)
-                (let [filepath (str directory "/" filename)
-                      all-y (apply concat (map #(get-in % [:time :observations]) plot-data))
-                      ymin 0
-                      ymax (apply max all-y)
-                     ; ymax (quantile all-y :probs 0.9)
-                      plot (charts/scatter-plot nil nil
-                                                :title  (str "Execution time of function " function "\n"
-                                                             "for configuration " (name config) " and\n"
-                                                             "execution parameters " execution-details)
-                                                :y-label "Time (s)"
-                                                :x-label (str "Entities in database (1 entity = " (count c/schema) " datoms)")
-                                                :legend true
-                                                :series-label "")]
-                (charts/set-stroke-color plot (Color. 0 0 0 0) :dataset 0)
-                (charts/set-y-range plot ymin ymax)
-                (doall (map-indexed (fn [idx [tag group]]
-                        (let [sorted (sort-by :x group)
-                              entities (map :x sorted)
-                              time (map :time sorted)
-                              time-obs (apply concat (map :observations time))
-                              entities-rep (apply concat (map #(repeat (count (:observations %2)) %1) entities time))]
+                  plot-data (->> data
+                                 (filter #(and (= (get-in % [:context :function]) function)
+                                               (= (get-in % [:context :dh-config]) config)
+                                               (= (get-in % [:context :execution]) execution-details)))
+                                 (map #(assoc % :x (get-in % [:context :db-entities]))))]
+               (when (seq plot-data)
+                 (let [filepath (str directory "/" filename)
+                       all-y (apply concat (map #(get-in % [:time :observations]) plot-data))
+                       ymin 0
+                       ymax (apply max all-y)
+                      ; ymax (quantile all-y :probs 0.9)
+                       plot (charts/scatter-plot nil nil
+                                                 :title  (str "Execution time of function " function "\n"
+                                                              "for configuration " (name config) " and\n"
+                                                              "execution parameters " execution-details)
+                                                 :y-label "Time (s)"
+                                                 :x-label (str "Entities in database (1 entity = " (count c/schema) " datoms)")
+                                                 :legend true
+                                                 :series-label "")]
+                  (charts/set-stroke-color plot (Color. 0 0 0 0) :dataset 0)
+                  (charts/set-y-range plot ymin ymax)
+                  (doall (map-indexed (fn [idx [tag group]]
+                                       (let [sorted (sort-by :x group)
+                                             entities (map :x sorted)
+                                             time (map :time sorted)
+                                             time-obs (apply concat (map :observations time))
+                                             entities-rep (apply concat (map #(repeat (count (:observations %2)) %1) entities time))]
                           
-                        (charts/add-points plot entities-rep time-obs :series-label tag)
-                        (charts/set-stroke-color plot (get colors idx) :dataset (+ 1 (* idx 2)))
-                        (charts/add-lines plot entities (map :median time) :series-label (str tag " median")))
-                        (charts/set-stroke-color plot (get colors idx) :dataset (+ 2 (* idx 2))))
-                          (group-by :tag plot-data)))
+                                        (charts/add-points plot entities-rep time-obs :series-label tag)
+                                        (charts/set-stroke-color plot (get colors idx) :dataset (+ 1 (* idx 2)))
+                                        (charts/add-lines plot entities (map :median time) :series-label (str tag " median")))
+                                       (charts/set-stroke-color plot (get colors idx) :dataset (+ 2 (* idx 2))))
+                            (group-by :tag plot-data)))
                   (when-not (.exists (io/file directory))
                     (.mkdir (io/file directory)))
                   (ic/save plot filepath
@@ -149,8 +149,8 @@
 
   (let [benchmarks (->> filenames
                         (map (fn [filename]
-                          (map #(assoc % :source filename)
-                               (edn/read-string (slurp filename)))))
+                              (map #(assoc % :source filename)
+                                   (edn/read-string (slurp filename)))))
                         (apply concat))]
     (if plots?
       (create-plots benchmarks)

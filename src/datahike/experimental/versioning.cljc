@@ -10,25 +10,26 @@
             [superv.async :refer [<? S go-loop-try]]
             [datahike.db.utils :refer [db?]]
             [datahike.tools :as dt]
+            [replikativ.logging :as log]
             [konserve.utils :refer [multi-key-capable?]]))
 
 (defn- branch-check [branch]
   (when-not (keyword? branch)
-    (dt/raise "Branch must be a keyword." {:type :branch-must-be-uuid :branch branch})))
+    (log/raise "Branch must be a keyword." {:type :branch-must-be-uuid :branch branch})))
 
 (defn- db-check [db]
   (when-not (db? db)
-    (dt/raise "You must provide a DB value." {:type :db-value-required :db db})))
+    (log/raise "You must provide a DB value." {:type :db-value-required :db db})))
 
 (defn- parent-check [parents]
   (when-not (pos? (count parents))
-    (dt/raise "You must provide at least one parent."
-              {:type :must-provide-at-least-one-parent :parents parents})))
+    (log/raise "You must provide at least one parent."
+               {:type :must-provide-at-least-one-parent :parents parents})))
 
 (defn- commit-id-check [commit-id]
   (when-not (uuid? commit-id)
-    (dt/raise "Commit-id must be a uuid."
-              {:type :commit-id-must-be-uuid :commit-id commit-id})))
+    (log/raise "Commit-id must be a uuid."
+               {:type :commit-id-must-be-uuid :commit-id commit-id})))
 
 ;; ========================= public API =========================
 
@@ -58,8 +59,8 @@
   (let [store (:store @conn)
         branches (k/get store :branches nil {:sync? true})
         _ (when (branches new-branch)
-            (dt/raise "Branch already exists." {:type :branch-already-exists
-                                                :new-branch new-branch}))
+            (log/raise "Branch already exists." {:type :branch-already-exists
+                                                 :new-branch new-branch}))
         db (k/get store from nil {:sync? true})]
     (when-not (stored-db? db)
       (throw (ex-info "From does not point to an existing branch or commit."
@@ -73,13 +74,13 @@
   accessible until the next gc. Remote readers need to release their connections."
   [conn branch]
   (when (= branch :db)
-    (dt/raise "Cannot delete main :db branch. Delete database instead."
-              {:type :cannot-delete-main-db-branch}))
+    (log/raise "Cannot delete main :db branch. Delete database instead."
+               {:type :cannot-delete-main-db-branch}))
   (let [store (:store @conn)
         branches (k/get store :branches nil {:sync? true})]
     (when-not (branches branch)
-      (dt/raise "Branch does not exist." {:type :branch-does-not-exist
-                                          :branch branch}))
+      (log/raise "Branch does not exist." {:type :branch-does-not-exist
+                                           :branch branch}))
     (delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
     (k/update store :branches #(disj (set %) branch) {:sync? true})))
 

@@ -30,7 +30,7 @@
    [muuntaja.core :as m]
    [datahike.tools :refer [datahike-version]]
    [datahike.impl.entity :as de]
-   [taoensso.timbre :as log]
+   [replikativ.logging :as log]
    [ring.adapter.jetty :refer [run-jetty]])
   (:import [datahike.datom Datom]))
 
@@ -39,7 +39,7 @@
     (try
       (let [{{body :body} :parameters
              :keys [headers params method]} request
-            _ (log/trace "request body" f body)
+            _ (log/trace :datahike/http-handler-request {:handler f :body body})
           ;; TODO move this to client
             ret-body
             (cond (= f #'api/create-database)
@@ -53,7 +53,7 @@
 
                   :else
                   (apply f body))]
-        (log/trace "return body" ret-body)
+        (log/trace :datahike/http-handler-response {:body ret-body})
         (merge
          {:status 200
           :body
@@ -261,9 +261,8 @@
 
 (defn -main [& args]
   (let [{:keys [level token] :as config} (edn/read-string (slurp (first args)))]
-    (when level (log/set-level! level))
     (when (#{:trace :debug :info nil} level)
       (println "Datahike HTTP Server" datahike-version "- https://datahike.io"))
-    (log/info "Config:" (if token (assoc config :token "REDACTED") config))
+    (log/info :datahike/http-server-config {:config (if token (assoc config :token "REDACTED") config)})
     (start-server config)
-    (log/info "Server started.")))
+    (log/info :datahike/http-server-started "Server started")))

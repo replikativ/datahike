@@ -1,6 +1,6 @@
 (ns benchmark.measure
   (:require [benchmark.config :as c]
-            [taoensso.timbre :as log]
+            [replikativ.logging :as log]
             [datahike.api :as d]
             [datahike.store :as ds]
             [datahike.index :as di])
@@ -40,7 +40,7 @@
 
 (defn measure-connection-time [iterations unique-cfg simple-cfg db-entities db-datoms]
   (->> (range iterations)
-       (map #(do (log/debug (str "  - iteration no. " % ))
+       (map #(do (log/debug :benchmark/iteration {:iteration %})
                  (let [timed-conn (timed (d/connect unique-cfg))]
                    (d/release (:res timed-conn))
                    (time-context-map (:t timed-conn) simple-cfg :connection db-entities db-datoms))) )
@@ -60,7 +60,7 @@
                            (filter #(= query (:function %)) queries))]
     (->> filtered-queries
          (mapcat (fn [{:keys [function query details]}]
-                (log/info (str "   Querying with " function " using " details ))
+                (log/info :benchmark/query {:function function :details details})
                 (->> (range iterations)
                      (map #(do (log/debug (str "   - iteration no. " % ))
                                (time-context-map (:t (timed (d/q query @conn)))
@@ -73,7 +73,7 @@
   (->> tx-entity-counts
        (mapcat (fn [tx-entities]
               (let [tx-datoms (* (count c/schema) tx-entities)]
-                (log/info (str "   Transacting " tx-datoms " entities"))
+                (log/info :benchmark/transact {:datom-count tx-datoms})
                 (->> (range iterations)
                      (map #(do (log/debug (str "   - iteration no. " % ))
                                (let [tx (vec (repeatedly tx-entities (partial c/rand-entity Integer/MAX_VALUE)))
@@ -102,7 +102,7 @@
          initial-tx (init-tx entity-count conn)
          measurements (vec (if (some? make-fn-invocation)
                              (do
-                               (log/info (str " Measuring function '" spec-fn-name "'..."))
+                               (log/info :benchmark/measure-fn {:function spec-fn-name})
                                (->> (range iterations)
                                     (map #(do (log/debug (str " - iteration no. " % ))
                                               (time-context-map (:t (timed (make-fn-invocation conn))) simple-cfg (keyword spec-fn-name)
@@ -110,15 +110,15 @@
                                     doall))
                              (let [query-times
                                    (when (#{:all :query} function)
-                                     (log/info (str " Measuring query times..." ))
+                                     (log/info :benchmark/measure-queries "Measuring query times")
                                      (measure-query-times options initial-tx conn simple-cfg entity-count datom-count))
                                    transaction-times
                                    (when (contains? #{:all :transaction} function)
-                                     (log/info (str " Measuring transaction times..."))
+                                     (log/info :benchmark/measure-transactions "Measuring transaction times")
                                      (measure-transaction-times options conn simple-cfg entity-count datom-count))
                                    connection-times
                                    (when (#{:all :connection} function)
-                                     (log/info (str " Measuring connection times..."))
+                                     (log/info :benchmark/measure-connections "Measuring connection times")
                                      (d/release conn)
                                      (measure-connection-time iterations unique-cfg simple-cfg entity-count datom-count))]
                                (concat query-times transaction-times connection-times))))]
@@ -176,9 +176,9 @@
                                (assoc :backend (get-in cfg [:store :backend]))
                                (update :index name)
                                (dissoc :store))]
-            (log/info "Get measurements for DB of size" datom-count "and config:" simple-cfg)
+            (log/info :benchmark/measure-db {:datom-count datom-count :config simple-cfg})
             (->> (range db-samples)
-                 (mapcat #(do (log/debug (str "- db instance no. " % ))
+                 (mapcat #(do (log/debug :benchmark/db-instance {:instance %})
                               (measure-performance-full entity-count options cfg specified-fn)))
                  doall)))
         (apply concat)
