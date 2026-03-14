@@ -15,7 +15,7 @@
   (try
     (require 'datahike.index.secondary.proximum)
     true
-    (catch UnsupportedClassVersionError _ false)))
+    (catch Throwable _ false)))
 
 ;; ---------------------------------------------------------------------------
 ;; Proximum (Vector Search) Tests
@@ -24,57 +24,57 @@
   (when-not proximum-available?
     (println "SKIP test-proximum-lifecycle: proximum requires Java 22+"))
   (when proximum-available?
-  (testing "create, insert, search, delete"
-    (let [idx (sec/create-index :proximum
-                                {:attrs #{:person/embedding}
-                                 :dim 4 :distance :cosine
-                                 :store-config {:backend :memory :id (random-uuid)}}
-                                nil)]
-      (is (= #{:person/embedding} (sec/-indexed-attrs idx)))
+    (testing "create, insert, search, delete"
+      (let [idx (sec/create-index :proximum
+                                  {:attrs #{:person/embedding}
+                                   :dim 4 :distance :cosine
+                                   :store-config {:backend :memory :id (random-uuid)}}
+                                  nil)]
+        (is (= #{:person/embedding} (sec/-indexed-attrs idx)))
 
       ;; Insert 3 vectors via -transact
-      (let [d1 (datahike.datom/datom 1 :person/embedding (float-array [1.0 0.0 0.0 0.0]))
-            d2 (datahike.datom/datom 2 :person/embedding (float-array [0.0 1.0 0.0 0.0]))
-            d3 (datahike.datom/datom 3 :person/embedding (float-array [0.7 0.7 0.0 0.0]))
-            idx (-> idx
-                    (sec/-transact {:datom d1 :added? true})
-                    (sec/-transact {:datom d2 :added? true})
-                    (sec/-transact {:datom d3 :added? true}))]
+        (let [d1 (datahike.datom/datom 1 :person/embedding (float-array [1.0 0.0 0.0 0.0]))
+              d2 (datahike.datom/datom 2 :person/embedding (float-array [0.0 1.0 0.0 0.0]))
+              d3 (datahike.datom/datom 3 :person/embedding (float-array [0.7 0.7 0.0 0.0]))
+              idx (-> idx
+                      (sec/-transact {:datom d1 :added? true})
+                      (sec/-transact {:datom d2 :added? true})
+                      (sec/-transact {:datom d3 :added? true}))]
 
         ;; Estimate
-        (is (= 2 (sec/-estimate idx {:k 2})))
-        (is (= 3 (sec/-estimate idx {:k 10})))
+          (is (= 2 (sec/-estimate idx {:k 2})))
+          (is (= 3 (sec/-estimate idx {:k 10})))
 
         ;; Search: all 3 entities returned
-        (let [results (sec/-search idx {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3} nil)]
-          (is (= 3 (es/entity-bitset-cardinality results)))
-          (is (= #{1 2 3} (set (es/entity-bitset-seq results)))))
+          (let [results (sec/-search idx {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3} nil)]
+            (is (= 3 (es/entity-bitset-cardinality results)))
+            (is (= #{1 2 3} (set (es/entity-bitset-seq results)))))
 
         ;; Search with entity filter
-        (let [filter-bs (es/entity-bitset-from-longs [1 3])
-              results (sec/-search idx {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3} filter-bs)]
-          (is (= #{1 3} (set (es/entity-bitset-seq results)))))
+          (let [filter-bs (es/entity-bitset-from-longs [1 3])
+                results (sec/-search idx {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3} filter-bs)]
+            (is (= #{1 3} (set (es/entity-bitset-seq results)))))
 
         ;; Ordered results (by distance ascending)
-        (is (sec/-can-order? idx :person/embedding :asc))
-        (is (not (sec/-can-order? idx :person/embedding :desc)))
-        (let [ordered (sec/-slice-ordered idx {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3}
-                                          nil nil :asc nil)]
-          (is (= 3 (count ordered)))
-          (is (= 1 (:entity-id (first ordered)))) ;; closest
-          (is (< (:distance (first ordered)) (:distance (second ordered)))))
+          (is (sec/-can-order? idx :person/embedding :asc))
+          (is (not (sec/-can-order? idx :person/embedding :desc)))
+          (let [ordered (sec/-slice-ordered idx {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3}
+                                            nil nil :asc nil)]
+            (is (= 3 (count ordered)))
+            (is (= 1 (:entity-id (first ordered)))) ;; closest
+            (is (< (:distance (first ordered)) (:distance (second ordered)))))
 
         ;; Delete entity 2
-        (let [idx-del (sec/-transact idx {:datom d2 :added? false})
-              results (sec/-search idx-del {:vector (float-array [0.0 1.0 0.0 0.0]) :k 3} nil)]
-          (is (not (es/entity-bitset-contains? results 2)))
-          (is (= 2 (es/entity-bitset-cardinality results))))
+          (let [idx-del (sec/-transact idx {:datom d2 :added? false})
+                results (sec/-search idx-del {:vector (float-array [0.0 1.0 0.0 0.0]) :k 3} nil)]
+            (is (not (es/entity-bitset-contains? results 2)))
+            (is (= 2 (es/entity-bitset-cardinality results))))
 
         ;; Non-vector value is silently skipped
-        (let [d-str (datahike.datom/datom 4 :person/embedding "not-a-vector")
-              idx2 (sec/-transact idx {:datom d-str :added? true})
-              results (sec/-search idx2 {:vector (float-array [1.0 0.0 0.0 0.0]) :k 10} nil)]
-          (is (= 3 (es/entity-bitset-cardinality results)))))))))
+          (let [d-str (datahike.datom/datom 4 :person/embedding "not-a-vector")
+                idx2 (sec/-transact idx {:datom d-str :added? true})
+                results (sec/-search idx2 {:vector (float-array [1.0 0.0 0.0 0.0]) :k 10} nil)]
+            (is (= 3 (es/entity-bitset-cardinality results)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Scriptum (Full-Text Search) Tests
@@ -136,54 +136,54 @@
   (when-not proximum-available?
     (println "SKIP test-cross-index-bitmap-composition: proximum requires Java 22+"))
   (when proximum-available?
-  (testing "RoaringBitmap flows between Proximum and Scriptum"
-    (let [;; Create both indices
-          vec-idx (sec/create-index :proximum
-                                    {:attrs #{:person/embedding}
-                                     :dim 4 :distance :cosine
-                                     :store-config {:backend :memory :id (random-uuid)}}
-                                    nil)
-          ft-idx (sec/create-index :scriptum
-                                   {:attrs #{:person/bio}
-                                    :path (str "/tmp/scriptum-cross-" (random-uuid))}
-                                   nil)
+    (testing "RoaringBitmap flows between Proximum and Scriptum"
+      (let [;; Create both indices
+            vec-idx (sec/create-index :proximum
+                                      {:attrs #{:person/embedding}
+                                       :dim 4 :distance :cosine
+                                       :store-config {:backend :memory :id (random-uuid)}}
+                                      nil)
+            ft-idx (sec/create-index :scriptum
+                                     {:attrs #{:person/bio}
+                                      :path (str "/tmp/scriptum-cross-" (random-uuid))}
+                                     nil)
           ;; Transact vectors
-          vec-idx (-> vec-idx
-                      (sec/-transact {:datom (datahike.datom/datom 1 :person/embedding
-                                                                   (float-array [1.0 0.0 0.0 0.0]))
-                                      :added? true})
-                      (sec/-transact {:datom (datahike.datom/datom 2 :person/embedding
-                                                                   (float-array [0.0 1.0 0.0 0.0]))
-                                      :added? true})
-                      (sec/-transact {:datom (datahike.datom/datom 3 :person/embedding
-                                                                   (float-array [0.9 0.1 0.0 0.0]))
-                                      :added? true}))]
+            vec-idx (-> vec-idx
+                        (sec/-transact {:datom (datahike.datom/datom 1 :person/embedding
+                                                                     (float-array [1.0 0.0 0.0 0.0]))
+                                        :added? true})
+                        (sec/-transact {:datom (datahike.datom/datom 2 :person/embedding
+                                                                     (float-array [0.0 1.0 0.0 0.0]))
+                                        :added? true})
+                        (sec/-transact {:datom (datahike.datom/datom 3 :person/embedding
+                                                                     (float-array [0.9 0.1 0.0 0.0]))
+                                        :added? true}))]
       ;; Transact text
-      (sec/-transact ft-idx {:datom (datahike.datom/datom 1 :person/bio "ML researcher")
-                             :added? true})
-      (sec/-transact ft-idx {:datom (datahike.datom/datom 2 :person/bio "Database admin")
-                             :added? true})
-      (sec/-transact ft-idx {:datom (datahike.datom/datom 3 :person/bio "ML engineer")
-                             :added? true})
+        (sec/-transact ft-idx {:datom (datahike.datom/datom 1 :person/bio "ML researcher")
+                               :added? true})
+        (sec/-transact ft-idx {:datom (datahike.datom/datom 2 :person/bio "Database admin")
+                               :added? true})
+        (sec/-transact ft-idx {:datom (datahike.datom/datom 3 :person/bio "ML engineer")
+                               :added? true})
 
       ;; Fulltext "ML" → entities {1, 3}
-      (let [ml-bits (sec/-search ft-idx {:query "ML" :field :value} nil)]
-        (is (= #{1 3} (set (es/entity-bitset-seq ml-bits))))
+        (let [ml-bits (sec/-search ft-idx {:query "ML" :field :value} nil)]
+          (is (= #{1 3} (set (es/entity-bitset-seq ml-bits))))
 
         ;; Use as pre-filter for KNN
-        (let [knn-filtered (sec/-search vec-idx
-                                        {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3}
-                                        ml-bits)]
-          (is (= #{1 3} (set (es/entity-bitset-seq knn-filtered))))
+          (let [knn-filtered (sec/-search vec-idx
+                                          {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3}
+                                          ml-bits)]
+            (is (= #{1 3} (set (es/entity-bitset-seq knn-filtered))))
           ;; Entity 2 excluded by fulltext filter
-          (is (not (es/entity-bitset-contains? knn-filtered 2))))
+            (is (not (es/entity-bitset-contains? knn-filtered 2))))
 
         ;; AND composition
-        (let [knn-all (sec/-search vec-idx
-                                   {:vector (float-array [1.0 0.0 0.0 0.0]) :k 2} nil)
-              combined (es/entity-bitset-and knn-all ml-bits)]
+          (let [knn-all (sec/-search vec-idx
+                                     {:vector (float-array [1.0 0.0 0.0 0.0]) :k 2} nil)
+                combined (es/entity-bitset-and knn-all ml-bits)]
           ;; KNN top-2 = {1, 3}, ML = {1, 3}, AND = {1, 3}
-          (is (= #{1 3} (set (es/entity-bitset-seq combined))))))))))
+            (is (= #{1 3} (set (es/entity-bitset-seq combined))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; In-Transaction Maintenance via d/db-with
