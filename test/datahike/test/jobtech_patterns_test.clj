@@ -117,91 +117,91 @@
 (deftest test-concept-by-id
   (testing "Find concept by id"
     (assert-engines-agree @test-db
-      '[:find ?c :in $ ?id :where [?c :concept/id ?id]]
-      ["c1"])))
+                          '[:find ?c :in $ ?id :where [?c :concept/id ?id]]
+                          ["c1"])))
 
 ;; Pattern 2: Concept by type (collection binding)
 
 (deftest test-concept-by-type
   (testing "Find concepts by type (collection binding)"
     (assert-engines-agree @test-db
-      '[:find ?c :in $ [?type ...] :where [?c :concept/type ?type]]
-      [["occupation" "skill"]])))
+                          '[:find ?c :in $ [?type ...] :where [?c :concept/type ?type]]
+                          [["occupation" "skill"]])))
 
 ;; Pattern 3: NOT deprecated
 
 (deftest test-not-deprecated
   (testing "Filter out deprecated concepts"
     (assert-engines-agree @test-db
-      '[:find ?c :where
-        [?c :concept/id]
-        (not [?c :concept/deprecated true])])))
+                          '[:find ?c :where
+                            [?c :concept/id]
+                            (not [?c :concept/deprecated true])])))
 
 ;; Pattern 4: Relation traversal with edge rule
 
 (deftest test-edge-rule-forward
   (testing "Forward edge: find skills essential for Software Developer"
     (assert-engines-agree @test-db
-      '[:find ?to-id :in $ % ?from-id ?relation
-        :where
-        [?from :concept/id ?from-id]
-        (edge ?from ?relation ?to ?_)
-        [?to :concept/id ?to-id]]
-      [edge-rules "c1" "essential"])))
+                          '[:find ?to-id :in $ % ?from-id ?relation
+                            :where
+                            [?from :concept/id ?from-id]
+                            (edge ?from ?relation ?to ?_)
+                            [?to :concept/id ?to-id]]
+                          [edge-rules "c1" "essential"])))
 
 (deftest test-edge-rule-reverse
   (testing "Reverse edge: find what Java is essential-for"
     (assert-engines-agree @test-db
-      '[:find ?from-id :in $ % ?to-id ?relation
-        :where
-        [?to :concept/id ?to-id]
-        (edge ?to ?relation ?from ?_)
-        [?from :concept/id ?from-id]]
-      [edge-rules "c3" "essential-for"])))
+                          '[:find ?from-id :in $ % ?to-id ?relation
+                            :where
+                            [?to :concept/id ?to-id]
+                            (edge ?to ?relation ?from ?_)
+                            [?from :concept/id ?from-id]]
+                          [edge-rules "c3" "essential-for"])))
 
 (deftest test-edge-rule-symmetric
   (testing "Symmetric edge: related goes both ways"
     (assert-engines-agree @test-db
-      '[:find ?to-id :in $ % ?from-id ?relation
-        :where
-        [?from :concept/id ?from-id]
-        (edge ?from ?relation ?to ?_)
-        [?to :concept/id ?to-id]]
-      [edge-rules "c5" "related"])))
+                          '[:find ?to-id :in $ % ?from-id ?relation
+                            :where
+                            [?from :concept/id ?from-id]
+                            (edge ?from ?relation ?to ?_)
+                            [?to :concept/id ?to-id]]
+                          [edge-rules "c5" "related"])))
 
 ;; Pattern 5: get-else for optional attributes
 
 (deftest test-get-else
   (testing "get-else for legacy id"
     (assert-engines-agree @test-db
-      '[:find ?c ?legacy-id :where
-        [?c :concept/id]
-        [(get-else $ ?c :concept.external-database.ams-taxonomy-67/id false)
-         ?legacy-id]])))
+                          '[:find ?c ?legacy-id :where
+                            [?c :concept/id]
+                            [(get-else $ ?c :concept.external-database.ams-taxonomy-67/id false)
+                             ?legacy-id]])))
 
 ;; Pattern 6: Regex matching on preferred-label
 
 (deftest test-regex-matching
   (testing "Case-insensitive label matching via .matches"
     (assert-engines-agree @test-db
-      '[:find ?c :in $ ?pattern :where
-        [?c :concept/preferred-label ?label]
-        [(.matches ^String ?label ?pattern)]]
-      ["(?i).*java.*"])))
+                          '[:find ?c :in $ ?pattern :where
+                            [?c :concept/preferred-label ?label]
+                            [(.matches ^String ?label ?pattern)]]
+                          ["(?i).*java.*"])))
 
 ;; Pattern 7: Combined query (type + not-deprecated + relation)
 
 (deftest test-combined-query
   (testing "Skills essential for occupation c1, not deprecated"
     (assert-engines-agree @test-db
-      '[:find ?skill-id ?label :in $ % ?occ-id
-        :where
-        [?occ :concept/id ?occ-id]
-        (edge ?occ "essential" ?skill ?_)
-        [?skill :concept/id ?skill-id]
-        [?skill :concept/preferred-label ?label]
-        (not [?skill :concept/deprecated true])]
-      [edge-rules "c1"])))
+                          '[:find ?skill-id ?label :in $ % ?occ-id
+                            :where
+                            [?occ :concept/id ?occ-id]
+                            (edge ?occ "essential" ?skill ?_)
+                            [?skill :concept/id ?skill-id]
+                            [?skill :concept/preferred-label ?label]
+                            (not [?skill :concept/deprecated true])]
+                          [edge-rules "c1"])))
 
 ;; Pattern 8: Ground binding in rule (the identity-binding pattern)
 
@@ -211,11 +211,11 @@
                    [?c :concept/type ?type]
                    [?c :concept/id]]]]
       (assert-engines-agree @test-db
-        '[:find ?id :in $ % ?type
-          :where
-          (typed-concept ?c ?type)
-          [?c :concept/id ?id]]
-        [rules "skill"]))))
+                            '[:find ?id :in $ % ?type
+                              :where
+                              (typed-concept ?c ?type)
+                              [?c :concept/id ?id]]
+                            [rules "skill"]))))
 
 ;; Pattern 9: Rule with identity binding (constant call-arg)
 
@@ -225,28 +225,28 @@
                    [?c :concept/type "occupation"]
                    [?c :concept/id]]]]
       (assert-engines-agree @test-db
-        '[:find ?id :in $ %
-          :where
-          (occupation-concept ?c)
-          [?c :concept/id ?id]]
-        [rules]))))
+                            '[:find ?id :in $ %
+                              :where
+                              (occupation-concept ?c)
+                              [?c :concept/id ?id]]
+                            [rules]))))
 
 ;; Pattern 10: Multiple relation types via OR
 
 (deftest test-or-relation-types
   (testing "Find concepts related by any of several types"
     (assert-engines-agree @test-db
-      '[:find ?to-id :in $ ?from-id
-        :where
-        [?from :concept/id ?from-id]
-        (or (and [?r :relation/concept-1 ?from]
-                 [?r :relation/type "essential"]
-                 [?r :relation/concept-2 ?to])
-            (and [?r :relation/concept-1 ?from]
-                 [?r :relation/type "broader"]
-                 [?r :relation/concept-2 ?to]))
-        [?to :concept/id ?to-id]]
-      ["c1"])))
+                          '[:find ?to-id :in $ ?from-id
+                            :where
+                            [?from :concept/id ?from-id]
+                            (or (and [?r :relation/concept-1 ?from]
+                                     [?r :relation/type "essential"]
+                                     [?r :relation/concept-2 ?to])
+                                (and [?r :relation/concept-1 ?from]
+                                     [?r :relation/type "broader"]
+                                     [?r :relation/concept-2 ?to]))
+                            [?to :concept/id ?to-id]]
+                          ["c1"])))
 
 ;; Pattern 11: Count aggregate
 
@@ -283,36 +283,36 @@
 (deftest test-concept-exists
   (testing "Check if concept exists by id"
     (assert-engines-agree @test-db
-      '[:find ?e :in $ ?id :where [?e :concept/id ?id]]
-      ["c1"])
+                          '[:find ?e :in $ ?id :where [?e :concept/id ?id]]
+                          ["c1"])
     (assert-engines-agree @test-db
-      '[:find ?e :in $ ?id :where [?e :concept/id ?id]]
-      ["nonexistent"])))
+                          '[:find ?e :in $ ?id :where [?e :concept/id ?id]]
+                          ["nonexistent"])))
 
 ;; Pattern 14: Relation lookup by id
 
 (deftest test-relation-by-id
   (testing "Find relation by id"
     (assert-engines-agree @test-db
-      '[:find ?r :in $ ?id :where [?r :relation/id ?id]]
-      ["c1:essential:c3"])))
+                          '[:find ?r :in $ ?id :where [?r :relation/id ?id]]
+                          ["c1:essential:c3"])))
 
 ;; Pattern 15: Multi-hop: occupation -> skill -> related skill
 
 (deftest test-multi-hop
   (testing "Two-hop: occupation's skills and their related skills"
     (assert-engines-agree @test-db
-      '[:find ?related-id :in $ ?occ-id
-        :where
-        [?occ :concept/id ?occ-id]
-        [?r1 :relation/concept-1 ?occ]
-        [?r1 :relation/type "essential"]
-        [?r1 :relation/concept-2 ?skill]
-        [?r2 :relation/concept-1 ?skill]
-        [?r2 :relation/type "related"]
-        [?r2 :relation/concept-2 ?related]
-        [?related :concept/id ?related-id]]
-      ["c1"])))
+                          '[:find ?related-id :in $ ?occ-id
+                            :where
+                            [?occ :concept/id ?occ-id]
+                            [?r1 :relation/concept-1 ?occ]
+                            [?r1 :relation/type "essential"]
+                            [?r1 :relation/concept-2 ?skill]
+                            [?r2 :relation/concept-1 ?skill]
+                            [?r2 :relation/type "related"]
+                            [?r2 :relation/concept-2 ?related]
+                            [?related :concept/id ?related-id]]
+                          ["c1"])))
 
 ;; Pattern 16: FindScalar
 
@@ -321,12 +321,12 @@
     (let [legacy  (binding [q/*force-legacy* true]
                     (d/q '[:find ?label . :in $ ?id
                            :where [?c :concept/id ?id]
-                                  [?c :concept/preferred-label ?label]]
+                           [?c :concept/preferred-label ?label]]
                          @test-db "c1"))
           compiled (binding [q/*force-legacy* false]
                      (d/q '[:find ?label . :in $ ?id
                             :where [?c :concept/id ?id]
-                                   [?c :concept/preferred-label ?label]]
+                            [?c :concept/preferred-label ?label]]
                           @test-db "c1"))]
       (is (= legacy compiled)))))
 

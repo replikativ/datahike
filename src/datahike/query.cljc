@@ -143,16 +143,16 @@
            (str (clojure.string/join "\n" lines)
                 (when (seq merges)
                   (str "\n" (clojure.string/join "\n"
-                              (map-indexed
-                               (fn [i m]
-                                 (str pad "  merge[" i "]: " (pr-str (:clause m))
-                                      (when-let [si (:schema-info m)]
-                                        (str " [" (if (:card-one? si) "card-one" "card-many")
-                                             (when (:ref? si) " ref") "]"))
-                                      (when (:anti? m) " [ANTI]")
-                                      (when-let [c (:estimated-card m)]
-                                        (format " est=%d" (long c)))))
-                               merges))))
+                                                 (map-indexed
+                                                  (fn [i m]
+                                                    (str pad "  merge[" i "]: " (pr-str (:clause m))
+                                                         (when-let [si (:schema-info m)]
+                                                           (str " [" (if (:card-one? si) "card-one" "card-many")
+                                                                (when (:ref? si) " ref") "]"))
+                                                         (when (:anti? m) " [ANTI]")
+                                                         (when-let [c (:estimated-card m)]
+                                                           (format " est=%d" (long c)))))
+                                                  merges))))
                 (when (seq (:pushdown-preds scan))
                   (str "\n" pad "  pushdown: "
                        (pr-str (mapv :clause (:pushdown-preds scan)))))))
@@ -168,20 +168,20 @@
          :or
          (str pad "OR" card "\n"
               (clojure.string/join "\n"
-                (map-indexed
-                 (fn [i branch]
-                   (str pad "  branch[" i "]:\n"
-                        (format-plan-ops (:ops branch) (+ indent 2))))
-                 (:branches op))))
+                                   (map-indexed
+                                    (fn [i branch]
+                                      (str pad "  branch[" i "]:\n"
+                                           (format-plan-ops (:ops branch) (+ indent 2))))
+                                    (:branches op))))
 
          :or-join
          (str pad "OR-JOIN " (pr-str (:join-vars op)) card "\n"
               (clojure.string/join "\n"
-                (map-indexed
-                 (fn [i branch]
-                   (str pad "  branch[" i "]:\n"
-                        (format-plan-ops (:ops branch) (+ indent 2))))
-                 (:branches op))))
+                                   (map-indexed
+                                    (fn [i branch]
+                                      (str pad "  branch[" i "]:\n"
+                                           (format-plan-ops (:ops branch) (+ indent 2))))
+                                    (:branches op))))
 
          :not
          (str pad "NOT\n"
@@ -200,25 +200,25 @@
                 (when mutual? (str " [MUTUAL SCC: " (pr-str scc-rule-names) "]"))
                 "\n"
                 (clojure.string/join "\n"
-                  (mapcat
-                   (fn [rn]
-                     (let [{:keys [head-vars base-plans rec-clause-versions]}
-                           (get scc-rule-plans rn)]
-                       (concat
-                        [(str pad "  " rn " head-vars=" (pr-str head-vars))]
-                        [(str pad "    base-plans: " (count base-plans))]
-                        (map-indexed
-                         (fn [i bp]
-                           (str pad "      [" i "]:\n"
-                                (format-plan-ops (:ops bp) (+ indent 4))))
-                         base-plans)
-                        [(str pad "    clause-versions: " (count rec-clause-versions))]
-                        (map-indexed
-                         (fn [i cv]
-                           (str pad "      [" i "]:\n"
-                                (format-plan-ops (:ops cv) (+ indent 4))))
-                         rec-clause-versions))))
-                   scc-rule-names))))
+                                     (mapcat
+                                      (fn [rn]
+                                        (let [{:keys [head-vars base-plans rec-clause-versions]}
+                                              (get scc-rule-plans rn)]
+                                          (concat
+                                           [(str pad "  " rn " head-vars=" (pr-str head-vars))]
+                                           [(str pad "    base-plans: " (count base-plans))]
+                                           (map-indexed
+                                            (fn [i bp]
+                                              (str pad "      [" i "]:\n"
+                                                   (format-plan-ops (:ops bp) (+ indent 4))))
+                                            base-plans)
+                                           [(str pad "    clause-versions: " (count rec-clause-versions))]
+                                           (map-indexed
+                                            (fn [i cv]
+                                              (str pad "      [" i "]:\n"
+                                                   (format-plan-ops (:ops cv) (+ indent 4))))
+                                            rec-clause-versions))))
+                                      scc-rule-names))))
 
          :rule-lookup
          (str pad "RULE-LOOKUP " (:rule-name op)
@@ -235,7 +235,7 @@
 #?(:clj
    (defn- format-plan-ops [ops indent]
      (clojure.string/join "\n"
-       (map #(format-op % indent) ops))))
+                          (map #(format-op % indent) ops))))
 
 ;; explain is defined later in the file (after memoized-parse-query, Context, etc.)
 
@@ -714,7 +714,7 @@
                                 (transient []) tuples2)
                         (persistent!))]
         (rel/->Relation (zipmap (concat keep-attrs1 keep-attrs2) (range))
-                   new-tuples))
+                        new-tuples))
       (let [hash       (hash-attrs key-fn2 tuples2)
             new-tuples (->>
                         (reduce (fn [acc tuple1]
@@ -727,7 +727,7 @@
                                 (transient []) tuples1)
                         (persistent!))]
         (rel/->Relation (zipmap (concat keep-attrs1 keep-attrs2) (range))
-                   new-tuples)))))
+                        new-tuples)))))
 
 (defn subtract-rel [a b]
   (let [{attrs-a :attrs, tuples-a :tuples} a
@@ -760,10 +760,10 @@
                               attr->idx)]
     (when (seq idx->const)
       (rel/->Relation attr->idx (map #(reduce (fn [datom [k v]]
-                                           (assoc datom k v))
-                                         (vec (seq %))
-                                         idx->const)
-                                datoms)))))
+                                                (assoc datom k v))
+                                              (vec (seq %))
+                                              idx->const)
+                                     datoms)))))
 
 (defn replace-symbols-by-nil [pattern]
   (mapv #(if (symbol? %) nil %) pattern))
@@ -808,9 +808,9 @@
                                          d))
                                      datoms)]
                  (rel/->Relation (var-mapping orig-pattern (range))
-                            converted))
+                                 converted))
          :clj (rel/->Relation (var-mapping orig-pattern (range))
-                         datoms))))
+                              datoms))))
 
 (defn matches-pattern? [pattern tuple]
   (loop [tuple tuple
@@ -1866,8 +1866,8 @@
     ;; This binding is needed for `collapse-rels` to work, and more specifically,
     ;; `hash-join` to work, that in turn depends on `getter-fn`.
     (binding [rel/*lookup-attrs* (if (satisfies? dbi/IDB source)
-                               (dynamic-lookup-attrs source pattern1)
-                               rel/*lookup-attrs*)]
+                                   (dynamic-lookup-attrs source pattern1)
+                                   rel/*lookup-attrs*)]
       (cond-> (update context :rels collapse-rels new-rel)
         (:stats context) (assoc :tmp-stats {:type :lookup})))))
 
@@ -2249,13 +2249,13 @@
           (let [parent-entries (get @query-result-cache parent-key)]
             (when (seq parent-entries)
               (let [child-entries (reduce-kv
-                                  (fn [m k {:keys [attrs]}]
-                                    (if (or (= attrs :all)
-                                            (some user-attrs attrs))
-                                      (dissoc m k)
-                                      m))
-                                  parent-entries
-                                  parent-entries)]
+                                   (fn [m k {:keys [attrs]}]
+                                     (if (or (= attrs :all)
+                                             (some user-attrs attrs))
+                                       (dissoc m k)
+                                       m))
+                                   parent-entries
+                                   parent-entries)]
                 (when (seq child-entries)
                   (swap! query-result-cache assoc child-key child-entries))))))))))
 
@@ -2461,32 +2461,32 @@
                                 (assoc rel :tuples
                                        (mapv (fn [tuple]
                                                (reduce-kv
-                                                 (fn [t sym idx]
-                                                   (let [v (if (da/array? t)
-                                                             (aget ^objects t idx)
-                                                             (get t idx))]
-                                                     (if (and (sequential? v)
-                                                              (= 2 (count v))
-                                                              (keyword? (first v)))
-                                                       (let [eid (dbu/entid db v)]
+                                                (fn [t sym idx]
+                                                  (let [v (if (da/array? t)
+                                                            (aget ^objects t idx)
+                                                            (get t idx))]
+                                                    (if (and (sequential? v)
+                                                             (= 2 (count v))
+                                                             (keyword? (first v)))
+                                                      (let [eid (dbu/entid db v)]
                                                          ;; Track reverse mapping for this var
-                                                         (vswap! reverse-map update sym assoc eid v)
-                                                         (if (da/array? t)
+                                                        (vswap! reverse-map update sym assoc eid v)
+                                                        (if (da/array? t)
                                                            ;; Copy to Object[] to avoid ArrayStoreException
                                                            ;; (typed arrays like PersistentVector[] can't hold Long)
-                                                           #?(:clj
-                                                              (let [^objects new-arr (object-array (alength ^objects t))]
-                                                                (System/arraycopy ^objects t 0 new-arr 0 (alength ^objects t))
-                                                                (aset new-arr (int idx) eid)
-                                                                new-arr)
-                                                              :cljs
-                                                              (let [new-arr (.slice t)]
-                                                                (aset new-arr idx eid)
-                                                                new-arr))
-                                                           (assoc t idx eid)))
-                                                       t)))
-                                                 tuple
-                                                 (:attrs rel)))
+                                                          #?(:clj
+                                                             (let [^objects new-arr (object-array (alength ^objects t))]
+                                                               (System/arraycopy ^objects t 0 new-arr 0 (alength ^objects t))
+                                                               (aset new-arr (int idx) eid)
+                                                               new-arr)
+                                                             :cljs
+                                                             (let [new-arr (.slice t)]
+                                                               (aset new-arr idx eid)
+                                                               new-arr))
+                                                          (assoc t idx eid)))
+                                                      t)))
+                                                tuple
+                                                (:attrs rel)))
                                              tuples)))))
                           rels)))]
       [context-in' @reverse-map])))
@@ -2523,20 +2523,20 @@
           resolve-idx (fn [v]
                         (cond
                           (nat-int? v) (do (when (>= v (count find-vars))
-                                            (throw (ex-info (str ":order-by column index " v " out of bounds, :find has " (count find-vars) " elements")
-                                                           {:index v :find-count (count find-vars)})))
-                                        v)
+                                             (throw (ex-info (str ":order-by column index " v " out of bounds, :find has " (count find-vars) " elements")
+                                                             {:index v :find-count (count find-vars)})))
+                                           v)
                           (symbol? v) (let [idx (let [fv find-vars n (count fv)]
-                                              (loop [i 0]
-                                                (cond (>= i n) -1
-                                                      (= (nth fv i) v) i
-                                                      :else (recur (inc i)))))]
+                                                  (loop [i 0]
+                                                    (cond (>= i n) -1
+                                                          (= (nth fv i) v) i
+                                                          :else (recur (inc i)))))]
                                         (when (neg? idx)
                                           (throw (ex-info (str ":order-by variable " v " not found in :find " find-vars)
-                                                         {:var v :find-vars find-vars})))
+                                                          {:var v :find-vars find-vars})))
                                         idx)
                           :else (throw (ex-info (str ":order-by element must be a symbol or column index, got: " (pr-str v))
-                                               {:element v}))))
+                                                {:element v}))))
           ;; Normalize to vector
           spec (cond
                  (symbol? order-by) [[order-by :asc]]
@@ -2634,7 +2634,6 @@
        (str header (format-plan-ops (:ops plan) 0) "\n"))
      :cljs (throw (ex-info "explain is not supported in ClojureScript" {}))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Query execution paths — split into small functions for JIT optimization
 
@@ -2667,7 +2666,6 @@
      {'> :>, '< :<, '>= :>=, '<= :<=, '= :=, 'not= :!=,
       'clojure.core/> :>, 'clojure.core/< :<, 'clojure.core/>= :>=,
       'clojure.core/<= :<=, 'clojure.core/= :=, 'clojure.core/not= :!=}))
-
 
 #?(:clj
    (defn- execute-filter-pattern-via-pss
@@ -2920,7 +2918,7 @@
       ;; requiring-resolve is cheap after first call: just a ns-map lookup via resolve,
       ;; since the namespace is already loaded. No need to cache the resolved var.
       (let [exec-direct #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct)
-                            :cljs execute/execute-plan-direct)
+                           :cljs execute/execute-plan-direct)
             find-var-syms (mapv #(.-symbol %) (:elements qfind))]
         (exec-direct plan db find-var-syms nil (:consts context-in))))))
 
@@ -2942,8 +2940,8 @@
           (comp (if offset (drop offset) identity)
                 (if (and limit (pos? limit)) (take limit) identity)))
     stats?                                        (#(-> context-out
-                                                         (dissoc :rels :sources :settings)
-                                                         (assoc :ret % :query query)))))
+                                                        (dissoc :rels :sources :settings)
+                                                        (assoc :ret % :query query)))))
 
 (defn- execute-compiled-relation
   "Relation path: fused scan → collect → dedup → aggregate/pull.
@@ -2952,7 +2950,7 @@
    result-arity lookup-ref-reverse-map order-spec offset limit
    stats? qreturnmaps]
   (let [exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
-                            :cljs execute/execute-plan-direct-rel)
+                           :cljs execute/execute-plan-direct-rel)
         fused-rel (try (exec-direct-rel plan db)
                        (catch #?(:clj Exception :cljs :default) e
                          (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
@@ -2971,10 +2969,10 @@
         deduped (if lookup-ref-reverse-map
                   (let [var-vec (vec all-vars)
                         idx-maps (keep-indexed
-                                   (fn [i v]
-                                     (when-let [rm (get lookup-ref-reverse-map v)]
-                                       [i rm]))
-                                   var-vec)]
+                                  (fn [i v]
+                                    (when-let [rm (get lookup-ref-reverse-map v)]
+                                      [i rm]))
+                                  var-vec)]
                     (if (seq idx-maps)
                       (into #{}
                             (map (fn [tuple]
@@ -3040,7 +3038,7 @@
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
           (if-let [direct-result (execute-compiled-direct
-                                   plan db qfind find-elements context-in query stats? qreturnmaps)]
+                                  plan db qfind find-elements context-in query stats? qreturnmaps)]
             (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
               #?(:clj
                  (when *profile?*
@@ -3054,11 +3052,11 @@
             (let [ta (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
                   has-aggs? (some #(instance? Aggregate %) find-elements)
                   columnar-eligible? (and has-aggs?
-                                         (instance? FindRel qfind)
-                                         (not (:with query))
-                                         (not (some #(instance? Pull %) find-elements))
-                                         (empty? (:rels context-in))
-                                         (not lookup-ref-reverse-map))
+                                          (instance? FindRel qfind)
+                                          (not (:with query))
+                                          (not (some #(instance? Pull %) find-elements))
+                                          (empty? (:rels context-in))
+                                          (not lookup-ref-reverse-map))
                   tb (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
                   columnar-result
                   (when columnar-eligible?
@@ -3080,9 +3078,9 @@
 
                 ;; 3. Standard Relation path
                 (let [result (execute-compiled-relation
-                               plan db qfind find-elements context-in query all-vars
-                               result-arity lookup-ref-reverse-map order-spec offset limit
-                               stats? qreturnmaps)]
+                              plan db qfind find-elements context-in query all-vars
+                              result-arity lookup-ref-reverse-map order-spec offset limit
+                              stats? qreturnmaps)]
                   #?(:clj
                      (when *profile?*
                        (let [t3 (System/nanoTime)]

@@ -41,8 +41,8 @@
                   ["sales" 60000.0]
                   ["sales" 70000.0]]
           result (dst/aggregate
-                   {:group [:dept] :agg [[:avg :salary]]}
-                   tuples [:dept :salary])]
+                  {:group [:dept] :agg [[:avg :salary]]}
+                  tuples [:dept :salary])]
       (is (= 2 (count result)))
       (let [eng (first (filter #(= "eng" (:dept %)) result))
             sales (first (filter #(= "sales" (:dept %)) result))]
@@ -52,8 +52,8 @@
   (testing "multiple aggregations"
     (let [tuples [["a" 10.0] ["a" 20.0] ["b" 30.0]]
           result (dst/aggregate
-                   {:group [:g] :agg [[:sum :v] [:count] [:min :v] [:max :v]]}
-                   tuples [:g :v])]
+                  {:group [:g] :agg [[:sum :v] [:count] [:min :v] [:max :v]]}
+                  tuples [:g :v])]
       (is (= 2 (count result)))
       (let [a (first (filter #(= "a" (:g %)) result))]
         (is (== 30.0 (:sum a)))
@@ -64,16 +64,16 @@
   (testing "with ordering"
     (let [tuples [["eng" 80000.0] ["eng" 90000.0] ["sales" 60000.0]]
           result (dst/aggregate
-                   {:group [:dept] :agg [[:avg :salary]]
-                    :order [[:avg :desc]]}
-                   tuples [:dept :salary])]
+                  {:group [:dept] :agg [[:avg :salary]]
+                   :order [[:avg :desc]]}
+                  tuples [:dept :salary])]
       (is (= "eng" (:dept (first result))))))
 
   (testing "no group-by (global aggregate)"
     (let [tuples [["a" 10.0] ["b" 20.0] ["c" 30.0]]
           result (dst/aggregate
-                   {:agg [[:sum :v] [:avg :v]]}
-                   tuples [:name :v])]
+                  {:agg [[:sum :v] [:avg :v]]}
+                  tuples [:name :v])]
       (is (= 1 (count result)))
       (is (== 60.0 (:sum (first result))))
       (is (== 20.0 (:avg (first result)))))))
@@ -89,10 +89,10 @@
                   ["sales" "Dave" 60000.0]
                   ["sales" "Eve" 70000.0]]
           result (dst/window
-                   {:window [{:op :row-number :as :rank
-                              :partition-by [:dept]
-                              :order [[:salary :desc]]}]}
-                   tuples [:dept :name :salary])]
+                  {:window [{:op :row-number :as :rank
+                             :partition-by [:dept]
+                             :order [[:salary :desc]]}]}
+                  tuples [:dept :name :salary])]
       (is (= 5 (count result)))
       ;; Check that ranking resets per partition
       (let [eng-rows (filter #(= "eng" (:dept %)) result)
@@ -110,11 +110,11 @@
                   :person/salary {:db/index true}}
           empty-db (db/empty-db schema)
           db (d/db-with empty-db
-               [{:db/id 1 :person/name "Alice" :person/dept "eng" :person/salary 80000}
-                {:db/id 2 :person/name "Bob" :person/dept "eng" :person/salary 90000}
-                {:db/id 3 :person/name "Charlie" :person/dept "sales" :person/salary 60000}
-                {:db/id 4 :person/name "Dave" :person/dept "eng" :person/salary 85000}
-                {:db/id 5 :person/name "Eve" :person/dept "sales" :person/salary 70000}])
+                        [{:db/id 1 :person/name "Alice" :person/dept "eng" :person/salary 80000}
+                         {:db/id 2 :person/name "Bob" :person/dept "eng" :person/salary 90000}
+                         {:db/id 3 :person/name "Charlie" :person/dept "sales" :person/salary 60000}
+                         {:db/id 4 :person/name "Dave" :person/dept "eng" :person/salary 85000}
+                         {:db/id 5 :person/name "Eve" :person/dept "sales" :person/salary 70000}])
           ;; Step 1: Datahike query for dept + salary tuples
           tuples (vec (d/q '[:find ?dept ?salary
                              :where
@@ -123,10 +123,10 @@
                            db))
           ;; Step 2: Stratum aggregate
           agg-result (dst/aggregate
-                       {:group [:dept]
-                        :agg [[:avg :salary] [:count]]
-                        :order [[:avg :desc]]}
-                       tuples [:dept :salary])]
+                      {:group [:dept]
+                       :agg [[:avg :salary] [:count]]
+                       :order [[:avg :desc]]}
+                      tuples [:dept :salary])]
       (is (= 2 (count agg-result)))
       (is (= "eng" (:dept (first agg-result))))
       (is (== 85000.0 (:avg (first agg-result))))
@@ -182,7 +182,7 @@
                             [?e :person/dept ?dept]
                             [?e :person/salary ?salary]
                             [(datahike.index.secondary.stratum/aggregate
-                               {:group [:dept] :agg [[:avg :salary]]})
+                              {:group [:dept] :agg [[:avg :salary]]})
                              [[?dept ?avg]]]]
                           @e2e-db)]
           (is (= 2 (count result)))
@@ -196,7 +196,7 @@
                             [?e :person/dept ?dept]
                             [?e :person/salary ?salary]
                             [(datahike.index.secondary.stratum/aggregate
-                               {:group [:dept] :agg [[:sum :salary] [:count]]})
+                              {:group [:dept] :agg [[:sum :salary] [:count]]})
                              [[?dept ?total ?cnt]]]]
                           @e2e-db)]
           (is (= 2 (count result)))
@@ -210,7 +210,7 @@
                             [?e :person/dept ?dept]
                             [?e :person/salary ?salary]
                             [(datahike.index.secondary.stratum/aggregate
-                               {:group [:dept] :agg [[:avg :salary]]})
+                              {:group [:dept] :agg [[:avg :salary]]})
                              [[?dept ?avg]]]
                             [(> ?avg 70000)]]
                           @e2e-db)]
@@ -227,9 +227,9 @@
                           [?e :person/salary ?salary]
                           [?e :person/dept ?dept]
                           [(datahike.index.secondary.stratum/window
-                             {:window [{:op :row-number :as :rn
-                                        :partition-by [:dept]
-                                        :order [[:salary :desc]]}]})
+                            {:window [{:op :row-number :as :rn
+                                       :partition-by [:dept]
+                                       :order [[:salary :desc]]}]})
                            [[?dept ?name ?salary ?rn]]]]
                         @e2e-db)]
         (is (= 5 (count result)))

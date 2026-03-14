@@ -16,10 +16,10 @@
 (deftest test-proximum-lifecycle
   (testing "create, insert, search, delete"
     (let [idx (sec/create-index :proximum
-                {:attrs #{:person/embedding}
-                 :dim 4 :distance :cosine
-                 :store-config {:backend :memory :id (random-uuid)}}
-                nil)]
+                                {:attrs #{:person/embedding}
+                                 :dim 4 :distance :cosine
+                                 :store-config {:backend :memory :id (random-uuid)}}
+                                nil)]
       (is (= #{:person/embedding} (sec/-indexed-attrs idx)))
 
       ;; Insert 3 vectors via -transact
@@ -72,9 +72,9 @@
 (deftest test-scriptum-lifecycle
   (testing "create, index documents, search, delete"
     (let [idx (sec/create-index :scriptum
-                {:attrs #{:person/name :person/bio}
-                 :path (str "/tmp/scriptum-test-" (random-uuid))}
-                nil)]
+                                {:attrs #{:person/name :person/bio}
+                                 :path (str "/tmp/scriptum-test-" (random-uuid))}
+                                nil)]
       (is (= #{:person/name :person/bio} (sec/-indexed-attrs idx)))
 
       ;; Index documents
@@ -126,24 +126,24 @@
   (testing "RoaringBitmap flows between Proximum and Scriptum"
     (let [;; Create both indices
           vec-idx (sec/create-index :proximum
-                    {:attrs #{:person/embedding}
-                     :dim 4 :distance :cosine
-                     :store-config {:backend :memory :id (random-uuid)}}
-                    nil)
+                                    {:attrs #{:person/embedding}
+                                     :dim 4 :distance :cosine
+                                     :store-config {:backend :memory :id (random-uuid)}}
+                                    nil)
           ft-idx (sec/create-index :scriptum
-                   {:attrs #{:person/bio}
-                    :path (str "/tmp/scriptum-cross-" (random-uuid))}
-                   nil)
+                                   {:attrs #{:person/bio}
+                                    :path (str "/tmp/scriptum-cross-" (random-uuid))}
+                                   nil)
           ;; Transact vectors
           vec-idx (-> vec-idx
                       (sec/-transact {:datom (datahike.datom/datom 1 :person/embedding
-                                              (float-array [1.0 0.0 0.0 0.0]))
+                                                                   (float-array [1.0 0.0 0.0 0.0]))
                                       :added? true})
                       (sec/-transact {:datom (datahike.datom/datom 2 :person/embedding
-                                              (float-array [0.0 1.0 0.0 0.0]))
+                                                                   (float-array [0.0 1.0 0.0 0.0]))
                                       :added? true})
                       (sec/-transact {:datom (datahike.datom/datom 3 :person/embedding
-                                              (float-array [0.9 0.1 0.0 0.0]))
+                                                                   (float-array [0.9 0.1 0.0 0.0]))
                                       :added? true}))]
       ;; Transact text
       (sec/-transact ft-idx {:datom (datahike.datom/datom 1 :person/bio "ML researcher")
@@ -159,15 +159,15 @@
 
         ;; Use as pre-filter for KNN
         (let [knn-filtered (sec/-search vec-idx
-                             {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3}
-                             ml-bits)]
+                                        {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3}
+                                        ml-bits)]
           (is (= #{1 3} (set (es/entity-bitset-seq knn-filtered))))
           ;; Entity 2 excluded by fulltext filter
           (is (not (es/entity-bitset-contains? knn-filtered 2))))
 
         ;; AND composition
         (let [knn-all (sec/-search vec-idx
-                        {:vector (float-array [1.0 0.0 0.0 0.0]) :k 2} nil)
+                                   {:vector (float-array [1.0 0.0 0.0 0.0]) :k 2} nil)
               combined (es/entity-bitset-and knn-all ml-bits)]
           ;; KNN top-2 = {1, 3}, ML = {1, 3}, AND = {1, 3}
           (is (= #{1 3} (set (es/entity-bitset-seq combined)))))))))
@@ -184,9 +184,9 @@
                                  :db.secondary/config {:path (str "/tmp/scriptum-tx-" (random-uuid))}}}
           empty-db (db/empty-db schema)
           ft-idx (sec/create-index :scriptum
-                   {:attrs [:person/name :person/bio]
-                    :path (str "/tmp/scriptum-tx-" (random-uuid))}
-                   empty-db)
+                                   {:attrs [:person/name :person/bio]
+                                    :path (str "/tmp/scriptum-tx-" (random-uuid))}
+                                   empty-db)
           db (assoc empty-db :secondary-indices {:idx/fulltext ft-idx})
           db2 (d/db-with db [{:db/id 1 :person/name "Alice" :person/bio "ML researcher"}
                              {:db/id 2 :person/name "Bob" :person/bio "Database engineer"}])]
@@ -211,10 +211,10 @@
                                                                      :id (random-uuid)}}}}
           empty-db (db/empty-db schema)
           vec-idx (sec/create-index :proximum
-                    {:attrs [:person/embedding]
-                     :dim 4 :distance :cosine
-                     :store-config {:backend :memory :id (random-uuid)}}
-                    empty-db)
+                                    {:attrs [:person/embedding]
+                                     :dim 4 :distance :cosine
+                                     :store-config {:backend :memory :id (random-uuid)}}
+                                    empty-db)
           db (assoc empty-db :secondary-indices {:idx/vectors vec-idx})
           db2 (d/db-with db [{:db/id 1 :person/embedding (float-array [1.0 0.0 0.0 0.0])}
                              {:db/id 2 :person/embedding (float-array [0.0 1.0 0.0 0.0])}])]
@@ -231,8 +231,8 @@
 (deftest test-stratum-entity-filter-aggregate
   (testing "IColumnarAggregate with entity-filter mask injection"
     (let [idx (sec/create-index :stratum
-                {:attrs #{:person/salary :person/dept}}
-                nil)
+                                {:attrs #{:person/salary :person/dept}}
+                                nil)
           datoms [(datahike.datom/datom 1 :person/salary 50000)
                   (datahike.datom/datom 1 :person/dept "eng")
                   (datahike.datom/datom 2 :person/salary 60000)
@@ -249,7 +249,7 @@
 
       ;; Full aggregate (no filter)
       (let [result (sec/-columnar-aggregate idx
-                     {:agg [[:avg :salary]] :group [:dept]})]
+                                            {:agg [[:avg :salary]] :group [:dept]})]
         (is (= 2 (count result)))
         ;; eng: (50+60+90)/3 = 66666.67, sales: (70+80)/2 = 75000
         (let [eng (first (filter #(= "eng" (:dept %)) result))
@@ -260,8 +260,8 @@
       ;; Filtered aggregate — only entities {1, 2, 3}
       (let [filter-bs (es/entity-bitset-from-longs [1 2 3])
             result (sec/-columnar-aggregate idx
-                     {:agg [[:avg :salary]] :group [:dept]}
-                     filter-bs)]
+                                            {:agg [[:avg :salary]] :group [:dept]}
+                                            filter-bs)]
         (is (= 2 (count result)))
         ;; eng: (50+60)/2 = 55000, sales: 70/1 = 70000
         (let [eng (first (filter #(= "eng" (:dept %)) result))
@@ -272,8 +272,8 @@
       ;; Filtered aggregate — only entity {5}
       (let [filter-bs (es/entity-bitset-from-longs [5])
             result (sec/-columnar-aggregate idx
-                     {:agg [[:sum :salary]]}
-                     filter-bs)]
+                                            {:agg [[:sum :salary]]}
+                                            filter-bs)]
         (is (= 1 (count result)))
         (is (== 90000 (:sum (first result))))))))
 
@@ -286,8 +286,8 @@
                                   :db.secondary/attrs [:person/salary :person/dept]}}
           empty-db (db/empty-db schema)
           stratum-idx (sec/create-index :stratum
-                        {:attrs #{:person/salary :person/dept}}
-                        empty-db)
+                                        {:attrs #{:person/salary :person/dept}}
+                                        empty-db)
           db (assoc empty-db :secondary-indices {:idx/analytics stratum-idx})
           ;; Add people: some named "Ivan", some not
           db (d/db-with db [{:db/id 1 :person/name "Ivan" :person/salary 50000 :person/dept "eng"}
@@ -321,8 +321,8 @@
                                   :db.secondary/attrs [:person/salary :person/dept]}}
           empty-db (db/empty-db schema)
           stratum-idx (sec/create-index :stratum
-                        {:attrs #{:person/salary :person/dept}}
-                        empty-db)
+                                        {:attrs #{:person/salary :person/dept}}
+                                        empty-db)
           db (assoc empty-db :secondary-indices {:idx/analytics stratum-idx})
           db (d/db-with db [{:db/id 1 :person/salary 50000 :person/dept "eng"}
                             {:db/id 2 :person/salary 80000 :person/dept "sales"}
@@ -362,12 +362,12 @@
                                   :db.secondary/attrs [:person/salary :person/dept]}}
           empty-db (db/empty-db schema)
           ft-idx (sec/create-index :scriptum
-                   {:attrs #{:person/bio}
-                    :path (str "/tmp/scriptum-cross-strat-" (random-uuid))}
-                   empty-db)
+                                   {:attrs #{:person/bio}
+                                    :path (str "/tmp/scriptum-cross-strat-" (random-uuid))}
+                                   empty-db)
           st-idx (sec/create-index :stratum
-                   {:attrs #{:person/salary :person/dept}}
-                   empty-db)
+                                   {:attrs #{:person/salary :person/dept}}
+                                   empty-db)
           db (assoc empty-db :secondary-indices
                     {:idx/fulltext ft-idx :idx/analytics st-idx})
           db (d/db-with db [{:db/id 1 :person/name "Alice" :person/bio "ML researcher" :person/salary 90000 :person/dept "eng"}
@@ -386,8 +386,8 @@
 
         ;; Step 2: pass bitmap as entity-filter to stratum aggregate
         (let [result (sec/-columnar-aggregate st
-                       {:agg [[:avg :salary]] :group [:dept]}
-                       ml-entities)]
+                                              {:agg [[:avg :salary]] :group [:dept]}
+                                              ml-entities)]
           ;; eng: (90000 + 80000)/2 = 85000 (only entities 1,3 — not 4)
           ;; ops: 75000/1 = 75000 (only entity 5 — not 2)
           (is (= 2 (count result)))
@@ -413,9 +413,9 @@
                                  :db.secondary/config {:path (str "/tmp/scriptum-fused-" (random-uuid))}}}
           empty-db (db/empty-db schema)
           ft-idx (sec/create-index :scriptum
-                   {:attrs #{:person/bio}
-                    :path (str "/tmp/scriptum-fused-" (random-uuid))}
-                   empty-db)
+                                   {:attrs #{:person/bio}
+                                    :path (str "/tmp/scriptum-fused-" (random-uuid))}
+                                   empty-db)
           db (assoc empty-db :secondary-indices {:idx/fulltext ft-idx})
           db (d/db-with db [{:db/id 1 :person/name "Alice" :person/bio "ML researcher" :person/salary 90000}
                             {:db/id 2 :person/name "Bob" :person/bio "Database admin" :person/salary 60000}

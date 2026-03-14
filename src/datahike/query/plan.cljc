@@ -262,13 +262,13 @@
               (let [scan-op (nth pattern-ops si)
                     scan-card (double (nth estimates si))
                     merges (into [] (keep-indexed
-                                    (fn [i op]
-                                      (when (not= i si)
-                                        (let [est (double (nth estimates i))
-                                              pass-rate (estimate/estimate-conditional-pass-rate est total-entities)
-                                              sort-key (/ 1.0 (max 0.001 (- 1.0 pass-rate)))]
-                                          {:op op :pass-rate pass-rate :sort-key sort-key}))))
-                                   pattern-ops)
+                                     (fn [i op]
+                                       (when (not= i si)
+                                         (let [est (double (nth estimates i))
+                                               pass-rate (estimate/estimate-conditional-pass-rate est total-entities)
+                                               sort-key (/ 1.0 (max 0.001 (- 1.0 pass-rate)))]
+                                           {:op op :pass-rate pass-rate :sort-key sort-key}))))
+                                 pattern-ops)
                     sorted-merges (sort-by :sort-key merges)
                     total-cost (reduce (fn [[cost cum-pass] m]
                                          [(+ cost (* scan-card cum-pass))
@@ -392,13 +392,13 @@
                                         merge-ops)
                      output-vars (into #{} (mapcat :vars) all-ops)]
                  (cond-> {:op :entity-group
-                         :entity-var e-var
-                         :scan-op (assoc scan :join-method :scan)
-                         :merge-ops (mapv #(assoc % :join-method :lookup) merge-ops)
-                         :output-vars output-vars
-                         :vars output-vars
-                         :estimated-card (max 1 group-card)}
-                  source (assoc :source source))))))
+                          :entity-var e-var
+                          :scan-op (assoc scan :join-method :scan)
+                          :merge-ops (mapv #(assoc % :join-method :lookup) merge-ops)
+                          :output-vars output-vars
+                          :vars output-vars
+                          :estimated-card (max 1 group-card)}
+                   source (assoc :source source))))))
          groups)
 
         ;; NOT ops that weren't folded
@@ -502,7 +502,7 @@
   [db branches bound-vars rules]
   (mapv (fn [branch]
           (let [branch-clauses (if (and (sequential? branch)
-                                       (not (sequential? (first branch))))
+                                        (not (sequential? (first branch))))
                                  [branch]
                                  (vec branch))]
             (create-plan db branch-clauses bound-vars rules)))
@@ -557,7 +557,6 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Rule SCC detection and expansion
-
 
 (defn- rule-call-graph
   "Build a call graph from rules: {rule-name → #{called-rule-names}}"
@@ -709,49 +708,49 @@
                 ;; For each SCC rule, extract head vars and build branch plans
                 scc-rule-plans
                 (into {}
-                  (map (fn [rn]
-                    (let [rn-branches (get rules rn)
-                          head-vars (vec (rest (first (first rn-branches))))
-                          free-call-args (mapv (fn [hv]
-                                                    (if (analyze/free-var? hv)
-                                                      hv
-                                                      (symbol (str "?" (name hv)))))
-                                                  head-vars)
-                          is-base? (fn [branch]
-                                     (let [[_head & body] branch]
-                                       (not (some is-scc-call? body))))
-                          base-bs (filterv is-base? rn-branches)
-                          rec-bs (filterv (complement is-base?) rn-branches)
+                      (map (fn [rn]
+                             (let [rn-branches (get rules rn)
+                                   head-vars (vec (rest (first (first rn-branches))))
+                                   free-call-args (mapv (fn [hv]
+                                                          (if (analyze/free-var? hv)
+                                                            hv
+                                                            (symbol (str "?" (name hv)))))
+                                                        head-vars)
+                                   is-base? (fn [branch]
+                                              (let [[_head & body] branch]
+                                                (not (some is-scc-call? body))))
+                                   base-bs (filterv is-base? rn-branches)
+                                   rec-bs (filterv (complement is-base?) rn-branches)
                           ;; Head vars are bound within rule branches (from call args / accumulator)
-                          branch-bound (into bound-vars (filter analyze/free-var?) free-call-args)
-                          base-ps (mapv (fn [b]
-                                          (let [renamed (rename-branch-vars b free-call-args seqid db)]
-                                            (create-plan db (vec renamed) branch-bound rules)))
-                                        base-bs)
-                          rec-cvs
-                          (vec (mapcat
-                                (fn [branch]
-                                  (let [renamed (rename-branch-vars branch free-call-args seqid db)
-                                        scc-indices (keep-indexed
-                                                     (fn [i c] (when (is-scc-call? c) i))
-                                                     renamed)]
-                                    (map (fn [delta-idx]
-                                           (let [versioned
-                                                 (vec (map-indexed
-                                                       (fn [i c]
-                                                         (if (is-scc-call? c)
-                                                           (with-meta (vec c)
-                                                             {:rule-lookup-mode
-                                                              (if (= i delta-idx) :delta :main)})
-                                                           c))
-                                                       renamed))]
-                                             (create-plan db versioned branch-bound rules scc-rule-names)))
-                                         scc-indices)))
-                                rec-bs))]
-                      [rn {:head-vars free-call-args
-                           :base-plans base-ps
-                           :rec-clause-versions rec-cvs}])))
-                  scc-rule-names)
+                                   branch-bound (into bound-vars (filter analyze/free-var?) free-call-args)
+                                   base-ps (mapv (fn [b]
+                                                   (let [renamed (rename-branch-vars b free-call-args seqid db)]
+                                                     (create-plan db (vec renamed) branch-bound rules)))
+                                                 base-bs)
+                                   rec-cvs
+                                   (vec (mapcat
+                                         (fn [branch]
+                                           (let [renamed (rename-branch-vars branch free-call-args seqid db)
+                                                 scc-indices (keep-indexed
+                                                              (fn [i c] (when (is-scc-call? c) i))
+                                                              renamed)]
+                                             (map (fn [delta-idx]
+                                                    (let [versioned
+                                                          (vec (map-indexed
+                                                                (fn [i c]
+                                                                  (if (is-scc-call? c)
+                                                                    (with-meta (vec c)
+                                                                      {:rule-lookup-mode
+                                                                       (if (= i delta-idx) :delta :main)})
+                                                                    c))
+                                                                renamed))]
+                                                      (create-plan db versioned branch-bound rules scc-rule-names)))
+                                                  scc-indices)))
+                                         rec-bs))]
+                               [rn {:head-vars free-call-args
+                                    :base-plans base-ps
+                                    :rec-clause-versions rec-cvs}])))
+                      scc-rule-names)
                 ;; Check if any base case lacks data patterns (e.g. [(identity ?a) ?c]).
                 ;; Such base cases can't be executed by the compiled fixpoint engine
                 ;; because head vars have no data source — fall back to legacy.
@@ -867,12 +866,12 @@
                        (contains? guarded-rules (:e ci)))
                 ;; Inside a recursive branch plan — emit :rule-lookup
                 (let [rule-ci (assoc ci :type :rule-call
-                                        :vars (into #{} (filter analyze/free-var?) (rest (:clause ci))))
+                                     :vars (into #{} (filter analyze/free-var?) (rest (:clause ci))))
                       mode (or lookup-mode :main)]
                   (update acc :ops conj (plan-rule-lookup-op rule-ci mode)))
                 (if is-rule-call?
                   (let [rule-ci (assoc ci :type :rule-call
-                                          :vars (into #{} (filter analyze/free-var?) (rest (:clause ci))))]
+                                       :vars (into #{} (filter analyze/free-var?) (rest (:clause ci))))]
                     (update acc :ops conj (plan-rule-op db rule-ci all-clause-vars rules scc-info)))
 
                   (case (:type ci)

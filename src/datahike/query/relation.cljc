@@ -85,9 +85,9 @@
       (persistent! hash-table))))
 
 (defn join-tuples [t1 #?(:cljs idxs1
-                       :clj ^{:tag "[[Ljava.lang.Object;"} idxs1)
+                         :clj ^{:tag "[[Ljava.lang.Object;"} idxs1)
                    t2 #?(:cljs idxs2
-                       :clj ^{:tag "[[Ljava.lang.Object;"} idxs2)]
+                         :clj ^{:tag "[[Ljava.lang.Object;"} idxs2)]
   (let [l1 (alength idxs1)
         l2 (alength idxs2)
         res (da/make-array (+ l1 l2))]

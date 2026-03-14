@@ -77,7 +77,7 @@
 
   (testing "unknown type throws"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Unknown secondary index type"
-          (sec/create-index :nonexistent/type {} nil)))))
+                          (sec/create-index :nonexistent/type {} nil)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Schema rschema mapping tests

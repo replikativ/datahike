@@ -121,8 +121,8 @@
     (let [clause (:clause scan-op)
           ;; Determine which datom field pred-var maps to in the scan clause
           var-field (some (fn [[i sym]]
-                           (when (= sym pred-var) i))
-                         (map-indexed vector clause))
+                            (when (= sym pred-var) i))
+                          (map-indexed vector clause))
           _ (when-not var-field
               (throw (ex-info "predicate var not found in scan clause"
                               {:pred-var pred-var :clause clause})))
@@ -213,7 +213,7 @@
    (reduce (fn [est pred]
              (let [sel (if (and db scan-op (:var pred) (:const-val pred))
                          (sample-predicate-selectivity db scan-op (:op pred)
-                                                      (:var pred) (:const-val pred))
+                                                       (:var pred) (:const-val pred))
                          (estimate-predicate-selectivity-heuristic (:op pred)))]
                (long (* est sel))))
            base-estimate

@@ -140,10 +140,10 @@
            _ (try
                (let [rim (:ref-ident-map (:db-after report))
                      modified-attrs (into #{}
-                                         (comp (map :a)
-                                               (clojure.core/filter some?)
-                                               (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
-                                         (:tx-data report))]
+                                          (comp (map :a)
+                                                (clojure.core/filter some?)
+                                                (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
+                                          (:tx-data report))]
                  (dq/propagate-query-cache db (:db-after report) modified-attrs))
                (catch #?(:clj Exception :cljs :default) _ nil))]
        report))))

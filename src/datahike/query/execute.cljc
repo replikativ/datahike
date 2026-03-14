@@ -18,9 +18,9 @@
    #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
    [taoensso.timbre :as log])
   #?(:clj (:import [datahike.datom Datom]
-                    [org.replikativ.persistent_sorted_set
-                     PersistentSortedSet
-                     PersistentSortedSet$ForwardCursor])))
+                   [org.replikativ.persistent_sorted_set
+                    PersistentSortedSet
+                    PersistentSortedSet$ForwardCursor])))
 
 #?(:clj (set! *warn-on-reflection* true))
 
@@ -87,17 +87,17 @@
 ;; Fast Java comparators (avoid Clojure Var indirection in hot path)
 
 #?(:clj
-(def ^:private ^java.util.Comparator fast-cmp-ea
-  "EA-only comparator as a direct Java Comparator.
+   (def ^:private ^java.util.Comparator fast-cmp-ea
+     "EA-only comparator as a direct Java Comparator.
    Avoids Clojure Var.getRawRoot overhead that cmp-datoms-ea incurs
    (~1.6x faster per seekGE call in profiling)."
-  (reify java.util.Comparator
-    (compare [_ d1 d2]
-      (let [^Datom d1 d1 ^Datom d2 d2
-            c (Long/compare (.-e d1) (.-e d2))]
-        (if (zero? c)
-          (.compareTo ^Comparable (.-a d1) (.-a d2))
-          (int c)))))))
+     (reify java.util.Comparator
+       (compare [_ d1 d2]
+         (let [^Datom d1 d1 ^Datom d2 d2
+               c (Long/compare (.-e d1) (.-e d2))]
+           (if (zero? c)
+             (.compareTo ^Comparable (.-a d1) (.-a d2))
+             (int c)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Helpers
@@ -301,17 +301,17 @@
                                           (resolve-attr db ma))))
                                     merge-ops))
         merge-v-ground (to-array (mapv (fn [op]
-                                          (let [mv (get (:clause op) 2)]
-                                            (boolean (and (some? mv) (not (symbol? mv))))))
-                                        merge-ops))
+                                         (let [mv (get (:clause op) 2)]
+                                           (boolean (and (some? mv) (not (symbol? mv))))))
+                                       merge-ops))
         merge-v-vals (to-array (mapv (fn [op]
                                        (let [mv (get (:clause op) 2)]
                                          (when (and (some? mv) (not (symbol? mv))) mv)))
                                      merge-ops))
         merge-anti (to-array (mapv #(boolean (:anti? %)) merge-ops))
         merge-card-many (to-array (mapv (fn [op]
-                                           (not (get-in op [:schema-info :card-one?] true)))
-                                         merge-ops))
+                                          (not (get-in op [:schema-info :card-one?] true)))
+                                        merge-ops))
         has-card-many? (some true? (seq merge-card-many))
 
         ;; ForwardCursor optimization (CLJ only): when scan entity IDs are ascending,
@@ -331,11 +331,11 @@
                                       (pos? n-merges)
                                       (not has-card-many?)
                                       (every? #(not (aget merge-anti %)) (range n-merges)))
-                             :cljs false)
+                            :cljs false)
 
         sorted-order (when use-sorted-scan?
                        (let [indexed (mapv (fn [i] [(aget merge-attrs i) i])
-                                          (range n-merges))
+                                           (range n-merges))
                              sorted (sort-by first compare indexed)]
                          #?(:clj (int-array (mapv second sorted))
                             :cljs (to-array (mapv second sorted)))))
@@ -365,7 +365,7 @@
                                             (.forwardCursor ^PersistentSortedSet eavt-pss)
                                             (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea))))
                                   cursors))
-                          :cljs nil)
+                         :cljs nil)
 
         ;; Build find-source projection: for each find-var, where to get its value
         ;; -1..-4 = scan datom e/a/v/tx, 0..N = merge[i].v, 1000+i = merge[i].e, etc.
@@ -468,7 +468,7 @@
                                    (let [probe (datom eid ra vgv tx0)
                                          ^Datom d (if merge-cursors
                                                     (.seekGE ^PersistentSortedSet$ForwardCursor
-                                                             (aget merge-cursors mi) probe)
+                                                     (aget merge-cursors mi) probe)
                                                     (.lookupGE ^PersistentSortedSet eavt-pss probe))
                                          found? (and d
                                                      (== (.-e d) eid)
@@ -625,7 +625,7 @@
                                      probe (datom eid ra vgv tx0)
                                      ^Datom d (if merge-cursors
                                                 (.seekGE ^PersistentSortedSet$ForwardCursor
-                                                         (aget merge-cursors mi) probe)
+                                                 (aget merge-cursors mi) probe)
                                                 (.lookupGE ^PersistentSortedSet eavt-pss probe))
                                      found? (and d
                                                  (== (.-e d) eid)
@@ -670,7 +670,6 @@
 
     result-list))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Direct-to-output execution (main fast path)
 
@@ -698,8 +697,8 @@
           ;; Where is probe-var in consumer's scan clause?
           consumer-clause (:clause (entity-group-scan-op consumer-op))
           consumer-scan-field (some (fn [[i x]]
-                                     (when (= x probe-var) i))
-                                   (map-indexed vector consumer-clause))
+                                      (when (= x probe-var) i))
+                                    (map-indexed vector consumer-clause))
           ;; Where is probe-var produced in the producer?
           ;; Check producer's scan clause first, then merge clauses
           producer-scan-clause (:clause (entity-group-scan-op producer-op))
@@ -762,7 +761,6 @@
 ;; for target attributes. If all required attributes present, emit tuple.
 ;; Zero comparator dispatch — just raw field access + long comparison.
 
-
 (defn execute-plan-direct
   "Execute a fully-fusable plan directly to a PersistentHashSet.
    Supports single-group and multi-group (value join via hash-probe) plans.
@@ -787,8 +785,8 @@
                 scan-op (entity-group-scan-op g)
                 merge-ops (entity-group-merge-ops g)]
             (execute-group-direct db scan-op merge-ops find-vars consts
-                                     result-list nil 0 nil 0 -1
-                                     max-results))
+                                  result-list nil 0 nil 0 -1
+                                  max-results))
 
           ;; Multi-group — hash-probe value join
           ;; Execute groups in order, build probe-sets between them
@@ -809,37 +807,37 @@
                         probe-set (get probe-sets producer-idx)]
                     (when (and pinfo probe-set)
                       (execute-group-direct db scan-op merge-ops find-vars consts
-                                               result-list
-                                               probe-set
-                                               (int (:consumer-scan-field pinfo))
-                                               nil 0 -1
-                                               max-results))
+                                            result-list
+                                            probe-set
+                                            (int (:consumer-scan-field pinfo))
+                                            nil 0 -1
+                                            max-results))
                     (recur (inc gi) probe-sets))
 
                   ;; Producer group: collect join-var values for downstream consumers
                   (let [;; Check if any downstream group needs a probe from us
                         downstream-info (some (fn [[consumer-gi info]]
-                                               (when (= (:producer-idx info) gi)
-                                                 {:consumer-gi consumer-gi
-                                                  :probe-vars (:probe-vars info)}))
-                                             group-joins)
+                                                (when (= (:producer-idx info) gi)
+                                                  {:consumer-gi consumer-gi
+                                                   :probe-vars (:probe-vars info)}))
+                                              group-joins)
                         collect-set (when downstream-info
                                       (make-probe-set 4000))
                         ;; Determine which field to collect
                         collect-field-info (when downstream-info
-                                            (let [consumer-g (nth groups (:consumer-gi downstream-info))
-                                                  pinfo (find-probe-info consumer-g g (:probe-vars downstream-info))]
-                                              pinfo))]
+                                             (let [consumer-g (nth groups (:consumer-gi downstream-info))
+                                                   pinfo (find-probe-info consumer-g g (:probe-vars downstream-info))]
+                                               pinfo))]
 
                     ;; Execute producer group — empty find-vars, only collect
                     ;; No max-results for producer (needs full collection for join)
                     (execute-group-direct db scan-op merge-ops [] consts
-                                             result-list
-                                             nil 0
-                                             collect-set
-                                             (int (or (:producer-datom-field collect-field-info) 0))
-                                             (int (or (:producer-merge-idx collect-field-info) -1))
-                                             nil)
+                                          result-list
+                                          nil 0
+                                          collect-set
+                                          (int (or (:producer-datom-field collect-field-info) 0))
+                                          (int (or (:producer-merge-idx collect-field-info) -1))
+                                          nil)
                     (recur (inc gi)
                            (if collect-set
                              (assoc probe-sets gi collect-set)
@@ -885,7 +883,7 @@
                 merge-ops (entity-group-merge-ops g)
                 result-list (make-result-list 4000)]
             (execute-group-direct db scan-op merge-ops all-vars nil
-                                 result-list nil 0 nil 0 -1 nil)
+                                  result-list nil 0 nil 0 -1 nil)
             ;; Convert to Relation: attrs = {var-sym → column-index}, tuples = vec of Object[]
             (let [attrs (into {} (map-indexed (fn [i v] [v i]) all-vars))
                   tuples #?(:clj (vec (.toArray ^java.util.ArrayList result-list))
@@ -917,8 +915,8 @@
                                                  (resolve-attr db ma))))
                                     merge-ops))
         merge-v-ground (to-array (mapv (fn [op] (let [mv (get (:clause op) 2)]
-                                                   (boolean (and (some? mv) (not (symbol? mv))))))
-                                        merge-ops))
+                                                  (boolean (and (some? mv) (not (symbol? mv))))))
+                                       merge-ops))
         merge-v-vals (to-array (mapv (fn [op] (let [mv (get (:clause op) 2)]
                                                 (when (and (some? mv) (not (symbol? mv))) mv)))
                                      merge-ops))
@@ -954,65 +952,65 @@
         [(-> context (assoc :rels merged) (assoc :unique-results? true))
          (inc (count merge-ops))])
       (let [filtered-datoms (cond->> (di/-slice db-index from-datom to-datom index)
-                          ground-filter (filter ground-filter)
-                          strict-filter (filter strict-filter))
+                              ground-filter (filter ground-filter)
+                              strict-filter (filter strict-filter))
 
-        merge-card-many (to-array (mapv (fn [op]
-                                        (not (get-in op [:schema-info :card-one?] true)))
-                                      merge-ops))
-        acc (make-result-list 2000)
-        _ (letfn [(process-merges [eid mi tuple]
-                    (if (>= mi n-merges)
-                      (result-list-add acc tuple)
-                      (let [anti? (aget merge-anti mi)
-                            ra (aget merge-attrs mi)
-                            vg? (aget merge-v-ground mi)
-                            vgv (aget merge-v-vals mi)
-                            card-many? (aget merge-card-many mi)
-                            has-v-var? (let [mv (get (:clause (nth merge-ops mi)) 2)]
-                                         (and (symbol? mv) (analyze/free-var? mv)))
-                            has-tx-var? (let [mtx (get (:clause (nth merge-ops mi)) 3)]
-                                          (and (some? mtx) (symbol? mtx) (analyze/free-var? mtx)))]
-                        (if card-many?
+            merge-card-many (to-array (mapv (fn [op]
+                                              (not (get-in op [:schema-info :card-one?] true)))
+                                            merge-ops))
+            acc (make-result-list 2000)
+            _ (letfn [(process-merges [eid mi tuple]
+                        (if (>= mi n-merges)
+                          (result-list-add acc tuple)
+                          (let [anti? (aget merge-anti mi)
+                                ra (aget merge-attrs mi)
+                                vg? (aget merge-v-ground mi)
+                                vgv (aget merge-v-vals mi)
+                                card-many? (aget merge-card-many mi)
+                                has-v-var? (let [mv (get (:clause (nth merge-ops mi)) 2)]
+                                             (and (symbol? mv) (analyze/free-var? mv)))
+                                has-tx-var? (let [mtx (get (:clause (nth merge-ops mi)) 3)]
+                                              (and (some? mtx) (symbol? mtx) (analyze/free-var? mtx)))]
+                            (if card-many?
                           ;; Card-many: iterate ALL matching datoms
-                          (let [from-d (datom eid ra (when vg? vgv) tx0)
-                                to-d (datom eid ra (when vg? vgv) txmax)
-                                slice (di/-slice (:eavt db) from-d to-d :eavt)]
-                            (if anti?
-                              (when (empty? (seq slice))
-                                (process-merges eid (inc mi) tuple))
-                              (doseq [^Datom d slice]
-                                (when (and (== (.-e d) eid) (= (.-a d) ra)
-                                           (or (not vg?) (val-eq? (.-v d) vgv)))
-                                  (process-merges eid (inc mi)
-                                                  (cond-> tuple
-                                                    has-v-var? (conj (.-v d))
-                                                    has-tx-var? (conj (.-tx d))))))))
+                              (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                    to-d (datom eid ra (when vg? vgv) txmax)
+                                    slice (di/-slice (:eavt db) from-d to-d :eavt)]
+                                (if anti?
+                                  (when (empty? (seq slice))
+                                    (process-merges eid (inc mi) tuple))
+                                  (doseq [^Datom d slice]
+                                    (when (and (== (.-e d) eid) (= (.-a d) ra)
+                                               (or (not vg?) (val-eq? (.-v d) vgv)))
+                                      (process-merges eid (inc mi)
+                                                      (cond-> tuple
+                                                        has-v-var? (conj (.-v d))
+                                                        has-tx-var? (conj (.-tx d))))))))
                           ;; Card-one: single lookupGE
-                          (let [^Datom d (pss-lookup-ge eavt-pss (datom eid ra vgv tx0))
-                                found? (and d (== (.-e d) eid) (= (.-a d) ra)
-                                            (or (not vg?) (val-eq? (.-v d) vgv)))]
-                            (if anti?
-                              (when (not found?)
-                                (process-merges eid (inc mi) tuple))
-                              (when found?
-                                (process-merges eid (inc mi)
-                                                (cond-> tuple
-                                                  has-v-var? (conj (.-v d))
-                                                  has-tx-var? (conj (.-tx d)))))))))))]
-            (run! (fn [^Datom scan-d]
-                    (when (or (nil? entity-filter)
-                              (es/entity-bitset-contains? entity-filter (.-e scan-d)))
-                      (process-merges (.-e scan-d) (int 0)
-                                     [(.-e scan-d) (.-a scan-d) (.-v scan-d) (.-tx scan-d) true])))
-                  filtered-datoms))]
-      (let [out-rel (rel/->Relation out-attrs #?(:clj (vec (.toArray ^java.util.ArrayList acc))
-                                                    :cljs (vec acc)))
-            merged (rel/collapse-rels (:rels context) out-rel)]
-        [(-> context
-             (assoc :rels merged)
-             (assoc :unique-results? true))
-         (inc (count merge-ops))])))))
+                              (let [^Datom d (pss-lookup-ge eavt-pss (datom eid ra vgv tx0))
+                                    found? (and d (== (.-e d) eid) (= (.-a d) ra)
+                                                (or (not vg?) (val-eq? (.-v d) vgv)))]
+                                (if anti?
+                                  (when (not found?)
+                                    (process-merges eid (inc mi) tuple))
+                                  (when found?
+                                    (process-merges eid (inc mi)
+                                                    (cond-> tuple
+                                                      has-v-var? (conj (.-v d))
+                                                      has-tx-var? (conj (.-tx d)))))))))))]
+                (run! (fn [^Datom scan-d]
+                        (when (or (nil? entity-filter)
+                                  (es/entity-bitset-contains? entity-filter (.-e scan-d)))
+                          (process-merges (.-e scan-d) (int 0)
+                                          [(.-e scan-d) (.-a scan-d) (.-v scan-d) (.-tx scan-d) true])))
+                      filtered-datoms))]
+        (let [out-rel (rel/->Relation out-attrs #?(:clj (vec (.toArray ^java.util.ArrayList acc))
+                                                   :cljs (vec acc)))
+              merged (rel/collapse-rels (:rels context) out-rel)]
+          [(-> context
+               (assoc :rels merged)
+               (assoc :unique-results? true))
+           (inc (count merge-ops))])))))
 
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT execution (Relation-based fallback)
@@ -1168,10 +1166,10 @@
                                 (vec result))
                          :cljs (let [result #js []]
                                  (.forEach demand-set
-                                   (fn [v]
-                                     (let [arr (datahike.arrays/make-array 1)]
-                                       (aset arr 0 v)
-                                       (.push result arr))))
+                                           (fn [v]
+                                             (let [arr (datahike.arrays/make-array 1)]
+                                               (aset arr 0 v)
+                                               (.push result arr))))
                                  (vec result)))
         demand-rel (rel/->Relation {demand-var 0} demand-tuples)]
     (update ctx :rels rel/collapse-rels demand-rel)))
@@ -1199,8 +1197,8 @@
                          (aget ^objects tuple (int join-pos))
                          (nth tuple join-pos))
                  y-val (if (instance? object-array-class tuple)
-                          (aget ^objects tuple (int output-pos))
-                          (nth tuple output-pos))
+                         (aget ^objects tuple (int output-pos))
+                         (nth tuple output-pos))
                  ;; Reverse lookup: find all entities where :attr = t-val
                  from-datom (datom e0 attr t-val tx0)
                  to-datom (datom emax attr t-val txmax)
@@ -1208,7 +1206,7 @@
              (doseq [^Datom sd slice]
                (when (and (= (.-a sd) attr) (= (.-v sd) t-val))
                  (let [arr (object-array 2)
-                           eid (.-e sd)]
+                       eid (.-e sd)]
                    (aset arr 0 (Long/valueOf eid))   ;; ?x = entity that follows t-val
                    (aset arr 1 y-val)      ;; ?y = propagated from delta
                    (.add result arr))))))
@@ -1254,8 +1252,8 @@
         initial-size (.size demand-set)]
     (doseq [tuple tuples]
       (let [v #?(:clj (if (instance? object-array-class tuple)
-                         (aget ^objects tuple (int prop-pos))
-                         (nth tuple prop-pos))
+                        (aget ^objects tuple (int prop-pos))
+                        (nth tuple prop-pos))
                  :cljs (datahike.arrays/aget tuple prop-pos))]
         (.add demand-set v)))
     (> (.size demand-set) initial-size)))
@@ -1301,29 +1299,29 @@
             magic-prop-pos (when magic-info (:propagation-pos magic-info))
             ;; Create per-rule seen-sets for deduplication across iterations
             seen-sets (into {} (map (fn [rn]
-                                     [rn #?(:clj (java.util.HashSet. 256)
-                                            :cljs (js/Set.))]))
+                                      [rn #?(:clj (java.util.HashSet. 256)
+                                             :cljs (js/Set.))]))
                             scc-rule-names)
             ;; Execute base branches for each SCC rule
             ;; With magic sets: use demand-driven base scan (point lookups only)
             rule-states
             (into {}
-              (map (fn [rn]
-                (let [{:keys [head-vars base-plans]} (get scc-rule-plans rn)
-                      base-rel (if (and magic-demand base-scan-attr (= rn rule-name))
+                  (map (fn [rn]
+                         (let [{:keys [head-vars base-plans]} (get scc-rule-plans rn)
+                               base-rel (if (and magic-demand base-scan-attr (= rn rule-name))
                                  ;; Magic: direct EAVT point lookups for demand entities
-                                 (or (magic-base-scan db head-vars base-scan-attr magic-demand magic-scanned)
-                                     (rel/->Relation (zipmap head-vars (range)) []))
+                                          (or (magic-base-scan db head-vars base-scan-attr magic-demand magic-scanned)
+                                              (rel/->Relation (zipmap head-vars (range)) []))
                                  ;; Normal: full base branch plan execution
-                                 (execute-branch-plans db base-plans ctx head-vars))
-                      delta-rel (rel-dedup-into! base-rel head-vars (get seen-sets rn))]
+                                          (execute-branch-plans db base-plans ctx head-vars))
+                               delta-rel (rel-dedup-into! base-rel head-vars (get seen-sets rn))]
                   ;; Propagate magic demand from base results
-                  (when (and magic-demand (= rn rule-name))
-                    (extract-demand-values delta-rel magic-prop-pos magic-demand))
-                  [rn {:head-vars head-vars
-                       :main-rel delta-rel
-                       :delta-rel delta-rel}])))
-              scc-rule-names)
+                           (when (and magic-demand (= rn rule-name))
+                             (extract-demand-values delta-rel magic-prop-pos magic-demand))
+                           [rn {:head-vars head-vars
+                                :main-rel delta-rel
+                                :delta-rel delta-rel}])))
+                  scc-rule-names)
             ;; Main fixpoint loop — Relations throughout, no vector conversion
             ;; With magic sets: re-scan base edges for newly demanded entities each
             ;; iteration (direct EAVT point lookups, not full branch plan re-execution).
@@ -1339,19 +1337,19 @@
                   states
                   ;; Check for magic explosion
                   (let [use-magic? (and use-magic?
-                                       (or (<= iteration 2)
-                                           (< #?(:clj (.size ^java.util.HashSet magic-demand)
-                                                 :cljs (.-size magic-demand))
-                                              magic-explosion-threshold)))
+                                        (or (<= iteration 2)
+                                            (< #?(:clj (.size ^java.util.HashSet magic-demand)
+                                                  :cljs (.-size magic-demand))
+                                               magic-explosion-threshold)))
                         ;; Build accumulators for ALL SCC rules
                         acc-map
                         (into {}
-                          (map (fn [[rn s]]
-                            (let [hv (:head-vars s)]
-                              [rn {:main (:main-rel s)
-                                   :delta (:delta-rel s)
-                                   :output-vars hv}])))
-                          states)
+                              (map (fn [[rn s]]
+                                     (let [hv (:head-vars s)]
+                                       [rn {:main (:main-rel s)
+                                            :delta (:delta-rel s)
+                                            :output-vars hv}])))
+                              states)
                         base-aug-ctx (assoc ctx :rule-accumulators acc-map)
                         ;; With magic: inject demand relation to constrain recursive scans
                         aug-ctx (if use-magic?
@@ -1361,20 +1359,20 @@
                         ;; Execute rec clause versions, dedup via seen-set
                         new-states
                         (into {}
-                          (map (fn [rn]
-                            (let [{:keys [head-vars rec-clause-versions]} (get scc-rule-plans rn)
+                              (map (fn [rn]
+                                     (let [{:keys [head-vars rec-clause-versions]} (get scc-rule-plans rn)
                                   ;; With magic: scan newly demanded entities AND run
                                   ;; recursive branches (constrained by demand relation).
-                                  magic-base-rel
-                                  (when (and use-magic? base-scan-attr (= rn rule-name))
-                                    (magic-base-scan db head-vars base-scan-attr
-                                                     magic-demand magic-scanned))
+                                           magic-base-rel
+                                           (when (and use-magic? base-scan-attr (= rn rule-name))
+                                             (magic-base-scan db head-vars base-scan-attr
+                                                              magic-demand magic-scanned))
                                   ;; Execute recursive clause versions
                                   ;; Optimization: delta-driven expansion for simple binary rules
                                   ;; Instead of full index scan + hash-join, iterate delta tuples
                                   ;; and do reverse AVET lookups — O(delta) instead of O(all-edges)
-                                  delta-state (get states rn)
-                                  delta-size (count (:tuples (:delta-rel delta-state)))
+                                           delta-state (get states rn)
+                                           delta-size (count (:tuples (:delta-rel delta-state)))
                                   ;; Use delta-driven when delta is small enough that
                                   ;; point lookups beat full scan + hash-join.
                                   ;; Heuristic: delta-driven wins when delta is very small.
@@ -1384,46 +1382,46 @@
                                   ;; a DB pattern (entity-group/pattern-scan). Pure rule-lookup
                                   ;; clauses (e.g., symmetric rule (follow ?e2 ?e1)) don't
                                   ;; have DB patterns — delta-driven would skip them entirely.
-                                  rec-has-db-pattern?
-                                  (every? (fn [cv-plan]
-                                            (some #(#{:entity-group :pattern-scan} (:op %))
-                                                  (:ops cv-plan)))
-                                          rec-clause-versions)
-                                  use-delta-driven? (and base-scan-attr
-                                                         rec-has-db-pattern?
-                                                         (= rn rule-name)
-                                                         (= 1 (count scc-rule-names))
-                                                         (= 2 (count head-vars))
-                                                         (pos? delta-size)
-                                                         (< delta-size 16)
+                                           rec-has-db-pattern?
+                                           (every? (fn [cv-plan]
+                                                     (some #(#{:entity-group :pattern-scan} (:op %))
+                                                           (:ops cv-plan)))
+                                                   rec-clause-versions)
+                                           use-delta-driven? (and base-scan-attr
+                                                                  rec-has-db-pattern?
+                                                                  (= rn rule-name)
+                                                                  (= 1 (count scc-rule-names))
+                                                                  (= 2 (count head-vars))
+                                                                  (pos? delta-size)
+                                                                  (< delta-size 16)
                                                          ;; AVET reverse lookup requires indexed attr
-                                                         (dbu/indexing? db base-scan-attr))
-                                  rec-rel (if use-delta-driven?
+                                                                  (dbu/indexing? db base-scan-attr))
+                                           rec-rel (if use-delta-driven?
                                             ;; Delta-driven: for each delta(?t,?y), AVET lookup ?x
-                                            (or (delta-driven-expand db head-vars base-scan-attr
-                                                                     (:delta-rel delta-state)
-                                                                     0 1)
-                                                (rel/->Relation (zipmap head-vars (range)) []))
+                                                     (or (delta-driven-expand db head-vars base-scan-attr
+                                                                              (:delta-rel delta-state)
+                                                                              0 1)
+                                                         (rel/->Relation (zipmap head-vars (range)) []))
                                             ;; Normal: full branch plan execution
-                                            (execute-branch-plans db rec-clause-versions aug-ctx head-vars))
+                                                     (execute-branch-plans db rec-clause-versions aug-ctx head-vars))
                                   ;; Union base and rec results
-                                  new-rel (if (and magic-base-rel (seq (:tuples magic-base-rel)))
-                                            (rel/sum-rel magic-base-rel rec-rel)
-                                            rec-rel)
+                                           new-rel (if (and magic-base-rel (seq (:tuples magic-base-rel)))
+                                                     (rel/sum-rel magic-base-rel rec-rel)
+                                                     rec-rel)
                                   ;; Fused dedup: only new tuples not in seen-set
-                                  delta-rel (rel-dedup-into! new-rel head-vars (get seen-sets rn))
+                                           delta-rel (rel-dedup-into! new-rel head-vars (get seen-sets rn))
                                   ;; Propagate magic demand from new results
-                                  _ (when (and magic-demand (= rn rule-name))
-                                      (extract-demand-values delta-rel magic-prop-pos magic-demand))
+                                           _ (when (and magic-demand (= rn rule-name))
+                                               (extract-demand-values delta-rel magic-prop-pos magic-demand))
                                   ;; Accumulate main by summing with delta
-                                  old-main (:main-rel (get states rn))
-                                  new-main (if (seq (:tuples delta-rel))
-                                             (rel/sum-rel old-main delta-rel)
-                                             old-main)]
-                              [rn {:head-vars head-vars
-                                   :main-rel new-main
-                                   :delta-rel delta-rel}])))
-                          scc-rule-names)]
+                                           old-main (:main-rel (get states rn))
+                                           new-main (if (seq (:tuples delta-rel))
+                                                      (rel/sum-rel old-main delta-rel)
+                                                      old-main)]
+                                       [rn {:head-vars head-vars
+                                            :main-rel new-main
+                                            :delta-rel delta-rel}])))
+                              scc-rule-names)]
                     (recur new-states (inc iteration) use-magic?)))))
             ;; Extract result for the called rule
             called-state (get final-states rule-name)
@@ -1440,8 +1438,8 @@
                 (filterv (fn [tuple]
                            (every? (fn [[i expected]]
                                      (= (if (instance? object-array-class tuple)
-                                           (aget ^objects tuple (int i))
-                                           (nth tuple i))
+                                          (aget ^objects tuple (int i))
+                                          (nth tuple i))
                                         expected))
                                    const-filters))
                          (:tuples main-rel))))
@@ -1461,7 +1459,7 @@
                   result #?(:clj (java.util.ArrayList.) :cljs #js [])]
               (doseq [tuple filtered-tuples]
                 (let [arr #?(:clj (let [a (object-array n-out)
-                                          oa? (instance? object-array-class tuple)]
+                                        oa? (instance? object-array-class tuple)]
                                     (dotimes [j n-out]
                                       (let [idx (aget output-indices j)]
                                         (aset a j (if oa? (aget ^objects tuple idx) (nth tuple idx)))))
@@ -1580,9 +1578,9 @@
          (if idx
            (let [query-args (vec (drop 1 args))
                  results (sec/-slice-ordered idx
-                                            {:query (first query-args)
-                                             :field (second query-args)}
-                                            nil nil nil nil)
+                                             {:query (first query-args)
+                                              :field (second query-args)}
+                                             nil nil nil nil)
                  binding-vars (if (and (sequential? binding-form)
                                        (sequential? (first binding-form)))
                                 (first binding-form)
@@ -1606,9 +1604,9 @@
          (let [resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
                              (some-> (resolve fn-sym) deref))
                binding-vars (if (and (sequential? binding-form)
-                                      (sequential? (first binding-form)))
-                               (first binding-form)
-                               [binding-form])
+                                     (sequential? (first binding-form)))
+                              (first binding-form)
+                              [binding-form])
                query-spec (first (remove analyze/free-var? args))]
            (if resolved-fn
              ;; Derive input vars: all context vars referenced by the query-spec
@@ -1720,7 +1718,7 @@
                 (let [[ctx' consumed] (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx)
                       actual-card (ctx-total-tuples ctx')
                       plan' (if (and (> (- (count (:ops plan)) idx) 2)
-                                    (should-replan? actual-card estimated-card))
+                                     (should-replan? actual-card estimated-card))
                               (replan-fn plan idx actual-card op-db)
                               plan)]
                   (recur ctx' plan' (inc idx)))
@@ -1764,38 +1762,38 @@
                   (let [ctx' (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op))]
                     (recur ctx' plan (inc idx)))
                 ;; DB source — use fused scan or single pattern scan
-                (let [;; Check if next ops form an ad-hoc fusable group
-                      all-ops (:ops plan)
-                      e-var (first (:clause op))
-                      op-source (:source op)
-                      fusable (when (and (= :scan (:join-method op)) (empty? (:rels ctx)))
-                                (loop [j (inc idx) fused []]
-                                  (if (>= j (count all-ops))
-                                    fused
-                                    (let [next-op (nth all-ops j)]
-                                      (if (and (= :pattern-scan (:op next-op))
-                                               (= :lookup (:join-method next-op))
-                                               (= e-var (first (:clause next-op)))
+                  (let [;; Check if next ops form an ad-hoc fusable group
+                        all-ops (:ops plan)
+                        e-var (first (:clause op))
+                        op-source (:source op)
+                        fusable (when (and (= :scan (:join-method op)) (empty? (:rels ctx)))
+                                  (loop [j (inc idx) fused []]
+                                    (if (>= j (count all-ops))
+                                      fused
+                                      (let [next-op (nth all-ops j)]
+                                        (if (and (= :pattern-scan (:op next-op))
+                                                 (= :lookup (:join-method next-op))
+                                                 (= e-var (first (:clause next-op)))
                                                ;; Only fuse ops on the same source
-                                               (= op-source (:source next-op)))
-                                        (recur (inc j) (conj fused next-op))
-                                        fused)))))]
-                  (if (seq fusable)
-                    (let [[ctx' consumed] (execute-fused-scan-rel op-db op fusable ctx)
-                          actual-card (ctx-total-tuples ctx')
-                          plan' (if (and (> (- (count (:ops plan)) (+ idx consumed)) 1)
-                                         (should-replan? actual-card estimated-card))
-                                  (replan-fn plan (+ idx (dec consumed)) actual-card op-db)
-                                  plan)]
-                      (recur ctx' plan' (+ idx consumed)))
-                    (let [new-rel (execute-pattern-scan op-db op)
-                          ctx' (update ctx :rels rel/collapse-rels new-rel)
-                          actual-card (count (:tuples new-rel))
-                          plan' (if (and (> (- (count (:ops plan)) idx) 2)
-                                         (should-replan? actual-card estimated-card))
-                                  (replan-fn plan idx actual-card op-db)
-                                  plan)]
-                      (recur ctx' plan' (inc idx)))))))
+                                                 (= op-source (:source next-op)))
+                                          (recur (inc j) (conj fused next-op))
+                                          fused)))))]
+                    (if (seq fusable)
+                      (let [[ctx' consumed] (execute-fused-scan-rel op-db op fusable ctx)
+                            actual-card (ctx-total-tuples ctx')
+                            plan' (if (and (> (- (count (:ops plan)) (+ idx consumed)) 1)
+                                           (should-replan? actual-card estimated-card))
+                                    (replan-fn plan (+ idx (dec consumed)) actual-card op-db)
+                                    plan)]
+                        (recur ctx' plan' (+ idx consumed)))
+                      (let [new-rel (execute-pattern-scan op-db op)
+                            ctx' (update ctx :rels rel/collapse-rels new-rel)
+                            actual-card (count (:tuples new-rel))
+                            plan' (if (and (> (- (count (:ops plan)) idx) 2)
+                                           (should-replan? actual-card estimated-card))
+                                    (replan-fn plan idx actual-card op-db)
+                                    plan)]
+                        (recur ctx' plan' (inc idx)))))))
 
               :predicate
               (recur (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred)) ctx (:clause op)) plan (inc idx))
@@ -1850,8 +1848,8 @@
 ;; group-by + aggregate, returning result tuples directly.
 
 #?(:clj
-(defn execute-columnar-aggregate
-  "Execute a single-group fusable plan, writing results directly into typed
+   (defn execute-columnar-aggregate
+     "Execute a single-group fusable plan, writing results directly into typed
    column arrays. Returns a vector of result tuples (vectors), or nil if
    the plan can't be executed this way.
 
@@ -1862,111 +1860,111 @@
 
    find-elements: parsed find elements (Variable, Aggregate)
    plan, db: as usual"
-  [plan db find-elements aggregate-fn]
-  (let [ops (:ops plan)]
-    (when (and (not (:has-passthrough? plan))
-               (seq ops)
-               (every? #(#{:entity-group :pattern-scan} (:op %)) ops)
-               (not-any? :source ops)
-               (= 1 (count (filterv #(#{:entity-group :pattern-scan} (:op %)) ops))))
-      (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
-            g (first groups)
-            scan-op (entity-group-scan-op g)
-            merge-ops (entity-group-merge-ops g)
+     [plan db find-elements aggregate-fn]
+     (let [ops (:ops plan)]
+       (when (and (not (:has-passthrough? plan))
+                  (seq ops)
+                  (every? #(#{:entity-group :pattern-scan} (:op %)) ops)
+                  (not-any? :source ops)
+                  (= 1 (count (filterv #(#{:entity-group :pattern-scan} (:op %)) ops))))
+         (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
+               g (first groups)
+               scan-op (entity-group-scan-op g)
+               merge-ops (entity-group-merge-ops g)
             ;; Collect all vars from the plan
-            all-vars (into [] (:vars g))
+               all-vars (into [] (:vars g))
 
             ;; First pass: execute the fused scan to get Object[] tuples
             ;; (reuses the proven execute-group-direct infrastructure)
-            result-list (make-result-list 4000)]
-        (execute-group-direct db scan-op merge-ops all-vars nil
-                              result-list nil 0 nil 0 -1 nil)
-        (let [n (.size ^java.util.ArrayList result-list)]
-          (when (pos? n)
-            (let [attrs (into {} (map-indexed (fn [i v] [v i]) all-vars))
+               result-list (make-result-list 4000)]
+           (execute-group-direct db scan-op merge-ops all-vars nil
+                                 result-list nil 0 nil 0 -1 nil)
+           (let [n (.size ^java.util.ArrayList result-list)]
+             (when (pos? n)
+               (let [attrs (into {} (map-indexed (fn [i v] [v i]) all-vars))
 
                   ;; Map find-elements to column info
                   ;; Group-by columns: Variable elements → column keyword + index in tuple
                   ;; Aggregate columns: Aggregate elements → agg-op + column keyword + index
-                  group-cols (vec (keep-indexed
-                                   (fn [_fi fe]
-                                     (when-not (instance? datalog.parser.type.Aggregate fe)
-                                       (let [var-sym (.-symbol ^datalog.parser.type.Variable fe)
-                                             col-idx (get attrs var-sym)]
-                                         (when col-idx
-                                           {:var var-sym
-                                            :col-key (keyword (name var-sym))
-                                            :col-idx col-idx}))))
-                                   find-elements))
-                  agg-cols (vec (keep-indexed
-                                  (fn [_fi fe]
-                                    (when (instance? datalog.parser.type.Aggregate fe)
-                                      (let [agg-sym (.-symbol ^datalog.parser.type.PlainSymbol (.-fn ^datalog.parser.type.Aggregate fe))
-                                            agg-args (.-args ^datalog.parser.type.Aggregate fe)
+                     group-cols (vec (keep-indexed
+                                      (fn [_fi fe]
+                                        (when-not (instance? datalog.parser.type.Aggregate fe)
+                                          (let [var-sym (.-symbol ^datalog.parser.type.Variable fe)
+                                                col-idx (get attrs var-sym)]
+                                            (when col-idx
+                                              {:var var-sym
+                                               :col-key (keyword (name var-sym))
+                                               :col-idx col-idx}))))
+                                      find-elements))
+                     agg-cols (vec (keep-indexed
+                                    (fn [_fi fe]
+                                      (when (instance? datalog.parser.type.Aggregate fe)
+                                        (let [agg-sym (.-symbol ^datalog.parser.type.PlainSymbol (.-fn ^datalog.parser.type.Aggregate fe))
+                                              agg-args (.-args ^datalog.parser.type.Aggregate fe)
                                             ;; The last arg is the variable being aggregated
                                             ;; (count has no explicit var — counts rows)
-                                            agg-var (when (and (seq agg-args)
-                                                              (instance? datalog.parser.type.Variable (last agg-args)))
-                                                     (.-symbol ^datalog.parser.type.Variable (last agg-args)))
-                                            col-idx (when agg-var (get attrs agg-var))]
-                                        {:agg-op (keyword (name agg-sym))
-                                         :var agg-var
-                                         :col-key (when agg-var (keyword (name agg-var)))
-                                         :col-idx col-idx
-                                         :find-idx _fi})))
-                                  find-elements))
+                                              agg-var (when (and (seq agg-args)
+                                                                 (instance? datalog.parser.type.Variable (last agg-args)))
+                                                        (.-symbol ^datalog.parser.type.Variable (last agg-args)))
+                                              col-idx (when agg-var (get attrs agg-var))]
+                                          {:agg-op (keyword (name agg-sym))
+                                           :var agg-var
+                                           :col-key (when agg-var (keyword (name agg-var)))
+                                           :col-idx col-idx
+                                           :find-idx _fi})))
+                                    find-elements))
 
                   ;; Extract typed columns from Object[] tuples
                   ;; Detect types from first tuple, then extract into typed arrays
-                  first-tuple ^objects (.get ^java.util.ArrayList result-list 0)
+                     first-tuple ^objects (.get ^java.util.ArrayList result-list 0)
 
-                  extract-column
-                  (fn [col-idx]
-                    (let [sample (aget first-tuple col-idx)]
-                      (cond
-                        (instance? Long sample)
-                        (let [arr (long-array n)]
-                          (dotimes [i n]
-                            (aset arr i (long (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx))))
-                          arr)
+                     extract-column
+                     (fn [col-idx]
+                       (let [sample (aget first-tuple col-idx)]
+                         (cond
+                           (instance? Long sample)
+                           (let [arr (long-array n)]
+                             (dotimes [i n]
+                               (aset arr i (long (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx))))
+                             arr)
 
-                        (instance? Double sample)
-                        (let [arr (double-array n)]
-                          (dotimes [i n]
-                            (aset arr i (double (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx))))
-                          arr)
+                           (instance? Double sample)
+                           (let [arr (double-array n)]
+                             (dotimes [i n]
+                               (aset arr i (double (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx))))
+                             arr)
 
-                        (instance? String sample)
-                        (let [arr ^"[Ljava.lang.String;" (make-array String n)]
-                          (dotimes [i n]
-                            (aset arr i ^String (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx)))
-                          arr)
+                           (instance? String sample)
+                           (let [arr ^"[Ljava.lang.String;" (make-array String n)]
+                             (dotimes [i n]
+                               (aset arr i ^String (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx)))
+                             arr)
 
-                        :else
+                           :else
                         ;; Generic object array for other types (keywords, etc.)
-                        (let [arr (object-array n)]
-                          (dotimes [i n]
-                            (aset arr i (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx)))
-                          arr))))
+                           (let [arr (object-array n)]
+                             (dotimes [i n]
+                               (aset arr i (aget ^objects (.get ^java.util.ArrayList result-list i) col-idx)))
+                             arr))))
 
                   ;; Build column map for the aggregate engine
-                  column-map (into {}
-                                   (concat
-                                    (map (fn [{:keys [col-key col-idx]}]
-                                           [col-key (extract-column col-idx)])
-                                         group-cols)
-                                    (keep (fn [{:keys [col-key col-idx]}]
-                                            (when col-idx
-                                              [col-key (extract-column col-idx)]))
-                                          agg-cols)))
+                     column-map (into {}
+                                      (concat
+                                       (map (fn [{:keys [col-key col-idx]}]
+                                              [col-key (extract-column col-idx)])
+                                            group-cols)
+                                       (keep (fn [{:keys [col-key col-idx]}]
+                                               (when col-idx
+                                                 [col-key (extract-column col-idx)]))
+                                             agg-cols)))
 
-                  group-keys (mapv :col-key group-cols)
-                  agg-specs (mapv (fn [{:keys [agg-op col-key]}]
-                                   (if col-key
-                                     [agg-op col-key]
-                                     [agg-op])) ;; e.g. [:count] with no column
-                                 agg-cols)]
+                     group-keys (mapv :col-key group-cols)
+                     agg-specs (mapv (fn [{:keys [agg-op col-key]}]
+                                       (if col-key
+                                         [agg-op col-key]
+                                         [agg-op])) ;; e.g. [:count] with no column
+                                     agg-cols)]
 
               ;; Call the external aggregate engine
-              (aggregate-fn column-map group-keys agg-specs)))))))))
+                 (aggregate-fn column-map group-keys agg-specs)))))))))
 

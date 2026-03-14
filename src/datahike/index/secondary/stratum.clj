@@ -279,51 +279,51 @@
       ;; Empty dataset — use long-array 0 for all columns since we don't know
       ;; actual value types yet. persist-transient-stratum-index will determine
       ;; real types from values via col-types pre-scan on first insert.
-      (let [col-map (into {:eid (long-array 0)}
-                          (map (fn [a] [(attr-col-key a) (long-array 0)]))
-                          attrs)]
-        (st/make-dataset col-map))
+        (let [col-map (into {:eid (long-array 0)}
+                            (map (fn [a] [(attr-col-key a) (long-array 0)]))
+                            attrs)]
+          (st/make-dataset col-map))
       ;; Build column arrays
-      (let [entity-ids (long-array n)
-            _ (let [i (volatile! 0)]
-                (doseq [^Long eid all-eids]
-                  (aset entity-ids @i (long eid))
-                  (vswap! i unchecked-inc)))
+        (let [entity-ids (long-array n)
+              _ (let [i (volatile! 0)]
+                  (doseq [^Long eid all-eids]
+                    (aset entity-ids @i (long eid))
+                    (vswap! i unchecked-inc)))
             ;; Build eid→row-index map for O(1) lookup
-            eid->row (java.util.HashMap. (* n 2))
-            _ (dotimes [i n] (.put eid->row (aget entity-ids i) (int i)))
-            attr-arrays
-            (into {}
-                  (map (fn [a]
-                         (let [col-key (attr-col-key a)
-                               schema (get (:schema db) a)
-                               vtype (or (:db/valueType schema) :db.type/string)
-                               ^java.util.LinkedHashMap pairs (get attr->eid-vals a)]
-                           [col-key
-                            (case vtype
-                              (:db.type/long :db.type/ref)
-                              (let [arr (long-array n)]
-                                (doseq [^java.util.Map$Entry e (.entrySet pairs)]
-                                  (let [row (int (.get eid->row (.getKey e)))]
-                                    (aset arr row (long (.getValue e)))))
-                                arr)
+              eid->row (java.util.HashMap. (* n 2))
+              _ (dotimes [i n] (.put eid->row (aget entity-ids i) (int i)))
+              attr-arrays
+              (into {}
+                    (map (fn [a]
+                           (let [col-key (attr-col-key a)
+                                 schema (get (:schema db) a)
+                                 vtype (or (:db/valueType schema) :db.type/string)
+                                 ^java.util.LinkedHashMap pairs (get attr->eid-vals a)]
+                             [col-key
+                              (case vtype
+                                (:db.type/long :db.type/ref)
+                                (let [arr (long-array n)]
+                                  (doseq [^java.util.Map$Entry e (.entrySet pairs)]
+                                    (let [row (int (.get eid->row (.getKey e)))]
+                                      (aset arr row (long (.getValue e)))))
+                                  arr)
 
-                              (:db.type/double :db.type/float)
-                              (let [arr (double-array n)]
-                                (doseq [^java.util.Map$Entry e (.entrySet pairs)]
-                                  (let [row (int (.get eid->row (.getKey e)))]
-                                    (aset arr row (double (.getValue e)))))
-                                arr)
+                                (:db.type/double :db.type/float)
+                                (let [arr (double-array n)]
+                                  (doseq [^java.util.Map$Entry e (.entrySet pairs)]
+                                    (let [row (int (.get eid->row (.getKey e)))]
+                                      (aset arr row (double (.getValue e)))))
+                                  arr)
 
                               ;; String/keyword/other
-                              (let [arr ^"[Ljava.lang.String;" (make-array String n)]
-                                (doseq [^java.util.Map$Entry e (.entrySet pairs)]
-                                  (let [row (int (.get eid->row (.getKey e)))]
-                                    (aset arr row (str (.getValue e)))))
-                                arr))])))
-                  attrs)
-            col-map (assoc attr-arrays :eid entity-ids)]
-        (st/make-dataset col-map))))))
+                                (let [arr ^"[Ljava.lang.String;" (make-array String n)]
+                                  (doseq [^java.util.Map$Entry e (.entrySet pairs)]
+                                    (let [row (int (.get eid->row (.getKey e)))]
+                                      (aset arr row (str (.getValue e)))))
+                                  arr))])))
+                    attrs)
+              col-map (assoc attr-arrays :eid entity-ids)]
+          (st/make-dataset col-map))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Persistent stratum index (declared first — TransientStratumIndex references it)
@@ -604,13 +604,13 @@
 ;; Registration
 
 (let [factory (fn [config db]
-               (let [attrs (set (:attrs config))
-                     ident-ref-map (:ident-ref-map config)
-                     attr-refs (when ident-ref-map
-                                 (not-empty (set (keep ident-ref-map attrs))))]
-                 (StratumIndex. (build-initial-dataset db attrs config)
-                                attrs
-                                attr-refs
-                                config)))]
+                (let [attrs (set (:attrs config))
+                      ident-ref-map (:ident-ref-map config)
+                      attr-refs (when ident-ref-map
+                                  (not-empty (set (keep ident-ref-map attrs))))]
+                  (StratumIndex. (build-initial-dataset db attrs config)
+                                 attrs
+                                 attr-refs
+                                 config)))]
   (sec/register-index-type! :stratum factory)
   (sec/register-index-type! :datahike.index.secondary/stratum factory))
