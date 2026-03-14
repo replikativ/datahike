@@ -1,0 +1,842 @@
+(ns benchmark.datascript-bench
+  "Comparative benchmarks: Datahike vs Datalevin vs Datomic.
+   Reproduces the datalevin/datascript benchmark suite for fair comparison.
+
+   Usage:
+     DATAHIKE_COMPILED_QUERY=true clj -M:bench-compare -m benchmark.datascript-bench [queries|writes|rules|all]
+
+   From REPL:
+     (require '[benchmark.datascript-bench :as bench])
+     (bench/run-all)        ;; run all benchmarks
+     (bench/run-queries)    ;; run only query benchmarks
+     (bench/run-writes)     ;; run only write benchmarks"
+  (:require
+   [datahike.api :as d]
+   [datahike.db :as db]
+   [datahike.db.utils :as dbu]
+   [datahike.query :as q]
+   [taoensso.timbre :as log])
+  (:import [java.util Random]))
+
+;; ---------------------------------------------------------------------------
+;; Data generation (same as datalevin bench)
+
+(def ^:private names      ["Ivan" "Petr" "Sergei" "Oleg" "Yuri" "Dmitry" "Fedor" "Denis"])
+(def ^:private last-names ["Ivanov" "Petrov" "Sidorov" "Kovalev" "Kuznetsov" "Voronoi"])
+(def ^:private sexes      [:male :female])
+
+(def next-eid (volatile! 0))
+
+(defn random-man []
+  {:db/id     (str (vswap! next-eid inc))
+   :name      (rand-nth names)
+   :last-name (rand-nth last-names)
+   :sex       (rand-nth sexes)
+   :age       (long (rand-int 100))
+   :salary    (long (rand-int 100000))})
+
+(def people (repeatedly random-man))
+(def people20k-base (vec (take 20000 (repeatedly random-man))))
+;; Add :follows refs so rule benchmarks have data (~50% follow someone)
+(def people20k
+  (mapv (fn [p]
+          (if (< (rand) 0.5)
+            (assoc p :follows (str (inc (rand-int 20000))))
+            p))
+        people20k-base))
+
+;; ---------------------------------------------------------------------------
+;; Timing infrastructure (matches datalevin bench protocol)
+
+(def ^:dynamic *warmup-t* 2000)
+(def ^:dynamic *bench-t*  2000)
+(def ^:dynamic *step*     10)
+(def ^:dynamic *repeats*  5)
+
+(defn now ^double [] (/ (System/nanoTime) 1000000.0))
+
+(defn round [n]
+  (cond
+    (> n 1)    (format "%.1f" (double n))
+    (> n 0.01) (format "%.2f" (double n))
+    :else      (format "%.3f" (double n))))
+
+(defn percentile [xs n]
+  (let [sorted (sort xs)]
+    (nth sorted (min (dec (count sorted))
+                     (int (* n (count sorted)))))))
+
+(defmacro dotime [duration & body]
+  `(let [start-t# (now)
+         end-t#   (+ ~duration start-t#)]
+     (loop [iterations# *step*]
+       (dotimes [_# *step*] ~@body)
+       (let [now# (now)]
+         (if (< now# end-t#)
+           (recur (+ *step* iterations#))
+           (double (/ (- now# start-t#) iterations#)))))))
+
+(defmacro bench [& body]
+  `(let [_#       (dotime *warmup-t* ~@body)
+         results# (into []
+                    (for [_# (range *repeats*)]
+                      (dotime *bench-t* ~@body)))
+         med#     (percentile results# 0.5)]
+     med#))
+
+(defmacro bench-10 [& body]
+  `(let [_#       (dotime 2 ~@body)
+         results# (into []
+                    (for [_# (range *repeats*)]
+                      (dotime 5 ~@body)))
+         med#     (percentile results# 0.5)]
+     med#))
+
+(defmacro bench-once [& body]
+  `(let [start-t# (now)]
+     ~@body
+     (- (now) start-t#)))
+
+;; ---------------------------------------------------------------------------
+;; Datahike setup
+
+(def dh-schema
+  [{:db/ident       :name
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/index       true}
+   {:db/ident       :last-name
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/index       true}
+   {:db/ident       :sex
+    :db/valueType   :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/index       true}
+   {:db/ident       :age
+    :db/valueType   :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/index       true}
+   {:db/ident       :salary
+    :db/valueType   :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/index       true}
+   {:db/ident       :follows
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/many}])
+
+(defn dh-empty-db []
+  (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+             :schema-flexibility :write
+             :keep-history? false
+             :attribute-refs? true
+             :search-cache-size 0
+             :index :datahike.index/persistent-set}]
+    (d/delete-database cfg)
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn {:tx-data dh-schema})
+      conn)))
+
+(defn dh-db-with-people
+  "Create a datahike connection with people20k loaded."
+  []
+  (let [conn (dh-empty-db)]
+    (d/transact conn {:tx-data people20k})
+    conn))
+
+;; ---------------------------------------------------------------------------
+;; Datalevin setup (loaded dynamically)
+
+(defn dl-require! []
+  (require '[datalevin.core :as dl]))
+
+(def dl-schema
+  {:follows   {:db/valueType   :db.type/ref
+               :db/cardinality :db.cardinality/many}
+   :name      {:db/valueType :db.type/string}
+   :last-name {:db/valueType :db.type/string}
+   :sex       {:db/valueType :db.type/keyword}
+   :age       {:db/valueType :db.type/long}
+   :salary    {:db/valueType :db.type/long}})
+
+(def dl-opts
+  {:wal?    false
+   :kv-opts {:inmemory? true
+             :wal?      false}})
+
+(defn dl-empty-db []
+  ((resolve 'datalevin.core/empty-db) nil dl-schema dl-opts))
+
+(defn dl-db-with [db data]
+  ((resolve 'datalevin.core/db-with) db data))
+
+(defn dl-close [db]
+  ((resolve 'datalevin.core/close-db) db))
+
+(defn dl-q [query & args]
+  ;; Disable datalevin query cache for fair benchmarking
+  (let [cache-var (resolve 'datalevin.query/*cache?*)]
+    (push-thread-bindings {cache-var false})
+    (try
+      (apply (resolve 'datalevin.core/q) query args)
+      (finally
+        (pop-thread-bindings)))))
+
+(defn dl-db-with-people []
+  (dl-db-with (dl-empty-db) people20k))
+
+;; ---------------------------------------------------------------------------
+;; Datomic setup (loaded dynamically)
+
+(defn dt-require! []
+  (require '[datomic.api :as datomic]))
+
+(defn dt-new-conn
+  ([] (dt-new-conn "bench"))
+  ([db-name]
+   (let [url (str "datomic:mem://" db-name)
+         _ ((resolve 'datomic.api/delete-database) url)
+         _ ((resolve 'datomic.api/create-database) url)
+         conn ((resolve 'datomic.api/connect) url)]
+     @((resolve 'datomic.api/transact) conn
+       [{:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+         :db/ident :name :db/valueType :db.type/string
+         :db/cardinality :db.cardinality/one :db.install/_attribute :db.part/db}
+        {:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+         :db/ident :last-name :db/valueType :db.type/string
+         :db/cardinality :db.cardinality/one :db.install/_attribute :db.part/db}
+        {:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+         :db/ident :sex :db/valueType :db.type/keyword
+         :db/cardinality :db.cardinality/one :db.install/_attribute :db.part/db}
+        {:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+         :db/ident :age :db/valueType :db.type/long
+         :db/cardinality :db.cardinality/one :db.install/_attribute :db.part/db}
+        {:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+         :db/ident :salary :db/valueType :db.type/long
+         :db/cardinality :db.cardinality/one :db.install/_attribute :db.part/db}
+        {:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+         :db/ident :follows :db/valueType :db.type/ref
+         :db/cardinality :db.cardinality/many :db.install/_attribute :db.part/db}])
+     conn)))
+
+(defn dt-db-with [conn tx-data]
+  (-> ((resolve 'datomic.api/transact) conn tx-data)
+      deref
+      :db-after))
+
+(defn dt-q [query & args]
+  (apply (resolve 'datomic.api/q) query args))
+
+(defn dt-db-with-people []
+  (let [conn (dt-new-conn "db-people")]
+    (dt-db-with conn people20k)
+    ((resolve 'datomic.api/db) conn)))
+
+;; ---------------------------------------------------------------------------
+;; Query benchmarks
+
+(def queries
+  {:q1       {:desc "Simple lookup: [?e :name \"Ivan\"]"
+              :query '[:find ?e
+                        :where [?e :name "Ivan"]]}
+   :q2       {:desc "Two-clause join: name=Ivan + age"
+              :query '[:find ?e ?a
+                        :where
+                        [?e :name "Ivan"]
+                        [?e :age ?a]]}
+   :q2-switch {:desc "Reversed clause order: age then name=Ivan"
+               :query '[:find ?e ?a
+                         :where
+                         [?e :age ?a]
+                         [?e :name "Ivan"]]}
+   :q3       {:desc "Three clauses: name=Ivan + age + sex=male"
+              :query '[:find ?e ?a
+                        :where
+                        [?e :name "Ivan"]
+                        [?e :age ?a]
+                        [?e :sex :male]]}
+   :q4       {:desc "Four clauses: name + last-name + age + sex"
+              :query '[:find ?e ?l ?a
+                        :where
+                        [?e :name "Ivan"]
+                        [?e :last-name ?l]
+                        [?e :age ?a]
+                        [?e :sex :male]]}
+   :q5       {:desc "Value join: age shared between entities"
+              :query '[:find ?e1 ?l ?a
+                        :where
+                        [?e :name "Ivan"]
+                        [?e :age ?a]
+                        [?e1 :age ?a]
+                        [?e1 :last-name ?l]]}
+   :qpred1   {:desc "Predicate: salary > 50000"
+              :query '[:find ?e ?s
+                        :where
+                        [?e :salary ?s]
+                        [(> ?s 50000)]]}
+   :qpred2   {:desc "Predicate with :in binding: salary > ?min"
+              :query '[:find ?e ?s
+                        :in $ ?min_s
+                        :where
+                        [?e :salary ?s]
+                        [(> ?s ?min_s)]]
+              :args [50000]}
+   :q-or     {:desc "OR disjunction"
+              :query '[:find ?e
+                        :where
+                        (or [?e :name "Ivan"]
+                            [?e :name "Petr"])]}
+   :q-not    {:desc "NOT negation"
+              :query '[:find ?e ?a
+                        :where
+                        [?e :age ?a]
+                        (not [?e :sex :male])]}
+   :q-pred-range {:desc "Range predicate: 50 < salary < 80000"
+                  :query '[:find ?e ?s
+                            :where
+                            [?e :salary ?s]
+                            [(> ?s 50000)]
+                            [(< ?s 80000)]]}
+   :q-5-merge {:desc "5 merges: name+last-name+age+salary+sex"
+               :query '[:find ?e ?n ?l ?a ?s
+                         :where
+                         [?e :name ?n] [?e :last-name ?l] [?e :age ?a]
+                         [?e :salary ?s] [?e :sex :male]]}
+   :q-rule   {:desc "Non-recursive rule"
+              :query '[:find ?e1 ?e2
+                        :in $ %
+                        :where (follow ?e1 ?e2)]
+              :args ['[[(follow ?e1 ?e2) [?e1 :follows ?e2]]]]}
+   :q-or-join {:desc "OR-join: name Ivan or Petr + age"
+               :query '[:find ?e ?a
+                         :where
+                         [?e :age ?a]
+                         (or-join [?e]
+                           [?e :name "Ivan"]
+                           [?e :name "Petr"])]}
+   :q-not-join {:desc "NOT-join: has age, not sex=male"
+                :query '[:find ?e ?a
+                          :where
+                          [?e :age ?a]
+                          (not-join [?e]
+                            [?e :sex :male])]}})
+
+;; ---------------------------------------------------------------------------
+;; Recursive rule benchmarks (matching datalevin's wide/long patterns)
+
+(def recursive-rule
+  '[[(follows ?x ?y)
+     [?x :follows ?y]]
+    [(follows ?x ?y)
+     [?x :follows ?t]
+     (follows ?t ?y)]])
+
+(defn- wide-db-data
+  "Generate wide tree: each node has `width` children, `depth` levels deep."
+  ([depth width] (wide-db-data 1 depth width))
+  ([id depth width]
+   (if (pos? depth)
+     (let [children (map #(+ (* id width) %) (range width))]
+       (concat
+        (map #(hash-map :db/id (str id) :name "Ivan" :follows (str %)) children)
+        (mapcat #(wide-db-data % (dec depth) width) children)))
+     [{:db/id (str id) :name "Ivan"}])))
+
+(defn- long-db-data
+  "Generate chain: `width` independent chains of `depth` links."
+  [depth width]
+  (apply concat
+    (for [x (range width)
+          y (range depth)
+          :let [from (+ (* x (inc depth)) y)
+                to   (+ (* x (inc depth)) y 1)]]
+      [{:db/id   (str from) :name "Ivan" :follows (str to)}
+       {:db/id   (str to)   :name "Ivan"}])))
+
+(defn- dh-rule-db [tx-data]
+  (let [conn (dh-empty-db)]
+    (d/transact conn {:tx-data tx-data})
+    (let [db @conn]
+      (d/release conn)
+      db)))
+
+(defn- dl-rule-db [tx-data]
+  (dl-db-with (dl-empty-db) tx-data))
+
+(def rule-benchmarks
+  {:rules-wide-3x3  {:desc "Recursive rule: wide tree 3x3"  :data-fn #(wide-db-data 3 3)}
+   :rules-wide-5x3  {:desc "Recursive rule: wide tree 5x3"  :data-fn #(wide-db-data 5 3)}
+   :rules-wide-7x3  {:desc "Recursive rule: wide tree 7x3"  :data-fn #(wide-db-data 7 3)}
+   :rules-wide-4x6  {:desc "Recursive rule: wide tree 4x6"  :data-fn #(wide-db-data 4 6)}
+   :rules-long-10x3 {:desc "Recursive rule: chain 10x3"     :data-fn #(long-db-data 10 3)}
+   :rules-long-30x3 {:desc "Recursive rule: chain 30x3"     :data-fn #(long-db-data 30 3)}
+   :rules-long-30x5 {:desc "Recursive rule: chain 30x5"     :data-fn #(long-db-data 30 5)}})
+
+(def rule-order [:rules-wide-3x3 :rules-wide-5x3 :rules-wide-7x3 :rules-wide-4x6
+                 :rules-long-10x3 :rules-long-30x3 :rules-long-30x5])
+
+(def query-order [:q1 :q2 :q2-switch :q3 :q4 :q5 :qpred1 :qpred2
+                  :q-or :q-not :q-or-join :q-not-join :q-pred-range :q-5-merge :q-rule])
+
+;; ---------------------------------------------------------------------------
+;; Aggregate query benchmarks
+
+(def agg-queries
+  {:q-agg-avg     {:desc "Aggregate: avg salary"
+                   :query '[:find (avg ?s)
+                             :where [?e :salary ?s]]}
+   :q-agg-group   {:desc "Aggregate: avg+count salary by sex"
+                   :query '[:find ?sex (avg ?s) (count ?e)
+                             :where [?e :sex ?sex] [?e :salary ?s]]}
+   :q-agg-filter  {:desc "Aggregate: avg/min/max male salary"
+                   :query '[:find (avg ?s) (min ?s) (max ?s)
+                             :where [?e :salary ?s] [?e :sex :male]]}
+   :q-agg-pred    {:desc "Aggregate: avg salary>50k by sex"
+                   :query '[:find ?sex (avg ?s)
+                             :where [?e :salary ?s] [?e :sex ?sex]
+                                    [(> ?s 50000)]]}
+   :q-agg-multi   {:desc "Aggregate: avg salary by sex×name"
+                   :query '[:find ?sex ?n (avg ?s)
+                             :where [?e :sex ?sex] [?e :name ?n]
+                                    [?e :salary ?s]]}
+   :q-agg-stats   {:desc "Aggregate: variance+stddev+median"
+                   :query '[:find (avg ?s) (variance ?s) (stddev ?s) (median ?s)
+                             :where [?e :salary ?s]]}})
+
+(def agg-order [:q-agg-avg :q-agg-group :q-agg-filter :q-agg-pred
+                :q-agg-multi :q-agg-stats])
+
+;; ---------------------------------------------------------------------------
+;; Result formatting
+
+(defn pad [s width]
+  (let [s (str s)]
+    (if (< (count s) width)
+      (str (apply str (repeat (- width (count s)) " ")) s)
+      s)))
+
+(defn print-header []
+  (println)
+  (let [compiled? (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY"))
+        dh-label (if compiled? "DH-compiled" "DH-legacy")]
+    (println (format "%-12s %-45s %10s %10s %10s  %s"
+                     "Benchmark" "Description"
+                     dh-label "Datalevin" "Datomic" "Winner"))
+    (println (apply str (repeat 110 "-")))))
+
+(defn print-row [bench-name desc dh-ms dl-ms dt-ms]
+  (let [times (remove nil? [dh-ms dl-ms dt-ms])
+        best (when (seq times) (apply min times))
+        tag (fn [ms label]
+              (if (nil? ms) (pad "N/A" 10)
+                  (let [s (pad (round ms) 10)]
+                    (if (= ms best) (str s "*") (str s " ")))))
+        winner (cond
+                 (and dh-ms dl-ms dt-ms)
+                 (cond (= best dh-ms) "DATAHIKE"
+                       (= best dl-ms) "datalevin"
+                       :else           "datomic")
+                 (and dh-ms dl-ms)
+                 (if (= best dh-ms) "DATAHIKE" "datalevin")
+                 :else "?")]
+    (println (format "%-12s %-45s %10s %10s %10s  %s"
+                     (name bench-name) desc
+                     (tag dh-ms "dh") (tag dl-ms "dl") (tag dt-ms "dt")
+                     winner))))
+
+;; ---------------------------------------------------------------------------
+;; Run benchmarks
+
+(defn- dh-inmemory-db
+  "Create a datahike in-memory DB with people20k via proper create-database."
+  []
+  (let [conn (dh-db-with-people)
+        db @conn]
+    (d/release conn)
+    db))
+
+(defn run-queries
+  "Run query benchmarks for all available engines.
+   Uses per-query DBs to avoid plan-cache cross-contamination.
+   Disables Datahike query result cache for fair comparison."
+  [& {:keys [datalevin? datomic?] :or {datalevin? true datomic? true}}]
+  ;; Disable datahike query result cache
+  (alter-var-root #'q/*query-result-cache?* (constantly false))
+  (println "Setting up databases with 20k people (query result cache OFF)...")
+  (println (str "  Compiled query engine: " (System/getenv "DATAHIKE_COMPILED_QUERY")))
+
+  ;; Datahike: one DB per query to match Datalevin's benchmark approach
+  (let [dh-dbs (into {} (map (fn [qname] [qname (dh-inmemory-db)]) query-order))]
+    (println "  Datahike DBs ready.")
+
+    ;; Datalevin: one DB per query
+    (def ^:private dl-dbs-atom (atom nil))
+    (when datalevin?
+      (try
+        (dl-require!)
+        (reset! dl-dbs-atom
+                (into {} (map (fn [qname] [qname (dl-db-with-people)]) query-order)))
+        (println "  Datalevin DBs ready.")
+        (catch Exception e
+          (println "  Datalevin not available:" (.getMessage e)))))
+
+    ;; Datomic
+    (def ^:private dt-db-atom (atom nil))
+    (when datomic?
+      (try
+        (dt-require!)
+        (reset! dt-db-atom (dt-db-with-people))
+        (println "  Datomic DB ready.")
+        (catch Exception e
+          (println "  Datomic not available:" (.getMessage e)))))
+
+    ;; JIT pre-warmup: run ALL datahike queries to stabilize JVMCI compilation.
+    ;; Without this, running Q1 (no merges) before Q2 (with merges) causes
+    ;; execute_group_direct to be deoptimized and recompiled conservatively,
+    ;; adding ~0.3ms overhead. Running all shapes first ensures JVMCI produces
+    ;; polymorphic code that handles all cases efficiently.
+    (println "  JIT pre-warmup (all query shapes)...")
+    (let [warmup-db (first (vals dh-dbs))]
+      (doseq [qname query-order]
+        (let [{:keys [query args]} (get queries qname)
+              qargs (or args [])]
+          (try
+            (dotimes [_ 500]
+              (apply d/q query warmup-db qargs))
+            (catch Exception _)))))
+    (println "  JIT pre-warmup done.")
+
+    (print-header)
+
+    (doseq [qname query-order]
+      (let [{:keys [desc query args]} (get queries qname)
+            qargs (or args [])
+            dh-db (get dh-dbs qname)
+
+            ;; Validate result counts match
+            dh-result (apply d/q query dh-db qargs)
+            dh-count (count dh-result)
+            dl-result (when-let [dl-dbs @dl-dbs-atom]
+                        (apply dl-q query (get dl-dbs qname) qargs))
+            dl-count (when dl-result (count dl-result))
+
+            _ (when (and dl-count (not= dh-count dl-count))
+                (println (format "  ⚠ RESULT MISMATCH %s: DH=%d DL=%d"
+                                 (name qname) dh-count dl-count)))
+
+            ;; Datahike
+            dh-ms (bench (apply d/q query dh-db qargs))
+
+            ;; Datalevin
+            dl-ms (when-let [dl-dbs @dl-dbs-atom]
+                    (bench (apply dl-q query (get dl-dbs qname) qargs)))
+
+            ;; Datomic
+            dt-ms (when @dt-db-atom
+                    (bench (apply dt-q query @dt-db-atom qargs)))]
+        (print-row qname desc dh-ms dl-ms dt-ms)
+        (println (format "  Results: DH=%d%s" dh-count
+                         (if dl-count (format " DL=%d%s" dl-count
+                                              (if (= dh-count dl-count) " ✓" " ✗"))
+                           "")))))
+
+    ;; Cleanup
+    (when-let [dl-dbs @dl-dbs-atom]
+      (doseq [[_ db] dl-dbs] (dl-close db)))
+    (println "\nDone.")))
+
+(defn run-writes
+  "Run write benchmarks for all available engines."
+  [& {:keys [datalevin? datomic?] :or {datalevin? true datomic? true}}]
+
+  ;; Check availability
+  (when datalevin?
+    (try (dl-require!) (catch Exception _)))
+  (when datomic?
+    (try (dt-require!) (catch Exception _)))
+
+  (print-header)
+
+  ;; add-all: bulk insert 20k entities in one transaction
+  (let [dh-ms (bench-10
+               (let [conn (dh-empty-db)]
+                 (d/transact conn {:tx-data people20k})
+                 (d/release conn)))
+        dl-ms (when (resolve 'datalevin.core/empty-db)
+                (bench-10
+                 (let [db (dl-db-with (dl-empty-db) people20k)]
+                   (dl-close db))))
+        dt-ms (when (resolve 'datomic.api/q)
+                (bench-10
+                 (let [conn (dt-new-conn (str "add-all-" (rand-int Integer/MAX_VALUE)))]
+                   @((resolve 'datomic.api/transact) conn people20k))))]
+    (print-row :add-all "Bulk insert 20k entities" dh-ms dl-ms dt-ms))
+
+  ;; add-5: insert one entity per transaction
+  (let [dh-ms (bench-10
+               (let [conn (dh-empty-db)]
+                 (doseq [p people20k]
+                   (d/transact conn {:tx-data [p]}))
+                 (d/release conn)))
+        dl-ms (when (resolve 'datalevin.core/empty-db)
+                (bench-10
+                 (let [db (reduce (fn [db p] (dl-db-with db [p]))
+                                  (dl-empty-db)
+                                  people20k)]
+                   (dl-close db))))
+        dt-ms (when (resolve 'datomic.api/q)
+                (bench-10
+                 (let [conn (dt-new-conn (str "add5-" (rand-int Integer/MAX_VALUE)))]
+                   (doseq [p people20k]
+                     @((resolve 'datomic.api/transact) conn [p])))))]
+    (print-row :add-5 "Insert 20k entities one-by-one" dh-ms dl-ms dt-ms))
+
+  (println "\nDone."))
+
+(defn run-rules
+  "Run recursive rule benchmarks for all available engines."
+  [& {:keys [datalevin? datomic?] :or {datalevin? true datomic? true}}]
+  (alter-var-root #'q/*query-result-cache?* (constantly false))
+  (println "\nRecursive rule benchmarks (query result cache OFF)...")
+
+  (when datalevin?
+    (try (dl-require!) (catch Exception _)))
+  (when datomic?
+    (try (dt-require!) (catch Exception _)))
+
+  (let [rule-query '[:find ?e ?e2
+                      :in $ %
+                      :where (follows ?e ?e2)]]
+
+    (print-header)
+
+    (doseq [rname rule-order]
+      (let [{:keys [desc data-fn]} (get rule-benchmarks rname)
+            tx-data (data-fn)
+
+            dh-db (dh-rule-db tx-data)
+            dh-result (d/q rule-query dh-db recursive-rule)
+            dh-count (count dh-result)
+
+            dl-db (when (resolve 'datalevin.core/empty-db)
+                    (dl-rule-db tx-data))
+            dl-result (when dl-db (dl-q rule-query dl-db recursive-rule))
+            dl-count (when dl-result (count dl-result))
+
+            dt-db (when (resolve 'datomic.api/q)
+                    (let [conn (dt-new-conn (str "rules-" (name rname)))]
+                      (dt-db-with conn tx-data)
+                      ((resolve 'datomic.api/db) conn)))
+            dt-result (when dt-db (dt-q rule-query dt-db recursive-rule))
+            dt-count (when dt-result (count dt-result))
+
+            _ (when (and dl-count (not= dh-count dl-count))
+                (println (format "  ⚠ RESULT MISMATCH %s: DH=%d DL=%d"
+                                 (name rname) dh-count dl-count)))
+
+            dh-ms (bench (d/q rule-query dh-db recursive-rule))
+            dl-ms (when dl-db (bench (dl-q rule-query dl-db recursive-rule)))
+            dt-ms (when dt-db (bench (dt-q rule-query dt-db recursive-rule)))]
+        (print-row rname desc dh-ms dl-ms dt-ms)
+        (println (format "  Results: DH=%d%s%s" dh-count
+                         (if dl-count (format " DL=%d%s" dl-count
+                                              (if (= dh-count dl-count) " ✓" " ✗"))
+                           "")
+                         (if dt-count (format " DT=%d%s" dt-count
+                                              (if (= dh-count dt-count) " ✓" " ✗"))
+                           "")))
+        (when dl-db (dl-close dl-db))))
+
+    (println "\nDone.")))
+
+;; ---------------------------------------------------------------------------
+;; Stratum-enabled DB setup
+
+(defn dh-empty-db-stratum []
+  (require 'datahike.index.secondary.stratum)
+  (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+             :schema-flexibility :write
+             :keep-history? false
+             :attribute-refs? true
+             :search-cache-size 0
+             :index :datahike.index/persistent-set
+             :secondary-indices {:idx/analytics {:type :stratum
+                                                 :attrs #{:name :last-name :sex :age :salary}}}}]
+    (d/delete-database cfg)
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn {:tx-data dh-schema})
+      conn)))
+
+(defn dh-stratum-db-with-people []
+  (let [conn (dh-empty-db-stratum)]
+    (d/transact conn {:tx-data people20k})
+    conn))
+
+(defn run-aggregates
+  "Run aggregate benchmarks: standard Datalog aggregates across all engines,
+   comparing DH (PSS), DH+stratum (columnar), Datalevin, and Datomic."
+  [& {:keys [datalevin? datomic?] :or {datalevin? true datomic? true}}]
+  (alter-var-root #'q/*query-result-cache?* (constantly false))
+  (println "\n=== AGGREGATE BENCHMARKS ===")
+  (println "Setting up databases with 20k people (query result cache OFF)...")
+  (println (str "  Compiled query engine: " (System/getenv "DATAHIKE_COMPILED_QUERY")))
+
+  ;; DH without stratum (PSS-based aggregates)
+  (let [dh-db (dh-inmemory-db)]
+    (println "  Datahike (PSS) DB ready.")
+
+    ;; DH with stratum
+    (let [dh-stratum-conn (try
+                            (dh-stratum-db-with-people)
+                            (catch Exception e
+                              (println "  Stratum not available:" (.getMessage e))
+                              nil))
+          dh-stratum-db (when dh-stratum-conn
+                          (let [db @dh-stratum-conn]
+                            (d/release dh-stratum-conn)
+                            db))]
+      (when dh-stratum-db
+        (println "  Datahike (stratum) DB ready."))
+
+      ;; Datalevin
+      (def ^:private dl-agg-db-atom (atom nil))
+      (when datalevin?
+        (try
+          (dl-require!)
+          (reset! dl-agg-db-atom (dl-db-with-people))
+          (println "  Datalevin DB ready.")
+          (catch Exception e
+            (println "  Datalevin not available:" (.getMessage e)))))
+
+      ;; Datomic
+      (def ^:private dt-agg-db-atom (atom nil))
+      (when datomic?
+        (try
+          (dt-require!)
+          (reset! dt-agg-db-atom (dt-db-with-people))
+          (println "  Datomic DB ready.")
+          (catch Throwable e
+            (println "  Datomic not available:" (.getMessage e)))))
+
+      ;; Print header with extra column for stratum
+      (println)
+      (let [compiled? (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY"))
+            dh-label (if compiled? "DH-compiled" "DH-legacy")]
+        (println (format "%-12s %-36s %10s %10s %10s %10s  %s"
+                         "Benchmark" "Description"
+                         dh-label "DH+strat" "Datalevin" "Datomic" "Winner"))
+        (println (apply str (repeat 120 "-"))))
+
+      (doseq [qname agg-order]
+        (let [{:keys [desc query]} (get agg-queries qname)
+
+              ;; DH PSS result
+              dh-result (try (d/q query dh-db)
+                             (catch Exception e
+                               (println (format "  ⚠ DH error on %s: %s" (name qname) (.getMessage e)))
+                               nil))
+
+              ;; DH stratum result
+              dh-st-result (when dh-stratum-db
+                             (try (d/q query dh-stratum-db)
+                                  (catch Exception e
+                                    (println (format "  ⚠ DH+stratum error on %s: %s"
+                                                     (name qname) (.getMessage e)))
+                                    nil)))
+
+              ;; DL result
+              dl-result (when @dl-agg-db-atom
+                          (try (dl-q query @dl-agg-db-atom)
+                               (catch Exception e
+                                 (println (format "  ⚠ DL error on %s: %s" (name qname) (.getMessage e)))
+                                 nil)))
+
+              ;; DT result
+              dt-result (when @dt-agg-db-atom
+                          (try (dt-q query @dt-agg-db-atom)
+                               (catch Exception e
+                                 (println (format "  ⚠ DT error on %s: %s" (name qname) (.getMessage e)))
+                                 nil)))
+
+              ;; Bench DH PSS
+              dh-ms (when dh-result
+                      (bench (d/q query dh-db)))
+
+              ;; Bench DH stratum
+              dh-st-ms (when dh-st-result
+                         (bench (d/q query dh-stratum-db)))
+
+              ;; Bench DL
+              dl-ms (when dl-result
+                      (bench (dl-q query @dl-agg-db-atom)))
+
+              ;; Bench DT
+              dt-ms (when dt-result
+                      (bench (dt-q query @dt-agg-db-atom)))
+
+              ;; Find winner
+              times (remove nil? [dh-ms dh-st-ms dl-ms dt-ms])
+              best (when (seq times) (apply min times))
+              tag (fn [ms]
+                    (if (nil? ms)
+                      (pad "N/A" 10)
+                      (let [s (pad (round ms) 10)]
+                        (if (= ms best) (str s "*") (str s " ")))))
+              winner (cond
+                       (= best dh-ms) "DH-PSS"
+                       (= best dh-st-ms) "DH+STRATUM"
+                       (= best dl-ms) "datalevin"
+                       (= best dt-ms) "datomic"
+                       :else "?")]
+          (println (format "%-12s %-36s %10s %10s %10s %10s  %s"
+                           (name qname) desc
+                           (tag dh-ms) (tag dh-st-ms) (tag dl-ms) (tag dt-ms)
+                           winner))
+          (println (format "  Results: DH=%s DH+st=%s%s%s"
+                           (if dh-result (str (count dh-result)) "err")
+                           (if dh-st-result (str (count dh-st-result)) "N/A")
+                           (if dl-result (format " DL=%d" (count dl-result)) "")
+                           (if dt-result (format " DT=%d" (count dt-result)) "")))))
+
+      ;; Cleanup
+      (when-let [dl-db @dl-agg-db-atom]
+        (dl-close dl-db))
+      (println "\nDone."))))
+
+(defn run-all
+  "Run all benchmarks."
+  [& opts]
+  (println "=== WRITE BENCHMARKS ===")
+  (apply run-writes opts)
+  (println)
+  (println "=== QUERY BENCHMARKS ===")
+  (apply run-queries opts)
+  (println)
+  (println "=== RECURSIVE RULE BENCHMARKS ===")
+  (apply run-rules opts)
+  (println)
+  (apply run-aggregates opts))
+
+(defn run-queries-only-datahike
+  "Quick benchmarks for datahike alone (no competitor deps needed)."
+  []
+  (run-queries :datalevin? false :datomic? false))
+
+(defn -main
+  "Entry point for comparative benchmarks.
+   Usage: DATAHIKE_COMPILED_QUERY=true clj -M:bench-compare -m benchmark.datascript-bench [queries|writes|rules|all]"
+  [& args]
+  (log/set-level! :warn)
+  (let [cmd (or (first args) "all")]
+    (case cmd
+      "queries"    (run-queries)
+      "writes"     (run-writes)
+      "rules"      (run-rules)
+      "aggregates" (run-aggregates)
+      "all"        (run-all)
+      (do (println (str "Unknown command: " cmd))
+          (println "Usage: ... -m benchmark.datascript-bench [queries|writes|rules|aggregates|all]")
+          (System/exit 1))))
+  (System/exit 0))
