@@ -7,6 +7,7 @@
             [datahike.store :as ds]
             [datahike.tools :as dt]
             [datahike.core :as core]
+            [datahike.query :as dq]
             [datahike.config :as dc]
             [datahike.schema-cache :as sc]
             [datahike.online-gc :as online-gc]
@@ -201,10 +202,22 @@
 
 (defn complete-db-update [old tx-report]
   (let [{:keys [writer]} old
-        {:keys [db-after]
+        {:keys [db-after tx-data]
          {:keys [db/txInstant]} :tx-meta} tx-report
         new-meta  (assoc (:meta db-after) :datahike/updated-at txInstant)
         db        (assoc db-after :meta new-meta :writer writer)
+        ;; Propagate query result cache from old DB to new DB
+        ;; Extract modified attributes from tx-data for selective invalidation
+        _         (try
+                    (let [rim (:ref-ident-map db)
+                          modified-attrs (into #{}
+                                               (comp (map :a)
+                                                     (filter some?)
+                                                     (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
+                                               tx-data)]
+                      (dq/propagate-query-cache old db modified-attrs))
+                    (catch #?(:clj Exception :cljs :default) e
+                      (log/error "propagate-query-cache error:" e)))
         tx-report (assoc tx-report :db-after db)]
     tx-report))
 
@@ -353,10 +366,10 @@
    (-database-exists? config)))
 
 (defn transact! [old {:keys [tx-data tx-meta]}]
-  (log/debug "Transacting" (count tx-data) "objects")
+  (log/trace "Transacting" (count tx-data) "objects")
   (log/trace "Transaction data" tx-data  "with meta:" tx-meta)
   (complete-db-update old (core/with old tx-data tx-meta)))
 
 (defn load-entities [old entities]
-  (log/debug "Loading" (count entities) " entities.")
+  (log/trace "Loading" (count entities) " entities.")
   (complete-db-update old (core/load-entities-with old entities nil)))

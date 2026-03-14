@@ -11,6 +11,7 @@
    [datahike.constants :refer [tx0]]
    [datahike.tools :refer [get-date raise]]
    [datahike.schema :as ds]
+   [datahike.index.secondary :as sec]
    [org.replikativ.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]
                             [datahike.tools :refer [raise]]))
@@ -117,7 +118,12 @@
         (assoc-in db [:schema e] (hash-map a-ident v-ident))))))
 
 (defn update-rschema [db]
-  (assoc db :rschema (dbu/rschema (:schema db))))
+  (let [new-rschema (dbu/rschema (:schema db))
+        ;; Preserve :db.secondary/index mappings from secondary indices
+        sec-idx-map (get-in db [:rschema :db.secondary/index])]
+    (assoc db :rschema (if (seq sec-idx-map)
+                         (assoc new-rschema :db.secondary/index sec-idx-map)
+                         new-rschema))))
 
 (defn remove-schema [db ^Datom datom]
   (let [schema (dbi/-schema db)
@@ -152,18 +158,40 @@
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
 
+(defn- update-secondary-indices
+  "Update all secondary indices that cover the given attribute.
+   When the index supports ITransientSecondaryIndex (batch mode), uses
+   -transact! (mutates in place, no assoc). Otherwise falls back to
+   -transact (persistent, returns new instance).
+   Returns updated db with modified secondary-indices map."
+  [db a-ident ^Datom datom added?]
+  (let [sec-idx-map (get-in db [:rschema :db.secondary/index a-ident])]
+    (if (seq sec-idx-map)
+      (let [tx-report {:datom datom :added? added?}]
+        (reduce (fn [db' idx-ident]
+                  (if-let [idx (get-in db' [:secondary-indices idx-ident])]
+                    (if (satisfies? sec/ITransientSecondaryIndex idx)
+                      (do (sec/-transact! idx tx-report) db')
+                      (assoc-in db' [:secondary-indices idx-ident]
+                                (sec/-transact idx tx-report)))
+                    db'))
+                db sec-idx-map))
+      db)))
+
 (defn- with-datom [db ^Datom datom]
   (validate-datom db datom)
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom))
         indexing? (dbu/indexing? db a-ident)
         schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident))
         keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
-        op-count (:op-count db)]
+        op-count (:op-count db)
+        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))]
     (if (datom-added datom)
       (cond-> db
         true (update-in [:eavt] #(di/-insert % datom :eavt op-count))
         true (update-in [:aevt] #(di/-insert % datom :aevt op-count))
         indexing? (update-in [:avet] #(di/-insert % datom :avet op-count))
+        has-secondary? (update-secondary-indices a-ident datom true)
         true (advance-max-eid (.-e datom))
         true (update :hash + (hash datom))
         schema? (-> (update-schema datom)
@@ -175,6 +203,7 @@
           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
           indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
+          has-secondary? (update-secondary-indices a-ident removing false)
           true (update :hash - (hash removing))
           schema? (-> (remove-schema datom) update-rschema)
           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
@@ -244,7 +273,8 @@
         old-datom (first (di/-slice (:eavt db)
                                     (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
                                     (dd/datom (.-e datom) (.-a datom) nil (.-tx datom))
-                                    :eavt))]
+                                    :eavt))
+        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))]
     (cond-> db
             ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
       schema? (try
@@ -260,6 +290,10 @@
 
       (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-upsert % datom :avet op-count old-datom))
       indexing?                     (update-in [:avet] #(di/-upsert % datom :avet op-count old-datom))
+
+      ;; Secondary indices: retract old, assert new
+      (and has-secondary? old-datom) (update-secondary-indices a-ident old-datom false)
+      has-secondary? (update-secondary-indices a-ident datom true)
 
       true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))

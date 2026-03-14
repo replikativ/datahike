@@ -12,6 +12,8 @@
   (-temporal-upsert [index datom index-type op-count old-datom] "Inserts or updates a datom in a history index")
   (-remove [index datom index-type op-count] "Removes a datom from the index")
   (-slice [index from to index-type] "Returns a slice of the index")
+  (-lookup [index key cmp] "Look up a single key with custom comparator. Returns the stored element or nil.")
+  (-count-slice [index from to cmp] "O(log n) count of elements in [from, to] range using the given comparator.")
   (-flush [index backend] "Saves the changes to the index to the given konserve backend")
   (-transient [index] "Returns a transient version of the index")
   (-persistent! [index] "Returns a persistent version of the index")
