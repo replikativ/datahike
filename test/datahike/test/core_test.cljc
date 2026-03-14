@@ -13,6 +13,11 @@
 #?(:cljs
    (enable-console-print!))
 
+(def compiled-engine?
+  "True when the compiled query engine is active (DATAHIKE_COMPILED_QUERY=true)."
+  #?(:clj (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY"))
+     :cljs false))
+
 ;; Added special case for printing ex-data of ExceptionInfo
 #?(:cljs
    (defmethod t/report [::t/default :error] [m]

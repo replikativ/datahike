@@ -169,7 +169,7 @@
 (defn -connect-impl* [config opts]
   (async+sync (:sync? opts) *default-sync-translation*
               (go-try-
-               (let [_ (log/debug "Using config " (update-in config [:store] dissoc :password))
+               (let [_ (log/trace "Using config " (update-in config [:store] dissoc :password))
                      store-config (:store config)
                      store-id (ds/store-identity store-config)
                      conn-id [store-id (:branch config)]]
@@ -250,12 +250,12 @@
   ([connection release-all?]
    (when-not (= @(:wrapped-atom connection) :released)
      (let [db      @(:wrapped-atom connection)
-           _ (log/info "Releasing connection, config store backend:"
-                       (get-in db [:config :store :backend]))
+           _ (log/debug "Releasing connection, config store backend:"
+                        (get-in db [:config :store :backend]))
            conn-id [(ds/store-identity (get-in db [:config :store]))
                     (get-in db [:config :branch])]]
        (if-not (get @*connections* conn-id)
-         (log/info "Connection already released." conn-id)
+         (log/debug "Connection already released." conn-id)
          (let [new-conns (swap! *connections* update-in [conn-id :count] dec)]
            (when (or release-all? (zero? (get-in new-conns [conn-id :count])))
              (delete-connection! conn-id)

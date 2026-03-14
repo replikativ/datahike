@@ -33,7 +33,7 @@
         gen       (.-gen lru)
         limit     (.-limit lru)]
     (if-let [g (key-gen k nil)]
-      (->LRU key-value
+      (->LRU (assoc key-value k v)
              (-> gen-key
                  (dissoc g)
                  (assoc gen k))

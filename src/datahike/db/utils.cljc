@@ -322,6 +322,21 @@
    {}
    (:db.type/tuple rschema)))
 
+(defn- secondary-index-mapping
+  "Build reverse mapping: attr → #{idx-ident ...} for secondary indices.
+   Schema entries with :db.secondary/type and :db.secondary/attrs define
+   secondary indices covering multiple attributes."
+  [schema]
+  (reduce-kv
+   (fn [m idx-ident idx-schema]
+     (if-not (and (map? idx-schema) (:db.secondary/type idx-schema))
+       m
+       (let [attrs (:db.secondary/attrs idx-schema)]
+         (reduce (fn [m attr]
+                   (update m attr (fnil conj #{}) idx-ident))
+                 m attrs))))
+   {} schema))
+
 (defn rschema [schema]
   (let [rschema (reduce-kv
                  (fn [m attr keys->values]
@@ -335,4 +350,6 @@
                          m (attr->properties key value)))
                       (update m :db/ident (fn [coll] (if coll (conj coll attr) #{attr}))) keys->values)))
                  {} schema)]
-    (assoc rschema :db/attrTuples (attrTuples schema rschema))))
+    (-> rschema
+        (assoc :db/attrTuples (attrTuples schema rschema))
+        (assoc :db.secondary/index (secondary-index-mapping schema)))))

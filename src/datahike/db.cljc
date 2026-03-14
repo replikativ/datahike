@@ -11,6 +11,7 @@
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
    [datahike.index :as di]
+   [datahike.index.secondary :as sec]
    [datahike.schema :as ds]
    [datahike.store :as store]
    [datahike.tools :as tools :refer [raise group-by-step #?(:clj meta-data)]]
@@ -198,13 +199,37 @@
   (-> db
       (update :eavt di/-transient)
       (update :aevt di/-transient)
-      (update :avet di/-transient)))
+      (update :avet di/-transient)
+      (update :secondary-indices
+              (fn [indices]
+                (when indices
+                  (let [ctx {:ident-ref-map (:ident-ref-map db)}]
+                    (persistent!
+                     (reduce-kv (fn [acc k idx]
+                                  (let [idx (if (satisfies? sec/IDbContextAware idx)
+                                              (sec/-with-db-context idx ctx)
+                                              idx)]
+                                    (assoc! acc k
+                                            (if (satisfies? sec/ITransientSecondaryIndex idx)
+                                              (sec/-as-transient idx)
+                                              idx))))
+                                (transient {}) indices))))))))
 
 (defn db-persistent! [db]
   (-> db
       (update :eavt di/-persistent!)
       (update :aevt di/-persistent!)
-      (update :avet di/-persistent!)))
+      (update :avet di/-persistent!)
+      (update :secondary-indices
+              (fn [indices]
+                (when indices
+                  (persistent!
+                   (reduce-kv (fn [acc k idx]
+                                (assoc! acc k
+                                        (if (satisfies? sec/ITransientSecondaryIndex idx)
+                                          (sec/-persistent! idx)
+                                          idx)))
+                              (transient {}) indices)))))))
 
 (defn contextual-search-fn [context]
   (case (dbi/context-temporal? context)
@@ -275,7 +300,7 @@
                     end
                     (dbi/context-set-current-db-if-not-set context db)))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map meta]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map secondary-indices meta]
   #?@(:cljs
       [IHash (-hash [db] (.-hash db))
        IEquiv (-equiv [db other] (equiv-db db other))
@@ -878,7 +903,31 @@
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt eavt
           :temporal-aevt aevt
-          :temporal-avet avet}))))))
+          :temporal-avet avet})
+       #?(:clj
+          (when-let [sec-cfg (:secondary-indices complete-config)]
+            (let [indices (persistent!
+                           (reduce-kv
+                            (fn [acc idx-ident idx-cfg]
+                              (let [idx-type (:type idx-cfg)
+                                    ;; Pass ident-ref-map so index can resolve attr-refs
+                                    idx-cfg (cond-> idx-cfg
+                                              (seq ident-ref-map)
+                                              (assoc :ident-ref-map ident-ref-map))]
+                                (assoc! acc idx-ident
+                                        (sec/create-index idx-type idx-cfg nil))))
+                            (transient {}) sec-cfg))
+                  ;; Build rschema :db.secondary/index mapping: attr → #{idx-ident ...}
+                  sec-rschema (reduce-kv
+                               (fn [m idx-ident idx-cfg]
+                                 (reduce (fn [m a]
+                                           (update-in m [:db.secondary/index a]
+                                                      (fnil conj #{}) idx-ident))
+                                         m (:attrs idx-cfg)))
+                               {} sec-cfg)]
+              {:secondary-indices indices
+               :rschema (merge-with merge rschema sec-rschema)}))
+          :cljs nil))))))
 
 (defn ^DB init-db
   ([datoms] (init-db datoms nil nil nil))

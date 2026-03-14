@@ -19,9 +19,9 @@
       l3 :a nil ;; :a get evicted on third insert
       l3 :b 2
       l3 :c 3
-      l4 :b 2 ;; assoc updates access time, but does not change a value
+      l4 :b 4 ;; assoc updates both value and access time
       l4 :c 3
-      l5 :b 2   ;; :b remains
+      l5 :b 4   ;; :b remains
       l5 :c nil ;; :c gets evicted as the oldest one
       l5 :d 5)))
 

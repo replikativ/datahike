@@ -309,6 +309,21 @@
                  :code "(query-stats '[:find ?e :where [?e :name]] db)"}]
      :impl datahike.query/query-stats}
 
+    explain
+    {:args [:function
+            [:=> [:cat [:or [:vector :any] :map] [:* :any]] :string]]
+     :ret :string
+     :categories [:query :diagnostics]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? true
+     :doc "Returns a human-readable string explaining the compiled query plan. Shows index selection, scan/merge ordering, recursive rule structure (SCC, base cases, clause versions), and estimated cardinalities. Takes the same arguments as `q`."
+     :examples [{:desc "Explain a simple query"
+                 :code "(explain '[:find ?e :where [?e :name]] db)"}
+                {:desc "Explain a recursive rule"
+                 :code "(explain '[:find ?e2 :in $ ?e1 % :where (follow ?e1 ?e2)] db 1 '[[(follow ?e1 ?e2) [?e1 :follow ?e2]] [(follow ?e1 ?e2) [?e1 :follow ?t] (follow ?t ?e2)]])"}]
+     :impl #?(:clj datahike.query/explain :cljs nil)}
+
     pull
     {:args [:function
             [:=> [:cat :datahike/SDB :datahike/SPullOptions] [:maybe :map]]

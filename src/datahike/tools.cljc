@@ -61,6 +61,12 @@
   #?(:clj (.getTime (Date.))
      :cljs (.getTime (js/Date.))))
 
+(defmacro env-flag
+  "Read an environment variable at compile time (works in both CLJ and CLJS).
+   Returns true if the env var equals \"true\", false otherwise."
+  [env-var-name]
+  (= "true" (System/getenv env-var-name)))
+
 (defmacro raise
   "Logging an error and throwing an exception with message and structured data.
    Arguments:

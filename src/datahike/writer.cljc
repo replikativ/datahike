@@ -107,7 +107,7 @@
                               (recur old))))
                     (do
                       (close! commit-queue)
-                      (log/debug "Writer thread gracefully closed")))))
+                      (log/trace "Writer thread gracefully closed")))))
         ;; commit loop
         (go-try S
                 (loop [tx (<?- commit-queue)]
