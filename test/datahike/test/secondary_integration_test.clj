@@ -6,14 +6,24 @@
    [datahike.db :as db]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
-   [datahike.index.secondary.proximum]
    [datahike.index.secondary.scriptum]
    [datahike.index.secondary.stratum]))
+
+;; Proximum requires Java 22+ (class file version 66.0).
+;; Load lazily so the test file compiles on older JVMs.
+(def ^:private proximum-available?
+  (try
+    (require 'datahike.index.secondary.proximum)
+    true
+    (catch UnsupportedClassVersionError _ false)))
 
 ;; ---------------------------------------------------------------------------
 ;; Proximum (Vector Search) Tests
 
 (deftest test-proximum-lifecycle
+  (when-not proximum-available?
+    (println "SKIP test-proximum-lifecycle: proximum requires Java 22+"))
+  (when proximum-available?
   (testing "create, insert, search, delete"
     (let [idx (sec/create-index :proximum
                                 {:attrs #{:person/embedding}
@@ -64,7 +74,7 @@
         (let [d-str (datahike.datom/datom 4 :person/embedding "not-a-vector")
               idx2 (sec/-transact idx {:datom d-str :added? true})
               results (sec/-search idx2 {:vector (float-array [1.0 0.0 0.0 0.0]) :k 10} nil)]
-          (is (= 3 (es/entity-bitset-cardinality results))))))))
+          (is (= 3 (es/entity-bitset-cardinality results)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Scriptum (Full-Text Search) Tests
@@ -123,6 +133,9 @@
 ;; Cross-Index Composition Tests
 
 (deftest test-cross-index-bitmap-composition
+  (when-not proximum-available?
+    (println "SKIP test-cross-index-bitmap-composition: proximum requires Java 22+"))
+  (when proximum-available?
   (testing "RoaringBitmap flows between Proximum and Scriptum"
     (let [;; Create both indices
           vec-idx (sec/create-index :proximum
@@ -170,7 +183,7 @@
                                    {:vector (float-array [1.0 0.0 0.0 0.0]) :k 2} nil)
               combined (es/entity-bitset-and knn-all ml-bits)]
           ;; KNN top-2 = {1, 3}, ML = {1, 3}, AND = {1, 3}
-          (is (= #{1 3} (set (es/entity-bitset-seq combined)))))))))
+          (is (= #{1 3} (set (es/entity-bitset-seq combined))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; In-Transaction Maintenance via d/db-with
@@ -202,28 +215,31 @@
         (is (= #{1} (set (es/entity-bitset-seq results))))))))
 
 (deftest test-in-transaction-proximum
-  (testing "vector index updated during d/db-with"
-    (let [schema {:person/embedding {}
-                  :idx/vectors {:db.secondary/type :proximum
-                                :db.secondary/attrs [:person/embedding]
-                                :db.secondary/config {:dim 4 :distance :cosine
-                                                      :store-config {:backend :memory
-                                                                     :id (random-uuid)}}}}
-          empty-db (db/empty-db schema)
-          vec-idx (sec/create-index :proximum
-                                    {:attrs [:person/embedding]
-                                     :dim 4 :distance :cosine
-                                     :store-config {:backend :memory :id (random-uuid)}}
-                                    empty-db)
-          db (assoc empty-db :secondary-indices {:idx/vectors vec-idx})
-          db2 (d/db-with db [{:db/id 1 :person/embedding (float-array [1.0 0.0 0.0 0.0])}
-                             {:db/id 2 :person/embedding (float-array [0.0 1.0 0.0 0.0])}])]
+  (when-not proximum-available?
+    (println "SKIP test-in-transaction-proximum: proximum requires Java 22+"))
+  (when proximum-available?
+    (testing "vector index updated during d/db-with"
+      (let [schema {:person/embedding {}
+                    :idx/vectors {:db.secondary/type :proximum
+                                  :db.secondary/attrs [:person/embedding]
+                                  :db.secondary/config {:dim 4 :distance :cosine
+                                                        :store-config {:backend :memory
+                                                                       :id (random-uuid)}}}}
+            empty-db (db/empty-db schema)
+            vec-idx (sec/create-index :proximum
+                                      {:attrs [:person/embedding]
+                                       :dim 4 :distance :cosine
+                                       :store-config {:backend :memory :id (random-uuid)}}
+                                      empty-db)
+            db (assoc empty-db :secondary-indices {:idx/vectors vec-idx})
+            db2 (d/db-with db [{:db/id 1 :person/embedding (float-array [1.0 0.0 0.0 0.0])}
+                               {:db/id 2 :person/embedding (float-array [0.0 1.0 0.0 0.0])}])]
 
-      (let [vt (get-in db2 [:secondary-indices :idx/vectors])
-            results (sec/-search vt {:vector (float-array [1.0 0.0 0.0 0.0]) :k 2} nil)]
-        (is (= 2 (es/entity-bitset-cardinality results)))
-        (is (es/entity-bitset-contains? results 1))
-        (is (es/entity-bitset-contains? results 2))))))
+        (let [vt (get-in db2 [:secondary-indices :idx/vectors])
+              results (sec/-search vt {:vector (float-array [1.0 0.0 0.0 0.0]) :k 2} nil)]
+          (is (= 2 (es/entity-bitset-cardinality results)))
+          (is (es/entity-bitset-contains? results 1))
+          (is (es/entity-bitset-contains? results 2)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stratum Entity-Filter Aggregate Tests
