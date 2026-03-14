@@ -22,7 +22,7 @@
 
 (deftest test-proximum-lifecycle
   (when-not proximum-available?
-    (println "SKIP test-proximum-lifecycle: proximum requires Java 22+"))
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
   (when proximum-available?
     (testing "create, insert, search, delete"
       (let [idx (sec/create-index :proximum
@@ -134,7 +134,7 @@
 
 (deftest test-cross-index-bitmap-composition
   (when-not proximum-available?
-    (println "SKIP test-cross-index-bitmap-composition: proximum requires Java 22+"))
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
   (when proximum-available?
     (testing "RoaringBitmap flows between Proximum and Scriptum"
       (let [;; Create both indices
@@ -216,7 +216,7 @@
 
 (deftest test-in-transaction-proximum
   (when-not proximum-available?
-    (println "SKIP test-in-transaction-proximum: proximum requires Java 22+"))
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
   (when proximum-available?
     (testing "vector index updated during d/db-with"
       (let [schema {:person/embedding {}
