@@ -64,6 +64,8 @@ Datahike supports multiple languages and platforms:
 
 For experienced users building production systems:
 
+- **[Compiled Query Engine](./query-engine.md)** - Fused scan execution, ORDER BY, query result cache, `d/explain` (experimental)
+- **[Secondary Indices](./secondary-indices.md)** - Full-text search, vector similarity, columnar aggregates (experimental)
 - **[Distributed Architecture](./distributed.md)** - Distributed Index Space and real-time sync with Kabel
 - **[Versioning](./versioning.md)** - Git-like branching and merging (beta)
 - **[Norms](./norms.md)** - Database migration system
