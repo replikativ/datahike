@@ -19,7 +19,7 @@ database snapshots are immutable values that can be held, shared, and queried an
 **Key capabilities:**
 - 🌐 **[Distributed Index Space](./doc/distributed.md)**: Read scaling without database connections—readers access persistent indices directly
 - 🗄️ **[Flexible storage](./doc/storage-backends.md)**: File, LMDB, S3, JDBC, Redis, IndexedDB via konserve
-- 🌍 **[Cross-platform](./doc/README.md#language-bindings-beta)**: Clojure, Java, JavaScript, Python, C/C++ (libdatahike), CLI (dthk), Babashka pod, HTTP REST
+- 🌍 **[Cross-platform](./doc/README.md#language-bindings-beta)**: JVM, Node.js, Browser (Clojure, ClojureScript, JavaScript, Java APIs)
 - ⚡ **[Real-time sync](./doc/distributed.md)**: WebSocket streaming with Kabel for browser ↔ server
 - 🕰️ **[Time-travel](./doc/time_variance.md)**: Query any historical state, full transaction audit trail
 - 🔒 **[GDPR-ready](./doc/time_variance.md#data-purging)**: Complete data excision for regulatory compliance
