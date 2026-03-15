@@ -15,7 +15,7 @@
    #?(:clj [datahike.index.entity-set :as es])
    #?(:clj [datahike.query :as legacy])
    #?(:cljs [org.replikativ.persistent-sorted-set :as psset])
-   #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
+   #?(:cljs [org.replikativ.persistent-sorted-set.btset :as btset :refer [BTSet]])
    [datahike.db :as db #?@(:cljs [:refer [AsOfDB SinceDB HistoricalDB FilteredDB]])]
    [taoensso.timbre :as log])
   #?(:clj (:import [datahike.datom Datom]
@@ -45,7 +45,7 @@
   "Cross-platform lookupGE: first element >= key."
   [pss key]
   #?(:clj  (.lookupGE ^PersistentSortedSet pss key)
-     :cljs (psset/lookup-ge pss key)))
+     :cljs (btset/lookup-ge pss key nil {:sync? true})))
 
 (defn- make-result-list
   "Create a mutable list for collecting results."
@@ -1083,12 +1083,16 @@
                              (if card-many?
                                (let [from-d (datom eid ra (when vg? vgv) tx0)
                                      to-d (datom eid ra (when vg? vgv) txmax)
-                                     mslice (di/-slice eavt-pss from-d to-d :eavt)]
+                                     temporal-only? (aget merge-temporal-only mi)
+                                     mslice (if temporal-only?
+                                              (di/-slice temporal-eavt-pss from-d to-d :eavt)
+                                              (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))]
                                  (if anti?
                                    (when (empty? (seq mslice)) (process-merges (inc mi)))
                                    (doseq [^Datom d mslice]
                                      (when (and (== (.-e d) eid) (= (.-a d) ra)
                                                 (or (not vg?) (val-eq? (.-v d) vgv))
+                                                (or (nil? temporal-tx-filter) (temporal-tx-filter d))
                                                 (or (nil? added-filter) (= (datom/datom-added d) added-filter)))
                                        (aset merge-datoms mi d) (process-merges (inc mi))))))
                                (let [probe (datom eid ra vgv tx0)
