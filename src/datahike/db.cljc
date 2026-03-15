@@ -176,7 +176,7 @@
               (contains? filtered-tx-ids
                          (datom-tx d))))))
 
-(defn- post-process-datoms [datoms db context]
+(defn post-process-datoms [datoms db context]
   (let [xform (dbi/context-xform context)
         time-pred (dbi/context-time-pred context)]
     (cond

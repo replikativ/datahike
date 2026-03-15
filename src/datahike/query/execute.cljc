@@ -16,8 +16,10 @@
    #?(:clj [datahike.query :as legacy])
    #?(:cljs [org.replikativ.persistent-sorted-set :as psset])
    #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
+   [datahike.db :as db #?@(:cljs [:refer [AsOfDB SinceDB HistoricalDB FilteredDB]])]
    [taoensso.timbre :as log])
   #?(:clj (:import [datahike.datom Datom]
+                   [datahike.db AsOfDB SinceDB HistoricalDB FilteredDB]
                    [org.replikativ.persistent_sorted_set
                     PersistentSortedSet
                     PersistentSortedSet$ForwardCursor])))
@@ -220,6 +222,19 @@
                                    2 (.-v ~scan-d) 3 (.-tx ~scan-d)
                                    (.-v ~scan-d))))))
 
+(defmacro ^:private scan-filter-temporal
+  "Like scan-filter but with additional temporal-tx-filter check."
+  [scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter]
+  `(and (or (nil? ~temporal-tx-filter) (~temporal-tx-filter ~scan-d))
+        (or (nil? ~ground-filter) (~ground-filter ~scan-d))
+        (or (nil? ~strict-filter) (~strict-filter ~scan-d))
+        (or (nil? ~probe-set)
+            (probe-set-contains? ~probe-set
+                                 (case (int ~probe-datom-field)
+                                   0 (.-e ~scan-d) 1 (.-a ~scan-d)
+                                   2 (.-v ~scan-d) 3 (datom/datom-tx ~scan-d)
+                                   (.-v ~scan-d))))))
+
 (defmacro ^:private emit-tuple
   "Expand inline result emission for a scan datom. All projection vars
    (find-source, const-vals, merge-datoms, etc.) must be in scope."
@@ -251,6 +266,201 @@
                      (< src# 4000) (.-tx ^Datom (aget ~merge-datoms (- src# 3000)))
                      :else (datom/datom-added ^Datom (aget ~merge-datoms (- src# 4000)))))))
          (result-list-add ~result-list out#)))))
+
+
+;; ---------------------------------------------------------------------------
+;; Temporal query support helpers
+
+(defn- temporal-info
+  "Extract temporal metadata from a DB wrapper.
+   Returns nil for regular DBs."
+  [db]
+  (cond
+    (instance? HistoricalDB db)
+    {:type :historical :origin-db (dbi/-origin db)}
+
+    (instance? AsOfDB db)
+    (let [tp (dbi/-time-point db)]
+      {:type :as-of :origin-db (dbi/-origin db)
+       :time-point tp :numeric-tx? (number? tp)})
+
+    (instance? SinceDB db)
+    (let [tp (dbi/-time-point db)]
+      {:type :since :origin-db (dbi/-origin db)
+       :time-point tp :numeric-tx? (number? tp)})
+
+    :else nil))
+
+(defn- temporal-db?
+  "Check if db is a temporal wrapper."
+  [db]
+  (or (instance? HistoricalDB db)
+      (instance? AsOfDB db)
+      (instance? SinceDB db)))
+
+(defn- build-temporal-tx-filter
+  "Build a tx filter function for as-of/since temporal queries.
+   Returns nil for non-temporal or historical queries."
+  [temporal]
+  (when temporal
+    (let [tp (long (or (:time-point temporal) 0))]
+      (case (:type temporal)
+        :since (fn [^Datom d] (> (datom/datom-tx d) tp))
+        :as-of (fn [^Datom d] (<= (datom/datom-tx d) tp))
+        nil))))
+
+#?(:clj
+   (defn- fast-merge-scan
+     "Eagerly merge two PSS slices (current + temporal) into an ArrayList.
+      Handles nil slices (di/-slice returns nil when no datoms match).
+      For card-one history attrs with scan-attr, skips current index entirely."
+     ^java.util.ArrayList [^PersistentSortedSet pss-a from to
+                           ^PersistentSortedSet pss-b
+                           index-type db scan-attr]
+     (let [keep-history? (dbi/-keep-history? db)
+           scan-attr-current-ok? (if scan-attr
+                                   (or (not keep-history?)
+                                       (dbu/no-history? db scan-attr)
+                                       (dbu/multival? db scan-attr))
+                                   true)]
+       (if (and scan-attr (not scan-attr-current-ok?))
+         ;; Fast path: card-one history attr — skip current entirely
+         (let [slice-b (di/-slice pss-b from to index-type)]
+           (if slice-b
+             (let [^java.util.Iterator iter-b (.iterator ^Iterable slice-b)
+                   result (java.util.ArrayList. 4096)]
+               (while (.hasNext iter-b) (.add result (.next iter-b)))
+               result)
+             (java.util.ArrayList. 0)))
+         ;; General path: merge both iterators
+         (let [slice-a (di/-slice pss-a from to index-type)
+               slice-b (di/-slice pss-b from to index-type)]
+           (cond
+             (and (nil? slice-a) (nil? slice-b))
+             (java.util.ArrayList. 0)
+
+             (nil? slice-b)
+             (let [^java.util.Iterator iter-a (.iterator ^Iterable slice-a)
+                   result (java.util.ArrayList. 4096)]
+               (while (.hasNext iter-a)
+                 (let [^Datom d (.next iter-a)]
+                   (when (or (not keep-history?)
+                             (if scan-attr true
+                                 (or (dbu/no-history? db (.-a d))
+                                     (dbu/multival? db (.-a d)))))
+                     (.add result d))))
+               result)
+
+             (nil? slice-a)
+             (let [^java.util.Iterator iter-b (.iterator ^Iterable slice-b)
+                   result (java.util.ArrayList. 4096)]
+               (while (.hasNext iter-b) (.add result (.next iter-b)))
+               result)
+
+             :else
+             (let [cmp (.comparator pss-a)
+                   ^java.util.Iterator iter-a (.iterator ^Iterable slice-a)
+                   ^java.util.Iterator iter-b (.iterator ^Iterable slice-b)
+                   result (java.util.ArrayList. 4096)]
+               (letfn [(current-ok? [^Datom d]
+                         (if scan-attr true
+                             (or (not keep-history?)
+                                 (dbu/no-history? db (.-a d))
+                                 (dbu/multival? db (.-a d)))))
+                       (next-ok-a []
+                         (loop [d (when (.hasNext iter-a) (.next iter-a))]
+                           (cond (nil? d) nil
+                                 (current-ok? d) d
+                                 (.hasNext iter-a) (recur (.next iter-a))
+                                 :else nil)))]
+                 (loop [a (next-ok-a)
+                        b (when (.hasNext iter-b) (.next iter-b))]
+                   (cond
+                     (and (nil? a) (nil? b)) result
+                     (nil? a) (do (.add result b)
+                                  (while (.hasNext iter-b) (.add result (.next iter-b)))
+                                  result)
+                     (nil? b) (do (.add result a)
+                                  (while (.hasNext iter-a)
+                                    (let [d (.next iter-a)]
+                                      (when (current-ok? d) (.add result d))))
+                                  result)
+                     :else
+                     (let [c (.compare ^java.util.Comparator cmp a b)]
+                       (cond
+                         (< c 0) (do (.add result a) (recur (next-ok-a) b))
+                         (> c 0) (do (.add result b)
+                                     (recur a (when (.hasNext iter-b) (.next iter-b))))
+                         :else   (do (.add result a) ;; dedup: keep first
+                                     (recur (next-ok-a)
+                                            (when (.hasNext iter-b) (.next iter-b))))))))))))))))
+
+(defn- temporal-merge-slice
+  "Get merged datoms for [eid attr] from current+temporal indexes.
+   For historical: merge via distinct-datoms (all versions).
+   For as-of/since: merge + post-process-datoms (time filter + assemble)."
+  [origin-db from-d to-d temporal-type temporal-tx-filter db]
+  (let [current-slice (di/-slice (:eavt origin-db) from-d to-d :eavt)]
+    (case temporal-type
+      :historical
+      (let [temporal-index (:temporal-eavt origin-db)]
+        (if temporal-index
+          (dbu/distinct-datoms origin-db :eavt
+                              current-slice
+                              (di/-slice temporal-index from-d to-d :eavt))
+          current-slice))
+
+      (:as-of :since)
+      (let [temporal-index (:temporal-eavt origin-db)
+            merged (if temporal-index
+                     (dbu/distinct-datoms origin-db :eavt
+                                         current-slice
+                                         (di/-slice temporal-index from-d to-d :eavt))
+                     current-slice)
+            ctx (dbi/-search-context db)]
+        (db/post-process-datoms merged origin-db ctx))
+
+      ;; regular DB
+      current-slice)))
+
+(defn- build-scan-slice
+  "Build the scan slice for execute-group-direct / execute-fused-scan-rel.
+   For temporal DBs, merges current + temporal indexes.
+   db is the temporal wrapper (needed for search-context), origin-db is the unwrapped DB."
+  [db db-index from-datom to-datom index temporal origin-db resolved-a]
+  (if-not temporal
+    (di/-slice db-index from-datom to-datom index)
+    (let [temporal-type (:type temporal)
+          as-of-at-max-tx? (and (= temporal-type :as-of)
+                                (:numeric-tx? temporal)
+                                (= (long (:time-point temporal))
+                                   (long (:max-tx origin-db))))
+          temporal-index-key (keyword (str "temporal-" (name index)))]
+      (case temporal-type
+        :historical
+        (let [temporal-index (get origin-db temporal-index-key)]
+          (if temporal-index
+            #?(:clj (fast-merge-scan db-index from-datom to-datom
+                                     temporal-index index origin-db resolved-a)
+               :cljs (dbu/distinct-datoms origin-db index
+                                         (di/-slice db-index from-datom to-datom index)
+                                         (di/-slice temporal-index from-datom to-datom index)))
+            (di/-slice db-index from-datom to-datom index)))
+
+        (:as-of :since)
+        (if as-of-at-max-tx?
+          (di/-slice db-index from-datom to-datom index)
+          (let [temporal-index (get origin-db temporal-index-key)]
+            (if temporal-index
+              (let [merged (dbu/distinct-datoms origin-db index
+                                               (di/-slice db-index from-datom to-datom index)
+                                               (di/-slice temporal-index from-datom to-datom index))
+                    ctx (dbi/-search-context db)]
+                (db/post-process-datoms merged origin-db ctx))
+              (di/-slice db-index from-datom to-datom index))))
+
+        ;; default: regular slice
+        (di/-slice db-index from-datom to-datom index)))))
 
 (defn- execute-group-direct
   "Execute an entity-group (or single pattern-scan) fused, writing results
@@ -670,6 +880,209 @@
 
     result-list))
 
+(defn- execute-group-direct-temporal
+  "Temporal variant of execute-group-direct for history/as-of/since queries.
+   Separate function to keep the non-temporal hot path small for JIT inlining."
+  [db scan-op merge-ops find-vars consts
+   result-list
+   probe-set probe-datom-field
+   collect-set collect-datom-field collect-merge-idx
+   max-results
+   temporal]
+  (let [{:keys [clause index pushdown-preds]} scan-op
+        [e a v tx] clause
+        origin-db (:origin-db temporal)
+        resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr origin-db a))
+        resolved-e (when (and (some? e) (not (symbol? e)) (number? e)) #?(:clj (long e) :cljs e))
+        pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
+        [from-datom to-datom] (compute-slice-bounds clause index pushdown-bounds resolved-a resolved-e)
+        db-index (get origin-db index)
+        ground-filter (build-ground-filter clause index)
+        strict-filter (when-let [strict (:strict-preds pushdown-bounds)]
+                        (let [scan-var-map (rel/var-mapping clause (range))
+                              pushdown-var (first (keep :var pushdown-preds))]
+                          (when pushdown-var
+                            (build-strict-filter strict (get scan-var-map pushdown-var)))))
+        temporal-type (:type temporal)
+        temporal-tx-filter (build-temporal-tx-filter temporal)
+        scan-added-val (let [added (get clause 4)]
+                         (when (and (some? added) (not (symbol? added)) (boolean? added))
+                           added))
+        eavt-pss (:eavt origin-db)
+        n-merges (count merge-ops)
+        merge-attrs (to-array (mapv (fn [op]
+                                      (let [ma (second (:clause op))]
+                                        (when (and (some? ma) (not (symbol? ma)))
+                                          (resolve-attr origin-db ma))))
+                                    merge-ops))
+        merge-v-ground (to-array (mapv (fn [op]
+                                         (let [mv (get (:clause op) 2)]
+                                           (boolean (and (some? mv) (not (symbol? mv))))))
+                                       merge-ops))
+        merge-v-vals (to-array (mapv (fn [op]
+                                       (let [mv (get (:clause op) 2)]
+                                         (when (and (some? mv) (not (symbol? mv))) mv)))
+                                     merge-ops))
+        merge-anti (to-array (mapv #(boolean (:anti? %)) merge-ops))
+        merge-card-many (to-array (mapv (fn [op]
+                                          (or (= temporal-type :historical)
+                                              (not (get-in op [:schema-info :card-one?] true))))
+                                        merge-ops))
+        merge-added-filter (to-array (mapv (fn [op]
+                                              (let [added (get (:clause op) 4)]
+                                                (when (and (some? added) (not (symbol? added)) (boolean? added))
+                                                  added)))
+                                            merge-ops))
+        ;; For historical card-one attrs, temporal index is self-sufficient — skip current
+        temporal-eavt-pss (when (= temporal-type :historical) (:temporal-eavt origin-db))
+        merge-temporal-only (to-array (mapv (fn [op]
+                                              (and (= temporal-type :historical)
+                                                   (some? temporal-eavt-pss)
+                                                   (get-in op [:schema-info :card-one?] true)
+                                                   (not (dbu/no-history? origin-db
+                                                          (let [ma (second (:clause op))]
+                                                            (when (and (some? ma) (not (symbol? ma)))
+                                                              (resolve-attr origin-db ma)))))))
+                                            merge-ops))
+        merge-clauses (mapv :clause merge-ops)
+        n-find (count find-vars)
+        const-vals #?(:clj (object-array n-find) :cljs (make-array n-find))
+        find-source
+        (#?(:clj int-array :cljs to-array)
+         (map-indexed
+          (fn [fi fvar]
+            (if (and consts (contains? consts fvar))
+              (do (aset const-vals fi (get consts fvar))
+                  find-src-const)
+              (or
+               (some (fn [[i x]]
+                       (when (= x fvar)
+                         (case (int i)
+                           0 find-src-scan-e 1 find-src-scan-a
+                           2 find-src-scan-v 3 find-src-scan-tx
+                           4 find-src-scan-added nil)))
+                     (map-indexed vector clause))
+               (some (fn [[mi mc]]
+                       (some (fn [[i x]]
+                               (when (= x fvar)
+                                 (case (int i)
+                                   0 (+ mi find-src-merge-e-base) 1 (+ mi 2000)
+                                   2 (+ mi find-src-merge-v-base) 3 (+ mi 3000)
+                                   4 (+ mi 4000) nil)))
+                             (map-indexed vector mc)))
+                     (map-indexed vector merge-clauses))
+               0)))
+          find-vars))
+        merge-datoms #?(:clj (object-array n-merges) :cljs (make-array n-merges))
+        slice (build-scan-slice db db-index from-datom to-datom index
+                                temporal origin-db resolved-a)
+        max-n (int (or max-results -1))]
+    (cond
+      (zero? n-merges)
+      #?(:clj
+         (when-let [iter (some-> ^Iterable slice .iterator)]
+           (while (and (.hasNext iter)
+                       (or (neg? max-n) (< (result-list-size result-list) max-n)))
+             (let [^Datom scan-d (.next iter)]
+               (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                          (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
+                 (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                             n-find find-source const-vals result-list)))))
+         :cljs
+         (doseq [scan-d slice
+                 :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+           (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                      (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
+             (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                         n-find find-source const-vals result-list))))
+      :else
+      #?(:clj
+         (when-let [iter (some-> ^Iterable slice .iterator)]
+           (while (and (.hasNext iter)
+                       (or (neg? max-n) (< (result-list-size result-list) max-n)))
+             (let [^Datom scan-d (.next iter)]
+               (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                          (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
+                 (let [eid (.-e scan-d)]
+                   (letfn [(process-merges [mi]
+                             (if (>= mi n-merges)
+                               (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                           n-find find-source const-vals result-list)
+                               (let [anti? (aget merge-anti mi)
+                                     ra (aget merge-attrs mi)
+                                     vg? (aget merge-v-ground mi)
+                                     vgv (aget merge-v-vals mi)
+                                     card-many? (aget merge-card-many mi)
+                                     added-filter (aget merge-added-filter mi)]
+                                 (if card-many?
+                                   (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                         to-d (datom eid ra (when vg? vgv) txmax)
+                                         temporal-only? (aget merge-temporal-only mi)
+                                         mslice (if temporal-only?
+                                                  ;; card-one history attr: temporal index has all data
+                                                  (di/-slice temporal-eavt-pss from-d to-d :eavt)
+                                                  (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))]
+                                     (if anti?
+                                       (when (empty? (seq mslice))
+                                         (process-merges (inc mi)))
+                                       (doseq [^Datom d mslice]
+                                         (when (and (== (.-e d) eid) (= (.-a d) ra)
+                                                    (or (not vg?) (val-eq? (.-v d) vgv))
+                                                    (or (nil? temporal-tx-filter) (temporal-tx-filter d))
+                                                    (or (nil? added-filter) (= (datom/datom-added d) added-filter)))
+                                           (aset merge-datoms mi d)
+                                           (process-merges (inc mi))))))
+                                   (let [probe (datom eid ra vgv tx0)
+                                         ^Datom d (.lookupGE ^PersistentSortedSet eavt-pss probe)
+                                         found? (and d (== (.-e d) eid) (= (.-a d) ra)
+                                                     (or (not vg?) (val-eq? (.-v d) vgv))
+                                                     (or (nil? added-filter) (= (datom/datom-added d) added-filter)))]
+                                     (if anti?
+                                       (when (not found?) (process-merges (inc mi)))
+                                       (when found?
+                                         (aset merge-datoms mi d)
+                                         (process-merges (inc mi)))))))))]
+                     (process-merges 0)))))))
+         :cljs
+         (doseq [scan-d slice
+                 :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+           (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                      (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
+             (let [eid (.-e ^Datom scan-d)]
+               (letfn [(process-merges [mi]
+                         (if (>= mi n-merges)
+                           (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                       n-find find-source const-vals result-list)
+                           (let [anti? (aget merge-anti mi)
+                                 ra (aget merge-attrs mi)
+                                 vg? (aget merge-v-ground mi)
+                                 vgv (aget merge-v-vals mi)
+                                 card-many? (aget merge-card-many mi)
+                                 added-filter (aget merge-added-filter mi)]
+                             (if card-many?
+                               (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                     to-d (datom eid ra (when vg? vgv) txmax)
+                                     mslice (di/-slice eavt-pss from-d to-d :eavt)]
+                                 (if anti?
+                                   (when (empty? (seq mslice)) (process-merges (inc mi)))
+                                   (doseq [^Datom d mslice]
+                                     (when (and (== (.-e d) eid) (= (.-a d) ra)
+                                                (or (not vg?) (val-eq? (.-v d) vgv))
+                                                (or (nil? added-filter) (= (datom/datom-added d) added-filter)))
+                                       (aset merge-datoms mi d) (process-merges (inc mi))))))
+                               (let [probe (datom eid ra vgv tx0)
+                                     ^Datom d (pss-lookup-ge eavt-pss probe)
+                                     found? (and d (== (.-e d) eid) (= (.-a d) ra)
+                                                 (or (not vg?) (val-eq? (.-v d) vgv))
+                                                 (or (nil? added-filter) (= (datom/datom-added d) added-filter)))]
+                                 (if anti?
+                                   (when (not found?) (process-merges (inc mi)))
+                                   (when found?
+                                     (aset merge-datoms mi d) (process-merges (inc mi)))))))))]
+                 (process-merges 0)))))))
+    result-list))
+
+
 ;; ---------------------------------------------------------------------------
 ;; Direct-to-output execution (main fast path)
 
@@ -768,15 +1181,13 @@
    consts: map of var-sym → constant value for scalar :in bindings.
    Returns the HashSet, or nil if the plan can't be executed directly."
   [plan db find-vars max-results consts]
-  (let [ops (:ops plan)]
+  (let [ops (:ops plan)
+        temporal (temporal-info db)]
     (when (and (not (:has-passthrough? plan))
                (can-direct-fuse? plan find-vars consts))
       (let [group-joins (:group-joins plan)
             groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
             n-groups (count groups)
-            ;; Use ArrayList of Object[] internally — no hashing, no PV overhead.
-            ;; Entity-join queries produce unique tuples (one per entity), so no dedup needed.
-            ;; Convert to set of PVs only at the boundary.
             result-list (make-result-list 4000)]
 
         (if (= 1 n-groups)
@@ -784,9 +1195,13 @@
           (let [g (first groups)
                 scan-op (entity-group-scan-op g)
                 merge-ops (entity-group-merge-ops g)]
-            (execute-group-direct db scan-op merge-ops find-vars consts
-                                  result-list nil 0 nil 0 -1
-                                  max-results))
+            (if temporal
+              (execute-group-direct-temporal db scan-op merge-ops find-vars consts
+                                            result-list nil 0 nil 0 -1
+                                            max-results temporal)
+              (execute-group-direct db scan-op merge-ops find-vars consts
+                                   result-list nil 0 nil 0 -1
+                                   max-results)))
 
           ;; Multi-group — hash-probe value join
           ;; Execute groups in order, build probe-sets between them
@@ -806,12 +1221,17 @@
                         pinfo (find-probe-info g producer-g probe-vars)
                         probe-set (get probe-sets producer-idx)]
                     (when (and pinfo probe-set)
-                      (execute-group-direct db scan-op merge-ops find-vars consts
-                                            result-list
-                                            probe-set
-                                            (int (:consumer-scan-field pinfo))
-                                            nil 0 -1
-                                            max-results))
+                      (if temporal
+                        (execute-group-direct-temporal db scan-op merge-ops find-vars consts
+                                                      result-list probe-set
+                                                      (int (:consumer-scan-field pinfo))
+                                                      nil 0 -1
+                                                      max-results temporal)
+                        (execute-group-direct db scan-op merge-ops find-vars consts
+                                             result-list probe-set
+                                             (int (:consumer-scan-field pinfo))
+                                             nil 0 -1
+                                             max-results)))
                     (recur (inc gi) probe-sets))
 
                   ;; Producer group: collect join-var values for downstream consumers
@@ -831,33 +1251,80 @@
 
                     ;; Execute producer group — empty find-vars, only collect
                     ;; No max-results for producer (needs full collection for join)
-                    (execute-group-direct db scan-op merge-ops [] consts
-                                          result-list
-                                          nil 0
-                                          collect-set
-                                          (int (or (:producer-datom-field collect-field-info) 0))
-                                          (int (or (:producer-merge-idx collect-field-info) -1))
-                                          nil)
+                    (if temporal
+                      (execute-group-direct-temporal db scan-op merge-ops [] consts
+                                                    result-list nil 0
+                                                    collect-set
+                                                    (int (or (:producer-datom-field collect-field-info) 0))
+                                                    (int (or (:producer-merge-idx collect-field-info) -1))
+                                                    nil temporal)
+                      (execute-group-direct db scan-op merge-ops [] consts
+                                            result-list nil 0
+                                            collect-set
+                                            (int (or (:producer-datom-field collect-field-info) 0))
+                                            (int (or (:producer-merge-idx collect-field-info) -1))
+                                            nil))
                     (recur (inc gi)
                            (if collect-set
                              (assoc probe-sets gi collect-set)
                              probe-sets))))))))
-        ;; Convert result-list → PersistentHashSet at the boundary
-        #?(:clj
-           (let [n (result-list-size result-list)
-                 out (object-array n)]
-             (loop [i (int 0)]
-               (when (< i n)
-                 (aset out i (adopt-vector (result-list-get result-list i)))
-                 (recur (unchecked-inc-int i))))
-             (datahike.java.QueryResult. out n))
-           :cljs
-           (let [n (result-list-size result-list)]
-             (persistent!
-              (loop [i 0 s (transient #{})]
-                (if (< i n)
-                  (recur (inc i) (conj! s (adopt-vector (result-list-get result-list i))))
-                  s)))))))))
+        ;; Convert result-list → final result with appropriate dedup strategy
+        (let [has-card-many-dupes?
+              (some (fn [g]
+                      (let [mops (entity-group-merge-ops g)]
+                        (or (some (fn [op] (not (get-in op [:schema-info :card-one?] true))) mops)
+                            ;; Entity var not in find-vars → different entities can produce same tuple
+                            (let [e-var (first (:clause (entity-group-scan-op g)))]
+                              (not (some #{e-var} find-vars))))))
+                    groups)
+              is-historical? (= :historical (when temporal (:type temporal)))
+              dedup-strategy (cond
+                               has-card-many-dupes? :hash
+                               is-historical? :adjacent
+                               :else nil)]
+          #?(:clj
+             (case dedup-strategy
+               :hash
+               (let [n (result-list-size result-list)]
+                 (persistent!
+                  (loop [i (int 0) s (transient #{})]
+                    (if (< i n)
+                      (recur (unchecked-inc-int i)
+                             (conj! s (adopt-vector (result-list-get result-list i))))
+                      s))))
+
+               :adjacent
+               ;; Adjacent dedup: history card-one duplicates are adjacent in scan order.
+               ;; Returns PHS for consistent set behavior and iteration order.
+               (let [n (result-list-size result-list)]
+                 (persistent!
+                  (loop [i (int 0)
+                         ^objects prev nil
+                         s (transient #{})]
+                    (if (< i n)
+                      (let [^objects cur (result-list-get result-list i)]
+                        (if (or (nil? prev)
+                                (not (java.util.Arrays/equals prev cur)))
+                          (recur (unchecked-inc-int i) cur
+                                 (conj! s (adopt-vector cur)))
+                          (recur (unchecked-inc-int i) cur s)))
+                      s))))
+
+               ;; nil — Fast path: no duplicates, use QueryResult
+               (let [n (result-list-size result-list)
+                     out (object-array n)]
+                 (loop [i (int 0)]
+                   (when (< i n)
+                     (aset out i (adopt-vector (result-list-get result-list i)))
+                     (recur (unchecked-inc-int i))))
+                 (datahike.java.QueryResult. out n)))
+             :cljs
+             (let [n (result-list-size result-list)]
+               (persistent!
+                (loop [i 0 s (transient #{})]
+                  (if (< i n)
+                    (recur (inc i) (conj! s (adopt-vector (result-list-get result-list i))))
+                    s))))))))))
 
 (defn execute-plan-direct-rel
   "Execute a fusable plan using the fast direct path, but return a Relation
@@ -882,8 +1349,12 @@
                 scan-op (entity-group-scan-op g)
                 merge-ops (entity-group-merge-ops g)
                 result-list (make-result-list 4000)]
-            (execute-group-direct db scan-op merge-ops all-vars nil
-                                  result-list nil 0 nil 0 -1 nil)
+            (let [ti (temporal-info db)]
+              (if ti
+                (execute-group-direct-temporal db scan-op merge-ops all-vars nil
+                                              result-list nil 0 nil 0 -1 nil ti)
+                (execute-group-direct db scan-op merge-ops all-vars nil
+                                     result-list nil 0 nil 0 -1 nil)))
             ;; Convert to Relation: attrs = {var-sym → column-index}, tuples = vec of Object[]
             (let [attrs (into {} (map-indexed (fn [i v] [v i]) all-vars))
                   tuples #?(:clj (vec (.toArray ^java.util.ArrayList result-list))

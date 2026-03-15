@@ -245,6 +245,13 @@
 ;; ---------------------------------------------------------------------------
 ;; DP-based optimal merge ordering
 
+(defn- can-be-merge?
+  "A pattern op can serve as a merge (lookupGE) only if its attribute position
+   is ground (not a variable). Variable-attribute patterns must be the scan."
+  [op]
+  (let [a (second (:clause op))]
+    (and (some? a) (not (symbol? a)))))
+
 (defn- dp-order-fuse-ops
   "For N pattern ops on same entity var, find optimal (scan, merge-order).
    Uses short-circuit AND ordering: sort merges by ascending
@@ -255,10 +262,20 @@
                           (max 1 (or (:estimated-card op) total-entities)))
                         pattern-ops)]
     (if (<= n 2)
-      (let [sorted (sort-by :estimated-card pattern-ops)]
-        {:scan (first sorted) :merges (vec (rest sorted))})
+      (let [;; Patterns with variable attribute can only be scan, not merge
+            mergeable (filterv can-be-merge? pattern-ops)
+            scan-only (filterv #(not (can-be-merge? %)) pattern-ops)]
+        (if (seq scan-only)
+          ;; Force scan-only pattern as scan, rest as merges
+          {:scan (first scan-only) :merges (vec (concat (rest scan-only) mergeable))}
+          ;; All can be merges — pick lowest cardinality as scan
+          (let [sorted (sort-by :estimated-card pattern-ops)]
+            {:scan (first sorted) :merges (vec (rest sorted))})))
       (let [candidates
-            (for [si (range n)]
+            (for [si (range n)
+                  ;; Only consider scan positions where all remaining ops can be merges
+                  :when (every? can-be-merge?
+                                (keep-indexed (fn [i op] (when (not= i si) op)) pattern-ops))]
               (let [scan-op (nth pattern-ops si)
                     scan-card (double (nth estimates si))
                     merges (into [] (keep-indexed
@@ -278,7 +295,12 @@
                 {:scan scan-op
                  :merges (mapv :op sorted-merges)
                  :cost (first total-cost)}))]
-        (apply min-key :cost candidates)))))
+        (if (seq candidates)
+          (apply min-key :cost candidates)
+          ;; Fallback: if no valid scan/merge partitioning exists (multiple variable-attr ops),
+          ;; just pick lowest cardinality as scan
+          (let [sorted (sort-by :estimated-card pattern-ops)]
+            {:scan (first sorted) :merges (vec (rest sorted))}))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Entity group construction

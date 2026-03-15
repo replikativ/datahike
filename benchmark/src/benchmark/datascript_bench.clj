@@ -805,6 +805,182 @@
         (dl-close dl-db))
       (println "\nDone."))))
 
+;; ---------------------------------------------------------------------------
+;; Temporal benchmarks (Datahike vs Datomic — only these two support history)
+
+(def temporal-queries
+  {:t-current-q1  {:desc "Current DB: name=Ivan"
+                   :db-key :current
+                   :query '[:find ?e :where [?e :name "Ivan"]]}
+   :t-current-q2  {:desc "Current DB: name+age"
+                   :db-key :current
+                   :query '[:find ?e ?a :where [?e :name "Ivan"] [?e :age ?a]]}
+   :t-asof-q1     {:desc "As-of: name=Ivan"
+                   :db-key :as-of
+                   :query '[:find ?e :where [?e :name "Ivan"]]}
+   :t-asof-q2     {:desc "As-of: name+age"
+                   :db-key :as-of
+                   :query '[:find ?e ?a :where [?e :name "Ivan"] [?e :age ?a]]}
+   :t-asof-q3     {:desc "As-of: name+age+sex"
+                   :db-key :as-of
+                   :query '[:find ?e ?a :where [?e :name "Ivan"] [?e :age ?a] [?e :sex :male]]}
+   :t-hist-q1     {:desc "History: all names"
+                   :db-key :history
+                   :query '[:find ?e :where [?e :name]]}
+   :t-hist-q2     {:desc "History: age+tx"
+                   :db-key :history
+                   :query '[:find ?e ?a ?tx :where [?e :age ?a ?tx]]}
+   :t-hist-q3     {:desc "History: name+age join"
+                   :db-key :history
+                   :query '[:find ?e ?n ?a :where [?e :name ?n] [?e :age ?a]]}
+   :t-hist-retract {:desc "History: retracted ages"
+                    :db-key :history
+                    :query '[:find ?e ?a :where [?e :age ?a _ false]]}})
+
+(def temporal-query-order
+  [:t-current-q1 :t-current-q2
+   :t-asof-q1 :t-asof-q2 :t-asof-q3
+   :t-hist-q1 :t-hist-q2 :t-hist-q3 :t-hist-retract])
+
+(defn- print-temporal-header []
+  (println)
+  (let [compiled? (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY"))
+        dh-label (if compiled? "DH-compiled" "DH-legacy")]
+    (println (format "%-16s %-36s %10s %10s  %s"
+                     "Benchmark" "Description" dh-label "Datomic" "Winner"))
+    (println (apply str (repeat 90 "-")))))
+
+(defn- print-temporal-row [bench-name desc dh-ms dt-ms]
+  (let [times (remove nil? [dh-ms dt-ms])
+        best (when (seq times) (apply min times))
+        tag (fn [ms]
+              (if (nil? ms) (pad "N/A" 10)
+                  (let [s (pad (round ms) 10)]
+                    (if (= ms best) (str s "*") (str s " ")))))
+        winner (cond
+                 (nil? dh-ms) "datomic"
+                 (nil? dt-ms) "DATAHIKE"
+                 (= best dh-ms) "DATAHIKE"
+                 :else "datomic")]
+    (println (format "%-16s %-36s %10s %10s  %s"
+                     (name bench-name) desc (tag dh-ms) (tag dt-ms) winner))))
+
+(defn run-temporal
+  "Run temporal (history/as-of) benchmarks: Datahike vs Datomic.
+   Datalevin has no time-travel support, so it's excluded."
+  [& {:keys [datomic?] :or {datomic? true}}]
+  (alter-var-root #'q/*query-result-cache?* (constantly false))
+  (println "=== TEMPORAL BENCHMARKS (Datahike vs Datomic) ===")
+  (println "Setting up history-enabled databases with 20k people + 2k modifications...")
+  (println (str "  Compiled query engine: " (System/getenv "DATAHIKE_COMPILED_QUERY")))
+
+  ;; --- Datahike setup: history-enabled DB ---
+  (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+             :schema-flexibility :write
+             :keep-history? true
+             :attribute-refs? true
+             :search-cache-size 0
+             :index :datahike.index/persistent-set}
+        _ (d/create-database cfg)
+        dh-conn (d/connect cfg)
+        _ (d/transact dh-conn {:tx-data dh-schema})
+        _ (d/transact dh-conn {:tx-data people20k})
+        dh-tx1 (:max-tx (d/db dh-conn))
+        ;; Get 2000 real entity IDs to modify
+        dh-eids (take 2000 (map first (d/q '[:find ?e :where [?e :name]] (d/db dh-conn))))
+        _ (d/transact dh-conn {:tx-data
+                                (mapv (fn [eid] [:db/add eid :age (long (+ 100 (rand-int 50)))])
+                                      dh-eids)})
+        dh-db (d/db dh-conn)
+        dh-dbs {:current dh-db
+                :as-of   (d/as-of dh-db dh-tx1)
+                :history (d/history dh-db)}]
+    (println "  Datahike ready (history=true).")
+
+    ;; --- Datomic setup ---
+    (def ^:private dt-temporal-dbs (atom nil))
+    (when datomic?
+      (try
+        (dt-require!)
+        (let [url "datomic:mem://bench-temporal"
+              _ ((resolve 'datomic.api/delete-database) url)
+              _ ((resolve 'datomic.api/create-database) url)
+              dt-conn ((resolve 'datomic.api/connect) url)]
+          @((resolve 'datomic.api/transact) dt-conn
+            [{:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+              :db/ident :name :db/valueType :db.type/string
+              :db/cardinality :db.cardinality/one :db.install/_attribute :db.part/db}
+             {:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+              :db/ident :last-name :db/valueType :db.type/string
+              :db/cardinality :db.cardinality/one :db.install/_attribute :db.part/db}
+             {:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+              :db/ident :sex :db/valueType :db.type/keyword
+              :db/cardinality :db.cardinality/one :db.install/_attribute :db.part/db}
+             {:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+              :db/ident :age :db/valueType :db.type/long
+              :db/cardinality :db.cardinality/one :db.install/_attribute :db.part/db}
+             {:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+              :db/ident :salary :db/valueType :db.type/long
+              :db/cardinality :db.cardinality/one :db.install/_attribute :db.part/db}
+             {:db/id ((resolve 'datomic.api/tempid) :db.part/db)
+              :db/ident :follows :db/valueType :db.type/ref
+              :db/cardinality :db.cardinality/many :db.install/_attribute :db.part/db}])
+          @((resolve 'datomic.api/transact) dt-conn (vec people20k))
+          (let [dt-tx1 (-> ((resolve 'datomic.api/db) dt-conn)
+                           ((resolve 'datomic.api/basis-t)))
+                dt-eids (take 2000 (map first
+                                       (dt-q '[:find ?e :where [?e :name]]
+                                             ((resolve 'datomic.api/db) dt-conn))))]
+            @((resolve 'datomic.api/transact) dt-conn
+              (mapv (fn [eid] [:db/add eid :age (long (+ 100 (rand-int 50)))]) dt-eids))
+            (let [dt-db ((resolve 'datomic.api/db) dt-conn)]
+              (reset! dt-temporal-dbs
+                      {:current dt-db
+                       :as-of   ((resolve 'datomic.api/as-of) dt-db dt-tx1)
+                       :history ((resolve 'datomic.api/history) dt-db)}))))
+        (println "  Datomic ready.")
+        (catch Exception e
+          (println "  Datomic not available:" (.getMessage e)))))
+
+    ;; JIT warmup
+    (println "  JIT pre-warmup...")
+    (doseq [qname temporal-query-order]
+      (let [{:keys [query db-key]} (get temporal-queries qname)
+            db (get dh-dbs db-key)]
+        (try (dotimes [_ 200] (d/q query db)) (catch Exception _))))
+    (println "  JIT pre-warmup done.")
+
+    (print-temporal-header)
+
+    (doseq [qname temporal-query-order]
+      (let [{:keys [desc query db-key]} (get temporal-queries qname)
+            dh-db (get dh-dbs db-key)
+
+            ;; Validate result counts
+            dh-result (d/q query dh-db)
+            dh-count (count dh-result)
+            dt-result (when-let [dt-dbs @dt-temporal-dbs]
+                        (dt-q query (get dt-dbs db-key)))
+            dt-count (when dt-result (count dt-result))
+
+            _ (when (and dt-count (not= dh-count dt-count))
+                (println (format "  ⚠ RESULT MISMATCH %s: DH=%d DT=%d"
+                                 (name qname) dh-count dt-count)))
+
+            ;; Benchmark
+            dh-ms (bench (d/q query dh-db))
+            dt-ms (when @dt-temporal-dbs
+                    (bench (dt-q query (get @dt-temporal-dbs db-key))))]
+        (print-temporal-row qname desc dh-ms dt-ms)
+        (println (format "  Results: DH=%d%s" dh-count
+                         (if dt-count (format " DT=%d%s" dt-count
+                                              (if (= dh-count dt-count) " ✓" " ✗"))
+                           "")))))
+
+    ;; Cleanup
+    (d/release dh-conn)
+    (println "\nDone.")))
+
 (defn run-all
   "Run all benchmarks."
   [& opts]
@@ -817,7 +993,9 @@
   (println "=== RECURSIVE RULE BENCHMARKS ===")
   (apply run-rules opts)
   (println)
-  (apply run-aggregates opts))
+  (apply run-aggregates opts)
+  (println)
+  (apply run-temporal opts))
 
 (defn run-queries-only-datahike
   "Quick benchmarks for datahike alone (no competitor deps needed)."
@@ -835,8 +1013,9 @@
       "writes"     (run-writes)
       "rules"      (run-rules)
       "aggregates" (run-aggregates)
+      "temporal"   (run-temporal)
       "all"        (run-all)
       (do (println (str "Unknown command: " cmd))
-          (println "Usage: ... -m benchmark.datascript-bench [queries|writes|rules|aggregates|all]")
+          (println "Usage: ... -m benchmark.datascript-bench [queries|writes|rules|aggregates|temporal|all]")
           (System/exit 1))))
   (System/exit 0))

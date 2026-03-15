@@ -25,7 +25,7 @@
    [datahike.constants :as const]
    [datahike.query.relation :as rel]
    [datahike.query.plan :as plan]
-   #?(:cljs [datahike.db :refer [DB]])
+   #?(:cljs [datahike.db :refer [DB AsOfDB SinceDB HistoricalDB]])
    #?(:cljs [datahike.query.execute :as execute])
    #?(:clj [datahike.index.entity-set :as es])
    #?(:clj [datahike.index.secondary :as sec])
@@ -37,7 +37,7 @@
 
   #?(:clj (:import [clojure.lang Reflector Seqable]
                    [datahike.datom Datom]
-                   [datahike.db DB]
+                   [datahike.db DB AsOfDB SinceDB HistoricalDB]
                    [datahike.query.relation Relation]
                    [datalog.parser.type Aggregate BindColl BindIgnore BindScalar BindTuple Constant
                     FindColl FindRel FindScalar FindTuple PlainSymbol Pull
@@ -2903,6 +2903,31 @@
          (log/debug "columnar-aggregate not applicable:" (.getMessage e))
          nil))))
 
+(defn- compiled-engine-db?
+  "Check if db is eligible for the compiled query engine.
+   Accepts regular DB and temporal wrappers (AsOfDB, SinceDB, HistoricalDB)
+   with numeric time-points. Date-based time-points fall back to legacy
+   (require filter-txInstant lookups that the fused scan can't do inline)."
+  [db]
+  (or (instance? DB db)
+      (and (instance? SinceDB db)
+           (number? (dbi/-time-point db)))
+      (and (instance? AsOfDB db)
+           (number? (dbi/-time-point db)))
+      (instance? HistoricalDB db)))
+
+(defn- compiled-engine-origin-db
+  "For temporal wrappers, return the origin DB for plan creation (schema, indexes).
+   For regular DB, return as-is. Returns nil for nested temporal wrappers
+   (e.g. (d/history (d/as-of ...))) which should fall back to legacy."
+  [db]
+  (cond
+    (instance? DB db) db
+    (or (instance? SinceDB db) (instance? AsOfDB db) (instance? HistoricalDB db))
+    (let [origin (dbi/-origin db)]
+      (when (instance? DB origin) origin))
+    :else nil))
+
 (defn- execute-compiled-direct
   "Direct HashSet path: write tuples directly, no Relations.
    Returns result set or nil if not eligible."
@@ -3019,7 +3044,7 @@
         use-compiled? (and (not *force-legacy*)
                            (not stats?)
                            (let [db (get (:sources context-in) '$)]
-                             (and db (dbu/db? db) (instance? DB db))))
+                             (and db (dbu/db? db) (compiled-engine-db? db))))
         [context-in lookup-ref-reverse-map]
         (if use-compiled?
           (resolve-lookup-ref-bindings (get (:sources context-in) '$) context-in)
@@ -3028,12 +3053,18 @@
     (if (and limit (zero? limit))
       #{}
 
-      (if use-compiled?
+      (if (and use-compiled?
+               ;; Nested temporal wrappers (e.g. (d/history (d/as-of ...))) → legacy
+               (compiled-engine-origin-db (get (:sources context-in) '$)))
         (let [db (get (:sources context-in) '$)
+              ;; For temporal wrappers, use origin-db for plan creation (schema, index stats)
+              plan-db (compiled-engine-origin-db db)
               bound-vars (context-bound-vars context-in)
+              ;; Use the actual db (not origin) for lookup-ref resolution — temporal
+              ;; DBs (history) can resolve retracted entities that origin-db can't.
               clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
               rules (not-empty (:rules context-in))
-              plan (get-or-create-plan db clauses bound-vars rules)]
+              plan (get-or-create-plan plan-db clauses bound-vars rules)]
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
