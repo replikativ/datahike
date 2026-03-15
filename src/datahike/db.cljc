@@ -903,8 +903,7 @@
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt eavt
           :temporal-aevt aevt
-          :temporal-avet avet})
-       )))))
+          :temporal-avet avet}))))))
 
 (defn ^DB init-db
   ([datoms] (init-db datoms nil nil nil))
