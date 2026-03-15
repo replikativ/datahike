@@ -118,16 +118,7 @@
         (assoc-in db [:schema e] (hash-map a-ident v-ident))))))
 
 (defn update-rschema [db]
-  (let [new-rschema (dbu/rschema (:schema db))
-        ;; Merge :db.secondary/index from both schema-derived and existing runtime mappings
-        ;; Schema-derived comes from secondary-index-mapping in dbu/rschema
-        ;; Runtime comes from indices that were created via config (not schema)
-        schema-sec-idx (get new-rschema :db.secondary/index)
-        runtime-sec-idx (get-in db [:rschema :db.secondary/index])
-        merged-sec-idx (merge-with into schema-sec-idx runtime-sec-idx)]
-    (assoc db :rschema (if (seq merged-sec-idx)
-                         (assoc new-rschema :db.secondary/index merged-sec-idx)
-                         new-rschema))))
+  (assoc db :rschema (dbu/rschema (:schema db))))
 
 #?(:clj
    (defn- maybe-create-secondary-index

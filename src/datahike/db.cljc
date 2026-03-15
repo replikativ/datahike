@@ -904,30 +904,7 @@
          {:temporal-eavt eavt
           :temporal-aevt aevt
           :temporal-avet avet})
-       #?(:clj
-          (when-let [sec-cfg (:secondary-indices complete-config)]
-            (let [indices (persistent!
-                           (reduce-kv
-                            (fn [acc idx-ident idx-cfg]
-                              (let [idx-type (:type idx-cfg)
-                                    ;; Pass ident-ref-map so index can resolve attr-refs
-                                    idx-cfg (cond-> idx-cfg
-                                              (seq ident-ref-map)
-                                              (assoc :ident-ref-map ident-ref-map))]
-                                (assoc! acc idx-ident
-                                        (sec/create-index idx-type idx-cfg nil))))
-                            (transient {}) sec-cfg))
-                  ;; Build rschema :db.secondary/index mapping: attr → #{idx-ident ...}
-                  sec-rschema (reduce-kv
-                               (fn [m idx-ident idx-cfg]
-                                 (reduce (fn [m a]
-                                           (update-in m [:db.secondary/index a]
-                                                      (fnil conj #{}) idx-ident))
-                                         m (:attrs idx-cfg)))
-                               {} sec-cfg)]
-              {:secondary-indices indices
-               :rschema (merge-with merge rschema sec-rschema)}))
-          :cljs nil))))))
+       )))))
 
 (defn ^DB init-db
   ([datoms] (init-db datoms nil nil nil))

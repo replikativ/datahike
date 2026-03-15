@@ -660,13 +660,15 @@
              :keep-history? false
              :attribute-refs? true
              :search-cache-size 0
-             :index :datahike.index/persistent-set
-             :secondary-indices {:idx/analytics {:type :stratum
-                                                 :attrs #{:name :last-name :sex :age :salary}}}}]
+             :index :datahike.index/persistent-set}]
     (d/delete-database cfg)
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
       (d/transact conn {:tx-data dh-schema})
+      (d/transact conn {:tx-data [{:db/ident :idx/analytics
+                                   :db.secondary/type :stratum
+                                   :db.secondary/attrs [:name :last-name :sex :age :salary]}]})
+      (Thread/sleep 1000) ;; wait for backfill to complete
       conn)))
 
 (defn dh-stratum-db-with-people []

@@ -16,47 +16,50 @@ All three are optional dependencies — add them to your `deps.edn` only if need
 
 ## Full-Text Search with Scriptum
 
-Scriptum provides Lucene-powered full-text search. Define which attributes to index in your schema, create the index, attach it to your database, and search.
+Scriptum provides Lucene-powered full-text search. Define a secondary index via a schema transaction, and Datahike will automatically maintain it.
 
 ### Setup
 
 ```clojure
 (require '[datahike.api :as d])
-(require '[datahike.db :as db])
 (require '[datahike.index.secondary :as sec])
 (require '[datahike.index.entity-set :as es])
 (require '[datahike.index.secondary.scriptum])
 
-;; 1. Define schema with secondary index metadata
-(def schema
-  {:person/name {:db/index true}
-   :person/bio  {}
-   :idx/fulltext {:db.secondary/type   :scriptum
-                  :db.secondary/attrs  [:person/name :person/bio]
-                  :db.secondary/config {:path "/tmp/my-fulltext-index"}}})
+;; 1. Create database and define attribute schema
+(def cfg {:store {:backend :memory :id (random-uuid)}
+          :schema-flexibility :write})
+(d/create-database cfg)
+(def conn (d/connect cfg))
 
-;; 2. Create the database and the index
-(def empty-db (db/empty-db schema))
+(d/transact conn [{:db/ident :person/name
+                   :db/valueType :db.type/string
+                   :db/cardinality :db.cardinality/one
+                   :db/index true}
+                  {:db/ident :person/bio
+                   :db/valueType :db.type/string
+                   :db/cardinality :db.cardinality/one}])
 
-(def ft-idx
-  (sec/create-index :scriptum
-                    {:attrs #{:person/name :person/bio}
-                     :path  "/tmp/my-fulltext-index"}
-                    empty-db))
+;; 2. Add data
+(d/transact conn [{:person/name "Alice"   :person/bio "Machine learning researcher"}
+                  {:person/name "Bob"     :person/bio "Database administrator"}
+                  {:person/name "Charlie" :person/bio "Machine learning engineer"}])
 
-;; 3. Attach the index and transact data
-(def db
-  (-> empty-db
-      (assoc :secondary-indices {:idx/fulltext ft-idx})
-      (d/db-with [{:db/id 1 :person/name "Alice"   :person/bio "Machine learning researcher"}
-                   {:db/id 2 :person/name "Bob"     :person/bio "Database administrator"}
-                   {:db/id 3 :person/name "Charlie" :person/bio "Machine learning engineer"}])))
+;; 3. Dynamically add a secondary index — backfills existing data automatically
+(d/transact conn [{:db/ident :idx/fulltext
+                   :db.secondary/type :scriptum
+                   :db.secondary/attrs [:person/name :person/bio]
+                   :db.secondary/config {:path "/tmp/my-fulltext-index"}}])
+;; Wait for backfill to complete (async writer operation)
+(Thread/sleep 1000)
 ```
 
 ### Searching
 
 ```clojure
-;; Get the updated index from the transacted database
+(def db (d/db conn))
+
+;; Get the index from the database
 (def ft (get-in db [:secondary-indices :idx/fulltext]))
 
 ;; Full-text search returns an EntityBitSet of matching entity IDs
@@ -92,35 +95,30 @@ Proximum provides HNSW-based approximate nearest neighbor search. Requires Java 
 ```clojure
 (require '[datahike.index.secondary.proximum])
 
-(def schema
-  {:person/embedding {}
-   :idx/vectors {:db.secondary/type   :proximum
-                 :db.secondary/attrs  [:person/embedding]
-                 :db.secondary/config {:dim 4
-                                       :distance :cosine
-                                       :store-config {:backend :memory
-                                                      :id (random-uuid)}}}})
+;; Add a vector index to an existing database
+(d/transact conn [{:db/ident :person/embedding
+                   :db/valueType :db.type/tuple
+                   :db/cardinality :db.cardinality/one}])
 
-(def empty-db (db/empty-db schema))
+(d/transact conn [{:db/ident :idx/vectors
+                   :db.secondary/type :proximum
+                   :db.secondary/attrs [:person/embedding]
+                   :db.secondary/config {:dim 4
+                                         :distance :cosine
+                                         :store-config {:backend :memory
+                                                        :id (random-uuid)}}}])
+(Thread/sleep 1000)
 
-(def vec-idx
-  (sec/create-index :proximum
-                    {:attrs #{:person/embedding}
-                     :dim 4 :distance :cosine
-                     :store-config {:backend :memory :id (random-uuid)}}
-                    empty-db))
-
-(def db
-  (-> empty-db
-      (assoc :secondary-indices {:idx/vectors vec-idx})
-      (d/db-with [{:db/id 1 :person/embedding (float-array [1.0 0.0 0.0 0.0])}
-                   {:db/id 2 :person/embedding (float-array [0.0 1.0 0.0 0.0])}
-                   {:db/id 3 :person/embedding (float-array [0.9 0.1 0.0 0.0])}])))
+;; Add vector data
+(d/transact conn [{:person/embedding (float-array [1.0 0.0 0.0 0.0])}
+                  {:person/embedding (float-array [0.0 1.0 0.0 0.0])}
+                  {:person/embedding (float-array [0.9 0.1 0.0 0.0])}])
 ```
 
 ### KNN Search
 
 ```clojure
+(def db (d/db conn))
 (def vt (get-in db [:secondary-indices :idx/vectors]))
 
 ;; Find 2 nearest neighbors to query vector
@@ -145,25 +143,21 @@ Stratum provides SIMD-accelerated columnar operations. When a query's aggregate 
 ```clojure
 (require '[datahike.index.secondary.stratum])
 
-(def schema
-  {:person/salary {}
-   :person/dept   {}
-   :idx/analytics {:db.secondary/type  :stratum
-                   :db.secondary/attrs [:person/salary :person/dept]}})
+(d/transact conn [{:db/ident :person/salary
+                   :db/valueType :db.type/long
+                   :db/cardinality :db.cardinality/one}
+                  {:db/ident :person/dept
+                   :db/valueType :db.type/string
+                   :db/cardinality :db.cardinality/one}])
 
-(def empty-db (db/empty-db schema))
+(d/transact conn [{:db/ident :idx/analytics
+                   :db.secondary/type :stratum
+                   :db.secondary/attrs [:person/salary :person/dept]}])
+(Thread/sleep 1000)
 
-(def st-idx
-  (sec/create-index :stratum
-                    {:attrs #{:person/salary :person/dept}}
-                    empty-db))
-
-(def db
-  (-> empty-db
-      (assoc :secondary-indices {:idx/analytics st-idx})
-      (d/db-with [{:db/id 1 :person/salary 90000 :person/dept "eng"}
-                   {:db/id 2 :person/salary 60000 :person/dept "sales"}
-                   {:db/id 3 :person/salary 80000 :person/dept "eng"}])))
+(d/transact conn [{:person/salary 90000 :person/dept "eng"}
+                  {:person/salary 60000 :person/dept "sales"}
+                  {:person/salary 80000 :person/dept "eng"}])
 ```
 
 ### Aggregate Queries
@@ -173,16 +167,42 @@ Standard Datalog aggregate queries are automatically routed to Stratum when the 
 ```clojure
 (d/q '[:find ?d (avg ?s)
        :where [?e :person/salary ?s] [?e :person/dept ?d]]
-     db)
+     (d/db conn))
 ;; => [["eng" 85000.0] ["sales" 60000.0]]
 
 (d/q '[:find (avg ?s) .
        :where [?e :person/salary ?s]]
-     db)
+     (d/db conn))
 ;; => 76666.66666666667
 ```
 
 Supported aggregate functions: `avg`, `sum`, `count`, `min`, `max`, `variance`, `stddev`, `count-distinct`, `median`.
+
+## Index Lifecycle
+
+Secondary indices are managed through schema transactions:
+
+```clojure
+;; Create — transact the index definition
+(d/transact conn [{:db/ident :idx/my-index
+                   :db.secondary/type :stratum
+                   :db.secondary/attrs [:attr1 :attr2]}])
+
+;; Status transitions: :building → :ready → :disabled
+;; Check status:
+(get-in (d/db conn) [:schema :idx/my-index :db.secondary/status])
+;; => :ready
+
+;; Disable — stops index maintenance for new transactions
+(d/transact conn [{:db/ident :idx/my-index
+                   :db.secondary/status :disabled}])
+```
+
+- **`:building`** — Index was just created, backfill in progress. Queries will not use it.
+- **`:ready`** — Index is fully populated and maintained on every transaction.
+- **`:disabled`** — Index is no longer maintained. Monotonic — cannot go back to `:ready`.
+
+The `:db.secondary/type` and `:db.secondary/attrs` are immutable after creation. To change indexed attributes, create a new index with a different ident.
 
 ## Composing Indices with Entity Bitmaps
 
@@ -211,12 +231,13 @@ All secondary indices communicate through `EntityBitSet` — a RoaringBitmap of 
 
 ## Schema Reference
 
-Secondary indices are declared in the schema using special keys:
+Secondary indices are declared via schema transactions:
 
 ```clojure
-{:idx/my-index {:db.secondary/type   :scriptum     ;; :scriptum | :proximum | :stratum
-                :db.secondary/attrs  [:attr1 :attr2] ;; attributes to index
-                :db.secondary/config {...}}}         ;; type-specific configuration
+(d/transact conn [{:db/ident            :idx/my-index
+                   :db.secondary/type   :scriptum     ;; :scriptum | :proximum | :stratum
+                   :db.secondary/attrs  [:attr1 :attr2] ;; attributes to index
+                   :db.secondary/config {...}}])       ;; type-specific configuration (optional)
 ```
 
 ### Scriptum Config
