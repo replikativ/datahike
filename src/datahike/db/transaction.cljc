@@ -94,8 +94,7 @@
         a-ident (if attribute-refs? (dbi/-ident-for db a) a)
         v-ident (if (and attribute-refs? (contains? (dbi/-system-entities db) v))
                   (dbi/-ident-for db v)
-                  v)
-]
+                  v)]
     (when (and attribute-refs? (contains? (dbi/-system-entities db) e))
       (raise "System schema entity cannot be changed"
              {:error :transact/schema :entity-id e}))
