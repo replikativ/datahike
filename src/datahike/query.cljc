@@ -2146,7 +2146,8 @@
    Takes effect immediately by replacing the cache with a new empty LRU of the given size."
   [n]
   {:pre [(pos-int? n)]}
-  (alter-var-root #'*query-cache-size* (constantly n))
+  #?(:clj (alter-var-root #'*query-cache-size* (constantly n))
+     :cljs (set! *query-cache-size* n))
   (reset! query-result-cache (datahike.lru/lru n))
   n)
 
@@ -2944,7 +2945,7 @@
       ;; since the namespace is already loaded. No need to cache the resolved var.
       (let [exec-direct #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct)
                            :cljs execute/execute-plan-direct)
-            find-var-syms (mapv #(.-symbol %) (:elements qfind))]
+            find-var-syms (mapv (fn [^Variable el] (.-symbol el)) (:elements qfind))]
         (exec-direct plan db find-var-syms nil (:consts context-in))))))
 
 (defn- post-process-result

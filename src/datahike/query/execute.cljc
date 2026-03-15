@@ -18,6 +18,7 @@
    #?(:cljs [org.replikativ.persistent-sorted-set.btset :as btset :refer [BTSet]])
    [datahike.db :as db #?@(:cljs [:refer [AsOfDB SinceDB HistoricalDB FilteredDB]])]
    [taoensso.timbre :as log])
+  #?(:cljs (:require-macros [datahike.query.execute :refer [scan-filter scan-filter-temporal emit-tuple]]))
   #?(:clj (:import [datahike.datom Datom]
                    [datahike.db AsOfDB SinceDB HistoricalDB FilteredDB]
                    [org.replikativ.persistent_sorted_set
@@ -213,59 +214,64 @@
    passes all filters (ground, strict, probe). All filter vars must be in
    scope at expansion site."
   [scan-d ground-filter strict-filter probe-set probe-datom-field]
-  `(and (or (nil? ~ground-filter) (~ground-filter ~scan-d))
-        (or (nil? ~strict-filter) (~strict-filter ~scan-d))
-        (or (nil? ~probe-set)
-            (probe-set-contains? ~probe-set
-                                 (case (int ~probe-datom-field)
-                                   0 (.-e ~scan-d) 1 (.-a ~scan-d)
-                                   2 (.-v ~scan-d) 3 (.-tx ~scan-d)
-                                   (.-v ~scan-d))))))
+  (let [d (with-meta scan-d {:tag 'datahike.datom.Datom})]
+    `(and (or (nil? ~ground-filter) (~ground-filter ~d))
+          (or (nil? ~strict-filter) (~strict-filter ~d))
+          (or (nil? ~probe-set)
+              (probe-set-contains? ~probe-set
+                                   (case (int ~probe-datom-field)
+                                     0 (.-e ~d) 1 (.-a ~d)
+                                     2 (.-v ~d) 3 (.-tx ~d)
+                                     (.-v ~d)))))))
 
 (defmacro ^:private scan-filter-temporal
   "Like scan-filter but with additional temporal-tx-filter check."
   [scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter]
-  `(and (or (nil? ~temporal-tx-filter) (~temporal-tx-filter ~scan-d))
-        (or (nil? ~ground-filter) (~ground-filter ~scan-d))
-        (or (nil? ~strict-filter) (~strict-filter ~scan-d))
-        (or (nil? ~probe-set)
-            (probe-set-contains? ~probe-set
-                                 (case (int ~probe-datom-field)
-                                   0 (.-e ~scan-d) 1 (.-a ~scan-d)
-                                   2 (.-v ~scan-d) 3 (datom/datom-tx ~scan-d)
-                                   (.-v ~scan-d))))))
+  (let [d (with-meta scan-d {:tag 'datahike.datom.Datom})]
+    `(and (or (nil? ~temporal-tx-filter) (~temporal-tx-filter ~d))
+          (or (nil? ~ground-filter) (~ground-filter ~d))
+          (or (nil? ~strict-filter) (~strict-filter ~d))
+          (or (nil? ~probe-set)
+              (probe-set-contains? ~probe-set
+                                   (case (int ~probe-datom-field)
+                                     0 (.-e ~d) 1 (.-a ~d)
+                                     2 (.-v ~d) 3 (datom/datom-tx ~d)
+                                     (.-v ~d)))))))
 
 (defmacro ^:private emit-tuple
   "Expand inline result emission for a scan datom. All projection vars
    (find-source, const-vals, merge-datoms, etc.) must be in scope."
   [scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
    n-find find-source const-vals result-list]
-  `(do
-     (when ~collect-set
-       (let [val# (if (neg? ~collect-merge-idx)
-                    (case (int ~collect-datom-field)
-                      0 (.-e ~scan-d) 1 (.-a ~scan-d)
-                      2 (.-v ~scan-d) 3 (.-tx ~scan-d) (.-v ~scan-d))
-                    (.-v ^Datom (aget ~merge-datoms ~collect-merge-idx)))]
-         (probe-set-add ~collect-set val#)))
-     (when (pos? ~n-find)
-       (let [out# #?(:clj (object-array ~n-find) :cljs (make-array ~n-find))]
-         (dotimes [fi# ~n-find]
-           (let [src# (aget ~find-source fi#)]
-             (aset out# fi#
-                   (cond
-                     (== src# find-src-const) (aget ~const-vals fi#)
-                     (== src# find-src-scan-e) (.-e ~scan-d)
-                     (== src# find-src-scan-a) (.-a ~scan-d)
-                     (== src# find-src-scan-v) (.-v ~scan-d)
-                     (== src# find-src-scan-tx) (.-tx ~scan-d)
-                     (== src# find-src-scan-added) (datom/datom-added ~scan-d)
-                     (< src# find-src-merge-e-base) (.-v ^Datom (aget ~merge-datoms src#))
-                     (< src# 2000) (.-e ^Datom (aget ~merge-datoms (- src# find-src-merge-e-base)))
-                     (< src# 3000) (.-a ^Datom (aget ~merge-datoms (- src# 2000)))
-                     (< src# 4000) (.-tx ^Datom (aget ~merge-datoms (- src# 3000)))
-                     :else (datom/datom-added ^Datom (aget ~merge-datoms (- src# 4000)))))))
-         (result-list-add ~result-list out#)))))
+  (let [d (with-meta scan-d {:tag 'datahike.datom.Datom})
+        md (with-meta (gensym "md") {:tag 'datahike.datom.Datom})]
+    `(do
+       (when ~collect-set
+         (let [val# (if (neg? ~collect-merge-idx)
+                      (case (int ~collect-datom-field)
+                        0 (.-e ~d) 1 (.-a ~d)
+                        2 (.-v ~d) 3 (.-tx ~d) (.-v ~d))
+                      (let [~md (aget ~merge-datoms ~collect-merge-idx)]
+                        (.-v ~md)))]
+           (probe-set-add ~collect-set val#)))
+       (when (pos? ~n-find)
+         (let [out# #?(:clj (object-array ~n-find) :cljs (make-array ~n-find))]
+           (dotimes [fi# ~n-find]
+             (let [src# (aget ~find-source fi#)]
+               (aset out# fi#
+                     (cond
+                       (== src# find-src-const) (aget ~const-vals fi#)
+                       (== src# find-src-scan-e) (.-e ~d)
+                       (== src# find-src-scan-a) (.-a ~d)
+                       (== src# find-src-scan-v) (.-v ~d)
+                       (== src# find-src-scan-tx) (.-tx ~d)
+                       (== src# find-src-scan-added) (datom/datom-added ~d)
+                       (< src# find-src-merge-e-base) (let [~md (aget ~merge-datoms src#)] (.-v ~md))
+                       (< src# 2000) (let [~md (aget ~merge-datoms (- src# find-src-merge-e-base))] (.-e ~md))
+                       (< src# 3000) (let [~md (aget ~merge-datoms (- src# 2000))] (.-a ~md))
+                       (< src# 4000) (let [~md (aget ~merge-datoms (- src# 3000))] (.-tx ~md))
+                       :else (let [~md (aget ~merge-datoms (- src# 4000))] (datom/datom-added ~md))))))
+           (result-list-add ~result-list out#))))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -1496,7 +1502,8 @@
                                                       has-tx-var? (conj (.-tx d)))))))))))]
                 (run! (fn [^Datom scan-d]
                         (when (or (nil? entity-filter)
-                                  (es/entity-bitset-contains? entity-filter (.-e scan-d)))
+                                  #?(:clj (es/entity-bitset-contains? entity-filter (.-e scan-d))
+                                     :cljs true))
                           (process-merges (.-e scan-d) (int 0)
                                           [(.-e scan-d) (.-a scan-d) (.-v scan-d) (.-tx scan-d) true])))
                       filtered-datoms))]
@@ -1592,9 +1599,9 @@
                                                   (aget ^objects tuple idx)
                                                   (nth tuple idx)))))
                                 arr)
-                         :cljs (let [arr (datahike.arrays/make-array n-vars)]
+                         :cljs (let [arr (make-array n-vars)]
                                  (dotimes [j n-vars]
-                                   (aset arr j (datahike.arrays/aget tuple (nth indices j))))
+                                   (aset arr j (aget tuple (nth indices j))))
                                  arr))
             wrapper #?(:clj (ArrayWrapper. projected (java.util.Arrays/hashCode projected))
                        :cljs projected)]
@@ -1663,7 +1670,7 @@
                          :cljs (let [result #js []]
                                  (.forEach demand-set
                                            (fn [v]
-                                             (let [arr (datahike.arrays/make-array 1)]
+                                             (let [arr (make-array 1)]
                                                (aset arr 0 v)
                                                (.push result arr))))
                                  (vec result)))
@@ -1750,7 +1757,7 @@
       (let [v #?(:clj (if (instance? object-array-class tuple)
                         (aget ^objects tuple (int prop-pos))
                         (nth tuple prop-pos))
-                 :cljs (datahike.arrays/aget tuple prop-pos))]
+                 :cljs (aget tuple prop-pos))]
         (.add demand-set v)))
     (> (.size demand-set) initial-size)))
 
@@ -1933,9 +1940,10 @@
                                    call-args)]
                 (filterv (fn [tuple]
                            (every? (fn [[i expected]]
-                                     (= (if (instance? object-array-class tuple)
-                                          (aget ^objects tuple (int i))
-                                          (nth tuple i))
+                                     (= #?(:clj (if (instance? object-array-class tuple)
+                                                   (aget ^objects tuple (int i))
+                                                   (nth tuple i))
+                                            :cljs (aget tuple i))
                                         expected))
                                    const-filters))
                          (:tuples main-rel))))
@@ -1960,9 +1968,9 @@
                                       (let [idx (aget output-indices j)]
                                         (aset a j (if oa? (aget ^objects tuple idx) (nth tuple idx)))))
                                     a)
-                             :cljs (let [a (datahike.arrays/make-array n-out)]
+                             :cljs (let [a (make-array n-out)]
                                      (dotimes [j n-out]
-                                       (aset a j (datahike.arrays/aget tuple (nth output-indices j))))
+                                       (aset a j (aget tuple (nth output-indices j))))
                                      a))
                       wrapper #?(:clj (ArrayWrapper. arr (java.util.Arrays/hashCode arr))
                                  :cljs (str (vec arr)))]
