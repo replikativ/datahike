@@ -273,7 +273,6 @@
                        :else (let [~md (aget ~merge-datoms (- src# 4000))] (datom/datom-added ~md))))))
            (result-list-add ~result-list out#))))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Temporal query support helpers
 
@@ -412,16 +411,16 @@
       (let [temporal-index (:temporal-eavt origin-db)]
         (if temporal-index
           (dbu/distinct-datoms origin-db :eavt
-                              current-slice
-                              (di/-slice temporal-index from-d to-d :eavt))
+                               current-slice
+                               (di/-slice temporal-index from-d to-d :eavt))
           current-slice))
 
       (:as-of :since)
       (let [temporal-index (:temporal-eavt origin-db)
             merged (if temporal-index
                      (dbu/distinct-datoms origin-db :eavt
-                                         current-slice
-                                         (di/-slice temporal-index from-d to-d :eavt))
+                                          current-slice
+                                          (di/-slice temporal-index from-d to-d :eavt))
                      current-slice)
             ctx (dbi/-search-context db)]
         (db/post-process-datoms merged origin-db ctx))
@@ -449,8 +448,8 @@
             #?(:clj (fast-merge-scan db-index from-datom to-datom
                                      temporal-index index origin-db resolved-a)
                :cljs (dbu/distinct-datoms origin-db index
-                                         (di/-slice db-index from-datom to-datom index)
-                                         (di/-slice temporal-index from-datom to-datom index)))
+                                          (di/-slice db-index from-datom to-datom index)
+                                          (di/-slice temporal-index from-datom to-datom index)))
             (di/-slice db-index from-datom to-datom index)))
 
         (:as-of :since)
@@ -459,8 +458,8 @@
           (let [temporal-index (get origin-db temporal-index-key)]
             (if temporal-index
               (let [merged (dbu/distinct-datoms origin-db index
-                                               (di/-slice db-index from-datom to-datom index)
-                                               (di/-slice temporal-index from-datom to-datom index))
+                                                (di/-slice db-index from-datom to-datom index)
+                                                (di/-slice temporal-index from-datom to-datom index))
                     ctx (dbi/-search-context db)]
                 (db/post-process-datoms merged origin-db ctx))
               (di/-slice db-index from-datom to-datom index))))
@@ -935,10 +934,10 @@
                                               (not (get-in op [:schema-info :card-one?] true))))
                                         merge-ops))
         merge-added-filter (to-array (mapv (fn [op]
-                                              (let [added (get (:clause op) 4)]
-                                                (when (and (some? added) (not (symbol? added)) (boolean? added))
-                                                  added)))
-                                            merge-ops))
+                                             (let [added (get (:clause op) 4)]
+                                               (when (and (some? added) (not (symbol? added)) (boolean? added))
+                                                 added)))
+                                           merge-ops))
         ;; For historical card-one attrs, temporal index is self-sufficient — skip current
         temporal-eavt-pss (when (= temporal-type :historical) (:temporal-eavt origin-db))
         merge-temporal-only (to-array (mapv (fn [op]
@@ -946,9 +945,9 @@
                                                    (some? temporal-eavt-pss)
                                                    (get-in op [:schema-info :card-one?] true)
                                                    (not (dbu/no-history? origin-db
-                                                          (let [ma (second (:clause op))]
-                                                            (when (and (some? ma) (not (symbol? ma)))
-                                                              (resolve-attr origin-db ma)))))))
+                                                                         (let [ma (second (:clause op))]
+                                                                           (when (and (some? ma) (not (symbol? ma)))
+                                                                             (resolve-attr origin-db ma)))))))
                                             merge-ops))
         ;; ForwardCursor on temporal index for card-one history merge lookups (CLJ only)
         temporal-cursor
@@ -1113,7 +1112,6 @@
                  (process-merges 0)))))))
     result-list))
 
-
 ;; ---------------------------------------------------------------------------
 ;; Direct-to-output execution (main fast path)
 
@@ -1228,11 +1226,11 @@
                 merge-ops (entity-group-merge-ops g)]
             (if temporal
               (execute-group-direct-temporal db scan-op merge-ops find-vars consts
-                                            result-list nil 0 nil 0 -1
-                                            max-results temporal)
+                                             result-list nil 0 nil 0 -1
+                                             max-results temporal)
               (execute-group-direct db scan-op merge-ops find-vars consts
-                                   result-list nil 0 nil 0 -1
-                                   max-results)))
+                                    result-list nil 0 nil 0 -1
+                                    max-results)))
 
           ;; Multi-group — hash-probe value join
           ;; Execute groups in order, build probe-sets between them
@@ -1254,15 +1252,15 @@
                     (when (and pinfo probe-set)
                       (if temporal
                         (execute-group-direct-temporal db scan-op merge-ops find-vars consts
-                                                      result-list probe-set
-                                                      (int (:consumer-scan-field pinfo))
-                                                      nil 0 -1
-                                                      max-results temporal)
+                                                       result-list probe-set
+                                                       (int (:consumer-scan-field pinfo))
+                                                       nil 0 -1
+                                                       max-results temporal)
                         (execute-group-direct db scan-op merge-ops find-vars consts
-                                             result-list probe-set
-                                             (int (:consumer-scan-field pinfo))
-                                             nil 0 -1
-                                             max-results)))
+                                              result-list probe-set
+                                              (int (:consumer-scan-field pinfo))
+                                              nil 0 -1
+                                              max-results)))
                     (recur (inc gi) probe-sets))
 
                   ;; Producer group: collect join-var values for downstream consumers
@@ -1284,11 +1282,11 @@
                     ;; No max-results for producer (needs full collection for join)
                     (if temporal
                       (execute-group-direct-temporal db scan-op merge-ops [] consts
-                                                    result-list nil 0
-                                                    collect-set
-                                                    (int (or (:producer-datom-field collect-field-info) 0))
-                                                    (int (or (:producer-merge-idx collect-field-info) -1))
-                                                    nil temporal)
+                                                     result-list nil 0
+                                                     collect-set
+                                                     (int (or (:producer-datom-field collect-field-info) 0))
+                                                     (int (or (:producer-merge-idx collect-field-info) -1))
+                                                     nil temporal)
                       (execute-group-direct db scan-op merge-ops [] consts
                                             result-list nil 0
                                             collect-set
@@ -1383,9 +1381,9 @@
             (let [ti (temporal-info db)]
               (if ti
                 (execute-group-direct-temporal db scan-op merge-ops all-vars nil
-                                              result-list nil 0 nil 0 -1 nil ti)
+                                               result-list nil 0 nil 0 -1 nil ti)
                 (execute-group-direct db scan-op merge-ops all-vars nil
-                                     result-list nil 0 nil 0 -1 nil)))
+                                      result-list nil 0 nil 0 -1 nil)))
             ;; Convert to Relation: attrs = {var-sym → column-index}, tuples = vec of Object[]
             (let [attrs (into {} (map-indexed (fn [i v] [v i]) all-vars))
                   tuples #?(:clj (vec (.toArray ^java.util.ArrayList result-list))
@@ -1941,9 +1939,9 @@
                 (filterv (fn [tuple]
                            (every? (fn [[i expected]]
                                      (= #?(:clj (if (instance? object-array-class tuple)
-                                                   (aget ^objects tuple (int i))
-                                                   (nth tuple i))
-                                            :cljs (aget tuple i))
+                                                  (aget ^objects tuple (int i))
+                                                  (nth tuple i))
+                                           :cljs (aget tuple i))
                                         expected))
                                    const-filters))
                          (:tuples main-rel))))
