@@ -83,7 +83,7 @@ Use `d/explain` to see the compiled plan for any query:
 | Feature | Compiled Engine | Notes |
 |---------|----------------|-------|
 | Entity joins (`[?e :a ?v] [?e :b ?w]`) | Yes | Fused scan+merge |
-| Value joins (`[?e :a ?x] [?e2 :b ?x]`) | Fallback to legacy | Multiple entity vars |
+| Value joins (`[?e :a ?x] [?e2 :b ?x]`) | Yes | Hash-probe between fused groups |
 | `:in` bindings (scalar, tuple, collection) | Yes | |
 | Predicates (`[(> ?a 50)]`) | Yes | Range predicates pushed into index slice |
 | OR / OR-JOIN | Yes | Recursive sub-plans |
