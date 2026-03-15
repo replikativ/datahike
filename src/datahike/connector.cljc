@@ -214,6 +214,18 @@
                          conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
                      (swap! (:wrapped-atom conn) assoc :writer
                             (w/create-writer (:writer config) conn))
+                     ;; Recovery: re-trigger backfill for any :building secondary indices
+                     #?(:clj
+                        (let [db @(:wrapped-atom conn)
+                              schema (:schema db)]
+                          (doseq [[ident entry] schema
+                                  :when (and (map? entry)
+                                             (:db.secondary/type entry)
+                                             (#{:building :ready} (:db.secondary/status entry)))]
+                            (log/info "Re-triggering secondary index backfill on connect:" ident)
+                            (w/dispatch! (:writer db)
+                                         {:op 'build-secondary-index!
+                                          :args [ident]}))))
                      (add-connection! conn-id conn)
                      conn))))))
 

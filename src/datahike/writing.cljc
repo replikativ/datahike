@@ -3,7 +3,9 @@
   (:require [datahike.connections :refer [delete-connection! *connections*]]
             [datahike.db :as db]
             [datahike.db.utils :as dbu]
+            [datahike.db.interface :as dbi]
             [datahike.index :as di]
+            [datahike.index.secondary :as sec]
             [datahike.store :as ds]
             [datahike.tools :as dt]
             [datahike.core :as core]
@@ -84,6 +86,32 @@
          :temporal-aevt-key (cond-> temporal-aevt flush! (di/-flush backend))
          :temporal-avet-key (cond-> temporal-avet flush! (di/-flush backend))}))]))
 
+(defn- reconstruct-secondary-indices
+  "Scan schema for secondary index definitions and recreate empty index instances.
+   Indices with status :ready or :building will be recreated (empty) and need backfill.
+   Returns a map of {idx-ident -> index-instance} and updated rschema mappings."
+  [schema ident-ref-map]
+  #?(:clj
+     (let [sec-indices (reduce-kv
+                        (fn [acc ident entry]
+                          (if (and (map? entry) (:db.secondary/type entry))
+                            (let [idx-type (:db.secondary/type entry)
+                                  idx-attrs (set (:db.secondary/attrs entry))
+                                  idx-config (merge (:db.secondary/config entry)
+                                                    {:attrs idx-attrs})
+                                  idx-config (cond-> idx-config
+                                               (seq ident-ref-map)
+                                               (assoc :ident-ref-map ident-ref-map))]
+                              (try
+                                (assoc acc ident (sec/create-index idx-type idx-config nil))
+                                (catch Exception e
+                                  (log/warn "Failed to reconstruct secondary index" ident ":" (.getMessage e))
+                                  acc)))
+                            acc))
+                        {} schema)]
+       sec-indices)
+     :cljs {}))
+
 (defn stored->db
   "Constructs in-memory db instance from stored map value."
   [stored-db store]
@@ -97,6 +125,9 @@
                         (when-let [schema-meta (k/get store schema-meta-key nil {:sync? true})]
                           (sc/cache-miss schema-meta-key schema-meta)
                           schema-meta))
+        effective-schema (or (:schema schema-meta) schema)
+        effective-ident-ref-map (or (:ident-ref-map schema-meta) ident-ref-map)
+        sec-indices (reconstruct-secondary-indices effective-schema effective-ident-ref-map)
         empty       (db/empty-db nil config store)]
     (merge
      (assoc empty
@@ -118,6 +149,8 @@
             :ident-ref-map ident-ref-map
             :ref-ident-map ref-ident-map
             :store store)
+     (when (seq sec-indices)
+       {:secondary-indices sec-indices})
      schema-meta)))
 
 (defn branch-heads-as-commits [store parents]
@@ -364,6 +397,48 @@
   ([config]
    ;; TODO log deprecation notice with #54
    (-database-exists? config)))
+
+#?(:clj
+   (defn build-secondary-index!
+     "Backfill a secondary index by scanning AEVT for all covered attributes.
+      This is a synchronous writer operation that blocks until complete.
+      Sets :db.secondary/status to :ready when done."
+     [old idx-ident]
+     (log/info "Building secondary index:" idx-ident)
+     (let [db old
+           idx (get-in db [:secondary-indices idx-ident])
+           _ (when-not idx
+               (dt/raise "Secondary index not found" {:idx-ident idx-ident}))
+           attrs (sec/-indexed-attrs idx)
+           ;; Use transient batch mode if available
+           use-transient? (satisfies? sec/ITransientSecondaryIndex idx)
+           t-idx (if use-transient? (sec/-as-transient idx) idx)
+           ;; Scan AEVT for each covered attribute and feed datoms
+           populated-idx (reduce
+                          (fn [current-idx attr]
+                            (let [datoms (dbi/datoms db :aevt [attr])]
+                              (log/debug "Backfilling" (count (seq datoms)) "datoms for" attr)
+                              (reduce
+                               (fn [idx d]
+                                 (let [tx-report {:datom d :added? true}]
+                                   (if use-transient?
+                                     (do (sec/-transact! idx tx-report) idx)
+                                     (sec/-transact idx tx-report))))
+                               current-idx datoms)))
+                          t-idx attrs)
+           final-idx (if use-transient?
+                       (sec/-persistent! populated-idx)
+                       populated-idx)
+           ;; Update db: replace index and set status to :ready
+           db-after (-> db
+                        (assoc-in [:secondary-indices idx-ident] final-idx)
+                        (assoc-in [:schema idx-ident :db.secondary/status] :ready)
+                        (update-in [:schema idx-ident] dissoc :db.secondary/building-since-tx))]
+       (log/info "Secondary index built successfully:" idx-ident)
+       (complete-db-update old {:db-before old
+                                :db-after db-after
+                                :tx-data []
+                                :tx-meta {}}))))
 
 (defn transact! [old {:keys [tx-data tx-meta]}]
   (log/trace "Transacting" (count tx-data) "objects")

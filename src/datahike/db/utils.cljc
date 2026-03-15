@@ -174,7 +174,8 @@
     (raise "Bad entity attribute " a-ident " at " at ", expected keyword or string"
            {:error :transact/syntax, :attribute a-ident, :context at}))
   (when (and (= :write (:schema-flexibility (dbi/-config db)))
-             (not (or (ds/meta-attr? a-ident) (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident))))
+             (not (or (ds/meta-attr? a-ident) (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
+                      (ds/secondary-index-attr? a-ident))))
     (if-let [db-idents (:db/ident (dbi/-rschema db))]
       (let [attr (if (reverse-ref? a-ident)
                    (reverse-ref a-ident)

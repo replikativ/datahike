@@ -64,6 +64,8 @@
 
 (s/def ::schema-attribute #{:db/id :db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleAttrs  :db/tupleType :db/tupleTypes})
 
+(s/def ::secondary-index-attribute #{:db.secondary/type :db.secondary/attrs :db.secondary/config :db.secondary/status :db.secondary/building-since-tx})
+
 (s/def ::entity-spec-attribute #{:db/ensure :db.entity/attrs :db.entity/preds})
 (s/def ::meta-attribute #{:db/txInstant :db/retracted :db/noCommit})
 
@@ -76,7 +78,19 @@
 
 (def required-keys #{:db/ident :db/valueType :db/cardinality})
 
-(def ^:const implicit-schema-spec {:db/ident {:db/valueType   :db.type/keyword
+(s/def :db.secondary/status-type #{:building :ready :disabled})
+
+(def ^:const implicit-schema-spec {:db.secondary/type {:db/valueType   :db.type/keyword
+                                                       :db/cardinality :db.cardinality/one}
+                                   :db.secondary/attrs {:db/valueType   :db.type/tuple
+                                                        :db/cardinality :db.cardinality/one}
+                                   :db.secondary/config {:db/valueType   :db.type/value
+                                                         :db/cardinality :db.cardinality/one}
+                                   :db.secondary/status {:db/valueType   :db.type/keyword
+                                                         :db/cardinality :db.cardinality/one}
+                                   :db.secondary/building-since-tx {:db/valueType   :db.type/long
+                                                                    :db/cardinality :db.cardinality/one}
+                                   :db/ident {:db/valueType   :db.type/keyword
                                               :db/unique      :db.unique/identity
                                               :db/cardinality :db.cardinality/one}
                                    :db/valueType {:db/valueType   :db.type/value
@@ -140,7 +154,8 @@
                           :meta :db.meta/attributes
                           :unique :db.type/unique))
 
-(def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleType :db/tupleTypes :db/tupleAttrs})
+(def schema-keys #{:db/ident :db/isComponent :db/noHistory :db/valueType :db/cardinality :db/unique :db/index :db.install/_attribute :db/doc :db/tupleType :db/tupleTypes :db/tupleAttrs
+                    :db.secondary/type :db.secondary/attrs :db.secondary/config :db.secondary/status :db.secondary/building-since-tx})
 
 (s/def ::old-schema-val (s/keys :req [:db/valueType :db/cardinality]
                                 :opt [:db/ident :db/unique :db/index :db.install/_attribute :db/doc :db/noHistory]))
@@ -167,8 +182,12 @@
 (defn entity-spec-attr? [a-ident]
   (s/valid? ::entity-spec-attribute a-ident))
 
+(defn secondary-index-attr? [a-ident]
+  (s/valid? ::secondary-index-attribute a-ident))
+
 (defn value-valid? [a-ident v-ident schema]
-  (let [schema (if (or (meta-attr? a-ident) (schema-attr? a-ident) (entity-spec-attr? a-ident))
+  (let [schema (if (or (meta-attr? a-ident) (schema-attr? a-ident) (entity-spec-attr? a-ident)
+                       (secondary-index-attr? a-ident))
                  implicit-schema-spec
                  schema)
         value-type (get-in schema [a-ident :db/valueType])]
@@ -185,6 +204,9 @@
 
 (defn schema-entity? [entity]
   (some #(contains? entity %) schema-keys))
+
+(defn secondary-index-entity? [entity]
+  (contains? entity :db.secondary/type))
 
 (defn schema? [schema]
   (s/valid? ::schema schema))
@@ -209,10 +231,14 @@
                      (not= :db.cardinality/one (:db/cardinality attr-schema)))
              (assoc m attr-def [old-value new-value]))
 
-           ;; Always allow these attributes to be updated. 
+           ;; Always allow these attributes to be updated.
            :db/doc nil
            :db/noHistory nil
            :db/isComponent nil
+
+           ;; Secondary index: status transitions are allowed, type/attrs/config are immutable
+           :db.secondary/status nil
+           :db.secondary/building-since-tx nil
 
            (assoc m attr-def [old-value new-value])))))
    {}

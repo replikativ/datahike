@@ -94,7 +94,8 @@
         a-ident (if attribute-refs? (dbi/-ident-for db a) a)
         v-ident (if (and attribute-refs? (contains? (dbi/-system-entities db) v))
                   (dbi/-ident-for db v)
-                  v)]
+                  v)
+]
     (when (and attribute-refs? (contains? (dbi/-system-entities db) e))
       (raise "System schema entity cannot be changed"
              {:error :transact/schema :entity-id e}))
@@ -119,11 +120,48 @@
 
 (defn update-rschema [db]
   (let [new-rschema (dbu/rschema (:schema db))
-        ;; Preserve :db.secondary/index mappings from secondary indices
-        sec-idx-map (get-in db [:rschema :db.secondary/index])]
-    (assoc db :rschema (if (seq sec-idx-map)
-                         (assoc new-rschema :db.secondary/index sec-idx-map)
+        ;; Merge :db.secondary/index from both schema-derived and existing runtime mappings
+        ;; Schema-derived comes from secondary-index-mapping in dbu/rschema
+        ;; Runtime comes from indices that were created via config (not schema)
+        schema-sec-idx (get new-rschema :db.secondary/index)
+        runtime-sec-idx (get-in db [:rschema :db.secondary/index])
+        merged-sec-idx (merge-with into schema-sec-idx runtime-sec-idx)]
+    (assoc db :rschema (if (seq merged-sec-idx)
+                         (assoc new-rschema :db.secondary/index merged-sec-idx)
                          new-rschema))))
+
+#?(:clj
+   (defn- maybe-create-secondary-index
+     "When a secondary index schema entity is fully defined (has both
+      :db.secondary/type and :db.secondary/attrs) and no index instance exists
+      yet, create an empty index instance and wire it into the db.
+      Sets :db.secondary/status to :building and records :building-since-tx."
+     [db ^Datom datom]
+     (let [e (.-e datom)
+           schema (:schema db)
+           ;; The entity's ident is stored in schema[e] as a keyword
+           idx-ident (get schema e)
+           idx-schema (when (keyword? idx-ident) (get schema idx-ident))]
+       (if (and (map? idx-schema)
+                (:db.secondary/type idx-schema)
+                (:db.secondary/attrs idx-schema)
+                ;; Don't create if already exists
+                (not (get-in db [:secondary-indices idx-ident])))
+         (let [idx-type (:db.secondary/type idx-schema)
+               idx-attrs (set (:db.secondary/attrs idx-schema))
+               idx-config (merge (:db.secondary/config idx-schema)
+                                 {:attrs idx-attrs})
+               idx-config (cond-> idx-config
+                            (seq (:ident-ref-map db))
+                            (assoc :ident-ref-map (:ident-ref-map db)))
+               idx (sec/create-index idx-type idx-config nil)]
+           (-> db
+               (assoc-in [:secondary-indices idx-ident] idx)
+               (assoc-in [:schema idx-ident :db.secondary/status] :building)
+               (assoc-in [:schema idx-ident :db.secondary/building-since-tx] (:max-tx db))))
+         db)))
+   :cljs
+   (defn- maybe-create-secondary-index [db _datom] db))
 
 (defn remove-schema [db ^Datom datom]
   (let [schema (dbi/-schema db)
@@ -182,7 +220,8 @@
   (validate-datom db datom)
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom))
         indexing? (dbu/indexing? db a-ident)
-        schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident))
+        schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
+                    (ds/secondary-index-attr? a-ident))
         keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
         op-count (:op-count db)
         has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))]
@@ -195,7 +234,8 @@
         true (advance-max-eid (.-e datom))
         true (update :hash + (hash datom))
         schema? (-> (update-schema datom)
-                    update-rschema)
+                    update-rschema
+                    (maybe-create-secondary-index datom))
         true (update :op-count inc))
 
       (if-some [removing ^Datom (first (dbi/search db [(.-e datom) (.-a datom) (.-v datom)]))]
@@ -266,7 +306,8 @@
   (validate-datom-upsert db datom)
   (let [indexing?     (dbu/indexing? db (.-a datom))
         {a-ident :ident} (dbu/attr-info db (.-a datom))
-        schema?       (ds/schema-attr? a-ident)
+        schema?       (or (ds/schema-attr? a-ident)
+                          (ds/secondary-index-attr? a-ident))
         keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident))
                            (not= :db/txInstant a-ident))
         op-count      (:op-count db)
@@ -298,7 +339,9 @@
       true    (update :op-count inc)
       true    (advance-max-eid (.-e datom))
       true    (update :hash + (hash datom))
-      schema? (-> (update-schema datom) update-rschema))))
+      schema? (-> (update-schema datom)
+                  update-rschema
+                  (maybe-create-secondary-index datom)))))
 
 (defn- transact-report
   ([report datom] (transact-report report datom false))
@@ -598,10 +641,15 @@
           (raise "Update not supported for these schema attributes"
                  {:error :transact/schema :entity entity :invalid-updates invalid-updates})))
       (when (= :write (get-in db [:config :schema-flexibility]))
-        (when (or (:db/cardinality entity) (:db/valueType entity))
-          (when-not (ds/schema? entity)
-            (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
-                   {:error :transact/schema :entity entity})))))))
+        ;; Secondary index entities only need :db/ident + :db.secondary/type + :db.secondary/attrs
+        (if (ds/secondary-index-entity? entity)
+          (when-not (and (:db/ident entity) (:db.secondary/type entity) (:db.secondary/attrs entity))
+            (raise "Incomplete secondary index schema, expected :db/ident, :db.secondary/type, :db.secondary/attrs"
+                   {:error :transact/schema :entity entity}))
+          (when (or (:db/cardinality entity) (:db/valueType entity))
+            (when-not (ds/schema? entity)
+              (raise "Incomplete schema transaction attributes, expected :db/ident, :db/valueType, :db/cardinality"
+                     {:error :transact/schema :entity entity}))))))))
 
 (defn entity-map->op-vec [db {:keys [tempids] :as report} entity]
   (let [old-eid (:db/id entity)
