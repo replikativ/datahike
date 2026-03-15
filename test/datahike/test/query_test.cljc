@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.test.core-test :as core-test]
    [datahike.test.utils :as utils]
    [datahike.query :as dq]
    [taoensso.timbre :as log])
@@ -390,17 +391,25 @@
                            {:db/id 2, :name  "Petr", :age   37}
                            {:db/id 3, :name  "Ivan", :age   37}
                            {:db/id 4, :age 15}]))]
-    (testing "Predicate clause before variable binding throws exception"
+    (testing "Predicate clause before variable binding"
       (is (= (d/q {:query '{:find [?e]
                             :where [[?e :age ?age]
                                     [(= ?age 37)]]}
                    :args [db]})
              #{[2] [3]}))
-      (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?age\} not bound"
-                            (d/q {:query '{:find [?e]
-                                           :where [[(= ?age 37)]
-                                                   [?e :age ?age]]}
-                                  :args [db]}))))))
+      (if core-test/compiled-engine?
+        ;; Compiled engine reorders predicate after its binding
+        (is (= #{[2] [3]}
+               (d/q {:query '{:find [?e]
+                              :where [[(= ?age 37)]
+                                      [?e :age ?age]]}
+                     :args [db]})))
+        ;; Legacy engine requires correct ordering
+        (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?age\} not bound"
+                              (d/q {:query '{:find [?e]
+                                             :where [[(= ?age 37)]
+                                                     [?e :age ?age]]}
+                                    :args [db]})))))))
 
 (deftest test-zeros-in-pattern
   (let [cfg {:store {:backend :memory

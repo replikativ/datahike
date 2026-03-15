@@ -174,7 +174,8 @@
     (raise "Bad entity attribute " a-ident " at " at ", expected keyword or string"
            {:error :transact/syntax, :attribute a-ident, :context at}))
   (when (and (= :write (:schema-flexibility (dbi/-config db)))
-             (not (or (ds/meta-attr? a-ident) (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident))))
+             (not (or (ds/meta-attr? a-ident) (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
+                      (ds/secondary-index-attr? a-ident))))
     (if-let [db-idents (:db/ident (dbi/-rschema db))]
       (let [attr (if (reverse-ref? a-ident)
                    (reverse-ref a-ident)
@@ -322,6 +323,21 @@
    {}
    (:db.type/tuple rschema)))
 
+(defn- secondary-index-mapping
+  "Build reverse mapping: attr → #{idx-ident ...} for secondary indices.
+   Schema entries with :db.secondary/type and :db.secondary/attrs define
+   secondary indices covering multiple attributes."
+  [schema]
+  (reduce-kv
+   (fn [m idx-ident idx-schema]
+     (if-not (and (map? idx-schema) (:db.secondary/type idx-schema))
+       m
+       (let [attrs (:db.secondary/attrs idx-schema)]
+         (reduce (fn [m attr]
+                   (update m attr (fnil conj #{}) idx-ident))
+                 m attrs))))
+   {} schema))
+
 (defn rschema [schema]
   (let [rschema (reduce-kv
                  (fn [m attr keys->values]
@@ -335,4 +351,6 @@
                          m (attr->properties key value)))
                       (update m :db/ident (fn [coll] (if coll (conj coll attr) #{attr}))) keys->values)))
                  {} schema)]
-    (assoc rschema :db/attrTuples (attrTuples schema rschema))))
+    (-> rschema
+        (assoc :db/attrTuples (attrTuples schema rschema))
+        (assoc :db.secondary/index (secondary-index-mapping schema)))))

@@ -357,6 +357,14 @@
    (long-cmp (datom-tx d1) (datom-tx d2))
    (boolean-cmp (datom-added d1) (datom-added d2))))
 
+;; EA-only comparator for merge lookups (compare e,a only, ignoring v and tx)
+;; Used by compiled query engine for seekGE merge lookups where we only need
+;; to find the first datom with matching (entity, attribute).
+(defn cmp-datoms-ea [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (long-cmp (.-e d1) (.-e d2))
+   (cmp-attr-quick (.-a d1) (.-a d2))))
+
 ;; Prefix comparators for existence checks (compare e,a,v only, ignoring tx)
 ;; Used by insert to check if ANY datom with same e,a,v exists
 (defn cmp-datoms-eavt-prefix [^Datom d1, ^Datom d2]
@@ -423,6 +431,14 @@
   (combine-cmp
    (long-cmp (.-e d1) (.-e d2))
    (cmp-attr-quick (.-a d1) (.-a d2))))
+
+(defn cmp-datoms-av-only
+  "Compare datoms by (a,v) only, ignoring e and tx.
+   Used for point lookup in AVET index when entity is unbound."
+  [^Datom d1, ^Datom d2]
+  (combine-cmp
+   (cmp-attr-quick (.-a d1) (.-a d2))
+   (compare-value (.-v d1) (.-v d2))))
 
 (defn cmp-datoms-aevt-replace
   "Compare datoms by (a,e) only, ignoring v and tx.

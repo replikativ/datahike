@@ -11,6 +11,7 @@
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
    [datahike.index :as di]
+   [datahike.index.secondary :as sec]
    [datahike.schema :as ds]
    [datahike.store :as store]
    [datahike.tools :as tools :refer [raise group-by-step #?(:clj meta-data)]]
@@ -175,7 +176,7 @@
               (contains? filtered-tx-ids
                          (datom-tx d))))))
 
-(defn- post-process-datoms [datoms db context]
+(defn post-process-datoms [datoms db context]
   (let [xform (dbi/context-xform context)
         time-pred (dbi/context-time-pred context)]
     (cond
@@ -198,13 +199,37 @@
   (-> db
       (update :eavt di/-transient)
       (update :aevt di/-transient)
-      (update :avet di/-transient)))
+      (update :avet di/-transient)
+      (update :secondary-indices
+              (fn [indices]
+                (when indices
+                  (let [ctx {:ident-ref-map (:ident-ref-map db)}]
+                    (persistent!
+                     (reduce-kv (fn [acc k idx]
+                                  (let [idx (if (satisfies? sec/IDbContextAware idx)
+                                              (sec/-with-db-context idx ctx)
+                                              idx)]
+                                    (assoc! acc k
+                                            (if (satisfies? sec/ITransientSecondaryIndex idx)
+                                              (sec/-as-transient idx)
+                                              idx))))
+                                (transient {}) indices))))))))
 
 (defn db-persistent! [db]
   (-> db
       (update :eavt di/-persistent!)
       (update :aevt di/-persistent!)
-      (update :avet di/-persistent!)))
+      (update :avet di/-persistent!)
+      (update :secondary-indices
+              (fn [indices]
+                (when indices
+                  (persistent!
+                   (reduce-kv (fn [acc k idx]
+                                (assoc! acc k
+                                        (if (satisfies? sec/ITransientSecondaryIndex idx)
+                                          (sec/-persistent! idx)
+                                          idx)))
+                              (transient {}) indices)))))))
 
 (defn contextual-search-fn [context]
   (case (dbi/context-temporal? context)
@@ -275,7 +300,7 @@
                     end
                     (dbi/context-set-current-db-if-not-set context db)))
 
-(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map meta]
+(defrecord-updatable DB [schema eavt aevt avet temporal-eavt temporal-aevt temporal-avet max-eid max-tx op-count rschema hash config system-entities ident-ref-map ref-ident-map secondary-indices meta]
   #?@(:cljs
       [IHash (-hash [db] (.-hash db))
        IEquiv (-equiv [db other] (equiv-db db other))

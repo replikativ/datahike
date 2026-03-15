@@ -107,7 +107,7 @@
                               (recur old))))
                     (do
                       (close! commit-queue)
-                      (log/debug "Writer thread gracefully closed")))))
+                      (log/trace "Writer thread gracefully closed")))))
         ;; commit loop
         (go-try S
                 (loop [tx (<?- commit-queue)]
@@ -146,7 +146,9 @@
 (def default-write-fn-map {'transact!     w/transact!
                            'load-entities w/load-entities
                            ;; async operations that run in background
-                           'gc-storage!   gc/gc-storage!})
+                           'gc-storage!   gc/gc-storage!
+                           ;; secondary index backfill (synchronous, may be slow)
+                           #?@(:clj ['build-secondary-index! w/build-secondary-index!])})
 
 (defmulti create-writer
   (fn [writer-config _]
@@ -204,6 +206,18 @@
         #?(:clj (deliver p res) :cljs (if (nil? res) (close! p) (put! p res)))))
     p))
 
+(defn- detect-new-building-indices
+  "Detect secondary indices that were just created (status :building) in a tx-report.
+   Returns a seq of idx-idents that need backfill."
+  [tx-report]
+  (when-let [schema (get-in tx-report [:db-after :schema])]
+    (keep (fn [[ident entry]]
+            (when (and (map? entry)
+                       (:db.secondary/type entry)
+                       (= :building (:db.secondary/status entry)))
+              ident))
+          schema)))
+
 (defn transact!
   [connection arg-map]
   (let [p (throwable-promise)
@@ -213,6 +227,12 @@
                                      {:op 'transact!
                                       :args [arg-map]}))]
         (when (map? tx-report) ;; not error
+          ;; Dispatch backfill for any newly created secondary indices
+          #?(:clj
+             (doseq [idx-ident (detect-new-building-indices tx-report)]
+               (log/info "Dispatching backfill for secondary index:" idx-ident)
+               (dispatch! writer {:op 'build-secondary-index!
+                                  :args [idx-ident]})))
           (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
             (callback tx-report)))
         (#?(:clj deliver :cljs put!) p tx-report)))
