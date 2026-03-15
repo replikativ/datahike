@@ -944,6 +944,12 @@
                                                             (when (and (some? ma) (not (symbol? ma)))
                                                               (resolve-attr origin-db ma)))))))
                                             merge-ops))
+        ;; ForwardCursor on temporal index for card-one history merge lookups (CLJ only)
+        temporal-cursor
+        #?(:clj (when (and temporal-eavt-pss (some true? (seq merge-temporal-only)))
+                  (.forwardCursor ^PersistentSortedSet temporal-eavt-pss
+                                  ^java.util.Comparator fast-cmp-ea))
+           :cljs nil)
         merge-clauses (mapv :clause merge-ops)
         n-find (count find-vars)
         const-vals #?(:clj (object-array n-find) :cljs (make-array n-find))
@@ -1015,23 +1021,38 @@
                                      card-many? (aget merge-card-many mi)
                                      added-filter (aget merge-added-filter mi)]
                                  (if card-many?
-                                   (let [from-d (datom eid ra (when vg? vgv) tx0)
-                                         to-d (datom eid ra (when vg? vgv) txmax)
-                                         temporal-only? (aget merge-temporal-only mi)
-                                         mslice (if temporal-only?
-                                                  ;; card-one history attr: temporal index has all data
-                                                  (di/-slice temporal-eavt-pss from-d to-d :eavt)
-                                                  (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))]
-                                     (if anti?
-                                       (when (empty? (seq mslice))
-                                         (process-merges (inc mi)))
-                                       (doseq [^Datom d mslice]
-                                         (when (and (== (.-e d) eid) (= (.-a d) ra)
-                                                    (or (not vg?) (val-eq? (.-v d) vgv))
-                                                    (or (nil? temporal-tx-filter) (temporal-tx-filter d))
-                                                    (or (nil? added-filter) (= (datom/datom-added d) added-filter)))
-                                           (aset merge-datoms mi d)
-                                           (process-merges (inc mi))))))
+                                   (let [temporal-only? (aget merge-temporal-only mi)]
+                                     (if (and temporal-only? temporal-cursor)
+                                       ;; Fast path: ForwardCursor on temporal index
+                                       (let [probe (datom eid ra (when vg? vgv) tx0)
+                                             ^Datom d (.seekGE ^PersistentSortedSet$ForwardCursor temporal-cursor probe)]
+                                         (if anti?
+                                           (when (or (nil? d) (not (== (.-e d) eid)) (not (= (.-a d) ra)))
+                                             (process-merges (inc mi)))
+                                           ;; iterate all datoms for this entity+attr
+                                           (loop [^Datom cur d]
+                                             (when (and cur (== (.-e cur) eid) (= (.-a cur) ra))
+                                               (when (and (or (not vg?) (val-eq? (.-v cur) vgv))
+                                                          (or (nil? added-filter) (= (datom/datom-added cur) added-filter)))
+                                                 (aset merge-datoms mi cur)
+                                                 (process-merges (inc mi)))
+                                               (recur (.next ^PersistentSortedSet$ForwardCursor temporal-cursor))))))
+                                       ;; General path: slice-based merge
+                                       (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                             to-d (datom eid ra (when vg? vgv) txmax)
+                                             mslice (if (aget merge-temporal-only mi)
+                                                      (di/-slice temporal-eavt-pss from-d to-d :eavt)
+                                                      (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))]
+                                         (if anti?
+                                           (when (empty? (seq mslice))
+                                             (process-merges (inc mi)))
+                                           (doseq [^Datom d mslice]
+                                             (when (and (== (.-e d) eid) (= (.-a d) ra)
+                                                        (or (not vg?) (val-eq? (.-v d) vgv))
+                                                        (or (nil? temporal-tx-filter) (temporal-tx-filter d))
+                                                        (or (nil? added-filter) (= (datom/datom-added d) added-filter)))
+                                               (aset merge-datoms mi d)
+                                               (process-merges (inc mi))))))))
                                    (let [probe (datom eid ra vgv tx0)
                                          ^Datom d (.lookupGE ^PersistentSortedSet eavt-pss probe)
                                          found? (and d (== (.-e d) eid) (= (.-a d) ra)
