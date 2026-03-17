@@ -1829,8 +1829,10 @@
         tuples (if found
                  (let [d found]
                    (case lookup-type
-                     :ea [[e0 a0 (.-v ^Datom d) (.-tx ^Datom d) true]]
-                     :av [[(.-e ^Datom d) a0 v0 (.-tx ^Datom d) true]]))
+                     :ea [#?(:cljs (da/array e0 a0 (.-v ^Datom d) (.-tx ^Datom d) true)
+                             :clj [e0 a0 (.-v ^Datom d) (.-tx ^Datom d) true])]
+                     :av [#?(:cljs (da/array (.-e ^Datom d) a0 v0 (.-tx ^Datom d) true)
+                             :clj [(.-e ^Datom d) a0 v0 (.-tx ^Datom d) true])]))
                  [])
         new-rel (rel/->Relation var-map tuples)]
     (cond-> (update context :rels collapse-rels new-rel)
