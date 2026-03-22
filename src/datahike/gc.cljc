@@ -3,7 +3,7 @@
             [datahike.index.interface :refer [-mark]]
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
-            [taoensso.timbre :refer [debug trace]]
+            [replikativ.logging :as log]
             [superv.async :refer [<? S go-try <<?]]
             [clojure.core.async  :as async]
             [datahike.schema-cache :as sc])
@@ -54,16 +54,16 @@
   ([db remove-before]
    (go-try S
            (let [now #?(:clj (Date.) :cljs (js/Date.))
-                 _ (debug "starting gc" now)
+                 _ (log/debug :datahike/gc-start {:time now})
                  {:keys [config store]} db
                  _ (sc/clear-write-cache (:store config)) ; Clear the schema write cache for this store
                  branches (<? S (k/get store :branches))
-                 _ (trace  "retaining branches" branches)
+                 _ (log/trace :datahike/gc-retain-branches {:branches branches})
                  reachable (->> branches
                                 (map #(reachable-in-branch store % remove-before config))
                                 async/merge
                                 (<<? S)
                                 (apply set/union))
                  reachable (conj reachable :branches)]
-             (trace  "gc reached: " reachable)
+             (log/trace :datahike/gc-reachable {:reachable-count (count reachable)})
              (<? S (sweep! store reachable now))))))

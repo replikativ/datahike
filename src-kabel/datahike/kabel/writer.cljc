@@ -20,8 +20,8 @@
             [superv.async :refer [<?-]]
             #?(:clj [clojure.core.async :refer [go put! promise-chan close!]]
                :cljs [clojure.core.async :refer [go put! promise-chan close!]])
-            #?(:clj [taoensso.timbre :as log]
-               :cljs [taoensso.timbre :as log :include-macros true])))
+            #?(:clj [replikativ.logging :as log]
+               :cljs [replikativ.logging :as log :include-macros true])))
 
 ;; =============================================================================
 ;; TX-Report Reconstruction (must be before defrecord)

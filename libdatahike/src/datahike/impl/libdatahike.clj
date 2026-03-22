@@ -3,7 +3,8 @@
             [jsonista.core :as j]
             [datahike.json :as json]
             [clj-cbor.core :as cbor]
-            [taoensso.timbre :as timbre])
+            [taoensso.trove :as trove]
+            [taoensso.trove.console :as trove-console])
   (:import [datahike.datom Datom]
            [datahike.connector Connection])
   (:gen-class
@@ -17,7 +18,7 @@
              ^{:static true} [intoMap [Object] Object]
              ^{:static true} [transformJSONForTx [Object Object] Object]]))
 
-(timbre/set-level! :warn)
+(trove/set-log-fn! (trove-console/get-log-fn {:min-level :warn}))
 
 (defn -parseJSON [s]
   (j/read-value s json/mapper))

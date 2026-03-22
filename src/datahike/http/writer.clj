@@ -5,7 +5,7 @@
             [datahike.json :as json]
             [datahike.connector :as connector]
             [datahike.tools :as dt :refer [throwable-promise]]
-            [taoensso.timbre :as log]
+            [replikativ.logging :as log]
             [clojure.core.async :refer [promise-chan put!]]))
 
 (defrecord DatahikeServerWriter [remote-peer conn]
@@ -14,8 +14,8 @@
     (let [{:keys [op args]} arg-map
           p (promise-chan)
           config (:config @(:wrapped-atom conn))]
-      (log/debug "Sending operation to datahike-server:" op)
-      (log/trace "Arguments:" arg-map)
+      (log/debug :datahike/http-write-op {:op op})
+      (log/trace :datahike/http-write-args {:arg-map arg-map})
       (put! p
             (try
               (request-json :post
@@ -31,7 +31,7 @@
 
 (defmethod create-writer :datahike-server
   [config connection]
-  (log/debug "Creating datahike-server writer for " connection config)
+  (log/debug :datahike/http-writer-create {:config config})
   (->DatahikeServerWriter config connection))
 
 (defmethod create-database :datahike-server

@@ -40,19 +40,19 @@ Options:
 1) Benchmark *connection* time for databases with  *1000 entities* (= 4000 datoms) and *file* backend with tag *feature* and output as *edn*
 
 ```bash
-TIMBRE_LEVEL=':warn' clj -M:benchmark run -f :connection -d '[1000]' -c file -t feature -o edn feature.edn
+LOG_LEVEL='warn' clj -M:benchmark run -f :connection -d '[1000]' -c file -t feature -o edn feature.edn
 ```
 
 2) Benchmark *transaction* time for *integer* datoms and 10 entities (= 40 datoms) per transaction using *memory* backend and output as csv
 
 ```bash
-TIMBRE_LEVEL=':warn' clj -M:benchmark run -f :transaction -y '[:int]' -x '[10]' -c mem-set -o csv feature.csv
+LOG_LEVEL='warn' clj -M:benchmark run -f :transaction -y '[:int]' -x '[10]' -c mem-set -o csv feature.csv
 ```
 
 3) Benchmark *query* time for a *simple query* for all backends, for every configuration run the query *10 times* and take the average time 
 
 ```bash
-TIMBRE_LEVEL=':warn'  clj -M:benchmark run -f :query -q :simple-query -i 10
+LOG_LEVEL='warn'  clj -M:benchmark run -f :query -q :simple-query -i 10
 ```
 
 ### Possible Options

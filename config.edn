@@ -2,7 +2,7 @@
  :lib "datahike"
  :version {:major 0
            :minor 7}
- :git-url "git@github.com:replikativ/datahike.git"
+ :git-url "https://github.com/replikativ/datahike.git"
 
  :pom-template "./bb/resources/template/pom.xml"
  :scm {:connection "scm:git:git@github.com:replikativ/datahike.git"

@@ -5,8 +5,8 @@
    [hasch.core :refer [uuid]]
    [clojure.core.async :as async]
    #?(:clj [clojure.java.io :as io])
-   [taoensso.timbre :as log])
-  #?(:cljs (:require-macros [datahike.tools :refer [raise]]))
+   [replikativ.logging :as log])
+  #?(:cljs (:require-macros [datahike.tools :refer [match-vector]]))
   #?(:clj (:import [java.util Properties UUID Date]
                    [java.util.concurrent CompletableFuture]
                    [java.net InetAddress])))
@@ -60,17 +60,6 @@
 (defn ^:dynamic get-time-ms []
   #?(:clj (.getTime (Date.))
      :cljs (.getTime (js/Date.))))
-
-(defmacro raise
-  "Logging an error and throwing an exception with message and structured data.
-   Arguments:
-   - Any number of strings that describe the error
-   - Last argument is a map of data that helps understanding the source of the error"
-  [& fragments]
-  (let [msgs (butlast fragments)
-        data (last fragments)]
-    (list `(log/log! :error :p ~fragments ~{:?line (:line (meta &form))})
-          `(throw (ex-info (str ~@(map (fn [m#] (if (string? m#) m# (list 'pr-str m#))) msgs)) ~data)))))
 
 ;; adapted from https://clojure.atlassian.net/browse/CLJ-2766
 #?(:clj
@@ -222,8 +211,8 @@
                                                    clauses)]
       (if (= (count failed-clauses)
              (count clauses))
-        (raise "Cannot resolve any more clauses"
-               {:clauses clauses})
+        (log/raise "Cannot resolve any more clauses"
+                   {:clauses clauses})
         (recur resolver context failed-clauses)))))
 
 (defn group-by-step

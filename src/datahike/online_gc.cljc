@@ -23,7 +23,7 @@
             [konserve.utils :refer [multi-key-capable?]]
             #?@(:clj  [[clojure.core.cache.wrapped :as wrapped]]
                 :cljs [[cljs.cache.wrapped :as wrapped]])
-            [taoensso.timbre :refer [debug trace warn]]
+            [replikativ.logging :as log]
             [clojure.core.async :as async]
             [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?-]]
             #?(:cljs [clojure.core.async :refer-macros [go]]))
@@ -85,7 +85,7 @@
     0
     (let [cache (-> store :storage :cache)
           freelist (-> store :storage :freelist)]
-      (trace "Recycling" (count addresses) "freed addresses to freelist")
+      (log/trace :datahike/ogc-recycle {:count (count addresses)})
       ;; Evict from cache to prevent stale reads
       (doseq [addr addresses]
         (wrapped/evict cache addr))
@@ -108,7 +108,7 @@
   (if (empty? addresses)
     (if sync? 0 (go-try- 0))
     (let [cache (-> store :storage :cache)]
-      (trace "Deleting" (count addresses) "freed addresses")
+      (log/trace :datahike/ogc-delete {:count (count addresses)})
       ;; Evict from cache first
       (doseq [addr addresses]
         (wrapped/evict cache addr))
@@ -177,7 +177,7 @@
             multi-branch? (> (count branches) 1)]
         (if multi-branch?
           (do
-            (debug "Online GC: skipped (multi-branch detected - use offline GC instead)")
+            (log/debug :datahike/ogc-skip-multi-branch "Use offline GC instead")
             0)
           (let [[to-recycle _remaining] (get-and-clear-eligible-freed! store grace-period-ms)]
             (if (seq to-recycle)
@@ -185,10 +185,10 @@
                     crypto-hash? (-> store :storage :config :crypto-hash?)]
                 (if (and freelist (not crypto-hash?))
                   (do
-                    (debug "Online GC: recycling" (count to-recycle) "addresses to freelist")
+                    (log/debug :datahike/ogc-recycle {:count (count to-recycle)})
                     (recycle-freed-addresses! store to-recycle))
                   (do
-                    (debug "Online GC: deleting" (count to-recycle) "addresses")
+                    (log/debug :datahike/ogc-delete {:count (count to-recycle)})
                     (delete-freed-addresses! store to-recycle max-batch true))))
               0))))
       ;; Asynchronous mode
@@ -197,7 +197,7 @@
              multi-branch? (> (count branches) 1)]
          (if multi-branch?
            (do
-             (debug "Online GC: skipped (multi-branch detected - use offline GC instead)")
+             (log/debug :datahike/ogc-skip-multi-branch "Use offline GC instead")
              0)
            (let [[to-recycle _remaining] (get-and-clear-eligible-freed! store grace-period-ms)]
              (if (seq to-recycle)
@@ -205,10 +205,10 @@
                      crypto-hash? (-> store :storage :config :crypto-hash?)]
                  (if (and freelist (not crypto-hash?))
                    (do
-                     (debug "Online GC: recycling" (count to-recycle) "addresses to freelist")
+                     (log/debug :datahike/ogc-recycle {:count (count to-recycle)})
                      (recycle-freed-addresses! store to-recycle))
                    (do
-                     (debug "Online GC: deleting" (count to-recycle) "addresses")
+                     (log/debug :datahike/ogc-delete {:count (count to-recycle)})
                      (<?- (delete-freed-addresses! store to-recycle max-batch false)))))
                0))))))))
 
@@ -245,8 +245,8 @@
                                                        :enabled? true
                                                        :sync? false}))]
               (when (and deleted (pos? deleted))
-                (debug "Background GC deleted" deleted "addresses")))
+                (log/debug :datahike/background-gc-deleted {:count deleted})))
             (catch #?(:clj Exception :cljs js/Error) e
-              (warn "Background GC error:" e)))
+              (log/warn :datahike/background-gc-error {:error e})))
           (recur))))
     stop-ch))
