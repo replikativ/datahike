@@ -67,8 +67,8 @@
 
             ;; Step 4: Merge feature into main
             (dv/merge! conn #{:feature}
-                        [{:person/name "Charlie" :person/bio "Machine learning engineer"}]
-                        nil)
+                       [{:person/name "Charlie" :person/bio "Machine learning engineer"}]
+                       nil)
             (let [ft (get-in (d/db conn) [:secondary-indices :idx/fulltext])
                   results (sec/-search ft {:query "machine" :field :value} nil)]
               (is (= 2 (es/entity-bitset-cardinality results))
@@ -107,8 +107,8 @@
             (d/transact alt-conn [{:item/name "Banana"}])
 
             (dv/merge! conn #{:alt}
-                        [{:item/name "Banana"}]
-                        nil)
+                       [{:item/name "Banana"}]
+                       nil)
 
             (let [db (d/db conn)
                   parents (get-in db [:meta :datahike/parents])]

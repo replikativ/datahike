@@ -33,15 +33,15 @@
                         in-range? (> (get-time (or updated-at created-at))
                                      (get-time after-date))]
                     (let [sec-reachable (when (seq secondary-index-keys)
-                                        (reduce-kv
-                                         (fn [acc _idx-ident key-map]
-                                           (set/union acc (sec/mark-from-key-map key-map store)))
-                                         #{} secondary-index-keys))
+                                          (reduce-kv
+                                           (fn [acc _idx-ident key-map]
+                                             (set/union acc (sec/mark-from-key-map key-map store)))
+                                           #{} secondary-index-keys))
                           new-reachable (cond-> (set/union reachable #{to-check}
-                                                          (when schema-meta-key #{schema-meta-key})
-                                                          (-mark eavt-key)
-                                                          (-mark aevt-key)
-                                                          (-mark avet-key))
+                                                           (when schema-meta-key #{schema-meta-key})
+                                                           (-mark eavt-key)
+                                                           (-mark aevt-key)
+                                                           (-mark avet-key))
                                           (:keep-history? config)
                                           (set/union (-mark temporal-eavt-key)
                                                      (-mark temporal-aevt-key)

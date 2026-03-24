@@ -152,7 +152,7 @@
 
       (not (same-keys? attrs-a attrs-b))
       (log/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
-                {:error :query/where})
+                 {:error :query/where})
 
       (every? number? (vals attrs-a))                       ;; can't conj into BTSetIter
       (let [idxb->idxa (vec (for [[sym idx-b] attrs-b]

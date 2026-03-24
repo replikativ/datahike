@@ -3045,9 +3045,9 @@
                         (parse-order-by order-by find-elements))
 
         use-planner? (and (not *force-legacy*)
-                           (not stats?)
-                           (let [db (get (:sources context-in) '$)]
-                             (and db (dbu/db? db) (planner-eligible-db? db))))
+                          (not stats?)
+                          (let [db (get (:sources context-in) '$)]
+                            (and db (dbu/db? db) (planner-eligible-db? db))))
         [context-in lookup-ref-reverse-map]
         (if use-planner?
           (resolve-lookup-ref-bindings (get (:sources context-in) '$) context-in)

@@ -91,43 +91,43 @@
   ([conn from new-branch opts]
    (let [opts (select-keys opts [:sync?])]
      (async+sync (:sync? opts) *default-sync-translation*
-               (go-try-
-                (let [store (:store @conn)
-                      existing-branches (<?- (k/get store :branches nil opts))
-                      _ (when (and existing-branches (existing-branches new-branch))
-                          (log/raise "Branch already exists." {:type :branch-already-exists
-                                                               :new-branch new-branch}))
-                      stored-db (<?- (k/get store from nil opts))]
-                  (when-not (stored-db? stored-db)
-                    (throw (ex-info "From does not point to an existing branch or commit."
-                                    {:type :from-branch-does-not-point-to-existing-branch-or-commit
-                                     :from from})))
+                 (go-try-
+                  (let [store (:store @conn)
+                        existing-branches (<?- (k/get store :branches nil opts))
+                        _ (when (and existing-branches (existing-branches new-branch))
+                            (log/raise "Branch already exists." {:type :branch-already-exists
+                                                                 :new-branch new-branch}))
+                        stored-db (<?- (k/get store from nil opts))]
+                    (when-not (stored-db? stored-db)
+                      (throw (ex-info "From does not point to an existing branch or commit."
+                                      {:type :from-branch-does-not-point-to-existing-branch-or-commit
+                                       :from from})))
                   ;; Branch secondary indices via their native CoW support.
                   ;; Prefer live indices from the connection (they hold the write lock).
-                  (let [sec-keys (:secondary-index-keys stored-db)
-                        live-indices (:secondary-indices @conn)
-                        from-branch (or (when (keyword? from) from) :db)
-                        branched-sec-keys
-                        #?(:clj
-                           (when (or (seq sec-keys) (seq live-indices))
-                             (reduce-kv
-                              (fn [acc idx-ident idx]
-                                (if (satisfies? sec/IVersionedSecondaryIndex idx)
-                                  (let [branched (sec/-sec-branch idx store from-branch new-branch)
-                                        key-map (sec/-sec-flush branched store new-branch)]
-                                    (when (instance? java.io.Closeable branched)
-                                      (.close ^java.io.Closeable branched))
-                                    (assoc acc idx-ident key-map))
-                                  (if-let [key-map (get sec-keys idx-ident)]
-                                    (assoc acc idx-ident
-                                           (sec/branch-from-key-map key-map store from-branch new-branch))
-                                    acc)))
-                              {} (or live-indices {})))
-                           :cljs nil)
-                        updated-db (cond-> (assoc-in stored-db [:config :branch] new-branch)
-                                     (seq branched-sec-keys) (assoc :secondary-index-keys branched-sec-keys))]
-                    (<?- (k/assoc store new-branch updated-db opts))
-                    (<?- (k/update store :branches #(conj (set %) new-branch) opts)))))))))
+                    (let [sec-keys (:secondary-index-keys stored-db)
+                          live-indices (:secondary-indices @conn)
+                          from-branch (or (when (keyword? from) from) :db)
+                          branched-sec-keys
+                          #?(:clj
+                             (when (or (seq sec-keys) (seq live-indices))
+                               (reduce-kv
+                                (fn [acc idx-ident idx]
+                                  (if (satisfies? sec/IVersionedSecondaryIndex idx)
+                                    (let [branched (sec/-sec-branch idx store from-branch new-branch)
+                                          key-map (sec/-sec-flush branched store new-branch)]
+                                      (when (instance? java.io.Closeable branched)
+                                        (.close ^java.io.Closeable branched))
+                                      (assoc acc idx-ident key-map))
+                                    (if-let [key-map (get sec-keys idx-ident)]
+                                      (assoc acc idx-ident
+                                             (sec/branch-from-key-map key-map store from-branch new-branch))
+                                      acc)))
+                                {} (or live-indices {})))
+                             :cljs nil)
+                          updated-db (cond-> (assoc-in stored-db [:config :branch] new-branch)
+                                       (seq branched-sec-keys) (assoc :secondary-index-keys branched-sec-keys))]
+                      (<?- (k/assoc store new-branch updated-db opts))
+                      (<?- (k/update store :branches #(conj (set %) new-branch) opts)))))))))
 
 (defn delete-branch!
   "Removes this branch from set of known branches. The branch will still be
@@ -139,14 +139,14 @@
                 {:type :cannot-delete-main-db-branch}))
    (let [opts (select-keys opts [:sync?])]
      (async+sync (:sync? opts) *default-sync-translation*
-               (go-try-
-                (let [store (:store @conn)
-                      existing-branches (<?- (k/get store :branches nil opts))]
-                  (when-not (and existing-branches (existing-branches branch))
-                    (log/raise "Branch does not exist." {:type :branch-does-not-exist
-                                                         :branch branch}))
-                  (delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
-                  (<?- (k/update store :branches #(disj (set %) branch) opts))))))))
+                 (go-try-
+                  (let [store (:store @conn)
+                        existing-branches (<?- (k/get store :branches nil opts))]
+                    (when-not (and existing-branches (existing-branches branch))
+                      (log/raise "Branch does not exist." {:type :branch-does-not-exist
+                                                           :branch branch}))
+                    (delete-connection! [(store-identity (get-in @conn [:config :store])) branch])
+                    (<?- (k/update store :branches #(disj (set %) branch) opts))))))))
 
 (defn force-branch!
   "Force the branch to point to the provided db value. Branch will be created if
@@ -163,33 +163,33 @@
    (let [opts (select-keys opts [:sync?])
          sync? (:sync? opts)]
      (async+sync sync? *default-sync-translation*
-               (go-try-
-                (let [store (:store db)
-                      cid (create-commit-id db)
-                      db-with-meta (-> db
-                                       (assoc-in [:config :branch] branch)
-                                       (assoc-in [:meta :datahike/parents] parents)
-                                       (assoc-in [:meta :datahike/commit-id] cid))
-                      [schema-meta-kv-to-write db-to-store] (db->stored db-with-meta true)
-                      pending-kvs (get-and-clear-pending-kvs! store)]
+                 (go-try-
+                  (let [store (:store db)
+                        cid (create-commit-id db)
+                        db-with-meta (-> db
+                                         (assoc-in [:config :branch] branch)
+                                         (assoc-in [:meta :datahike/parents] parents)
+                                         (assoc-in [:meta :datahike/commit-id] cid))
+                        [schema-meta-kv-to-write db-to-store] (db->stored db-with-meta true)
+                        pending-kvs (get-and-clear-pending-kvs! store)]
 
                   ;; Update the set of known branches
-                  (<?- (k/update store :branches #(conj (set %) branch) opts))
+                    (<?- (k/update store :branches #(conj (set %) branch) opts))
 
                   ;; Write all data
-                  (if (multi-key-capable? store)
-                    (let [writes-map (cond-> (into {} pending-kvs)
-                                      schema-meta-kv-to-write (assoc (first schema-meta-kv-to-write) (second schema-meta-kv-to-write))
-                                      true                    (assoc cid db-to-store)
-                                      true                    (assoc branch db-to-store))]
-                      (<?- (k/multi-assoc store writes-map opts)))
-                    (do
-                      (<?- (write-pending-kvs! store pending-kvs sync?))
-                      (when schema-meta-kv-to-write
-                        (<?- (k/assoc store (first schema-meta-kv-to-write) (second schema-meta-kv-to-write) opts)))
-                      (<?- (k/assoc store cid db-to-store opts))
-                      (<?- (k/assoc store branch db-to-store opts))))
-                  nil))))))
+                    (if (multi-key-capable? store)
+                      (let [writes-map (cond-> (into {} pending-kvs)
+                                         schema-meta-kv-to-write (assoc (first schema-meta-kv-to-write) (second schema-meta-kv-to-write))
+                                         true                    (assoc cid db-to-store)
+                                         true                    (assoc branch db-to-store))]
+                        (<?- (k/multi-assoc store writes-map opts)))
+                      (do
+                        (<?- (write-pending-kvs! store pending-kvs sync?))
+                        (when schema-meta-kv-to-write
+                          (<?- (k/assoc store (first schema-meta-kv-to-write) (second schema-meta-kv-to-write) opts)))
+                        (<?- (k/assoc store cid db-to-store opts))
+                        (<?- (k/assoc store branch db-to-store opts))))
+                    nil))))))
 
 (defn commit-id
   "Retrieve the commit-id for this db."
