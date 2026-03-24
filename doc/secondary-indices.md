@@ -204,6 +204,76 @@ Secondary indices are managed through schema transactions:
 
 The `:db.secondary/type` and `:db.secondary/attrs` are immutable after creation. To change indexed attributes, create a new index with a different ident.
 
+## Branching and Versioning
+
+Secondary indices are first-class versioned state. When you branch a database, each secondary index is CoW-forked alongside the primary indices:
+
+```clojure
+(require '[datahike.experimental.versioning :as dv])
+
+;; Branch — secondary indices are forked automatically
+(dv/branch! conn :db :experiment)
+
+;; Connect to the branch — indices are restored from durable storage
+(def exp-conn (d/connect (assoc cfg :branch :experiment)))
+
+;; Data and indices on each branch are independent
+(d/transact exp-conn [{:person/name "New person on experiment branch"}])
+
+;; Merge — routed through the writer for proper serialization
+(dv/merge! conn #{:experiment} [{:person/name "New person on experiment branch"}] nil)
+```
+
+Each index type uses its native CoW mechanism:
+- **Scriptum**: Lucene segment sharing via `BranchedDirectory` (~3-5ms fork)
+- **Stratum**: PSS structural sharing via `dataset/fork` (O(1))
+- **Proximum**: Reflink mmap + konserve CoW via `versioning/branch!`
+
+Index state is persisted in commits via the `IVersionedSecondaryIndex` protocol. On reconnect, indices are restored from their durable storage — no AEVT backfill needed for versioned indices.
+
+## Distributed Deployment
+
+Datahike supports distributed deployments with remote writers (`:http` or `:kabel` backends). Each secondary index type has different characteristics for distributed use:
+
+### Stratum and Proximum (konserve-backed)
+
+Stratum and Proximum store their data in konserve, the same key-value store that Datahike uses for primary indices. This means they are **automatically available to all readers** in a distributed setup — readers sync from konserve and can restore the index state.
+
+### Scriptum (filesystem-backed)
+
+Scriptum stores Lucene segments on the **writer node's local filesystem**, not in konserve. This means:
+
+- **Writer node**: Has full read/write access to the Lucene index. Transactions maintain the index in real-time.
+- **Reader nodes**: Cannot directly access the Lucene files. Fulltext search queries must be routed to the writer.
+
+**Current approach (Option A)**: Scriptum is a writer-side index. Readers that need fulltext search results should query through the writer connection (via kabel/http). This is similar to how Elasticsearch routes search requests to the shards that hold the data.
+
+```
+┌──────────┐     transact      ┌──────────────┐
+│  Client   │ ───────────────> │ Writer Node  │
+│           │ <─── tx-report── │  (scriptum)  │
+└──────────┘                   └──────┬───────┘
+                                      │ konserve sync
+     ┌────────────────────────────────┼────────────────┐
+     │                                │                 │
+┌────▼─────┐                   ┌──────▼───────┐  ┌─────▼──────┐
+│ Reader 1 │                   │  Reader 2    │  │  Reader 3  │
+│ (stratum │                   │  (stratum    │  │  (stratum  │
+│  ✓)      │                   │   ✓)         │  │   ✓)       │
+│ scriptum │                   │  scriptum    │  │  scriptum  │
+│  ✗ local │                   │   ✗ local    │  │   ✗ local  │
+└──────────┘                   └──────────────┘  └────────────┘
+
+Readers have stratum/proximum (via konserve).
+Scriptum queries must go through the writer.
+```
+
+**Future options** (not yet implemented):
+- **Segment replication via konserve**: Store Lucene segments as blobs in konserve, implement a read-only `KonserveDirectory` for readers
+- **NRT segment replication via kabel**: Use Lucene's built-in primary/replica protocol over kabel for near-real-time search replication
+
+**Important**: Lucene does not support NFS or shared network filesystems. Do not mount the scriptum index path over NFS — this will cause index corruption.
+
 ## Composing Indices with Entity Bitmaps
 
 All secondary indices communicate through `EntityBitSet` — a RoaringBitmap of entity IDs. This enables composing indices:
