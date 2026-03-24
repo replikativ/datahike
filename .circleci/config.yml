@@ -190,7 +190,7 @@ jobs:
       - run:
           name: Compile ClojureScript for browser tests
           command: npx shadow-cljs compile :browser-ci
-          no_output_timeout: 5m
+          no_output_timeout: 15m
       - run:
           name: Run Karma browser tests
           command: npx karma start --single-run
