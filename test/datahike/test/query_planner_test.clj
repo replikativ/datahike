@@ -1,4 +1,4 @@
-(ns datahike.test.compiled-engine-test
+(ns datahike.test.query-planner-test
   "Dual-execution correctness tests: compiled engine vs legacy engine.
    For every test case, runs through both engines and asserts identical results."
   (:require

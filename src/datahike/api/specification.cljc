@@ -317,7 +317,7 @@
      :stability :experimental
      :supports-remote? false
      :referentially-transparent? true
-     :doc "Returns a human-readable string explaining the compiled query plan. Shows index selection, scan/merge ordering, recursive rule structure (SCC, base cases, clause versions), and estimated cardinalities. Takes the same arguments as `q`."
+     :doc "Returns a human-readable string explaining the query plan. Shows index selection, scan/merge ordering, recursive rule structure (SCC, base cases, clause versions), and estimated cardinalities. Takes the same arguments as `q`."
      :examples [{:desc "Explain a simple query"
                  :code "(explain '[:find ?e :where [?e :name]] db)"}
                 {:desc "Explain a recursive rule"

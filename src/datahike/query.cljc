@@ -52,10 +52,10 @@
 (def ^:const lru-cache-size 100)
 
 (def ^:dynamic *force-legacy*
-  "When true, bypass the compiled query engine and use legacy engine.
-   Set DATAHIKE_COMPILED_QUERY=true to enable the compiled engine.
-   Default: legacy engine (compiled engine is opt-in during testing)."
-  #?(:clj (not (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY")))
+  "When true, bypass the query planner and use legacy engine.
+   Set DATAHIKE_QUERY_PLANNER=true to enable the query planner.
+   Default: legacy engine (query planner is opt-in during testing)."
+  #?(:clj (not (= "true" (System/getenv "DATAHIKE_QUERY_PLANNER")))
      :cljs true))
 
 (def ^:dynamic *query-result-cache?*
@@ -2308,7 +2308,7 @@
 
 (defn- substitute-consts-with-lookup-refs
   "Like substitute-consts but also resolves lookup refs in pattern positions.
-   Used by the compiled engine which needs patterns normalized before planning.
+   Used by the query planner which needs patterns normalized before planning.
    Lookup refs like [:name \"Ivan\"] in e/v positions are resolved to entity IDs."
   [db where-clauses consts]
   (letfn [(resolve-clause [clause]
@@ -2431,7 +2431,7 @@
 
 (defn- has-lookup-ref-bindings?
   "Check if any :in binding contains lookup refs (sequential values like [:name \"Ivan\"]).
-   These need entity-id resolution before the compiled engine can join them."
+   These need entity-id resolution before the query planner can join them."
   [context-in]
   (some (fn [rel]
           (when-let [tuple (first (:tuples rel))]
@@ -2599,7 +2599,7 @@
       true vec)))
 
 (defn explain
-  "Returns a human-readable string explaining the compiled query plan.
+  "Returns a human-readable string explaining the query plan.
    Takes the same arguments as `q`. Shows index selection, scan/merge ordering,
    recursive rule structure (SCC, base cases, clause versions), and estimated
    cardinalities.
@@ -2632,7 +2632,7 @@
                        (when-let [c (:consts context-in)]
                          (when (seq c)
                            (str "consts: " (pr-str c) "\n")))
-                       "engine: compiled\n"
+                       "engine: planned\n"
                        "---\n")]
        (str header (format-plan-ops (:ops plan) 0) "\n"))
      :cljs (throw (ex-info "explain is not supported in ClojureScript" {}))))
@@ -2906,8 +2906,8 @@
          (log/debug "columnar-aggregate not applicable:" (.getMessage e))
          nil))))
 
-(defn- compiled-engine-db?
-  "Check if db is eligible for the compiled query engine.
+(defn- planner-eligible-db?
+  "Check if db is eligible for the query planner.
    Accepts regular DB and temporal wrappers (AsOfDB, SinceDB, HistoricalDB)
    with numeric time-points. Date-based time-points fall back to legacy
    (require filter-txInstant lookups that the fused scan can't do inline)."
@@ -2919,7 +2919,7 @@
            (number? (dbi/-time-point db)))
       (instance? HistoricalDB db)))
 
-(defn- compiled-engine-origin-db
+(defn- planner-origin-db
   "For temporal wrappers, return the origin DB for plan creation (schema, indexes).
    For regular DB, return as-is. Returns nil for nested temporal wrappers
    (e.g. (d/history (d/as-of ...))) which should fall back to legacy."
@@ -2931,7 +2931,7 @@
       (when (instance? DB origin) origin))
     :else nil))
 
-(defn- execute-compiled-direct
+(defn- execute-planned-direct
   "Direct HashSet path: write tuples directly, no Relations.
    Returns result set or nil if not eligible."
   [plan db qfind find-elements context-in query stats? qreturnmaps]
@@ -2951,7 +2951,7 @@
         (exec-direct plan db find-var-syms nil (:consts context-in))))))
 
 (defn- post-process-result
-  "Shared post-processing pipeline for both compiled-relation and legacy paths.
+  "Shared post-processing pipeline for both planned-relation and legacy paths.
    Applies :with truncation, aggregation, pull, post-process, return-maps,
    ordering, offset/limit, and stats wrapping."
   [deduped context-in context-out query qfind find-elements
@@ -2971,7 +2971,7 @@
                                                         (dissoc :rels :sources :settings)
                                                         (assoc :ret % :query query)))))
 
-(defn- execute-compiled-relation
+(defn- execute-planned-relation
   "Relation path: fused scan → collect → dedup → aggregate/pull.
    Returns final result."
   [plan db qfind find-elements context-in query all-vars
@@ -3044,24 +3044,24 @@
         order-spec    (when (and order-by (instance? FindRel qfind))
                         (parse-order-by order-by find-elements))
 
-        use-compiled? (and (not *force-legacy*)
+        use-planner? (and (not *force-legacy*)
                            (not stats?)
                            (let [db (get (:sources context-in) '$)]
-                             (and db (dbu/db? db) (compiled-engine-db? db))))
+                             (and db (dbu/db? db) (planner-eligible-db? db))))
         [context-in lookup-ref-reverse-map]
-        (if use-compiled?
+        (if use-planner?
           (resolve-lookup-ref-bindings (get (:sources context-in) '$) context-in)
           [context-in nil])]
 
     (if (and limit (zero? limit))
       #{}
 
-      (if (and use-compiled?
+      (if (and use-planner?
                ;; Nested temporal wrappers (e.g. (d/history (d/as-of ...))) → legacy
-               (compiled-engine-origin-db (get (:sources context-in) '$)))
+               (planner-origin-db (get (:sources context-in) '$)))
         (let [db (get (:sources context-in) '$)
               ;; For temporal wrappers, use origin-db for plan creation (schema, index stats)
-              plan-db (compiled-engine-origin-db db)
+              plan-db (planner-origin-db db)
               bound-vars (context-bound-vars context-in)
               ;; Use the actual db (not origin) for lookup-ref resolution — temporal
               ;; DBs (history) can resolve retracted entities that origin-db can't.
@@ -3071,7 +3071,7 @@
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
-          (if-let [direct-result (execute-compiled-direct
+          (if-let [direct-result (execute-planned-direct
                                   plan db qfind find-elements context-in query stats? qreturnmaps)]
             (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
               #?(:clj
@@ -3111,7 +3111,7 @@
                   result)
 
                 ;; 3. Standard Relation path
-                (let [result (execute-compiled-relation
+                (let [result (execute-planned-relation
                               plan db qfind find-elements context-in query all-vars
                               result-arity lookup-ref-reverse-map order-spec offset limit
                               stats? qreturnmaps)]

@@ -1,15 +1,15 @@
 # Compiled Query Engine
 
-Datahike includes an opt-in compiled query engine that plans and executes Datalog queries using a fused scan+merge strategy over B-tree indices. For multi-clause entity joins, it can be significantly faster than the legacy engine.
+Datahike includes an opt-in query planner that plans and executes Datalog queries using a fused scan+merge strategy over B-tree indices. For multi-clause entity joins, it can be significantly faster than the legacy engine.
 
-**Status: Experimental** — The compiled engine produces identical results to the legacy engine for all supported query shapes. It is opt-in and the legacy engine remains the default.
+**Status: Experimental** — The query planner produces identical results to the legacy engine for all supported query shapes. It is opt-in and the legacy engine remains the default.
 
 ## Enabling the Compiled Engine
 
 Set the environment variable before starting your JVM:
 
 ```bash
-DATAHIKE_COMPILED_QUERY=true clj -M:dev
+DATAHIKE_QUERY_PLANNER=true clj -M:dev
 ```
 
 Or bind the dynamic var at runtime:
@@ -27,7 +27,7 @@ Or bind the dynamic var at runtime:
 
 ## How It Works
 
-The compiled engine processes queries in four phases:
+The query planner processes queries in four phases:
 
 1. **Analyze** — Classify where-clauses into patterns, predicates, functions, OR/NOT branches, and rule calls
 2. **Estimate** — Estimate cardinality of each pattern using index statistics and sample-based predicate selectivity
@@ -38,7 +38,7 @@ For queries with multiple clauses on the same entity variable (the common case),
 
 ## Query Plan Visualization
 
-Use `d/explain` to see the compiled plan for any query:
+Use `d/explain` to see the query plan for any query:
 
 ```clojure
 (require '[datahike.api :as d])
@@ -96,7 +96,7 @@ Use `d/explain` to see the compiled plan for any query:
 | FindScalar / FindColl / FindTuple | Yes | |
 | Temporal DBs (as-of, since, history) | Fallback to legacy | |
 
-When the compiled engine encounters an unsupported query shape, it automatically falls back to the legacy engine — no error, no configuration needed.
+When the query planner encounters an unsupported query shape, it automatically falls back to the legacy engine — no error, no configuration needed.
 
 ## ORDER BY
 

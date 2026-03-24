@@ -1,5 +1,5 @@
 (ns datahike.query.execute
-  "Execution engine for compiled query plans.
+  "Execution engine for query plans.
    Supports fused scan+merge for entity groups, hash-probe value joins,
    anti-merge NOT, and direct-to-HashSet output."
   (:require
@@ -1778,7 +1778,7 @@
                 base-scan-attr]} op
         max-iterations 100]
     (if (nil? scc-rule-plans)
-      ;; No pre-compiled plans — fall back to legacy
+      ;; No pre-built plans — fall back to legacy
       (let [clause (:clause op)]
         (binding [rel/*implicit-source* (get (:sources ctx) '$)]
           (#?(:clj legacy/solve-rule :cljs (rel/get-legacy-fn :solve-rule)) ctx clause)))

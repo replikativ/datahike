@@ -1,5 +1,5 @@
 (ns datahike.query.analyze
-  "Clause analysis for the compiled query engine.
+  "Clause analysis for the query planner.
    Classifies clauses, extracts variable dependencies, and detects
    pushable predicates."
   (:require

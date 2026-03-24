@@ -1,5 +1,5 @@
 (ns datahike.query.plan
-  "Query plan construction for the compiled query engine.
+  "Query plan construction for the query planner.
    Creates optimized execution plans with join ordering, predicate pushdown,
    and index selection.
 
@@ -713,7 +713,7 @@
       (plan-passthrough-op clause-info)
       (let [{:keys [scc recursive?]} (get scc-info rule-name)]
         (if recursive?
-          ;; Recursive rule — pre-compile branch plans with clause versions.
+          ;; Recursive rule — pre-build branch plans with clause versions.
           ;; IMPORTANT: We use the rule head vars (all free) for branch renaming,
           ;; NOT the call-args (which may contain constants like 62).
           ;; Constants are filtered AFTER the fixpoint completes.
@@ -774,7 +774,7 @@
                                     :rec-clause-versions rec-cvs}])))
                       scc-rule-names)
                 ;; Check if any base case lacks data patterns (e.g. [(identity ?a) ?c]).
-                ;; Such base cases can't be executed by the compiled fixpoint engine
+                ;; Such base cases can't be executed by the planned fixpoint engine
                 ;; because head vars have no data source — fall back to legacy.
                 has-scanless-base?
                 (some (fn [[_ {:keys [base-plans]}]]

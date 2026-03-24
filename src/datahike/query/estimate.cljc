@@ -1,5 +1,5 @@
 (ns datahike.query.estimate
-  "Cardinality estimation for the compiled query engine.
+  "Cardinality estimation for the query planner.
    Uses PSS count-slice for O(log n) cardinality estimates per pattern."
   (:require
    [datahike.constants :refer [e0 tx0 emax txmax]]
