@@ -55,7 +55,8 @@
   "When true, bypass the compiled query engine and use legacy engine.
    Set DATAHIKE_COMPILED_QUERY=true to enable the compiled engine.
    Default: legacy engine (compiled engine is opt-in during testing)."
-  (not (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY"))))
+  #?(:clj (not (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY")))
+     :cljs true))
 
 (def ^:dynamic *query-result-cache?*
   "When true (default), query results are cached by [query args db-snapshot].

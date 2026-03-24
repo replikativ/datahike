@@ -15,7 +15,9 @@
             [datahike.tools :as dt]
             [replikativ.logging :as log]
             [konserve.utils :refer [#?(:clj async+sync) multi-key-capable? *default-sync-translation*]
-             #?@(:cljs [:refer-macros [async+sync]])])
+             #?@(:cljs [:refer-macros [async+sync]])]
+            #?(:cljs [clojure.core.async :refer [<!]]))
+  #?(:cljs (:require-macros [clojure.core.async :refer [go]]))
   #?(:clj (:import [datahike.connector Connection])))
 
 (defn- branch-check [branch]
