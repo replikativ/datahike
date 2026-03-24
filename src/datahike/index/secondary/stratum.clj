@@ -428,9 +428,9 @@
       (StratumIndex. nil attrs attr-refs config)))
 
   (-sec-mark [_]
-    ;; Return konserve keys referenced by this dataset
-    ;; For now return #{} — stratum's GC is handled by stratum.storage/gc!
-    ;; TODO: implement proper key collection from dataset commit chain
+    ;; Stratum shares datahike's store but -sec-mark on a live instance
+    ;; doesn't have access to the store. GC uses mark-from-key-map instead,
+    ;; which gets the key-map + store from the stored commit.
     #{})
 
   sec/IColumnarAggregate
@@ -647,9 +647,43 @@
   (sec/register-index-type! :stratum factory)
   (sec/register-index-type! :datahike.index.secondary/stratum factory))
 
-;; GC: stratum uses konserve — delegate to stratum's own GC for now
-;; TODO: implement proper key enumeration from dataset commit
-(defmethod sec/mark-from-key-map :stratum [_ _] #{})
+;; GC: stratum writes to datahike's konserve store, so datahike's GC must
+;; preserve stratum's keys. Walk the dataset commit chain to collect all
+;; reachable keys: dataset commits, index commits, PSS node addresses,
+;; plus branch metadata keys.
+(defmethod sec/mark-from-key-map :stratum [key-map store]
+  (if-let [commit-id (:dataset-commit-id key-map)]
+    (let [;; Walk parent chain from this commit to collect all reachable dataset commits
+          reachable-ds-commits
+          (loop [queue [commit-id]
+                 visited #{}]
+            (if (empty? queue)
+              visited
+              (let [[current & rest] queue]
+                (if (or (nil? current) (visited current))
+                  (recur (vec rest) visited)
+                  (let [snapshot (ss/load-dataset-commit store current)
+                        parents (when snapshot (seq (:parents snapshot)))]
+                    (recur (into (vec rest) parents)
+                           (conj visited current)))))))
+          ;; Collect reachable index commits from dataset snapshots
+          reachable-idx-commits (ss/collect-live-index-commits store reachable-ds-commits)
+          ;; Collect reachable PSS node addresses from index snapshots
+          reachable-pss-addrs (ss/collect-live-pss-addresses store reachable-idx-commits)]
+      ;; Return the union of all reachable keys in datahike's store format
+      (into #{}
+            (concat
+             ;; PSS node addresses (flat UUIDs)
+             reachable-pss-addrs
+             ;; Index commit keys
+             (map (fn [id] [:indices :commits id]) reachable-idx-commits)
+             ;; Dataset commit keys
+             (map (fn [id] [:datasets :commits id]) reachable-ds-commits)
+             ;; Branch metadata keys
+             (when-let [branch (:branch key-map)]
+               [[:datasets :heads branch]
+                [:datasets :branches]]))))
+    #{}))
 
 ;; Branch: fork dataset and sync to new branch
 (defmethod sec/branch-from-key-map :stratum [key-map store _from-branch new-branch]
