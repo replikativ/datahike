@@ -22,7 +22,8 @@
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [stratum.api :as st]
-   [stratum.dataset :as sd])
+   [stratum.dataset :as sd]
+   [stratum.storage :as ss])
   (:import
    [datahike.datom Datom]))
 
@@ -401,6 +402,37 @@
         this
         (StratumIndex. dataset attrs new-attr-refs new-config))))
 
+  sec/IVersionedSecondaryIndex
+  (-sec-flush [_ store branch]
+    ;; Persist dataset to konserve via stratum's sync!
+    (if dataset
+      (let [synced-ds (sd/sync! dataset store (name branch))]
+        {:type :stratum
+         :branch (name branch)
+         :dataset-commit-id (get-in synced-ds [:commit-info :id])})
+      {:type :stratum :branch (name branch) :dataset-commit-id nil}))
+
+  (-sec-restore [_ store key-map]
+    ;; Restore dataset from konserve
+    (if-let [commit-id (:dataset-commit-id key-map)]
+      (let [restored-ds (sd/load store commit-id)]
+        (StratumIndex. restored-ds attrs attr-refs config))
+      (StratumIndex. nil attrs attr-refs config)))
+
+  (-sec-branch [_ store _from-branch new-branch]
+    ;; Fork dataset (O(1) structural sharing) and sync to new branch
+    (if dataset
+      (let [forked-ds (sd/fork dataset)
+            synced-ds (sd/sync! forked-ds store (name new-branch))]
+        (StratumIndex. synced-ds attrs attr-refs config))
+      (StratumIndex. nil attrs attr-refs config)))
+
+  (-sec-mark [_]
+    ;; Return konserve keys referenced by this dataset
+    ;; For now return #{} — stratum's GC is handled by stratum.storage/gc!
+    ;; TODO: implement proper key collection from dataset commit chain
+    #{})
+
   sec/IColumnarAggregate
   (-columnar-aggregate [this query-spec]
     (sec/-columnar-aggregate this query-spec nil))
@@ -614,3 +646,18 @@
                                  config)))]
   (sec/register-index-type! :stratum factory)
   (sec/register-index-type! :datahike.index.secondary/stratum factory))
+
+;; GC: stratum uses konserve — delegate to stratum's own GC for now
+;; TODO: implement proper key enumeration from dataset commit
+(defmethod sec/mark-from-key-map :stratum [_ _] #{})
+
+;; Branch: fork dataset and sync to new branch
+(defmethod sec/branch-from-key-map :stratum [key-map store _from-branch new-branch]
+  (if-let [commit-id (:dataset-commit-id key-map)]
+    (let [ds (sd/load store commit-id)
+          forked (sd/fork ds)
+          synced (sd/sync! forked store (name new-branch))]
+      (assoc key-map
+             :branch (name new-branch)
+             :dataset-commit-id (get-in synced [:commit-info :id])))
+    (assoc key-map :branch (name new-branch))))

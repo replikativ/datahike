@@ -79,12 +79,13 @@
 (def required-keys #{:db/ident :db/valueType :db/cardinality})
 
 (s/def :db.secondary/status-type #{:building :ready :disabled})
+(s/def :db.type/any any?)
 
 (def ^:const implicit-schema-spec {:db.secondary/type {:db/valueType   :db.type/keyword
                                                        :db/cardinality :db.cardinality/one}
                                    :db.secondary/attrs {:db/valueType   :db.type/tuple
                                                         :db/cardinality :db.cardinality/one}
-                                   :db.secondary/config {:db/valueType   :db.type/value
+                                   :db.secondary/config {:db/valueType   :db.type/any
                                                          :db/cardinality :db.cardinality/one}
                                    :db.secondary/status {:db/valueType   :db.type/keyword
                                                          :db/cardinality :db.cardinality/one}
