@@ -112,11 +112,17 @@
               ;; empty channel of pending transactions
                       (log/trace :datahike/batch-commit {:batch-size (count txs)})
               ;; commit latest tx to disk
-                      (let [db (:db-after (first (peek txs)))]
+                      (let [db (:db-after (first (peek txs)))
+                            ;; Check for merge parents (set by merge-writer!)
+                            merge-parents (get-in db [:meta :datahike/merge-parents])
+                            ;; Clear merge-parents from db meta before persisting
+                            db (if merge-parents
+                                 (update db :meta dissoc :datahike/merge-parents)
+                                 db)]
                         (try
                           (let [start-ts (get-time-ms)
                                 {{:keys [datahike/commit-id]} :meta
-                                 :as commit-db} (<?- (w/commit! db nil false))
+                                 :as commit-db} (<?- (w/commit! db merge-parents false))
                                 commit-time (- (get-time-ms) start-ts)]
                             (log/trace :datahike/commit-time {:duration-ms commit-time})
                             (reset! connection commit-db)
@@ -144,7 +150,9 @@
                            ;; async operations that run in background
                            'gc-storage!   gc/gc-storage!
                            ;; secondary index backfill (synchronous, may be slow)
-                           #?@(:clj ['build-secondary-index! w/build-secondary-index!])})
+                           #?@(:clj ['build-secondary-index! w/build-secondary-index!])
+                           ;; merge with multi-parent commit tracking
+                           'merge! w/merge-writer!})
 
 (defmulti create-writer
   (fn [writer-config _]
@@ -241,6 +249,23 @@
       (let [tx-report (<! (dispatch! writer
                                      {:op 'load-entities
                                       :args [entities]}))]
+        (#?(:clj deliver :cljs put!) p tx-report)))
+    p))
+
+(defn merge-db!
+  "Merge parent branches/commits into the current branch through the writer.
+   Parents is a set of branch keywords or commit UUIDs.
+   tx-data contains the merged changes."
+  [connection {:keys [parents tx-data tx-meta] :as arg-map}]
+  (let [p (throwable-promise)
+        writer (:writer @(:wrapped-atom connection))]
+    (go
+      (let [tx-report (<! (dispatch! writer
+                                     {:op 'merge!
+                                      :args [arg-map]}))]
+        (when (map? tx-report)
+          (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
+            (callback tx-report)))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 

@@ -1,6 +1,7 @@
 (ns datahike.gc
   (:require [clojure.set :as set]
             [datahike.index.interface :refer [-mark]]
+            [datahike.index.secondary :as sec]
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
             [replikativ.logging :as log]
@@ -24,25 +25,32 @@
                   (recur r visited reachable)
                   (let [{:keys                         [eavt-key avet-key aevt-key
                                                         temporal-eavt-key temporal-avet-key temporal-aevt-key
-                                                        schema-meta-key]
+                                                        schema-meta-key secondary-index-keys]
                          {:keys [datahike/parents
                                  datahike/created-at
                                  datahike/updated-at]} :meta}
                         (<? S (k/get store to-check))
                         in-range? (> (get-time (or updated-at created-at))
                                      (get-time after-date))]
-                    (recur (concat r (when in-range? parents))
-                           (conj visited to-check)
-                           (set/union reachable #{to-check}
-                                      (when schema-meta-key #{schema-meta-key})
-                                      (-mark eavt-key)
-                                      (-mark aevt-key)
-                                      (-mark avet-key)
-                                      (when (:keep-history? config)
-                                        (set/union
-                                         (-mark temporal-eavt-key)
-                                         (-mark temporal-aevt-key)
-                                         (-mark temporal-avet-key)))))))
+                    (let [sec-reachable (when (seq secondary-index-keys)
+                                        (reduce-kv
+                                         (fn [acc _idx-ident key-map]
+                                           (set/union acc (sec/mark-from-key-map key-map store)))
+                                         #{} secondary-index-keys))
+                          new-reachable (cond-> (set/union reachable #{to-check}
+                                                          (when schema-meta-key #{schema-meta-key})
+                                                          (-mark eavt-key)
+                                                          (-mark aevt-key)
+                                                          (-mark avet-key))
+                                          (:keep-history? config)
+                                          (set/union (-mark temporal-eavt-key)
+                                                     (-mark temporal-aevt-key)
+                                                     (-mark temporal-avet-key))
+                                          sec-reachable
+                                          (set/union sec-reachable))]
+                      (recur (concat r (when in-range? parents))
+                             (conj visited to-check)
+                             new-reachable))))
                 reachable)))))
 
 (defn gc-storage!

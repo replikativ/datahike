@@ -84,32 +84,47 @@
       (when (:keep-history? config)
         {:temporal-eavt-key (cond-> temporal-eavt flush! (di/-flush backend))
          :temporal-aevt-key (cond-> temporal-aevt flush! (di/-flush backend))
-         :temporal-avet-key (cond-> temporal-avet flush! (di/-flush backend))}))]))
+         :temporal-avet-key (cond-> temporal-avet flush! (di/-flush backend))})
+      #?(:clj
+         (when (and flush! (seq (:secondary-indices db)))
+           {:secondary-index-keys
+            (reduce-kv
+             (fn [acc idx-ident idx]
+               (if (satisfies? sec/IVersionedSecondaryIndex idx)
+                 (assoc acc idx-ident (sec/-sec-flush idx store (:branch config)))
+                 acc))
+             {} (:secondary-indices db))})
+         :cljs nil))]))
 
-(defn- reconstruct-secondary-indices
-  "Scan schema for secondary index definitions and recreate empty index instances.
-   Indices with status :ready or :building will be recreated (empty) and need backfill.
-   Returns a map of {idx-ident -> index-instance} and updated rschema mappings."
-  [schema ident-ref-map]
+(defn- restore-secondary-indices
+  "Restore secondary index instances from stored key-maps.
+   For versioned indices (IVersionedSecondaryIndex), restores from durable storage.
+   For non-versioned or missing keys, creates empty instances that need backfill."
+  [schema ident-ref-map secondary-index-keys store]
   #?(:clj
-     (let [sec-indices (reduce-kv
-                        (fn [acc ident entry]
-                          (if (and (map? entry) (:db.secondary/type entry))
-                            (let [idx-type (:db.secondary/type entry)
-                                  idx-attrs (set (:db.secondary/attrs entry))
-                                  idx-config (merge (:db.secondary/config entry)
-                                                    {:attrs idx-attrs})
-                                  idx-config (cond-> idx-config
-                                               (seq ident-ref-map)
-                                               (assoc :ident-ref-map ident-ref-map))]
-                              (try
-                                (assoc acc ident (sec/create-index idx-type idx-config nil))
-                                (catch Exception e
-                                  (log/warn :datahike/secondary-index-reconstruct-failed {:ident ident :error (.getMessage e)})
-                                  acc)))
-                            acc))
-                        {} schema)]
-       sec-indices)
+     (reduce-kv
+      (fn [acc ident entry]
+        (if (and (map? entry) (:db.secondary/type entry))
+          (let [idx-type (:db.secondary/type entry)
+                idx-attrs (set (:db.secondary/attrs entry))
+                idx-config (merge (:db.secondary/config entry)
+                                  {:attrs idx-attrs})
+                idx-config (cond-> idx-config
+                             (seq ident-ref-map)
+                             (assoc :ident-ref-map ident-ref-map))
+                key-map (get secondary-index-keys ident)]
+            (try
+              (let [skeleton (sec/create-index idx-type idx-config nil)]
+                (if (and key-map (satisfies? sec/IVersionedSecondaryIndex skeleton))
+                  ;; Restore from durable storage
+                  (assoc acc ident (sec/-sec-restore skeleton store key-map))
+                  ;; No stored keys — empty index, needs backfill
+                  (assoc acc ident skeleton)))
+              (catch Exception e
+                (log/warn :datahike/secondary-index-restore-failed {:ident ident :error (.getMessage e)})
+                acc)))
+          acc))
+      {} schema)
      :cljs {}))
 
 (defn stored->db
@@ -117,6 +132,7 @@
   [stored-db store]
   (let [{:keys [eavt-key aevt-key avet-key
                 temporal-eavt-key temporal-aevt-key temporal-avet-key
+                secondary-index-keys
                 schema rschema system-entities ref-ident-map ident-ref-map
                 config max-tx max-eid op-count hash meta schema-meta-key]
          :or   {op-count 0}} stored-db
@@ -127,7 +143,8 @@
                           schema-meta))
         effective-schema (or (:schema schema-meta) schema)
         effective-ident-ref-map (or (:ident-ref-map schema-meta) ident-ref-map)
-        sec-indices (reconstruct-secondary-indices effective-schema effective-ident-ref-map)
+        sec-indices (restore-secondary-indices effective-schema effective-ident-ref-map
+                                               secondary-index-keys store)
         empty       (db/empty-db nil config store)]
     (merge
      (assoc empty
@@ -438,6 +455,18 @@
                                 :db-after db-after
                                 :tx-data []
                                 :tx-meta {}}))))
+
+(defn merge-writer!
+  "Writer operation for merge. Applies tx-data and records merge parents
+   on the db meta so the commit loop creates a multi-parent merge commit."
+  [old {:keys [parents tx-data tx-meta]}]
+  (log/info :datahike/merge {:parent-count (count parents) :tx-count (count tx-data)})
+  (let [tx-report (complete-db-update old (core/with old tx-data tx-meta))
+        ;; Add merge parents to db meta — commit loop picks these up
+        branch (get-in old [:config :branch])
+        all-parents (conj (set parents) branch)]
+    (update tx-report :db-after
+            assoc-in [:meta :datahike/merge-parents] all-parents)))
 
 (defn transact! [old {:keys [tx-data tx-meta]}]
   (log/debug :datahike/transact {:tx-count (count tx-data)})

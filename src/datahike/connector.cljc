@@ -214,14 +214,18 @@
                          conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
                      (swap! (:wrapped-atom conn) assoc :writer
                             (w/create-writer (:writer config) conn))
-                     ;; Recovery: re-trigger backfill for any :building secondary indices
+                     ;; Recovery: backfill secondary indices that are :building
+                     ;; and were not restored from durable storage
                      #?(:clj
                         (let [db @(:wrapped-atom conn)
-                              schema (:schema db)]
+                              schema (:schema db)
+                              sec-idx-keys (:secondary-index-keys stored-db)]
                           (doseq [[ident entry] schema
                                   :when (and (map? entry)
                                              (:db.secondary/type entry)
-                                             (#{:building :ready} (:db.secondary/status entry)))]
+                                             (= :building (:db.secondary/status entry))
+                                             ;; Only backfill if no stored key-map exists
+                                             (not (get sec-idx-keys ident)))]
                             (log/info :datahike/secondary-index-backfill {:ident ident})
                             (w/dispatch! (:writer db)
                                          {:op 'build-secondary-index!

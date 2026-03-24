@@ -2,14 +2,14 @@
   "Git-like versioning tools for Datahike."
   (:require [konserve.core :as k]
             [datahike.connections :refer [delete-connection!]]
-            [datahike.core :refer [with]]
             [datahike.store :refer [store-identity]]
             [datahike.writing :refer [stored->db db->stored stored-db?
-                                      complete-db-update commit! create-commit-id get-and-clear-pending-kvs!
+                                      commit! create-commit-id get-and-clear-pending-kvs!
                                       write-pending-kvs!]]
+            [datahike.writer]
+            [datahike.index.secondary :as sec]
             [superv.async :refer [<? S go-loop-try]]
             [datahike.db.utils :refer [db?]]
-            [datahike.tools :as dt]
             [replikativ.logging :as log]
             [konserve.utils :refer [multi-key-capable?]]))
 
@@ -54,20 +54,32 @@
                    reachable))))
 
 (defn branch!
-  "Create a new branch from commit-id or existing branch as new-branch."
+  "Create a new branch from commit-id or existing branch as new-branch.
+   Secondary indices are CoW-branched via their native branching support."
   [conn from new-branch]
   (let [store (:store @conn)
         branches (k/get store :branches nil {:sync? true})
         _ (when (branches new-branch)
             (log/raise "Branch already exists." {:type :branch-already-exists
                                                  :new-branch new-branch}))
-        db (k/get store from nil {:sync? true})]
-    (when-not (stored-db? db)
+        stored-db (k/get store from nil {:sync? true})]
+    (when-not (stored-db? stored-db)
       (throw (ex-info "From does not point to an existing branch or commit."
                       {:type :from-branch-does-not-point-to-existing-branch-or-commit
                        :from from})))
-    (k/assoc store new-branch (assoc-in db [:config :branch] new-branch) {:sync? true})
-    (k/update store :branches #(conj (set %) new-branch) {:sync? true})))
+    ;; Branch secondary indices via their native CoW support
+    (let [sec-keys (:secondary-index-keys stored-db)
+          from-branch (or (when (keyword? from) from) :db)
+          branched-sec-keys (when (seq sec-keys)
+                              (reduce-kv
+                               (fn [acc idx-ident key-map]
+                                 (assoc acc idx-ident
+                                        (sec/branch-from-key-map key-map store from-branch new-branch)))
+                               {} sec-keys))
+          updated-db (cond-> (assoc-in stored-db [:config :branch] new-branch)
+                       (seq branched-sec-keys) (assoc :secondary-index-keys branched-sec-keys))]
+      (k/assoc store new-branch updated-db {:sync? true})
+      (k/update store :branches #(conj (set %) new-branch) {:sync? true}))))
 
 (defn delete-branch!
   "Removes this branch from set of known branches. The branch will still be
@@ -156,18 +168,16 @@
 
 (defn merge!
   "Create a merge commit to the current branch of this connection for parent
-  commit uuids. It is the responsibility of the caller to make sure that tx-data
-  contains the data to be merged into the branch from the parents. This function
-  ensures that the parent commits are properly tracked.
-   
-   NOTE: Currently merge! requires that you release all connections to conn and reconnect afterwards to reset the writer state. This will be fixed in the future by handling merge! through the writer."
+  commit uuids or branch keywords. It is the responsibility of the caller to
+  make sure that tx-data contains the data to be merged into the branch from
+  the parents. This function ensures that the parent commits are properly tracked.
+
+  Routed through the writer for proper serialization with concurrent transactions."
   ([conn parents tx-data]
    (merge! conn parents tx-data nil))
   ([conn parents tx-data tx-meta]
    (parent-check parents)
-   (let [old @conn
-         db (:db-after (complete-db-update old (with old tx-data tx-meta)))
-         parents (conj parents (get-in old [:config :branch]))
-         commit-db (commit! db parents)]
-     (reset! conn commit-db)
-     true)))
+   (let [writer (:writer @(:wrapped-atom conn))]
+     @(datahike.writer/merge-db! conn {:parents parents
+                                       :tx-data tx-data
+                                       :tx-meta tx-meta}))))
