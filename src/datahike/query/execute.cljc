@@ -17,7 +17,7 @@
    #?(:cljs [org.replikativ.persistent-sorted-set :as psset])
    #?(:cljs [org.replikativ.persistent-sorted-set.btset :as btset :refer [BTSet]])
    [datahike.db :as db #?@(:cljs [:refer [AsOfDB SinceDB HistoricalDB FilteredDB]])]
-   [taoensso.timbre :as log])
+   [replikativ.logging :as log])
   #?(:cljs (:require-macros [datahike.query.execute :refer [scan-filter scan-filter-temporal emit-tuple]]))
   #?(:clj (:import [datahike.datom Datom]
                    [datahike.db AsOfDB SinceDB HistoricalDB FilteredDB]
@@ -2207,7 +2207,7 @@
                 ;; Resolve the db for this op — may differ from default $ for multi-source queries
                 op-db (if-let [src (:source op)]
                         (or (get (:sources ctx) src)
-                            (do (log/warn "Source not found in query context, using default db:"
+                            (do (log/warn :datahike/source-not-found "Source not found in query context, using default db"
                                           {:source src :available (set (keys (:sources ctx)))})
                                 db))
                         db)]

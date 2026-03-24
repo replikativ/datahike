@@ -2,7 +2,7 @@
   "Pluggable secondary index protocol and registry.
    Secondary indices are declared through schema and maintained in-transaction.
    Anyone can register their own index type — the planner treats all uniformly."
-  (:require [taoensso.timbre :as log]))
+  (:require [replikativ.logging :as log]))
 
 ;; ---------------------------------------------------------------------------
 ;; Protocol
@@ -104,8 +104,8 @@
                               (symbol (namespace type-keyword)))]
          (try (require ns-sym)
               (catch Exception e
-                (log/warn "Failed to auto-require secondary index namespace"
-                          ns-sym ":" (.getMessage e)))))))
+                (log/warn :datahike/secondary-index-require-failed {:ns ns-sym :error (.getMessage e)})))))
+     :cljs nil)
   (if-let [factory (get @index-types type-keyword)]
     (factory config db)
     (throw (ex-info (str "Unknown secondary index type: " type-keyword

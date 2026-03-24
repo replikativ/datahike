@@ -7,7 +7,7 @@
    [datahike.test.core-test :as core-test]
    [datahike.test.utils :as utils]
    [datahike.query :as dq]
-   [taoensso.timbre :as log])
+   [replikativ.logging :as log])
   #?(:clj
      (:import [clojure.lang ExceptionInfo])))
 
@@ -859,8 +859,8 @@
                             (fn [kv-pairs]
                               (mapv first kv-pairs)))]
     (doseq [[k v] (sort-by val (update-vals groups count))]
-      (log/info k v))
-    (log/info "Total count:" (count concept-map))
+      (log/info :datahike/test-query {:key k :value v}))
+    (log/info :datahike/test-query-total {:count (count concept-map)})
     groups))
 
 (deftest synthetic-ssyk-tree-test

@@ -12,7 +12,7 @@
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [scriptum.core :as sc]
-   [taoensso.timbre :as log]))
+   [replikativ.logging :as log]))
 
 (defn- make-scriptum-index
   "Create an ISecondaryIndex backed by Scriptum.
@@ -50,7 +50,7 @@
                               (es/entity-bitset-contains? entity-filter eid))
                       (es/entity-bitset-add! bs eid)))
                   (catch NumberFormatException e
-                    (log/warn "Invalid entity ID in Lucene search results:" eid-str)))))
+                    (log/warn :datahike/invalid-lucene-eid {:eid-str eid-str})))))
             bs)))
 
       (-estimate [_ query-spec]
@@ -84,7 +84,7 @@
                                        (es/entity-bitset-contains? entity-filter eid))
                                {:entity-id eid :score (:score r)}))
                            (catch NumberFormatException _
-                             (log/warn "Invalid entity ID in Lucene search results:" eid-str)
+                             (log/warn :datahike/invalid-lucene-eid {:eid-str eid-str})
                              nil)))))
                vec)))
 

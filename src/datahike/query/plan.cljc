@@ -18,7 +18,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
-   [taoensso.timbre :as log]
+   [replikativ.logging :as log]
    [datahike.query.analyze :as analyze]
    [datahike.query.estimate :as estimate]))
 
@@ -160,7 +160,7 @@
               (when-some [v (resolve fn-sym)]
                 (:datahike/external-engine (meta v)))
               (catch Exception e
-                (log/debug "external-engine meta resolution failed for" fn-sym ":" (.getMessage e))
+                (log/debug :datahike/external-engine-meta-failed {:fn-sym fn-sym :error (.getMessage e)})
                 nil)))))
 
 (defn- detect-external-engine-mode
@@ -206,7 +206,7 @@
         cost (when cost-fn
                (try (cost-fn db idx-ident args n-bound)
                     (catch #?(:clj Exception :cljs js/Error) e
-                      (log/warn "external-engine cost-model failed:" #?(:clj (.getMessage e) :cljs (.-message e)))
+                      (log/warn :datahike/external-engine-cost-failed {:error #?(:clj (.getMessage e) :cljs (.-message e))})
                       nil)))]
     {:op :external-engine
      :clause (:clause fn-info)

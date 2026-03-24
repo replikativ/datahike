@@ -4,26 +4,25 @@
    This namespace provides the internal connection logic for :kabel writer backends.
    It is called by datahike.connector when a kabel writer is detected."
   (:require [datahike.db :as db]
-            [datahike.store :as ds]
-            [datahike.writing :as dw]
-            [datahike.writer :as w]
-            [datahike.tools :as dt]
             [datahike.config :as dc]
-            [datahike.kabel.writer :as kw]
-            [datahike.kabel.fressian-handlers :as fh]
             [datahike.connections :refer [add-connection!]]
             [datahike.connector :refer [->Connection]]
+            [datahike.kabel.fressian-handlers :as fh]
+            [datahike.kabel.writer :as kw]
+            [datahike.store :as ds]
+            [datahike.writer :as w]
+            [datahike.writing :as dw]
             [konserve-sync.transport.kabel-pubsub :as kp]
             [konserve-sync.walkers.datahike :as dh-walker]
-            [konserve.tiered :as kt]
             [konserve.core :as k]
             [konserve.store :as ks]
+            [konserve.tiered :as kt]
             #?(:clj [clojure.core.async :refer [promise-chan put!]]
                :cljs [clojure.core.async :refer [promise-chan put!] :include-macros true])
             #?(:clj [superv.async :refer [go-try- <?-]]
                :cljs [superv.async :refer [go-try- <?-] :include-macros true])
-            #?(:clj [taoensso.timbre :as log]
-               :cljs [taoensso.timbre :as log :include-macros true])))
+            #?(:clj [replikativ.logging :as log]
+               :cljs [replikativ.logging :as log :include-macros true])))
 
 ;; =============================================================================
 ;; TieredStore Support
@@ -126,11 +125,11 @@
 
           ;; Validate required kabel config
          _ (when-not local-peer
-             (dt/raise "KabelWriter requires :local-peer in writer config"
+             (log/raise "KabelWriter requires :local-peer in writer config"
                        {:type :kabel-missing-local-peer
                         :config (:writer config)}))
          _ (when-not store-id
-             (dt/raise "KabelWriter requires :id in store config"
+             (log/raise "KabelWriter requires :id in store config"
                        {:type :kabel-missing-store-id
                         :store-config store-config}))
 
@@ -146,9 +145,9 @@
                      (<?- (ks/create-store store-config opts)))
          _ (log/trace "Store ready" {:raw-store (some? raw-store)})
          _ (when-not raw-store
-             (dt/raise "Failed to create/connect store." {:type :store-creation-failed
-                                                          :backend (:backend store-config)
-                                                          :id (:id store-config)}))
+             (log/raise "Failed to create/connect store." {:type :store-creation-failed
+                                                           :backend (:backend store-config)
+                                                           :id (:id store-config)}))
          store (ds/add-cache-and-handlers raw-store config)
          _ (log/trace "Store ready, adding handlers...")
 
@@ -283,7 +282,7 @@
 (defmethod datahike.connector/-connect* :kabel [config opts]
   (log/info "Kabel -connect* multimethod dispatched" {:sync? (:sync? opts)})
   (when (:sync? opts)
-    (dt/raise "Kabel connections must be async. Use {:sync? false} or omit :sync? option."
+    (log/raise "Kabel connections must be async. Use {:sync? false} or omit :sync? option."
               {:type :kabel-requires-async
                :config config}))
   (connect-kabel config (assoc opts :sync? false)))

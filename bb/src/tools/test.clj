@@ -9,7 +9,7 @@
 (defn git [opts & args] (apply p/shell opts "git" args))
 
 (defn kaocha [& args]
-  (apply clj {:extra-env {"TIMBRE_LEVEL" ":warn"}}
+  (apply clj {:extra-env {"LOG_LEVEL" ":warn"}}
          "-M:test" "-m" "kaocha.runner" args))
 
 (defn back-compat [config]

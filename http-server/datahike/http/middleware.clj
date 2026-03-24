@@ -8,7 +8,7 @@
    [datahike.json :as json]
    [datahike.readers :refer [edn-readers]]
    [muuntaja.core :as m]
-   [taoensso.timbre :refer [info trace]])
+   [replikativ.logging :as log])
   (:import
    [clojure.lang ExceptionInfo]))
 
@@ -65,11 +65,11 @@
         (if (.endsWith ^String uri "transact")
           (let [[conn tx-data] body-params
                 new-body-params [conn (json/xf-data-for-tx tx-data @conn)]]
-            (trace "transact transformation" new-body-params)
+            (log/trace :datahike/http-transact-transform {:body-params new-body-params})
             (handler (assoc request :body-params new-body-params)))
           (let [[f & r]         body-params
                 new-body-params (vec (concat [(if (string? f) (edn/read-string {:readers edn-readers} f) f)] r))]
-            (trace "old-body-params" body-params)
-            (trace "new-body-params" new-body-params)
+            (log/trace :datahike/http-old-body-params {:body-params body-params})
+            (log/trace :datahike/http-new-body-params {:body-params new-body-params})
             (handler (assoc request :body-params new-body-params))))
         (handler request)))))

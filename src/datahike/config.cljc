@@ -7,7 +7,7 @@
             [datahike.tools :as dt]
             [datahike.store :as ds]
             [datahike.index :as di]
-            [taoensso.timbre :as log])
+            [replikativ.logging :as log])
   (:import #?(:clj [java.net URI]
               :cljs [goog.Uri])))
 
@@ -196,7 +196,7 @@
          ;; Normalize :mem to :memory for backward compatibility
          store-config (if (= (:backend raw-store-config) :mem)
                         (do
-                          (log/warn "DEPRECATION: :mem backend is deprecated, use :memory instead. Support for :mem will be removed in a future version.")
+                          (log/warn :datahike/deprecated-mem-backend "Use :memory instead of :mem")
                           (assoc raw-store-config :backend :memory))
                         raw-store-config)
          _ (validate-store-backend store-config)
@@ -242,7 +242,7 @@
                                      :opt-un [::username ::password ::path ::host ::port]))
 
 (defn uri->config [uri]
-  (log/warn "DEPRECATION WARNING: URI string format for Datahike configuration is deprecated and may be removed in a future version. Please migrate to the map-based configuration format. See documentation for details.")
+  (log/warn :datahike/deprecated-uri-config "Migrate to map-based configuration format")
   (let [base-uri (#?(:clj URI. :cljs goog.Uri.) uri)
         _ (when-not (= (.getScheme base-uri) "datahike")
             (throw (ex-info "URI scheme is not datahike conform." {:uri uri})))

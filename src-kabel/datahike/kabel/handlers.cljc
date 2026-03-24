@@ -32,8 +32,8 @@
                :cljs [superv.async :refer [<?] :refer-macros [go-try]])
             #?(:clj [clojure.core.async :refer [go <! put!]]
                :cljs [clojure.core.async :refer [put!] :include-macros true])
-            #?(:clj [taoensso.timbre :as log]
-               :cljs [taoensso.timbre :as log :include-macros true]))
+            #?(:clj [replikativ.logging :as log]
+               :cljs [replikativ.logging :as log :include-macros true]))
   #?(:cljs (:require-macros [clojure.core.async.macros :refer [go]])))
 
 ;; =============================================================================

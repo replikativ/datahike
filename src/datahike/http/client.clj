@@ -9,7 +9,7 @@
             [datahike.datom :as dd]
             [datahike.remote :as remote]
             [datahike.impl.entity :as de]
-            [taoensso.timbre :as log])
+            [replikativ.logging :as log])
   (:import [java.io ByteArrayOutputStream]))
 
 (def MEGABYTE (* 1024 1024))
@@ -21,7 +21,7 @@
         fmt                 "application/edn"
         url                 (str url "/" end-point)
         body                (remote/edn-replace-remote-literals (pr-str data))
-        _                   (log/trace "request" url end-point token data body)
+        _                   (log/trace :datahike/http-request {:url url :end-point end-point :data data})
         response
         (try
           (http/request (merge
@@ -41,7 +41,7 @@
                   (update data :body #(edn/read-string {:readers remote/edn-readers} %))]
               (throw (ex-info msg new-data)))))
         response            (:body response)]
-    (log/trace "response" response)
+    (log/trace :datahike/http-response {:response response})
     (edn/read-string {:readers remote/edn-readers} response)))
 
 (defn request-transit
@@ -57,7 +57,7 @@
          out      (ByteArrayOutputStream. (or max-output-buffer-size MAX_OUTPUT_BUFFER_SIZE))
          writer   (transit/writer out :json {:handlers write-handlers})
          _        (transit/write writer data)
-         _        (log/trace "request" url end-point token data out)
+         _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
          response
          (try
            (http/request (merge
@@ -83,7 +83,7 @@
                (throw (ex-info msg new-data)))))
          response (:body response)
          response (transit/read (transit/reader response :json {:handlers read-handlers}))]
-     (log/trace  "response" response)
+     (log/trace :datahike/http-response {:response response})
      response)))
 
 (defn request-json
@@ -95,7 +95,7 @@
          fmt      "application/json"
          url      (str url "/" end-point)
          out      (j/write-value-as-bytes data mapper)
-         _        (log/trace "request" url end-point token data out)
+         _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
          response
          (try
            (http/request (merge
@@ -122,7 +122,7 @@
                                (or (:ex-data (:body new-data)) new-data))))))
          response (:body response)
          response (j/read-value response mapper)]
-     (log/trace  "response" response)
+     (log/trace :datahike/http-response {:response response})
      response)))
 
 (defn request-json-raw [method end-point remote-peer data]
@@ -131,7 +131,7 @@
         fmt      "application/json"
         url      (str url "/" end-point)
         out      data
-        _        (log/trace "request" url end-point token data out)
+        _        (log/trace :datahike/http-request {:url url :end-point end-point :data data})
         response
         (http/request (merge
                        {:method method
@@ -146,7 +146,7 @@
                        (when (= method :get)
                          {:query-params {"args-id" (uuid data)}})))
         response (slurp (:body response))]
-    (log/trace  "response" response)
+    (log/trace :datahike/http-response {:response response})
     response))
 
 (defn get-remote [args]

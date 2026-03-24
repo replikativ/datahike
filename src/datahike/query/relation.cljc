@@ -6,6 +6,7 @@
    [clojure.set :as set]
    [datahike.db.utils :as dbu]
    [datahike.tools :as dt]
+   [replikativ.logging :as log]
    [org.replikativ.persistent-sorted-set.arrays :as da]))
 
 #?(:clj (set! *warn-on-reflection* true))
@@ -150,7 +151,7 @@
       (Relation. attrs-a (into (vec tuples-a) tuples-b))
 
       (not (same-keys? attrs-a attrs-b))
-      (dt/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
+      (log/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
                 {:error :query/where})
 
       (every? number? (vals attrs-a))                       ;; can't conj into BTSetIter

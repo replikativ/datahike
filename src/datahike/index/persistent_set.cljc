@@ -18,7 +18,7 @@
             [konserve.serializers :refer [fressian-serializer]]
             #?(:cljs [fress.api :as fress])
             [hasch.core :refer [uuid squuid]]
-            [taoensso.timbre :refer [trace]])
+            [replikativ.logging :as log])
   #?(:cljs (:require-macros [datahike.index.persistent-set :refer [generate-slice-comparator-constructor]]))
   #?(:clj (:import [datahike.datom Datom]
                    [org.fressian.handlers WriteHandler ReadHandler]
@@ -240,7 +240,7 @@
           reused (when-not (:crypto-hash? config)
                    (freelist-pop! freelist))
           address (or reused (gen-address node (:crypto-hash? config)))
-          _ (trace "writing storage: " address " reused: " (boolean reused) " crypto: " (:crypto-hash? config))]
+          _ (log/trace :datahike/index-write {:address address :reused (boolean reused) :crypto-hash (:crypto-hash? config)})]
       ;; Evict old cached value when reusing an address
       (when reused
         (wrapped/evict cache address))
@@ -249,27 +249,27 @@
       address))
   (accessed [_ address]
     (@cost-center-fn :accessed)
-    (trace "accessing storage: " address)
+    (log/trace :datahike/index-access {:address address})
     (swap! stats update :accessed inc)
     (wrapped/hit cache address)
     nil)
   (restore [_ address #?(:cljs opts)]
     (@cost-center-fn :restore)
-    (trace "reading: " address)
+    (log/trace :datahike/index-read {:address address})
     (if-let [cached (wrapped/lookup cache address)]
       cached
       (let [node (k/get store address nil {:sync? true})]
         (when (nil? node)
-          (dt/raise "Node not found in storage." {:type :node-not-found
-                                                  :address address
-                                                  :store store}))
+          (log/raise "Node not found in storage." {:type :node-not-found
+                                                   :address address
+                                                   :store store}))
         (swap! stats update :reads inc)
         (wrapped/miss cache address node)
         node)))
   (markFreed [_ address]
     (when address
       (let [now #?(:clj (java.util.Date.) :cljs (js/Date.))]
-        (trace "marking address as freed: " address)
+        (log/trace :datahike/index-freed {:address address})
         (swap! freed-set conj address)
         (swap! freed-addresses conj [address now]))))
   (isFreed [_ address]
@@ -402,8 +402,8 @@
                                       (reify WriteHandler
                                         (write [_ writer pset]
                                           (when (nil? (.-_address ^PersistentSortedSet pset))
-                                            (dt/raise "Must be flushed." {:type :must-be-flushed
-                                                                          :pset pset}))
+                                            (log/raise "Must be flushed." {:type :must-be-flushed
+                                                                           :pset pset}))
                                           (.writeTag writer "datahike.index.PersistentSortedSet" 1)
                                           (.writeObject writer {:meta    (meta pset)
                                                                 :address (.-_address ^PersistentSortedSet pset)
@@ -438,8 +438,8 @@
                                     {BTSet
                                      (fn [writer pset]
                                        (when (nil? (.-address ^BTSet pset))
-                                         (dt/raise "Must be flushed." {:type :must-be-flushed
-                                                                       :pset pset}))
+                                         (log/raise "Must be flushed." {:type :must-be-flushed
+                                                                        :pset pset}))
                                        (fress/write-tag writer "datahike.index.PersistentSortedSet" 1)
                                        (fress/write-object writer {:meta    (meta pset)
                                                                    :address (.-address ^BTSet pset)

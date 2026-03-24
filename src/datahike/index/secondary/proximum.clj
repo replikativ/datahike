@@ -13,7 +13,7 @@
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [proximum.core :as prox]
-   [taoensso.timbre :as log]))
+   [replikativ.logging :as log]))
 
 (defn- make-proximum-index
   "Create an ISecondaryIndex backed by Proximum.
@@ -67,8 +67,7 @@
               (make-proximum-index
                (prox/insert prox-idx val eid)
                config)
-              (do (log/warn "Non-float-array value for entity" eid "in vector similarity index, skipping:"
-                            (type val))
+              (do (log/warn :datahike/non-float-array-vector {:eid eid :type (type val)})
                   (make-proximum-index prox-idx config)))
             ;; Retract: delete by external entity ID
             (make-proximum-index

@@ -15,7 +15,7 @@
             [datahike.online-gc :as online-gc]
             [konserve.core :as k]
             [konserve.store :as ks]
-            [taoensso.timbre :as log]
+            [replikativ.logging :as log]
             [hasch.core :refer [uuid squuid]]
             [hasch.platform]
             [clojure.core.async :as async :refer [go put!]]
@@ -47,9 +47,9 @@
   "Maps memory db to storage layout. Index flushes will add [k v] pairs to pending-writes."
   [db flush?]
   (when-not (dbu/db? db)
-    (dt/raise "Argument is not a database."
-              {:type     :argument-is-not-a-db
-               :argument db}))
+    (log/raise "Argument is not a database."
+               {:type     :argument-is-not-a-db
+                :argument db}))
   (let [{:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
                 schema rschema system-entities ident-ref-map ref-ident-map config
                 max-tx max-eid op-count hash meta store]} db
@@ -105,7 +105,7 @@
                               (try
                                 (assoc acc ident (sec/create-index idx-type idx-config nil))
                                 (catch Exception e
-                                  (log/warn "Failed to reconstruct secondary index" ident ":" (.getMessage e))
+                                  (log/warn :datahike/secondary-index-reconstruct-failed {:ident ident :error (.getMessage e)})
                                   acc)))
                             acc))
                         {} schema)]
@@ -157,15 +157,15 @@
   (set (doall (for [p parents]
                 (do
                   (when (nil? p)
-                    (dt/raise "Parent cannot be nil." {:type :parent-cannot-be-nil
-                                                       :parent p}))
+                    (log/raise "Parent cannot be nil." {:type :parent-cannot-be-nil
+                                                        :parent p}))
                   (if-not (keyword? p) p
                           (let [{{:keys [datahike/commit-id]} :meta :as old-db}
                                 (k/get store p nil {:sync? true})]
                             (when-not old-db
-                              (dt/raise "Parent does not exist in store."
-                                        {:type   :parent-does-not-exist-in-store
-                                         :parent p}))
+                              (log/raise "Parent does not exist in store."
+                                         {:type   :parent-does-not-exist-in-store
+                                          :parent p}))
                             commit-id)))))))
 
 (defn create-commit-id [db]
@@ -289,8 +289,8 @@
          store (ds/add-cache-and-handlers (<?- (ks/create-store store-config opts)) config)
          stored-db (<?- (k/get store :db nil opts))
          _ (when stored-db
-             (dt/raise "Database already exists."
-                       {:type :db-already-exists :config store-config}))
+             (log/raise "Database already exists."
+                        {:type :db-already-exists :config store-config}))
          {:keys [eavt aevt avet temporal-eavt temporal-aevt temporal-avet
                  schema rschema system-entities ref-ident-map ident-ref-map
                  config max-tx max-eid op-count hash meta] :as db}
@@ -344,8 +344,7 @@
                               (keys @*connections*))]
      (sc/clear-write-cache (:store config))
      (doseq [conn active-conns]
-       (log/warn "Deleting database without releasing all connections first: " conn "."
-                 "All connections will be released now, but this cannot be ensured for remote readers.")
+       (log/warn :datahike/delete-unreleased-connections {:connection conn})
        (delete-connection! conn))
      (ks/delete-store (:store config)))))
 
@@ -404,11 +403,11 @@
       This is a synchronous writer operation that blocks until complete.
       Sets :db.secondary/status to :ready when done."
      [old idx-ident]
-     (log/info "Building secondary index:" idx-ident)
+     (log/info :datahike/build-secondary-index {:idx-ident idx-ident})
      (let [db old
            idx (get-in db [:secondary-indices idx-ident])
            _ (when-not idx
-               (dt/raise "Secondary index not found" {:idx-ident idx-ident}))
+               (log/raise "Secondary index not found" {:idx-ident idx-ident}))
            attrs (sec/-indexed-attrs idx)
            ;; Use transient batch mode if available
            use-transient? (satisfies? sec/ITransientSecondaryIndex idx)
@@ -417,7 +416,7 @@
            populated-idx (reduce
                           (fn [current-idx attr]
                             (let [datoms (dbi/datoms db :aevt [attr])]
-                              (log/debug "Backfilling" (count (seq datoms)) "datoms for" attr)
+                              (log/debug :datahike/backfilling {:attr attr :count (count (seq datoms))})
                               (reduce
                                (fn [idx d]
                                  (let [tx-report {:datom d :added? true}]
@@ -434,17 +433,17 @@
                         (assoc-in [:secondary-indices idx-ident] final-idx)
                         (assoc-in [:schema idx-ident :db.secondary/status] :ready)
                         (update-in [:schema idx-ident] dissoc :db.secondary/building-since-tx))]
-       (log/info "Secondary index built successfully:" idx-ident)
+       (log/info :datahike/secondary-index-built {:idx-ident idx-ident})
        (complete-db-update old {:db-before old
                                 :db-after db-after
                                 :tx-data []
                                 :tx-meta {}}))))
 
 (defn transact! [old {:keys [tx-data tx-meta]}]
-  (log/trace "Transacting" (count tx-data) "objects")
-  (log/trace "Transaction data" tx-data  "with meta:" tx-meta)
+  (log/debug :datahike/transact {:tx-count (count tx-data)})
+  (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
   (complete-db-update old (core/with old tx-data tx-meta)))
 
 (defn load-entities [old entities]
-  (log/trace "Loading" (count entities) " entities.")
+  (log/debug :datahike/load-entities {:entity-count (count entities)})
   (complete-db-update old (core/load-entities-with old entities nil)))

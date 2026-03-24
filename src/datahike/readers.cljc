@@ -5,7 +5,7 @@
             #?(:cljs [datahike.db :refer [HistoricalDB AsOfDB SinceDB]])
             [datahike.impl.entity :as de]
             [datahike.core :refer [init-db] :as dc]
-            [datahike.tools :refer [raise]]
+            [replikativ.logging :as log]
             [konserve.core :as k])
   #?(:clj
      (:import [datahike.datom Datom]
@@ -24,9 +24,9 @@
          (let [store (:store @conn)]
            (when-let [raw-db (k/get store commit-id nil {:sync? true})]
              (dw/stored->db raw-db store)))
-         (raise (ex-info "Could not find active connection. Did you connect already?"
-                         {:type :no-connection-for-db
-                          :raw-db raw-db}))))
+         (log/raise (ex-info "Could not find active connection. Did you connect already?"
+                             {:type :no-connection-for-db
+                              :raw-db raw-db}))))
     (init-db (map (fn [[e a v tx]] (datom e a v tx)) datoms) schema)))
 
 (defn history-from-reader [{:keys [origin]}]

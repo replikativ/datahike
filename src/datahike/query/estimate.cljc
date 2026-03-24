@@ -8,7 +8,7 @@
    [datahike.db.utils :as dbu]
    [datahike.index.interface :as di]
    [datahike.query.analyze :as analyze]
-   [taoensso.timbre :as log]))
+   [replikativ.logging :as log]))
 
 #?(:clj (set! *warn-on-reflection* true))
 
@@ -189,14 +189,14 @@
                                        (let [v (extract-fn d)]
                                          (try (cmp-fn v const-val)
                                               (catch #?(:clj Exception :cljs :default) e
-                                                (log/debug "selectivity sample comparison failed:"
+                                                (log/debug :datahike/selectivity-sample-failed "selectivity sample comparison failed"
                                                            {:value v :const const-val :error #?(:clj (.getMessage ^Exception e) :cljs (str e))})
                                                 false))))
                                      datoms))
               rate (/ (double passing) n-sampled)]
           (min 1.0 (max 0.01 rate)))))
     (catch #?(:clj Exception :cljs :default) e
-      (log/debug "predicate selectivity sampling failed, using heuristic:"
+      (log/debug :datahike/selectivity-heuristic "predicate selectivity sampling failed, using heuristic"
                  {:pred-op pred-op :error #?(:clj (.getMessage ^Exception e) :cljs (str e))})
       (estimate-predicate-selectivity-heuristic pred-op))))
 

@@ -3,15 +3,15 @@
                                                      :exclusions [org.clojure/clojurescript]}
         org.replikativ/konserve                     {:mvn/version "0.9.345"
                                                      :exclusions [org.clojure/clojurescript
-                                                                  org.clojars.mmb90/cljs-cache]
-                                                     }
+                                                                  org.clojars.mmb90/cljs-cache]}
+                                                     
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
         org.replikativ/datalog-parser               {:mvn/version "0.2.37"}
         org.replikativ/persistent-sorted-set        {:mvn/version "0.4.120"}
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.1.0"}
-        com.taoensso/timbre                         {:mvn/version "6.8.0"}
+        org.replikativ/logging                      {:mvn/version "0.1.3"}
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.6"}
@@ -51,7 +51,7 @@
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
            :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server" "src-hitchhiker-tree" "src-kabel"]
-                  :jvm-opts ["-ea" "--add-modules" "jdk.incubator.vector"]
+                  :jvm-opts ["-ea"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.87.1366"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.5.154"}
                                org.clojure/test.check      {:mvn/version "1.1.1"}
@@ -124,9 +124,9 @@
 
            :pod {:extra-deps {com.cognitect/transit-clj {:mvn/version "1.0.333"}
                               babashka/pods             {:git/url "https://github.com/babashka/pods"
-                                                         :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}
+                                                         :git/sha "ed5e1f3390b9dfca564f66b6e79c739c3cd82d78"}}}
                                     
-                              }}
+                              
 
            ;; Checks
 

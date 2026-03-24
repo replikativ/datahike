@@ -6,7 +6,7 @@
    [clojure.data :as data]
    [clojure.edn :as edn]
    [clojure.spec.alpha :as s]
-   [taoensso.timbre :as log]
+   [replikativ.logging :as log]
    [hasch.core :as h]
    [hasch.platform :as hp]
    [datahike.api :as d]
@@ -54,7 +54,7 @@
               (filter #(.isFile %))
               (filter #(string/ends-with? (.getPath %) ".edn")))]
       (into [] xf migration-files))
-    (dt/raise (format "Norms folder %s does not exist." (str file)) {:folder file})))
+    (log/raise (format "Norms folder %s does not exist." (str file)) {:folder file})))
 
 (defmethod ^:private retrieve-file-list URL [resource]
   (if resource
@@ -69,10 +69,10 @@
                            (string/ends-with? % ".edn"))))
         (->> (file-seq (io/file abs-path))
              (filter #(not (.isDirectory %))))))
-    (dt/raise "Resource does not exist." {:resource (str resource)})))
+    (log/raise "Resource does not exist." {:resource (str resource)})))
 
 (defmethod ^:private retrieve-file-list :default [arg]
-  (dt/raise "Can only read a File or a URL (resource)" {:arg arg :type (type arg)}))
+  (log/raise "Can only read a File or a URL (resource)" {:arg arg :type (type arg)}))
 
 (defn- filter-file-list [file-list]
   (filter #(and (string/ends-with? % ".edn")
@@ -89,7 +89,7 @@
 
 (defmethod ^:private read-edn-file File [f _file]
   (when (not (.exists f))
-    (dt/raise "Failed reading file because it does not exist" {:filename (str f)}))
+    (log/raise "Failed reading file because it does not exist" {:filename (str f)}))
   [(-> (slurp f)
        edn/read-string)
    {:name (.getName f)
@@ -97,7 +97,7 @@
 
 (defmethod ^:private read-edn-file JarEntry [entry resource]
   (when (nil? resource)
-    (dt/raise "Failed reading resource because it does not exist" {:resource (str resource)}))
+    (log/raise "Failed reading resource because it does not exist" {:resource (str resource)}))
   (let [file-name (-> (.getName entry)
                       (string/split #"/")
                       peek)]
@@ -109,7 +109,7 @@
       :norm (filename->keyword file-name)}]))
 
 (defmethod ^:private read-edn-file :default [t _]
-  (dt/raise "Can not handle argument" {:type (type t) :arg t}))
+  (log/raise "Can not handle argument" {:type (type t) :arg t}))
 
 (defn- read-norm-files [norm-list file-or-resource]
   (->> norm-list
@@ -133,33 +133,33 @@
 (s/def ::norm-map (s/keys :opt-un [::tx-data ::tx-fn]))
 (defn- validate-norm [norm]
   (if (s/valid? ::norm-map norm)
-    (log/debug "Norm validated" {:norm-map norm})
+    (log/debug :datahike/norm-validated {:norm-map norm})
     (let [res (s/explain-data ::norm-map norm)]
-      (dt/raise "Invalid norm" {:validation-error res}))))
+      (log/raise "Invalid norm" {:validation-error res}))))
 
 (defn- neutral-fn [_] [])
 
 (defn- transact-norms [conn norm-list]
   (let [db (ensure-norm-attribute! conn)]
-    (log/info "Checking migrations ...")
+    (log/info :datahike/check-migrations "Checking migrations")
     (doseq [{:keys [norm tx-data tx-fn]
              :as   norm-map
              :or   {tx-data []
                     tx-fn   'datahike.norm.norm/neutral-fn}}
             norm-list]
-      (log/info "Checking migration" norm)
+      (log/info :datahike/check-migration {:norm norm})
       (validate-norm norm-map)
       (when-not (norm-installed? db norm)
-        (log/info "Running migration")
+        (log/info :datahike/run-migration {:norm norm})
         (d/transact conn {:tx-data (vec (concat [{:tx/norm norm}]
                                                 tx-data
                                                 ((var-get (requiring-resolve tx-fn)) conn)))})
-        (log/info "Done")))))
+        (log/info :datahike/migration-complete {:norm norm})))))
 
 (defn- diff-checksums [checksums edn-content]
   (let [diff (data/diff checksums edn-content)]
     (when-not (every? nil? (butlast diff))
-      (dt/raise "Deviation of the checksums found. Migration aborted." {:diff diff}))))
+      (log/raise "Deviation of the checksums found. Migration aborted." {:diff diff}))))
 
 (defmulti verify-checksums
   (fn [file-or-resource] (type file-or-resource)))
