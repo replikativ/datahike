@@ -21,6 +21,7 @@
   (:require
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
+   [datahike.db.interface :as dbi]
    [stratum.api :as st]
    [stratum.dataset :as sd]
    [stratum.storage :as ss])
@@ -262,12 +263,11 @@
                         attrs)]
       (st/make-dataset col-map))
     (let [;; For each attr, collect {eid value} via AEVT datoms
-          datoms-fn @(requiring-resolve 'datahike.api/datoms)
           attr->eid-vals
           (into {}
                 (map (fn [a]
                        (let [pairs (java.util.LinkedHashMap.)]
-                         (doseq [^Datom d (datoms-fn db :aevt a)]
+                         (doseq [^Datom d (dbi/datoms db :aevt [a])]
                            (.put pairs (long (.-e d)) (.-v d)))
                          [a pairs])))
                 attrs)
