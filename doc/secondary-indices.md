@@ -198,9 +198,9 @@ Secondary indices are managed through schema transactions:
                    :db.secondary/status :disabled}])
 ```
 
-- **`:building`** — Index was just created, backfill in progress. Queries will not use it.
-- **`:ready`** — Index is fully populated and maintained on every transaction.
-- **`:disabled`** — Index is no longer maintained. Monotonic — cannot go back to `:ready`.
+- **`:building`** — Index was just created, backfill in progress. New transactions feed into the index, but it may return incomplete results until backfill completes. Check status before relying on query results.
+- **`:ready`** — Index is fully populated and maintained on every transaction. Safe for queries.
+- **`:disabled`** — Index is no longer maintained. Monotonic — cannot go back to `:ready`. Queries may return stale results.
 
 The `:db.secondary/type` and `:db.secondary/attrs` are immutable after creation. To change indexed attributes, create a new index with a different ident.
 

@@ -428,6 +428,9 @@
            _ (when-not idx
                (log/raise "Secondary index not found" {:idx-ident idx-ident}))
            attrs (sec/-indexed-attrs idx)
+           ;; Skip datoms added after the index was created — they were
+           ;; already fed by rschema wiring during normal transactions.
+           building-since-tx (get-in db [:schema idx-ident :db.secondary/building-since-tx])
            ;; Use transient batch mode if available
            use-transient? (satisfies? sec/ITransientSecondaryIndex idx)
            t-idx (if use-transient? (sec/-as-transient idx) idx)
@@ -438,10 +441,13 @@
                               (log/debug :datahike/backfilling {:attr attr :count (count (seq datoms))})
                               (reduce
                                (fn [idx d]
-                                 (let [tx-report {:datom d :added? true}]
-                                   (if use-transient?
-                                     (do (sec/-transact! idx tx-report) idx)
-                                     (sec/-transact idx tx-report))))
+                                 ;; Skip datoms newer than building-since-tx to avoid duplicates
+                                 (if (and building-since-tx (> (.-tx ^datahike.datom.Datom d) building-since-tx))
+                                   idx
+                                   (let [tx-report {:datom d :added? true}]
+                                     (if use-transient?
+                                       (do (sec/-transact! idx tx-report) idx)
+                                       (sec/-transact idx tx-report)))))
                                current-idx datoms)))
                           t-idx attrs)
            final-idx (if use-transient?
