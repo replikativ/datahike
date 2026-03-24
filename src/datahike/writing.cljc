@@ -85,8 +85,10 @@
         {:temporal-eavt-key (cond-> temporal-eavt flush! (di/-flush backend))
          :temporal-aevt-key (cond-> temporal-aevt flush! (di/-flush backend))
          :temporal-avet-key (cond-> temporal-avet flush! (di/-flush backend))})
+      ;; Secondary indices manage their own storage (Lucene files, konserve, mmap)
+      ;; so they must always be flushed regardless of the primary store backend.
       #?(:clj
-         (when (and flush! (seq (:secondary-indices db)))
+         (when (and flush? (seq (:secondary-indices db)))
            {:secondary-index-keys
             (reduce-kv
              (fn [acc idx-ident idx]

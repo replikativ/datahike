@@ -71,7 +71,7 @@
 
                                ;; secondary index integrations (for testing)
                                org.replikativ/proximum       {:mvn/version "0.1.24"}
-                               org.replikativ/scriptum       {:mvn/version "0.1.22"}
+                               org.replikativ/scriptum       {:local/root "../scriptum"}
                                org.replikativ/stratum        {:mvn/version "0.1.44"}
 
                                ;; kabel integration for distributed datahike

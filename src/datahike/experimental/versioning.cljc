@@ -55,7 +55,9 @@
 
 (defn branch!
   "Create a new branch from commit-id or existing branch as new-branch.
-   Secondary indices are CoW-branched via their native branching support."
+   Secondary indices are CoW-branched via their native branching support.
+   Uses live index instances from the connection when available (avoids
+   write-lock conflicts with indices like scriptum/Lucene)."
   [conn from new-branch]
   (let [store (:store @conn)
         branches (k/get store :branches nil {:sync? true})
@@ -67,15 +69,34 @@
       (throw (ex-info "From does not point to an existing branch or commit."
                       {:type :from-branch-does-not-point-to-existing-branch-or-commit
                        :from from})))
-    ;; Branch secondary indices via their native CoW support
+    ;; Branch secondary indices via their native CoW support.
+    ;; Prefer live indices from the connection (they hold the write lock).
+    ;; Fall back to branch-from-key-map for stored-only indices.
     (let [sec-keys (:secondary-index-keys stored-db)
+          live-indices (:secondary-indices @conn)
           from-branch (or (when (keyword? from) from) :db)
-          branched-sec-keys (when (seq sec-keys)
-                              (reduce-kv
-                               (fn [acc idx-ident key-map]
-                                 (assoc acc idx-ident
-                                        (sec/branch-from-key-map key-map store from-branch new-branch)))
-                               {} sec-keys))
+          branched-sec-keys
+          #?(:clj
+             (when (or (seq sec-keys) (seq live-indices))
+               (reduce-kv
+                (fn [acc idx-ident idx]
+                  (if (satisfies? sec/IVersionedSecondaryIndex idx)
+                    ;; Use live index to branch (avoids base write-lock conflict).
+                    ;; Must flush then close the branched writer to release the overlay lock.
+                    (let [branched (sec/-sec-branch idx store from-branch new-branch)
+                          key-map (sec/-sec-flush branched store new-branch)]
+                      ;; Close the branched writer to release the lock so the new
+                      ;; connection can open it
+                      (when (instance? java.io.Closeable branched)
+                        (.close ^java.io.Closeable branched))
+                      (assoc acc idx-ident key-map))
+                    ;; Fall back to stored key-map
+                    (if-let [key-map (get sec-keys idx-ident)]
+                      (assoc acc idx-ident
+                             (sec/branch-from-key-map key-map store from-branch new-branch))
+                      acc)))
+                {} (or live-indices {})))
+             :cljs nil)
           updated-db (cond-> (assoc-in stored-db [:config :branch] new-branch)
                        (seq branched-sec-keys) (assoc :secondary-index-keys branched-sec-keys))]
       (k/assoc store new-branch updated-db {:sync? true})

@@ -20,7 +20,11 @@
    Each attribute value becomes a separate document: {_entity_id, _attr, <field-value>}."
   [writer config]
   (let [attrs (set (:attrs config))]
-    (reify sec/ISecondaryIndex
+    (reify
+      java.io.Closeable
+      (close [_] (sc/close! writer))
+
+      sec/ISecondaryIndex
       (-search [_ query-spec entity-filter]
         ;; query-spec: {:query string-or-Query, :field keyword, :limit int}
         ;; Returns EntityBitSet of matching entity IDs
@@ -100,10 +104,12 @@
          :branch (or (:branch config) "main")})
 
       (-sec-restore [_ _store key-map]
-        ;; Reopen the Lucene branch at the stored path
-        (let [restored-writer (sc/open-branch (:path key-map) (:branch key-map)
+        ;; Reopen the Lucene branch at the stored path.
+        ;; open-branch handles both main (root) and non-main (branches/) layouts.
+        (let [branch-name (:branch key-map)
+              restored-writer (sc/open-branch (:path key-map) branch-name
                                               (select-keys config [:crypto-hash?]))]
-          (make-scriptum-index restored-writer config)))
+          (make-scriptum-index restored-writer (assoc config :path (:path key-map) :branch branch-name))))
 
       (-sec-branch [_ _store _from-branch new-branch]
         ;; Fork the Lucene writer to a new branch (COW via segment sharing)
@@ -147,11 +153,11 @@
 ;; GC: scriptum uses filesystem, nothing in konserve to mark
 (defmethod sec/mark-from-key-map :scriptum [_ _] #{})
 
-;; Branch: fork via scriptum's native segment-sharing fork
+;; Branch: open source, fork via scriptum's native segment-sharing fork
 (defmethod sec/branch-from-key-map :scriptum [key-map _store _from-branch new-branch]
-  (let [writer (sc/open-branch (:path key-map) (:branch key-map))
-        forked (sc/fork writer (name new-branch))]
-    (sc/commit! forked "branch" {"datahike.branch" (name new-branch)})
+  (let [writer (sc/open-branch (:path key-map) (:branch key-map))]
+    (let [forked (sc/fork writer (name new-branch))]
+      (sc/commit! forked "branch" {"datahike.branch" (name new-branch)})
+      (sc/close! forked))
     (sc/close! writer)
-    (sc/close! forked)
     (assoc key-map :branch (name new-branch))))

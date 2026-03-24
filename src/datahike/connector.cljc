@@ -274,6 +274,13 @@
          (let [new-conns (swap! *connections* update-in [conn-id :count] dec)]
            (when (or release-all? (zero? (get-in new-conns [conn-id :count])))
              (delete-connection! conn-id)
+             ;; Close secondary index writers to release file locks (e.g., Lucene write.lock)
+             #?(:clj
+                (doseq [[_ident idx] (:secondary-indices db)]
+                  (when (instance? java.io.Closeable idx)
+                    (try (.close ^java.io.Closeable idx)
+                         (catch Exception e
+                           (log/warn :datahike/secondary-index-close-failed {:error (.getMessage e)}))))))
              (w/shutdown (:writer db))
              ;; Release the underlying store to clean up resources (memory registry, etc.)
              (ks/release-store (get-in db [:config :store]) (:store db))
