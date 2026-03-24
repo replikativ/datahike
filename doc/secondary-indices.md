@@ -209,7 +209,7 @@ The `:db.secondary/type` and `:db.secondary/attrs` are immutable after creation.
 Secondary indices are first-class versioned state. When you branch a database, each secondary index is CoW-forked alongside the primary indices:
 
 ```clojure
-(require '[datahike.experimental.versioning :as dv])
+(require '[datahike.versioning :as dv])
 
 ;; Branch — secondary indices are forked automatically
 (dv/branch! conn :db :experiment)

@@ -16,7 +16,7 @@
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
             [datahike.impl.entity :as de]
-            [datahike.experimental.versioning :as dv]
+            [datahike.versioning :as dv]
             [replikativ.logging :as log]
             #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!]]))
   #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]

@@ -3,7 +3,7 @@
   (:require
    [clojure.test :refer [deftest testing is]]
    [datahike.api :as d]
-   [datahike.experimental.versioning :as dv]
+   [datahike.versioning :as dv]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [datahike.index.secondary.scriptum]))

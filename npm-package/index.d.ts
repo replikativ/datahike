@@ -76,6 +76,53 @@ export interface Metrics {
 export function asOf(arg0: any, arg1: any): Promise<any>;
 
 /**
+ * Create a new branch from an existing branch or commit.
+ *
+ * Examples:
+ * - Branch from main
+ *   (branch! conn :db :experiment)
+ * - Branch from specific commit
+ *   (branch! conn #uuid "..." :hotfix)
+ */
+export function branch(arg0: any, arg1: any, arg2: string): Promise<any>;
+
+/**
+ * Load the database at a branch head.
+ *
+ * Examples:
+ * - Load db at branch
+ *   (branch-as-db conn :experiment)
+ */
+export function branchAsDb(arg0: any, arg1: string): Promise<any | null>;
+
+/**
+ * List all known branch names.
+ *
+ * Examples:
+ * - List branches
+ *   (branches conn)
+ */
+export function branches(arg0: any): Promise<any>;
+
+/**
+ * Load the database at a specific commit.
+ *
+ * Examples:
+ * - Load db at commit
+ *   (commit-as-db conn #uuid "...")
+ */
+export function commitAsDb(arg0: any, arg1: any): Promise<any | null>;
+
+/**
+ * Retrieve the commit-id for this database value..
+ *
+ * Examples:
+ * - Get commit id
+ *   (commit-id @conn)
+ */
+export function commitId(arg0: any): Promise<any | null>;
+
+/**
  * Connects to a Datahike database via configuration map..
  *
  * Examples:
@@ -140,6 +187,15 @@ export function db(arg0: any): Promise<any>;
 export function dbWith(arg0: any, arg1: any): Promise<any>;
 
 /**
+ * Remove a branch.
+ *
+ * Examples:
+ * - Delete branch
+ *   (delete-branch! conn :experiment)
+ */
+export function deleteBranch(arg0: any, arg1: string): Promise<any>;
+
+/**
  * Deletes a database given via configuration map..
  *
  * Examples:
@@ -169,6 +225,17 @@ export function entity(arg0: any, arg1: any | any): Promise<any>;
 export function entityDb(arg0: any): Promise<any>;
 
 /**
+ * Returns a human-readable string explaining the query plan.
+ *
+ * Examples:
+ * - Explain a simple query
+ *   (explain '[:find ?e :where [?e :name]] db)
+ * - Explain a recursive rule
+ *   (explain '[:find ?e2 :in $ ?e1 % :where (follow ?e1 ?e2)] db 1 '[[(follow ?e1 ?e2) [?e1 :follow ?e2]] [(follow ?e1 ?e2) [?e1 :follow ?t] (follow ?t ?e2)]])
+ */
+export function explain(arg0: Array<any> | object, arg1: ...any[]): Promise<string>;
+
+/**
  * Returns filtered view over database.
  *
  * Examples:
@@ -176,6 +243,15 @@ export function entityDb(arg0: any): Promise<any>;
  *   (filter db (fn [db datom] (> (:tx datom) recent-tx)))
  */
 export function filter(arg0: any, arg1: any): Promise<any>;
+
+/**
+ * Force a branch to point to the provided db value.
+ *
+ * Examples:
+ * - Force branch to current db
+ *   (force-branch! @conn :experiment #{:db})
+ */
+export function forceBranch(arg0: any, arg1: string, arg2: any): Promise<null>;
 
 /**
  * Invokes garbage collection on connection's store.
@@ -238,6 +314,26 @@ export function listen(arg0: any, arg1: any): Promise<any>;
 export function loadEntities(arg0: any, arg1: any): Promise<any>;
 
 /**
+ * Create a merge commit combining the current branch with parent branches/commits.
+ *
+ * Examples:
+ * - Merge feature into main
+ *   (d/merge-db conn #{:feature} [{:name "merged entity"}])
+ * - Merge with metadata
+ *   (d/merge-db conn #{:feature} [{:name "merged"}] {:source :merge})
+ */
+export function mergeDb(arg0: any, arg1: any, arg2: any): Promise<any>;
+
+/**
+ * Async version of merge-db.
+ *
+ * Examples:
+ * - Async merge
+ *   @(d/merge-db! conn #{:feature} [{:name "merged"}])
+ */
+export function mergeDb(arg0: any, arg1: any, arg2: any): Promise<any>;
+
+/**
  * Returns database metrics (datom counts, index sizes, etc)..
  *
  * Examples:
@@ -245,6 +341,15 @@ export function loadEntities(arg0: any, arg1: any): Promise<any>;
  *   (metrics @conn)
  */
 export function metrics(arg0: any): Promise<any>;
+
+/**
+ * Retrieve parent commit ids from this database value..
+ *
+ * Examples:
+ * - Get parent commits
+ *   (parent-commit-ids @conn)
+ */
+export function parentCommitIds(arg0: any): Promise<any | null>;
 
 /**
  * Fetches data using recursive declarative pull pattern..
@@ -345,7 +450,7 @@ export function since(arg0: any, arg1: any): Promise<any>;
 export function tempid(arg0: any): Promise<any | number>;
 
 /**
- * Same as transact, but asynchronously returns a future..
+ * Same as transact, but asynchronously returns a future.
  *
  * Examples:
  * - Async transaction

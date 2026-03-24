@@ -1,4 +1,4 @@
-(ns datahike.experimental.versioning
+(ns datahike.versioning
   "Git-like versioning tools for Datahike.
    All operations support both synchronous (CLJ default) and asynchronous modes."
   (:require [konserve.core :as k]
