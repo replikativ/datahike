@@ -149,8 +149,9 @@
                            'load-entities w/load-entities
                            ;; async operations that run in background
                            'gc-storage!   gc/gc-storage!
-                           ;; secondary index backfill (synchronous, may be slow)
-                           #?@(:clj ['build-secondary-index! w/build-secondary-index!])
+                           ;; secondary index backfill (async, runs in background)
+                           #?@(:clj ['build-secondary-index! w/build-secondary-index!
+                                      'install-secondary-index! w/install-secondary-index!])
                            ;; merge with multi-parent commit tracking
                            'merge! w/merge-writer!})
 
@@ -235,8 +236,14 @@
           #?(:clj
              (doseq [idx-ident (detect-new-building-indices tx-report)]
                (log/info :datahike/dispatch-backfill {:idx-ident idx-ident})
-               (dispatch! writer {:op 'build-secondary-index!
-                                  :args [idx-ident]})))
+               ;; build-secondary-index! is async (returns channel).
+               ;; When it completes, dispatch install to swap in the result.
+               (go
+                 (let [build-result (<! (dispatch! writer {:op 'build-secondary-index!
+                                                           :args [idx-ident]}))]
+                   (when (map? build-result)
+                     (dispatch! writer {:op 'install-secondary-index!
+                                        :args [build-result]}))))))
           (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
             (callback tx-report)))
         (#?(:clj deliver :cljs put!) p tx-report)))

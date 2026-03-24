@@ -419,46 +419,60 @@
 #?(:clj
    (defn build-secondary-index!
      "Backfill a secondary index by scanning AEVT for all covered attributes.
-      This is a synchronous writer operation that blocks until complete.
-      Sets :db.secondary/status to :ready when done."
+      Returns a channel (async op) so the writer continues processing other
+      transactions during backfill. When complete, dispatches a lightweight
+      install-secondary-index! op to atomically swap in the result."
      [old idx-ident]
      (log/info :datahike/build-secondary-index {:idx-ident idx-ident})
+     ;; Return a channel — writer runs this in background (lines 89-93 of writer.cljc)
      (let [db old
            idx (get-in db [:secondary-indices idx-ident])
            _ (when-not idx
                (log/raise "Secondary index not found" {:idx-ident idx-ident}))
            attrs (sec/-indexed-attrs idx)
-           ;; Skip datoms added after the index was created — they were
-           ;; already fed by rschema wiring during normal transactions.
            building-since-tx (get-in db [:schema idx-ident :db.secondary/building-since-tx])
-           ;; Use transient batch mode if available
            use-transient? (satisfies? sec/ITransientSecondaryIndex idx)
-           t-idx (if use-transient? (sec/-as-transient idx) idx)
-           ;; Scan AEVT for each covered attribute and feed datoms
-           populated-idx (reduce
-                          (fn [current-idx attr]
-                            (let [datoms (dbi/datoms db :aevt [attr])]
-                              (log/debug :datahike/backfilling {:attr attr :count (count (seq datoms))})
-                              (reduce
-                               (fn [idx d]
-                                 ;; Skip datoms newer than building-since-tx to avoid duplicates
-                                 (if (and building-since-tx (> (.-tx ^datahike.datom.Datom d) building-since-tx))
-                                   idx
-                                   (let [tx-report {:datom d :added? true}]
-                                     (if use-transient?
-                                       (do (sec/-transact! idx tx-report) idx)
-                                       (sec/-transact idx tx-report)))))
-                               current-idx datoms)))
-                          t-idx attrs)
-           final-idx (if use-transient?
-                       (sec/-persistent! populated-idx)
-                       populated-idx)
-           ;; Update db: replace index and set status to :ready
-           db-after (-> db
-                        (assoc-in [:secondary-indices idx-ident] final-idx)
+           t-idx (if use-transient? (sec/-as-transient idx) idx)]
+       ;; Background go block — doesn't block the writer
+       (go-try-
+        (let [populated-idx
+              (reduce
+               (fn [current-idx attr]
+                 (let [datoms (dbi/datoms db :aevt [attr])
+                       n (atom 0)]
+                   (log/debug :datahike/backfilling {:attr attr})
+                   (let [result (reduce
+                                 (fn [idx d]
+                                   (if (and building-since-tx
+                                            (> (.-tx ^datahike.datom.Datom d) building-since-tx))
+                                     idx
+                                     (do (swap! n inc)
+                                         (let [tx-report {:datom d :added? true}]
+                                           (if use-transient?
+                                             (do (sec/-transact! idx tx-report) idx)
+                                             (sec/-transact idx tx-report))))))
+                                 current-idx datoms)]
+                     (log/debug :datahike/backfilled {:attr attr :count @n})
+                     result)))
+               t-idx attrs)
+              final-idx (if use-transient?
+                          (sec/-persistent! populated-idx)
+                          populated-idx)]
+          (log/info :datahike/secondary-index-built {:idx-ident idx-ident})
+          ;; Return the populated index — the writer dispatch callback
+          ;; receives this, but we need to install it via a separate writer op.
+          ;; Store it in an atom for install-secondary-index! to pick up.
+          {:idx-ident idx-ident :index final-idx})))))
+
+#?(:clj
+   (defn install-secondary-index!
+     "Lightweight synchronous writer op that installs a backfilled index.
+      Called after build-secondary-index! completes in the background."
+     [old {:keys [idx-ident index]}]
+     (let [db-after (-> old
+                        (assoc-in [:secondary-indices idx-ident] index)
                         (assoc-in [:schema idx-ident :db.secondary/status] :ready)
                         (update-in [:schema idx-ident] dissoc :db.secondary/building-since-tx))]
-       (log/info :datahike/secondary-index-built {:idx-ident idx-ident})
        (complete-db-update old {:db-before old
                                 :db-after db-after
                                 :tx-data []
