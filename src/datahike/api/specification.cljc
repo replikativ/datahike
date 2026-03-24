@@ -204,7 +204,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Applies transaction to the database and updates connection."
+     :doc "Applies transaction to the database and updates connection. Blocks until committed. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks."
      :examples [{:desc "Add single datom"
                  :code "(transact conn [[:db/add 1 :name \"Ivan\"]])"}
                 {:desc "Retract datom"
@@ -224,7 +224,7 @@
      :stability :stable
      :supports-remote? false
      :referentially-transparent? false
-     :doc "Same as transact, but asynchronously returns a future."
+     :doc "Same as transact, but asynchronously returns a future. Safe to call from listener callbacks and go blocks."
      :examples [{:desc "Async transaction"
                  :code "@(transact! conn [{:db/id -1 :name \"Alice\"}])"}]
      :impl datahike.api.impl/transact!}
@@ -567,7 +567,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Create a merge commit combining the current branch with parent branches/commits. The caller provides the merged tx-data. Routed through the writer for serialization."
+     :doc "Create a merge commit combining the current branch with parent branches/commits. The caller provides the merged tx-data. Routed through the writer for serialization. Blocks until committed. WARNING: Do not call from listener callbacks — use merge-db! instead to avoid deadlocks."
      :examples [{:desc "Merge feature into main"
                  :code "(d/merge-db conn #{:feature} [{:name \"merged entity\"}])"}
                 {:desc "Merge with metadata"
@@ -583,7 +583,7 @@
      :stability :stable
      :supports-remote? false
      :referentially-transparent? false
-     :doc "Async version of merge-db. Returns a promise (CLJ) or channel (CLJS)."
+     :doc "Async version of merge-db. Returns a promise (CLJ) or channel (CLJS). Safe to call from listener callbacks and go blocks."
      :examples [{:desc "Async merge"
                  :code "@(d/merge-db! conn #{:feature} [{:name \"merged\"}])"}]
      :impl datahike.api.impl/merge-db!}
@@ -649,7 +649,7 @@
      :stability :stable
      :supports-remote? false
      :referentially-transparent? false
-     :doc "Listen for changes on connection. Callback called with transaction report on each transact."
+     :doc "Listen for changes on connection. Callback called with transaction report on each transact. WARNING: Inside the callback, use only async operations (transact!, merge-db!) — synchronous writer operations will deadlock."
      :examples [{:desc "Listen with callback"
                  :code "(listen conn (fn [tx-report] (println \"Transaction:\" (:tx-data tx-report))))"}
                 {:desc "Listen with key"
