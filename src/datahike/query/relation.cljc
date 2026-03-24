@@ -37,7 +37,6 @@
 
 (defn same-keys? [a b]
   (and (= (count a) (count b))
-       (every? #(contains? b %) (keys a))
        (every? #(contains? b %) (keys a))))
 
 ;; ---------------------------------------------------------------------------

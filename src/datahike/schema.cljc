@@ -237,8 +237,13 @@
            :db/noHistory nil
            :db/isComponent nil
 
-           ;; Secondary index: status transitions are allowed, type/attrs/config are immutable
-           :db.secondary/status nil
+           ;; Secondary index: monotonic status transitions only
+           ;; :building → :ready → :disabled (no going back)
+           :db.secondary/status
+           (let [valid-transitions {:building #{:ready :disabled}
+                                    :ready    #{:disabled}}]
+             (when-not (contains? (get valid-transitions old-value) new-value)
+               (assoc m attr-def [old-value new-value])))
            :db.secondary/building-since-tx nil
 
            (assoc m attr-def [old-value new-value])))))

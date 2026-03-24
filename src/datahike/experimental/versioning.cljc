@@ -9,8 +9,8 @@
                                       write-pending-kvs!]]
             [datahike.writer]
             [datahike.index.secondary :as sec]
-            [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?-]]
-            [superv.async :refer [#?(:clj <?) S go-loop-try]]
+            #?(:clj  [superv.async :refer [go-try- <?- <? S go-loop-try]]
+               :cljs [superv.async :refer-macros [go-try- <?- S go-loop-try]])
             [datahike.db.utils :refer [db?]]
             [datahike.tools :as dt]
             [replikativ.logging :as log]

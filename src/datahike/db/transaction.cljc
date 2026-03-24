@@ -197,12 +197,16 @@
     (if (seq sec-idx-map)
       (let [tx-report {:datom datom :added? added?}]
         (reduce (fn [db' idx-ident]
-                  (if-let [idx (get-in db' [:secondary-indices idx-ident])]
-                    (if (satisfies? sec/ITransientSecondaryIndex idx)
-                      (do (sec/-transact! idx tx-report) db')
-                      (assoc-in db' [:secondary-indices idx-ident]
-                                (sec/-transact idx tx-report)))
-                    db'))
+                  (let [status (get-in db' [:schema idx-ident :db.secondary/status])]
+                    ;; Skip disabled indices — they are no longer maintained
+                    (if (= :disabled status)
+                      db'
+                      (if-let [idx (get-in db' [:secondary-indices idx-ident])]
+                        (if (satisfies? sec/ITransientSecondaryIndex idx)
+                          (do (sec/-transact! idx tx-report) db')
+                          (assoc-in db' [:secondary-indices idx-ident]
+                                    (sec/-transact idx tx-report)))
+                        db'))))
                 db sec-idx-map))
       db)))
 

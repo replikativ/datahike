@@ -14,8 +14,8 @@
    (enable-console-print!))
 
 (def compiled-engine?
-  "True when the compiled query engine is active (DATAHIKE_COMPILED_QUERY=true)."
-  #?(:clj (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY"))
+  "True when the query planner is active (DATAHIKE_QUERY_PLANNER=true)."
+  #?(:clj (= "true" (System/getenv "DATAHIKE_QUERY_PLANNER"))
      :cljs false))
 
 ;; Added special case for printing ex-data of ExceptionInfo
