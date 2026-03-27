@@ -3050,7 +3050,10 @@
 
         use-planner? (and (not *force-legacy*)
                           (not stats?)
-                          ;; Only single-source queries: planner doesn't handle $1/$2
+                          ;; Multi-source queries ($1/$2) fall back to legacy.
+                          ;; The planner resolves lookup refs and plans against a single db.
+                          ;; Multi-source support requires per-source resolution which is
+                          ;; a larger feature (each source may have different entity IDs).
                           (<= (count (:sources context-in)) 1)
                           (let [db (get (:sources context-in) '$)]
                             (and db (dbu/db? db) (planner-eligible-db? db))))
