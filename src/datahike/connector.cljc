@@ -266,11 +266,11 @@
   ([connection release-all?]
    (when-not (= @(:wrapped-atom connection) :released)
      (let [db      @(:wrapped-atom connection)
-           _ (log/info :datahike/release-connection {:backend (get-in db [:config :store :backend])})
+           _ (log/trace :datahike/release-connection {:backend (get-in db [:config :store :backend])})
            conn-id [(ds/store-identity (get-in db [:config :store]))
                     (get-in db [:config :branch])]]
        (if-not (get @*connections* conn-id)
-         (log/info :datahike/connection-already-released {:conn-id conn-id})
+         (log/trace :datahike/connection-already-released {:conn-id conn-id})
          (let [new-conns (swap! *connections* update-in [conn-id :count] dec)]
            (when (or release-all? (zero? (get-in new-conns [conn-id :count])))
              (delete-connection! conn-id)

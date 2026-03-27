@@ -3,7 +3,7 @@
    Reproduces the datalevin/datascript benchmark suite for fair comparison.
 
    Usage:
-     DATAHIKE_COMPILED_QUERY=true clj -M:bench-compare -m benchmark.datascript-bench [queries|writes|rules|all]
+     DATAHIKE_QUERY_PLANNER=true clj -M:bench-compare -m benchmark.datascript-bench [queries|writes|rules|all]
 
    From REPL:
      (require '[benchmark.datascript-bench :as bench])
@@ -418,8 +418,8 @@
 
 (defn print-header []
   (println)
-  (let [compiled? (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY"))
-        dh-label (if compiled? "DH-compiled" "DH-legacy")]
+  (let [planner? (= "true" (System/getenv "DATAHIKE_QUERY_PLANNER"))
+        dh-label (if planner? "DH-plan" "DH-legacy")]
     (println (format "%-12s %-45s %10s %10s %10s  %s"
                      "Benchmark" "Description"
                      dh-label "Datalevin" "Datomic" "Winner"))
@@ -464,7 +464,7 @@
   ;; Disable datahike query result cache
   (alter-var-root #'q/*query-result-cache?* (constantly false))
   (println "Setting up databases with 20k people (query result cache OFF)...")
-  (println (str "  Compiled query engine: " (System/getenv "DATAHIKE_COMPILED_QUERY")))
+  (println (str "  Query planner: " (System/getenv "DATAHIKE_QUERY_PLANNER")))
 
   ;; Datahike: one DB per query to match Datalevin's benchmark approach
   (let [dh-dbs (into {} (map (fn [qname] [qname (dh-inmemory-db)]) query-order))]
@@ -552,9 +552,9 @@
 
   ;; Check availability
   (when datalevin?
-    (try (dl-require!) (catch Exception _)))
+    (try (dl-require!) (catch Exception e (println "  Datalevin not available:" (.getMessage e)))))
   (when datomic?
-    (try (dt-require!) (catch Exception _)))
+    (try (dt-require!) (catch Exception e (println "  Datomic not available:" (.getMessage e)))))
 
   (print-header)
 
@@ -683,7 +683,7 @@
   (alter-var-root #'q/*query-result-cache?* (constantly false))
   (println "\n=== AGGREGATE BENCHMARKS ===")
   (println "Setting up databases with 20k people (query result cache OFF)...")
-  (println (str "  Compiled query engine: " (System/getenv "DATAHIKE_COMPILED_QUERY")))
+  (println (str "  Query planner: " (System/getenv "DATAHIKE_QUERY_PLANNER")))
 
   ;; DH without stratum (PSS-based aggregates)
   (let [dh-db (dh-inmemory-db)]
@@ -724,8 +724,8 @@
 
       ;; Print header with extra column for stratum
       (println)
-      (let [compiled? (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY"))
-            dh-label (if compiled? "DH-compiled" "DH-legacy")]
+      (let [planner? (= "true" (System/getenv "DATAHIKE_QUERY_PLANNER"))
+            dh-label (if planner? "DH-plan" "DH-legacy")]
         (println (format "%-12s %-36s %10s %10s %10s %10s  %s"
                          "Benchmark" "Description"
                          dh-label "DH+strat" "Datalevin" "Datomic" "Winner"))
@@ -846,8 +846,8 @@
 
 (defn- print-temporal-header []
   (println)
-  (let [compiled? (= "true" (System/getenv "DATAHIKE_COMPILED_QUERY"))
-        dh-label (if compiled? "DH-compiled" "DH-legacy")]
+  (let [planner? (= "true" (System/getenv "DATAHIKE_QUERY_PLANNER"))
+        dh-label (if planner? "DH-plan" "DH-legacy")]
     (println (format "%-16s %-36s %10s %10s  %s"
                      "Benchmark" "Description" dh-label "Datomic" "Winner"))
     (println (apply str (repeat 90 "-")))))
@@ -874,7 +874,7 @@
   (alter-var-root #'q/*query-result-cache?* (constantly false))
   (println "=== TEMPORAL BENCHMARKS (Datahike vs Datomic) ===")
   (println "Setting up history-enabled databases with 20k people + 2k modifications...")
-  (println (str "  Compiled query engine: " (System/getenv "DATAHIKE_COMPILED_QUERY")))
+  (println (str "  Query planner: " (System/getenv "DATAHIKE_QUERY_PLANNER")))
 
   ;; --- Datahike setup: history-enabled DB ---
   (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
@@ -1006,7 +1006,7 @@
 
 (defn -main
   "Entry point for comparative benchmarks.
-   Usage: DATAHIKE_COMPILED_QUERY=true clj -M:bench-compare -m benchmark.datascript-bench [queries|writes|rules|all]"
+   Usage: DATAHIKE_QUERY_PLANNER=true clj -M:bench-compare -m benchmark.datascript-bench [queries|writes|rules|all]"
   [& args]
   (log/set-level! :warn)
   (let [cmd (or (first args) "all")]

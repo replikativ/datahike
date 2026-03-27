@@ -138,6 +138,8 @@
                                     incanter/incanter-charts {:mvn/version "1.9.3"}}
                        :main-opts ["-m" "benchmark.cli"]}
 
+           ;; Benchmark deps (no :main-opts so it composes with -e / nREPL).
+           ;; Run via: clj -M:bench-compare -m benchmark.datascript-bench all
            :bench-compare {:extra-paths ["benchmark/src"]
                            :extra-deps {datalevin/datalevin {:mvn/version "0.10.4"
                                                              :exclusions [com.taoensso/timbre
@@ -146,8 +148,7 @@
                                         com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.6.1"}
                                         org.replikativ/stratum {:mvn/version "0.1.44"
                                                                 :exclusions [org.slf4j/slf4j-reload4j
-                                                                             ch.qos.reload4j/reload4j]}}
-                           :main-opts ["-m" "benchmark.datascript-bench"]}
+                                                                             ch.qos.reload4j/reload4j]}}}
 
            :bench-sql {:extra-paths ["benchmark/src"]
                        :extra-deps {org.postgresql/postgresql {:mvn/version "42.7.3"}
