@@ -3050,6 +3050,8 @@
 
         use-planner? (and (not *force-legacy*)
                           (not stats?)
+                          ;; Only single-source queries: planner doesn't handle $1/$2
+                          (<= (count (:sources context-in)) 1)
                           (let [db (get (:sources context-in) '$)]
                             (and db (dbu/db? db) (planner-eligible-db? db))))
         [context-in lookup-ref-reverse-map]
