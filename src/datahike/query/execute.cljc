@@ -473,26 +473,353 @@
         ;; default: regular slice
         (di/-slice db-index from-datom to-datom index)))))
 
+;; ---------------------------------------------------------------------------
+;; Path functions — each small enough for JIT C2/Graal compilation.
+;; The macros scan-filter and emit-tuple expand inline within each path.
+
+(defn- execute-scan-only
+  "Path 1: Scan without merges (e.g. Q1). Smallest possible loop."
+  [slice ground-filter strict-filter
+   probe-set probe-datom-field
+   collect-set collect-datom-field collect-merge-idx
+   merge-datoms n-find find-source const-vals
+   result-list max-n]
+  (let [^objects merge-datoms merge-datoms
+        ^ints find-source find-source
+        ^objects const-vals const-vals]
+  #?(:clj
+     (when-let [iter (some-> ^Iterable slice .iterator)]
+       (while (and (.hasNext iter)
+                   (or (neg? max-n) (< (result-list-size result-list) max-n)))
+         (let [^Datom scan-d (.next iter)]
+           (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+             (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                         n-find find-source const-vals result-list)))))
+     :cljs
+     (doseq [scan-d slice
+             :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+       (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+         (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                     n-find find-source const-vals result-list))))))
+
+(defn- execute-card-many-merge
+  "Path 2: Card-many recursive cross-product merge.
+   merge-ctx is [merge-attrs merge-v-ground merge-v-vals merge-anti
+                 merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors]."
+  [db eavt-pss slice ground-filter strict-filter
+   probe-set probe-datom-field
+   collect-set collect-datom-field collect-merge-idx
+   merge-datoms n-find find-source const-vals
+   result-list max-n n-merges merge-ctx]
+  (let [^objects merge-attrs (aget ^objects merge-ctx 0)
+        ^objects merge-v-ground (aget ^objects merge-ctx 1)
+        ^objects merge-v-vals (aget ^objects merge-ctx 2)
+        ^objects merge-anti (aget ^objects merge-ctx 3)
+        ^objects merge-card-many (aget ^objects merge-ctx 4)
+        ^objects merge-check-scan-v (aget ^objects merge-ctx 5)
+        ^objects merge-check-scan-tx (aget ^objects merge-ctx 6)
+        ^objects merge-cursors (aget ^objects merge-ctx 7)
+        ^objects merge-datoms merge-datoms
+        ^ints find-source find-source
+        ^objects const-vals const-vals]
+  #?(:clj
+     (when-let [iter (some-> ^Iterable slice .iterator)]
+       (while (and (.hasNext iter)
+                   (or (neg? max-n) (< (result-list-size result-list) max-n)))
+         (let [^Datom scan-d (.next iter)]
+           (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+             (let [eid (.-e scan-d)]
+               (letfn [(process-merges [mi]
+                         (if (>= mi n-merges)
+                           (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                       n-find find-source const-vals result-list)
+                           (let [anti? (aget merge-anti mi)
+                                 ra (aget merge-attrs mi)
+                                 vg? (aget merge-v-ground mi)
+                                 vgv (aget merge-v-vals mi)
+                                 card-many? (aget merge-card-many mi)
+                                 check-v? (aget merge-check-scan-v mi)
+                                 check-tx? (aget merge-check-scan-tx mi)]
+                             (if card-many?
+                               (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                     to-d (datom eid ra (when vg? vgv) txmax)
+                                     mslice (di/-slice (:eavt db) from-d to-d :eavt)]
+                                 (if anti?
+                                   (when (not-any? (fn [^Datom d]
+                                                     (and (== (.-e d) eid) (= (.-a d) ra)
+                                                          (or (not vg?) (val-eq? (.-v d) vgv))
+                                                          (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                                          (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d)))))
+                                                   mslice)
+                                     (process-merges (inc mi)))
+                                   (let [check-v? (aget merge-check-scan-v mi)
+                                         check-tx? (aget merge-check-scan-tx mi)]
+                                     (doseq [^Datom d mslice]
+                                       (when (and (== (.-e d) eid)
+                                                  (= (.-a d) ra)
+                                                  (or (not vg?) (val-eq? (.-v d) vgv))
+                                                  (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                                  (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))
+                                         (aset merge-datoms mi d)
+                                         (process-merges (inc mi)))))))
+                               (let [probe (datom eid ra vgv tx0)
+                                     ^Datom d (if merge-cursors
+                                                (.seekGE ^PersistentSortedSet$ForwardCursor
+                                                 (aget merge-cursors mi) probe)
+                                                (.lookupGE ^PersistentSortedSet eavt-pss probe))
+                                     found? (and d
+                                                 (== (.-e d) eid)
+                                                 (= (.-a d) ra)
+                                                 (or (not vg?) (val-eq? (.-v d) vgv))
+                                                 (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                                 (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
+                                 (if anti?
+                                   (when (not found?)
+                                     (process-merges (inc mi)))
+                                   (when found?
+                                     (aset merge-datoms mi d)
+                                     (process-merges (inc mi)))))))))]
+                 (process-merges 0)))))))
+     :cljs
+     (doseq [scan-d slice
+             :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+       (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+         (let [eid (.-e ^Datom scan-d)]
+           (letfn [(process-merges [mi]
+                     (if (>= mi n-merges)
+                       (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                   n-find find-source const-vals result-list)
+                       (let [anti? (aget merge-anti mi)
+                             ra (aget merge-attrs mi)
+                             vg? (aget merge-v-ground mi)
+                             vgv (aget merge-v-vals mi)
+                             card-many? (aget merge-card-many mi)
+                             check-v? (aget merge-check-scan-v mi)
+                             check-tx? (aget merge-check-scan-tx mi)]
+                         (if card-many?
+                           (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                 to-d (datom eid ra (when vg? vgv) txmax)
+                                 mslice (di/-slice (:eavt db) from-d to-d :eavt)]
+                             (if anti?
+                               (when (not-any? (fn [^Datom d]
+                                                 (and (== (.-e d) eid) (= (.-a d) ra)
+                                                      (or (not vg?) (val-eq? (.-v d) vgv))
+                                                      (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                                      (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d)))))
+                                               mslice)
+                                 (process-merges (inc mi)))
+                               (doseq [^Datom d mslice]
+                                 (when (and (== (.-e d) eid)
+                                            (= (.-a d) ra)
+                                            (or (not vg?) (val-eq? (.-v d) vgv))
+                                            (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                            (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))
+                                   (aset merge-datoms mi d)
+                                   (process-merges (inc mi))))))
+                           (let [probe (datom eid ra vgv tx0)
+                                 ^Datom d (pss-lookup-ge eavt-pss probe)
+                                 found? (and d
+                                             (== (.-e d) eid)
+                                             (= (.-a d) ra)
+                                             (or (not vg?) (val-eq? (.-v d) vgv))
+                                             (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                             (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
+                             (if anti?
+                               (when (not found?)
+                                 (process-merges (inc mi)))
+                               (when found?
+                                 (aset merge-datoms mi d)
+                                 (process-merges (inc mi)))))))))]
+             (process-merges 0))))))))
+
+#?(:clj
+   (defn- execute-sorted-merge
+     "Path 3: Sorted single-cursor merge (CLJ only, the hot path for Q2-Q4).
+      Uses one ForwardCursor with EA comparator, seekGE per entity to first attr,
+      then next() through sorted merge attrs.
+      sorted-ctx is [sorted-cursor sorted-order sorted-attrs-long sorted-attrs-obj
+                     merge-v-ground merge-v-vals merge-check-scan-v merge-check-scan-tx]."
+     [slice ground-filter strict-filter
+      probe-set probe-datom-field
+      collect-set collect-datom-field collect-merge-idx
+      merge-datoms n-find find-source const-vals
+      result-list max-n n-merges attr-refs? sorted-ctx]
+     (let [sorted-cursor (aget ^objects sorted-ctx 0)
+           ^ints sorted-order (aget ^objects sorted-ctx 1)
+           ^longs sorted-attrs-long (aget ^objects sorted-ctx 2)
+           ^objects sorted-attrs-obj (aget ^objects sorted-ctx 3)
+           ^objects merge-v-ground (aget ^objects sorted-ctx 4)
+           ^objects merge-v-vals (aget ^objects sorted-ctx 5)
+           ^objects merge-check-scan-v (aget ^objects sorted-ctx 6)
+           ^objects merge-check-scan-tx (aget ^objects sorted-ctx 7)
+           ^objects merge-datoms merge-datoms
+           ^ints find-source find-source
+           ^objects const-vals const-vals]
+     (when-let [iter (some-> ^Iterable slice .iterator)]
+       (if attr-refs?
+         ;; Attribute-refs path: long comparison
+         (while (and (.hasNext iter)
+                     (or (neg? max-n) (< (result-list-size result-list) max-n)))
+           (let [^Datom scan-d (.next iter)]
+             (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+               (let [eid (.-e scan-d)
+                     first-attr (aget ^longs sorted-attrs-long 0)
+                     probe (Datom. eid first-attr nil tx0 0)
+                     ^Datom d (.seekGE ^PersistentSortedSet$ForwardCursor sorted-cursor probe)]
+                 (when (and d (== (.-e d) eid))
+                   (let [ok? (loop [si (int 0)
+                                    ^Datom cur-d d]
+                               (if (>= si n-merges)
+                                 true
+                                 (if (or (nil? cur-d) (not (== (.-e cur-d) eid)))
+                                   false
+                                   (let [cur-a (long (.-a cur-d))
+                                         target-a (aget ^longs sorted-attrs-long si)]
+                                     (cond
+                                       (== cur-a target-a)
+                                       (let [orig-mi (aget ^ints sorted-order si)
+                                             vg? (aget merge-v-ground orig-mi)
+                                             vgv (aget merge-v-vals orig-mi)]
+                                         (if (and (or (not vg?) (val-eq? (.-v cur-d) vgv))
+                                                  (or (not (aget merge-check-scan-v orig-mi)) (val-eq? (.-v cur-d) (.-v scan-d)))
+                                                  (or (not (aget merge-check-scan-tx orig-mi)) (= (datom/datom-tx cur-d) (datom/datom-tx scan-d))))
+                                           (do (aset merge-datoms orig-mi cur-d)
+                                               (recur (unchecked-inc-int si)
+                                                      (.next ^PersistentSortedSet$ForwardCursor sorted-cursor)))
+                                           (recur si (.next ^PersistentSortedSet$ForwardCursor sorted-cursor))))
+
+                                       (< cur-a target-a)
+                                       (recur si (.next ^PersistentSortedSet$ForwardCursor sorted-cursor))
+
+                                       :else
+                                       false)))))]
+                     (when ok?
+                       (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                   n-find find-source const-vals result-list))))))))
+         ;; Keyword attrs path: compare-based comparison
+         (while (and (.hasNext iter)
+                     (or (neg? max-n) (< (result-list-size result-list) max-n)))
+           (let [^Datom scan-d (.next iter)]
+             (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+               (let [eid (.-e scan-d)
+                     first-attr (aget sorted-attrs-obj 0)
+                     probe (datom eid first-attr nil tx0)
+                     ^Datom d (.seekGE ^PersistentSortedSet$ForwardCursor sorted-cursor probe)]
+                 (when (and d (== (.-e d) eid))
+                   (let [ok? (loop [si (int 0)
+                                    ^Datom cur-d d]
+                               (if (>= si n-merges)
+                                 true
+                                 (if (or (nil? cur-d) (not (== (.-e cur-d) eid)))
+                                   false
+                                   (let [cur-a (.-a cur-d)
+                                         target-a (aget sorted-attrs-obj si)
+                                         cmp (compare cur-a target-a)]
+                                     (cond
+                                       (zero? cmp)
+                                       (let [orig-mi (aget ^ints sorted-order si)
+                                             vg? (aget merge-v-ground orig-mi)
+                                             vgv (aget merge-v-vals orig-mi)]
+                                         (if (and (or (not vg?) (val-eq? (.-v cur-d) vgv))
+                                                  (or (not (aget merge-check-scan-v orig-mi)) (val-eq? (.-v cur-d) (.-v scan-d)))
+                                                  (or (not (aget merge-check-scan-tx orig-mi)) (= (datom/datom-tx cur-d) (datom/datom-tx scan-d))))
+                                           (do (aset merge-datoms orig-mi cur-d)
+                                               (recur (unchecked-inc-int si)
+                                                      (.next ^PersistentSortedSet$ForwardCursor sorted-cursor)))
+                                           (recur si (.next ^PersistentSortedSet$ForwardCursor sorted-cursor))))
+
+                                       (neg? cmp)
+                                       (recur si (.next ^PersistentSortedSet$ForwardCursor sorted-cursor))
+
+                                       :else
+                                       false)))))]
+                     (when ok?
+                       (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                   n-find find-source const-vals result-list)))))))))))))
+
+(defn- execute-per-cursor-merge
+  "Path 4: Per-cursor or lookupGE merge (fallback for anti-merges, non-sorted).
+   merge-ctx is [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors]."
+  [eavt-pss slice ground-filter strict-filter
+   probe-set probe-datom-field
+   collect-set collect-datom-field collect-merge-idx
+   merge-datoms n-find find-source const-vals
+   result-list max-n n-merges merge-ctx]
+  (let [^objects merge-attrs (aget ^objects merge-ctx 0)
+        ^objects merge-v-ground (aget ^objects merge-ctx 1)
+        ^objects merge-v-vals (aget ^objects merge-ctx 2)
+        ^objects merge-anti (aget ^objects merge-ctx 3)
+        ^objects merge-cursors (aget ^objects merge-ctx 4)
+        ^objects merge-datoms merge-datoms
+        ^ints find-source find-source
+        ^objects const-vals const-vals]
+  #?(:clj
+     (when-let [iter (some-> ^Iterable slice .iterator)]
+       (while (and (.hasNext iter)
+                   (or (neg? max-n) (< (result-list-size result-list) max-n)))
+         (let [^Datom scan-d (.next iter)]
+           (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+             (let [eid (.-e scan-d)
+                   ok? (loop [mi (int 0) ok? true]
+                         (if (or (not ok?) (>= mi n-merges))
+                           ok?
+                           (let [anti? (aget merge-anti mi)
+                                 ra (aget merge-attrs mi)
+                                 vg? (aget merge-v-ground mi)
+                                 vgv (aget merge-v-vals mi)
+                                 probe (datom eid ra vgv tx0)
+                                 ^Datom d (if merge-cursors
+                                            (.seekGE ^PersistentSortedSet$ForwardCursor
+                                             (aget merge-cursors mi) probe)
+                                            (.lookupGE ^PersistentSortedSet eavt-pss probe))
+                                 found? (and d
+                                             (== (.-e d) eid)
+                                             (= (.-a d) ra)
+                                             (or (not vg?) (val-eq? (.-v d) vgv)))]
+                             (if anti?
+                               (recur (unchecked-inc-int mi) (not found?))
+                               (if found?
+                                 (do (aset merge-datoms mi d)
+                                     (recur (unchecked-inc-int mi) true))
+                                 (recur (unchecked-inc-int mi) false))))))]
+               (when ok?
+                 (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                             n-find find-source const-vals result-list)))))))
+     :cljs
+     (doseq [scan-d slice
+             :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+       (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
+         (let [eid (.-e ^Datom scan-d)
+               ok? (loop [mi (int 0) ok? true]
+                     (if (or (not ok?) (>= mi n-merges))
+                       ok?
+                       (let [anti? (aget merge-anti mi)
+                             ra (aget merge-attrs mi)
+                             vg? (aget merge-v-ground mi)
+                             vgv (aget merge-v-vals mi)
+                             probe (datom eid ra vgv tx0)
+                             ^Datom d (pss-lookup-ge eavt-pss probe)
+                             found? (and d
+                                         (== (.-e d) eid)
+                                         (= (.-a d) ra)
+                                         (or (not vg?) (val-eq? (.-v d) vgv)))]
+                         (if anti?
+                           (recur (inc mi) (not found?))
+                           (if found?
+                             (do (aset merge-datoms mi d)
+                                 (recur (inc mi) true))
+                             (recur (inc mi) false))))))]
+           (when ok?
+             (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                         n-find find-source const-vals result-list))))))))
+
+;; ---------------------------------------------------------------------------
+;; Dispatcher — setup + dispatch to the appropriate path function.
+
 (defn- execute-group-direct
   "Execute an entity-group (or single pattern-scan) fused, writing results
-   directly into a result list.
-
-   Branch-once-then-loop: selects the appropriate loop variant (scan-only,
-   sorted-merge, per-cursor, card-many) once, then iterates with fully
-   inlined filter/merge/emit. Keeps everything in one defn- so closures
-   remain inlineable by the JIT.
-
-   If probe-set is non-nil, scan datoms are filtered against it:
-   - For value-var scans: datom.v must be in probe-set
-   - Enables hash-probe joins between entity groups.
-
-   If collect-var is non-nil, collects values of that var into collect-set
-   (used by producer groups to build the probe-set for consumers).
-
-   consts: map of var-sym → constant value for scalar :in bindings.
-   Find-vars that are in consts will project the constant value directly.
-
-   max-results: when positive, stop collecting after this many results."
+   directly into a result list. Computes shared setup, then dispatches to
+   a path-specific function (each small enough for JIT C2/Graal compilation)."
   [db scan-op merge-ops find-vars consts
    result-list
    probe-set probe-datom-field
@@ -530,9 +857,6 @@
                                          (when (and (some? mv) (not (symbol? mv))) mv)))
                                      merge-ops))
         merge-anti (to-array (mapv #(boolean (:anti? %)) merge-ops))
-        ;; Shared-variable checks: when a merge clause shares a variable
-        ;; with the scan at the value (pos 2) or tx (pos 3) position, the merge
-        ;; must verify the merge datom matches the scan datom at those positions.
         merge-check-scan-v (to-array (mapv (fn [op]
                                               (let [mv (get (:clause op) 2)
                                                     sv (get clause 2)]
@@ -550,8 +874,6 @@
                                         merge-ops))
         has-card-many? (some true? (seq merge-card-many))
 
-        ;; ForwardCursor optimization (CLJ only): when scan entity IDs are ascending,
-        ;; use cursors for amortized O(1) merge lookups instead of O(log n).
         use-cursors? #?(:clj (and (pos? n-merges)
                                   (or (= index :eavt)
                                       (= index :aevt)
@@ -560,12 +882,7 @@
                                              (and (some? sv) (not (analyze/free-var? sv)))))))
                         :cljs false)
 
-        ;; Single-cursor sorted merge scan (CLJ only)
-        ;; Works for both attribute-refs (long attrs) and keyword attrs.
         attr-refs? (:attribute-refs? (dbi/-config db))
-        ;; Sorted scan requires each entity to appear at most once in the scan.
-        ;; Variable-attribute scans (e.g., [?e ?a ?v]) produce multiple datoms per
-        ;; entity, so the shared sorted cursor can't re-seek the same entity.
         scan-attr-ground? (let [a (second clause)]
                             (and (some? a) (not (symbol? a))))
         use-sorted-scan? #?(:clj (and use-cursors?
@@ -575,46 +892,10 @@
                                       (every? #(not (aget merge-anti %)) (range n-merges)))
                             :cljs false)
 
-        sorted-order (when use-sorted-scan?
-                       (let [indexed (mapv (fn [i] [(aget merge-attrs i) i])
-                                           (range n-merges))
-                             sorted (sort-by first compare indexed)]
-                         #?(:clj (int-array (mapv second sorted))
-                            :cljs (to-array (mapv second sorted)))))
-        ;; For attribute-refs: long array for fast == comparison
-        ;; For keyword attrs: object array for compare-based comparison
-        sorted-attrs-long (when (and use-sorted-scan? attr-refs?)
-                            (let [arr (long-array n-merges)]
-                              (dotimes [si n-merges]
-                                (aset arr si (long (aget merge-attrs (aget sorted-order si)))))
-                              arr))
-        sorted-attrs-obj (when (and use-sorted-scan? (not attr-refs?))
-                           (let [arr (object-array n-merges)]
-                             (dotimes [si n-merges]
-                               (aset arr si (aget merge-attrs (aget sorted-order si))))
-                             arr))
-        ;; Single cursor with EA-only comparator for sorted scan (CLJ only)
-        sorted-cursor
-        #?(:clj (when use-sorted-scan?
-                  (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea))
-           :cljs nil)
-
-        merge-cursors #?(:clj (when (and use-cursors? (not use-sorted-scan?))
-                                (let [cursors (object-array n-merges)]
-                                  (dotimes [i n-merges]
-                                    (aset cursors i
-                                          (if (aget merge-v-ground i)
-                                            (.forwardCursor ^PersistentSortedSet eavt-pss)
-                                            (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea))))
-                                  cursors))
-                         :cljs nil)
-
-        ;; Build find-source projection: for each find-var, where to get its value
-        ;; -1..-4 = scan datom e/a/v/tx, 0..N = merge[i].v, 1000+i = merge[i].e, etc.
-        ;; -10 = const value (from scalar :in binding), stored in const-vals array
+        ;; Build find-source projection
         merge-clauses (mapv :clause merge-ops)
         n-find (count find-vars)
-        const-vals #?(:clj (object-array n-find) :cljs (make-array n-find)) ;; const values for find-vars from :in bindings
+        const-vals #?(:clj (object-array n-find) :cljs (make-array n-find))
         find-source
         (#?(:clj int-array :cljs to-array)
          (map-indexed
@@ -626,23 +907,17 @@
                (some (fn [[i x]]
                        (when (= x fvar)
                          (case (int i)
-                           0 find-src-scan-e
-                           1 find-src-scan-a
-                           2 find-src-scan-v
-                           3 find-src-scan-tx
-                           4 find-src-scan-added
-                           nil)))
+                           0 find-src-scan-e 1 find-src-scan-a
+                           2 find-src-scan-v 3 find-src-scan-tx
+                           4 find-src-scan-added nil)))
                      (map-indexed vector clause))
                (some (fn [[mi mc]]
                        (some (fn [[i x]]
                                (when (= x fvar)
                                  (case (int i)
-                                   0 (+ mi find-src-merge-e-base)
-                                   1 (+ mi 2000)
-                                   2 (+ mi find-src-merge-v-base)
-                                   3 (+ mi 3000)
-                                   4 (+ mi 4000)
-                                   nil)))
+                                   0 (+ mi find-src-merge-e-base) 1 (+ mi 2000)
+                                   2 (+ mi find-src-merge-v-base) 3 (+ mi 3000)
+                                   4 (+ mi 4000) nil)))
                              (map-indexed vector mc)))
                      (map-indexed vector merge-clauses))
                0)))
@@ -652,93 +927,141 @@
         slice (di/-slice db-index from-datom to-datom index)
         max-n (int (or max-results -1))]
 
-    ;; ===================================================================
-    ;; Branch-once: select loop variant, then iterate with everything inlined.
-    ;; Each branch is a complete loop — no closures passed as arguments.
-    ;; ===================================================================
+    ;; Dispatch to path-specific function
     (cond
-      ;; --- Path 1: Scan only (no merges, e.g. Q1) ---
       (zero? n-merges)
-      #?(:clj
-         (when-let [iter (some-> ^Iterable slice .iterator)]
-           (while (and (.hasNext iter)
-                       (or (neg? max-n) (< (result-list-size result-list) max-n)))
-             (let [^Datom scan-d (.next iter)]
-               (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-                 (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                             n-find find-source const-vals result-list)))))
-         :cljs
-         (doseq [scan-d slice
-                 :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
-           (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-             (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                         n-find find-source const-vals result-list))))
+      (execute-scan-only slice ground-filter strict-filter
+                         probe-set probe-datom-field
+                         collect-set collect-datom-field collect-merge-idx
+                         merge-datoms n-find find-source const-vals
+                         result-list max-n)
 
-      ;; --- Path 2: Card-many merge (recursive cross-product) ---
       has-card-many?
+      (let [merge-cursors #?(:clj (when use-cursors?
+                                    (let [cursors (object-array n-merges)]
+                                      (dotimes [i n-merges]
+                                        (aset cursors i
+                                              (if (aget merge-v-ground i)
+                                                (.forwardCursor ^PersistentSortedSet eavt-pss)
+                                                (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea))))
+                                      cursors))
+                              :cljs nil)
+            merge-ctx (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti
+                                     merge-card-many merge-check-scan-v merge-check-scan-tx merge-cursors])]
+        (execute-card-many-merge db eavt-pss slice ground-filter strict-filter
+                                 probe-set probe-datom-field
+                                 collect-set collect-datom-field collect-merge-idx
+                                 merge-datoms n-find find-source const-vals
+                                 result-list max-n n-merges merge-ctx))
+
+      use-sorted-scan?
       #?(:clj
-         (when-let [iter (some-> ^Iterable slice .iterator)]
-           (while (and (.hasNext iter)
-                       (or (neg? max-n) (< (result-list-size result-list) max-n)))
-             (let [^Datom scan-d (.next iter)]
-               (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-                 (let [eid (.-e scan-d)]
-                   (letfn [(process-merges [mi]
-                             (if (>= mi n-merges)
-                               (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                                           n-find find-source const-vals result-list)
-                               (let [anti? (aget merge-anti mi)
-                                     ra (aget merge-attrs mi)
-                                     vg? (aget merge-v-ground mi)
-                                     vgv (aget merge-v-vals mi)
-                                     card-many? (aget merge-card-many mi)]
-                                 (let [check-v? (aget merge-check-scan-v mi)
-                                       check-tx? (aget merge-check-scan-tx mi)]
-                                   (if card-many?
-                                     ;; Card-many: iterate ALL matching datoms
-                                     (let [from-d (datom eid ra (when vg? vgv) tx0)
-                                           to-d (datom eid ra (when vg? vgv) txmax)
-                                           mslice (di/-slice (:eavt db) from-d to-d :eavt)]
-                                       (if anti?
-                                         (when (not-any? (fn [^Datom d]
-                                                           (and (== (.-e d) eid) (= (.-a d) ra)
-                                                                (or (not vg?) (val-eq? (.-v d) vgv))
-                                                                (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                                (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d)))))
-                                                         mslice)
-                                           (process-merges (inc mi)))
-                                         (doseq [^Datom d mslice]
-                                           (when (and (== (.-e d) eid)
-                                                      (= (.-a d) ra)
-                                                      (or (not vg?) (val-eq? (.-v d) vgv))
-                                                      (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                      (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))
-                                             (aset merge-datoms mi d)
-                                             (process-merges (inc mi))))))
-                                     ;; Card-one: single lookupGE
-                                     (let [probe (datom eid ra vgv tx0)
-                                           ^Datom d (if merge-cursors
-                                                      (.seekGE ^PersistentSortedSet$ForwardCursor
-                                                       (aget merge-cursors mi) probe)
-                                                      (.lookupGE ^PersistentSortedSet eavt-pss probe))
-                                           found? (and d
-                                                       (== (.-e d) eid)
-                                                       (= (.-a d) ra)
-                                                       (or (not vg?) (val-eq? (.-v d) vgv))
-                                                       (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                       (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
-                                       (if anti?
-                                         (when (not found?)
-                                           (process-merges (inc mi)))
-                                         (when found?
-                                           (aset merge-datoms mi d)
-                                           (process-merges (inc mi))))))))))]
-                     (process-merges 0)))))))
-         :cljs
-         (doseq [scan-d slice
-                 :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
-           (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-             (let [eid (.-e ^Datom scan-d)]
+         (let [sorted-order (let [indexed (mapv (fn [i] [(aget merge-attrs i) i]) (range n-merges))
+                                  sorted (sort-by first compare indexed)]
+                              (int-array (mapv second sorted)))
+               sorted-attrs-long (when attr-refs?
+                                   (let [arr (long-array n-merges)]
+                                     (dotimes [si n-merges]
+                                       (aset arr si (long (aget merge-attrs (aget sorted-order si)))))
+                                     arr))
+               sorted-attrs-obj (when (not attr-refs?)
+                                  (let [arr (object-array n-merges)]
+                                    (dotimes [si n-merges]
+                                      (aset arr si (aget merge-attrs (aget sorted-order si))))
+                                    arr))
+               sorted-cursor (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea)]
+           (execute-sorted-merge slice ground-filter strict-filter
+                                 probe-set probe-datom-field
+                                 collect-set collect-datom-field collect-merge-idx
+                                 merge-datoms n-find find-source const-vals
+                                 result-list max-n n-merges attr-refs?
+                                 (object-array [sorted-cursor sorted-order
+                                                sorted-attrs-long sorted-attrs-obj
+                                                merge-v-ground merge-v-vals
+                                                merge-check-scan-v merge-check-scan-tx])))
+         :cljs nil)
+
+      :else
+      (let [merge-cursors #?(:clj (when use-cursors?
+                                    (let [cursors (object-array n-merges)]
+                                      (dotimes [i n-merges]
+                                        (aset cursors i
+                                              (if (aget merge-v-ground i)
+                                                (.forwardCursor ^PersistentSortedSet eavt-pss)
+                                                (.forwardCursor ^PersistentSortedSet eavt-pss ^java.util.Comparator fast-cmp-ea))))
+                                      cursors))
+                              :cljs nil)]
+        (execute-per-cursor-merge eavt-pss slice ground-filter strict-filter
+                                  probe-set probe-datom-field
+                                  collect-set collect-datom-field collect-merge-idx
+                                  merge-datoms n-find find-source const-vals
+                                  result-list max-n n-merges
+                                  (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors]))))
+
+    result-list))
+
+(defn- execute-temporal-scan-only
+  "Temporal path 1: scan without merges."
+  [slice ground-filter strict-filter
+   probe-set probe-datom-field
+   collect-set collect-datom-field collect-merge-idx
+   merge-datoms n-find find-source const-vals
+   result-list max-n temporal-tx-filter scan-added-val]
+  (let [^objects merge-datoms merge-datoms
+        ^ints find-source find-source
+        ^objects const-vals const-vals]
+    #?(:clj
+       (when-let [iter (some-> ^Iterable slice .iterator)]
+         (while (and (.hasNext iter)
+                     (or (neg? max-n) (< (result-list-size result-list) max-n)))
+           (let [^Datom scan-d (.next iter)]
+             (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                        (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
+               (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                           n-find find-source const-vals result-list)))))
+       :cljs
+       (doseq [scan-d slice
+               :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+         (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                    (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
+           (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                       n-find find-source const-vals result-list))))))
+
+(defn- execute-temporal-merge
+  "Temporal path 2: merge with card-many/card-one, anti-merge, cursor cache.
+   temporal-ctx packs temporal-specific arrays to stay under 20-param limit."
+  [db eavt-pss slice ground-filter strict-filter
+   probe-set probe-datom-field
+   collect-set collect-datom-field collect-merge-idx
+   merge-datoms n-find find-source const-vals
+   result-list max-n n-merges temporal-ctx]
+  (let [^objects merge-attrs (aget ^objects temporal-ctx 0)
+        ^objects merge-v-ground (aget ^objects temporal-ctx 1)
+        ^objects merge-v-vals (aget ^objects temporal-ctx 2)
+        ^objects merge-anti (aget ^objects temporal-ctx 3)
+        ^objects merge-card-many (aget ^objects temporal-ctx 4)
+        ^objects merge-added-filter (aget ^objects temporal-ctx 5)
+        ^objects merge-check-scan-v (aget ^objects temporal-ctx 6)
+        ^objects merge-check-scan-tx (aget ^objects temporal-ctx 7)
+        ^objects merge-temporal-only (aget ^objects temporal-ctx 8)
+        ^objects merge-cursor-cache (aget ^objects temporal-ctx 9)
+        temporal-eavt-pss (aget ^objects temporal-ctx 10)
+        temporal-cursors (aget ^objects temporal-ctx 11)
+        temporal-type (aget ^objects temporal-ctx 12)
+        temporal-tx-filter (aget ^objects temporal-ctx 13)
+        scan-added-val (aget ^objects temporal-ctx 14)
+        origin-db (aget ^objects temporal-ctx 15)
+        ^objects merge-datoms merge-datoms
+        ^ints find-source find-source
+        ^objects const-vals const-vals]
+  #?(:clj
+     (when-let [iter (some-> ^Iterable slice .iterator)]
+       (while (and (.hasNext iter)
+                   (or (neg? max-n) (< (result-list-size result-list) max-n)))
+         (let [^Datom scan-d (.next iter)]
+           (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                      (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
+             (let [eid (.-e scan-d)]
                (letfn [(process-merges [mi]
                          (if (>= mi n-merges)
                            (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
@@ -748,199 +1071,164 @@
                                  vg? (aget merge-v-ground mi)
                                  vgv (aget merge-v-vals mi)
                                  card-many? (aget merge-card-many mi)
+                                 added-filter (aget merge-added-filter mi)]
+                             (if card-many?
+                               (let [temporal-only? (aget merge-temporal-only mi)]
+                                 (if (and temporal-only? temporal-cursors (aget temporal-cursors mi)
+                                              anti?)
+                                   ;; Fast path: ForwardCursor on temporal index (anti-merge only).
+                                   (let [^longs cache-eid-arr (aget merge-cursor-cache mi)
+                                         cached-eid (aget cache-eid-arr 0)]
+                                     (if (== cached-eid (long eid))
+                                       (let [cached (aget merge-datoms mi)]
+                                         (when (nil? cached) (process-merges (inc mi))))
+                                       (let [probe (datom eid ra (when vg? vgv) tx0)
+                                             ^PersistentSortedSet$ForwardCursor cur (aget temporal-cursors mi)
+                                             ^Datom d (.seekGE cur probe)
+                                             found (volatile! nil)]
+                                         (do (aset cache-eid-arr 0 (long eid))
+                                             (let [check-v? (aget merge-check-scan-v mi)
+                                                   check-tx? (aget merge-check-scan-tx mi)
+                                                   match (loop [^Datom md d]
+                                                           (cond
+                                                             (or (nil? md) (not (== (.-e md) eid)) (not (= (.-a md) ra)))
+                                                             nil
+                                                             (and (or (not vg?) (val-eq? (.-v md) vgv))
+                                                                  (or (nil? added-filter) (= (datom/datom-added md) added-filter))
+                                                                  (or (not check-v?) (val-eq? (.-v md) (.-v scan-d)))
+                                                                  (or (not check-tx?) (= (datom/datom-tx md) (datom/datom-tx scan-d))))
+                                                             md
+                                                             :else (recur (.next cur))))]
+                                               (if match
+                                                 (aset merge-datoms mi match)
+                                                 (do (aset merge-datoms mi nil)
+                                                     (process-merges (inc mi)))))))))
+                                   ;; General path: slice-based merge
+                                   (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                         to-d (datom eid ra (when vg? vgv) txmax)
+                                         mslice (if (aget merge-temporal-only mi)
+                                                  (di/-slice temporal-eavt-pss from-d to-d :eavt)
+                                                  (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))
+                                         check-v? (aget merge-check-scan-v mi)
+                                         check-tx? (aget merge-check-scan-tx mi)]
+                                     (if anti?
+                                       (when (not-any? (fn [^Datom d]
+                                                         (and (== (.-e d) eid) (= (.-a d) ra)
+                                                              (or (not vg?) (val-eq? (.-v d) vgv))
+                                                              (or (nil? temporal-tx-filter) (temporal-tx-filter d))
+                                                              (or (nil? added-filter) (= (datom/datom-added d) added-filter))
+                                                              (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                                              (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d)))))
+                                                       mslice)
+                                         (process-merges (inc mi)))
+                                       (doseq [^Datom d mslice]
+                                         (when (and (== (.-e d) eid) (= (.-a d) ra)
+                                                    (or (not vg?) (val-eq? (.-v d) vgv))
+                                                    (or (nil? temporal-tx-filter) (temporal-tx-filter d))
+                                                    (or (nil? added-filter) (= (datom/datom-added d) added-filter))
+                                                    (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                                    (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))
+                                           (aset merge-datoms mi d)
+                                           (process-merges (inc mi))))))))
+                               ;; Card-one merge
+                               (if (nil? temporal-type)
+                                 (let [probe (datom eid ra vgv tx0)
+                                       ^Datom d (.lookupGE ^PersistentSortedSet eavt-pss probe)
+                                       found? (and d (== (.-e d) eid) (= (.-a d) ra)
+                                                   (or (not vg?) (val-eq? (.-v d) vgv))
+                                                   (or (nil? added-filter) (= (datom/datom-added d) added-filter))
+                                                   (or (not (aget merge-check-scan-v mi)) (val-eq? (.-v d) (.-v scan-d)))
+                                                   (or (not (aget merge-check-scan-tx mi)) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
+                                   (if anti?
+                                     (when (not found?) (process-merges (inc mi)))
+                                     (when found?
+                                       (aset merge-datoms mi d)
+                                       (process-merges (inc mi)))))
+                                 ;; Temporal card-one: merge via slice
+                                 (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                       to-d (datom eid ra (when vg? vgv) txmax)
+                                       mslice (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db)
+                                       check-v? (aget merge-check-scan-v mi)
+                                       check-tx? (aget merge-check-scan-tx mi)]
+                                   (if anti?
+                                     (when (not-any? (fn [^Datom d]
+                                                       (and (== (.-e d) eid) (= (.-a d) ra)
+                                                            (or (not vg?) (val-eq? (.-v d) vgv))
+                                                            (or (nil? added-filter) (= (datom/datom-added d) added-filter))
+                                                            (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                                            (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d)))))
+                                                     mslice)
+                                       (process-merges (inc mi)))
+                                     (when-let [^Datom d (first (cond->> mslice
+                                                                     (or check-v? check-tx?)
+                                                                     (filter (fn [^Datom d]
+                                                                               (and (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                                                                    (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))))))]
+                                       (when (and (== (.-e d) eid) (= (.-a d) ra)
+                                                  (or (not vg?) (val-eq? (.-v d) vgv))
+                                                  (or (nil? added-filter) (= (datom/datom-added d) added-filter)))
+                                         (aset merge-datoms mi d)
+                                         (process-merges (inc mi)))))))))))]
+                 (process-merges 0)))))))
+     :cljs
+     (doseq [scan-d slice
+             :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+       (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
+                  (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
+         (let [eid (.-e ^Datom scan-d)]
+           (letfn [(process-merges [mi]
+                     (if (>= mi n-merges)
+                       (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
+                                   n-find find-source const-vals result-list)
+                       (let [anti? (aget merge-anti mi)
+                             ra (aget merge-attrs mi)
+                             vg? (aget merge-v-ground mi)
+                             vgv (aget merge-v-vals mi)
+                             card-many? (aget merge-card-many mi)
+                             added-filter (aget merge-added-filter mi)]
+                         (if card-many?
+                           (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                 to-d (datom eid ra (when vg? vgv) txmax)
+                                 temporal-only? (aget merge-temporal-only mi)
+                                 mslice (if temporal-only?
+                                          (di/-slice temporal-eavt-pss from-d to-d :eavt)
+                                          (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))
                                  check-v? (aget merge-check-scan-v mi)
                                  check-tx? (aget merge-check-scan-tx mi)]
-                             (if card-many?
-                               (let [from-d (datom eid ra (when vg? vgv) tx0)
-                                     to-d (datom eid ra (when vg? vgv) txmax)
-                                     mslice (di/-slice (:eavt db) from-d to-d :eavt)]
-                                 (if anti?
-                                   (when (not-any? (fn [^Datom d]
-                                                     (and (== (.-e d) eid) (= (.-a d) ra)
-                                                          (or (not vg?) (val-eq? (.-v d) vgv))
-                                                          (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                          (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d)))))
-                                                   mslice)
-                                     (process-merges (inc mi)))
-                                   (doseq [^Datom d mslice]
-                                     (when (and (== (.-e d) eid)
-                                                (= (.-a d) ra)
-                                                (or (not vg?) (val-eq? (.-v d) vgv))
-                                                (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))
-                                       (aset merge-datoms mi d)
-                                       (process-merges (inc mi))))))
-                               (let [probe (datom eid ra vgv tx0)
-                                     ^Datom d (pss-lookup-ge eavt-pss probe)
-                                     found? (and d
-                                                 (== (.-e d) eid)
-                                                 (= (.-a d) ra)
-                                                 (or (not vg?) (val-eq? (.-v d) vgv))
-                                                 (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                 (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
-                                 (if anti?
-                                   (when (not found?)
-                                     (process-merges (inc mi)))
-                                   (when found?
-                                     (aset merge-datoms mi d)
-                                     (process-merges (inc mi)))))))))]
-                 (process-merges 0))))))
-
-      ;; --- Path 3: Sorted merge scan (single cursor, CLJ only) ---
-      ;; Uses one ForwardCursor, one seekGE per entity to first attr, then next() for rest.
-      ;; Supports both attribute-refs (long ==) and keyword attrs (compare).
-      use-sorted-scan?
-      #?(:clj
-         (when-let [iter (some-> ^Iterable slice .iterator)]
-           (if attr-refs?
-             ;; Attribute-refs path: long comparison, seekGE with Datom constructor
-             (while (and (.hasNext iter)
-                         (or (neg? max-n) (< (result-list-size result-list) max-n)))
-               (let [^Datom scan-d (.next iter)]
-                 (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-                   (let [eid (.-e scan-d)
-                         first-attr (aget ^longs sorted-attrs-long 0)
-                         probe (Datom. eid first-attr nil tx0 0)
-                         ^Datom d (.seekGE ^PersistentSortedSet$ForwardCursor sorted-cursor probe)]
-                     (when (and d (== (.-e d) eid))
-                       (let [ok? (loop [si (int 0)
-                                        ^Datom cur-d d]
-                                   (if (>= si n-merges)
-                                     true
-                                     (if (or (nil? cur-d) (not (== (.-e cur-d) eid)))
-                                       false
-                                       (let [cur-a (long (.-a cur-d))
-                                             target-a (aget ^longs sorted-attrs-long si)]
-                                         (cond
-                                           (== cur-a target-a)
-                                           (let [orig-mi (aget ^ints sorted-order si)
-                                                 vg? (aget merge-v-ground orig-mi)
-                                                 vgv (aget merge-v-vals orig-mi)]
-                                             (if (and (or (not vg?) (val-eq? (.-v cur-d) vgv))
-                                                      (or (not (aget merge-check-scan-v orig-mi)) (val-eq? (.-v cur-d) (.-v scan-d)))
-                                                      (or (not (aget merge-check-scan-tx orig-mi)) (= (datom/datom-tx cur-d) (datom/datom-tx scan-d))))
-                                               (do (aset merge-datoms orig-mi cur-d)
-                                                   (recur (unchecked-inc-int si)
-                                                          (.next ^PersistentSortedSet$ForwardCursor sorted-cursor)))
-                                               (recur si (.next ^PersistentSortedSet$ForwardCursor sorted-cursor))))
-
-                                           (< cur-a target-a)
-                                           (recur si (.next ^PersistentSortedSet$ForwardCursor sorted-cursor))
-
-                                           :else
-                                           false)))))]
-                         (when ok?
-                           (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                                       n-find find-source const-vals result-list))))))))
-             ;; Keyword attrs path: compare-based comparison, seekGE with datom fn
-             (while (and (.hasNext iter)
-                         (or (neg? max-n) (< (result-list-size result-list) max-n)))
-               (let [^Datom scan-d (.next iter)]
-                 (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-                   (let [eid (.-e scan-d)
-                         first-attr (aget sorted-attrs-obj 0)
-                         probe (datom eid first-attr nil tx0)
-                         ^Datom d (.seekGE ^PersistentSortedSet$ForwardCursor sorted-cursor probe)]
-                     (when (and d (== (.-e d) eid))
-                       (let [ok? (loop [si (int 0)
-                                        ^Datom cur-d d]
-                                   (if (>= si n-merges)
-                                     true
-                                     (if (or (nil? cur-d) (not (== (.-e cur-d) eid)))
-                                       false
-                                       (let [cur-a (.-a cur-d)
-                                             target-a (aget sorted-attrs-obj si)
-                                             cmp (compare cur-a target-a)]
-                                         (cond
-                                           (zero? cmp)
-                                           (let [orig-mi (aget ^ints sorted-order si)
-                                                 vg? (aget merge-v-ground orig-mi)
-                                                 vgv (aget merge-v-vals orig-mi)]
-                                             (if (and (or (not vg?) (val-eq? (.-v cur-d) vgv))
-                                                      (or (not (aget merge-check-scan-v orig-mi)) (val-eq? (.-v cur-d) (.-v scan-d)))
-                                                      (or (not (aget merge-check-scan-tx orig-mi)) (= (datom/datom-tx cur-d) (datom/datom-tx scan-d))))
-                                               (do (aset merge-datoms orig-mi cur-d)
-                                                   (recur (unchecked-inc-int si)
-                                                          (.next ^PersistentSortedSet$ForwardCursor sorted-cursor)))
-                                               (recur si (.next ^PersistentSortedSet$ForwardCursor sorted-cursor))))
-
-                                           (neg? cmp)
-                                           (recur si (.next ^PersistentSortedSet$ForwardCursor sorted-cursor))
-
-                                           :else
-                                           false)))))]
-                         (when ok?
-                           (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                                       n-find find-source const-vals result-list))))))))))
-         :cljs nil) ;; sorted scan not available in CLJS
-
-      ;; --- Path 4: Per-cursor merge (individual cursors or lookupGE) ---
-      :else
-      #?(:clj
-         (when-let [iter (some-> ^Iterable slice .iterator)]
-           (while (and (.hasNext iter)
-                       (or (neg? max-n) (< (result-list-size result-list) max-n)))
-             (let [^Datom scan-d (.next iter)]
-               (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-                 (let [eid (.-e scan-d)
-                       ok? (loop [mi (int 0) ok? true]
-                             (if (or (not ok?) (>= mi n-merges))
-                               ok?
-                               (let [anti? (aget merge-anti mi)
-                                     ra (aget merge-attrs mi)
-                                     vg? (aget merge-v-ground mi)
-                                     vgv (aget merge-v-vals mi)
-                                     probe (datom eid ra vgv tx0)
-                                     ^Datom d (if merge-cursors
-                                                (.seekGE ^PersistentSortedSet$ForwardCursor
-                                                 (aget merge-cursors mi) probe)
-                                                (.lookupGE ^PersistentSortedSet eavt-pss probe))
-                                     found? (and d
-                                                 (== (.-e d) eid)
-                                                 (= (.-a d) ra)
-                                                 (or (not vg?) (val-eq? (.-v d) vgv)))]
-                                 (if anti?
-                                   (recur (unchecked-inc-int mi) (not found?))
-                                   (if found?
-                                     (do (aset merge-datoms mi d)
-                                         (recur (unchecked-inc-int mi) true))
-                                     (recur (unchecked-inc-int mi) false))))))]
-                   (when ok?
-                     (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                                 n-find find-source const-vals result-list)))))))
-         :cljs
-         (doseq [scan-d slice
-                 :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
-           (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
-             (let [eid (.-e ^Datom scan-d)
-                   ok? (loop [mi (int 0) ok? true]
-                         (if (or (not ok?) (>= mi n-merges))
-                           ok?
-                           (let [anti? (aget merge-anti mi)
-                                 ra (aget merge-attrs mi)
-                                 vg? (aget merge-v-ground mi)
-                                 vgv (aget merge-v-vals mi)
-                                 probe (datom eid ra vgv tx0)
-                                 ^Datom d (pss-lookup-ge eavt-pss probe)
-                                 found? (and d
-                                             (== (.-e d) eid)
-                                             (= (.-a d) ra)
-                                             (or (not vg?) (val-eq? (.-v d) vgv)))]
                              (if anti?
-                               (recur (inc mi) (not found?))
-                               (if found?
-                                 (do (aset merge-datoms mi d)
-                                     (recur (inc mi) true))
-                                 (recur (inc mi) false))))))]
-               (when ok?
-                 (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                             n-find find-source const-vals result-list)))))))
-
-    result-list))
+                               (when (not-any? (fn [^Datom d]
+                                                 (and (== (.-e d) eid) (= (.-a d) ra)
+                                                      (or (not vg?) (val-eq? (.-v d) vgv))
+                                                      (or (nil? temporal-tx-filter) (temporal-tx-filter d))
+                                                      (or (nil? added-filter) (= (datom/datom-added d) added-filter))
+                                                      (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                                      (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d)))))
+                                               mslice)
+                                 (process-merges (inc mi)))
+                               (doseq [^Datom d mslice]
+                                 (when (and (== (.-e d) eid) (= (.-a d) ra)
+                                            (or (not vg?) (val-eq? (.-v d) vgv))
+                                            (or (nil? temporal-tx-filter) (temporal-tx-filter d))
+                                            (or (nil? added-filter) (= (datom/datom-added d) added-filter))
+                                            (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+                                            (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))
+                                   (aset merge-datoms mi d) (process-merges (inc mi))))))
+                           (let [probe (datom eid ra vgv tx0)
+                                 ^Datom d (pss-lookup-ge eavt-pss probe)
+                                 found? (and d (== (.-e d) eid) (= (.-a d) ra)
+                                             (or (not vg?) (val-eq? (.-v d) vgv))
+                                             (or (nil? added-filter) (= (datom/datom-added d) added-filter))
+                                             (or (not (aget merge-check-scan-v mi)) (val-eq? (.-v d) (.-v scan-d)))
+                                             (or (not (aget merge-check-scan-tx mi)) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
+                             (if anti?
+                               (when (not found?) (process-merges (inc mi)))
+                               (when found?
+                                 (aset merge-datoms mi d) (process-merges (inc mi)))))))))]
+             (process-merges 0))))))))
 
 (defn- execute-group-direct-temporal
   "Temporal variant of execute-group-direct for history/as-of/since queries.
-   Separate function to keep the non-temporal hot path small for JIT inlining."
+   Dispatcher: computes setup, then calls execute-temporal-scan-only or execute-temporal-merge."
   [db scan-op merge-ops find-vars consts
    result-list
    probe-set probe-datom-field
@@ -1073,235 +1361,28 @@
         slice (build-scan-slice db db-index from-datom to-datom index
                                 temporal origin-db resolved-a)
         max-n (int (or max-results -1))]
-    (cond
-      (zero? n-merges)
-      #?(:clj
-         (when-let [iter (some-> ^Iterable slice .iterator)]
-           (while (and (.hasNext iter)
-                       (or (neg? max-n) (< (result-list-size result-list) max-n)))
-             (let [^Datom scan-d (.next iter)]
-               (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
-                          (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
-                 (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                             n-find find-source const-vals result-list)))))
-         :cljs
-         (doseq [scan-d slice
-                 :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
-           (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
-                      (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
-             (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                         n-find find-source const-vals result-list))))
-      :else
-      #?(:clj
-         (when-let [iter (some-> ^Iterable slice .iterator)]
-           (while (and (.hasNext iter)
-                       (or (neg? max-n) (< (result-list-size result-list) max-n)))
-             (let [^Datom scan-d (.next iter)]
-               (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
-                          (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
-                 (let [eid (.-e scan-d)]
-                   (letfn [(process-merges [mi]
-                             (if (>= mi n-merges)
-                               (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                                           n-find find-source const-vals result-list)
-                               (let [anti? (aget merge-anti mi)
-                                     ra (aget merge-attrs mi)
-                                     vg? (aget merge-v-ground mi)
-                                     vgv (aget merge-v-vals mi)
-                                     card-many? (aget merge-card-many mi)
-                                     added-filter (aget merge-added-filter mi)]
-                                 (if card-many?
-                                   (let [temporal-only? (aget merge-temporal-only mi)]
-                                     (if (and temporal-only? temporal-cursors (aget temporal-cursors mi)
-                                                  ;; ForwardCursor cache only works for anti-merge (existence check).
-                                                  ;; Non-anti card-many needs all matching datoms per scan datom,
-                                                  ;; but the forward-only cursor can't re-iterate for the same entity.
-                                                  ;; Fall through to the general slice path for non-anti.
-                                                  anti?)
-                                       ;; Fast path: ForwardCursor on temporal index (anti-merge only).
-                                       ;; Uses per-entity cache: ForwardCursor can't re-seek backwards.
-                                       (let [^longs cache-eid-arr (aget merge-cursor-cache mi)
-                                             cached-eid (aget cache-eid-arr 0)]
-                                         (if (== cached-eid (long eid))
-                                           ;; Cache hit: reuse existence result
-                                           (let [cached (aget merge-datoms mi)]
-                                             (when (nil? cached) (process-merges (inc mi))))
-                                           ;; Cache miss: new entity — seek cursor and cache
-                                           (let [probe (datom eid ra (when vg? vgv) tx0)
-                                                 ^PersistentSortedSet$ForwardCursor cur (aget temporal-cursors mi)
-                                                 ^Datom d (.seekGE cur probe)
-                                                 found (volatile! nil)]
-                                             (if anti?
-                                               ;; Anti-merge with ForwardCursor: iterate to find any matching datom
-                                               ;; Must check added-filter (e.g. looking for retractions only)
-                                               (do (aset cache-eid-arr 0 (long eid))
-                                                   (let [check-v? (aget merge-check-scan-v mi)
-                                                         check-tx? (aget merge-check-scan-tx mi)
-                                                         match (loop [^Datom md d]
-                                                                 (cond
-                                                                   (or (nil? md) (not (== (.-e md) eid)) (not (= (.-a md) ra)))
-                                                                   nil
-                                                                   (and (or (not vg?) (val-eq? (.-v md) vgv))
-                                                                        (or (nil? added-filter) (= (datom/datom-added md) added-filter))
-                                                                        (or (not check-v?) (val-eq? (.-v md) (.-v scan-d)))
-                                                                        (or (not check-tx?) (= (datom/datom-tx md) (datom/datom-tx scan-d))))
-                                                                   md
-                                                                   :else (recur (.next cur))))]
-                                                     (if match
-                                                       (aset merge-datoms mi match)
-                                                       (do (aset merge-datoms mi nil)
-                                                           (process-merges (inc mi))))))
-                                               ;; iterate all datoms for this entity+attr
-                                               (let [check-v? (aget merge-check-scan-v mi)
-                                                     check-tx? (aget merge-check-scan-tx mi)]
-                                                 (loop [^Datom md d]
-                                                   (when (and md (== (.-e md) eid) (= (.-a md) ra))
-                                                     (when (and (or (not vg?) (val-eq? (.-v md) vgv))
-                                                                (or (nil? added-filter) (= (datom/datom-added md) added-filter))
-                                                                (or (not check-v?) (val-eq? (.-v md) (.-v scan-d)))
-                                                                (or (not check-tx?) (= (datom/datom-tx md) (datom/datom-tx scan-d))))
-                                                       (vreset! found md)
-                                                       (aset merge-datoms mi md)
-                                                       (process-merges (inc mi)))
-                                                     (recur (.next cur))))
-                                                 ;; Cache the result for next scan datom with same entity
-                                                 (aset cache-eid-arr 0 (long eid))
-                                                 (when-not @found (aset merge-datoms mi nil)))))))
-                                       ;; General path: slice-based merge (always used for historical)
-                                       (let [from-d (datom eid ra (when vg? vgv) tx0)
-                                             to-d (datom eid ra (when vg? vgv) txmax)
-                                             mslice (if (aget merge-temporal-only mi)
-                                                      (di/-slice temporal-eavt-pss from-d to-d :eavt)
-                                                      (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))]
-                                         (let [check-v? (aget merge-check-scan-v mi)
-                                               check-tx? (aget merge-check-scan-tx mi)]
-                                           (if anti?
-                                             ;; Anti-merge: check that NO datom in the slice matches all filters
-                                             ;; (including added-filter and shared-variable checks from the scan datom).
-                                             (when (not-any? (fn [^Datom d]
-                                                               (and (== (.-e d) eid) (= (.-a d) ra)
-                                                                    (or (not vg?) (val-eq? (.-v d) vgv))
-                                                                    (or (nil? temporal-tx-filter) (temporal-tx-filter d))
-                                                                    (or (nil? added-filter) (= (datom/datom-added d) added-filter))
-                                                                    (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                                    (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d)))))
-                                                             mslice)
-                                               (process-merges (inc mi)))
-                                             (doseq [^Datom d mslice]
-                                               (when (and (== (.-e d) eid) (= (.-a d) ra)
-                                                          (or (not vg?) (val-eq? (.-v d) vgv))
-                                                          (or (nil? temporal-tx-filter) (temporal-tx-filter d))
-                                                          (or (nil? added-filter) (= (datom/datom-added d) added-filter))
-                                                          (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                          (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))
-                                                 (aset merge-datoms mi d)
-                                                 (process-merges (inc mi)))))))))
-                                   ;; Card-one merge: for temporal queries, use temporal-merge-slice
-                                   ;; to get the correct value at the time point (not the current value).
-                                   ;; For non-temporal, direct lookupGE on current EAVT is fastest.
-                                   (if (nil? temporal-type)
-                                     (let [probe (datom eid ra vgv tx0)
-                                           ^Datom d (.lookupGE ^PersistentSortedSet eavt-pss probe)
-                                           found? (and d (== (.-e d) eid) (= (.-a d) ra)
-                                                       (or (not vg?) (val-eq? (.-v d) vgv))
-                                                       (or (nil? added-filter) (= (datom/datom-added d) added-filter))
-                                                       (or (not (aget merge-check-scan-v mi)) (val-eq? (.-v d) (.-v scan-d)))
-                                                       (or (not (aget merge-check-scan-tx mi)) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
-                                       (if anti?
-                                         (when (not found?) (process-merges (inc mi)))
-                                         (when found?
-                                           (aset merge-datoms mi d)
-                                           (process-merges (inc mi)))))
-                                     ;; Temporal card-one: merge via slice + post-process
-                                     (let [from-d (datom eid ra (when vg? vgv) tx0)
-                                           to-d (datom eid ra (when vg? vgv) txmax)
-                                           mslice (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db)]
-                                       (let [check-v? (aget merge-check-scan-v mi)
-                                             check-tx? (aget merge-check-scan-tx mi)]
-                                         (if anti?
-                                           ;; Anti-merge: check that NO datom matches all filters + shared-var checks.
-                                           (when (not-any? (fn [^Datom d]
-                                                             (and (== (.-e d) eid) (= (.-a d) ra)
-                                                                  (or (not vg?) (val-eq? (.-v d) vgv))
-                                                                  (or (nil? added-filter) (= (datom/datom-added d) added-filter))
-                                                                  (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                                  (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d)))))
-                                                           mslice)
-                                             (process-merges (inc mi)))
-                                           ;; Non-anti: find first datom matching all filters + shared-var checks.
-                                           (when-let [^Datom d (first (cond->> mslice
-                                                                           (or check-v? check-tx?)
-                                                                           (filter (fn [^Datom d]
-                                                                                     (and (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                                                          (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))))))]
-                                             (when (and (== (.-e d) eid) (= (.-a d) ra)
-                                                        (or (not vg?) (val-eq? (.-v d) vgv))
-                                                        (or (nil? added-filter) (= (datom/datom-added d) added-filter)))
-                                               (aset merge-datoms mi d)
-                                               (process-merges (inc mi))))))))))))]
-                     (process-merges 0)))))))
-         :cljs
-         (doseq [scan-d slice
-                 :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
-           (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
-                      (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
-             (let [eid (.-e ^Datom scan-d)]
-               (letfn [(process-merges [mi]
-                         (if (>= mi n-merges)
-                           (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
-                                       n-find find-source const-vals result-list)
-                           (let [anti? (aget merge-anti mi)
-                                 ra (aget merge-attrs mi)
-                                 vg? (aget merge-v-ground mi)
-                                 vgv (aget merge-v-vals mi)
-                                 card-many? (aget merge-card-many mi)
-                                 added-filter (aget merge-added-filter mi)]
-                             (if card-many?
-                               (let [from-d (datom eid ra (when vg? vgv) tx0)
-                                     to-d (datom eid ra (when vg? vgv) txmax)
-                                     temporal-only? (aget merge-temporal-only mi)
-                                     mslice (if temporal-only?
-                                              (di/-slice temporal-eavt-pss from-d to-d :eavt)
-                                              (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db))]
-                                 (if anti?
-                                   ;; Anti-merge: filter by all conditions including added-filter
-                                   ;; and shared-variable checks from the scan datom.
-                                   (let [check-v? (aget merge-check-scan-v mi)
-                                         check-tx? (aget merge-check-scan-tx mi)]
-                                     (when (not-any? (fn [^Datom d]
-                                                       (and (== (.-e d) eid) (= (.-a d) ra)
-                                                            (or (not vg?) (val-eq? (.-v d) vgv))
-                                                            (or (nil? temporal-tx-filter) (temporal-tx-filter d))
-                                                            (or (nil? added-filter) (= (datom/datom-added d) added-filter))
-                                                            (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                            (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d)))))
-                                                     mslice)
-                                       (process-merges (inc mi))))
-                                   (let [check-v? (aget merge-check-scan-v mi)
-                                         check-tx? (aget merge-check-scan-tx mi)]
-                                     (doseq [^Datom d mslice]
-                                       (when (and (== (.-e d) eid) (= (.-a d) ra)
-                                                  (or (not vg?) (val-eq? (.-v d) vgv))
-                                                  (or (nil? temporal-tx-filter) (temporal-tx-filter d))
-                                                  (or (nil? added-filter) (= (datom/datom-added d) added-filter))
-                                                  (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
-                                                  (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))
-                                         (aset merge-datoms mi d) (process-merges (inc mi)))))))
-                               (let [probe (datom eid ra vgv tx0)
-                                     ^Datom d (pss-lookup-ge eavt-pss probe)
-                                     found? (and d (== (.-e d) eid) (= (.-a d) ra)
-                                                 (or (not vg?) (val-eq? (.-v d) vgv))
-                                                 (or (nil? added-filter) (= (datom/datom-added d) added-filter))
-                                                 (or (not (aget merge-check-scan-v mi)) (val-eq? (.-v d) (.-v scan-d)))
-                                                 (or (not (aget merge-check-scan-tx mi)) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
-                                 (if anti?
-                                   (when (not found?) (process-merges (inc mi)))
-                                   (when found?
-                                     (aset merge-datoms mi d) (process-merges (inc mi)))))))))]
-                 (process-merges 0)))))))
+
+    (if (zero? n-merges)
+      (execute-temporal-scan-only slice ground-filter strict-filter
+                                  probe-set probe-datom-field
+                                  collect-set collect-datom-field collect-merge-idx
+                                  merge-datoms n-find find-source const-vals
+                                  result-list max-n temporal-tx-filter scan-added-val)
+      (execute-temporal-merge db eavt-pss slice ground-filter strict-filter
+                              probe-set probe-datom-field
+                              collect-set collect-datom-field collect-merge-idx
+                              merge-datoms n-find find-source const-vals
+                              result-list max-n n-merges
+                              (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti
+                                             merge-card-many merge-added-filter
+                                             merge-check-scan-v merge-check-scan-tx
+                                             merge-temporal-only merge-cursor-cache
+                                             temporal-eavt-pss temporal-cursors
+                                             temporal-type temporal-tx-filter
+                                             scan-added-val origin-db])))
+
     result-list))
 
-;; ---------------------------------------------------------------------------
 ;; Direct-to-output execution (main fast path)
 
 (defn- entity-group-scan-op
