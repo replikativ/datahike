@@ -176,11 +176,11 @@
                         (let [pushdown-var (first (keep :var pushdown-preds))]
                           (when pushdown-var
                             (build-strict-filter strict (get scan-var-map pushdown-var)))))
-        filtered-datoms (cond->> datoms
-                          ground-filter (filter ground-filter)
-                          strict-filter (filter strict-filter))
-        tuples (into [] (map (fn [^Datom d] [(.-e d) (.-a d) (.-v d) (.-tx d) true]))
-                     filtered-datoms)]
+        tuples (into []
+                     (comp (if ground-filter (filter ground-filter) identity)
+                           (if strict-filter (filter strict-filter) identity)
+                           (map (fn [^Datom d] [(.-e d) (.-a d) (.-v d) (.-tx d) true])))
+                     datoms)]
     (rel/->Relation var-map tuples)))
 
 ;; ---------------------------------------------------------------------------
@@ -350,9 +350,9 @@
                (while (.hasNext iter-a)
                  (let [^Datom d (.next iter-a)]
                    (when (or (not keep-history?)
-                             (if scan-attr true
-                                 (or (dbu/no-history? db (.-a d))
-                                     (dbu/multival? db (.-a d)))))
+                             scan-attr
+                             (dbu/no-history? db (.-a d))
+                             (dbu/multival? db (.-a d)))
                      (.add result d))))
                result)
 
@@ -368,10 +368,10 @@
                    ^java.util.Iterator iter-b (.iterator ^Iterable slice-b)
                    result (java.util.ArrayList. 4096)]
                (letfn [(current-ok? [^Datom d]
-                         (if scan-attr true
-                             (or (not keep-history?)
-                                 (dbu/no-history? db (.-a d))
-                                 (dbu/multival? db (.-a d)))))
+                         (or scan-attr
+                             (not keep-history?)
+                             (dbu/no-history? db (.-a d))
+                             (dbu/multival? db (.-a d))))
                        (next-ok-a []
                          (loop [d (when (.hasNext iter-a) (.next iter-a))]
                            (cond (nil? d) nil

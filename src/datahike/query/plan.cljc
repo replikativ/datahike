@@ -48,6 +48,9 @@
 ;; ---------------------------------------------------------------------------
 ;; Pushdown bound computation
 
+(defn- update-bound [bounds bound-key aggr-fn const-val]
+  (update bounds bound-key (fn [cur] (if cur (aggr-fn cur const-val) const-val))))
+
 (defn pushdown-to-bounds
   "Convert pushdown predicates into tighter datom bounds for index slice.
    Returns {:from-v val-or-nil, :to-v val-or-nil, :strict-preds [...]}.
@@ -57,16 +60,12 @@
   (reduce
    (fn [bounds {:keys [op const-val] :as pred}]
      (case op
-       >  (-> (update bounds :from-v
-                      (fn [cur] (if cur (max cur const-val) const-val)))
+       >  (-> (update-bound bounds :from-v max const-val)
               (update :strict-preds (fnil conj []) pred))
-       >= (update bounds :from-v
-                  (fn [cur] (if cur (max cur const-val) const-val)))
-       <  (-> (update bounds :to-v
-                      (fn [cur] (if cur (min cur const-val) const-val)))
+       >= (update-bound bounds :from-v max const-val)
+       <  (-> (update-bound bounds :to-v min const-val)
               (update :strict-preds (fnil conj []) pred))
-       <= (update bounds :to-v
-                  (fn [cur] (if cur (min cur const-val) const-val)))
+       <= (update-bound bounds :to-v min const-val)
        =  (-> bounds
               (assoc :from-v const-val)
               (assoc :to-v const-val))
@@ -506,9 +505,7 @@
       ordered
       (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
             executable (filter #(< (second %) max-cost) scored)
-            best (if (seq executable)
-                   (first (sort-by second executable))
-                   (first (sort-by second scored)))
+            best (first (sort-by second (if (seq executable) executable scored)))
             [chosen-op _] best
             new-vars (into bound-vars (:vars chosen-op))]
         (recur (disj remaining chosen-op)

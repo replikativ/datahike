@@ -55,7 +55,7 @@
   "When true, bypass the query planner and use legacy engine.
    Set DATAHIKE_QUERY_PLANNER=true to enable the query planner.
    Default: legacy engine (query planner is opt-in during testing)."
-  #?(:clj (not (= "true" (System/getenv "DATAHIKE_QUERY_PLANNER")))
+  #?(:clj (not= "true" (System/getenv "DATAHIKE_QUERY_PLANNER"))
      :cljs true))
 
 (def ^:dynamic *query-result-cache?*
@@ -1782,6 +1782,12 @@
                        init-coll)]
       result)))
 
+(defn- scalar-value?
+  "Returns true if v is a scalar value suitable for index lookup."
+  [v]
+  (or (number? v) (string? v) (keyword? v)
+      (boolean? v) (inst? v) (uuid? v)))
+
 (defn- fast-lookup-type
   "Returns :ea for ground [e a ?v], :av for ground [?e a v] patterns that
    can use di/-lookup for a single point lookup instead of the full batch
@@ -1802,8 +1808,7 @@
         ;; [?e a v] — lookup on AVET with AV comparator
         ;; v must be a scalar, attr must be :db/unique (guarantees single result)
         (and (symbol? e) a-ground? tx-free?
-             (or (number? v) (string? v) (keyword? v)
-                 (boolean? v) (inst? v) (uuid? v))
+             (scalar-value? v)
              (:avet source)
              (dbu/is-attr? source a :db/unique))
         :av))))
@@ -2167,46 +2172,42 @@
   "Extract the set of attributes referenced in where-clauses.
    Returns a set of keywords/symbols, or :all if deps cannot be determined."
   [where-clauses]
-  (let [attrs (volatile! #{})
-        all?  (volatile! false)]
-    (letfn [(extract-clauses [clauses]
-              (doseq [clause clauses]
-                (cond
-                  ;; Pattern clause: [?e :attr ?v] or [?e :attr value]
-                  (and (vector? clause) (not (vector? (first clause))))
-                  (let [a (second clause)]
-                    (when (and (some? a) (not (symbol? a)))
-                      (vswap! attrs conj a)))
+  (reduce (fn extract-clause [attrs clause]
+            (cond
+              ;; Pattern clause: [?e :attr ?v] or [?e :attr value]
+              (and (vector? clause) (not (vector? (first clause))))
+              (let [a (second clause)]
+                (if (and (some? a) (not (symbol? a)))
+                  (conj attrs a)
+                  attrs))
 
-                  ;; Predicate/function clause like [(> ?a 50)] — deps come from
-                  ;; the pattern clauses that bind the predicate's vars. Safe to skip.
-                  (and (sequential? clause) (vector? (first clause)))
-                  nil
+              ;; Predicate/function clause like [(> ?a 50)] — deps come from
+              ;; the pattern clauses that bind the predicate's vars. Safe to skip.
+              (and (sequential? clause) (vector? (first clause)))
+              attrs
 
-                  ;; OR / NOT with sub-clauses — recurse to extract attrs
-                  (and (sequential? clause) (symbol? (first clause)))
-                  (let [op-name (name (first clause))]
-                    (case op-name
-                      ("or" "and")
-                      (extract-clauses (rest clause))
+              ;; OR / NOT with sub-clauses — recurse to extract attrs
+              (and (sequential? clause) (symbol? (first clause)))
+              (let [op-name (name (first clause))]
+                (case op-name
+                  ("or" "and")
+                  (reduce extract-clause attrs (rest clause))
 
-                      ("or-join" "not-join")
-                      ;; First arg after op is the join-var binding vector
-                      (extract-clauses (rest (rest clause)))
+                  ("or-join" "not-join")
+                  ;; First arg after op is the join-var binding vector
+                  (reduce extract-clause attrs (rest (rest clause)))
 
-                      "not"
-                      (extract-clauses (rest clause))
+                  "not"
+                  (reduce extract-clause attrs (rest clause))
 
-                      ;; Default: unknown clause type (rule calls, get-else, etc.)
-                      ;; — cannot determine attribute deps, mark :all
-                      (vreset! all? true)))
+                  ;; Default: unknown clause type (rule calls, get-else, etc.)
+                  ;; — cannot determine attribute deps, mark :all
+                  (reduced :all)))
 
-                  ;; Nested vector (e.g., expression clause) — skip
-                  :else nil)))]
-      (extract-clauses where-clauses))
-    (if @all?
-      :all
-      @attrs)))
+              ;; Nested vector (e.g., expression clause) — skip
+              :else attrs))
+          #{}
+          where-clauses))
 
 (defn- result-cache-get
   "Look up a cached query result for the given DB."
@@ -2643,14 +2644,17 @@
 (defn- apply-result-transforms
   "Apply offset/limit/order-by/return-maps to a result set."
   [result order-spec offset limit qreturnmaps]
-  (let [result (if order-spec
+  (let [result (cond
+                 order-spec
                  (apply-order-by result order-spec offset limit)
-                 (if (or offset (and limit (pos? limit)))
-                   (into #{}
-                         (comp (if offset (drop offset) identity)
-                               (if (and limit (pos? limit)) (take limit) identity))
-                         result)
-                   result))]
+
+                 (or offset (and limit (pos? limit)))
+                 (into #{}
+                       (comp (if offset (drop offset) identity)
+                             (if (and limit (pos? limit)) (take limit) identity))
+                       result)
+
+                 :else result)]
     (cond->> result
       qreturnmaps (convert-to-return-maps qreturnmaps))))
 
@@ -2736,10 +2740,10 @@
                  indexed-attrs (when best-idx (:indexed best-idx-info))
                  stratum-compat? (when best-idx
                                    (resolve-stratum-fn 'stratum-compatible-aggs?))
-                 agg-ops (vec (keep (fn [fe]
-                                      (when (instance? Aggregate fe)
-                                        [(keyword (name (.-symbol ^PlainSymbol (.-fn ^Aggregate fe))))]))
-                                    find-elements))]
+                 agg-ops (into [] (keep (fn [fe]
+                                        (when (instance? Aggregate fe)
+                                          [(keyword (name (.-symbol ^PlainSymbol (.-fn ^Aggregate fe))))])))
+                                find-elements)]
              (when (and best-idx stratum-compat? (stratum-compat? agg-ops))
                ;; Determine which sub-ops provide values needed by :find vs which are filter-only
                (let [col-agg-fn sec/-columnar-aggregate
@@ -2939,8 +2943,8 @@
                               (not stats?)
                               (not qreturnmaps)
                               (not (:with query))
-                              (not (some #(instance? Aggregate %) find-elements))
-                              (not (some #(instance? Pull %) find-elements))
+                              (not-any? #(instance? Aggregate %) find-elements)
+                              (not-any? #(instance? Pull %) find-elements)
                               (empty? (:rels context-in)))]
     (when direct-eligible?
       ;; requiring-resolve is cheap after first call: just a ns-map lookup via resolve,

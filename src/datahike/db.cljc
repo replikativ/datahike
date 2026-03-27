@@ -204,16 +204,15 @@
               (fn [indices]
                 (when indices
                   (let [ctx {:ident-ref-map (:ident-ref-map db)}]
-                    (persistent!
-                     (reduce-kv (fn [acc k idx]
-                                  (let [idx (if (satisfies? sec/IDbContextAware idx)
-                                              (sec/-with-db-context idx ctx)
-                                              idx)]
-                                    (assoc! acc k
-                                            (if (satisfies? sec/ITransientSecondaryIndex idx)
-                                              (sec/-as-transient idx)
-                                              idx))))
-                                (transient {}) indices))))))))
+                    (into {}
+                          (map (fn [[k idx]]
+                                 (let [idx (if (satisfies? sec/IDbContextAware idx)
+                                             (sec/-with-db-context idx ctx)
+                                             idx)]
+                                   [k (if (satisfies? sec/ITransientSecondaryIndex idx)
+                                        (sec/-as-transient idx)
+                                        idx)])))
+                          indices)))))))
 
 (defn db-persistent! [db]
   (-> db
