@@ -405,60 +405,66 @@
       (d/transact conn [[:db/retract [:name "Alice"] :likes "cats"]]) ;; retract card-many
       conn)))
 
-(deftest test-history-join
-  (testing "history join with upserted card-one attr"
-    (let [hdb (d/history @(force temporal-db))]
-      (assert-engines-agree hdb
-        '[:find ?a ?tx ?added :where [?e :age ?a ?tx ?added] [?e :name "Alice"]]))))
+(deftest test-temporal-queries
+  (let [conn (force temporal-db)
+        hdb (d/history @conn)
+        tx2 (+ 536870912 2)]
 
-(deftest test-history-bound-tx
-  (testing "history with bound tx from :in"
-    (let [hdb (d/history @(force temporal-db))
-          tx2 (+ 536870912 2)]
+    (testing "history: join with upserted card-one"
+      (assert-engines-agree hdb
+        '[:find ?a ?tx ?added :where [?e :age ?a ?tx ?added] [?e :name "Alice"]]))
+
+    (testing "history: bound tx from :in filters correctly"
       (assert-engines-agree hdb
         '[:find ?e ?a ?v :in $ ?t :where [?e ?a ?v ?t true]]
-        [tx2]))))
+        [tx2]))
 
-(deftest test-history-not
-  (testing "history with NOT anti-merge (value-ground)"
-    (let [hdb (d/history @(force temporal-db))]
+    (testing "history: ground added=false (only retractions)"
       (assert-engines-agree hdb
-        '[:find ?n ?tx ?added :where [?e :name ?n ?tx ?added] (not [?e :age 30])]))))
+        '[:find ?e ?a ?v ?tx :where [?e ?a ?v ?tx false]]))
 
-(deftest test-history-card-many
-  (testing "history with card-many attr"
-    (let [hdb (d/history @(force temporal-db))]
+    (testing "history: NOT anti-merge checks value, not just entity+attr"
       (assert-engines-agree hdb
-        '[:find ?l ?tx ?added :where [?e :likes ?l ?tx ?added] [?e :name "Alice"]]))))
+        '[:find ?n ?tx ?added :where [?e :name ?n ?tx ?added] (not [?e :age 30])]))
 
-(deftest test-as-of-merge
-  (testing "as-of with card-one merge returns correct temporal value"
-    (let [conn (force temporal-db)
-          tx2 (+ 536870912 2)
-          as-of-db (d/as-of @conn tx2)]
-      (assert-engines-agree as-of-db
-        '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))))
-
-(deftest test-since-query
-  (testing "since query"
-    (let [conn (force temporal-db)
-          tx2 (+ 536870912 2)
-          since-db (d/since @conn tx2)]
-      (assert-engines-agree since-db
-        '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))))
-
-(deftest test-history-ground-added
-  (testing "history with ground added=false (only retractions)"
-    (let [hdb (d/history @(force temporal-db))]
+    (testing "history: card-many attr join"
       (assert-engines-agree hdb
-        '[:find ?e ?a ?v ?tx :where [?e ?a ?v ?tx false]]))))
+        '[:find ?l ?tx ?added :where [?e :likes ?l ?tx ?added] [?e :name "Alice"]]))
 
-(deftest test-history-multi-merge-attribute-order
-  (testing "history with multiple merges in different attribute order than EA index"
-    (let [hdb (d/history @(force temporal-db))]
-      ;; This specifically tests per-merge cursors: merge0=:name (later in EA),
-      ;; merge1=:age (earlier in EA). A single shared cursor would fail because
-      ;; after seeking :name it can't go back to :age.
+    (testing "history: multi-merge with per-merge cursors (attribute order differs from EA)"
+      ;; merge0=:name (later in EA), merge1=:age (earlier) — cursor ordering bug
       (assert-engines-agree hdb
         '[:find ?a :in $ ?n ?l :where [?e :name ?n] [?e :age ?a] [?e :likes ?l]]
-        ["Alice" "pizza"]))))
+        ["Alice" "pizza"]))
+
+    (testing "history: predicates on temporal values"
+      (assert-engines-agree hdb
+        '[:find ?n ?a ?tx ?added :where [?e :name ?n] [?e :age ?a ?tx ?added] [(> ?a 26)]]))
+
+    (testing "history: OR clause"
+      (assert-engines-agree hdb
+        '[:find ?n :where [?e :name ?n] (or [?e :age 25] [?e :age 30])]))
+
+    (testing "as-of: card-one merge returns temporal value, not current"
+      (assert-engines-agree (d/as-of @conn tx2)
+        '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))
+
+    (testing "as-of: card-many join"
+      (assert-engines-agree (d/as-of @conn tx2)
+        '[:find ?n ?l :where [?e :name ?n] [?e :likes ?l]]))
+
+    (testing "as-of: NOT"
+      (assert-engines-agree (d/as-of @conn tx2)
+        '[:find ?n :where [?e :name ?n] (not [?e :age 30])]))
+
+    (testing "since: join"
+      (assert-engines-agree (d/since @conn tx2)
+        '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))))
+
+(deftest test-variable-attribute-join
+  (testing "variable-attr scan + merge: all entity datoms pass merge filter"
+    ;; [?e ?a ?v] produces multiple datoms per entity (all attributes).
+    ;; The sorted-scan single cursor can't re-seek the same entity.
+    ;; Disabled sorted-scan when scan attribute is variable.
+    (assert-engines-agree @test-db
+      '[:find ?e ?a ?v :where [?e ?a ?v] [?e :name "Ivan"]])))

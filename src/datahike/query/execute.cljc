@@ -548,8 +548,14 @@
         ;; Single-cursor sorted merge scan (CLJ only)
         ;; Works for both attribute-refs (long attrs) and keyword attrs.
         attr-refs? (:attribute-refs? (dbi/-config db))
+        ;; Sorted scan requires each entity to appear at most once in the scan.
+        ;; Variable-attribute scans (e.g., [?e ?a ?v]) produce multiple datoms per
+        ;; entity, so the shared sorted cursor can't re-seek the same entity.
+        scan-attr-ground? (let [a (second clause)]
+                            (and (some? a) (not (symbol? a))))
         use-sorted-scan? #?(:clj (and use-cursors?
                                       (pos? n-merges)
+                                      scan-attr-ground?
                                       (not has-card-many?)
                                       (every? #(not (aget merge-anti %)) (range n-merges)))
                             :cljs false)
