@@ -461,6 +461,71 @@
       (assert-engines-agree (d/since @conn tx2)
         '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))))
 
+(def temporal-friend-db
+  "DB with history, friendships, and retractions — for shared-variable merge tests."
+  (delay
+    (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+               :keep-history? true :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                          :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                         {:db/ident :id :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                         {:db/ident :age :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one}
+                         {:db/ident :friend :db/valueType :db.type/ref
+                          :db/cardinality :db.cardinality/many}])
+      ;; tx1: initial data
+      (d/transact conn [{:db/id -1 :name "Ivan" :id 1 :age 25 :friend [-2]}
+                         {:db/id -2 :name "Petr" :id 2 :age 30 :friend [-3]}
+                         {:db/id -3 :name "Oleg" :id 3 :age 35}])
+      ;; tx2: update ages (different tx than names)
+      (d/transact conn [{:db/id [:name "Ivan"] :age 26}
+                         {:db/id [:name "Petr"] :age 31}])
+      ;; tx3: retract a friendship
+      (d/transact conn [[:db/retract [:name "Ivan"] :friend [:name "Petr"]]])
+      conn)))
+
+(deftest test-shared-variable-merges
+  (let [conn (force temporal-friend-db)
+        db (d/db conn)
+        hdb (d/history db)]
+
+    (testing "tx-join on current db: [?e :name ?n ?tx] [?e :age ?a ?tx]"
+      ;; Names set at tx1, ages updated at tx2. Only entities whose name and
+      ;; age share the same tx should appear. Without shared-var checks the
+      ;; merge ignores ?tx and returns spurious matches.
+      (assert-engines-agree db
+        '[:find ?n ?a ?tx :where [?e :name ?n ?tx] [?e :age ?a ?tx]]))
+
+    (testing "tx-join on history db"
+      (assert-engines-agree hdb
+        '[:find ?n ?a :where [?e :name ?n ?tx] [?e :age ?a ?tx]]))
+
+    (testing "history NOT with shared ?f and ?tx (anti-merge + added?)"
+      ;; NOT [?e :friend ?f ?tx false]: exclude friendships retracted at
+      ;; the SAME tx as the assertion. The retraction is at tx3, assertions
+      ;; at tx1, so nothing should be excluded.
+      (assert-engines-agree hdb
+        '[:find ?e ?f ?tx :where [?e :friend ?f ?tx true]
+          (not [?e :friend ?f ?tx false])]))
+
+    (testing "history NOT with shared ?f, wildcard tx"
+      ;; NOT [?e :friend ?f _ false]: for each (e,f) pair, check if there
+      ;; is ANY retraction of that specific friend value.
+      (assert-engines-agree hdb
+        '[:find ?e ?f ?tx :where [?e :friend ?f ?tx true]
+          (not [?e :friend ?f _ false])]))
+
+    (testing "history multi-merge cross-product (cursor cache must not collapse)"
+      ;; When the same entity has multiple values for card-one attrs across
+      ;; transactions in history, ALL combinations must appear in the result.
+      ;; A ForwardCursor cache that stores only one datom per entity would
+      ;; miss combinations.
+      (assert-engines-agree hdb
+        '[:find ?n ?a ?s :where [?e :name ?n] [?e :age ?a] [?e :salary ?s]]))))
+
 (deftest test-variable-attribute-join
   (testing "variable-attr scan + merge: all entity datoms pass merge filter"
     ;; [?e ?a ?v] produces multiple datoms per entity (all attributes).
@@ -468,3 +533,83 @@
     ;; Disabled sorted-scan when scan attribute is variable.
     (assert-engines-agree @test-db
       '[:find ?e ?a ?v :where [?e ?a ?v] [?e :name "Ivan"]])))
+
+(deftest test-multi-source-queries
+  (let [schema {:name {:db/unique :db.unique/identity}
+                :id   {:db/unique :db.unique/identity}
+                :friend {:db/valueType :db.type/ref}}
+        db1 (d/db-with (db/empty-db schema)
+                       [{:db/id 1 :name "Ivan" :id 1 :friend 2}
+                        {:db/id 2 :name "Petr" :id 2 :friend 3}
+                        {:db/id 3 :name "Oleg" :id 3}])
+        db2 (d/db-with (db/empty-db schema)
+                       [{:db/id 3 :name "Ivan" :id 3}
+                        {:db/id 1 :name "Petr" :id 1}
+                        {:db/id 2 :name "Oleg" :id 2}])
+        assert-multi
+        (fn [query & extra-args]
+          (let [legacy  (binding [q/*force-legacy* true]
+                          (apply d/q query extra-args))
+                planner (binding [q/*force-legacy* false]
+                          (apply d/q query extra-args))]
+            (is (= (set (seq legacy)) (set (seq planner)))
+                (str "Engines disagree on: " (pr-str query)))))]
+
+    (testing "simple multi-source join"
+      (assert-multi '[:find ?e ?a1 ?a2
+                      :in $1 $2
+                      :where [$1 ?e :name ?a1] [$2 ?e :name ?a2]]
+                    db1 db2))
+
+    (testing "collection-bound lookup refs across sources"
+      (assert-multi '[:find ?e ?e1 ?e2
+                      :in $1 $2 [?e ...]
+                      :where [$1 ?e :id ?e1] [$2 ?e :id ?e2]]
+                    db1 db2 [[:name "Ivan"] [:name "Petr"] [:name "Oleg"]]))
+
+    (testing "scalar lookup ref with multi-source"
+      (assert-multi '[:find ?v
+                      :in $1 ?e
+                      :where [$1 ?e :friend ?v]]
+                    db1 [:name "Ivan"]))
+
+    (testing "multi-source with NOT"
+      (assert-multi '[:find ?n
+                      :in $1 $2
+                      :where [$1 ?e :name ?n]
+                      (not [$2 ?e :name "Ivan"])]
+                    db1 db2))
+
+    (testing "multi-source with predicate"
+      (assert-multi '[:find ?e ?a1 ?a2
+                      :in $1 $2
+                      :where [$1 ?e :name ?n] [$1 ?e :id ?a1]
+                      [$2 ?e :id ?a2] [(> ?a2 1)]]
+                    db1 db2))
+
+    (testing "multi-source with OR"
+      (assert-multi '[:find ?n
+                      :in $1 $2
+                      :where [$1 ?e :name ?n]
+                      (or [$2 ?e :id 3] [$2 ?e :id 1])]
+                    db1 db2))
+
+    (testing "multi-source with disjoint dbs (empty result)"
+      (let [db3 (d/db-with (db/empty-db schema)
+                           [{:db/id 100 :name "Alice" :id 100}])]
+        (assert-multi '[:find ?n1 ?n2
+                        :in $1 $2
+                        :where [$1 ?e :name ?n1] [$2 ?e :name ?n2]]
+                      db1 db3)))
+
+    (testing "collection-bound lookup refs + NOT"
+      ;; The planner correctly resolves lookup refs in NOT sub-queries.
+      ;; Legacy has a known bug here (doesn't resolve lookup refs in NOT context),
+      ;; so we assert the correct result directly.
+      (let [result (binding [q/*force-legacy* false]
+                     (d/q '[:find ?e ?a
+                            :in $1 [?e ...]
+                            :where [$1 ?e :id ?a]
+                            (not [$1 ?e :name "Oleg"])]
+                          db1 [[:name "Ivan"] [:name "Petr"] [:name "Oleg"]]))]
+        (is (= #{[[:name "Ivan"] 1] [[:name "Petr"] 2]} result))))))

@@ -2310,10 +2310,26 @@
 (defn- substitute-consts-with-lookup-refs
   "Like substitute-consts but also resolves lookup refs in pattern positions.
    Used by the query planner which needs patterns normalized before planning.
-   Lookup refs like [:name \"Ivan\"] in e/v positions are resolved to entity IDs."
-  [db where-clauses consts]
-  (letfn [(resolve-clause [clause]
+   Lookup refs like [:name \"Ivan\"] in e/v positions are resolved to entity IDs.
+   For multi-source queries, pass sources so each source-prefixed clause resolves
+   against its own db."
+  ([db where-clauses consts] (substitute-consts-with-lookup-refs db where-clauses consts nil))
+  ([db where-clauses consts sources]
+  (letfn [(resolve-clause
+            ([clause] (resolve-clause db clause))
+            ([resolve-db clause]
             (cond
+              ;; Source-prefixed clauses ($source pattern...) — must be checked BEFORE
+              ;; data patterns because [$1 ?e :attr ?v] is also a vector.
+              (and (sequential? clause) (symbol? (first clause))
+                   (let [s (name (first clause))]
+                     (= \$ (first s))))
+              (let [src-sym (first clause)
+                    src-db (if sources (get sources src-sym resolve-db) resolve-db)
+                    inner-pattern (vec (rest clause))
+                    resolved-inner (resolve-clause src-db inner-pattern)]
+                (cons src-sym resolved-inner))
+
               ;; Data pattern: [e a v ...]
               (and (vector? clause) (not (sequential? (first clause))))
               (let [had-consts? (some #(and (symbol? %) (contains? consts %)) clause)
@@ -2330,8 +2346,8 @@
                                                 (let [e (first substituted)]
                                                   (and (sequential? e) (= 2 (count e)) (keyword? (first e)))))
                     resolved (if (or (not had-consts?) has-lookup-ref-entity?)
-                               (resolve-pattern-lookup-refs db substituted)
-                               (resolve-pattern-lookup-refs-or-nil db substituted))]
+                               (resolve-pattern-lookup-refs resolve-db substituted)
+                               (resolve-pattern-lookup-refs-or-nil resolve-db substituted))]
                 (or resolved substituted))
 
               ;; Data pattern where first elem is a lookup ref
@@ -2339,15 +2355,15 @@
               (and (vector? clause) (vector? (first clause))
                    (= 2 (count (first clause))))
               ;; Inline lookup refs use strict resolution (should throw on missing entities)
-              (resolve-pattern-lookup-refs db clause)
+              (resolve-pattern-lookup-refs resolve-db clause)
 
               ;; (not ...) / (not-join [...] ...)
               (and (sequential? clause) (symbol? (first clause))
                    (#{'not 'not-join} (first clause)))
               (if (= 'not (first clause))
-                (cons 'not (mapv resolve-clause (rest clause)))
+                (cons 'not (mapv (partial resolve-clause resolve-db) (rest clause)))
                 (let [[_ join-vars & body] clause]
-                  (list* 'not-join join-vars (mapv resolve-clause body))))
+                  (list* 'not-join join-vars (mapv (partial resolve-clause resolve-db) body))))
 
               ;; (or ...) / (or-join [...] ...)
               (and (sequential? clause) (symbol? (first clause))
@@ -2355,26 +2371,22 @@
               (if (= 'or (first clause))
                 (cons 'or (map (fn [branch]
                                  (if (and (sequential? branch) (sequential? (first branch)))
-                                   (mapv resolve-clause branch)
-                                   (resolve-clause branch)))
+                                   (mapv (partial resolve-clause resolve-db) branch)
+                                   (resolve-clause resolve-db branch)))
                                (rest clause)))
                 (let [[_ join-vars & branches] clause]
                   (list* 'or-join join-vars
                          (map (fn [branch]
                                 (if (and (sequential? branch) (sequential? (first branch)))
-                                  (mapv resolve-clause branch)
-                                  (resolve-clause branch)))
+                                  (mapv (partial resolve-clause resolve-db) branch)
+                                  (resolve-clause resolve-db branch)))
                               branches))))
 
               ;; (and ...)
               (and (sequential? clause) (= 'and (first clause)))
-              (cons 'and (mapv resolve-clause (rest clause)))
+              (cons 'and (mapv (partial resolve-clause resolve-db) (rest clause)))
 
-              ;; Source-prefixed clauses ($2 ...)
-              (and (sequential? clause) (symbol? (first clause))
-                   (let [s (name (first clause))]
-                     (= \$ (first s))))
-              (cons (first clause) (mapv resolve-clause (rest clause)))
+              ;; Source-prefixed: already handled at top of cond
 
               ;; Rule calls: (rule-name ?arg1 ?arg2 ...) — substitute scalar consts in args.
               ;; Only substitute data values (numbers, strings, keywords, booleans),
@@ -2427,8 +2439,8 @@
                             (if (list? x) (apply list substituted) (vec substituted)))
                           :else x))
                       clause)
-                clause)))]
-    (mapv resolve-clause where-clauses)))
+                clause))))]
+    (mapv resolve-clause where-clauses))))
 
 (defn- has-lookup-ref-bindings?
   "Check if any :in binding contains lookup refs (sequential values like [:name \"Ivan\"]).
@@ -3048,18 +3060,25 @@
         order-spec    (when (and order-by (instance? FindRel qfind))
                         (parse-order-by order-by find-elements))
 
+        ;; Find the primary db for planning: $ if available, else first eligible source
+        primary-db (let [sources (:sources context-in)]
+                     (or (get sources '$)
+                         (some (fn [[_k v]] (when (and (dbu/db? v) (planner-eligible-db? v)) v))
+                               sources)))
+        multi-source? (> (count (:sources context-in)) 1)
         use-planner? (and (not *force-legacy*)
                           (not stats?)
-                          ;; Multi-source queries ($1/$2) fall back to legacy.
-                          ;; The planner resolves lookup refs and plans against a single db.
-                          ;; Multi-source support requires per-source resolution which is
-                          ;; a larger feature (each source may have different entity IDs).
-                          (<= (count (:sources context-in)) 1)
-                          (let [db (get (:sources context-in) '$)]
-                            (and db (dbu/db? db) (planner-eligible-db? db))))
+                          (some? primary-db)
+                          (dbu/db? primary-db)
+                          (planner-eligible-db? primary-db))
         [context-in lookup-ref-reverse-map]
         (if use-planner?
-          (resolve-lookup-ref-bindings (get (:sources context-in) '$) context-in)
+          ;; For multi-source, don't pre-resolve lookup refs in :in bindings —
+          ;; they may resolve to different entity IDs per source. The relation path's
+          ;; lookup-batch-search handles per-source resolution at match time.
+          (if multi-source?
+            [context-in nil]
+            (resolve-lookup-ref-bindings primary-db context-in))
           [context-in nil])]
 
     (if (and limit (zero? limit))
@@ -3067,14 +3086,16 @@
 
       (if (and use-planner?
                ;; Nested temporal wrappers (e.g. (d/history (d/as-of ...))) → legacy
-               (planner-origin-db (get (:sources context-in) '$)))
-        (let [db (get (:sources context-in) '$)
+               (planner-origin-db primary-db))
+        (let [db primary-db
               ;; For temporal wrappers, use origin-db for plan creation (schema, index stats)
               plan-db (planner-origin-db db)
               bound-vars (context-bound-vars context-in)
               ;; Use the actual db (not origin) for lookup-ref resolution — temporal
               ;; DBs (history) can resolve retracted entities that origin-db can't.
-              clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
+              ;; For multi-source, pass sources so each clause resolves against its source db.
+              clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
+                                                          (when multi-source? (:sources context-in)))
               rules (not-empty (:rules context-in))
               plan (get-or-create-plan plan-db clauses bound-vars rules)]
 
