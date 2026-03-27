@@ -382,3 +382,73 @@
   (testing "FindRel (default)"
     (assert-engines-agree @test-db
                           '[:find ?e ?a :where [?e :name "Ivan"] [?e :age ?a]])))
+
+;; ---------------------------------------------------------------------------
+;; Temporal query tests (HistoricalDB, AsOfDB, SinceDB)
+
+(def temporal-db
+  (delay
+    (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+               :keep-history? true :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                          :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                         {:db/ident :age :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one}
+                         {:db/ident :likes :db/valueType :db.type/string
+                          :db/cardinality :db.cardinality/many}])
+      (d/transact conn [{:name "Alice" :age 25 :likes ["cats" "pizza"]}
+                         {:name "Bob" :age 30}])
+      (d/transact conn [{:name "Alice" :age 26}])       ;; upsert age
+      (d/transact conn [{:name "Alice" :age 27}])       ;; another upsert
+      (d/transact conn [[:db/retract [:name "Alice"] :likes "cats"]]) ;; retract card-many
+      conn)))
+
+(deftest test-history-join
+  (testing "history join with upserted card-one attr"
+    (let [hdb (d/history @(force temporal-db))]
+      (assert-engines-agree hdb
+        '[:find ?a ?tx ?added :where [?e :age ?a ?tx ?added] [?e :name "Alice"]]))))
+
+(deftest test-history-bound-tx
+  (testing "history with bound tx from :in"
+    (let [hdb (d/history @(force temporal-db))
+          tx2 (+ 536870912 2)]
+      (assert-engines-agree hdb
+        '[:find ?e ?a ?v :in $ ?t :where [?e ?a ?v ?t true]]
+        [tx2]))))
+
+(deftest test-history-not
+  (testing "history with NOT anti-merge (value-ground)"
+    (let [hdb (d/history @(force temporal-db))]
+      (assert-engines-agree hdb
+        '[:find ?n ?tx ?added :where [?e :name ?n ?tx ?added] (not [?e :age 30])]))))
+
+(deftest test-history-card-many
+  (testing "history with card-many attr"
+    (let [hdb (d/history @(force temporal-db))]
+      (assert-engines-agree hdb
+        '[:find ?l ?tx ?added :where [?e :likes ?l ?tx ?added] [?e :name "Alice"]]))))
+
+(deftest test-as-of-merge
+  (testing "as-of with card-one merge returns correct temporal value"
+    (let [conn (force temporal-db)
+          tx2 (+ 536870912 2)
+          as-of-db (d/as-of @conn tx2)]
+      (assert-engines-agree as-of-db
+        '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))))
+
+(deftest test-since-query
+  (testing "since query"
+    (let [conn (force temporal-db)
+          tx2 (+ 536870912 2)
+          since-db (d/since @conn tx2)]
+      (assert-engines-agree since-db
+        '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))))
+
+(deftest test-history-ground-added
+  (testing "history with ground added=false (only retractions)"
+    (let [hdb (d/history @(force temporal-db))]
+      (assert-engines-agree hdb
+        '[:find ?e ?a ?v ?tx :where [?e ?a ?v ?tx false]]))))

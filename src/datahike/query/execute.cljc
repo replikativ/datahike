@@ -1057,7 +1057,8 @@
                                                  found (volatile! nil)]
                                              (if anti?
                                                (do (aset cache-eid-arr 0 (long eid))
-                                                   (if (or (nil? d) (not (== (.-e d) eid)) (not (= (.-a d) ra)))
+                                                   (if (or (nil? d) (not (== (.-e d) eid)) (not (= (.-a d) ra))
+                                                           (and vg? (not (val-eq? (.-v d) vgv))))
                                                      (do (aset merge-datoms mi nil)
                                                          (process-merges (inc mi)))
                                                      (aset merge-datoms mi d)))
@@ -1090,16 +1091,33 @@
                                                         (or (nil? added-filter) (= (datom/datom-added d) added-filter)))
                                                (aset merge-datoms mi d)
                                                (process-merges (inc mi))))))))
-                                   (let [probe (datom eid ra vgv tx0)
-                                         ^Datom d (.lookupGE ^PersistentSortedSet eavt-pss probe)
-                                         found? (and d (== (.-e d) eid) (= (.-a d) ra)
-                                                     (or (not vg?) (val-eq? (.-v d) vgv))
-                                                     (or (nil? added-filter) (= (datom/datom-added d) added-filter)))]
-                                     (if anti?
-                                       (when (not found?) (process-merges (inc mi)))
-                                       (when found?
-                                         (aset merge-datoms mi d)
-                                         (process-merges (inc mi)))))))))]
+                                   ;; Card-one merge: for temporal queries, use temporal-merge-slice
+                                   ;; to get the correct value at the time point (not the current value).
+                                   ;; For non-temporal, direct lookupGE on current EAVT is fastest.
+                                   (if (nil? temporal-type)
+                                     (let [probe (datom eid ra vgv tx0)
+                                           ^Datom d (.lookupGE ^PersistentSortedSet eavt-pss probe)
+                                           found? (and d (== (.-e d) eid) (= (.-a d) ra)
+                                                       (or (not vg?) (val-eq? (.-v d) vgv))
+                                                       (or (nil? added-filter) (= (datom/datom-added d) added-filter)))]
+                                       (if anti?
+                                         (when (not found?) (process-merges (inc mi)))
+                                         (when found?
+                                           (aset merge-datoms mi d)
+                                           (process-merges (inc mi)))))
+                                     ;; Temporal card-one: merge via slice + post-process
+                                     (let [from-d (datom eid ra (when vg? vgv) tx0)
+                                           to-d (datom eid ra (when vg? vgv) txmax)
+                                           mslice (temporal-merge-slice origin-db from-d to-d temporal-type temporal-tx-filter db)]
+                                       (if anti?
+                                         (when (empty? (seq mslice))
+                                           (process-merges (inc mi)))
+                                         (when-let [^Datom d (first mslice)]
+                                           (when (and (== (.-e d) eid) (= (.-a d) ra)
+                                                      (or (not vg?) (val-eq? (.-v d) vgv))
+                                                      (or (nil? added-filter) (= (datom/datom-added d) added-filter)))
+                                             (aset merge-datoms mi d)
+                                             (process-merges (inc mi)))))))))))]
                      (process-merges 0)))))))
          :cljs
          (doseq [scan-d slice
