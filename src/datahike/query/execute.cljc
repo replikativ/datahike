@@ -955,11 +955,20 @@
                                                                            (when (and (some? ma) (not (symbol? ma)))
                                                                              (resolve-attr origin-db ma)))))))
                                             merge-ops))
-        ;; ForwardCursor on temporal index for card-one history merge lookups (CLJ only)
-        temporal-cursor
+        ;; Per-merge ForwardCursors on temporal index (CLJ only).
+        ;; Each merge gets its own independent cursor so merges can be processed
+        ;; in plan order without requiring EA attribute ordering. A single shared
+        ;; cursor fails when merge0=:name, merge1=:age because :age < :name in
+        ;; EA order and the forward-only cursor can't seek backward.
+        temporal-cursors
         #?(:clj (when (and temporal-eavt-pss (some true? (seq merge-temporal-only)))
-                  (.forwardCursor ^PersistentSortedSet temporal-eavt-pss
-                                  ^java.util.Comparator fast-cmp-ea))
+                  (let [cursors (object-array n-merges)]
+                    (dotimes [i n-merges]
+                      (when (aget merge-temporal-only i)
+                        (aset cursors i
+                              (.forwardCursor ^PersistentSortedSet temporal-eavt-pss
+                                              ^java.util.Comparator fast-cmp-ea))))
+                    cursors))
            :cljs nil)
         merge-clauses (mapv :clause merge-ops)
         n-find (count find-vars)
@@ -1039,7 +1048,7 @@
                                      added-filter (aget merge-added-filter mi)]
                                  (if card-many?
                                    (let [temporal-only? (aget merge-temporal-only mi)]
-                                     (if (and temporal-only? temporal-cursor)
+                                     (if (and temporal-only? temporal-cursors (aget temporal-cursors mi))
                                        ;; Fast path: ForwardCursor on temporal index.
                                        ;; Uses per-entity cache to handle historical mode where the same
                                        ;; entity appears in multiple scan datoms (ForwardCursor can't re-seek backwards).
@@ -1053,7 +1062,8 @@
                                                (when cached (process-merges (inc mi)))))
                                            ;; Cache miss: new entity — seek cursor and cache
                                            (let [probe (datom eid ra (when vg? vgv) tx0)
-                                                 ^Datom d (.seekGE ^PersistentSortedSet$ForwardCursor temporal-cursor probe)
+                                                 ^PersistentSortedSet$ForwardCursor cur (aget temporal-cursors mi)
+                                                 ^Datom d (.seekGE cur probe)
                                                  found (volatile! nil)]
                                              (if anti?
                                                (do (aset cache-eid-arr 0 (long eid))
@@ -1064,14 +1074,14 @@
                                                      (aset merge-datoms mi d)))
                                                ;; iterate all datoms for this entity+attr
                                                (do
-                                                 (loop [^Datom cur d]
-                                                   (when (and cur (== (.-e cur) eid) (= (.-a cur) ra))
-                                                     (when (and (or (not vg?) (val-eq? (.-v cur) vgv))
-                                                                (or (nil? added-filter) (= (datom/datom-added cur) added-filter)))
-                                                       (vreset! found cur)
-                                                       (aset merge-datoms mi cur)
+                                                 (loop [^Datom md d]
+                                                   (when (and md (== (.-e md) eid) (= (.-a md) ra))
+                                                     (when (and (or (not vg?) (val-eq? (.-v md) vgv))
+                                                                (or (nil? added-filter) (= (datom/datom-added md) added-filter)))
+                                                       (vreset! found md)
+                                                       (aset merge-datoms mi md)
                                                        (process-merges (inc mi)))
-                                                     (recur (.next ^PersistentSortedSet$ForwardCursor temporal-cursor))))
+                                                     (recur (.next cur))))
                                                  ;; Cache the result for next scan datom with same entity
                                                  (aset cache-eid-arr 0 (long eid))
                                                  (when-not @found (aset merge-datoms mi nil)))))))

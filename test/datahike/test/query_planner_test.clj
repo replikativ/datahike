@@ -452,3 +452,13 @@
     (let [hdb (d/history @(force temporal-db))]
       (assert-engines-agree hdb
         '[:find ?e ?a ?v ?tx :where [?e ?a ?v ?tx false]]))))
+
+(deftest test-history-multi-merge-attribute-order
+  (testing "history with multiple merges in different attribute order than EA index"
+    (let [hdb (d/history @(force temporal-db))]
+      ;; This specifically tests per-merge cursors: merge0=:name (later in EA),
+      ;; merge1=:age (earlier in EA). A single shared cursor would fail because
+      ;; after seeking :name it can't go back to :age.
+      (assert-engines-agree hdb
+        '[:find ?a :in $ ?n ?l :where [?e :name ?n] [?e :age ?a] [?e :likes ?l]]
+        ["Alice" "pizza"]))))
