@@ -2838,11 +2838,12 @@
                                                        (if agg-col [op agg-col] [op]))))
                                                  find-elements))
                          ;; WHERE: covered v-ground equality constraints
+                         ;; Keywords are stored as strings in stratum dict-encoded columns
                          where-equality (vec (keep (fn [sub-op]
                                                      (when-let [v-ground (:v-ground sub-op)]
                                                        (let [a (resolve-attr (or (:attr sub-op) (get-in sub-op [:schema-info :attr])))]
                                                          (when (contains? indexed-attrs a)
-                                                           [:= (attr-col-key a) v-ground]))))
+                                                           [:= (attr-col-key a) (if (keyword? v-ground) (name v-ground) v-ground)]))))
                                                    sub-ops))
                          ;; WHERE: translate predicates on covered columns
                          pred-ops (filter #(= :predicate (:op %)) (:ops plan))
