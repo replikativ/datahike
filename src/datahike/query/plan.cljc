@@ -529,52 +529,44 @@
             (create-plan db branch-clauses bound-vars rules)))
         branches))
 
-(defn- plan-or-op [db clause-info bound-vars rules]
-  (let [sub-plans (normalize-and-plan-branches db (:branches clause-info) bound-vars rules)
-        total-est (reduce + 0 (keep (fn [p] (some :estimated-card (:ops p))) sub-plans))]
-    {:op :or
-     :clause (:clause clause-info)
-     :branches sub-plans
-     :vars (:vars clause-info)
-     :estimated-card (max 1 total-est)}))
+(defn- plan-or-op
+  "Plan an OR or OR-JOIN clause. When join-vars? is true, validates and
+   includes :join-vars in the op (OR-JOIN semantics)."
+  ([db clause-info bound-vars rules]
+   (plan-or-op db clause-info bound-vars rules false))
+  ([db clause-info bound-vars rules join-vars?]
+   (let [join-vars (when join-vars?
+                     (let [raw (:join-vars clause-info)]
+                       (when (some sequential? raw)
+                         (throw (ex-info (str "Insufficient bindings: "
+                                              (into #{} (mapcat analyze/extract-vars) raw)
+                                              " not bound in " (:clause clause-info))
+                                         {:error :query/where :form (:clause clause-info)})))
+                       (set raw)))
+         sub-plans (normalize-and-plan-branches db (:branches clause-info) bound-vars rules)
+         total-est (reduce + 0 (keep (fn [p] (some :estimated-card (:ops p))) sub-plans))]
+     (cond-> {:op (if join-vars? :or-join :or)
+              :clause (:clause clause-info)
+              :branches sub-plans
+              :vars (:vars clause-info)
+              :estimated-card (max 1 total-est)}
+       join-vars? (assoc :join-vars join-vars)))))
 
-(defn- plan-or-join-op [db clause-info bound-vars rules]
-  (let [raw-join-vars (:join-vars clause-info)
-        _ (when (some sequential? raw-join-vars)
-            (throw (ex-info (str "Insufficient bindings: "
-                                 (into #{} (mapcat analyze/extract-vars) raw-join-vars)
-                                 " not bound in " (:clause clause-info))
-                            {:error :query/where
-                             :form (:clause clause-info)})))
-        join-vars (set raw-join-vars)
-        sub-plans (normalize-and-plan-branches db (:branches clause-info) bound-vars rules)
-        total-est (reduce + 0 (keep (fn [p] (some :estimated-card (:ops p))) sub-plans))]
-    {:op :or-join
-     :clause (:clause clause-info)
-     :join-vars join-vars
-     :branches sub-plans
-     :vars (:vars clause-info)
-     :estimated-card (max 1 total-est)}))
-
-(defn- plan-not-op [db clause-info bound-vars rules]
-  (let [sub-plan (create-plan db (vec (:sub-clauses clause-info)) bound-vars rules)]
-    {:op :not
-     :clause (:clause clause-info)
-     :sub-plan sub-plan
-     :vars (:vars clause-info)
-     :estimated-card nil}))
-
-(defn- plan-not-join-op [db clause-info bound-vars rules]
-  (let [join-vars (set (:join-vars clause-info))
-        ;; Sub-plan starts with only join-vars bound — inner NOT validation
-        ;; needs accurate binding tracking, not all-clause-vars from outer scope
-        sub-plan (create-plan db (vec (:sub-clauses clause-info)) join-vars rules)]
-    {:op :not-join
-     :clause (:clause clause-info)
-     :join-vars join-vars
-     :sub-plan sub-plan
-     :vars (:vars clause-info)
-     :estimated-card nil}))
+(defn- plan-not-op
+  "Plan a NOT or NOT-JOIN clause. When join-vars? is true, scopes the
+   sub-plan to only the join-vars (NOT-JOIN semantics)."
+  ([db clause-info bound-vars rules]
+   (plan-not-op db clause-info bound-vars rules false))
+  ([db clause-info bound-vars rules join-vars?]
+   (let [join-vars (when join-vars? (set (:join-vars clause-info)))
+         sub-plan (create-plan db (vec (:sub-clauses clause-info))
+                               (if join-vars? join-vars bound-vars) rules)]
+     (cond-> {:op (if join-vars? :not-join :not)
+              :clause (:clause clause-info)
+              :sub-plan sub-plan
+              :vars (:vars clause-info)
+              :estimated-card nil}
+       join-vars? (assoc :join-vars join-vars)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Rule SCC detection and expansion
@@ -907,10 +899,10 @@
                     :function (update acc :ops conj (plan-function-op ci db))
                     :predicate (update acc :ops conj [:maybe-pred ci])
                     :or (update acc :ops conj (plan-or-op db ci all-clause-vars rules))
-                    :or-join (update acc :ops conj (plan-or-join-op db ci all-clause-vars rules))
+                    :or-join (update acc :ops conj (plan-or-op db ci all-clause-vars rules true))
                     ;; Collect NOT ops separately for anti-merge folding
                     :not (update acc :not-ops conj (plan-not-op db ci all-clause-vars rules))
-                    :not-join (update acc :ops conj (plan-not-join-op db ci all-clause-vars rules))
+                    :not-join (update acc :ops conj (plan-not-op db ci all-clause-vars rules true))
                     :and (let [sub-plan (create-plan db (vec (:sub-clauses ci)) all-clause-vars rules)]
                            (update acc :ops into (:ops sub-plan)))
 
@@ -930,12 +922,12 @@
                         (let [op (plan-not-op db inner-ci all-clause-vars rules)]
                           (update acc :ops conj (assoc op :source source-sym)))
                         :not-join
-                        (let [op (plan-not-join-op db inner-ci all-clause-vars rules)]
+                        (let [op (plan-not-op db inner-ci all-clause-vars rules true)]
                           (update acc :ops conj (assoc op :source source-sym)))
                         :or
                         (update acc :ops conj (assoc (plan-or-op db inner-ci all-clause-vars rules) :source source-sym))
                         :or-join
-                        (update acc :ops conj (assoc (plan-or-join-op db inner-ci all-clause-vars rules) :source source-sym))
+                        (update acc :ops conj (assoc (plan-or-op db inner-ci all-clause-vars rules true) :source source-sym))
                         ;; Source-prefix wrapping another source-prefix or unknown
                         (update acc :ops conj (plan-passthrough-op ci))))
 

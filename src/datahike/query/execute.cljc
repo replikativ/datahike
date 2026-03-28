@@ -118,6 +118,25 @@
             (= a b))
      :cljs (= a b)))
 
+(defmacro ^:private merge-datom-match?
+  "Inline predicate: does merge datom d match entity+attr+value+shared-var constraints?
+   Expands in place for zero-overhead in hot loops."
+  [d eid ra vg? vgv check-v? check-tx? scan-d]
+  `(and (== (.-e ~d) ~eid) (= (.-a ~d) ~ra)
+        (or (not ~vg?) (val-eq? (.-v ~d) ~vgv))
+        (or (not ~check-v?) (val-eq? (.-v ~d) (.-v ~scan-d)))
+        (or (not ~check-tx?) (= (datom/datom-tx ~d) (datom/datom-tx ~scan-d)))))
+
+(defmacro ^:private temporal-merge-datom-match?
+  "Like merge-datom-match? but also checks temporal-tx-filter and added-filter."
+  [d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter]
+  `(and (== (.-e ~d) ~eid) (= (.-a ~d) ~ra)
+        (or (not ~vg?) (val-eq? (.-v ~d) ~vgv))
+        (or (nil? ~temporal-tx-filter) (~temporal-tx-filter ~d))
+        (or (nil? ~added-filter) (= (datom/datom-added ~d) ~added-filter))
+        (or (not ~check-v?) (val-eq? (.-v ~d) (.-v ~scan-d)))
+        (or (not ~check-tx?) (= (datom/datom-tx ~d) (datom/datom-tx ~scan-d)))))
+
 (defn- build-ground-filter
   "Build a filter for ground components not covered by the index bounds."
   [clause index]
@@ -211,6 +230,9 @@
 (def ^:private ^:const find-src-const -10)
 (def ^:private ^:const find-src-merge-v-base 0)
 (def ^:private ^:const find-src-merge-e-base 1000)
+(def ^:private ^:const find-src-merge-a-base 2000)
+(def ^:private ^:const find-src-merge-tx-base 3000)
+(def ^:private ^:const find-src-merge-added-base 4000)
 
 ;; Macros for filter/emit to avoid duplication across loop branches.
 ;; These expand inline, so the JIT sees them as part of the same method.
@@ -273,10 +295,10 @@
                        (== src# find-src-scan-tx) (datom/datom-tx ~d)
                        (== src# find-src-scan-added) (datom/datom-added ~d)
                        (< src# find-src-merge-e-base) (let [~md (aget ~merge-datoms src#)] (.-v ~md))
-                       (< src# 2000) (let [~md (aget ~merge-datoms (- src# find-src-merge-e-base))] (.-e ~md))
-                       (< src# 3000) (let [~md (aget ~merge-datoms (- src# 2000))] (.-a ~md))
-                       (< src# 4000) (let [~md (aget ~merge-datoms (- src# 3000))] (datom/datom-tx ~md))
-                       :else (let [~md (aget ~merge-datoms (- src# 4000))] (datom/datom-added ~md))))))
+                       (< src# find-src-merge-a-base) (let [~md (aget ~merge-datoms (- src# find-src-merge-e-base))] (.-e ~md))
+                       (< src# find-src-merge-tx-base) (let [~md (aget ~merge-datoms (- src# find-src-merge-a-base))] (.-a ~md))
+                       (< src# find-src-merge-added-base) (let [~md (aget ~merge-datoms (- src# find-src-merge-tx-base))] (datom/datom-tx ~md))
+                       :else (let [~md (aget ~merge-datoms (- src# find-src-merge-added-base))] (datom/datom-added ~md))))))
            (result-list-add ~result-list out#))))))
 
 ;; ---------------------------------------------------------------------------
@@ -915,9 +937,9 @@
                        (some (fn [[i x]]
                                (when (= x fvar)
                                  (case (int i)
-                                   0 (+ mi find-src-merge-e-base) 1 (+ mi 2000)
-                                   2 (+ mi find-src-merge-v-base) 3 (+ mi 3000)
-                                   4 (+ mi 4000) nil)))
+                                   0 (+ mi find-src-merge-e-base) 1 (+ mi find-src-merge-a-base)
+                                   2 (+ mi find-src-merge-v-base) 3 (+ mi find-src-merge-tx-base)
+                                   4 (+ mi find-src-merge-added-base) nil)))
                              (map-indexed vector mc)))
                      (map-indexed vector merge-clauses))
                0)))
@@ -1377,9 +1399,9 @@
                        (some (fn [[i x]]
                                (when (= x fvar)
                                  (case (int i)
-                                   0 (+ mi find-src-merge-e-base) 1 (+ mi 2000)
-                                   2 (+ mi find-src-merge-v-base) 3 (+ mi 3000)
-                                   4 (+ mi 4000) nil)))
+                                   0 (+ mi find-src-merge-e-base) 1 (+ mi find-src-merge-a-base)
+                                   2 (+ mi find-src-merge-v-base) 3 (+ mi find-src-merge-tx-base)
+                                   4 (+ mi find-src-merge-added-base) nil)))
                              (map-indexed vector mc)))
                      (map-indexed vector merge-clauses))
                0)))
