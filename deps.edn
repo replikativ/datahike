@@ -72,7 +72,7 @@
                                ;; secondary index integrations (for testing)
                                org.replikativ/proximum       {:mvn/version "0.1.24"}
                                org.replikativ/scriptum       {:mvn/version "0.1.23"}
-                               org.replikativ/stratum        {:local/root "../stratum"}
+                               org.replikativ/stratum        {:mvn/version "0.1.49"}
 
                                ;; kabel integration for distributed datahike
                                org.replikativ/kabel          {:mvn/version "0.3.93"}
@@ -142,20 +142,14 @@
            ;; Run via: clj -M:bench-compare -m benchmark.datascript-bench all
            :bench-compare {:extra-paths ["benchmark/src"]
                            :extra-deps {datalevin/datalevin {:mvn/version "0.10.7"
-                                                             :exclusions [com.taoensso/timbre
-                                                                          com.taoensso/encore]}
+                                                             :exclusions [com.taoensso/timbre]}
                                         com.datomic/peer {:mvn/version "1.0.7277"}
                                         com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.6.1"}
-                                        org.replikativ/stratum {:mvn/version "0.1.45"
-                                                                :exclusions [org.slf4j/slf4j-reload4j
-                                                                             ch.qos.reload4j/reload4j]}}}
+                                        }}
 
            :bench-sql {:extra-paths ["benchmark/src"]
                        :extra-deps {org.postgresql/postgresql {:mvn/version "42.7.3"}
                                     org.xerial/sqlite-jdbc {:mvn/version "3.46.1.0"}
-                                    org.replikativ/stratum {:mvn/version "0.1.45"
-                                                            :exclusions [org.slf4j/slf4j-reload4j
-                                                                         ch.qos.reload4j/reload4j]}
                                     com.clojure-goes-fast/clj-async-profiler {:mvn/version "1.6.1"}}
                        :main-opts ["-m" "benchmark.sql-bench"]}
 

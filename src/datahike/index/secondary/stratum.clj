@@ -24,6 +24,7 @@
    [datahike.db.interface :as dbi]
    [stratum.api :as st]
    [stratum.dataset :as sd]
+   [stratum.index :as sidx]
    [stratum.storage :as ss])
   (:import
    [datahike.datom Datom]))
@@ -438,17 +439,11 @@
   (-columnar-aggregate [_ query-spec entity-filter]
     (when dataset
       (if entity-filter
-        ;; Build long[] mask: 1 for rows whose :eid is in the bitmap
-        (let [eid-col ^longs (:data (sd/column dataset :eid))
-              n (int (st/row-count dataset))
-              mask (long-array n)]
-          (dotimes [i n]
-            (when (es/entity-bitset-contains? entity-filter (aget eid-col i))
-              (aset mask i 1)))
-          ;; Add mask as synthetic column, filter with [:= :__eid_mask 1]
-          (let [mask-ds (sd/add-column dataset :__eid_mask mask)
-                where (conj (vec (:where query-spec)) [:= :__eid_mask 1])]
-            (st/q (assoc query-spec :from mask-ds :where where))))
+        ;; Push entity-filter as a :fn predicate on the :eid column.
+        ;; Stratum compiles this into the fused filter+aggregate loop — no mask allocation.
+        (let [eid-pred (fn [^long eid] (es/entity-bitset-contains? entity-filter eid))
+              where (conj (vec (:where query-spec)) [:fn :eid eid-pred])]
+          (st/q (assoc query-spec :from dataset :where where)))
         (st/q (assoc query-spec :from dataset))))))
 
 ;; ---------------------------------------------------------------------------
@@ -506,7 +501,9 @@
         current-cols (when current-ds (st/columns current-ds))
         current-n (if current-ds (st/row-count current-ds) 0)
         surviving-eids (when (and has-retracts? (pos? current-n))
-                         (let [eid-col (:data (get current-cols :eid))
+                         (let [eid-col-info (get current-cols :eid)
+                               eid-col (or (:data eid-col-info)
+                                           (sidx/idx-materialize-to-array (:index eid-col-info)))
                                survivors (java.util.ArrayList.)]
                            (dotimes [i current-n]
                              (let [eid (aget ^longs eid-col i)]
@@ -539,7 +536,10 @@
               (into {}
                     (map (fn [col-key]
                            (let [current-col-info (when current-cols (get current-cols col-key))
-                                 current-col-data (when current-col-info (:data current-col-info))
+                                 current-col-data (when current-col-info
+                                                    (or (:data current-col-info)
+                                                        (when-let [idx (:index current-col-info)]
+                                                          (sidx/idx-materialize-to-array idx))))
                                  has-dict? (:dict current-col-info)
                                  ;; String col: raw String[], OR dict-encoded (data=long[] + dict=String[]),
                                  ;; OR new column with string values in pending
