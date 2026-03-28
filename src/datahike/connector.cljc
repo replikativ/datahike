@@ -226,7 +226,7 @@
                                              (= :building (:db.secondary/status entry))
                                              ;; Only backfill if no stored key-map exists
                                              (not (get sec-idx-keys ident)))]
-                            (log/info :datahike/secondary-index-backfill {:ident ident})
+                            (log/trace :datahike/secondary-index-backfill {:ident ident})
                             (w/dispatch! (:writer db)
                                          {:op 'build-secondary-index!
                                           :args [ident]}))))

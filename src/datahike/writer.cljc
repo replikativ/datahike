@@ -235,7 +235,7 @@
           ;; Dispatch backfill for any newly created secondary indices
           #?(:clj
              (doseq [idx-ident (detect-new-building-indices tx-report)]
-               (log/info :datahike/dispatch-backfill {:idx-ident idx-ident})
+               (log/trace :datahike/dispatch-backfill {:idx-ident idx-ident})
                ;; build-secondary-index! is async (returns channel).
                ;; When it completes, dispatch install to swap in the result.
                (go

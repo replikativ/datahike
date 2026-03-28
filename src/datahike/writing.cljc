@@ -423,7 +423,7 @@
       transactions during backfill. When complete, dispatches a lightweight
       install-secondary-index! op to atomically swap in the result."
      [old idx-ident]
-     (log/info :datahike/build-secondary-index {:idx-ident idx-ident})
+     (log/trace :datahike/build-secondary-index {:idx-ident idx-ident})
      ;; Return a channel — writer runs this in background (lines 89-93 of writer.cljc)
      (let [db old
            idx (get-in db [:secondary-indices idx-ident])
@@ -458,7 +458,7 @@
               final-idx (if use-transient?
                           (sec/-persistent! populated-idx)
                           populated-idx)]
-          (log/info :datahike/secondary-index-built {:idx-ident idx-ident})
+          (log/trace :datahike/secondary-index-built {:idx-ident idx-ident})
           ;; Return the populated index — the writer dispatch callback
           ;; receives this, but we need to install it via a separate writer op.
           ;; Store it in an atom for install-secondary-index! to pick up.
@@ -482,7 +482,7 @@
   "Writer operation for merge. Applies tx-data and records merge parents
    on the db meta so the commit loop creates a multi-parent merge commit."
   [old {:keys [parents tx-data tx-meta]}]
-  (log/info :datahike/merge {:parent-count (count parents) :tx-count (count tx-data)})
+  (log/trace :datahike/merge {:parent-count (count parents) :tx-count (count tx-data)})
   (let [tx-report (complete-db-update old (core/with old tx-data tx-meta))
         ;; Add merge parents to db meta — commit loop picks these up
         branch (get-in old [:config :branch])

@@ -2704,11 +2704,12 @@
 
 #?(:clj
    (defn- resolve-stratum-fn
-     "Lazily resolve a function from datahike.index.secondary.stratum.
-      Returns the fn or nil if stratum is not on the classpath."
+     "Lazily resolve a var from datahike.index.secondary.stratum and deref it.
+      Returns the value (fn or data) or nil if stratum is not on the classpath."
      [sym]
      (try
-       (requiring-resolve (symbol "datahike.index.secondary.stratum" (name sym)))
+       (when-let [v (requiring-resolve (symbol "datahike.index.secondary.stratum" (name sym)))]
+         @v)
        (catch Exception _ nil))))
 
 #?(:clj
