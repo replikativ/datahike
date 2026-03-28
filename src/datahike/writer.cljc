@@ -151,7 +151,7 @@
                            'gc-storage!   gc/gc-storage!
                            ;; secondary index backfill (async, runs in background)
                            #?@(:clj ['build-secondary-index! w/build-secondary-index!
-                                      'install-secondary-index! w/install-secondary-index!])
+                                     'install-secondary-index! w/install-secondary-index!])
                            ;; merge with multi-parent commit tracking
                            'merge! w/merge-writer!})
 

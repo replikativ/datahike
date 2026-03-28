@@ -7,7 +7,7 @@
    [datahike.api :as d]
    [datahike.index.interface :refer [-mark]]
    [datahike.versioning :refer [branch! delete-branch! merge!
-                                             branch-history]]
+                                branch-history]]
    [konserve.core :as k]
    [datahike.test.core-test])
   (:import [java.util Date]))

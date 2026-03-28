@@ -393,13 +393,13 @@
           _ (d/create-database cfg)
           conn (d/connect cfg)]
       (d/transact conn [{:db/ident :name :db/valueType :db.type/string
-                          :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
-                         {:db/ident :age :db/valueType :db.type/long
-                          :db/cardinality :db.cardinality/one}
-                         {:db/ident :likes :db/valueType :db.type/string
-                          :db/cardinality :db.cardinality/many}])
+                         :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                        {:db/ident :age :db/valueType :db.type/long
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :likes :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/many}])
       (d/transact conn [{:name "Alice" :age 25 :likes ["cats" "pizza"]}
-                         {:name "Bob" :age 30}])
+                        {:name "Bob" :age 30}])
       (d/transact conn [{:name "Alice" :age 26}])       ;; upsert age
       (d/transact conn [{:name "Alice" :age 27}])       ;; another upsert
       (d/transact conn [[:db/retract [:name "Alice"] :likes "cats"]]) ;; retract card-many
@@ -412,54 +412,54 @@
 
     (testing "history: join with upserted card-one"
       (assert-engines-agree hdb
-        '[:find ?a ?tx ?added :where [?e :age ?a ?tx ?added] [?e :name "Alice"]]))
+                            '[:find ?a ?tx ?added :where [?e :age ?a ?tx ?added] [?e :name "Alice"]]))
 
     (testing "history: bound tx from :in filters correctly"
       (assert-engines-agree hdb
-        '[:find ?e ?a ?v :in $ ?t :where [?e ?a ?v ?t true]]
-        [tx2]))
+                            '[:find ?e ?a ?v :in $ ?t :where [?e ?a ?v ?t true]]
+                            [tx2]))
 
     (testing "history: ground added=false (only retractions)"
       (assert-engines-agree hdb
-        '[:find ?e ?a ?v ?tx :where [?e ?a ?v ?tx false]]))
+                            '[:find ?e ?a ?v ?tx :where [?e ?a ?v ?tx false]]))
 
     (testing "history: NOT anti-merge checks value, not just entity+attr"
       (assert-engines-agree hdb
-        '[:find ?n ?tx ?added :where [?e :name ?n ?tx ?added] (not [?e :age 30])]))
+                            '[:find ?n ?tx ?added :where [?e :name ?n ?tx ?added] (not [?e :age 30])]))
 
     (testing "history: card-many attr join"
       (assert-engines-agree hdb
-        '[:find ?l ?tx ?added :where [?e :likes ?l ?tx ?added] [?e :name "Alice"]]))
+                            '[:find ?l ?tx ?added :where [?e :likes ?l ?tx ?added] [?e :name "Alice"]]))
 
     (testing "history: multi-merge with per-merge cursors (attribute order differs from EA)"
       ;; merge0=:name (later in EA), merge1=:age (earlier) — cursor ordering bug
       (assert-engines-agree hdb
-        '[:find ?a :in $ ?n ?l :where [?e :name ?n] [?e :age ?a] [?e :likes ?l]]
-        ["Alice" "pizza"]))
+                            '[:find ?a :in $ ?n ?l :where [?e :name ?n] [?e :age ?a] [?e :likes ?l]]
+                            ["Alice" "pizza"]))
 
     (testing "history: predicates on temporal values"
       (assert-engines-agree hdb
-        '[:find ?n ?a ?tx ?added :where [?e :name ?n] [?e :age ?a ?tx ?added] [(> ?a 26)]]))
+                            '[:find ?n ?a ?tx ?added :where [?e :name ?n] [?e :age ?a ?tx ?added] [(> ?a 26)]]))
 
     (testing "history: OR clause"
       (assert-engines-agree hdb
-        '[:find ?n :where [?e :name ?n] (or [?e :age 25] [?e :age 30])]))
+                            '[:find ?n :where [?e :name ?n] (or [?e :age 25] [?e :age 30])]))
 
     (testing "as-of: card-one merge returns temporal value, not current"
       (assert-engines-agree (d/as-of @conn tx2)
-        '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))
+                            '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))
 
     (testing "as-of: card-many join"
       (assert-engines-agree (d/as-of @conn tx2)
-        '[:find ?n ?l :where [?e :name ?n] [?e :likes ?l]]))
+                            '[:find ?n ?l :where [?e :name ?n] [?e :likes ?l]]))
 
     (testing "as-of: NOT"
       (assert-engines-agree (d/as-of @conn tx2)
-        '[:find ?n :where [?e :name ?n] (not [?e :age 30])]))
+                            '[:find ?n :where [?e :name ?n] (not [?e :age 30])]))
 
     (testing "since: join"
       (assert-engines-agree (d/since @conn tx2)
-        '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))))
+                            '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]]))))
 
 (def temporal-friend-db
   "DB with history, friendships, and retractions — for shared-variable merge tests."
@@ -469,20 +469,20 @@
           _ (d/create-database cfg)
           conn (d/connect cfg)]
       (d/transact conn [{:db/ident :name :db/valueType :db.type/string
-                          :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
-                         {:db/ident :id :db/valueType :db.type/long
-                          :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
-                         {:db/ident :age :db/valueType :db.type/long
-                          :db/cardinality :db.cardinality/one}
-                         {:db/ident :friend :db/valueType :db.type/ref
-                          :db/cardinality :db.cardinality/many}])
+                         :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                        {:db/ident :id :db/valueType :db.type/long
+                         :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                        {:db/ident :age :db/valueType :db.type/long
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :friend :db/valueType :db.type/ref
+                         :db/cardinality :db.cardinality/many}])
       ;; tx1: initial data
       (d/transact conn [{:db/id -1 :name "Ivan" :id 1 :age 25 :friend [-2]}
-                         {:db/id -2 :name "Petr" :id 2 :age 30 :friend [-3]}
-                         {:db/id -3 :name "Oleg" :id 3 :age 35}])
+                        {:db/id -2 :name "Petr" :id 2 :age 30 :friend [-3]}
+                        {:db/id -3 :name "Oleg" :id 3 :age 35}])
       ;; tx2: update ages (different tx than names)
       (d/transact conn [{:db/id [:name "Ivan"] :age 26}
-                         {:db/id [:name "Petr"] :age 31}])
+                        {:db/id [:name "Petr"] :age 31}])
       ;; tx3: retract a friendship
       (d/transact conn [[:db/retract [:name "Ivan"] :friend [:name "Petr"]]])
       conn)))
@@ -497,26 +497,26 @@
       ;; age share the same tx should appear. Without shared-var checks the
       ;; merge ignores ?tx and returns spurious matches.
       (assert-engines-agree db
-        '[:find ?n ?a ?tx :where [?e :name ?n ?tx] [?e :age ?a ?tx]]))
+                            '[:find ?n ?a ?tx :where [?e :name ?n ?tx] [?e :age ?a ?tx]]))
 
     (testing "tx-join on history db"
       (assert-engines-agree hdb
-        '[:find ?n ?a :where [?e :name ?n ?tx] [?e :age ?a ?tx]]))
+                            '[:find ?n ?a :where [?e :name ?n ?tx] [?e :age ?a ?tx]]))
 
     (testing "history NOT with shared ?f and ?tx (anti-merge + added?)"
       ;; NOT [?e :friend ?f ?tx false]: exclude friendships retracted at
       ;; the SAME tx as the assertion. The retraction is at tx3, assertions
       ;; at tx1, so nothing should be excluded.
       (assert-engines-agree hdb
-        '[:find ?e ?f ?tx :where [?e :friend ?f ?tx true]
-          (not [?e :friend ?f ?tx false])]))
+                            '[:find ?e ?f ?tx :where [?e :friend ?f ?tx true]
+                              (not [?e :friend ?f ?tx false])]))
 
     (testing "history NOT with shared ?f, wildcard tx"
       ;; NOT [?e :friend ?f _ false]: for each (e,f) pair, check if there
       ;; is ANY retraction of that specific friend value.
       (assert-engines-agree hdb
-        '[:find ?e ?f ?tx :where [?e :friend ?f ?tx true]
-          (not [?e :friend ?f _ false])]))
+                            '[:find ?e ?f ?tx :where [?e :friend ?f ?tx true]
+                              (not [?e :friend ?f _ false])]))
 
     (testing "history multi-merge cross-product (cursor cache must not collapse)"
       ;; When the same entity has multiple values for card-one attrs across
@@ -524,7 +524,7 @@
       ;; A ForwardCursor cache that stores only one datom per entity would
       ;; miss combinations.
       (assert-engines-agree hdb
-        '[:find ?n ?a ?s :where [?e :name ?n] [?e :age ?a] [?e :salary ?s]]))))
+                            '[:find ?n ?a ?s :where [?e :name ?n] [?e :age ?a] [?e :salary ?s]]))))
 
 (deftest test-variable-attribute-join
   (testing "variable-attr scan + merge: all entity datoms pass merge filter"
@@ -532,7 +532,7 @@
     ;; The sorted-scan single cursor can't re-seek the same entity.
     ;; Disabled sorted-scan when scan attribute is variable.
     (assert-engines-agree @test-db
-      '[:find ?e ?a ?v :where [?e ?a ?v] [?e :name "Ivan"]])))
+                          '[:find ?e ?a ?v :where [?e ?a ?v] [?e :name "Ivan"]])))
 
 (deftest test-multi-source-queries
   (let [schema {:name {:db/unique :db.unique/identity}
