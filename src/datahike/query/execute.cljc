@@ -1046,7 +1046,7 @@
         ^objects merge-temporal-only (aget ^objects temporal-ctx 8)
         ^objects merge-cursor-cache (aget ^objects temporal-ctx 9)
         temporal-eavt-pss (aget ^objects temporal-ctx 10)
-        temporal-cursors (aget ^objects temporal-ctx 11)
+        ^objects temporal-cursors (aget ^objects temporal-ctx 11)
         temporal-type (aget ^objects temporal-ctx 12)
         temporal-tx-filter (aget ^objects temporal-ctx 13)
         scan-added-val (aget ^objects temporal-ctx 14)
