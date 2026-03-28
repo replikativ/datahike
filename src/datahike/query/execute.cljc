@@ -2268,12 +2268,7 @@
              ;; Binding vars that match a window :as are output cols
              ;; All others are pass-through input cols (name-based)
              ]
-         (into {} (map (fn [v]
-                         (let [kw (keyword (subs (name v) 1))]
-                           (if (contains? window-as-keys kw)
-                             [v kw]
-                             [v kw])))
-                       binding-vars)))
+         (into {} (map (fn [v] [v (keyword (subs (name v) 1))]) binding-vars)))
 
        ;; Fallback: keyword from var name
        :else
@@ -2289,7 +2284,11 @@
            idx (when idx-ident (get-in db [:secondary-indices idx-ident]))
            fn-sym (:fn-sym op)
            args (:args op)
-           binding-form (:binding op)]
+           binding-form (:binding op)
+           binding-vars (if (and (sequential? binding-form)
+                                 (sequential? (first binding-form)))
+                          (first binding-form)
+                          [binding-form])]
        (case mode
          ;; Filter: produce EntityBitSet, create single-column relation of entity IDs.
          ;; Also stores the bitmap in :entity-filters for downstream entity-group optimization.
@@ -2297,12 +2296,7 @@
          (if idx
            (let [;; Build query-spec from args (skip the index ident arg)
                  query-args (vec (drop 1 args))
-                 ;; Resolve any ground args
-                 resolved-args (mapv (fn [a]
-                                       (if (analyze/free-var? a)
-                                         a
-                                         a))
-                                     query-args)
+                 resolved-args query-args
                  ;; Build query-spec — the engine function knows its own format
                  ;; For now, call the resolved function with args to get query-spec
                  resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
@@ -2316,10 +2310,6 @@
                                           nil)
                              (es/entity-bitset))
                  ;; Create relation from entity IDs
-                 binding-vars (if (and (sequential? binding-form)
-                                       (sequential? (first binding-form)))
-                                (first binding-form)
-                                [binding-form])
                  entity-var (first binding-vars)
                  eids (es/entity-bitset-seq result-bs)
                  tuples (mapv (fn [eid] [eid]) eids)
@@ -2341,10 +2331,6 @@
                                              {:query (first query-args)
                                               :field (second query-args)}
                                              nil nil nil nil)
-                 binding-vars (if (and (sequential? binding-form)
-                                       (sequential? (first binding-form)))
-                                (first binding-form)
-                                [binding-form])
                  ;; Map binding vars to column indices
                  attrs (into {} (map-indexed (fn [i v] [v i]) binding-vars))
                  ;; Build tuples from results
@@ -2363,10 +2349,6 @@
          :solver
          (let [resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
                              (some-> (resolve fn-sym) deref))
-               binding-vars (if (and (sequential? binding-form)
-                                     (sequential? (first binding-form)))
-                              (first binding-form)
-                              [binding-form])
                query-spec (first (remove analyze/free-var? args))]
            (if resolved-fn
              ;; Derive input vars: all context vars referenced by the query-spec
