@@ -2838,12 +2838,13 @@
                                                        (if agg-col [op agg-col] [op]))))
                                                  find-elements))
                          ;; WHERE: covered v-ground equality constraints
-                         ;; Keywords are stored as strings in stratum dict-encoded columns
+                         ;; Convert keyword ground values to strings to match stratum's
+                         ;; dict-encoded column storage (keywords stored via str)
                          where-equality (vec (keep (fn [sub-op]
                                                      (when-let [v-ground (:v-ground sub-op)]
                                                        (let [a (resolve-attr (or (:attr sub-op) (get-in sub-op [:schema-info :attr])))]
                                                          (when (contains? indexed-attrs a)
-                                                           [:= (attr-col-key a) (if (keyword? v-ground) (name v-ground) v-ground)]))))
+                                                           [:= (attr-col-key a) (if (keyword? v-ground) (str v-ground) v-ground)]))))
                                                    sub-ops))
                          ;; WHERE: translate predicates on covered columns
                          pred-ops (filter #(= :predicate (:op %)) (:ops plan))
@@ -2900,7 +2901,7 @@
                          col-agg-adapter (resolve-stratum-fn 'columnar-aggregate-from-maps)]
                      (col-agg-adapter result-maps group-keys stratum-aggs find-elements))))))))
        (catch Exception e
-         (log/debug "secondary-idx-agg not applicable:" (.getMessage e))
+         (log/warn "secondary-idx-agg not applicable:" (.getMessage e) (pr-str (type e)))
          nil))))
 
 #?(:clj

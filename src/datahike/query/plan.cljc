@@ -108,7 +108,9 @@
       :pushdown-preds effective-preds
       :estimated-card est
       :join-method join-method
-      :vars (:vars pattern-info)}
+      :vars (:vars pattern-info)
+      :e-ground (when e? e)
+      :v-ground (when v? v)}
      (when (seq effective-preds)
        (into #{} (map :pred-clause) effective-preds))]))
 

@@ -132,9 +132,8 @@
 
 (def stratum-agg-ops
   "Map from datahike built-in aggregate symbols to stratum agg op keywords.
-   min/max excluded: stratum returns doubles, but datahike must preserve
-   input type (Long min → Long result, not Double)."
-  {:avg :avg, :sum :sum, :count :count,
+   Since stratum 0.1.45, min/max on int64 columns return Long (type-preserving)."
+  {:avg :avg, :sum :sum, :count :count, :min :min, :max :max,
    :variance :variance, :stddev :stddev, :count-distinct :count-distinct,
    :median :median})
 
