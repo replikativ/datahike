@@ -329,13 +329,6 @@
 
     :else nil))
 
-(defn- temporal-db?
-  "Check if db is a temporal wrapper."
-  [db]
-  (or (instance? HistoricalDB db)
-      (instance? AsOfDB db)
-      (instance? SinceDB db)))
-
 (defn- build-temporal-tx-filter
   "Build a tx filter function for as-of/since temporal queries.
    Returns nil for non-temporal or historical queries."
