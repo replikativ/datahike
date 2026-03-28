@@ -658,8 +658,8 @@
   (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
              :schema-flexibility :write
              :keep-history? false
-             :attribute-refs? true
-             :search-cache-size 0
+             :attribute-refs? false  ;; secondary index schema attrs use implicit schema
+             :search-cache-size 0    ;; which only works without attribute-refs
              :index :datahike.index/persistent-set}]
     (d/delete-database cfg)
     (d/create-database cfg)
