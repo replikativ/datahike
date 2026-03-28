@@ -261,7 +261,7 @@
     (let [col-map (into {:eid (long-array 0)}
                         (map (fn [a] [(attr-col-key a) (long-array 0)]))
                         attrs)]
-      (st/make-dataset col-map))
+      (sd/ensure-indexed (st/make-dataset col-map)))
     (let [;; For each attr, collect {eid value} via AEVT datoms
           attr->eid-vals
           (into {}
@@ -283,7 +283,7 @@
         (let [col-map (into {:eid (long-array 0)}
                             (map (fn [a] [(attr-col-key a) (long-array 0)]))
                             attrs)]
-          (st/make-dataset col-map))
+          (sd/ensure-indexed (st/make-dataset col-map)))
       ;; Build column arrays
         (let [entity-ids (long-array n)
               _ (let [i (volatile! 0)]
@@ -324,7 +324,7 @@
                                   arr))])))
                     attrs)
               col-map (assoc attr-arrays :eid entity-ids)]
-          (st/make-dataset col-map))))))
+          (sd/ensure-indexed (st/make-dataset col-map)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Persistent stratum index (declared first — TransientStratumIndex references it)
@@ -630,7 +630,9 @@
                                 :else
                                 (long-array total-n))])))
                     col-keys)]
-          (StratumIndex. (st/make-dataset col-map) attrs attr-refs config))))))
+          ;; ensure-indexed converts array-backed columns to index-backed (PSS)
+          ;; columns, which is required before sync! can persist.
+          (StratumIndex. (sd/ensure-indexed (st/make-dataset col-map)) attrs attr-refs config))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Registration
