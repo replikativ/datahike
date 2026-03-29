@@ -80,6 +80,77 @@
   #?(:clj  (.contains ^java.util.HashSet s x)
      :cljs (.has s x)))
 
+(defn- probe-set-size [s]
+  #?(:clj  (.size ^java.util.HashSet s)
+     :cljs (.-size s)))
+
+(def ^:private ^:const probe-driven-threshold
+  "Use probe-driven AVET seeks when probe-set-size * threshold < scan-size.
+   Empirically determined: AVET seek overhead ~50μs, scan+filter ~20ns/datom,
+   so break-even at K ≈ N/2500. Using 2500 as threshold."
+  2500)
+
+#?(:clj
+   (defn- probe-driven-iterable
+     "Build an Iterable that seeks an index for each probe-set value using a
+      single ForwardCursor. Sorted probe values ensure forward-only cursor
+      movement. The iterator yields all datoms matching any probe value.
+
+      probe-field: 0 = entity position (seeks EAVT), 2 = value position (seeks AVET).
+      Caller should pass nil for probe-set since filtering is baked into the seeks."
+     ^Iterable [^PersistentSortedSet pss resolved-a ^java.util.HashSet probe-set probe-field]
+     (let [sorted-vals (sort (vec (.toArray probe-set)))
+           ^objects val-arr (object-array sorted-vals)
+           n-vals (alength val-arr)
+           by-entity? (== (int probe-field) 0)]
+       (reify Iterable
+         (iterator [_]
+           (let [cursor (.forwardCursor pss)
+                 vi (volatile! (int 0))
+                 current (volatile! nil)
+                 done (volatile! false)
+                 seek-fn (fn [v]
+                           (.seekGE ^PersistentSortedSet$ForwardCursor cursor
+                                    (if by-entity?
+                                      (datom (long v) resolved-a nil tx0)
+                                      (datom e0 resolved-a v tx0))))
+                 match-fn (fn [^Datom d v]
+                            (if by-entity?
+                              (and (== (.-e d) (long v)) (= (.-a d) resolved-a))
+                              (and (= (.-a d) resolved-a) (= (.-v d) v))))]
+             ;; Seek to first value
+             (when (pos? n-vals)
+               (vreset! current (seek-fn (aget val-arr 0))))
+             (reify java.util.Iterator
+               (hasNext [_]
+                 (if @done
+                   false
+                   (loop []
+                     (let [^Datom d @current
+                           vi-val (int @vi)]
+                       (cond
+                         (nil? d)
+                         (let [next-vi (inc vi-val)]
+                           (if (>= next-vi n-vals)
+                             (do (vreset! done true) false)
+                             (do (vreset! vi next-vi)
+                                 (vreset! current (seek-fn (aget val-arr next-vi)))
+                                 (recur))))
+
+                         (not (match-fn d (aget val-arr vi-val)))
+                         (let [next-vi (inc vi-val)]
+                           (if (>= next-vi n-vals)
+                             (do (vreset! done true) false)
+                             (do (vreset! vi next-vi)
+                                 (vreset! current (seek-fn (aget val-arr next-vi)))
+                                 (recur))))
+
+                         :else true)))))
+               (next [_]
+                 (let [d @current]
+                   (vreset! current (.next ^PersistentSortedSet$ForwardCursor cursor))
+                   d)))))))))
+
 (defn- adopt-vector
   "Create a PersistentVector from an object array without copying."
   [^objects arr]
@@ -872,7 +943,8 @@
    result-list
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
-   max-results]
+   max-results
+   & {:keys [scan-estimate]}]
   (let [{:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
@@ -929,7 +1001,27 @@
         find-source (build-find-source-array find-vars consts clause merge-clauses n-find const-vals)
 
         merge-datoms #?(:clj (object-array n-merges) :cljs (make-array n-merges))
-        slice (di/-slice db-index from-datom to-datom index)
+        ;; Probe-driven AVET optimization: when the probe-set is small relative
+        ;; to the scan size and the probed field is the value position, use targeted
+        ;; AVET seeks instead of scanning all datoms and filtering.
+        use-probe-driven? #?(:clj (let [probe-field (int probe-datom-field)]
+                                   (and probe-set
+                                        resolved-a
+                                        (or (= probe-field 0) (= probe-field 2)) ;; entity or value position
+                                        (if (= probe-field 2) (some? (:avet db)) true) ;; value needs AVET; entity always has EAVT
+                                        (let [est (long (or scan-estimate (di/-count db-index)))]
+                                          (and (pos? est)
+                                               (< (* (long (probe-set-size probe-set)) (long probe-driven-threshold))
+                                                  est)))))
+                              :cljs false)
+        slice (if use-probe-driven?
+                (let [pf (int probe-datom-field)]
+                  (probe-driven-iterable
+                   (if (= pf 2) (:avet db) (:eavt db))
+                   resolved-a probe-set pf))
+                (di/-slice db-index from-datom to-datom index))
+        ;; When probe-driven, filtering is baked into the seeks — nil out probe-set
+        probe-set (if use-probe-driven? nil probe-set)
         max-n (int (or max-results -1))]
 
     ;; Dispatch to path-specific function
@@ -1225,7 +1317,8 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    max-results
-   temporal]
+   temporal
+   & {:keys [scan-estimate]}]
   (let [{:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         origin-db (:origin-db temporal)
@@ -1306,8 +1399,40 @@
         ;; Each entry: [cached-eid cached-datoms-or-nil]
         merge-cursor-cache #?(:clj (object-array n-merges) :cljs nil)
         _ #?(:clj (dotimes [i n-merges] (aset merge-cursor-cache i (long-array 1 -1))) :cljs nil)
-        slice (build-scan-slice db db-index from-datom to-datom index
-                                temporal origin-db resolved-a)
+        use-probe-driven? #?(:clj (let [probe-field (int probe-datom-field)]
+                                   (and probe-set
+                                        resolved-a
+                                        (or (= probe-field 0) (= probe-field 2))
+                                        (if (= probe-field 2) (some? (:avet origin-db)) true)
+                                        (let [est (long (or scan-estimate (di/-count db-index)))]
+                                          (and (pos? est)
+                                               (< (* (long (probe-set-size probe-set)) (long probe-driven-threshold))
+                                                  est)))))
+                              :cljs false)
+        slice (if use-probe-driven?
+                ;; Build concatenated temporal slices per probe value
+                (let [pf (int probe-datom-field)
+                      sorted-vals (sort (vec (.toArray ^java.util.HashSet probe-set)))
+                      result (java.util.ArrayList.)]
+                  (doseq [v sorted-vals]
+                    (let [[from to] (if (== pf 0)
+                                      [(datom (long v) resolved-a nil tx0)
+                                       (datom (long v) resolved-a nil txmax)]
+                                      [(datom e0 resolved-a v tx0)
+                                       (datom emax resolved-a v txmax)])
+                          sub-slice (build-scan-slice db
+                                                      (if (== pf 2) (:avet origin-db) db-index)
+                                                      from to
+                                                      (if (== pf 2) :avet index)
+                                                      temporal origin-db resolved-a)]
+                      (when sub-slice
+                        (let [iter (.iterator ^Iterable sub-slice)]
+                          (while (.hasNext iter)
+                            (.add result (.next iter)))))))
+                  result)
+                (build-scan-slice db db-index from-datom to-datom index
+                                  temporal origin-db resolved-a))
+        probe-set (if use-probe-driven? nil probe-set)
         max-n (int (or max-results -1))]
 
     (if (zero? n-merges)
@@ -1473,12 +1598,14 @@
                                                        result-list probe-set
                                                        (int (:consumer-scan-field pinfo))
                                                        nil 0 -1
-                                                       max-results temporal)
+                                                       max-results temporal
+                                                       :scan-estimate (:estimated-card g))
                         (execute-group-direct db scan-op merge-ops find-vars consts
                                               result-list probe-set
                                               (int (:consumer-scan-field pinfo))
                                               nil 0 -1
-                                              max-results)))
+                                              max-results
+                                              :scan-estimate (:estimated-card g))))
                     (recur (inc gi) probe-sets))
 
                   ;; Producer group: collect join-var values for downstream consumers
@@ -1700,7 +1827,57 @@
             merged (rel/collapse-rels (:rels context) out-rel)]
         [(-> context (assoc :rels merged) (assoc :unique-results? true))
          (inc (count merge-ops))])
-      (let [filtered-datoms (cond->> (di/-slice db-index from-datom to-datom index)
+      (let [;; SIP: extract probe values from context relations for selective seeks.
+            ;; Check both entity-var and value-var of the scan clause.
+            sip-probe
+            #?(:clj
+               (when (and resolved-a (seq (:rels context)))
+                 (let [v-var (get clause 2)
+                       extract-probe-values
+                       (fn [rel col-idx]
+                         (let [tuples (:tuples rel)
+                               tuple-seq (if (instance? java.util.Collection tuples)
+                                           (seq tuples)
+                                           (seq tuples))
+                               n (if (instance? java.util.Collection tuples)
+                                   (.size ^java.util.Collection tuples)
+                                   (count tuples))]
+                           (when (and (pos? n)
+                                      (< (* (long n) (long probe-driven-threshold))
+                                         (long (di/-count db-index))))
+                             (let [hs (java.util.HashSet.)]
+                               (doseq [t tuple-seq]
+                                 (let [v (cond
+                                           (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t col-idx)
+                                           (sequential? t) (nth t col-idx)
+                                           :else (get t col-idx))]
+                                   (when (some? v) (.add hs v))))
+                               (when (pos? (.size hs)) hs)))))
+                       ;; Check entity variable
+                       e-probe (when (and (symbol? e) (analyze/free-var? e))
+                                 (some (fn [rel]
+                                         (when-let [col-idx (get (:attrs rel) e)]
+                                           (when-let [vs (extract-probe-values rel col-idx)]
+                                             {:field 0 :values vs})))
+                                       (:rels context)))
+                       ;; Check value variable (needs AVET + attribute must be indexed)
+                       v-probe (when (and (not e-probe)
+                                          (symbol? v-var) (analyze/free-var? v-var)
+                                          (some? (:avet db))
+                                          resolved-a
+                                          (dbu/indexing? db resolved-a))
+                                 (some (fn [rel]
+                                         (when-let [col-idx (get (:attrs rel) v-var)]
+                                           (when-let [vs (extract-probe-values rel col-idx)]
+                                             {:field 2 :values vs})))
+                                       (:rels context)))]
+                   (or e-probe v-probe)))
+               :cljs nil)
+            filtered-datoms (cond->> (if sip-probe
+                                       (probe-driven-iterable
+                                        (if (== (:field sip-probe) 2) (:avet db) (:eavt db))
+                                        resolved-a (:values sip-probe) (:field sip-probe))
+                                       (di/-slice db-index from-datom to-datom index))
                               ground-filter (filter ground-filter)
                               strict-filter (filter strict-filter))
 
