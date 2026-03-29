@@ -1005,15 +1005,15 @@
         ;; to the scan size and the probed field is the value position, use targeted
         ;; AVET seeks instead of scanning all datoms and filtering.
         use-probe-driven? #?(:clj (let [probe-field (int probe-datom-field)]
-                                   (and probe-set
-                                        resolved-a
-                                        (or (= probe-field 0) (= probe-field 2)) ;; entity or value position
-                                        (if (= probe-field 2) (some? (:avet db)) true) ;; value needs AVET; entity always has EAVT
-                                        (let [est (long (or scan-estimate (di/-count db-index)))]
-                                          (and (pos? est)
-                                               (< (* (long (probe-set-size probe-set)) (long probe-driven-threshold))
-                                                  est)))))
-                              :cljs false)
+                                    (and probe-set
+                                         resolved-a
+                                         (or (= probe-field 0) (= probe-field 2)) ;; entity or value position
+                                         (if (= probe-field 2) (some? (:avet db)) true) ;; value needs AVET; entity always has EAVT
+                                         (let [est (long (or scan-estimate (di/-count db-index)))]
+                                           (and (pos? est)
+                                                (< (* (long (probe-set-size probe-set)) (long probe-driven-threshold))
+                                                   est)))))
+                             :cljs false)
         slice (if use-probe-driven?
                 (let [pf (int probe-datom-field)]
                   (probe-driven-iterable
@@ -1400,15 +1400,15 @@
         merge-cursor-cache #?(:clj (object-array n-merges) :cljs nil)
         _ #?(:clj (dotimes [i n-merges] (aset merge-cursor-cache i (long-array 1 -1))) :cljs nil)
         use-probe-driven? #?(:clj (let [probe-field (int probe-datom-field)]
-                                   (and probe-set
-                                        resolved-a
-                                        (or (= probe-field 0) (= probe-field 2))
-                                        (if (= probe-field 2) (some? (:avet origin-db)) true)
-                                        (let [est (long (or scan-estimate (di/-count db-index)))]
-                                          (and (pos? est)
-                                               (< (* (long (probe-set-size probe-set)) (long probe-driven-threshold))
-                                                  est)))))
-                              :cljs false)
+                                    (and probe-set
+                                         resolved-a
+                                         (or (= probe-field 0) (= probe-field 2))
+                                         (if (= probe-field 2) (some? (:avet origin-db)) true)
+                                         (let [est (long (or scan-estimate (di/-count db-index)))]
+                                           (and (pos? est)
+                                                (< (* (long (probe-set-size probe-set)) (long probe-driven-threshold))
+                                                   est)))))
+                             :cljs false)
         slice (if use-probe-driven?
                 ;; Build concatenated temporal slices per probe value
                 (let [pf (int probe-datom-field)
