@@ -983,6 +983,228 @@
     (d/release dh-conn)
     (println "\nDone.")))
 
+;; ---------------------------------------------------------------------------
+;; Cross-entity join benchmarks
+
+(def ^:private join-schema
+  [{:db/ident :p/name    :db/valueType :db.type/string  :db/cardinality :db.cardinality/one}
+   {:db/ident :p/dept    :db/valueType :db.type/ref     :db/cardinality :db.cardinality/one :db/index true}
+   {:db/ident :p/salary  :db/valueType :db.type/long    :db/cardinality :db.cardinality/one :db/index true}
+   {:db/ident :d/name    :db/valueType :db.type/string  :db/cardinality :db.cardinality/one}
+   {:db/ident :d/budget  :db/valueType :db.type/long    :db/cardinality :db.cardinality/one :db/index true}
+   {:db/ident :d/div     :db/valueType :db.type/ref     :db/cardinality :db.cardinality/one}
+   {:db/ident :div/name  :db/valueType :db.type/string  :db/cardinality :db.cardinality/one}])
+
+(def ^:private dl-join-schema
+  {:p/name   {:db/valueType :db.type/string}
+   :p/dept   {:db/valueType :db.type/ref :db/index true}
+   :p/salary {:db/valueType :db.type/long :db/index true}
+   :d/name   {:db/valueType :db.type/string}
+   :d/budget {:db/valueType :db.type/long :db/index true}
+   :d/div    {:db/valueType :db.type/ref}
+   :div/name {:db/valueType :db.type/string}})
+
+;; Pre-generate deterministic salary data (fixed seed for reproducibility)
+(def ^:private join-salaries
+  (let [rng (Random. 42)]
+    (mapv (fn [_] (+ 30000 (.nextInt rng 70000))) (range 20000))))
+
+(defn- join-people-tx
+  "Generate people tx-data using pre-computed salaries and a dept-id lookup fn."
+  [dept-ids]
+  (mapv (fn [i] {:p/name (str "p-" i)
+                 :p/dept (nth dept-ids (mod i 100))
+                 :p/salary (nth join-salaries i)})
+        (range 20000)))
+
+(defn- dh-join-db
+  "Create datahike DB with 20k people, 100 departments, 10 divisions."
+  []
+  (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+             :schema-flexibility :write :keep-history? false
+             :attribute-refs? false :search-cache-size 0
+             :index :datahike.index/persistent-set}]
+    (d/delete-database cfg)
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn {:tx-data join-schema})
+      (d/transact conn {:tx-data (mapv (fn [i] {:db/id (- -1 i) :div/name (str "div-" i)})
+                                       (range 10))})
+      (let [div-ids (mapv first (d/q '[:find ?d :where [?d :div/name _]] @conn))]
+        (d/transact conn {:tx-data (mapv (fn [i] {:db/id (- -100 i)
+                                                   :d/name (str "dept-" i)
+                                                   :d/budget (* i 5000)
+                                                   :d/div (nth div-ids (mod i 10))})
+                                         (range 100))}))
+      (let [dept-ids (mapv first (d/q '[:find ?d :where [?d :d/name _]] @conn))]
+        (d/transact conn {:tx-data (join-people-tx dept-ids)}))
+      (let [db @conn] (d/release conn) db))))
+
+(defn- dl-join-db []
+  (let [dl-get-conn (resolve 'datalevin.core/get-conn)
+        dl-transact (resolve 'datalevin.core/transact!)
+        dl-db-fn    (resolve 'datalevin.core/db)
+        dl-q-fn     (resolve 'datalevin.core/q)
+        dir (str "/tmp/dlv-join-bench-" (System/currentTimeMillis))
+        conn (dl-get-conn dir dl-join-schema)]
+    (dl-transact conn (mapv (fn [i] {:db/id (- -1 i) :div/name (str "div-" i)}) (range 10)))
+    (let [div-ids (mapv first (dl-q-fn '[:find ?d :where [?d :div/name _]] (dl-db-fn conn)))]
+      (dl-transact conn (mapv (fn [i] {:db/id (- -100 i)
+                                        :d/name (str "dept-" i)
+                                        :d/budget (* i 5000)
+                                        :d/div (nth div-ids (mod i 10))})
+                               (range 100)))
+      (let [dept-ids (mapv first (dl-q-fn '[:find ?d :where [?d :d/name _]] (dl-db-fn conn)))]
+        (dl-transact conn (mapv (fn [i] {:p/name (str "p-" i)
+                                          :p/dept (nth dept-ids (mod i 100))
+                                          :p/salary (nth join-salaries i)})
+                                 (range 20000)))))
+    (let [db (dl-db-fn conn)]
+      [db conn])))
+
+(defn- dt-join-db []
+  (let [dt-tempid  (resolve 'datomic.api/tempid)
+        dt-transact (resolve 'datomic.api/transact)
+        dt-db-fn   (resolve 'datomic.api/db)
+        url "datomic:mem://join-bench"
+        _ ((resolve 'datomic.api/delete-database) url)
+        _ ((resolve 'datomic.api/create-database) url)
+        conn ((resolve 'datomic.api/connect) url)]
+    @(dt-transact conn
+       (mapv (fn [[ident vtype]]
+               {:db/id (dt-tempid :db.part/db)
+                :db/ident ident :db/valueType vtype
+                :db/cardinality :db.cardinality/one
+                :db.install/_attribute :db.part/db})
+             [[:p/name :db.type/string] [:p/dept :db.type/ref] [:p/salary :db.type/long]
+              [:d/name :db.type/string] [:d/budget :db.type/long] [:d/div :db.type/ref]
+              [:div/name :db.type/string]]))
+    @(dt-transact conn (mapv (fn [i] {:db/id (dt-tempid :db.part/user)
+                                       :div/name (str "div-" i)}) (range 10)))
+    (let [div-ids (mapv first (dt-q '[:find ?d :where [?d :div/name _]] (dt-db-fn conn)))]
+      @(dt-transact conn (mapv (fn [i] {:db/id (dt-tempid :db.part/user)
+                                          :d/name (str "dept-" i)
+                                          :d/budget (* i 5000)
+                                          :d/div (nth div-ids (mod i 10))}) (range 100)))
+      (let [dept-ids (mapv first (dt-q '[:find ?d :where [?d :d/name _]] (dt-db-fn conn)))]
+        @(dt-transact conn (mapv (fn [i] {:db/id (dt-tempid :db.part/user)
+                                            :p/name (str "p-" i)
+                                            :p/dept (nth dept-ids (mod i 100))
+                                            :p/salary (nth join-salaries i)}) (range 20000)))))
+    (dt-db-fn conn)))
+
+(def ^:private join-queries
+  {:q-join-ref-1
+   {:desc "Ref join: 1 dept → people (high selectivity)"
+    :query '[:find ?pn ?dn
+             :where [?d :d/name "dept-99"]
+                    [?d :d/budget ?b]
+                    [?e :p/dept ?d]
+                    [?e :p/name ?pn]
+                    [?d :d/name ?dn]]}
+   :q-join-ref-10
+   {:desc "Ref join: 10 depts → people"
+    :query '[:find ?pn ?dn
+             :where [?d :d/budget ?b] [(> ?b 450000)]
+                    [?d :d/name ?dn]
+                    [?e :p/dept ?d]
+                    [?e :p/name ?pn]]}
+   :q-join-pred
+   {:desc "Ref join with predicate: budget > 400k"
+    :query '[:find ?pn ?dn
+             :where [?d :d/budget ?b] [(> ?b 400000)]
+                    [?d :d/name ?dn]
+                    [?e :p/dept ?d]
+                    [?e :p/name ?pn]]}
+   :q-join-chain
+   {:desc "3-hop chain: person → dept → division"
+    :query '[:find ?pn ?dn ?divn
+             :where [?e :p/name ?pn]
+                    [?e :p/dept ?d]
+                    [?d :d/name ?dn]
+                    [?d :d/div ?div]
+                    [?div :div/name ?divn]]}
+   :q-join-selective
+   {:desc "Selective: salary > 90k → dept name"
+    :query '[:find ?pn ?dn
+             :where [?e :p/salary ?s] [(> ?s 90000)]
+                    [?e :p/name ?pn]
+                    [?e :p/dept ?d]
+                    [?d :d/name ?dn]]}})
+
+(def ^:private join-order [:q-join-ref-1 :q-join-ref-10 :q-join-pred :q-join-chain :q-join-selective])
+
+(defn run-joins
+  "Run cross-entity join benchmarks."
+  [& {:keys [datalevin? datomic?] :or {datalevin? true datomic? true}}]
+  (alter-var-root #'q/*query-result-cache?* (constantly false))
+  (println "\n=== CROSS-ENTITY JOIN BENCHMARKS ===")
+  (println "Setting up databases with 20k people + 100 depts + 10 divisions (deterministic salaries)...")
+  (println (str "  Query planner: " (System/getenv "DATAHIKE_QUERY_PLANNER")))
+
+  (let [dh-db (dh-join-db)]
+    (println "  Datahike DB ready.")
+
+    (def ^:private dl-join-db-atom (atom nil))
+    (when datalevin?
+      (try
+        (dl-require!)
+        (let [[db conn] (dl-join-db)]
+          (reset! dl-join-db-atom db)
+          (println "  Datalevin DB ready."))
+        (catch Exception e
+          (println "  Datalevin not available:" (.getMessage e)))))
+
+    (def ^:private dt-join-db-atom (atom nil))
+    (when datomic?
+      (try
+        (dt-require!)
+        (reset! dt-join-db-atom (dt-join-db))
+        (println "  Datomic DB ready.")
+        (catch Throwable e
+          (println "  Datomic not available:" (.getMessage e)))))
+
+    ;; JIT warmup
+    (println "  JIT pre-warmup...")
+    (doseq [qname join-order]
+      (let [{:keys [query]} (get join-queries qname)]
+        (try (dotimes [_ 200] (d/q query dh-db)) (catch Exception _))))
+    (println "  JIT pre-warmup done.")
+
+    (print-header)
+
+    (doseq [qname join-order]
+      (let [{:keys [desc query]} (get join-queries qname)
+            dh-result (d/q query dh-db)
+            dh-count (count dh-result)
+            dl-result (when @dl-join-db-atom (dl-q query @dl-join-db-atom))
+            dl-count (when dl-result (count dl-result))
+            dt-result (when @dt-join-db-atom (dt-q query @dt-join-db-atom))
+            dt-count (when dt-result (count dt-result))
+
+            _ (when (and dl-count (not= dh-count dl-count))
+                (println (format "  ⚠ RESULT MISMATCH %s: DH=%d DL=%d"
+                                 (name qname) dh-count dl-count)))
+            _ (when (and dt-count (not= dh-count dt-count))
+                (println (format "  ⚠ RESULT MISMATCH %s: DH=%d DT=%d"
+                                 (name qname) dh-count dt-count)))
+
+            dh-ms (bench (d/q query dh-db))
+            dl-ms (when @dl-join-db-atom (bench (dl-q query @dl-join-db-atom)))
+            dt-ms (when @dt-join-db-atom (bench (dt-q query @dt-join-db-atom)))]
+        (print-row qname desc dh-ms dl-ms dt-ms)
+        (println (format "  Results: DH=%d%s%s" dh-count
+                         (if dl-count (format " DL=%d%s" dl-count
+                                              (if (= dh-count dl-count) " ✓" " ✗"))
+                           "")
+                         (if dt-count (format " DT=%d%s" dt-count
+                                              (if (= dh-count dt-count) " ✓" " ✗"))
+                           "")))))
+
+    (when-let [dl-db @dl-join-db-atom]
+      (dl-close dl-db))
+    (println "\nDone.")))
+
 (defn run-all
   "Run all benchmarks."
   [& opts]
@@ -997,7 +1219,9 @@
   (println)
   (apply run-aggregates opts)
   (println)
-  (apply run-temporal opts))
+  (apply run-temporal opts)
+  (println)
+  (apply run-joins opts))
 
 (defn run-queries-only-datahike
   "Quick benchmarks for datahike alone (no competitor deps needed)."
@@ -1016,8 +1240,9 @@
       "rules"      (run-rules)
       "aggregates" (run-aggregates)
       "temporal"   (run-temporal)
+      "joins"      (run-joins)
       "all"        (run-all)
       (do (println (str "Unknown command: " cmd))
-          (println "Usage: ... -m benchmark.datascript-bench [queries|writes|rules|aggregates|temporal|all]")
+          (println "Usage: ... -m benchmark.datascript-bench [queries|writes|rules|aggregates|temporal|joins|all]")
           (System/exit 1))))
   (System/exit 0))
