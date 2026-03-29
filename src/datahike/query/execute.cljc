@@ -1836,9 +1836,6 @@
                        extract-probe-values
                        (fn [rel col-idx]
                          (let [tuples (:tuples rel)
-                               tuple-seq (if (instance? java.util.Collection tuples)
-                                           (seq tuples)
-                                           (seq tuples))
                                n (if (instance? java.util.Collection tuples)
                                    (.size ^java.util.Collection tuples)
                                    (count tuples))]
@@ -1846,7 +1843,7 @@
                                       (< (* (long n) (long probe-driven-threshold))
                                          (long (di/-count db-index))))
                              (let [hs (java.util.HashSet.)]
-                               (doseq [t tuple-seq]
+                               (doseq [t tuples]
                                  (let [v (cond
                                            (instance? clojure.lang.Indexed t) (.nth ^clojure.lang.Indexed t col-idx)
                                            (sequential? t) (nth t col-idx)
