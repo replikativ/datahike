@@ -875,63 +875,62 @@
 (defn transact-entities-directly [initial-report initial-es]
   (loop [report (update initial-report :db-after transient)
          es initial-es
-         migration-state (or (get-in initial-report [:db-before :migration]) {})]
-    (let [[entity & entities] es
-          {:keys [config] :as db} (:db-after report)
-          [e a v t op] entity
-          a-ident (if (and (number? a) (:attribute-refs? config))
-                    (dbi/-ident-for db a)
-                    a)
-          a (if (:attribute-refs? config)
-              (dbi/-ref-for db a-ident)
-              (if (number? a)
-                (log/raise "Configuration mismatch: import data with attribute references can not be imported into a database with no attribute references."
-                           {:error :import/mismatch :data entity})
-                a-ident))
-          max-eid (next-eid db)
-          max-tid (inc (get-in report [:db-after :max-tx]))]
-      (cond
-        (empty? es)
-        (-> report
-            (update-in [:db-after :max-tx] inc)
-            (update-in [:db-after :migration] #(if %
-                                                 (merge % migration-state)
-                                                 migration-state))
-            (update :db-after persistent!))
+         migration-state (get-in initial-report [:db-before :migration] {})]
+    (if (empty? es)
+      (-> report
+          (update-in [:db-after :max-tx] inc)
+          (update-in [:db-after :migration] #(if %
+                                               (merge % migration-state)
+                                               migration-state))
+          (update :db-after persistent!))
+      (let [[entity & entities] es
+            {:keys [config] :as db} (:db-after report)
+            [e a v t op] entity
+            a-ident (if (and (number? a) (:attribute-refs? config))
+                      (dbi/-ident-for db a)
+                      a)
+            a (if (:attribute-refs? config)
+                (dbi/-ref-for db a-ident)
+                (if (number? a)
+                  (log/raise "Configuration mismatch: import data with attribute references can not be imported into a database with no attribute references."
+                             {:error :import/mismatch :data entity})
+                  a-ident))
+            max-eid (next-eid db)
+            max-tid (inc (get-in report [:db-after :max-tx]))]
+        (cond
+          (= :db.install/attribute a-ident)
+          (recur report entities migration-state)
 
-        (= :db.install/attribute a-ident)
-        (recur report entities migration-state)
+          ;; meta entity
+          (ds/meta-attr? a-ident)
+          (let [new-t (get-in migration-state [:tids t] max-tid)
+                new-datom (dd/datom new-t a v new-t op)
+                new-e (.-e new-datom)
+                upsert? (not (dbu/multival? db a-ident))]
+            (recur (-> (transact-report report new-datom upsert?)
+                       (assoc-in [:db-after :max-tx] max-tid))
+                   entities
+                   (-> migration-state
+                       (assoc-in [:tids e] new-e)
+                       (assoc-in [:eids e] new-e))))
 
-        ;; meta entity
-        (ds/meta-attr? a-ident)
-        (let [new-t (get-in migration-state [:tids t] max-tid)
-              new-datom (dd/datom new-t a v new-t op)
-              new-e (.-e new-datom)
-              upsert? (not (dbu/multival? db a-ident))]
-          (recur (-> (transact-report report new-datom upsert?)
-                     (assoc-in [:db-after :max-tx] max-tid))
-                 entities
-                 (-> migration-state
-                     (assoc-in [:tids e] new-e)
-                     (assoc-in [:eids e] new-e))))
+          ;; tx not added yet
+          (nil? (get-in migration-state [:tids t]))
+          (recur (update-in report [:db-after :max-tx] inc) es (assoc-in migration-state [:tids t] max-tid))
 
-        ;; tx not added yet
-        (nil? (get-in migration-state [:tids t]))
-        (recur (update-in report [:db-after :max-tx] inc) es (assoc-in migration-state [:tids t] max-tid))
+          ;; ref not added yet
+          (and (dbu/ref? db a) (nil? (get-in migration-state [:eids v])))
+          (recur (allocate-eid report max-eid) es (assoc-in migration-state [:eids v] max-eid))
 
-        ;; ref not added yet
-        (and (dbu/ref? db a) (nil? (get-in migration-state [:eids v])))
-        (recur (allocate-eid report max-eid) es (assoc-in migration-state [:eids v] max-eid))
-
-        :else
-        (let [new-datom ^Datom (dd/datom
-                                (or (get-in migration-state [:eids e]) max-eid)
-                                a
-                                (if (dbu/ref? db a)
-                                  (get-in migration-state [:eids v])
-                                  v)
-                                (get-in migration-state [:tids t])
-                                op)
-              upsert? (and (not (dbu/multival? db a-ident))
-                           op)]
-          (recur (transact-report report new-datom upsert?) entities (assoc-in migration-state [:eids e] (.-e new-datom))))))))
+          :else
+          (let [new-datom ^Datom (dd/datom
+                                  (or (get-in migration-state [:eids e]) max-eid)
+                                  a
+                                  (if (dbu/ref? db a)
+                                    (get-in migration-state [:eids v])
+                                    v)
+                                  (get-in migration-state [:tids t])
+                                  op)
+                upsert? (and (not (dbu/multival? db a-ident))
+                             op)]
+            (recur (transact-report report new-datom upsert?) entities (assoc-in migration-state [:eids e] (.-e new-datom)))))))))
