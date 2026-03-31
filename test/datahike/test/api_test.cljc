@@ -821,7 +821,7 @@
           (let [update-counts (fn [coll] (reduce (fn [m counted] (update m counted #(if % (inc %) 1)))
                                                  {}
                                                  coll))
-                ref-attrs (map #(.-ident-for @conn (.-a %)) db/ref-datoms)
+                ref-attrs (map #(dbi/ident-for @conn (.-a %) :error-on-missing) db/ref-datoms)
                 ref-datom-per-attr-counts (update-counts ref-attrs)
                 indexed? (fn [a] (-> (:db/index (.-rschema @conn))
                                      (contains? a)))]

@@ -6,6 +6,7 @@
             [datahike.readers :as readers]
             [datahike.connector]
             [datahike.datom :as dd]
+            [datahike.db.interface :as dbi]
             [datahike.schema :as s]
             [jsonista.core :as j]
             [jsonista.tagged :as jt])
@@ -150,7 +151,7 @@
   (if (string? s) (keyword s) s))
 
 (defn ident-for [^datahike.db.DB db a]
-  (if (and (number? a) (some? db)) (.-ident-for db a) a))
+  (if (and (number? a) (some? db)) (dbi/ident-for db a :error-on-missing) a))
 
 (defn cond-xf-val
   [a-ident v {:keys [ref-attrs long-attrs keyword-attrs symbol-attrs] :as valtype-attrs-map} db]
