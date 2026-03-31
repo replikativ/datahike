@@ -380,8 +380,26 @@
 ;; ---------------------------------------------------------------------------
 ;; Temporal query support helpers
 
+(defn- resolve-date-to-tx-id
+  "Resolve a Date time-point to the max numeric tx-id where :db/txInstant <= date.
+   Scans temporal AEVT for :db/txInstant datoms on the origin DB (plain DB).
+   Returns tx0 if no transactions exist at or before the given date."
+  [origin-db date]
+  (let [txInstant-attr (if (:attribute-refs? (dbi/-config origin-db))
+                         (dbi/-ref-for origin-db :db/txInstant)
+                         :db/txInstant)
+        all-instants (dbi/-datoms origin-db :aevt [txInstant-attr] dbu/temporal-context)
+        matching (filter (fn [^Datom d]
+                           #?(:clj  (<= (compare (.-v d) date) 0)
+                              :cljs (<= (.getTime (.-v d)) (.getTime date))))
+                         all-instants)]
+    (if (seq matching)
+      (long (.-e ^Datom (last matching)))
+      (long tx0))))
+
 (defn- temporal-info
   "Extract temporal metadata from a DB wrapper.
+   Date-based time-points are resolved to numeric tx-ids via AVET lookup on the origin DB.
    Returns nil for regular DBs."
   [db]
   (cond
@@ -389,14 +407,16 @@
     {:type :historical :origin-db (dbi/-origin db)}
 
     (instance? AsOfDB db)
-    (let [tp (dbi/-time-point db)]
-      {:type :as-of :origin-db (dbi/-origin db)
-       :time-point tp :numeric-tx? (number? tp)})
+    (let [tp (dbi/-time-point db)
+          origin-db (dbi/-origin db)
+          numeric-tp (if (number? tp) (long tp) (resolve-date-to-tx-id origin-db tp))]
+      {:type :as-of :origin-db origin-db :time-point numeric-tp})
 
     (instance? SinceDB db)
-    (let [tp (dbi/-time-point db)]
-      {:type :since :origin-db (dbi/-origin db)
-       :time-point tp :numeric-tx? (number? tp)})
+    (let [tp (dbi/-time-point db)
+          origin-db (dbi/-origin db)
+          numeric-tp (if (number? tp) (long tp) (resolve-date-to-tx-id origin-db tp))]
+      {:type :since :origin-db origin-db :time-point numeric-tp})
 
     :else nil))
 
@@ -534,7 +554,6 @@
     (di/-slice db-index from-datom to-datom index)
     (let [temporal-type (:type temporal)
           as-of-at-max-tx? (and (= temporal-type :as-of)
-                                (:numeric-tx? temporal)
                                 (= (long (:time-point temporal))
                                    (long (:max-tx origin-db))))
           temporal-index-key (keyword (str "temporal-" (name index)))]

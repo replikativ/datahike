@@ -94,7 +94,8 @@ Use `d/explain` to see the query plan for any query:
 | Pull expressions | Yes | |
 | ORDER BY | Yes | Independent of engine choice |
 | FindScalar / FindColl / FindTuple | Yes | |
-| Temporal DBs (as-of, since, history) | Fallback to legacy | |
+| Temporal DBs (`as-of`, `since`, `history`) | Yes | Numeric and Date time-points |
+| Nested temporal wrappers (`(history (as-of ...))`) | Fallback to legacy | |
 
 When the query planner encounters an unsupported query shape, it automatically falls back to the legacy engine — no error, no configuration needed.
 

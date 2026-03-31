@@ -2927,15 +2927,12 @@
 
 (defn- planner-eligible-db?
   "Check if db is eligible for the query planner.
-   Accepts regular DB and temporal wrappers (AsOfDB, SinceDB, HistoricalDB)
-   with numeric time-points. Date-based time-points fall back to legacy
-   (require filter-txInstant lookups that the fused scan can't do inline)."
+   Accepts regular DB and all temporal wrappers (AsOfDB, SinceDB, HistoricalDB).
+   Date-based time-points are resolved to tx-ids at execution time via AVET lookup."
   [db]
   (or (instance? DB db)
-      (and (instance? SinceDB db)
-           (number? (dbi/-time-point db)))
-      (and (instance? AsOfDB db)
-           (number? (dbi/-time-point db)))
+      (instance? SinceDB db)
+      (instance? AsOfDB db)
       (instance? HistoricalDB db)))
 
 (defn- planner-origin-db
