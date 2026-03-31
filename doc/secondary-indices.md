@@ -255,7 +255,7 @@ Scriptum stores Lucene segments on the **writer node's local filesystem**, not i
 └───────────┘                   └───────┬────────┘
                                         │ konserve sync
       ┌─────────────────────────────────┼──────────────────┐
-      │                                 │                   │
+      │                                 │                  │
 ┌─────▼──────┐                   ┌──────▼───────┐   ┌──────▼───────┐
 │  Reader 1  │                   │  Reader 2    │   │  Reader 3    │
 │  stratum ✓ │                   │  stratum ✓   │   │  stratum ✓   │
