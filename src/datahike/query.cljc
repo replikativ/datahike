@@ -254,7 +254,7 @@
      (when-some [datom (first (dbi/search db [e (translate-for db a)]))]
        (let [a-ident (if (keyword? (:a datom))
                        (:a datom)
-                       (dbi/-ident-for db (:a datom)))]
+                       (dbi/ident-for db (:a datom) :error-on-missing))]
          (reduced [a-ident (:v datom)]))))
    nil
    as))

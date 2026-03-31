@@ -321,10 +321,7 @@
               a-ident))
   (-ident-for [db a-ref]
               (if (:attribute-refs? (.-config db))
-                (let [a-ident (get (.-ref-ident-map db) a-ref)]
-                  (when (nil? a-ident)
-                    (log/warn :datahike/attribute-ref-not-found {:ref a-ref}))
-                  a-ident)
+                (get (.-ref-ident-map db) a-ref)
                 a-ref))
 
   dbi/ISearch
@@ -935,7 +932,7 @@
         counts-map (->> (di/-seq (.-eavt db))
                         (reduce (fn [m ^Datom datom]
                                   (-> m
-                                      (update-count-in [:per-attr-counts (dbi/-ident-for db (.-a datom))])
+                                      (update-count-in [:per-attr-counts (dbi/ident-for db (.-a datom) :error-on-missing)])
                                       (update-count-in [:per-entity-counts (.-e datom)])))
                                 {:per-attr-counts    {}
                                  :per-entity-counts  {}}))
@@ -950,7 +947,7 @@
       (dbi/-keep-history? db)
       (merge {:temporal-count (di/-count (.-temporal-eavt db))
               :temporal-avet-count (->> (di/-seq (.-temporal-eavt db))
-                                        (reduce (fn [m ^Datom datom] (update-count-in m [(dbi/-ident-for db (.-a datom))]))
+                                        (reduce (fn [m ^Datom datom] (update-count-in m [(dbi/ident-for db (.-a datom) :error-on-missing)]))
                                                 {})
                                         sum-indexed-attr-counts)}))))
 
