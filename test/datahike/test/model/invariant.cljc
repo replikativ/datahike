@@ -32,10 +32,10 @@
   (let [attr-refs? (:attribute-refs? (.-config db))]
     (into #{}
           (comp (filter (if attr-refs?
-                          (comp user-attrs #(dbi/-ident-for db %) :a)
+                          (comp user-attrs #(dbi/ident-for db % :error-on-missing) :a)
                           (comp user-attrs :a)))
                 (map (if attr-refs?
-                       (juxt :e #(dbi/-ident-for db (:a %)) :v)
+                       (juxt :e #(dbi/ident-for db (:a %) :error-on-missing) :v)
                        (juxt :e :a :v))))
           datoms)))
 

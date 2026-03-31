@@ -31,7 +31,7 @@
     (log/raise "Cannot store nil as a value at " at
                {:error :transact/syntax, :value v, :context at}))
   (let [{:keys [attribute-refs? schema-flexibility]} config
-        a-ident (if (and attribute-refs? (number? a)) (dbi/-ident-for db a) a)
+        a-ident (if (and attribute-refs? (number? a)) (dbi/ident-for db a :error-on-missing) a)
         v-ident (if (and attribute-refs?
                          (contains? (dbi/-system-entities db) a)
                          (not (nil? (ref-ident-map v))))
@@ -90,9 +90,9 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)
-        a-ident (if attribute-refs? (dbi/-ident-for db a) a)
+        a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
         v-ident (if (and attribute-refs? (contains? (dbi/-system-entities db) v))
-                  (dbi/-ident-for db v)
+                  (dbi/ident-for db v :error-on-missing)
                   v)]
     (when (and attribute-refs? (contains? (dbi/-system-entities db) e))
       (log/raise "System schema entity cannot be changed"
@@ -125,9 +125,9 @@
         e (.-e datom)
         a (.-a datom)
         v (.-v datom)
-        a-ident (if attribute-refs? (dbi/-ident-for db a) a)
+        a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
         v-ident (if (and attribute-refs? (contains? (dbi/-system-entities db) v))
-                  (dbi/-ident-for db v)
+                  (dbi/ident-for db v :error-on-missing)
                   v)]
     (when (and attribute-refs? (contains? (dbi/-system-entities db) e))
       (log/raise "System schema entity cannot be changed"
@@ -154,7 +154,7 @@
 
 (defn- with-datom [db ^Datom datom]
   (validate-datom db datom)
-  (let [{a-ident :ident} (dbu/attr-info db (.-a datom))
+  (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
         indexing? (dbu/indexing? db a-ident)
         schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident))
         keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
@@ -188,7 +188,7 @@
         db))))
 
 (defn- with-temporal-datom [db ^Datom datom]
-  (let [{a-ident :ident} (dbu/attr-info db (.-a datom))
+  (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
         indexing? (dbu/indexing? db a-ident)
         schema? (ds/schema-attr? a-ident)
         current-datom ^Datom (first (dbi/search db [(.-e datom) (.-a datom) (.-v datom)]))
@@ -236,7 +236,7 @@
 (defn- with-datom-upsert [db ^Datom datom]
   (validate-datom-upsert db datom)
   (let [indexing?     (dbu/indexing? db (.-a datom))
-        {a-ident :ident} (dbu/attr-info db (.-a datom))
+        {a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
         schema?       (ds/schema-attr? a-ident)
         keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident))
                            (not= :db/txInstant a-ident))
@@ -400,8 +400,8 @@
   (let [eid (:db/id entity)
         attribute-refs? (:attribute-refs? (dbi/-config db))
         _ (when (and attribute-refs? (contains? (dbi/-system-entities db) eid))
-            (log/raise "Entity with ID " eid " is a system attribute " (dbi/-ident-for db eid) " and cannot be changed"
-                       {:error :transact/syntax, :eid eid, :attribute (dbi/-ident-for db eid) :context entity}))
+            (log/raise "Entity with ID " eid " is a system attribute " (dbi/ident-for db eid :error-on-missing) " and cannot be changed"
+                       {:error :transact/syntax, :eid eid, :attribute (dbi/ident-for db eid :error-on-missing) :context entity}))
         ensure (:db/ensure entity)
         entities (for [[a-ident vs] entity
                        :when (not (or (= a-ident :db/id) (= a-ident :db/ensure)))
@@ -444,7 +444,7 @@
         tx (or tx (current-tx report))
         db db-after
         e (dbu/entid-strict db e)
-        a-ident (if attribute-refs? (dbi/-ident-for db a) a)
+        a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
         v (if (dbu/ref? db a-ident) (dbu/entid-strict db v) v)
         new-datom (datom e a v tx)
         upsert? (not (dbu/multival? db a))]
@@ -626,7 +626,8 @@
     (if-let [e (dbu/entid db e)]
       (let [e-datoms (vec (dbi/search db [e]))
             v-datoms (->> (dbi/-attrs-by db :db.type/ref)
-                          (map (partial dbi/-ident-for db))
+                          ;; TODO: How to best handle nil here?
+                          (map #(dbi/ident-for db % :warn-on-missing))
                           (mapcat (fn [a] (dbi/search db [nil a e])))
                           vec)]
         [(reduce transact-retract-datom report (concat e-datoms v-datoms))
