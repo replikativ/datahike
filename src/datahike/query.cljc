@@ -2170,44 +2170,46 @@
 
 (defn- extract-query-attr-deps
   "Extract the set of attributes referenced in where-clauses.
-   Returns a set of keywords/symbols, or :all if deps cannot be determined."
+   Returns a set of keywords/symbols, or :all if deps cannot be determined.
+   Uses a work-queue loop so :all short-circuits cleanly without nested reduces."
   [where-clauses]
-  (reduce (fn extract-clause [attrs clause]
-            (cond
-              ;; Pattern clause: [?e :attr ?v] or [?e :attr value]
-              (and (vector? clause) (not (vector? (first clause))))
-              (let [a (second clause)]
-                (if (and (some? a) (not (symbol? a)))
-                  (conj attrs a)
-                  attrs))
+  (loop [clauses where-clauses
+         attrs   #{}]
+    (if (empty? clauses)
+      attrs
+      (let [[clause & rest-clauses] clauses]
+        (cond
+          ;; Data pattern: [?e :attr ?v] or with src-var [$ ?e :attr ?v]
+          (and (vector? clause) (not (vector? (first clause))))
+          (let [f (first clause)
+                src? (and (symbol? f) (clojure.string/starts-with? (name f) "$"))
+                a (if src? (nth clause 2 nil) (second clause))]
+            (recur rest-clauses
+                   (if (and (some? a) (not (symbol? a)))
+                     (conj attrs a)
+                     attrs)))
 
-              ;; Predicate/function clause like [(> ?a 50)] — deps come from
-              ;; the pattern clauses that bind the predicate's vars. Safe to skip.
-              (and (sequential? clause) (vector? (first clause)))
-              attrs
+          ;; Predicate/function clause [(> ?a 50)] — deps come from binding
+          ;; pattern clauses, safe to skip.
+          (and (sequential? clause) (vector? (first clause)))
+          (recur rest-clauses attrs)
 
-              ;; OR / NOT with sub-clauses — recurse to extract attrs
-              (and (sequential? clause) (symbol? (first clause)))
-              (let [op-name (name (first clause))]
-                (case op-name
-                  ("or" "and")
-                  (reduce extract-clause attrs (rest clause))
+          ;; or / not / and / or-join / not-join — add sub-clauses to work queue
+          (and (sequential? clause) (symbol? (first clause)))
+          (let [op-name (name (first clause))]
+            (case op-name
+              ("or" "and" "not")
+              (recur (into rest-clauses (rest clause)) attrs)
 
-                  ("or-join" "not-join")
-                  ;; First arg after op is the join-var binding vector
-                  (reduce extract-clause attrs (rest (rest clause)))
+              ("or-join" "not-join")
+              ;; Skip the binding-var vector (second element)
+              (recur (into rest-clauses (rest (rest clause))) attrs)
 
-                  "not"
-                  (reduce extract-clause attrs (rest clause))
+              ;; Unknown: rule call, get-else, etc. — cannot determine attr deps
+              :all))
 
-                  ;; Default: unknown clause type (rule calls, get-else, etc.)
-                  ;; — cannot determine attribute deps, mark :all
-                  (reduced :all)))
-
-              ;; Nested vector (e.g., expression clause) — skip
-              :else attrs))
-          #{}
-          where-clauses))
+          ;; Unknown shape — skip
+          :else (recur rest-clauses attrs))))))
 
 (defn- result-cache-get
   "Look up a cached query result for the given DB."
