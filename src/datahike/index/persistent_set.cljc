@@ -195,8 +195,8 @@
     (temporal-upsert pset datom index-type old-val))
   (-remove [^PersistentSortedSet pset datom index-type _op-count]
     (remove-datom pset datom index-type))
-  (-flush [^PersistentSortedSet pset _]
-    (psset/store pset)
+  (-flush [^PersistentSortedSet pset backend]
+    (psset/store pset (:storage backend))
     pset)
   (-transient [^PersistentSortedSet pset]
     (transient pset))
