@@ -613,3 +613,36 @@
                             (not [$1 ?e :name "Oleg"])]
                           db1 [[:name "Ivan"] [:name "Petr"] [:name "Oleg"]]))]
         (is (= #{[[:name "Ivan"] 1] [[:name "Petr"] 2]} result))))))
+
+;; ---------------------------------------------------------------------------
+;; Path 4 regression: shared value variable with NOT (per-cursor-merge bug)
+
+(deftest test-per-cursor-merge-shared-variable
+  (testing "NOT clause + shared value variable: execute-per-cursor-merge must enforce ?x equality"
+    ;; [?e :val-a ?x] [?e :val-b ?x] (not [?e :flag :no])
+    ;; The NOT clause routes the group to execute-per-cursor-merge (Path 4).
+    ;; Bug: Path 4 dropped merge-check-scan-v, so the ?x equality constraint
+    ;; between :val-a and :val-b was silently ignored, causing entity 5
+    ;; (val-a="foo", val-b="bar") to spuriously appear in the result.
+    (let [db (d/db-with (db/empty-db {:val-a {} :val-b {} :flag {}})
+                        [{:db/id 4 :val-a "foo" :val-b "foo" :flag :yes}   ;; val-a == val-b, flag != :no  => matches
+                         {:db/id 5 :val-a "foo" :val-b "bar" :flag :yes}   ;; val-a != val-b               => must NOT match
+                         {:db/id 6 :val-a "baz" :val-b "baz" :flag :no}])  ;; val-a == val-b but flag == :no => excluded by NOT
+          query '[:find ?e :where [?e :val-a ?x] [?e :val-b ?x] (not [?e :flag :no])]]
+      (assert-engines-agree db query)
+      (is (= #{[4]}
+             (binding [q/*force-legacy* false] (d/q query db)))
+          "Only entity 4 should match: val-a == val-b AND flag != :no")))
+
+  (testing "shared value variable without NOT still correct (sorted-merge path)"
+    ;; Without NOT the group routes to execute-sorted-merge (Path 3), which
+    ;; was already correct. Confirm it still is after the fix.
+    (let [db (d/db-with (db/empty-db {:val-a {} :val-b {} :flag {}})
+                        [{:db/id 4 :val-a "foo" :val-b "foo" :flag :yes}
+                         {:db/id 5 :val-a "foo" :val-b "bar" :flag :yes}
+                         {:db/id 6 :val-a "baz" :val-b "baz" :flag :no}])
+          query '[:find ?e :where [?e :val-a ?x] [?e :val-b ?x]]]
+      (assert-engines-agree db query)
+      (is (= #{[4] [6]}
+             (binding [q/*force-legacy* false] (d/q query db)))
+          "Entities 4 and 6 match: both have val-a == val-b"))))

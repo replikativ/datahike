@@ -811,7 +811,8 @@
 
 (defn- execute-per-cursor-merge
   "Path 4: Per-cursor or lookupGE merge (fallback for anti-merges, non-sorted).
-   merge-ctx is [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors]."
+   merge-ctx is [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors
+                 merge-check-scan-v merge-check-scan-tx]."
   [eavt-pss slice ground-filter strict-filter
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
@@ -822,6 +823,8 @@
         ^objects merge-v-vals (aget ^objects merge-ctx 2)
         ^objects merge-anti (aget ^objects merge-ctx 3)
         ^objects merge-cursors (aget ^objects merge-ctx 4)
+        ^objects merge-check-scan-v (aget ^objects merge-ctx 5)
+        ^objects merge-check-scan-tx (aget ^objects merge-ctx 6)
         ^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -847,7 +850,9 @@
                                    found? (and d
                                                (== (.-e d) eid)
                                                (= (.-a d) ra)
-                                               (or (not vg?) (val-eq? (.-v d) vgv)))]
+                                               (or (not vg?) (val-eq? (.-v d) vgv))
+                                               (or (not (aget merge-check-scan-v mi)) (val-eq? (.-v d) (.-v scan-d)))
+                                               (or (not (aget merge-check-scan-tx mi)) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
                                (if anti?
                                  (recur (unchecked-inc-int mi) (not found?))
                                  (if found?
@@ -874,7 +879,9 @@
                                found? (and d
                                            (== (.-e d) eid)
                                            (= (.-a d) ra)
-                                           (or (not vg?) (val-eq? (.-v d) vgv)))]
+                                           (or (not vg?) (val-eq? (.-v d) vgv))
+                                           (or (not (aget merge-check-scan-v mi)) (val-eq? (.-v d) (.-v scan-d)))
+                                           (or (not (aget merge-check-scan-tx mi)) (= (datom/datom-tx d) (datom/datom-tx scan-d))))]
                            (if anti?
                              (recur (inc mi) (not found?))
                              (if found?
@@ -1112,7 +1119,8 @@
                                   collect-set collect-datom-field collect-merge-idx
                                   merge-datoms n-find find-source const-vals
                                   result-list max-n n-merges
-                                  (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors]))))
+                                  (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors
+                                                 merge-check-scan-v merge-check-scan-tx]))))
 
     result-list))
 
