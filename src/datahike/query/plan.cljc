@@ -20,7 +20,8 @@
    [datahike.index.interface :as di]
    [replikativ.logging :as log]
    [datahike.query.analyze :as analyze]
-   [datahike.query.estimate :as estimate]))
+   [datahike.query.estimate :as estimate]
+   [datahike.query.ir :as ir]))
 
 #?(:clj (set! *warn-on-reflection* true))
 
@@ -76,7 +77,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Pattern plan ops
 
-(defn- plan-pattern-op
+(defn plan-pattern-op
   "Create a plan operation for a pattern clause.
    Returns [op actually-consumed-pred-clauses]."
   [db pattern-info schema-info pushdown-preds bound-vars]
@@ -114,7 +115,7 @@
      (when (seq effective-preds)
        (into #{} (map :pred-clause) effective-preds))]))
 
-(defn- estimate-standalone-predicate
+(defn estimate-standalone-predicate
   "Estimate selectivity for a standalone predicate by finding the pattern
    it depends on and sampling."
   [db pred-info pattern-ops]
@@ -138,7 +139,7 @@
                     (estimate/sample-predicate-selectivity db pop op pred-var const-val)))
                 pattern-ops))))))
 
-(defn- plan-predicate-op
+(defn plan-predicate-op
   ([pred-info]
    (plan-predicate-op pred-info nil nil))
   ([pred-info db pattern-ops]
@@ -221,7 +222,7 @@
      :accepts-entity-filter? (:accepts-entity-filter? engine-meta false)
      :estimated-card (or (:estimated-card cost) 100)}))
 
-(defn- plan-function-op
+(defn plan-function-op
   "Create a plan op for a function clause. Checks for external engine metadata."
   ([fn-info] (plan-function-op fn-info nil))
   ([fn-info db]
@@ -236,7 +237,7 @@
         :vars (:vars fn-info)
         :estimated-card nil}))))
 
-(defn- plan-passthrough-op [clause-info]
+(defn plan-passthrough-op [clause-info]
   {:op :passthrough
    :clause (:clause clause-info)
    :type (:type clause-info)
@@ -246,14 +247,14 @@
 ;; ---------------------------------------------------------------------------
 ;; DP-based optimal merge ordering
 
-(defn- can-be-merge?
+(defn can-be-merge?
   "A pattern op can serve as a merge (lookupGE) only if its attribute position
    is ground (not a variable). Variable-attribute patterns must be the scan."
   [op]
   (let [a (second (:clause op))]
     (and (some? a) (not (symbol? a)))))
 
-(defn- dp-order-fuse-ops
+(defn dp-order-fuse-ops
   "For N pattern ops on same entity var, find optimal (scan, merge-order).
    Uses short-circuit AND ordering: sort merges by ascending
    merge-cost / (1 - pass-rate). Try each pattern as scan, pick minimum total cost."
@@ -304,11 +305,173 @@
             {:scan (first sorted) :merges (vec (rest sorted))}))))))
 
 ;; ---------------------------------------------------------------------------
-;; Entity group construction
+;; Pipeline construction
+;;
+;; Determines the fused execution path from plan-time data and annotates
+;; entity-group ops with a PPipeline record.
+
+(defn build-pipeline
+  "Build a PPipeline for an entity-group or standalone scan.
+   Determines the fused execution path from plan-time data only.
+   Does NOT pre-compute runtime values (slice bounds, filters, arrays)."
+  [scan-op merge-ops db]
+  (let [n-merges (count merge-ops)
+        {:keys [clause index]} scan-op
+        [_e a _v _tx] clause
+        scan-attr-ground? (and (some? a) (not (symbol? a)))
+        has-card-many? (boolean (some #(not (get-in % [:schema-info :card-one?] true)) merge-ops))
+        has-anti? (boolean (some :anti? merge-ops))
+        use-cursors? #?(:clj (and (pos? n-merges)
+                                  (or (= index :eavt)
+                                      (= index :aevt)
+                                      (and (= index :avet)
+                                           (let [sv (get clause 2)]
+                                             (and (some? sv) (not (analyze/free-var? sv)))))))
+                        :cljs false)
+        use-sorted-scan? #?(:clj (and use-cursors?
+                                      (pos? n-merges)
+                                      scan-attr-ground?
+                                      (not has-card-many?)
+                                      (not has-anti?))
+                            :cljs false)
+        attr-refs? (:attribute-refs? (dbi/-config db))
+        fused-path (cond
+                     (zero? n-merges) :scan-only
+                     has-card-many?   :card-many-merge
+                     use-sorted-scan? :sorted-merge
+                     :else            :per-cursor-merge)
+        steps (cond-> [(ir/->PIndexScan index clause scan-attr-ground?)
+                       (ir/->PGroundFilter true (boolean (seq (:pushdown-preds scan-op))))]
+                true (conj (ir/->PProbeFilter nil))
+                (and (pos? n-merges) (= fused-path :sorted-merge))
+                (conj (ir/->PSortedMerge n-merges))
+                (and (pos? n-merges) (= fused-path :per-cursor-merge))
+                (conj (ir/->PPerCursorMerge n-merges has-anti?))
+                (and (pos? n-merges) (= fused-path :card-many-merge))
+                (conj (ir/->PCardManyMerge n-merges))
+                true (conj (ir/->PEmitTuple 0)))]
+    (ir/->PPipeline (vec steps) fused-path use-cursors? (boolean attr-refs?))))
+
+(defn- op-input-vars
+  "Return only the *input* vars of an op — vars it consumes, not vars it produces.
+   For :function ops, output vars (bound by the function) are excluded.
+   For all other ops, :vars is already the set of input vars."
+  [op]
+  (if (= :function (:op op))
+    ;; Input vars are the free variables in :args
+    (into #{} (filter analyze/free-var?) (:args op))
+    (:vars op)))
+
+(defn post-op-direct-eligible?
+  "Check whether a predicate or function op can be evaluated in the direct
+   (post-filter) path. Excludes:
+   - Java interop methods (.startsWith etc.) — error semantics differ in try/catch path
+   - ops that reference source symbols ($, %) in args
+   - functions with non-scalar binding forms (tuple [?a ?b], collection [[?x ...]])"
+  [op]
+  (let [args (:args op)
+        binding (:binding op)
+        fn-sym (:fn-sym op)]
+    (and
+     ;; Exclude Java interop methods — post-filter catches all exceptions,
+     ;; which swallows NoSuchMethodException instead of propagating it
+     (not (and (symbol? fn-sym)
+              (let [n (name fn-sym)]
+                (and (pos? (count n)) (= \. (.charAt ^String n 0))))))
+     ;; Only scalar bindings supported (symbol or nil for predicates)
+     (or (nil? binding) (symbol? binding))
+     ;; All args must be constants or free variables (no source/rule symbols)
+     (every? (fn [a]
+               (or (not (symbol? a))
+                   (analyze/free-var? a)))
+             args))))
+
+(defn structurally-fusable?
+  "Check if a plan's ops are structurally eligible for the direct-to-HashSet path.
+   Allows groups (entity-group, pattern-scan) plus predicates and functions for
+   single-group plans only (multi-group cross-predicates need the Relation engine).
+   Functions that reference source symbols ($) are excluded.
+   This is a necessary but not sufficient condition — runtime still checks find-var coverage."
+  [ops]
+  (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
+        has-post-ops? (not (every? #(#{:entity-group :pattern-scan} (:op %)) ops))]
+    (and (seq ops)
+         (every? #(#{:entity-group :pattern-scan :predicate :function} (:op %)) ops)
+         (not-any? :source ops)
+         ;; Post-ops only supported for single-group plans
+         (or (not has-post-ops?)
+             (= 1 (count groups)))
+         ;; All predicate/function ops must be direct-eligible
+         (every? (fn [op]
+                   (or (#{:entity-group :pattern-scan} (:op op))
+                       (post-op-direct-eligible? op)))
+                 ops)
+         ;; Verify all predicate/function input vars are bound by preceding groups
+         (let [group-vars (into #{} (mapcat :vars) groups)]
+           (every? (fn [op]
+                     (or (#{:entity-group :pattern-scan} (:op op))
+                         (clojure.set/subset? (op-input-vars op) group-vars)))
+                   ops)))))
+
+;; ---------------------------------------------------------------------------
+;; Entity group assembly
 ;;
 ;; An entity group bundles all pattern ops on the same entity variable into
 ;; a single plan node: one scan + zero or more merge lookups.
 ;; This enables fused execution (single pass over scan datoms, lookupGE per merge).
+
+(defn assemble-entity-group
+  "Build an :entity-group op from pattern-ops on the same entity-var.
+   Applies DP merge ordering, folds anti-merges, computes pipeline annotation.
+   Returns {:op entity-group-op, :merge-lost-preds #{consumed-pred-clauses-on-merges}}."
+  [db entity-var source pattern-ops anti-ops total-entities]
+  (let [{:keys [scan merges]}
+        (dp-order-fuse-ops db pattern-ops total-entities)
+        ;; Merge ops = DP-ordered merges + anti-merges
+        ;; Sort anti-merges by their filtering power (most selective first)
+        all-merges (into (vec merges) anti-ops)
+        merge-ops (let [normal (filterv #(not (:anti? %)) all-merges)
+                        anti (filterv :anti? all-merges)]
+                    (if (empty? anti)
+                      normal
+                      (let [anti-with-pass (mapv (fn [op]
+                                                    (let [est (max 1 (or (:estimated-card op) total-entities))
+                                                          match-rate (estimate/estimate-conditional-pass-rate est total-entities)]
+                                                      (assoc op ::anti-pass-rate (- 1.0 match-rate))))
+                                                  anti)
+                            sorted-anti (sort-by ::anti-pass-rate anti-with-pass)]
+                        (into (vec normal)
+                              (mapv #(dissoc % ::anti-pass-rate) sorted-anti)))))
+        ;; Estimate output cardinality
+        scan-card (max 1 (or (:estimated-card scan) total-entities))
+        group-card (reduce (fn [card merge-op]
+                             (let [merge-est (max 1 (or (:estimated-card merge-op) total-entities))
+                                   pass-rate (estimate/estimate-conditional-pass-rate merge-est total-entities)]
+                               (if (:anti? merge-op)
+                                 (long (* card (max 0.01 (- 1.0 pass-rate))))
+                                 (long (* card pass-rate)))))
+                           scan-card
+                           merge-ops)
+        output-vars (into #{} (mapcat :vars) (into pattern-ops anti-ops))
+        ;; Merge-ops' pushdown preds can't be applied (merge uses EAVT lookupGE,
+        ;; not AVET scan). Collect them so they can be restored as standalone preds.
+        merge-lost-preds (into #{} (comp (mapcat :pushdown-preds) (map :pred-clause)) merge-ops)
+        final-scan (assoc scan :join-method :scan)
+        final-merges (mapv #(assoc % :join-method :lookup) merge-ops)
+        eg-op (cond-> {:op :entity-group
+                        :entity-var entity-var
+                        :scan-op final-scan
+                        :merge-ops final-merges
+                        :output-vars output-vars
+                        :vars output-vars
+                        :estimated-card (max 1 group-card)
+                        :pipeline (build-pipeline final-scan final-merges db)}
+                 source (assoc :source source))]
+    {:op eg-op
+     :merge-lost-preds merge-lost-preds}))
+
+;; ---------------------------------------------------------------------------
+;; Entity group partitioning
 
 (defn- build-entity-groups
   "Partition pattern ops by entity variable and build entity-group nodes.
@@ -375,53 +538,13 @@
                  all-ops (into (vec ops) anti-ops)]
              (if (and (= 1 (count all-ops)) (not (:anti? (first all-ops))))
                ;; Single pattern, no anti-merges — keep as plain pattern-scan
-               (first ops)
-               ;; Multi-op group — build entity-group with DP ordering
-               (let [{:keys [scan merges]}
-                     (dp-order-fuse-ops db
-                                        ;; Only non-anti ops participate in scan selection
-                                        (filterv #(not (:anti? %)) all-ops)
-                                        total-entities)
-                     ;; Merge ops = DP-ordered merges + anti-merges
-                     ;; Sort anti-merges into the merge order by their filtering power:
-                     ;; anti-merge with low pass-rate (strong filter) should go early
-                     all-merges (into (vec merges) anti-ops)
-                     merge-ops (let [normal (filterv #(not (:anti? %)) all-merges)
-                                     anti (filterv :anti? all-merges)]
-                                 (if (empty? anti)
-                                   normal
-                                   ;; Append anti-merges sorted by selectivity (most selective first)
-                                   ;; Anti pass-rate = 1 - P(match), lower = more selective
-                                   (let [anti-with-pass (mapv (fn [op]
-                                                                (let [est (max 1 (or (:estimated-card op) total-entities))
-                                                                      match-rate (estimate/estimate-conditional-pass-rate est total-entities)]
-                                                                  (assoc op ::anti-pass-rate (- 1.0 match-rate))))
-                                                              anti)
-                                         ;; Sort anti-merges by pass-rate ascending (most selective first)
-                                         sorted-anti (sort-by ::anti-pass-rate anti-with-pass)
-                                         ;; Place anti-merges after normal merges, sorted by selectivity
-                                         result (into (vec normal) (mapv #(dissoc % ::anti-pass-rate) sorted-anti))]
-                                     result)))
-                     ;; Estimate output cardinality
-                     scan-card (max 1 (or (:estimated-card scan) total-entities))
-                     group-card (reduce (fn [card merge-op]
-                                          (let [merge-est (max 1 (or (:estimated-card merge-op) total-entities))
-                                                pass-rate (estimate/estimate-conditional-pass-rate merge-est total-entities)]
-                                            (if (:anti? merge-op)
-                                              ;; Anti-merge: pass = 1 - P(match)
-                                              (long (* card (max 0.01 (- 1.0 pass-rate))))
-                                              (long (* card pass-rate)))))
-                                        scan-card
-                                        merge-ops)
-                     output-vars (into #{} (mapcat :vars) all-ops)]
-                 (cond-> {:op :entity-group
-                          :entity-var e-var
-                          :scan-op (assoc scan :join-method :scan)
-                          :merge-ops (mapv #(assoc % :join-method :lookup) merge-ops)
-                          :output-vars output-vars
-                          :vars output-vars
-                          :estimated-card (max 1 group-card)}
-                   source (assoc :source source))))))
+               (let [op (first ops)]
+                 (assoc op :pipeline (build-pipeline op [] db)))
+               ;; Multi-op group — delegate to shared assembly
+               (let [non-anti (filterv #(not (:anti? %)) all-ops)
+                     {:keys [op merge-lost-preds]}
+                     (assemble-entity-group db e-var source non-anti anti-ops total-entities)]
+                 (assoc op :merge-lost-preds merge-lost-preds)))))
          groups)
 
         ;; NOT ops that weren't folded
@@ -433,7 +556,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Inter-group join detection
 
-(defn- detect-inter-group-joins
+(defn detect-inter-group-joins
   "Detect shared variables between entity groups.
    Returns a map of {group-idx → {:probe-vars #{shared-vars}, :producer-idx N}}."
   [entity-groups]
@@ -464,7 +587,7 @@
 
 (def ^:private max-cost #?(:clj Long/MAX_VALUE :cljs (.-MAX_SAFE_INTEGER js/Number)))
 
-(defn- op-cost [op bound-vars]
+(defn op-cost [op bound-vars]
   (case (:op op)
     (:entity-group :pattern-scan)
     (or (:estimated-card op) max-cost)
@@ -477,12 +600,18 @@
       (if (every? #(contains? bound-vars %) input-vars) 1 max-cost))
 
     :external-engine
-    (let [input-vars (into #{} (filter analyze/free-var?) (:args op))]
-      (if (every? #(contains? bound-vars %) input-vars)
-        ;; Filter/retrieval with no input deps → place early (low cost)
-        ;; Solver with input deps → after deps are bound
-        (or (:estimated-card op) 100)
-        max-cost))
+    (if (= :solver (:mode op))
+      ;; Solver mode needs populated context — require at least some of its
+      ;; vars to be bound first (shared vars come from entity-group patterns)
+      (let [op-vars (into #{} (filter analyze/free-var?) (:vars op))]
+        (if (some #(contains? bound-vars %) op-vars)
+          (or (:estimated-card op) 100)
+          max-cost))
+      ;; Filter/retrieval: check args for free var deps
+      (let [input-vars (into #{} (filter analyze/free-var?) (:args op))]
+        (if (every? #(contains? bound-vars %) input-vars)
+          (or (:estimated-card op) 100)
+          max-cost)))
 
     :rule-lookup
     (or (:estimated-card op) 100)
@@ -495,7 +624,7 @@
 
     max-cost))
 
-(defn- order-plan-ops
+(defn order-plan-ops
   "Order plan operations (entity-groups, predicates, OR/NOT, etc.)
    greedily by ascending estimated cost. Predicates placed immediately
    after their dependencies are satisfied."
@@ -529,7 +658,7 @@
             (create-plan db branch-clauses bound-vars rules)))
         branches))
 
-(defn- plan-or-op
+(defn plan-or-op
   "Plan an OR or OR-JOIN clause. When join-vars? is true, validates and
    includes :join-vars in the op (OR-JOIN semantics)."
   ([db clause-info bound-vars rules]
@@ -552,7 +681,7 @@
               :estimated-card (max 1 total-est)}
        join-vars? (assoc :join-vars join-vars)))))
 
-(defn- plan-not-op
+(defn plan-not-op
   "Plan a NOT or NOT-JOIN clause. When join-vars? is true, scopes the
    sub-plan to only the join-vars (NOT-JOIN semantics)."
   ([db clause-info bound-vars rules]
@@ -627,7 +756,7 @@
           (strong-connect v))))
     @result))
 
-(defn- compute-rule-sccs
+(defn compute-rule-sccs
   "Compute SCCs for the rule graph. Returns a map:
    {rule-name → {:scc #{rule-names} :recursive? bool}}"
   [rules]
@@ -686,7 +815,7 @@
     ;; Put const-bindings first so synthetic vars are bound before body uses them
     (into const-bindings renamed)))
 
-(defn- plan-rule-op [db clause-info bound-vars rules scc-info]
+(defn plan-rule-op [db clause-info bound-vars rules scc-info]
   (let [[rule-name & call-args] (:clause clause-info)
         ;; Validate: non-var rule args must be scalars (not collections/maps)
         _ (doseq [arg call-args]
@@ -813,7 +942,7 @@
              :vars (:vars clause-info)
              :estimated-card (max 1 total-est)}))))))
 
-(defn- plan-rule-lookup-op
+(defn plan-rule-lookup-op
   "Create a plan op for a rule-call inside a recursive branch.
    The :mode is :delta or :main, indicating which accumulator to read from."
   [clause-info mode]
@@ -961,6 +1090,22 @@
            (build-entity-groups db pattern-ops not-ops total-entities)
            {:entity-groups [] :remaining-nots not-ops})
 
+         ;; Step 3d: Restore predicates that were consumed as pushdowns but ended up
+         ;; on merge-ops (where pushdowns can't be applied — merges use EAVT lookupGE).
+         merge-lost-pred-clauses (into #{} (comp (filter #(= :entity-group (:op %)))
+                                                 (mapcat :merge-lost-preds))
+                                       entity-groups)
+         restored-preds (when (seq merge-lost-pred-clauses)
+                          (let [ci-by-clause (into {} (map (fn [ci] [(:clause ci) ci])) classified)]
+                            (mapv (fn [pred-clause]
+                                    (plan-predicate-op (ci-by-clause pred-clause) db raw-pattern-ops))
+                                  merge-lost-pred-clauses)))
+         other-ops (if (seq restored-preds)
+                     (into other-ops restored-preds)
+                     other-ops)
+         ;; Strip internal :merge-lost-preds from entity-group ops
+         entity-groups (mapv #(dissoc % :merge-lost-preds) entity-groups)
+
          ;; Step 4: Order everything together
          all-ops (into (into (vec entity-groups) other-ops) remaining-nots)
          ordered-ops (order-plan-ops all-ops)
@@ -995,7 +1140,9 @@
                                 nil))))))]
 
      {:ops ordered-ops
-      :consumed-preds actual-consumed
+      :consumed-preds (if (seq merge-lost-pred-clauses)
+                        (reduce disj actual-consumed merge-lost-pred-clauses)
+                        actual-consumed)
       :classified classified
       :group-joins group-joins
       :has-passthrough? (some #(= :passthrough (:op %)) ordered-ops)})))

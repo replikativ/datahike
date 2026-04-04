@@ -168,27 +168,41 @@
         agg-result-keys (mapv (fn [spec stratum-spec]
                                 (first stratum-spec))
                               agg-specs stratum-aggs)]
-    (mapv (fn [result-map]
-            (let [tuple (object-array (count find-elements))
-                  gi (volatile! 0)
-                  ai (volatile! 0)]
-              (dotimes [fi (count find-elements)]
-                (let [fe (nth find-elements fi)]
-                  (if (instance? datalog.parser.type.Aggregate fe)
-                    (let [spec (nth agg-specs @ai)
-                          op-key (nth agg-result-keys @ai)
-                          col-key (when (> (count spec) 1) (second spec))
-                          v (or (get result-map op-key)
-                                (when col-key
-                                  (get result-map (keyword (str (name op-key) "_" (name col-key))))))]
-                      (aset tuple fi v)
-                      (vswap! ai unchecked-inc))
-                    ;; Group-by variable
-                    (let [col-key (nth group-keys @gi)]
-                      (aset tuple fi (get result-map col-key))
-                      (vswap! gi unchecked-inc)))))
-              (clojure.lang.PersistentVector/adopt tuple)))
-          result-maps)))
+    ;; Stratum returns Doubles for numeric aggregates. For min/max/sum on Long
+    ;; columns, coerce back to Long to preserve type semantics.
+    (let [long-coerce-agg? #{:min :max :sum}
+          coerce-fns (mapv (fn [spec]
+                             (let [agg-op (first spec)
+                                   col-key (when (> (count spec) 1) (second spec))
+                                   col-arr (when col-key (get column-map col-key))]
+                               (if (and (long-coerce-agg? agg-op)
+                                        col-arr
+                                        (instance? (Class/forName "[J") col-arr))
+                                 long
+                                 identity)))
+                           agg-specs)]
+      (mapv (fn [result-map]
+              (let [tuple (object-array (count find-elements))
+                    gi (volatile! 0)
+                    ai (volatile! 0)]
+                (dotimes [fi (count find-elements)]
+                  (let [fe (nth find-elements fi)]
+                    (if (instance? datalog.parser.type.Aggregate fe)
+                      (let [spec (nth agg-specs @ai)
+                            op-key (nth agg-result-keys @ai)
+                            col-key (when (> (count spec) 1) (second spec))
+                            v (or (get result-map op-key)
+                                  (when col-key
+                                    (get result-map (keyword (str (name op-key) "_" (name col-key))))))
+                            coerce (nth coerce-fns @ai)]
+                        (aset tuple fi (if (number? v) (coerce v) v))
+                        (vswap! ai unchecked-inc))
+                      ;; Group-by variable
+                      (let [col-key (nth group-keys @gi)]
+                        (aset tuple fi (get result-map col-key))
+                        (vswap! gi unchecked-inc)))))
+                (clojure.lang.PersistentVector/adopt tuple)))
+            result-maps))))
 
 (defn columnar-aggregate-from-maps
   "Convert stratum result maps to tuples matching find-element order.

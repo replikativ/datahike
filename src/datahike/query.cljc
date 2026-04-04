@@ -63,6 +63,7 @@
    Bind to false for benchmarking raw query execution."
   true)
 
+
 (declare -collect -resolve-clause resolve-clause raw-q)
 
 ;; Records
@@ -2509,18 +2510,28 @@
                           rels)))]
       [context-in' @reverse-map])))
 
+(defn- create-plan-via-ir
+  "Build a plan using the IR pipeline: logical IR → lowering."
+  [db clauses bound-vars rules]
+  (let [build-logical #?(:clj @(requiring-resolve 'datahike.query.logical/build-logical-plan)
+                         :cljs datahike.query.logical/build-logical-plan)
+        lower-plan #?(:clj @(requiring-resolve 'datahike.query.lower/lower)
+                      :cljs datahike.query.lower/lower)
+        logical (build-logical db clauses bound-vars rules)
+        plan (lower-plan logical db rules)]
+    plan))
+
 (defn- get-or-create-plan
   "Get a cached query plan or create a new one. Plans are cached by
    [clauses bound-vars rules-keys schema-hash] since the plan structure
    (index selection, merge ordering) depends on query shape and schema,
    not on the actual data."
   [db clauses bound-vars rules]
-  (let [make-plan plan/create-plan
-        schema-hash (hash (dbi/-schema db))
+  (let [schema-hash (hash (dbi/-schema db))
         cache-key [clauses bound-vars (when rules rules) schema-hash]]
     (if-some [cached (get @plan-cache cache-key nil)]
       cached
-      (let [plan (make-plan db clauses bound-vars rules)]
+      (let [plan (create-plan-via-ir db clauses bound-vars rules)]
         (vswap! plan-cache assoc cache-key plan)
         plan))))
 
@@ -2636,8 +2647,7 @@
                      (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                      (:where query))
            rules (not-empty (:rules context-in))
-           make-plan plan/create-plan
-           plan (make-plan db clauses bound-vars rules)
+           plan (create-plan-via-ir db clauses bound-vars rules)
            find-vars (mapv #(.-symbol ^Variable %) (filter #(instance? Variable %) (dpip/find-elements qfind)))
            header (str "=== Query Plan ===\n"
                        "find: " (pr-str find-vars) "\n"

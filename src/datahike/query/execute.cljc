@@ -920,12 +920,12 @@
    (to-array (mapv (fn [op]
                      (let [mv (get (:clause op) 2)
                            sv (get scan-clause 2)]
-                       (boolean (and (symbol? mv) (symbol? sv) (= mv sv)))))
+                       (boolean (and (analyze/free-var? mv) (analyze/free-var? sv) (= mv sv)))))
                    merge-ops))
    (to-array (mapv (fn [op]
                      (let [mtx (get (:clause op) 3)
                            stx (get scan-clause 3)]
-                       (boolean (and (symbol? mtx) (symbol? stx) (= mtx stx)))))
+                       (boolean (and (analyze/free-var? mtx) (analyze/free-var? stx) (= mtx stx)))))
                    merge-ops))])
 
 (defn- build-find-source-array
@@ -970,7 +970,7 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    max-results
-   & {:keys [scan-estimate]}]
+   & {:keys [scan-estimate pipeline]}]
   (let [{:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
@@ -1002,23 +1002,10 @@
                                         merge-ops))
         has-card-many? (some true? (seq merge-card-many))
 
-        use-cursors? #?(:clj (and (pos? n-merges)
-                                  (or (= index :eavt)
-                                      (= index :aevt)
-                                      (and (= index :avet)
-                                           (let [sv (get clause 2)]
-                                             (and (some? sv) (not (analyze/free-var? sv)))))))
-                        :cljs false)
-
-        attr-refs? (:attribute-refs? (dbi/-config db))
-        scan-attr-ground? (let [a (second clause)]
-                            (and (some? a) (not (symbol? a))))
-        use-sorted-scan? #?(:clj (and use-cursors?
-                                      (pos? n-merges)
-                                      scan-attr-ground?
-                                      (not has-card-many?)
-                                      (every? #(not (aget merge-anti %)) (range n-merges)))
-                            :cljs false)
+        _ (assert pipeline "Plans must have :pipeline annotation")
+        use-cursors? (:use-cursors? pipeline)
+        attr-refs? (:attr-refs? pipeline)
+        fused-path (:fused-path pipeline)
 
         ;; Build find-source projection
         merge-clauses (mapv :clause merge-ops)
@@ -1050,16 +1037,16 @@
         probe-set (if use-probe-driven? nil probe-set)
         max-n (int (or max-results -1))]
 
-    ;; Dispatch to path-specific function
-    (cond
-      (zero? n-merges)
+    ;; Dispatch to path-specific function via fused-path keyword
+    (case fused-path
+      :scan-only
       (execute-scan-only slice ground-filter strict-filter
                          probe-set probe-datom-field
                          collect-set collect-datom-field collect-merge-idx
                          merge-datoms n-find find-source const-vals
                          result-list max-n)
 
-      has-card-many?
+      :card-many-merge
       (let [merge-cursors #?(:clj (when use-cursors?
                                     (let [cursors (object-array n-merges)]
                                       (dotimes [i n-merges]
@@ -1077,7 +1064,7 @@
                                  merge-datoms n-find find-source const-vals
                                  result-list max-n n-merges merge-ctx))
 
-      use-sorted-scan?
+      :sorted-merge
       #?(:clj
          (let [sorted-order (let [indexed (mapv (fn [i] [(aget merge-attrs i) i]) (range n-merges))
                                   sorted (sort-by first compare indexed)]
@@ -1104,7 +1091,7 @@
                                                 merge-check-scan-v merge-check-scan-tx])))
          :cljs nil)
 
-      :else
+      :per-cursor-merge
       (let [merge-cursors #?(:clj (when use-cursors?
                                     (let [cursors (object-array n-merges)]
                                       (dotimes [i n-merges]
@@ -1542,19 +1529,27 @@
 
 (defn- can-direct-fuse?
   "Check if a plan can use the direct-to-HashSet execution path.
-   Requires all ops to be entity-groups or pattern-scans (no predicates/functions/passthrough).
-   For multi-group plans, also requires:
-   - probe vars are in the consumer's scan clause
-   - ALL find-vars are resolvable from the consumer (last) group or from consts
-     (the direct path can only project from one group's scan+merge datoms)"
+   Delegates structural checks (op types, post-op eligibility, source exclusion)
+   to plan/structurally-fusable?, then adds runtime-specific checks:
+   - ALL find-vars resolvable from groups, function outputs, or consts
+   - Multi-group: probe vars in consumer scan, find-vars from consumer group"
   [plan find-vars consts]
   (let [ops (:ops plan)
         groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)]
-    (and (seq ops)
-         (every? #(#{:entity-group :pattern-scan} (:op %)) ops)
-         ;; Direct path uses single db — no non-default sources allowed
-         (not-any? :source ops)
-         ;; For multi-group: verify probe vars and find-var coverage
+    (and ;; Structural eligibility (shared with plan-time pre-check)
+         (plan/structurally-fusable? ops)
+         ;; Find-var coverage: groups + function outputs + consts
+         (let [group-vars (into #{} (mapcat :vars) groups)
+               fn-ops (filterv #(= :function (:op %)) ops)
+               fn-output-vars (into #{} (mapcat (fn [op]
+                                                  (let [input-vars (into #{} (filter analyze/free-var?) (:args op))]
+                                                    (remove input-vars (:vars op)))))
+                                    fn-ops)
+               all-available-vars (into group-vars fn-output-vars)]
+           (every? #(or (and consts (contains? consts %))
+                         (contains? all-available-vars %))
+                   find-vars))
+         ;; Multi-group: probe vars and find-var coverage from consumer
          (every? (fn [[gi {:keys [producer-idx probe-vars]}]]
                    (let [consumer-g (nth groups gi)
                          producer-g (nth groups producer-idx)]
@@ -1564,6 +1559,157 @@
                                        (group-provides-var? consumer-g %))
                                   find-vars))))
                  (:group-joins plan)))))
+
+;; ---------------------------------------------------------------------------
+;; Post-processing on fused result tuples
+;;
+;; When the plan has predicates or functions whose vars are all provided by
+;; groups, we emit wide tuples (all group vars), post-process in-place on the
+;; ArrayList, then project down to find-vars. This avoids the Relation engine.
+
+(defn- resolve-pred-fn
+  "Resolve a predicate or function symbol to a callable.
+   Handles built-ins, clj-core built-ins, regular vars, and Java interop methods."
+  [f]
+  (or (get @(requiring-resolve 'datahike.query/built-ins) f)
+      (get @(requiring-resolve 'datahike.query/clj-core-built-ins) f)
+      #?(:clj (some-> (resolve f) deref)
+         :cljs nil)
+      #?(:clj ((requiring-resolve 'datahike.query/resolve-method) f)
+         :cljs nil)))
+
+(defn- post-filter-preds
+  "Filter result-list in-place by evaluating predicate ops.
+   var-index maps var-sym → position in the wide tuple Object[].
+   Removes tuples that don't satisfy all predicates."
+  [^java.util.ArrayList result-list pred-ops var-index]
+  (let [n (.size result-list)]
+    (loop [read-i (int 0)
+           write-i (int 0)]
+      (if (< read-i n)
+        (let [^objects tuple (.get result-list read-i)
+              pass? (loop [pi 0]
+                      (if (>= pi (count pred-ops))
+                        true
+                        (let [pred-op (nth pred-ops pi)
+                              f (resolve-pred-fn (:fn-sym pred-op))
+                              args (:args pred-op)
+                              argv (mapv (fn [a]
+                                           (if (and (symbol? a) (analyze/free-var? a))
+                                             (aget tuple (int (get var-index a)))
+                                             a))
+                                         args)]
+                          (if (try (apply f argv)
+                                   #?(:clj (catch Exception _ false)
+                                      :cljs (catch :default _ false)))
+                            (recur (inc pi))
+                            false))))]
+          (if pass?
+            (do (when (not= read-i write-i)
+                  (.set result-list write-i tuple))
+                (recur (unchecked-inc-int read-i) (unchecked-inc-int write-i)))
+            (recur (unchecked-inc-int read-i) write-i)))
+        ;; Trim removed entries
+        (when (< write-i n)
+          (loop [i (dec n)]
+            (when (>= i write-i)
+              (.remove result-list i)
+              (recur (dec i)))))))))
+
+(defn- binding-vars
+  "Extract the binding variable(s) from a binding form as a flat vector.
+   Handles scalar (?x), tuple ([?x ?y]), and nested forms."
+  [binding-form]
+  (cond
+    (symbol? binding-form) [binding-form]
+    (vector? binding-form) (vec (flatten binding-form))
+    :else []))
+
+(defn- post-apply-fns
+  "Extend tuples in result-list by evaluating function ops.
+   For new vars: adds columns to each tuple.
+   For already-bound vars: acts as a filter (keeps tuple only when function result = existing value).
+   Returns updated var-index with new var positions."
+  [^java.util.ArrayList result-list fn-ops var-index]
+  (reduce
+   (fn [vi fn-op]
+     (let [f (resolve-pred-fn (:fn-sym fn-op))
+           args (:args fn-op)
+           bind-form (:binding fn-op)
+           bvars (binding-vars bind-form)
+           ;; Separate already-bound vars from new vars
+           already-bound (filterv #(and (symbol? %) (analyze/free-var? %) (contains? vi %)) bvars)
+           ;; New vars get appended to tuple
+           new-vi (reduce (fn [m bv]
+                            (if (and (symbol? bv) (analyze/free-var? bv)
+                                     (not (contains? m bv)))
+                              (assoc m bv (count m))
+                              m))
+                          vi bvars)
+           n (.size result-list)]
+       (loop [read-i (int 0)
+              write-i (int 0)]
+         (if (< read-i n)
+           (let [^objects tuple (.get result-list read-i)
+                 argv (mapv (fn [a]
+                              (if (and (symbol? a) (analyze/free-var? a))
+                                (aget tuple (int (get vi a)))
+                                a))
+                            args)
+                 val (try (apply f argv)
+                          #?(:clj (catch Exception _ nil)
+                             :cljs (catch :default _ nil)))]
+             (if (some? val)
+               ;; Check already-bound vars: function result must match existing value
+               (if (every? (fn [bv]
+                             (= val (aget tuple (int (get vi bv)))))
+                           already-bound)
+                 (let [;; Extend tuple with new value(s) for unbound vars
+                       old-len (alength tuple)
+                       new-len (count new-vi)
+                       new-tuple (if (> new-len old-len)
+                                   (let [t #?(:clj (object-array new-len) :cljs (make-array new-len))]
+                                     (System/arraycopy tuple 0 t 0 old-len)
+                                     t)
+                                   tuple)]
+                   ;; Set only NEW bound var values (already-bound vars keep their value)
+                   (doseq [bv bvars
+                           :when (and (symbol? bv) (analyze/free-var? bv)
+                                      (not (contains? vi bv)))]
+                     (aset new-tuple (int (get new-vi bv)) val))
+                   (.set result-list write-i new-tuple)
+                   (recur (unchecked-inc-int read-i) (unchecked-inc-int write-i)))
+                 ;; Already-bound var mismatch — filter out tuple
+                 (recur (unchecked-inc-int read-i) write-i))
+               ;; Function returned nil — skip tuple
+               (recur (unchecked-inc-int read-i) write-i)))
+           ;; Trim removed entries
+           (when (< write-i n)
+             (loop [i (dec n)]
+               (when (>= i write-i)
+                 (.remove result-list i)
+                 (recur (dec i)))))))
+       new-vi))
+   var-index fn-ops))
+
+(defn- project-tuples
+  "Project wide tuples down to find-vars only.
+   Modifies result-list in-place, replacing each tuple with a narrower one."
+  [^java.util.ArrayList result-list find-vars var-index consts]
+  (let [n-find (count find-vars)
+        ;; Build projection: for each find-var, its index in the wide tuple (or nil if const)
+        proj (mapv (fn [fv] (if (and consts (contains? consts fv))
+                              [:const (get consts fv)]
+                              [:var (get var-index fv)]))
+                   find-vars)
+        n (.size result-list)]
+    (dotimes [i n]
+      (let [^objects wide (.get result-list i)
+            narrow #?(:clj (object-array n-find) :cljs (make-array n-find))]
+        (dotimes [fi n-find]
+          (let [[kind v] (nth proj fi)]
+            (aset narrow fi (if (= kind :const) v (aget wide (int v))))))
+        (.set result-list i narrow)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Single-pass EAVT scan (prototype for max throughput)
@@ -1583,9 +1729,21 @@
   (let [ops (:ops plan)
         temporal (temporal-info db)]
     (when (and (not (:has-passthrough? plan))
+               ;; Fast structural pre-check from IR pipeline (when available)
+               (if (contains? plan :structurally-fusable?)
+                 (:structurally-fusable? plan)
+                 true)
                (can-direct-fuse? plan find-vars consts))
       (let [group-joins (:group-joins plan)
             groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
+            pred-ops (filterv #(= :predicate (:op %)) ops)
+            fn-ops (filterv #(= :function (:op %)) ops)
+            has-post-ops? (or (seq pred-ops) (seq fn-ops))
+            ;; When post-ops exist, emit ALL group vars (wide tuples) so
+            ;; predicates/functions can reference any var. Project afterwards.
+            all-group-vars (when has-post-ops?
+                             (vec (distinct (mapcat :vars groups))))
+            emit-vars (if has-post-ops? all-group-vars find-vars)
             n-groups (count groups)
             result-list (make-result-list 4000)]
 
@@ -1595,12 +1753,13 @@
                 scan-op (entity-group-scan-op g)
                 merge-ops (entity-group-merge-ops g)]
             (if temporal
-              (execute-group-direct-temporal db scan-op merge-ops find-vars consts
+              (execute-group-direct-temporal db scan-op merge-ops emit-vars consts
                                              result-list nil 0 nil 0 -1
                                              max-results temporal)
-              (execute-group-direct db scan-op merge-ops find-vars consts
+              (execute-group-direct db scan-op merge-ops emit-vars consts
                                     result-list nil 0 nil 0 -1
-                                    max-results)))
+                                    max-results
+                                    :pipeline (:pipeline g))))
 
           ;; Multi-group — hash-probe value join
           ;; Execute groups in order, build probe-sets between them
@@ -1621,18 +1780,19 @@
                         probe-set (get probe-sets producer-idx)]
                     (when (and pinfo probe-set)
                       (if temporal
-                        (execute-group-direct-temporal db scan-op merge-ops find-vars consts
+                        (execute-group-direct-temporal db scan-op merge-ops emit-vars consts
                                                        result-list probe-set
                                                        (int (:consumer-scan-field pinfo))
                                                        nil 0 -1
                                                        max-results temporal
                                                        :scan-estimate (:estimated-card g))
-                        (execute-group-direct db scan-op merge-ops find-vars consts
+                        (execute-group-direct db scan-op merge-ops emit-vars consts
                                               result-list probe-set
                                               (int (:consumer-scan-field pinfo))
                                               nil 0 -1
                                               max-results
-                                              :scan-estimate (:estimated-card g))))
+                                              :scan-estimate (:estimated-card g)
+                                              :pipeline (:pipeline g))))
                     (recur (inc gi) probe-sets))
 
                   ;; Producer group: collect join-var values for downstream consumers
@@ -1664,11 +1824,21 @@
                                             collect-set
                                             (int (or (:producer-datom-field collect-field-info) 0))
                                             (int (or (:producer-merge-idx collect-field-info) -1))
-                                            nil))
+                                            nil
+                                            :pipeline (:pipeline g)))
                     (recur (inc gi)
                            (if collect-set
                              (assoc probe-sets gi collect-set)
                              probe-sets))))))))
+        ;; Post-processing: apply predicates, functions, then project to find-vars
+        (when has-post-ops?
+          (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-group-vars)]
+            (when (seq pred-ops)
+              (post-filter-preds result-list pred-ops var-index))
+            (let [var-index (if (seq fn-ops)
+                              (post-apply-fns result-list fn-ops var-index)
+                              var-index)]
+              (project-tuples result-list find-vars var-index consts))))
         ;; Convert result-list → final result with appropriate dedup strategy
         (let [has-card-many-dupes?
               (some (fn [g]
@@ -1736,6 +1906,8 @@
   [plan db]
   (let [ops (:ops plan)]
     (when (and (not (:has-passthrough? plan))
+               ;; direct-rel only handles pure group plans — no predicates/functions
+               ;; (unlike execute-plan-direct which has post-filter machinery)
                (seq ops)
                (every? #(#{:entity-group :pattern-scan} (:op %)) ops)
                (not-any? :source ops))
@@ -1755,7 +1927,8 @@
                 (execute-group-direct-temporal db scan-op merge-ops all-vars nil
                                                result-list nil 0 nil 0 -1 nil ti)
                 (execute-group-direct db scan-op merge-ops all-vars nil
-                                      result-list nil 0 nil 0 -1 nil)))
+                                      result-list nil 0 nil 0 -1 nil
+                                      :pipeline (:pipeline g))))
             ;; Convert to Relation: attrs = {var-sym → column-index}, tuples = vec of Object[]
             (let [attrs (into {} (map-indexed (fn [i v] [v i]) all-vars))
                   tuples #?(:clj (vec (.toArray ^java.util.ArrayList result-list))
@@ -1815,13 +1988,13 @@
         merge-check-scan-v (to-array (mapv (fn [op]
                                              (let [mv (get (:clause op) 2)
                                                    sv (get clause 2)]
-                                               (boolean (and (symbol? mv) (symbol? sv)
+                                               (boolean (and (analyze/free-var? mv) (analyze/free-var? sv)
                                                              (= mv sv)))))
                                            merge-ops))
         merge-check-scan-tx (to-array (mapv (fn [op]
                                               (let [mtx (get (:clause op) 3)
                                                     stx (get clause 3)]
-                                                (boolean (and (symbol? mtx) (symbol? stx)
+                                                (boolean (and (analyze/free-var? mtx) (analyze/free-var? stx)
                                                               (= mtx stx)))))
                                             merge-ops))
 
@@ -2828,7 +3001,8 @@
             ;; (reuses the proven execute-group-direct infrastructure)
                result-list (make-result-list 4000)]
            (execute-group-direct db scan-op merge-ops all-vars nil
-                                 result-list nil 0 nil 0 -1 nil)
+                                 result-list nil 0 nil 0 -1 nil
+                                 :pipeline (:pipeline g))
            (let [n (.size ^java.util.ArrayList result-list)]
              (when (pos? n)
                (let [attrs (into {} (map-indexed (fn [i v] [v i]) all-vars))
