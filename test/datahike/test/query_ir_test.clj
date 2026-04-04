@@ -209,7 +209,7 @@
 
 (deftest test-ir-pipeline-with-in-bindings
   (let [[current ir] (query-both '[:find ?e :in $ ?name :where [?e :name ?name]]
-                                  test-db)]
+                                 test-db)]
     ;; Can't use assert-ir-match directly since d/q needs extra args
     ;; Test the plan equivalence instead
     (is (plan-match? (db/empty-db {:name {}}) '[[?e :name ?name]]))))

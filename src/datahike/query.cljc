@@ -27,6 +27,8 @@
    [datahike.query.plan :as plan]
    #?(:cljs [datahike.db :refer [DB AsOfDB SinceDB HistoricalDB]])
    #?(:cljs [datahike.query.execute :as execute])
+   #?(:cljs [datahike.query.logical :as logical])
+   #?(:cljs [datahike.query.lower :as lower])
    #?(:clj [datahike.index.entity-set :as es])
    #?(:clj [datahike.index.secondary :as sec])
    ;; NOTE: datahike.index.secondary.stratum is loaded lazily via requiring-resolve
@@ -56,13 +58,12 @@
    Set DATAHIKE_QUERY_PLANNER=true to enable the query planner.
    Default: legacy engine (query planner is opt-in during testing)."
   #?(:clj (not= "true" (System/getenv "DATAHIKE_QUERY_PLANNER"))
-     :cljs true))
+     :cljs false))
 
 (def ^:dynamic *query-result-cache?*
   "When true (default), query results are cached by [query args db-snapshot].
    Bind to false for benchmarking raw query execution."
   true)
-
 
 (declare -collect -resolve-clause resolve-clause raw-q)
 
@@ -2514,9 +2515,9 @@
   "Build a plan using the IR pipeline: logical IR → lowering."
   [db clauses bound-vars rules]
   (let [build-logical #?(:clj @(requiring-resolve 'datahike.query.logical/build-logical-plan)
-                         :cljs datahike.query.logical/build-logical-plan)
+                         :cljs logical/build-logical-plan)
         lower-plan #?(:clj @(requiring-resolve 'datahike.query.lower/lower)
-                      :cljs datahike.query.lower/lower)
+                      :cljs lower/lower)
         logical (build-logical db clauses bound-vars rules)
         plan (lower-plan logical db rules)]
     plan))

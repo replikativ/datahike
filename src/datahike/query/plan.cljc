@@ -428,10 +428,10 @@
                     (if (empty? anti)
                       normal
                       (let [anti-with-pass (mapv (fn [op]
-                                                    (let [est (max 1 (or (:estimated-card op) total-entities))
-                                                          match-rate (estimate/estimate-conditional-pass-rate est total-entities)]
-                                                      (assoc op ::anti-pass-rate (- 1.0 match-rate))))
-                                                  anti)
+                                                   (let [est (max 1 (or (:estimated-card op) total-entities))
+                                                         match-rate (estimate/estimate-conditional-pass-rate est total-entities)]
+                                                     (assoc op ::anti-pass-rate (- 1.0 match-rate))))
+                                                 anti)
                             sorted-anti (sort-by ::anti-pass-rate anti-with-pass)]
                         (into (vec normal)
                               (mapv #(dissoc % ::anti-pass-rate) sorted-anti)))))
@@ -452,14 +452,14 @@
         final-scan (assoc scan :join-method :scan)
         final-merges (mapv #(assoc % :join-method :lookup) merge-ops)
         eg-op (cond-> {:op :entity-group
-                        :entity-var entity-var
-                        :scan-op final-scan
-                        :merge-ops final-merges
-                        :output-vars output-vars
-                        :vars output-vars
-                        :estimated-card (max 1 group-card)
-                        :pipeline (build-pipeline final-scan final-merges db)}
-                 source (assoc :source source))]
+                       :entity-var entity-var
+                       :scan-op final-scan
+                       :merge-ops final-merges
+                       :output-vars output-vars
+                       :vars output-vars
+                       :estimated-card (max 1 group-card)
+                       :pipeline (build-pipeline final-scan final-merges db)}
+                source (assoc :source source))]
     {:op eg-op
      :merge-lost-preds merge-lost-preds}))
 

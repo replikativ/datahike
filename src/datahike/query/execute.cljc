@@ -1537,28 +1537,28 @@
   (let [ops (:ops plan)
         groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)]
     (and ;; Structural eligibility (shared with plan-time pre-check)
-         (plan/structurally-fusable? ops)
+     (plan/structurally-fusable? ops)
          ;; Find-var coverage: groups + function outputs + consts
-         (let [group-vars (into #{} (mapcat :vars) groups)
-               fn-ops (filterv #(= :function (:op %)) ops)
-               fn-output-vars (into #{} (mapcat (fn [op]
-                                                  (let [input-vars (into #{} (filter analyze/free-var?) (:args op))]
-                                                    (remove input-vars (:vars op)))))
-                                    fn-ops)
-               all-available-vars (into group-vars fn-output-vars)]
-           (every? #(or (and consts (contains? consts %))
-                         (contains? all-available-vars %))
-                   find-vars))
+     (let [group-vars (into #{} (mapcat :vars) groups)
+           fn-ops (filterv #(= :function (:op %)) ops)
+           fn-output-vars (into #{} (mapcat (fn [op]
+                                              (let [input-vars (into #{} (filter analyze/free-var?) (:args op))]
+                                                (remove input-vars (:vars op)))))
+                                fn-ops)
+           all-available-vars (into group-vars fn-output-vars)]
+       (every? #(or (and consts (contains? consts %))
+                    (contains? all-available-vars %))
+               find-vars))
          ;; Multi-group: probe vars and find-var coverage from consumer
-         (every? (fn [[gi {:keys [producer-idx probe-vars]}]]
-                   (let [consumer-g (nth groups gi)
-                         producer-g (nth groups producer-idx)]
-                     (and (some? (find-probe-info consumer-g producer-g probe-vars))
+     (every? (fn [[gi {:keys [producer-idx probe-vars]}]]
+               (let [consumer-g (nth groups gi)
+                     producer-g (nth groups producer-idx)]
+                 (and (some? (find-probe-info consumer-g producer-g probe-vars))
                           ;; All find-vars must be resolvable from the consumer group or consts
-                          (every? #(or (and consts (contains? consts %))
-                                       (group-provides-var? consumer-g %))
-                                  find-vars))))
-                 (:group-joins plan)))))
+                      (every? #(or (and consts (contains? consts %))
+                                   (group-provides-var? consumer-g %))
+                              find-vars))))
+             (:group-joins plan)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Post-processing on fused result tuples
