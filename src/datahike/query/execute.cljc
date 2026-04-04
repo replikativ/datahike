@@ -1578,12 +1578,30 @@
       #?(:clj ((requiring-resolve 'datahike.query/resolve-method) f)
          :cljs nil)))
 
+(defn- resolve-pred-fns
+  "Resolve all predicate/function symbols up front, failing fast for unknowns.
+   Returns a vector of resolved callables parallel to the input ops."
+  [ops]
+  (mapv (fn [op]
+          (let [f (resolve-pred-fn (:fn-sym op))]
+            (when-not f
+              (throw (ex-info (str "Unknown predicate/function '" (:fn-sym op)
+                                   " in " (:clause op))
+                              {:error :query/where
+                               :form (:clause op)
+                               :var (:fn-sym op)})))
+            f))
+        ops))
+
 (defn- post-filter-preds
   "Filter result-list in-place by evaluating predicate ops.
    var-index maps var-sym → position in the wide tuple Object[].
-   Removes tuples that don't satisfy all predicates."
+   Removes tuples that don't satisfy all predicates.
+   Exception handling matches the Relation engine (filter-by-pred):
+   only ClassCastException and IllegalArgumentException are caught."
   [^java.util.ArrayList result-list pred-ops var-index]
-  (let [n (.size result-list)]
+  (let [resolved (resolve-pred-fns pred-ops)
+        n (.size result-list)]
     (loop [read-i (int 0)
            write-i (int 0)]
       (if (< read-i n)
@@ -1591,16 +1609,16 @@
               pass? (loop [pi 0]
                       (if (>= pi (count pred-ops))
                         true
-                        (let [pred-op (nth pred-ops pi)
-                              f (resolve-pred-fn (:fn-sym pred-op))
-                              args (:args pred-op)
+                        (let [f (nth resolved pi)
+                              args (:args (nth pred-ops pi))
                               argv (mapv (fn [a]
                                            (if (and (symbol? a) (analyze/free-var? a))
                                              (aget tuple (int (get var-index a)))
                                              a))
                                          args)]
                           (if (try (apply f argv)
-                                   #?(:clj (catch Exception _ false)
+                                   #?(:clj (catch ClassCastException _ false))
+                                   #?(:clj (catch IllegalArgumentException _ false)
                                       :cljs (catch :default _ false)))
                             (recur (inc pi))
                             false))))]
@@ -1629,68 +1647,68 @@
   "Extend tuples in result-list by evaluating function ops.
    For new vars: adds columns to each tuple.
    For already-bound vars: acts as a filter (keeps tuple only when function result = existing value).
-   Returns updated var-index with new var positions."
+   Returns updated var-index with new var positions.
+   No exception catching — matches the Relation engine (bind-by-fn) which lets
+   exceptions propagate and only treats nil return as tuple filter."
   [^java.util.ArrayList result-list fn-ops var-index]
-  (reduce
-   (fn [vi fn-op]
-     (let [f (resolve-pred-fn (:fn-sym fn-op))
-           args (:args fn-op)
-           bind-form (:binding fn-op)
-           bvars (binding-vars bind-form)
-           ;; Separate already-bound vars from new vars
-           already-bound (filterv #(and (symbol? %) (analyze/free-var? %) (contains? vi %)) bvars)
-           ;; New vars get appended to tuple
-           new-vi (reduce (fn [m bv]
-                            (if (and (symbol? bv) (analyze/free-var? bv)
-                                     (not (contains? m bv)))
-                              (assoc m bv (count m))
-                              m))
-                          vi bvars)
-           n (.size result-list)]
-       (loop [read-i (int 0)
-              write-i (int 0)]
-         (if (< read-i n)
-           (let [^objects tuple (.get result-list read-i)
-                 argv (mapv (fn [a]
-                              (if (and (symbol? a) (analyze/free-var? a))
-                                (aget tuple (int (get vi a)))
-                                a))
-                            args)
-                 val (try (apply f argv)
-                          #?(:clj (catch Exception _ nil)
-                             :cljs (catch :default _ nil)))]
-             (if (some? val)
-               ;; Check already-bound vars: function result must match existing value
-               (if (every? (fn [bv]
-                             (= val (aget tuple (int (get vi bv)))))
-                           already-bound)
-                 (let [;; Extend tuple with new value(s) for unbound vars
-                       old-len (alength tuple)
-                       new-len (count new-vi)
-                       new-tuple (if (> new-len old-len)
-                                   (let [t #?(:clj (object-array new-len) :cljs (make-array new-len))]
-                                     (System/arraycopy tuple 0 t 0 old-len)
-                                     t)
-                                   tuple)]
-                   ;; Set only NEW bound var values (already-bound vars keep their value)
-                   (doseq [bv bvars
-                           :when (and (symbol? bv) (analyze/free-var? bv)
-                                      (not (contains? vi bv)))]
-                     (aset new-tuple (int (get new-vi bv)) val))
-                   (.set result-list write-i new-tuple)
-                   (recur (unchecked-inc-int read-i) (unchecked-inc-int write-i)))
-                 ;; Already-bound var mismatch — filter out tuple
-                 (recur (unchecked-inc-int read-i) write-i))
-               ;; Function returned nil — skip tuple
-               (recur (unchecked-inc-int read-i) write-i)))
-           ;; Trim removed entries
-           (when (< write-i n)
-             (loop [i (dec n)]
-               (when (>= i write-i)
-                 (.remove result-list i)
-                 (recur (dec i)))))))
-       new-vi))
-   var-index fn-ops))
+  (let [resolved (resolve-pred-fns fn-ops)]
+    (reduce
+     (fn [vi [fn-op f]]
+       (let [args (:args fn-op)
+             bind-form (:binding fn-op)
+             bvars (binding-vars bind-form)
+             ;; Separate already-bound vars from new vars
+             already-bound (filterv #(and (symbol? %) (analyze/free-var? %) (contains? vi %)) bvars)
+             ;; New vars get appended to tuple
+             new-vi (reduce (fn [m bv]
+                              (if (and (symbol? bv) (analyze/free-var? bv)
+                                       (not (contains? m bv)))
+                                (assoc m bv (count m))
+                                m))
+                            vi bvars)
+             n (.size result-list)]
+         (loop [read-i (int 0)
+                write-i (int 0)]
+           (if (< read-i n)
+             (let [^objects tuple (.get result-list read-i)
+                   argv (mapv (fn [a]
+                                (if (and (symbol? a) (analyze/free-var? a))
+                                  (aget tuple (int (get vi a)))
+                                  a))
+                              args)
+                   val (apply f argv)]
+               (if (some? val)
+                 ;; Check already-bound vars: function result must match existing value
+                 (if (every? (fn [bv]
+                               (= val (aget tuple (int (get vi bv)))))
+                             already-bound)
+                   (let [;; Extend tuple with new value(s) for unbound vars
+                         old-len (alength tuple)
+                         new-len (count new-vi)
+                         new-tuple (if (> new-len old-len)
+                                     (let [t #?(:clj (object-array new-len) :cljs (make-array new-len))]
+                                       (System/arraycopy tuple 0 t 0 old-len)
+                                       t)
+                                     tuple)]
+                     ;; Set only NEW bound var values (already-bound vars keep their value)
+                     (doseq [bv bvars
+                             :when (and (symbol? bv) (analyze/free-var? bv)
+                                        (not (contains? vi bv)))]
+                       (aset new-tuple (int (get new-vi bv)) val))
+                     (.set result-list write-i new-tuple)
+                     (recur (unchecked-inc-int read-i) (unchecked-inc-int write-i)))
+                   ;; Already-bound var mismatch — filter out tuple
+                   (recur (unchecked-inc-int read-i) write-i))
+                 ;; Function returned nil — skip tuple
+                 (recur (unchecked-inc-int read-i) write-i)))
+             ;; Trim removed entries
+             (when (< write-i n)
+               (loop [i (dec n)]
+                 (when (>= i write-i)
+                   (.remove result-list i)
+                   (recur (dec i)))))))
+         new-vi))
+     var-index (map vector fn-ops resolved))))
 
 (defn- project-tuples
   "Project wide tuples down to find-vars only.

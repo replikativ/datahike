@@ -365,19 +365,12 @@
 (defn post-op-direct-eligible?
   "Check whether a predicate or function op can be evaluated in the direct
    (post-filter) path. Excludes:
-   - Java interop methods (.startsWith etc.) — error semantics differ in try/catch path
    - ops that reference source symbols ($, %) in args
    - functions with non-scalar binding forms (tuple [?a ?b], collection [[?x ...]])"
   [op]
   (let [args (:args op)
-        binding (:binding op)
-        fn-sym (:fn-sym op)]
+        binding (:binding op)]
     (and
-     ;; Exclude Java interop methods — post-filter catches all exceptions,
-     ;; which swallows NoSuchMethodException instead of propagating it
-     (not (and (symbol? fn-sym)
-              (let [n (name fn-sym)]
-                (and (pos? (count n)) (= \. (.charAt ^String n 0))))))
      ;; Only scalar bindings supported (symbol or nil for predicates)
      (or (nil? binding) (symbol? binding))
      ;; All args must be constants or free variables (no source/rule symbols)
