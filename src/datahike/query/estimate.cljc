@@ -25,6 +25,8 @@
   [^datahike.datom.Datom d1 ^datahike.datom.Datom d2]
   (datom/cmp-attr-quick (.-a d1) (.-a d2)))
 
+(def ^:private ^:const sample-size 64)
+
 ;; ---------------------------------------------------------------------------
 ;; Pattern cardinality estimation
 
@@ -58,19 +60,37 @@
       (and e-ground? a-ground? v-ground?)
       1
 
-      ;; [?e a v] — count on AVET if indexed, otherwise estimate from AEVT attr count
+      ;; [?e a v] — count on AVET if indexed, otherwise sample from AEVT
       (and (not e-ground?) a-ground? v-ground?)
       (if (:indexed? schema-info)
         (di/-count-slice (:avet db)
                          (datom e0 resolved-a v tx0)
                          (datom emax resolved-a v txmax)
                          datom/cmp-datoms-av-only)
-        ;; Without AVET, estimate: (attr-count / 10) — 10% selectivity on value
-        (quot (di/-count-slice (:aevt db)
-                               (datom e0 resolved-a nil tx0)
-                               (datom emax resolved-a nil txmax)
-                               cmp-attr-only)
-              10))
+        ;; Without AVET, sample datoms from the attribute slice to estimate
+        ;; what fraction have this value. More accurate than fixed 10% heuristic.
+        (let [attr-count (di/-count-slice (:aevt db)
+                                          (datom e0 resolved-a nil tx0)
+                                          (datom emax resolved-a nil txmax)
+                                          cmp-attr-only)]
+          (if (<= attr-count sample-size)
+            ;; Small enough to count exactly via sampling the whole slice
+            (let [datoms (di/-slice (:aevt db)
+                                    (datom e0 resolved-a nil tx0)
+                                    (datom emax resolved-a nil txmax) :aevt)
+                  matching (count (filter #(= (.-v ^datahike.datom.Datom %) v) datoms))]
+              (max 1 matching))
+            ;; Sample first N datoms and extrapolate
+            (let [datoms (into [] (take sample-size)
+                               (di/-slice (:aevt db)
+                                          (datom e0 resolved-a nil tx0)
+                                          (datom emax resolved-a nil txmax) :aevt))
+                  n-sampled (count datoms)]
+              (if (zero? n-sampled)
+                (max 1 (quot attr-count 10))
+                (let [matching (count (filter #(= (.-v ^datahike.datom.Datom %) v) datoms))
+                      rate (/ (double matching) n-sampled)]
+                  (max 1 (long (* attr-count (max 0.01 rate))))))))))
 
       ;; [?e a ?v] — all datoms for attribute
       (and (not e-ground?) a-ground? (not v-ground?))
@@ -99,8 +119,6 @@
     (not= !=) 0.9
     (> < >= <=) 0.33
     0.5))
-
-(def ^:private ^:const sample-size 64)
 
 (defn sample-predicate-selectivity
   "Sample datoms from the index and apply the predicate to estimate
