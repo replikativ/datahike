@@ -24,11 +24,20 @@
     (lower/lower logical db nil)))
 
 (defn- plan-match?
-  "Check that IR pipeline and create-plan produce structurally equivalent plans."
+  "Check that IR pipeline and create-plan produce structurally equivalent plans.
+   The IR path may attach predicates to groups (optimization); normalize by
+   flattening attached-preds back to standalone ops for comparison."
   [db clauses]
   (let [old (plan/create-plan db clauses #{} nil)
-        new (ir-plan db clauses)]
-    (and (= (mapv :op (:ops old)) (mapv :op (:ops new)))
+        new (ir-plan db clauses)
+        ;; Normalize: flatten attached-preds back to standalone ops
+        normalize-ops (fn [ops]
+                        (mapv :op (into [] (mapcat (fn [op]
+                                                     (if (seq (:attached-preds op))
+                                                       (cons op (:attached-preds op))
+                                                       [op])))
+                                        ops)))]
+    (and (= (mapv :op (:ops old)) (normalize-ops (:ops new)))
          (= (:group-joins old) (:group-joins new)))))
 
 (defn- query-both

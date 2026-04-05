@@ -369,8 +369,11 @@
    - functions with non-scalar binding forms (tuple [?a ?b], collection [[?x ...]])"
   [op]
   (let [args (:args op)
-        binding (:binding op)]
+        binding (:binding op)
+        fn-sym (:fn-sym op)]
     (and
+     ;; fn-sym must not be a variable (e.g. ?pred in [(?pred ?x)])
+     (not (analyze/free-var? fn-sym))
      ;; Only scalar bindings supported (symbol or nil for predicates)
      (or (nil? binding) (symbol? binding))
      ;; All args must be constants or free variables (no source/rule symbols)

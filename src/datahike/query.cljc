@@ -552,6 +552,9 @@
              'eval)
      :cljs {}))
 
+;; Register built-ins with execute module for CLJS (breaks circular dep)
+#?(:cljs (execute/register-built-ins! built-ins clj-core-built-ins))
+
 (def built-in-aggregates
   (letfn [(sum [coll] (reduce + 0 coll))
           (avg [coll] (/ (sum coll) (count coll)))

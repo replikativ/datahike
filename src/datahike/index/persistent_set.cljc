@@ -295,7 +295,7 @@
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
-  (let [^PersistentSortedSet pset (psset/sorted-set* {:cmp (index-type->cmp-quick index-type false)
+  (let [^PersistentSortedSet pset (psset/sorted-set* {:comparator (index-type->cmp-quick index-type false)
                                                       :storage (:storage store)
                                                       :branching-factor DEFAULT_BRANCHING_FACTOR})]
     (with-meta pset

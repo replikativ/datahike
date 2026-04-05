@@ -361,6 +361,36 @@
                           actual-consumed)
 
         ;; ---------------------------------------------------------------
+        ;; Step 4c: Attach single-group predicates to their entity group.
+        ;; A predicate whose free-var args are a subset of exactly one group's
+        ;; vars is evaluated during that group's execution, not as a post-filter.
+        {:keys [all-groups other-ops]}
+        (let [pred-ops   (filterv #(= :predicate (:op %)) other-ops)
+              non-preds  (filterv #(not= :predicate (:op %)) other-ops)]
+          (if (empty? pred-ops)
+            {:all-groups all-groups :other-ops other-ops}
+            (let [group-vars (mapv #(or (:output-vars %) (:vars %)) all-groups)]
+              (reduce
+               (fn [{:keys [all-groups other-ops]} pred]
+                 (let [pred-free (into #{} (filter analyze/free-var?) (:args pred))
+                       matching  (keep-indexed
+                                  (fn [i gvars]
+                                    (when (clojure.set/subset? pred-free gvars) i))
+                                  group-vars)]
+                   (if (and (= 1 (count matching))
+                            (plan/post-op-direct-eligible? pred))
+                     ;; Attach to the single matching group
+                     (let [gi (first matching)]
+                       {:all-groups (update all-groups gi
+                                            update :attached-preds (fnil conj []) pred)
+                        :other-ops other-ops})
+                     ;; Multi-group or no-group: keep as standalone
+                     {:all-groups all-groups
+                      :other-ops (conj other-ops pred)})))
+               {:all-groups all-groups :other-ops non-preds}
+               pred-ops))))
+
+        ;; ---------------------------------------------------------------
         ;; Step 5: Order everything (entity-groups + other ops + remaining NOTs)
         all-ops (into (into all-groups other-ops) not-ops)
         ordered-ops (plan/order-plan-ops all-ops)
