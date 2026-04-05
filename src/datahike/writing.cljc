@@ -260,16 +260,13 @@
         db        (assoc db-after :meta new-meta :writer writer)
         ;; Propagate query result cache from old DB to new DB
         ;; Extract modified attributes from tx-data for selective invalidation
-        _         (try
-                    (let [rim (:ref-ident-map db)
-                          modified-attrs (into #{}
-                                               (comp (map :a)
-                                                     (filter some?)
-                                                     (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
-                                               tx-data)]
-                      (dq/propagate-query-cache old db modified-attrs))
-                    (catch #?(:clj Exception :cljs :default) e
-                      (log/error "propagate-query-cache error:" e)))
+        rim (:ref-ident-map db)
+        modified-attrs (into #{}
+                             (comp (map :a)
+                                   (filter some?)
+                                   (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
+                             tx-data)
+        _ (dq/propagate-query-cache old db modified-attrs)
         tx-report (assoc tx-report :db-after db)]
     tx-report))
 

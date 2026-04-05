@@ -137,15 +137,13 @@
                                           :tempids   {}
                                           :tx-meta   tx-meta}) tx-data)
            ;; Propagate query result cache with selective invalidation
-           _ (try
-               (let [rim (:ref-ident-map (:db-after report))
-                     modified-attrs (into #{}
-                                          (comp (map :a)
-                                                (clojure.core/filter some?)
-                                                (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
-                                          (:tx-data report))]
-                 (dq/propagate-query-cache db (:db-after report) modified-attrs))
-               (catch #?(:clj Exception :cljs :default) _ nil))]
+           rim (:ref-ident-map (:db-after report))
+           modified-attrs (into #{}
+                                (comp (map :a)
+                                      (clojure.core/filter some?)
+                                      (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
+                                (:tx-data report))
+           _ (dq/propagate-query-cache db (:db-after report) modified-attrs)]
        report))))
 
 (defn load-entities-with [db entities tx-meta]
