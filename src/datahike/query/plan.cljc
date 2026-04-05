@@ -836,7 +836,6 @@
                              (into bound-vars (:vars chosen-op))
                              (conj result chosen-op)))))))))))))
 
-
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT / Rule plan ops
 
