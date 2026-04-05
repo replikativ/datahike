@@ -607,16 +607,58 @@
                 :when (seq common)]
             [[i j] common]))))
 
+(def ^:private ^:const dp-group-threshold
+  "Maximum number of entity groups for exact DP enumeration.
+   Beyond this, fall back to greedy (GOO-style) ordering.
+   16 groups = 65536 DP states ≈ 1ms. 20 = 1M states ≈ 50ms."
+  16)
+
+(defn- greedy-order-groups
+  "Greedy Operator Ordering (GOO) for large group counts.
+   At each step, pick the cheapest group that connects to the partial plan.
+   O(n²) — equivalent to DuckDB's approximate fallback."
+  [groups]
+  (let [n (count groups)
+        cards (long-array (map group-effective-card groups))
+        edges (build-group-join-graph groups)
+        adj (mapv (fn [i]
+                    (into #{}
+                          (keep (fn [j]
+                                  (when (and (not= i j)
+                                             (or (contains? edges [i j])
+                                                 (contains? edges [j i])))
+                                    j)))
+                          (range n)))
+                  (range n))]
+    (loop [placed #{}
+           order []
+           remaining (set (range n))]
+      (if (empty? remaining)
+        order
+        (if (empty? placed)
+          ;; First group: pick lowest cardinality
+          (let [best (apply min-key #(aget cards (int %)) remaining)]
+            (recur (conj placed best) (conj order best) (disj remaining best)))
+          ;; Pick cheapest connected group; if none connected, pick cheapest overall
+          (let [connected (filterv (fn [i]
+                                     (some #(contains? placed %) (nth adj i)))
+                                   remaining)
+                candidates (if (seq connected) connected (vec remaining))
+                best (apply min-key #(aget cards (int %)) candidates)]
+            (recur (conj placed best) (conj order best) (disj remaining best))))))))
+
 (defn- dp-order-groups
   "DP bitmask enumeration for inter-group join ordering.
    Minimizes total intermediate cardinality (sum of rows at each step).
    Only considers connected extensions (groups sharing vars with the partial plan)
-   to avoid cross-products. Falls back to cardinality-ordered append for
-   disconnected components."
+   to avoid cross-products. Falls back to greedy ordering when n > dp-group-threshold,
+   and to cardinality-ordered append for disconnected components."
   [groups]
   (let [n (count groups)]
-    (if (<= n 1)
-      (vec (range n))
+    (cond
+      (<= n 1) (vec (range n))
+      (> n dp-group-threshold) (greedy-order-groups groups)
+      :else
       (let [cards (long-array (map group-effective-card groups))
             edges (build-group-join-graph groups)
             ;; Precompute adjacency: for each group i, which groups share vars?
