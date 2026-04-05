@@ -1703,6 +1703,47 @@
         (when (< write-i n)
           (result-list-trim result-list write-i))))))
 
+(defn- post-filter-not-joins
+  "Apply NOT-JOIN anti-probe filtering on result-list.
+   For each NOT-JOIN op, executes its sub-plan to get exclusion values,
+   builds a HashSet of join-var tuples, and removes matching result tuples."
+  [result-list not-join-ops var-index db]
+  (doseq [nj-op not-join-ops]
+    (let [join-vars (:join-vars nj-op)
+          sub-plan (:sub-plan nj-op)
+          ;; Execute the NOT-JOIN's sub-plan via the Relation engine
+          neg-ctx (execute-plan sub-plan {:rels [] :sources {}} db)
+          neg-rel (when (and neg-ctx (seq (:rels neg-ctx)))
+                    (reduce rel/hash-join (:rels neg-ctx)))]
+      (when (and neg-rel (pos? (count (:tuples neg-rel))))
+        ;; Build exclusion set from the negation result
+        (let [neg-attrs (:attrs neg-rel)
+              jv-vec (vec join-vars)
+              n-jv (count jv-vec)
+              excl-set (java.util.HashSet.)]
+          ;; Collect all join-var value tuples from negation result
+          (doseq [tuple (:tuples neg-rel)]
+            (if (= 1 n-jv)
+              (.add excl-set (get tuple (get neg-attrs (first jv-vec))))
+              (.add excl-set (mapv #(get tuple (get neg-attrs %)) jv-vec))))
+          ;; Filter result-list: remove tuples whose join-var values are in the exclusion set
+          (let [jv-indices (mapv #(int (get var-index %)) jv-vec)
+                n (result-list-size result-list)]
+            (loop [read-i (int 0) write-i (int 0)]
+              (if (< read-i n)
+                (let [^objects tuple (result-list-get result-list read-i)
+                      probe (if (= 1 n-jv)
+                              (aget tuple (int (first jv-indices)))
+                              (mapv #(aget tuple (int %)) jv-indices))
+                      excluded? (.contains excl-set probe)]
+                  (if excluded?
+                    (recur (unchecked-inc-int read-i) write-i)
+                    (do (when (not= read-i write-i)
+                          (result-list-set result-list write-i tuple))
+                        (recur (unchecked-inc-int read-i) (unchecked-inc-int write-i)))))
+                (when (< write-i n)
+                  (result-list-trim result-list write-i))))))))))
+
 (defn- binding-vars
   "Extract the binding variable(s) from a binding form as a flat vector.
    Handles scalar (?x), tuple ([?x ?y]), and nested forms."
@@ -1843,7 +1884,8 @@
             groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
             pred-ops (filterv #(= :predicate (:op %)) ops)
             fn-ops (filterv #(= :function (:op %)) ops)
-            has-post-ops? (or (seq pred-ops) (seq fn-ops))
+            not-join-ops (filterv #(= :not-join (:op %)) ops)
+            has-post-ops? (or (seq pred-ops) (seq fn-ops) (seq not-join-ops))
             ;; When post-ops exist, emit ALL group vars (wide tuples) so
             ;; predicates/functions can reference any var. Project afterwards.
             all-group-vars (when has-post-ops?
@@ -2063,12 +2105,14 @@
                                   (post-apply-fns result-list fn-ops var-index)
                                   var-index)]
                   (project-tuples result-list find-vars var-index consts))))))
-        ;; Post-processing: apply predicates, functions, then project to find-vars
+        ;; Post-processing: apply predicates, functions, NOT-JOINs, then project
         ;; (single-group standalone post-ops only — multi-group handled above)
         (when (and (= 1 n-groups) has-post-ops?)
           (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-group-vars)]
             (when (seq pred-ops)
               (post-filter-preds result-list pred-ops var-index))
+            (when (seq not-join-ops)
+              (post-filter-not-joins result-list not-join-ops var-index db))
             (let [var-index (if (seq fn-ops)
                               (post-apply-fns result-list fn-ops var-index)
                               var-index)]

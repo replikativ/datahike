@@ -384,28 +384,29 @@
 
 (defn structurally-fusable?
   "Check if a plan's ops are structurally eligible for the direct-to-HashSet path.
-   Allows groups (entity-group, pattern-scan) plus predicates and functions for
-   single-group plans only (multi-group cross-predicates need the Relation engine).
+   Allows groups (entity-group, pattern-scan) plus predicates, functions, and
+   simple NOT-JOINs for single-group plans only.
    Functions that reference source symbols ($) are excluded.
    This is a necessary but not sufficient condition — runtime still checks find-var coverage."
   [ops]
   (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
         has-post-ops? (not (every? #(#{:entity-group :pattern-scan} (:op %)) ops))]
     (and (seq ops)
-         (every? #(#{:entity-group :pattern-scan :predicate :function} (:op %)) ops)
+         (every? #(#{:entity-group :pattern-scan :predicate :function :not-join} (:op %)) ops)
          (not-any? :source ops)
          ;; Post-ops only supported for single-group plans
          (or (not has-post-ops?)
              (= 1 (count groups)))
          ;; All predicate/function ops must be direct-eligible
          (every? (fn [op]
-                   (or (#{:entity-group :pattern-scan} (:op op))
+                   (or (#{:entity-group :pattern-scan :not-join} (:op op))
                        (post-op-direct-eligible? op)))
                  ops)
-         ;; Verify all predicate/function input vars are bound by preceding groups
+         ;; Verify all predicate/function/not-join input vars are bound by preceding groups
          (let [group-vars (into #{} (mapcat :vars) groups)]
            (every? (fn [op]
                      (or (#{:entity-group :pattern-scan} (:op op))
+                         (= :not-join (:op op))  ;; join-vars checked at runtime
                          (clojure.set/subset? (op-input-vars op) group-vars)))
                    ops)))))
 
@@ -586,7 +587,11 @@
 (defn op-cost [op bound-vars]
   (case (:op op)
     (:entity-group :pattern-scan)
-    (or (:estimated-card op) max-cost)
+    (let [base (or (:estimated-card op) max-cost)]
+      ;; Incorporate attached-pred selectivity: each pred filters ~33% of rows
+      (if-let [preds (seq (:attached-preds op))]
+        (max 1 (long (* base (Math/pow 0.33 (count preds)))))
+        base))
 
     :predicate
     (if (every? #(contains? bound-vars %) (:vars op)) 0 max-cost)
