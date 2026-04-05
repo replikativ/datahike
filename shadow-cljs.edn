@@ -15,7 +15,8 @@
            :main datahike.test.nodejs-test/-main
            :compiler-options {:optimizations :advanced
                               :infer-externs :auto
-                              :elide-asserts false}}
+                              :elide-asserts false
+                              :externs ["externs/node_fs.js"]}}
 
           :browser-integration-test
           {:target :browser-test

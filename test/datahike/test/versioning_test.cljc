@@ -1,7 +1,7 @@
 (ns datahike.test.versioning-test
   (:require #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
                :clj  [clojure.test :as t :refer [is deftest testing]])
-            [datahike.experimental.versioning :refer
+            [datahike.versioning :refer
              [branch-history branch! delete-branch! merge! force-branch! branch-as-db parent-commit-ids
               commit-id commit-as-db]]
             [datahike.db.utils :refer [db?]]

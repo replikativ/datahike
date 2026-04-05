@@ -16,6 +16,7 @@
             [datahike.db.interface :as dbi]
             [datahike.db.transaction :as dbt]
             [datahike.impl.entity :as de]
+            [datahike.versioning :as dv]
             [replikativ.logging :as log]
             #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!]]))
   #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]
@@ -175,3 +176,50 @@
          (assoc m k attrs))))
    {}
    (dbi/-rschema db)))
+
+;; ---------------------------------------------------------------------------
+;; Versioning Operations
+
+(defn branches [conn]
+  #?(:clj  (dv/branches conn {:sync? true})
+     :cljs (dv/branches conn {:sync? false})))
+
+(defn branch! [conn from new-branch]
+  #?(:clj  (dv/branch! conn from new-branch {:sync? true})
+     :cljs (dv/branch! conn from new-branch {:sync? false})))
+
+(defn delete-branch! [conn branch]
+  #?(:clj  (dv/delete-branch! conn branch {:sync? true})
+     :cljs (dv/delete-branch! conn branch {:sync? false})))
+
+(defn force-branch! [db branch parents]
+  #?(:clj  (dv/force-branch! db branch parents {:sync? true})
+     :cljs (dv/force-branch! db branch parents {:sync? false})))
+
+(defn merge-db
+  ([conn parents tx-data]
+   (merge-db conn parents tx-data nil))
+  ([conn parents tx-data tx-meta]
+   #?(:clj  (dv/merge! conn parents tx-data tx-meta)
+      :cljs (throw (ex-info "Synchronous merge not supported in ClojureScript, use merge-db! instead."
+                            {:error :merge/sync-not-supported})))))
+
+(defn merge-db!
+  ([conn parents tx-data]
+   (merge-db! conn parents tx-data nil))
+  ([conn parents tx-data tx-meta]
+   (dv/merge-async! conn parents tx-data tx-meta)))
+
+(defn commit-id [db]
+  (dv/commit-id db))
+
+(defn parent-commit-ids [db]
+  (dv/parent-commit-ids db))
+
+(defn commit-as-db [conn-or-store cid]
+  #?(:clj  (dv/commit-as-db conn-or-store cid {:sync? true})
+     :cljs (dv/commit-as-db conn-or-store cid {:sync? false})))
+
+(defn branch-as-db [conn-or-store branch]
+  #?(:clj  (dv/branch-as-db conn-or-store branch {:sync? true})
+     :cljs (dv/branch-as-db conn-or-store branch {:sync? false})))

@@ -214,6 +214,22 @@
                          conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
                      (swap! (:wrapped-atom conn) assoc :writer
                             (w/create-writer (:writer config) conn))
+                     ;; Recovery: backfill secondary indices that are :building
+                     ;; and were not restored from durable storage
+                     #?(:clj
+                        (let [db @(:wrapped-atom conn)
+                              schema (:schema db)
+                              sec-idx-keys (:secondary-index-keys stored-db)]
+                          (doseq [[ident entry] schema
+                                  :when (and (map? entry)
+                                             (:db.secondary/type entry)
+                                             (= :building (:db.secondary/status entry))
+                                             ;; Only backfill if no stored key-map exists
+                                             (not (get sec-idx-keys ident)))]
+                            (log/trace :datahike/secondary-index-backfill {:ident ident})
+                            (w/dispatch! (:writer db)
+                                         {:op 'build-secondary-index!
+                                          :args [ident]}))))
                      (add-connection! conn-id conn)
                      conn))))))
 
@@ -250,14 +266,21 @@
   ([connection release-all?]
    (when-not (= @(:wrapped-atom connection) :released)
      (let [db      @(:wrapped-atom connection)
-           _ (log/info :datahike/release-connection {:backend (get-in db [:config :store :backend])})
+           _ (log/trace :datahike/release-connection {:backend (get-in db [:config :store :backend])})
            conn-id [(ds/store-identity (get-in db [:config :store]))
                     (get-in db [:config :branch])]]
        (if-not (get @*connections* conn-id)
-         (log/info :datahike/connection-already-released {:conn-id conn-id})
+         (log/trace :datahike/connection-already-released {:conn-id conn-id})
          (let [new-conns (swap! *connections* update-in [conn-id :count] dec)]
            (when (or release-all? (zero? (get-in new-conns [conn-id :count])))
              (delete-connection! conn-id)
+             ;; Close secondary index writers to release file locks (e.g., Lucene write.lock)
+             #?(:clj
+                (doseq [[_ident idx] (:secondary-indices db)]
+                  (when (instance? java.io.Closeable idx)
+                    (try (.close ^java.io.Closeable idx)
+                         (catch Exception e
+                           (log/warn :datahike/secondary-index-close-failed {:error (.getMessage e)}))))))
              (w/shutdown (:writer db))
              ;; Release the underlying store to clean up resources (memory registry, etc.)
              (ks/release-store (get-in db [:config :store]) (:store db))

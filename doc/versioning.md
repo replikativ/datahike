@@ -78,7 +78,7 @@ All operations work with the connection's configured storage backend—no specia
 
 ```clojure
 (require '[datahike.api :as d]
-         '[datahike.experimental.versioning :refer [branch! merge! delete-branch!]])
+         '[datahike.versioning :refer [branch! merge! delete-branch!]])
 
 (let [cfg {:store {:backend :file :path "/var/db/production"}
            :keep-history? true
@@ -162,7 +162,7 @@ The following example demonstrates the full versioning API:
 ~~~clojure
 (require '[superv.async :refer [<?? S]]
          '[datahike.api :as d]
-         '[datahike.experimental.versioning :refer [branch! branch-history delete-branch! force-branch! merge!
+         '[datahike.versioning :refer [branch! branch-history delete-branch! force-branch! merge!
                                                     branch-as-db commit-as-db parent-commit-ids]])
 
 (let [cfg    {:store              {:backend :file

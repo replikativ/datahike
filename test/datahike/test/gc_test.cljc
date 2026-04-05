@@ -6,8 +6,8 @@
    [superv.async :refer [<?? S]]
    [datahike.api :as d]
    [datahike.index.interface :refer [-mark]]
-   [datahike.experimental.versioning :refer [branch! delete-branch! merge!
-                                             branch-history]]
+   [datahike.versioning :refer [branch! delete-branch! merge!
+                                branch-history]]
    [konserve.core :as k]
    [datahike.test.core-test])
   (:import [java.util Date]))

@@ -1,7 +1,7 @@
 (ns datahike.test.query-not-test
   (:require
-   #?(:cljs [cljs.test    :as t :refer-macros [are deftest]]
-      :clj  [clojure.test :as t :refer        [are deftest]])
+   #?(:cljs [cljs.test    :as t :refer-macros [are deftest is testing]]
+      :clj  [clojure.test :as t :refer        [are deftest is testing]])
    [datahike.api :as d]
    #?(:cljs [datahike.cljs :refer [Throwable]])
    [datahike.db :as db]
@@ -172,18 +172,32 @@
     #{[4 3] [3 3] [4 4]}))
 
 (deftest test-insufficient-bindings
-  (are [q msg] (thrown-with-msg? Throwable msg
-                                 (d/q (into '[:find ?e :where] (quote q)) @test-db))
-    [(not [?e :name "Ivan"])
-     [?e :name]]
-    #"Insufficient bindings: none of #\{\?e\} is bound"
+  (if datahike.test.core-test/compiled-engine?
+    ;; Compiled engine reorders NOT after its bindings — these are valid queries
+    (do
+      (testing "reorderable NOT — compiled engine handles correctly"
+        (is (= #{[3] [4]}
+               (d/q '[:find ?e :where (not [?e :name "Ivan"]) [?e :name]] @test-db))))
+      (testing "NOT-JOIN with inner vars bound within body"
+        (is (= #{[1] [3] [5]}
+               (d/q '[:find ?e :where [?e :name]
+                      (not-join [?e] (not [1 :age ?a]) [?e :age ?a])]
+                    @test-db)))))
+    ;; Legacy engine requires bindings before NOT
+    (are [q msg] (thrown-with-msg? Throwable msg
+                                   (d/q (into '[:find ?e :where] (quote q)) @test-db))
+      [(not [?e :name "Ivan"])
+       [?e :name]]
+      #"Insufficient bindings: none of #\{\?e\} is bound"
 
-    [[?e :name]
-     (not-join [?e]
-               (not [1 :age ?a])
-               [?e :age ?a])]
-    #"Insufficient bindings: none of #\{\?a\} is bound"
+      [[?e :name]
+       (not-join [?e]
+                 (not [1 :age ?a])
+                 [?e :age ?a])]
+      #"Insufficient bindings: none of #\{\?a\} is bound"))
 
-    [[?e :name]
-     (not [?a :name "Ivan"])]
-    #"Insufficient bindings: none of #\{\?a\} is bound"))
+  ;; Both engines: truly unbound vars must throw
+  (testing "truly unbound vars throw"
+    (is (thrown-with-msg? Throwable #"Insufficient bindings"
+                          (d/q '[:find ?e :where [?e :name] (not [?a :name "Ivan"])]
+                               @test-db)))))

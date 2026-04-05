@@ -179,6 +179,11 @@
   IIndex
   (-slice [^PersistentSortedSet pset from to index-type]
     (psset/slice pset from to (slice-comparator-constructor index-type from to)))
+  (-lookup [^PersistentSortedSet pset key cmp]
+    #?(:clj  (.lookup pset key cmp)
+       :cljs (psset/lookup pset key cmp)))
+  (-count-slice [^PersistentSortedSet pset from to cmp]
+    (psset/count-slice pset from to cmp))
   (-all [pset]
     (identity pset))
   (-seq [^PersistentSortedSet pset]
@@ -290,7 +295,7 @@
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
-  (let [^PersistentSortedSet pset (psset/sorted-set* {:cmp (index-type->cmp-quick index-type false)
+  (let [^PersistentSortedSet pset (psset/sorted-set* {:comparator (index-type->cmp-quick index-type false)
                                                       :storage (:storage store)
                                                       :branching-factor DEFAULT_BRANCHING_FACTOR})]
     (with-meta pset
