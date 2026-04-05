@@ -184,6 +184,9 @@
        :cljs (psset/lookup pset key cmp)))
   (-count-slice [^PersistentSortedSet pset from to cmp]
     (psset/count-slice pset from to cmp))
+  (-has-subtree-counts? [^PersistentSortedSet pset]
+    #?(:clj  (psset/has-subtree-counts? pset)
+       :cljs true))
   (-all [pset]
     (identity pset))
   (-seq [^PersistentSortedSet pset]

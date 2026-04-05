@@ -27,21 +27,62 @@
 
 (def ^:private ^:const sample-size 64)
 
+(def ^:private heuristic-warned? (atom false))
+
+;; ---------------------------------------------------------------------------
+;; Heuristic fallback estimation (no subtree counts available)
+
+(defn- estimate-pattern-heuristic
+  "Heuristic cardinality estimation for indices without precomputed subtree counts.
+   Uses total datom count (O(1)) divided by pattern-specific factors.
+   Rough but gives differential estimates so the planner can still order joins."
+  [db pattern-info schema-info]
+  (when-not @heuristic-warned?
+    (reset! heuristic-warned? true)
+    (log/info :datahike/estimate-heuristic-fallback
+              "Index lacks precomputed subtree counts (old database format). Using heuristic estimates for query planning. Consider re-indexing for optimal performance."))
+  (let [{:keys [e a v]} pattern-info
+        ground? (fn [x] (and (some? x) (not (symbol? x))))
+        e-ground? (ground? e)
+        a-ground? (ground? a)
+        v-ground? (ground? v)
+        total (max 1 (di/-count (:eavt db)))]
+    (cond
+      ;; [e a ?v] — single datom for card-one, small fan-out for card-many
+      (and e-ground? a-ground? (not v-ground?))
+      (if (:card-one? schema-info) 1 5)
+
+      ;; [e a v] — exact point
+      (and e-ground? a-ground? v-ground?)
+      1
+
+      ;; [?e a v] — ~1% of attribute datoms
+      (and (not e-ground?) a-ground? v-ground?)
+      (max 1 (quot total 1000))
+
+      ;; [?e a ?v] — assume ~20 attributes, so attribute has ~1/20 of total
+      (and (not e-ground?) a-ground? (not v-ground?))
+      (max 1 (quot total 20))
+
+      ;; [e ?a ?v] — typical entity width
+      (and e-ground? (not a-ground?) (not v-ground?))
+      20
+
+      ;; [?e ?a ?v] — full scan
+      :else
+      total)))
+
 ;; ---------------------------------------------------------------------------
 ;; Pattern cardinality estimation
 
-(defn estimate-pattern
-  "Estimate the cardinality (number of matching datoms) for a pattern clause.
-   Uses count-slice on the appropriate index with partial comparators.
-   Returns a long estimate, or nil if estimation is not possible."
+(defn- estimate-pattern-counted
+  "Estimate cardinality using O(log n) count-slice on indices with subtree counts."
   [db pattern-info schema-info]
   (let [{:keys [e a v tx]} pattern-info
         ground? (fn [x] (and (some? x) (not (symbol? x))))
         e-ground? (ground? e)
         a-ground? (ground? a)
         v-ground? (ground? v)
-        ;; Resolve attribute for attribute-refs databases
-        ;; Guard with keyword? to avoid double-resolution when attrs are already numeric
         resolved-a (when a-ground?
                      (if (and (:attribute-refs? (dbi/-config db)) (keyword? a))
                        (dbi/-ref-for db a)
@@ -109,6 +150,16 @@
       ;; [?e ?a ?v] — full scan (worst case)
       :else
       (di/-count (:eavt db)))))
+
+(defn estimate-pattern
+  "Estimate the cardinality (number of matching datoms) for a pattern clause.
+   Uses count-slice on the appropriate index with partial comparators when
+   subtree counts are available, otherwise falls back to O(1) heuristics.
+   Returns a long estimate, or nil if estimation is not possible."
+  [db pattern-info schema-info]
+  (if (di/-has-subtree-counts? (:eavt db))
+    (estimate-pattern-counted db pattern-info schema-info)
+    (estimate-pattern-heuristic db pattern-info schema-info)))
 
 (defn estimate-predicate-selectivity-heuristic
   "Heuristic selectivity estimate for a predicate operator.
