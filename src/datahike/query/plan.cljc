@@ -580,18 +580,126 @@
      (range n))))
 
 ;; ---------------------------------------------------------------------------
-;; Greedy ordering for mixed ops (entity-groups + predicates + functions + OR/NOT)
+;; DP inter-group join ordering
+
+(defn- group-effective-card
+  "Effective output cardinality for a group, accounting for attached predicates."
+  ^long [group]
+  (let [base (long (or (:estimated-card group) 1000000))]
+    (if-let [preds (seq (:attached-preds group))]
+      (max 1 (long (* base (Math/pow 0.33 (count preds)))))
+      base)))
+
+(defn- build-group-join-graph
+  "Build adjacency map for groups connected by shared variables.
+   Returns {[i j] → #{shared-vars}} for all pairs with shared vars."
+  [groups]
+  (let [n (count groups)
+        gvars (mapv (fn [g]
+                      (if (= :entity-group (:op g))
+                        (:output-vars g)
+                        (:vars g)))
+                    groups)]
+    (into {}
+          (for [i (range n)
+                j (range (inc i) n)
+                :let [common (clojure.set/intersection (nth gvars i) (nth gvars j))]
+                :when (seq common)]
+            [[i j] common]))))
+
+(defn- dp-order-groups
+  "DP bitmask enumeration for inter-group join ordering.
+   Minimizes total intermediate cardinality (sum of rows at each step).
+   Only considers connected extensions (groups sharing vars with the partial plan)
+   to avoid cross-products. Falls back to cardinality-ordered append for
+   disconnected components."
+  [groups]
+  (let [n (count groups)]
+    (if (<= n 1)
+      (vec (range n))
+      (let [cards (long-array (map group-effective-card groups))
+            edges (build-group-join-graph groups)
+            ;; Precompute adjacency: for each group i, which groups share vars?
+            adj (mapv (fn [i]
+                        (into #{}
+                              (keep (fn [j]
+                                      (when (and (not= i j)
+                                                 (or (contains? edges [i j])
+                                                     (contains? edges [j i])))
+                                        j)))
+                              (range n)))
+                      (range n))
+            ;; Join selectivity: when joining group i into a partial plan,
+            ;; estimate result = max(plan-rows, group-rows) for FK-like joins.
+            ;; For M:N we'd need distinct counts; this is a safe upper bound.
+            full (unchecked-dec (bit-shift-left 1 n))
+            dp (object-array (unchecked-inc full))]
+        ;; Base cases: each single group as a starting point
+        (dotimes [i n]
+          (let [mask (bit-shift-left 1 i)]
+            (aset dp mask {:cost (aget cards i)
+                           :order [i]
+                           :rows (aget cards i)})))
+        ;; Fill DP table: for each subset, try extending by one connected group
+        (doseq [mask (range 1 (unchecked-inc full))]
+          (when (aget dp (int mask))
+            (let [{:keys [cost order rows]} (aget dp (int mask))
+                  rows (long rows)
+                  cost (long cost)]
+              ;; Find groups not in mask that are adjacent to some group in mask
+              (doseq [i (range n)]
+                (when (zero? (bit-and mask (bit-shift-left 1 i)))
+                  ;; Connectivity check: i must share vars with some group in mask
+                  (let [connected? (some (fn [j]
+                                           (pos? (bit-and mask (bit-shift-left 1 j))))
+                                         (nth adj i))]
+                    (when connected?
+                      (let [new-mask (bit-or mask (bit-shift-left 1 i))
+                            i-card (long (aget cards i))
+                            ;; Join cardinality estimate: for an equi-join on shared
+                            ;; vars, result ≈ max(probe-side, build-side) for FK joins.
+                            ;; Conservative: use max as the join output.
+                            join-rows (Math/max rows i-card)
+                            new-cost (+ cost join-rows)
+                            prev (aget dp (int new-mask))]
+                        (when (or (nil? prev) (< new-cost (long (:cost prev))))
+                          (aset dp (int new-mask)
+                                {:cost new-cost
+                                 :order (conj order i)
+                                 :rows join-rows}))))))))))
+        ;; Extract result: if graph is connected, dp[full] has the answer.
+        ;; If disconnected (multiple components), chain components by cardinality.
+        (if-let [result (aget dp (int full))]
+          (:order result)
+          ;; Disconnected graph: find largest solved component, then chain remaining
+          (let [popcount (fn [^long x]
+                           #?(:clj (Long/bitCount x)
+                              :cljs (loop [v x c 0]
+                                      (if (zero? v) c
+                                          (recur (bit-and v (dec v)) (inc c))))))
+                best-mask (reduce (fn [best mask]
+                                    (if (aget dp (int mask))
+                                      (if (> (long (popcount mask)) (long (popcount best)))
+                                        mask best)
+                                      best))
+                                  0
+                                  (range 1 (unchecked-inc full)))
+                main-order (:order (aget dp (int best-mask)))
+                remaining-idxs (filterv (fn [i] (zero? (bit-and best-mask (bit-shift-left 1 i))))
+                                        (range n))
+                ;; Sort remaining disconnected groups by ascending cardinality
+                sorted-remaining (sort-by #(aget cards (int %)) remaining-idxs)]
+            (into (vec main-order) sorted-remaining)))))))
+
+;; ---------------------------------------------------------------------------
+;; Cost-based ordering for mixed ops (groups + predicates + functions + OR/NOT)
 
 (def ^:private max-cost #?(:clj Long/MAX_VALUE :cljs (.-MAX_SAFE_INTEGER js/Number)))
 
 (defn op-cost [op bound-vars]
   (case (:op op)
     (:entity-group :pattern-scan)
-    (let [base (or (:estimated-card op) max-cost)]
-      ;; Incorporate attached-pred selectivity: each pred filters ~33% of rows
-      (if-let [preds (seq (:attached-preds op))]
-        (max 1 (long (* base (Math/pow 0.33 (count preds)))))
-        base))
+    (group-effective-card op)
 
     :predicate
     (if (every? #(contains? bound-vars %) (:vars op)) 0 max-cost)
@@ -626,23 +734,66 @@
     max-cost))
 
 (defn order-plan-ops
-  "Order plan operations (entity-groups, predicates, OR/NOT, etc.)
-   greedily by ascending estimated cost. Predicates placed immediately
-   after their dependencies are satisfied."
+  "Order plan operations using DP for entity-group ordering and greedy
+   interleaving for dependency-constrained ops (predicates, functions, etc.).
+   The DP phase finds the optimal group execution order by minimizing
+   total intermediate cardinality. The greedy phase then inserts non-group
+   ops at the earliest point where their dependencies are satisfied."
   [ops]
-  (loop [remaining (set ops)
-         bound-vars #{}
-         ordered []]
-    (if (empty? remaining)
-      ordered
-      (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
-            executable (filter #(< (second %) max-cost) scored)
-            best (first (sort-by second (if (seq executable) executable scored)))
-            [chosen-op _] best
-            new-vars (into bound-vars (:vars chosen-op))]
-        (recur (disj remaining chosen-op)
-               new-vars
-               (conj ordered chosen-op))))))
+  (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
+        non-groups (filterv #(not (#{:entity-group :pattern-scan} (:op %))) ops)]
+    (if (empty? groups)
+      ;; No groups — pure greedy on non-group ops
+      (loop [remaining (set ops)
+             bound-vars #{}
+             ordered []]
+        (if (empty? remaining)
+          ordered
+          (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
+                executable (filter #(< (second %) max-cost) scored)
+                best (first (sort-by second (if (seq executable) executable scored)))
+                [chosen-op _] best]
+            (recur (disj remaining chosen-op)
+                   (into bound-vars (:vars chosen-op))
+                   (conj ordered chosen-op)))))
+      ;; DP-order groups, then greedily interleave non-group ops
+      (let [dp-order (dp-order-groups groups)
+            ordered-groups (mapv #(nth groups %) dp-order)]
+        (if (empty? non-groups)
+          ordered-groups
+          ;; Interleave: walk the group order, inserting non-group ops
+          ;; as soon as their dependencies are satisfied
+          (loop [group-q (seq ordered-groups)
+                 remaining (set non-groups)
+                 bound-vars #{}
+                 result []]
+            (if (and (nil? group-q) (empty? remaining))
+              result
+              ;; First, flush any non-group ops whose deps are now satisfied
+              (let [ready (filterv (fn [op] (< (op-cost op bound-vars) max-cost)) remaining)]
+                (if (seq ready)
+                  ;; Insert the cheapest ready non-group op
+                  (let [best (first (sort-by #(op-cost % bound-vars) ready))]
+                    (recur group-q
+                           (disj remaining best)
+                           (into bound-vars (:vars best))
+                           (conj result best)))
+                  ;; No ready non-group ops — emit next group
+                  (if group-q
+                    (let [g (first group-q)]
+                      (recur (next group-q)
+                             remaining
+                             (into bound-vars (:vars g))
+                             (conj result g)))
+                    ;; No more groups but remaining ops still unready — force them
+                    (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
+                          best (first (sort-by second scored))
+                          [chosen-op _] best]
+                      (recur nil
+                             (disj remaining chosen-op)
+                             (into bound-vars (:vars chosen-op))
+                             (conj result chosen-op)))))))))))))
+
 
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT / Rule plan ops
