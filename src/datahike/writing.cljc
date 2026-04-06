@@ -3,10 +3,13 @@
   (:require [datahike.connections :refer [delete-connection! *connections*]]
             [datahike.db :as db]
             [datahike.db.utils :as dbu]
+            [datahike.db.interface :as dbi]
             [datahike.index :as di]
+            [datahike.index.secondary :as sec]
             [datahike.store :as ds]
             [datahike.tools :as dt]
             [datahike.core :as core]
+            [datahike.query :as dq]
             [datahike.config :as dc]
             [datahike.schema-cache :as sc]
             [datahike.online-gc :as online-gc]
@@ -81,13 +84,57 @@
       (when (:keep-history? config)
         {:temporal-eavt-key (cond-> temporal-eavt flush! (di/-flush backend))
          :temporal-aevt-key (cond-> temporal-aevt flush! (di/-flush backend))
-         :temporal-avet-key (cond-> temporal-avet flush! (di/-flush backend))}))]))
+         :temporal-avet-key (cond-> temporal-avet flush! (di/-flush backend))})
+      ;; Secondary indices manage their own storage (Lucene files, konserve, mmap)
+      ;; so they must always be flushed regardless of the primary store backend.
+      #?(:clj
+         (when (and flush? (seq (:secondary-indices db)))
+           {:secondary-index-keys
+            (reduce-kv
+             (fn [acc idx-ident idx]
+               (if (satisfies? sec/IVersionedSecondaryIndex idx)
+                 (assoc acc idx-ident (sec/-sec-flush idx store (:branch config)))
+                 acc))
+             {} (:secondary-indices db))})
+         :cljs nil))]))
+
+(defn- restore-secondary-indices
+  "Restore secondary index instances from stored key-maps.
+   For versioned indices (IVersionedSecondaryIndex), restores from durable storage.
+   For non-versioned or missing keys, creates empty instances that need backfill."
+  [schema ident-ref-map secondary-index-keys store]
+  #?(:clj
+     (reduce-kv
+      (fn [acc ident entry]
+        (if (and (map? entry) (:db.secondary/type entry))
+          (let [idx-type (:db.secondary/type entry)
+                idx-attrs (set (:db.secondary/attrs entry))
+                idx-config (merge (:db.secondary/config entry)
+                                  {:attrs idx-attrs})
+                idx-config (cond-> idx-config
+                             (seq ident-ref-map)
+                             (assoc :ident-ref-map ident-ref-map))
+                key-map (get secondary-index-keys ident)]
+            (try
+              (let [skeleton (sec/create-index idx-type idx-config nil)]
+                (if (and key-map (satisfies? sec/IVersionedSecondaryIndex skeleton))
+                  ;; Restore from durable storage
+                  (assoc acc ident (sec/-sec-restore skeleton store key-map))
+                  ;; No stored keys — empty index, needs backfill
+                  (assoc acc ident skeleton)))
+              (catch Exception e
+                (log/warn :datahike/secondary-index-restore-failed {:ident ident :error (.getMessage e)})
+                acc)))
+          acc))
+      {} schema)
+     :cljs {}))
 
 (defn stored->db
   "Constructs in-memory db instance from stored map value."
   [stored-db store]
   (let [{:keys [eavt-key aevt-key avet-key
                 temporal-eavt-key temporal-aevt-key temporal-avet-key
+                secondary-index-keys
                 schema rschema system-entities ref-ident-map ident-ref-map
                 config max-tx max-eid op-count hash meta schema-meta-key]
          :or   {op-count 0}} stored-db
@@ -96,6 +143,10 @@
                         (when-let [schema-meta (k/get store schema-meta-key nil {:sync? true})]
                           (sc/cache-miss schema-meta-key schema-meta)
                           schema-meta))
+        effective-schema (or (:schema schema-meta) schema)
+        effective-ident-ref-map (or (:ident-ref-map schema-meta) ident-ref-map)
+        sec-indices (restore-secondary-indices effective-schema effective-ident-ref-map
+                                               secondary-index-keys store)
         empty       (db/empty-db nil config store)]
     (merge
      (assoc empty
@@ -117,6 +168,8 @@
             :ident-ref-map ident-ref-map
             :ref-ident-map ref-ident-map
             :store store)
+     (when (seq sec-indices)
+       {:secondary-indices sec-indices})
      schema-meta)))
 
 (defn branch-heads-as-commits [store parents]
@@ -201,10 +254,19 @@
 
 (defn complete-db-update [old tx-report]
   (let [{:keys [writer]} old
-        {:keys [db-after]
+        {:keys [db-after tx-data]
          {:keys [db/txInstant]} :tx-meta} tx-report
         new-meta  (assoc (:meta db-after) :datahike/updated-at txInstant)
         db        (assoc db-after :meta new-meta :writer writer)
+        ;; Propagate query result cache from old DB to new DB
+        ;; Extract modified attributes from tx-data for selective invalidation
+        rim (:ref-ident-map db)
+        modified-attrs (into #{}
+                             (comp (map :a)
+                                   (filter some?)
+                                   (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
+                             tx-data)
+        _ (dq/propagate-query-cache old db modified-attrs)
         tx-report (assoc tx-report :db-after db)]
     tx-report))
 
@@ -350,6 +412,80 @@
   ([config]
    ;; TODO log deprecation notice with #54
    (-database-exists? config)))
+
+#?(:clj
+   (defn build-secondary-index!
+     "Backfill a secondary index by scanning AEVT for all covered attributes.
+      Returns a channel (async op) so the writer continues processing other
+      transactions during backfill. When complete, dispatches a lightweight
+      install-secondary-index! op to atomically swap in the result."
+     [old idx-ident]
+     (log/trace :datahike/build-secondary-index {:idx-ident idx-ident})
+     ;; Return a channel — writer runs this in background (lines 89-93 of writer.cljc)
+     (let [db old
+           idx (get-in db [:secondary-indices idx-ident])
+           _ (when-not idx
+               (log/raise "Secondary index not found" {:idx-ident idx-ident}))
+           attrs (sec/-indexed-attrs idx)
+           building-since-tx (get-in db [:schema idx-ident :db.secondary/building-since-tx])
+           use-transient? (satisfies? sec/ITransientSecondaryIndex idx)
+           t-idx (if use-transient? (sec/-as-transient idx) idx)]
+       ;; Background go block — doesn't block the writer
+       (go-try-
+        (let [populated-idx
+              (reduce
+               (fn [current-idx attr]
+                 (let [datoms (dbi/datoms db :aevt [attr])
+                       n (atom 0)]
+                   (log/debug :datahike/backfilling {:attr attr})
+                   (let [result (reduce
+                                 (fn [idx d]
+                                   (if (and building-since-tx
+                                            (> (.-tx ^datahike.datom.Datom d) building-since-tx))
+                                     idx
+                                     (do (swap! n inc)
+                                         (let [tx-report {:datom d :added? true}]
+                                           (if use-transient?
+                                             (do (sec/-transact! idx tx-report) idx)
+                                             (sec/-transact idx tx-report))))))
+                                 current-idx datoms)]
+                     (log/debug :datahike/backfilled {:attr attr :count @n})
+                     result)))
+               t-idx attrs)
+              final-idx (if use-transient?
+                          (sec/-persistent! populated-idx)
+                          populated-idx)]
+          (log/trace :datahike/secondary-index-built {:idx-ident idx-ident})
+          ;; Return the populated index — the writer dispatch callback
+          ;; receives this, but we need to install it via a separate writer op.
+          ;; Store it in an atom for install-secondary-index! to pick up.
+          {:idx-ident idx-ident :index final-idx})))))
+
+#?(:clj
+   (defn install-secondary-index!
+     "Lightweight synchronous writer op that installs a backfilled index.
+      Called after build-secondary-index! completes in the background."
+     [old {:keys [idx-ident index]}]
+     (let [db-after (-> old
+                        (assoc-in [:secondary-indices idx-ident] index)
+                        (assoc-in [:schema idx-ident :db.secondary/status] :ready)
+                        (update-in [:schema idx-ident] dissoc :db.secondary/building-since-tx))]
+       (complete-db-update old {:db-before old
+                                :db-after db-after
+                                :tx-data []
+                                :tx-meta {}}))))
+
+(defn merge-writer!
+  "Writer operation for merge. Applies tx-data and records merge parents
+   on the db meta so the commit loop creates a multi-parent merge commit."
+  [old {:keys [parents tx-data tx-meta]}]
+  (log/trace :datahike/merge {:parent-count (count parents) :tx-count (count tx-data)})
+  (let [tx-report (complete-db-update old (core/with old tx-data tx-meta))
+        ;; Add merge parents to db meta — commit loop picks these up
+        branch (get-in old [:config :branch])
+        all-parents (conj (set parents) branch)]
+    (update tx-report :db-after
+            assoc-in [:meta :datahike/merge-parents] all-parents)))
 
 (defn transact! [old {:keys [tx-data tx-meta]}]
   (log/debug :datahike/transact {:tx-count (count tx-data)})

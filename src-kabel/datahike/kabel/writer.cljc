@@ -14,6 +14,7 @@
    ```"
   (:require [datahike.writer :as writer :refer [PWriter]]
             [datahike.writing :as dw]
+            [datahike.query :as dq]
             [datahike.kabel.fressian-handlers :as fh]
             [datahike.tools :refer [throwable-promise]]
             [is.simm.distributed-scope :as ds]
@@ -212,6 +213,18 @@
           processed (fh/reconstruct-deferred-indexes stored-db storage)
           ;; Convert stored format to live DB
           live-db (dw/stored->db processed conn-store)
+          ;; Propagate query cache from old DB to new DB
+          ;; Get modified attrs from pending tx-report if available
+          max-tx (:max-tx live-db)
+          pending-entry (when writer
+                          (get @(:pending-txs writer) max-tx))
+          tx-data (get-in pending-entry [:tx-report :tx-data])
+          _ (when tx-data
+              ;; Known tx: selective invalidation
+              (let [rim (:ref-ident-map live-db)
+                    modified-attrs (into #{} (comp (map :a) (filter some?)
+                                                   (map (fn [a] (if (and rim (number? a)) (get rim a a) a)))) tx-data)]
+                (dq/propagate-query-cache current-state live-db modified-attrs)))
           ;; Merge new db with connection state (preserve writer, store, etc.)
           new-state (assoc live-db
                            :store conn-store

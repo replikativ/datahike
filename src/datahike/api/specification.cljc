@@ -204,7 +204,7 @@
      :stability :stable
      :supports-remote? true
      :referentially-transparent? false
-     :doc "Applies transaction to the database and updates connection."
+     :doc "Applies transaction to the database and updates connection. Blocks until committed. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks."
      :examples [{:desc "Add single datom"
                  :code "(transact conn [[:db/add 1 :name \"Ivan\"]])"}
                 {:desc "Retract datom"
@@ -224,7 +224,7 @@
      :stability :stable
      :supports-remote? false
      :referentially-transparent? false
-     :doc "Same as transact, but asynchronously returns a future."
+     :doc "Same as transact, but asynchronously returns a future. Safe to call from listener callbacks and go blocks."
      :examples [{:desc "Async transaction"
                  :code "@(transact! conn [{:db/id -1 :name \"Alice\"}])"}]
      :impl datahike.api.impl/transact!}
@@ -308,6 +308,21 @@
      :examples [{:desc "Query with stats"
                  :code "(query-stats '[:find ?e :where [?e :name]] db)"}]
      :impl datahike.query/query-stats}
+
+    explain
+    {:args [:function
+            [:=> [:cat [:or [:vector :any] :map] [:* :any]] :string]]
+     :ret :string
+     :categories [:query :diagnostics]
+     :stability :experimental
+     :supports-remote? false
+     :referentially-transparent? true
+     :doc "Returns a human-readable string explaining the query plan. Shows index selection, scan/merge ordering, recursive rule structure (SCC, base cases, clause versions), and estimated cardinalities. Takes the same arguments as `q`."
+     :examples [{:desc "Explain a simple query"
+                 :code "(explain '[:find ?e :where [?e :name]] db)"}
+                {:desc "Explain a recursive rule"
+                 :code "(explain '[:find ?e2 :in $ ?e1 % :where (follow ?e1 ?e2)] db 1 '[[(follow ?e1 ?e2) [?e1 :follow ?e2]] [(follow ?e1 ?e2) [?e1 :follow ?t] (follow ?t ?e2)]])"}]
+     :impl #?(:clj datahike.query/explain :cljs nil)}
 
     pull
     {:args [:function
@@ -490,6 +505,138 @@
      :impl datahike.api.impl/as-of}
 
     ;; =========================================================================
+    ;; Versioning Operations
+    ;; =========================================================================
+
+    branches
+    {:args [:=> [:cat :datahike/SConnection] [:set :keyword]]
+     :ret [:set :keyword]
+     :categories [:versioning :query]
+     :stability :stable
+     :supports-remote? true
+     :referentially-transparent? false
+     :doc "List all known branch names. Returns set of keywords."
+     :examples [{:desc "List branches"
+                 :code "(branches conn)"}]
+     :impl datahike.api.impl/branches}
+
+    branch!
+    {:args [:=> [:cat :datahike/SConnection :any :keyword] :any]
+     :ret :any
+     :categories [:versioning :write :async]
+     :stability :stable
+     :supports-remote? true
+     :referentially-transparent? false
+     :doc "Create a new branch from an existing branch or commit. Secondary indices are CoW-branched automatically."
+     :examples [{:desc "Branch from main"
+                 :code "(branch! conn :db :experiment)"}
+                {:desc "Branch from specific commit"
+                 :code "(branch! conn #uuid \"...\" :hotfix)"}]
+     :impl datahike.api.impl/branch!}
+
+    delete-branch!
+    {:args [:=> [:cat :datahike/SConnection :keyword] :any]
+     :ret :any
+     :categories [:versioning :write :async]
+     :stability :stable
+     :supports-remote? true
+     :referentially-transparent? false
+     :doc "Remove a branch. The branch data remains accessible until the next GC."
+     :examples [{:desc "Delete branch"
+                 :code "(delete-branch! conn :experiment)"}]
+     :impl datahike.api.impl/delete-branch!}
+
+    force-branch!
+    {:args [:=> [:cat :datahike/SDB :keyword [:set :any]] :nil]
+     :ret :nil
+     :categories [:versioning :write :advanced]
+     :stability :stable
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "Force a branch to point to the provided db value. WARNING: This overwrites the branch head unconditionally, like git reset --hard. Existing connections to this branch will see stale state and must be released and reconnected."
+     :examples [{:desc "Force branch to current db"
+                 :code "(force-branch! @conn :experiment #{:db})"}]
+     :impl datahike.api.impl/force-branch!}
+
+    merge-db
+    {:args [:function
+            [:=> [:cat :datahike/SConnection [:set :any] :datahike/STransactions] :datahike/STransactionReport]
+            [:=> [:cat :datahike/SConnection [:set :any] :datahike/STransactions :any] :datahike/STransactionReport]]
+     :ret :datahike/STransactionReport
+     :categories [:versioning :write]
+     :stability :stable
+     :supports-remote? true
+     :referentially-transparent? false
+     :doc "Create a merge commit combining the current branch with parent branches/commits. The caller provides the merged tx-data. Routed through the writer for serialization. Blocks until committed. WARNING: Do not call from listener callbacks — use merge-db! instead to avoid deadlocks."
+     :examples [{:desc "Merge feature into main"
+                 :code "(d/merge-db conn #{:feature} [{:name \"merged entity\"}])"}
+                {:desc "Merge with metadata"
+                 :code "(d/merge-db conn #{:feature} [{:name \"merged\"}] {:source :merge})"}]
+     :impl datahike.api.impl/merge-db}
+
+    merge-db!
+    {:args [:function
+            [:=> [:cat :datahike/SConnection [:set :any] :datahike/STransactions] :any]
+            [:=> [:cat :datahike/SConnection [:set :any] :datahike/STransactions :any] :any]]
+     :ret :any
+     :categories [:versioning :write :async]
+     :stability :stable
+     :supports-remote? false
+     :referentially-transparent? false
+     :doc "Async version of merge-db. Returns a promise (CLJ) or channel (CLJS). Safe to call from listener callbacks and go blocks."
+     :examples [{:desc "Async merge"
+                 :code "@(d/merge-db! conn #{:feature} [{:name \"merged\"}])"}]
+     :impl datahike.api.impl/merge-db!}
+
+    commit-id
+    {:args [:=> [:cat :datahike/SDB] [:maybe :uuid]]
+     :ret [:maybe :uuid]
+     :categories [:versioning :query]
+     :stability :stable
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Retrieve the commit-id for this database value."
+     :examples [{:desc "Get commit id"
+                 :code "(commit-id @conn)"}]
+     :impl datahike.api.impl/commit-id}
+
+    parent-commit-ids
+    {:args [:=> [:cat :datahike/SDB] [:maybe [:set :any]]]
+     :ret [:maybe [:set :any]]
+     :categories [:versioning :query]
+     :stability :stable
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Retrieve parent commit ids from this database value."
+     :examples [{:desc "Get parent commits"
+                 :code "(parent-commit-ids @conn)"}]
+     :impl datahike.api.impl/parent-commit-ids}
+
+    commit-as-db
+    {:args [:=> [:cat :any :uuid] [:maybe :datahike/SDB]]
+     :ret [:maybe :datahike/SDB]
+     :categories [:versioning :query]
+     :stability :stable
+     :supports-remote? true
+     :referentially-transparent? false
+     :doc "Load the database at a specific commit. First argument can be a connection, db value, or raw store."
+     :examples [{:desc "Load db at commit"
+                 :code "(commit-as-db conn #uuid \"...\")"}]
+     :impl datahike.api.impl/commit-as-db}
+
+    branch-as-db
+    {:args [:=> [:cat :any :keyword] [:maybe :datahike/SDB]]
+     :ret [:maybe :datahike/SDB]
+     :categories [:versioning :query]
+     :stability :stable
+     :supports-remote? true
+     :referentially-transparent? false
+     :doc "Load the database at a branch head. First argument can be a connection, db value, or raw store."
+     :examples [{:desc "Load db at branch"
+                 :code "(branch-as-db conn :experiment)"}]
+     :impl datahike.api.impl/branch-as-db}
+
+    ;; =========================================================================
     ;; Reactive Operations
     ;; =========================================================================
 
@@ -502,7 +649,7 @@
      :stability :stable
      :supports-remote? false
      :referentially-transparent? false
-     :doc "Listen for changes on connection. Callback called with transaction report on each transact."
+     :doc "Listen for changes on connection. Callback called with transaction report on each transact. WARNING: Inside the callback, use only async operations (transact!, merge-db!) — synchronous writer operations will deadlock."
      :examples [{:desc "Listen with callback"
                  :code "(listen conn (fn [tx-report] (println \"Transaction:\" (:tx-data tx-report))))"}
                 {:desc "Listen with key"

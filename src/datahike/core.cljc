@@ -130,12 +130,21 @@
    {:pre [(dbu/db? db)]}
    (if (is-filtered db)
      (throw (ex-info "Filtered DB cannot be modified" {:error :transaction/filtered}))
-     (dbt/transact-tx-data (db/map->TxReport
-                            {:db-before db
-                             :db-after  db
-                             :tx-data   []
-                             :tempids   {}
-                             :tx-meta   tx-meta}) tx-data))))
+     (let [report (dbt/transact-tx-data (db/map->TxReport
+                                         {:db-before db
+                                          :db-after  db
+                                          :tx-data   []
+                                          :tempids   {}
+                                          :tx-meta   tx-meta}) tx-data)
+           ;; Propagate query result cache with selective invalidation
+           rim (:ref-ident-map (:db-after report))
+           modified-attrs (into #{}
+                                (comp (map :a)
+                                      (clojure.core/filter some?)
+                                      (map (fn [a] (if (and rim (number? a)) (get rim a a) a))))
+                                (:tx-data report))
+           _ (dq/propagate-query-cache db (:db-after report) modified-attrs)]
+       report))))
 
 (defn load-entities-with [db entities tx-meta]
   (dbt/transact-entities-directly

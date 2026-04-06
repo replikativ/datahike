@@ -112,11 +112,17 @@
               ;; empty channel of pending transactions
                       (log/trace :datahike/batch-commit {:batch-size (count txs)})
               ;; commit latest tx to disk
-                      (let [db (:db-after (first (peek txs)))]
+                      (let [db (:db-after (first (peek txs)))
+                            ;; Check for merge parents (set by merge-writer!)
+                            merge-parents (get-in db [:meta :datahike/merge-parents])
+                            ;; Clear merge-parents from db meta before persisting
+                            db (if merge-parents
+                                 (update db :meta dissoc :datahike/merge-parents)
+                                 db)]
                         (try
                           (let [start-ts (get-time-ms)
                                 {{:keys [datahike/commit-id]} :meta
-                                 :as commit-db} (<?- (w/commit! db nil false))
+                                 :as commit-db} (<?- (w/commit! db merge-parents false))
                                 commit-time (- (get-time-ms) start-ts)]
                             (log/trace :datahike/commit-time {:duration-ms commit-time})
                             (reset! connection commit-db)
@@ -142,7 +148,12 @@
 (def default-write-fn-map {'transact!     w/transact!
                            'load-entities w/load-entities
                            ;; async operations that run in background
-                           'gc-storage!   gc/gc-storage!})
+                           'gc-storage!   gc/gc-storage!
+                           ;; secondary index backfill (async, runs in background)
+                           #?@(:clj ['build-secondary-index! w/build-secondary-index!
+                                     'install-secondary-index! w/install-secondary-index!])
+                           ;; merge with multi-parent commit tracking
+                           'merge! w/merge-writer!})
 
 (defmulti create-writer
   (fn [writer-config _]
@@ -200,6 +211,18 @@
         #?(:clj (deliver p res) :cljs (if (nil? res) (close! p) (put! p res)))))
     p))
 
+(defn- detect-new-building-indices
+  "Detect secondary indices that were just created (status :building) in a tx-report.
+   Returns a seq of idx-idents that need backfill."
+  [tx-report]
+  (when-let [schema (get-in tx-report [:db-after :schema])]
+    (keep (fn [[ident entry]]
+            (when (and (map? entry)
+                       (:db.secondary/type entry)
+                       (= :building (:db.secondary/status entry)))
+              ident))
+          schema)))
+
 (defn transact!
   [connection arg-map]
   (let [p (throwable-promise)
@@ -209,6 +232,18 @@
                                      {:op 'transact!
                                       :args [arg-map]}))]
         (when (map? tx-report) ;; not error
+          ;; Dispatch backfill for any newly created secondary indices
+          #?(:clj
+             (doseq [idx-ident (detect-new-building-indices tx-report)]
+               (log/trace :datahike/dispatch-backfill {:idx-ident idx-ident})
+               ;; build-secondary-index! is async (returns channel).
+               ;; When it completes, dispatch install to swap in the result.
+               (go
+                 (let [build-result (<! (dispatch! writer {:op 'build-secondary-index!
+                                                           :args [idx-ident]}))]
+                   (when (map? build-result)
+                     (dispatch! writer {:op 'install-secondary-index!
+                                        :args [build-result]}))))))
           (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
             (callback tx-report)))
         (#?(:clj deliver :cljs put!) p tx-report)))
@@ -221,6 +256,23 @@
       (let [tx-report (<! (dispatch! writer
                                      {:op 'load-entities
                                       :args [entities]}))]
+        (#?(:clj deliver :cljs put!) p tx-report)))
+    p))
+
+(defn merge-db!
+  "Merge parent branches/commits into the current branch through the writer.
+   Parents is a set of branch keywords or commit UUIDs.
+   tx-data contains the merged changes."
+  [connection {:keys [parents tx-data tx-meta] :as arg-map}]
+  (let [p (throwable-promise)
+        writer (:writer @(:wrapped-atom connection))]
+    (go
+      (let [tx-report (<! (dispatch! writer
+                                     {:op 'merge!
+                                      :args [arg-map]}))]
+        (when (map? tx-report)
+          (doseq [[_ callback] (some-> (:listeners (meta connection)) (deref))]
+            (callback tx-report)))
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 

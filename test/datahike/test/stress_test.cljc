@@ -35,20 +35,19 @@
 
           _ (d/transact conn schema)
 
-          ;; write in parallel and force the transactor to keep flusing
-          last-transact
-          (last
-           (for [i (shuffle (range num-writes))]
-             (do #_(prn "write")
-              (d/transact! conn {:tx-data [[:db/add (inc i) :age i]]}))))]
+          ;; write in parallel and force the transactor to keep flushing
+          all-transacts
+          (mapv (fn [i]
+                  (d/transact! conn {:tx-data [[:db/add (inc i) :age i]]}))
+                (shuffle (range num-writes)))]
 
       ;; read while we are writing
       (dotimes [_ num-reads]
-        #_(prn "read")
         (d/q '[:find ?e :where [?e :age ?a]]
              @conn))
 
-      @last-transact
+      ;; wait for ALL transactions, not just the last one
+      (run! deref all-transacts)
       (is (= num-writes
              (d/q '[:find (count ?e) .
                     :where

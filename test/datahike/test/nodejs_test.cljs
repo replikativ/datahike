@@ -145,6 +145,91 @@
                (finally
                  (done)))))))
 
+(deftest branching-and-merge-test
+  (let [dir (tmp-dir)
+        cfg {:store {:backend :file :path dir :id (random-uuid)}
+             :keep-history? false
+             :schema-flexibility :write}]
+    (async done
+           (go
+             (try
+               ;; Create and connect
+               (<! (d/create-database cfg))
+               (let [conn (d/connect cfg)]
+
+                 ;; Schema + data
+                 (<! (d/transact! conn [{:db/ident :name
+                                         :db/valueType :db.type/string
+                                         :db/cardinality :db.cardinality/one}]))
+                 (<! (d/transact! conn [{:name "Alice"}
+                                        {:name "Bob"}]))
+
+                 ;; Verify branches (should be just :db)
+                 (let [bs (<! (d/branches conn))]
+                   (is (contains? bs :db) "Default branch :db exists")
+                   (is (= 1 (count bs)) "Only one branch initially"))
+
+                 ;; Verify commit-id and parent-commit-ids
+                 (let [cid (d/commit-id @conn)
+                       pids (d/parent-commit-ids @conn)]
+                   (is (uuid? cid) "commit-id is a UUID")
+                   (is (set? pids) "parent-commit-ids is a set"))
+
+                 ;; Branch
+                 (<! (d/branch! conn :db :feature))
+                 (let [bs (<! (d/branches conn))]
+                   (is (= #{:db :feature} bs) "Feature branch created"))
+
+                 ;; Connect to feature branch
+                 (let [feat-conn (d/connect (assoc cfg :branch :feature))]
+
+                   ;; Add data on feature
+                   (<! (d/transact! feat-conn [{:name "Charlie"}]))
+                   (let [feat-names (d/q '[:find ?n :where [_ :name ?n]] @feat-conn)
+                         feat-name-set (set (map first feat-names))]
+                     (is (contains? feat-name-set "Charlie") "Feature has Charlie")
+                     (is (contains? feat-name-set "Alice") "Feature inherited Alice"))
+
+                   ;; Main should not have Charlie
+                   (let [main-names (d/q '[:find ?n :where [_ :name ?n]] @conn)
+                         main-name-set (set (map first main-names))]
+                     (is (not (contains? main-name-set "Charlie")) "Main does not have Charlie yet"))
+
+                   ;; Merge feature into main
+                   (let [merge-report (<! (d/merge-db! conn #{:feature} [{:name "Charlie"}]))]
+                     (is (:db-after merge-report) "Merge produced db-after"))
+
+                   ;; Main should now have Charlie
+                   (let [main-names (d/q '[:find ?n :where [_ :name ?n]] @conn)
+                         main-name-set (set (map first main-names))]
+                     (is (contains? main-name-set "Charlie") "Main has Charlie after merge")
+                     (is (contains? main-name-set "Alice") "Main still has Alice"))
+
+                   ;; branch-as-db
+                   (let [feat-db (<! (d/branch-as-db conn :feature))]
+                     (is (some? feat-db) "branch-as-db returns a db"))
+
+                   ;; commit-as-db
+                   (let [cid (d/commit-id @conn)
+                         cdb (<! (d/commit-as-db conn cid))]
+                     (is (some? cdb) "commit-as-db returns a db"))
+
+                   ;; Delete branch
+                   (<! (d/delete-branch! conn :feature))
+                   (let [bs (<! (d/branches conn))]
+                     (is (= #{:db} bs) "Feature branch deleted"))
+
+                   (d/release feat-conn))
+                 (d/release conn))
+
+               ;; Cleanup
+               (<! (d/delete-database cfg))
+
+               (catch js/Error e
+                 (is false (str "Error: " (.-message e))))
+               (finally
+                 (done)))))))
+
 (deftest online-gc-basic-test
   (async done
          (go

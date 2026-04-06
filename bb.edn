@@ -81,6 +81,9 @@
          codegen-ts {:doc "Generate TypeScript type definitions from specification"
                      :task (npm/generate-typescript-definitions! "npm-package/index.d.ts")}
 
+         codegen-esm {:doc "Generate ESM browser wrapper from specification"
+                      :task (npm/generate-esm-wrapper! "npm-package/browser/index.mjs")}
+
          codegen-native {:doc "Generate native C entry points from specification"
                          :depends [prep]
                          :task (clojure "-M" "-m" "datahike.codegen.native" "libdatahike/src")}
@@ -101,9 +104,6 @@
                                     "resources/clj-kondo.exports/io.replikativ/datahike/config.edn"
                                     ".clj-kondo/datahike/datahike/config.edn"
                                     ".clj-kondo/config.edn")}
-
-         codegen-esm {:doc "Generate ESM browser wrapper from specification"
-                      :task (npm/generate-esm-wrapper! "npm-package/browser/index.mjs")}
 
          codegen-all {:doc "Generate all language bindings (TypeScript, Java, Native, Python, ESM)"
                       :depends [codegen-ts codegen-esm codegen-java codegen-native codegen-python]}
