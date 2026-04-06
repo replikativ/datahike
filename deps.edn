@@ -51,7 +51,7 @@
                               hashp/hashp                 {:mvn/version "0.2.2"}
                               orchestra/orchestra         {:mvn/version "2021.01.01-1"}}}
 
-           :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server" "src-hitchhiker-tree" "src-kabel"]
+           :test {:extra-paths ["test" "bechmark/src" "benchmark/test" "http-server" "src-hitchhiker-tree" "src-kabel" "src-secondary"]
                   :jvm-opts ["-ea" "--add-modules" "jdk.incubator.vector"]
                   :extra-deps {lambdaisland/kaocha         {:mvn/version "1.91.1392"}
                                lambdaisland/kaocha-cljs    {:mvn/version "1.9.181"}
