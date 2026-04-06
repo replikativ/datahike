@@ -171,7 +171,7 @@
           (try
             (Thread/sleep 1000)
             (is (= :ready
-                    (get-in (d/db conn2) [:schema :idx/recorder-recover :db.secondary/status]))
+                   (get-in (d/db conn2) [:schema :idx/recorder-recover :db.secondary/status]))
                 "Recovery should transition index from :building to :ready")
             (finally
               (d/release conn2))))
