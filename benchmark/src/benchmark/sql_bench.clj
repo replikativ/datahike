@@ -11,7 +11,7 @@
    [datahike.api :as d]
    [datahike.query :as q]
    [benchmark.datascript-bench :as dsb]
-   [taoensso.timbre :as log])
+   [replikativ.logging :as log])
   (:import [java.sql DriverManager Connection PreparedStatement ResultSet]))
 
 ;; ---------------------------------------------------------------------------
@@ -382,7 +382,7 @@
   (run-aggregates))
 
 (defn -main [& args]
-  (log/set-level! :warn)
+  ;; replikativ.logging defaults to :warn
   (let [cmd (or (first args) "all")]
     (case cmd
       "queries"    (run-queries)

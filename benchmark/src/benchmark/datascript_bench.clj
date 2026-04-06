@@ -15,7 +15,7 @@
    [datahike.db :as db]
    [datahike.db.utils :as dbu]
    [datahike.query :as q]
-   [taoensso.timbre :as log])
+   [replikativ.logging :as log])
   (:import [java.util Random]))
 
 ;; ---------------------------------------------------------------------------
@@ -1232,7 +1232,7 @@
   "Entry point for comparative benchmarks.
    Usage: DATAHIKE_QUERY_PLANNER=true clj -M:bench-compare -m benchmark.datascript-bench [queries|writes|rules|all]"
   [& args]
-  (log/set-level! :warn)
+  ;; replikativ.logging defaults to :warn
   (let [cmd (or (first args) "all")]
     (case cmd
       "queries"    (run-queries)
