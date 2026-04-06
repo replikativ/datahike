@@ -2595,7 +2595,7 @@
    Uses Soufflé-style delta iteration:
    1. Execute base branches for ALL SCC rules → initial 'recent' tuples
    2. Loop: execute clause versions with delta/main accumulators for ALL rules
-   3. Terminate when no new tuples produced across any rule, or iteration > 100.
+   3. Terminate when no new tuples produced across any rule (fixpoint).
    4. Post-filter: apply constant call-args to restrict final result.
 
    Magic set optimization: when the called rule has ground arguments, a demand
@@ -2606,8 +2606,7 @@
    Each rule has its own accumulator."
   [db op ctx]
   (let [{:keys [scc-rule-plans scc-rule-names call-args head-vars rule-name
-                base-scan-attr]} op
-        max-iterations 100]
+                base-scan-attr]} op]
     (if (nil? scc-rule-plans)
       ;; No pre-built plans — fall back to legacy
       (let [clause (:clause op)]
@@ -2665,7 +2664,7 @@
                    iteration 0
                    use-magic? (boolean magic-demand)]
               (let [any-delta? (some (fn [[_ s]] (seq (:tuples (:delta-rel s)))) states)]
-                (if (or (not any-delta?) (>= iteration max-iterations))
+                (if (not any-delta?)
                   states
                   ;; Check for magic explosion
                   (let [use-magic? (and use-magic?
