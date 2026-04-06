@@ -54,10 +54,11 @@
      use prefix syntax instead (e.g., asof:timestamp:config.edn)
    - connect: Redundant with conn: prefix syntax
    - db-with: Returns db value that can't be used in subsequent commands
-   - is-filtered: Requires filtered db input, which can't exist in CLI (filter excluded)"
+   - is-filtered: Requires filtered db input, which can't exist in CLI (filter excluded)
+   - transact!: Async variant, redundant with transact in single-shot CLI (also collides on command name)"
   #{'listen 'unlisten 'release 'db 'tempid 'entity-db
     'as-of 'since 'history 'filter
-    'connect 'db-with 'is-filtered})
+    'connect 'db-with 'is-filtered 'transact!})
 
 (defn cli-spec
   "Get merged specification with CLI-specific config."
@@ -390,8 +391,18 @@
         (System/exit 1))
 
       (let [{:keys [args impl]} (cli-spec op-name)
+            ;; Inject --tx-file content at :file-arg position if provided
+            {:keys [file-arg]} (get cli-config op-name)
+            effective-args (if-let [tx-file (:tx-file cli-opts)]
+                             (if file-arg
+                               (let [content (slurp tx-file)]
+                                 (into (vec (take file-arg raw-args))
+                                       (cons content (drop file-arg raw-args))))
+                               (do (println "⚠ --tx-file not supported for command:" cmd-str)
+                                   raw-args))
+                             raw-args)
             ;; Parse arguments (handle prefixes, files, etc.)
-            parsed-args (mapv parse-prefix raw-args)
+            parsed-args (mapv parse-prefix effective-args)
             ;; Validate with malli
             validation (try-arities args parsed-args)]
 

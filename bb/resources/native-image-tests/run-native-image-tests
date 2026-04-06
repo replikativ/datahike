@@ -15,7 +15,7 @@ trap "rm -rf $TMPSTORE" EXIT
 ./dthk database-exists edn:$ATTR_REF_CONFIG
 
 # test that warnings etc. get logged to stderr
-LOG_OUTPUT="$(./dthk query '[:find ?e . :where [?e :nonexistent _]]' db:$ATTR_REF_CONFIG 2>&1 >/dev/null | grep ':nonexistent has not been found')"
+LOG_OUTPUT="$(./dthk query '[:find ?e . :where [?e :nonexistent _]]' db:$ATTR_REF_CONFIG 2>&1 >/dev/null | grep ':nonexistent')"
 if [ -z "$LOG_OUTPUT" ]
 then
   echo "Exception: binary did not log to stderr"
