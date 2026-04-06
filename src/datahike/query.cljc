@@ -2189,10 +2189,13 @@
           (let [f (first clause)
                 src? (and (symbol? f) (clojure.string/starts-with? (name f) "$"))
                 a (if src? (nth clause 2 nil) (second clause))]
-            (recur rest-clauses
-                   (if (and (some? a) (not (symbol? a)))
-                     (conj attrs a)
-                     attrs)))
+            (if (symbol? a)
+              ;; Variable in attribute position — query touches all attributes
+              :all
+              (recur rest-clauses
+                     (if (some? a)
+                       (conj attrs a)
+                       attrs))))
 
           ;; Predicate/function clause [(> ?a 50)] — deps come from binding
           ;; pattern clauses, safe to skip.
