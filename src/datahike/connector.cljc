@@ -15,7 +15,7 @@
             [konserve.utils :refer [#?(:clj async+sync) *default-sync-translation*]
              #?@(:cljs [:refer-macros [async+sync]])]
             [superv.async :refer [go-try- <?-]]
-            [clojure.core.async :refer [go] :as async])
+            [clojure.core.async :refer [go <!] :as async])
   #?(:clj (:import [clojure.lang IDeref IAtom IMeta ILookup IRef])))
 
 ;; connection
@@ -219,6 +219,7 @@
                      #?(:clj
                         (let [db @(:wrapped-atom conn)
                               schema (:schema db)
+                              writer (:writer db)
                               sec-idx-keys (:secondary-index-keys stored-db)]
                           (doseq [[ident entry] schema
                                   :when (and (map? entry)
@@ -227,9 +228,13 @@
                                              ;; Only backfill if no stored key-map exists
                                              (not (get sec-idx-keys ident)))]
                             (log/trace :datahike/secondary-index-backfill {:ident ident})
-                            (w/dispatch! (:writer db)
-                                         {:op 'build-secondary-index!
-                                          :args [ident]}))))
+                            (go
+                              (let [build-result (<! (w/dispatch! writer
+                                                                  {:op 'build-secondary-index!
+                                                                   :args [ident]}))]
+                                (when (map? build-result)
+                                  (w/dispatch! writer {:op 'install-secondary-index!
+                                                       :args [build-result]})))))))
                      (add-connection! conn-id conn)
                      conn))))))
 

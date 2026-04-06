@@ -10,7 +10,7 @@
    [benchmark.datascript-bench :as dsb]
    [datahike.api :as d]
    [datahike.query :as q]
-   [taoensso.timbre :as log])
+   [replikativ.logging :as log])
   (:import [java.io File]))
 
 (def souffle-bin (or (System/getenv "SOUFFLE_BIN") "souffle"))
@@ -118,7 +118,7 @@ tc(x, y) :- tc(x, z), follows(z, y).
   []
   (alter-var-root #'q/*query-result-cache?* (constantly false))
   (println "\n=== RECURSIVE RULE BENCHMARKS: Datahike vs Soufflé ===")
-  (println (str "  Compiled query engine: " (System/getenv "DATAHIKE_COMPILED_QUERY")))
+  (println (str "  Query planner: " (System/getenv "DATAHIKE_QUERY_PLANNER")))
 
   (let [rule-query '[:find ?e ?e2
                       :in $ %
@@ -175,6 +175,5 @@ tc(x, y) :- tc(x, z), follows(z, y).
   (println "\nDone."))
 
 (defn -main [& _]
-  (log/set-level! :warn)
   (run-rules)
   (System/exit 0))
