@@ -154,8 +154,8 @@
       :cljs
       (fn [reader _tag _component-count]
         (let [{:keys [keys _level]} (fress/read-object reader)]
-          ;; CLJS Leaf deftype: [keys settings]
-          (Leaf. (clj->js keys) {:branching-factor DEFAULT_BRANCHING_FACTOR}))))
+          ;; CLJS Leaf deftype: [keys settings _measure]
+          (Leaf. (clj->js keys) {:branching-factor DEFAULT_BRANCHING_FACTOR} nil))))
 
    "datahike.index.PersistentSortedSet.Branch"
    #?(:clj
@@ -166,10 +166,10 @@
             (Branch. (int level) ^List keys ^List (seq addresses) settings))))
       :cljs
       (fn [reader _tag _component-count]
-        (let [{:keys [keys level addresses]} (fress/read-object reader)]
-          ;; CLJS Branch deftype: [level keys children addresses settings]
+        (let [{:keys [keys level addresses subtree-count]} (fress/read-object reader)]
+          ;; CLJS Branch deftype: [level keys children addresses subtree-count _measure settings]
           ;; children=nil for lazy loading
-          (Branch. (int level) (clj->js keys) nil (clj->js addresses) {:branching-factor DEFAULT_BRANCHING_FACTOR}))))
+          (Branch. (int level) (clj->js keys) nil (clj->js addresses) (or subtree-count -1) nil {:branching-factor DEFAULT_BRANCHING_FACTOR}))))
 
    "datahike.datom.Datom"
    #?(:clj

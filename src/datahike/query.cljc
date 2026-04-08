@@ -2025,9 +2025,7 @@
                     (let [res (aclone t1)]
                       (dotimes [i len]
                         (when-some [idx (aget copy-map i)]
-                          (aset res i (get t2 idx))
-                          ;; TODO figure out why this array lookup does not work anymore (returns nil)
-                          #_(aset res i (#?(:cljs da/aget :clj get) t2 idx))))
+                          (aset res i (#?(:cljs da/aget :clj get) t2 idx))))
                       res))
                   (next rels)
                   symbols))))
