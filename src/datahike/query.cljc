@@ -328,9 +328,9 @@
         l2 (alength idxs2)
         res (da/make-array (+ l1 l2))]
     (dotimes [i l1]
-      (aset res i (#?(:cljs da/aget :clj get) t1 (aget idxs1 i)))) ;; FIXME aget
+      (aset res i (#?(:cljs nth :clj get) t1 (aget idxs1 i))))
     (dotimes [i l2]
-      (aset res (+ l1 i) (#?(:cljs da/aget :clj get) t2 (aget idxs2 i)))) ;; FIXME aget
+      (aset res (+ l1 i) (#?(:cljs nth :clj get) t2 (aget idxs2 i))))
     res))
 
 (defn sum-rel [a b]
@@ -353,7 +353,7 @@
                       (fn [acc tuple-b]
                         (let [tuple' (da/make-array tlen)]
                           (doseq [[idx-b idx-a] idxb->idxa]
-                            (aset tuple' idx-a (#?(:cljs da/aget :clj get) tuple-b idx-b)))
+                            (aset tuple' idx-a (#?(:cljs nth :clj get) tuple-b idx-b)))
                           (conj! acc tuple')))
                       (transient (vec tuples-a))
                       tuples-b))]
@@ -665,14 +665,14 @@
   (let [idx (attrs attr)]
     (if (contains? rel/*lookup-attrs* attr)
       (fn [tuple]
-        (let [eid (#?(:cljs da/aget :clj get) tuple idx)]
+        (let [eid (#?(:cljs nth :clj get) tuple idx)]
           (cond
             (number? eid) eid                               ;; quick path to avoid fn call
             (sequential? eid) (dbu/entid rel/*implicit-source* eid)
             (da/array? eid) (dbu/entid rel/*implicit-source* eid)
             :else eid)))
       (fn [tuple]
-        (#?(:cljs da/aget :clj get) tuple idx)))))
+        (#?(:cljs nth :clj get) tuple idx)))))
 
 (defn tuple-key-fn [getters]
   (if (== (count getters) 1)
@@ -851,7 +851,7 @@
     replacement
     (when-some [rel (rel-with-attr context sym)]
       (when-some [tuple (first (:tuples rel))]
-        (#?(:cljs da/aget :clj get) tuple ((:attrs rel) sym))))))
+        (#?(:cljs nth :clj get) tuple ((:attrs rel) sym))))))
 
 (defn- rel-contains-attrs? [rel attrs]
   (some #(contains? (:attrs rel) %) attrs))
@@ -880,7 +880,7 @@
       ;; TODO raise if not all args are bound
       (dotimes [i len]
         (when-some [tuple-idx (aget tuples-args i)]
-          (let [v (#?(:cljs da/aget :clj get) tuple tuple-idx)]
+          (let [v (#?(:cljs nth :clj get) tuple tuple-idx)]
             (da/aset static-args i v))))
       (apply f static-args))))
 
