@@ -246,29 +246,51 @@
             (= a b))
      :cljs (= a b)))
 
-(defmacro ^:private merge-datom-match?
-  "Inline predicate: does merge datom d match entity+attr+value+shared-var constraints?
-   Expands in place for zero-overhead in hot loops. Type-hints d and scan-d internally."
-  [d eid ra vg? vgv check-v? check-tx? scan-d]
-  (let [d# (with-meta d {:tag 'datahike.datom.Datom})
-        sd# (with-meta scan-d {:tag 'datahike.datom.Datom})]
-    `(and (== (.-e ~d#) ~eid) (= (.-a ~d#) ~ra)
-          (or (not ~vg?) (val-eq? (.-v ~d#) ~vgv))
-          (or (not ~check-v?) (val-eq? (.-v ~d#) (.-v ~sd#)))
-          (or (not ~check-tx?) (= (datom/datom-tx ~d#) (datom/datom-tx ~sd#))))))
+#?(:clj
+   (defmacro ^:private merge-datom-match?
+     "Inline predicate: does merge datom d match entity+attr+value+shared-var constraints?
+      Expands in place for zero-overhead in hot loops. Type-hints d and scan-d internally."
+     [d eid ra vg? vgv check-v? check-tx? scan-d]
+     (let [d# (with-meta d {:tag 'datahike.datom.Datom})
+           sd# (with-meta scan-d {:tag 'datahike.datom.Datom})]
+       `(and (== (.-e ~d#) ~eid) (= (.-a ~d#) ~ra)
+             (or (not ~vg?) (val-eq? (.-v ~d#) ~vgv))
+             (or (not ~check-v?) (val-eq? (.-v ~d#) (.-v ~sd#)))
+             (or (not ~check-tx?) (= (datom/datom-tx ~d#) (datom/datom-tx ~sd#)))))))
 
-(defmacro ^:private temporal-merge-datom-match?
-  "Like merge-datom-match? but also checks temporal-tx-filter and added-filter.
-   Type-hints d and scan-d internally."
-  [d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter]
-  (let [d# (with-meta d {:tag 'datahike.datom.Datom})
-        sd# (with-meta scan-d {:tag 'datahike.datom.Datom})]
-    `(and (== (.-e ~d#) ~eid) (= (.-a ~d#) ~ra)
-          (or (not ~vg?) (val-eq? (.-v ~d#) ~vgv))
-          (or (nil? ~temporal-tx-filter) (~temporal-tx-filter ~d#))
-          (or (nil? ~added-filter) (= (datom/datom-added ~d#) ~added-filter))
-          (or (not ~check-v?) (val-eq? (.-v ~d#) (.-v ~sd#)))
-          (or (not ~check-tx?) (= (datom/datom-tx ~d#) (datom/datom-tx ~sd#))))))
+#?(:cljs
+   (defn- merge-datom-match?
+     "Predicate: does merge datom d match entity+attr+value+shared-var constraints?"
+     [d eid ra vg? vgv check-v? check-tx? scan-d]
+     (and (== (.-e d) eid) (= (.-a d) ra)
+          (or (not vg?) (val-eq? (.-v d) vgv))
+          (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+          (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))))
+
+#?(:clj
+   (defmacro ^:private temporal-merge-datom-match?
+     "Like merge-datom-match? but also checks temporal-tx-filter and added-filter.
+      Type-hints d and scan-d internally."
+     [d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter]
+     (let [d# (with-meta d {:tag 'datahike.datom.Datom})
+           sd# (with-meta scan-d {:tag 'datahike.datom.Datom})]
+       `(and (== (.-e ~d#) ~eid) (= (.-a ~d#) ~ra)
+             (or (not ~vg?) (val-eq? (.-v ~d#) ~vgv))
+             (or (nil? ~temporal-tx-filter) (~temporal-tx-filter ~d#))
+             (or (nil? ~added-filter) (= (datom/datom-added ~d#) ~added-filter))
+             (or (not ~check-v?) (val-eq? (.-v ~d#) (.-v ~sd#)))
+             (or (not ~check-tx?) (= (datom/datom-tx ~d#) (datom/datom-tx ~sd#)))))))
+
+#?(:cljs
+   (defn- temporal-merge-datom-match?
+     "Like merge-datom-match? but also checks temporal-tx-filter and added-filter."
+     [d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter]
+     (and (== (.-e d) eid) (= (.-a d) ra)
+          (or (not vg?) (val-eq? (.-v d) vgv))
+          (or (nil? temporal-tx-filter) (temporal-tx-filter d))
+          (or (nil? added-filter) (= (datom/datom-added d) added-filter))
+          (or (not check-v?) (val-eq? (.-v d) (.-v scan-d)))
+          (or (not check-tx?) (= (datom/datom-tx d) (datom/datom-tx scan-d))))))
 
 (defn- build-ground-filter
   "Build a filter for ground components not covered by the index bounds."
