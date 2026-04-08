@@ -416,7 +416,14 @@
                            (if strict-filter (filter strict-filter) identity)
                            (map (fn [^Datom d]
                                   (check-cancel! cancel)
-                                  [(.-e d) (.-a d) (.-v d) (.-tx d) true])))
+                                  #?(:clj  [(.-e d) (.-a d) (.-v d) (.-tx d) true]
+                                     :cljs (let [t (make-array 5)]
+                                             (aset t 0 (.-e d))
+                                             (aset t 1 (.-a d))
+                                             (aset t 2 (.-v d))
+                                             (aset t 3 (.-tx d))
+                                             (aset t 4 true)
+                                             t)))))
                      datoms)]
     (rel/->Relation var-map tuples)))
 
