@@ -33,10 +33,10 @@
   (HistoricalDB. origin))
 
 (defn since-from-reader [{:keys [origin time-point]}]
-  (AsOfDB. origin time-point))
+  (SinceDB. origin time-point))
 
 (defn as-of-from-reader [{:keys [origin time-point]}]
-  (SinceDB. origin time-point))
+  (AsOfDB. origin time-point))
 
 (defn connection-from-reader [conn-id]
   (:conn (@*connections* conn-id)))
