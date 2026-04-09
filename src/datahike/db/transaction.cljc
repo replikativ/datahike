@@ -702,8 +702,14 @@
     (if-let [e (dbu/entid db e)]
       (let [e-datoms (vec (dbi/search db [e]))
             v-datoms (->> (dbi/-attrs-by db :db.type/ref)
-                          ;; TODO: How to best handle nil here?
-                          (map #(dbi/ident-for db % :warn-on-missing))
+                          (map (fn [attr]
+                                 ;; TODO: Consider using
+                                 ;; (or (dbi/-ref-for db attr) attr)
+                                 ;; once warning has been removed from the -ref-for
+                                 ;; implementation in datahike.db.
+                                 (if (dbu/attr-has-ref? db attr)
+                                   (dbi/-ref-for db attr)
+                                   attr)))
                           (mapcat (fn [a] (dbi/search db [nil a e])))
                           vec)]
         [(reduce transact-retract-datom report (concat e-datoms v-datoms))
