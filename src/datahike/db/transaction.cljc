@@ -522,6 +522,7 @@
     (transact-report report new-datom upsert?)))
 
 (defn- transact-retract-datom
+  ([report] report)
   ([report ^Datom d] (transact-retract-datom report d false))
   ([report ^Datom d keep-tx-id]
    (let [txid (or (and keep-tx-id (datom-tx d)) (current-tx report))]
@@ -701,18 +702,18 @@
   (let [[_ e] op-vec]
     (if-let [e (dbu/entid db e)]
       (let [e-datoms (vec (dbi/search db [e]))
-            v-datoms (->> (dbi/-attrs-by db :db.type/ref)
-                          (map (fn [attr]
-                                 ;; TODO: Consider using
-                                 ;; (or (dbi/-ref-for db attr) attr)
-                                 ;; once warning has been removed from the -ref-for
-                                 ;; implementation in datahike.db.
-                                 (if (dbu/attr-has-ref? db attr)
-                                   (dbi/-ref-for db attr)
-                                   attr)))
-                          (mapcat (fn [a] (dbi/search db [nil a e])))
-                          vec)]
-        [(reduce transact-retract-datom report (concat e-datoms v-datoms))
+            v-datoms (into []
+                           (mapcat (fn [attr]
+                                     ;; TODO: Consider using
+                                     ;; (or (dbi/-ref-for db attr) attr)
+                                     ;; once warning has been removed from
+                                     ;; the -ref-for implementation in datahike.db.
+                                     (let [a (if (dbu/attr-has-ref? db attr)
+                                               (dbi/-ref-for db attr)
+                                               attr)]
+                                       (dbi/search db [nil a e]))))
+                           (dbi/-attrs-by db :db.type/ref))]
+        [(transduce cat transact-retract-datom report [e-datoms v-datoms])
          (retract-components db e-datoms)])
       [report []])))
 
