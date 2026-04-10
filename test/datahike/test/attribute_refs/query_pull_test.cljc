@@ -154,3 +154,33 @@
       (is (every? number? ids))
       (is (= (count (set ids))
              (count ids))))))
+
+(deftest test-pull-retract-cache-invalidation
+  (testing "Retracting an attr only referenced in pull invalidates the cache"
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :schema-flexibility :write
+               :attribute-refs? true}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :c/id
+                           :db/valueType :db.type/string
+                           :db/unique :db.unique/identity
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :c/labels
+                           :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/many}])
+        (d/transact conn [{:c/id "t1" :c/labels ["a" "b"]}])
+        ;; Populate cache — :c/labels only in pull, not in :where
+        (d/q '[:find [(pull ?c [:c/id :c/labels]) ...]
+               :where [?c :c/id]]
+             @conn)
+        ;; Retract one label
+        (let [tx (d/transact conn [[:db/retract [:c/id "t1"] :c/labels "a"]])]
+          (is (= ["b"]
+                 (:c/labels (first (d/q '[:find [(pull ?c [:c/id :c/labels]) ...]
+                                          :where [?c :c/id]]
+                                        (:db-after tx)))))))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
