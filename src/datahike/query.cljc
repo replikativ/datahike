@@ -2217,6 +2217,36 @@
           ;; Unknown shape — skip
           :else (recur rest-clauses attrs))))))
 
+(defn- extract-find-pull-attr-deps
+  "Extract the set of attributes referenced in pull patterns within :find.
+   Returns a set of keywords, or :all for wildcard pulls or unresolvable patterns."
+  [find-clause]
+  (let [find-elements (dpip/find-elements find-clause)]
+    (reduce
+     (fn [attrs el]
+       (if (= attrs :all)
+         (reduced :all)
+         (if (instance? Pull el)
+           (let [pattern (:pattern el)]
+             (if-not (sequential? pattern)
+                ;; Pattern is a variable bound via :in — cannot determine attrs
+               (reduced :all)
+               (let [spec (dpp/parse-pull pattern)]
+                 (if (:wildcard? spec)
+                   (reduced :all)
+                   (into attrs (keys (:attrs spec)))))))
+           attrs)))
+     #{}
+     find-elements)))
+
+(defn- merge-attr-deps
+  "Merge two attr-dep sets. :all dominates."
+  [a b]
+  (cond
+    (= a :all) :all
+    (= b :all) :all
+    :else (into a b)))
+
 (defn- result-cache-get
   "Look up a cached query result for the given DB."
   [db cache-key]
@@ -3237,7 +3267,10 @@
             (if entry
               (:result entry)
               (let [result (uncached)
-                    attr-deps (extract-query-attr-deps (:where query))]
+                    where-deps (extract-query-attr-deps (:where query))
+                    find-deps  (extract-find-pull-attr-deps
+                                (:qfind (memoized-parse-query query)))
+                    attr-deps  (merge-attr-deps where-deps find-deps)]
                 (result-cache-put! db cache-key result attr-deps)
                 result))))))))
 
