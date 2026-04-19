@@ -6,9 +6,19 @@ set -o nounset
 
 echo "Setting up Python test environment..."
 
-# Set library paths so Python can find libdatahike.so
-export LD_LIBRARY_PATH=./libdatahike/target
-export DYLD_LIBRARY_PATH=./libdatahike/target
+# Set library paths so Python can find libdatahike.so (absolute, for use after cd)
+LIB_DIR="$(pwd)/libdatahike/target"
+export LD_LIBRARY_PATH="${LIB_DIR}"
+export DYLD_LIBRARY_PATH="${LIB_DIR}"
+if [ -f "${LIB_DIR}/libdatahike.so" ]; then
+  export LIBDATAHIKE_PATH="${LIB_DIR}/libdatahike.so"
+elif [ -f "${LIB_DIR}/libdatahike.dylib" ]; then
+  export LIBDATAHIKE_PATH="${LIB_DIR}/libdatahike.dylib"
+fi
+
+# Generate Python bindings (pydatahike/src/datahike/generated.py is gitignored)
+echo "Generating Python bindings..."
+bb codegen-python
 
 # Install the pydatahike package with dev extras (pulls in cbor2, pytest, etc.)
 echo "Installing pydatahike and test dependencies..."
