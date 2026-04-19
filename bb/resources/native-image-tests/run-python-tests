@@ -10,13 +10,13 @@ echo "Setting up Python test environment..."
 export LD_LIBRARY_PATH=./libdatahike/target
 export DYLD_LIBRARY_PATH=./libdatahike/target
 
-# Install pytest (use pip3 explicitly to avoid Python 2.7)
-echo "Installing pytest..."
-pip3 install --user pytest
+# Install the pydatahike package with dev extras (pulls in cbor2, pytest, etc.)
+echo "Installing pydatahike and test dependencies..."
+cd pydatahike
+pip3 install --user -e ".[dev]"
 
 # Run Python tests using python3 -m pytest to avoid PATH issues
 echo "Running Python tests..."
-cd pydatahike
 python3 -m pytest -v tests/
 
 echo "Python tests completed successfully!"
