@@ -791,10 +791,24 @@
     :rule-lookup
     (or (:estimated-card op) 100)
 
-    (:or :or-join :not :not-join :recursive-rule)
+    ;; NOT/NOT-JOIN: require ALL referenced vars bound (negation needs full context)
+    (:not :not-join :recursive-rule)
     (let [required (or (:join-vars op) (:vars op))]
       (if (every? #(contains? bound-vars %) required)
         (or (:estimated-card op) 100)
+        max-cost))
+
+    ;; OR/OR-JOIN: join-vars include both input vars (bound from outer context)
+    ;; and output vars (produced by branches). Only input vars need pre-binding.
+    ;; The branches handle unbound join-vars by producing them.
+    ;; execute-or-join's limited-ctx correctly projects to only the bound vars.
+    (:or :or-join)
+    (let [join-vars (or (:join-vars op) (:vars op))
+          bound-join (clojure.set/intersection join-vars bound-vars)]
+      (if (seq bound-join)
+        ;; At least one join-var is bound — branches have some constraint
+        (or (:estimated-card op) 100)
+        ;; No join-vars bound yet — can't execute until at least one is bound
         max-cost))
 
     max-cost))
@@ -865,11 +879,21 @@
 
 (defn- normalize-and-plan-branches
   "Normalize branch clauses and create sub-plans for each branch.
-   Used by both OR and OR-JOIN planning."
+   Used by both OR and OR-JOIN planning.
+
+   Branch forms:
+   - Single data pattern:  [?e :attr ?v]       → wrap as [[?e :attr ?v]]
+   - Single predicate:     [(pred ?a ?b)]       → wrap as [[(pred ?a ?b)]]
+   - Multiple clauses:     [[?e :a ?v] [(> ?v 5)]] → use as-is
+   - AND compound:         (and [?e :a ?v] ...)  → use as-is
+
+   The key distinction: a multi-clause branch has a vector as its first element
+   (Datalog clauses are vectors). A single predicate like [(= ?a 1)] has a list
+   as its first element (the function call expression)."
   [db branches bound-vars rules]
   (mapv (fn [branch]
           (let [branch-clauses (if (and (sequential? branch)
-                                        (not (sequential? (first branch))))
+                                        (not (vector? (first branch))))
                                  [branch]
                                  (vec branch))]
             (create-plan db branch-clauses bound-vars rules)))

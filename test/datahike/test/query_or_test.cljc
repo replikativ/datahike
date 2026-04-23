@@ -105,6 +105,58 @@
               [[:a1 :b1 :c1]]
               [[:a2 :c2]]))))
 
+(deftest test-or-join-predicate-branches
+  ;; or-join / or where branches contain only predicates (no data patterns).
+  ;; Regression: these were misclassified as patterns in the query planner
+  ;; because (= ?a 10) is a list that classify-clause treated as [entity attr val].
+  (is (= #{[10]}
+         (d/q '[:find ?a
+                :where [?e :age ?a]
+                       (or-join [?a] [(= ?a 10)])]
+              @test-db))
+      "or-join with single predicate branch")
+  (is (= #{[10] [20]}
+         (d/q '[:find ?a
+                :where [?e :age ?a]
+                       (or-join [?a] [(= ?a 10)] [(= ?a 20)])]
+              @test-db))
+      "or-join with two predicate branches")
+  (is (= #{[10]}
+         (d/q '[:find ?a
+                :where [?e :age ?a]
+                       (or [(= ?a 10)])]
+              @test-db))
+      "or with single predicate branch")
+  ;; NOT wrapping predicate-only or-join
+  (is (= #{[20]}
+         (d/q '[:find ?a
+                :where [?e :age ?a]
+                       (not (or-join [?a] [(= ?a 10)]))]
+              @test-db))
+      "not wrapping predicate-only or-join"))
+
+(deftest test-or-join-output-var-predicate
+  ;; Predicate on a variable produced by or-join branches (not pre-bound).
+  ;; Regression: or-join required ALL join-vars bound, so when a join-var
+  ;; was an output (produced by branches, not the outer context), the or-join
+  ;; was deferred to force-emit and scheduled after the predicate.
+  (let [db (d/db-with (db/empty-db)
+                      [{:db/ident :j/i :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                       {:db/ident :j/k :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                       {:db/ident :t/i :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                       {:t/i 1} {:t/i 2} {:t/i 4}
+                       {:j/i 1 :j/k 10} {:j/i 2 :j/k 20}])]
+    (is (= #{[2 20]}
+           (d/q '[:find ?i ?k
+                  :where [?e :t/i ?i]
+                         (or-join [?i ?k]
+                                  (and [?e2 :j/i ?i] [?e2 :j/k ?k])
+                                  (and (not-join [?i] [?e2 :j/i ?i])
+                                       [(ground -1) ?k]))
+                         [(= ?k 20)]]
+                db))
+        "predicate on or-join output var filters correctly")))
+
 (deftest test-default-source
   (let [db1 (d/db-with (db/empty-db)
                        [[:db/add 1 :name "Ivan"]
