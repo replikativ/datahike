@@ -883,7 +883,7 @@
 (defn- execute-per-cursor-merge
   "Path 4: Per-cursor or lookupGE merge (fallback for anti-merges, non-sorted).
    merge-ctx is [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors
-                 merge-check-scan-v merge-check-scan-tx]."
+                 merge-check-scan-v merge-check-scan-tx merge-optional merge-defaults]."
   [eavt-pss slice ground-filter strict-filter
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
@@ -896,6 +896,8 @@
         ^objects merge-cursors (aget ^objects merge-ctx 4)
         ^objects merge-check-scan-v (aget ^objects merge-ctx 5)
         ^objects merge-check-scan-tx (aget ^objects merge-ctx 6)
+        ^objects merge-optional (when (> (alength ^objects merge-ctx) 7) (aget ^objects merge-ctx 7))
+        ^objects merge-defaults (when (> (alength ^objects merge-ctx) 8) (aget ^objects merge-ctx 8))
         ^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -929,7 +931,14 @@
                                  (if found?
                                    (do (aset merge-datoms mi d)
                                        (recur (unchecked-inc-int mi) true))
-                                   (recur (unchecked-inc-int mi) false))))))]
+                                   ;; Not found: check if this merge is optional (get-else)
+                                   (if (and merge-optional (aget merge-optional mi))
+                                     ;; Optional: create synthetic datom with default value
+                                     (do (aset merge-datoms mi
+                                                (datom eid ra (aget merge-defaults mi) tx0))
+                                         (recur (unchecked-inc-int mi) true))
+                                     ;; Regular: short-circuit (skip entity)
+                                     (recur (unchecked-inc-int mi) false)))))))]
                  (when ok?
                    (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
                                n-find find-source const-vals result-list)))))))
@@ -958,7 +967,12 @@
                              (if found?
                                (do (aset merge-datoms mi d)
                                    (recur (inc mi) true))
-                               (recur (inc mi) false))))))]
+                               ;; Not found: check optional
+                               (if (and merge-optional (aget merge-optional mi))
+                                 (do (aset merge-datoms mi
+                                           (datom eid ra (aget merge-defaults mi) tx0))
+                                     (recur (inc mi) true))
+                                 (recur (inc mi) false)))))))]
              (when ok?
                (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
                            n-find find-source const-vals result-list))))))))
@@ -1296,6 +1310,9 @@
                                           (or (= temporal-type :historical)
                                               (not (get-in op [:schema-info :card-one?] true))))
                                         merge-ops))
+        ;; Optional merge arrays (for get-else optimization)
+        ^objects merge-optional (to-array (mapv #(boolean (:optional? %)) merge-ops))
+        ^objects merge-defaults (to-array (mapv :default-value merge-ops))
 
         ;; Temporal-only merge arrays (nil when non-temporal)
         merge-added-filter (when temporal
@@ -1485,7 +1502,8 @@
                                     merge-datoms n-find find-source const-vals
                                     result-list max-n n-merges
                                     (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors
-                                                   merge-check-scan-v merge-check-scan-tx])))))
+                                                   merge-check-scan-v merge-check-scan-tx
+                                                   merge-optional merge-defaults])))))
 
     result-list))
 
@@ -2337,15 +2355,26 @@
                               (let [^Datom d (pss-lookup-ge eavt-pss (datom eid ra vgv tx0))
                                     check-v? (aget merge-check-scan-v mi)
                                     check-tx? (aget merge-check-scan-tx mi)
-                                    found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))]
-                                (if anti?
+                                    found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))
+                                    merge-op (nth merge-ops mi)
+                                    optional? (:optional? merge-op)]
+                                (cond
+                                  anti?
                                   (when (not found?)
                                     (process-merges scan-d eid (inc mi) tuple))
-                                  (when found?
-                                    (process-merges scan-d eid (inc mi)
-                                                    (cond-> tuple
-                                                      has-v-var? (conj (.-v d))
-                                                      has-tx-var? (conj (.-tx d)))))))))))]
+
+                                  found?
+                                  (process-merges scan-d eid (inc mi)
+                                                  (cond-> tuple
+                                                    has-v-var? (conj (.-v d))
+                                                    has-tx-var? (conj (.-tx d))))
+
+                                  ;; Optional merge (get-else): produce default value on miss
+                                  optional?
+                                  (process-merges scan-d eid (inc mi)
+                                                  (cond-> tuple
+                                                    has-v-var? (conj (:default-value merge-op))
+                                                    has-tx-var? (conj 0)))))))))]
                 (run! (fn [^Datom scan-d]
                         (when (or (nil? entity-filter)
                                   #?(:clj (es/entity-bitset-contains? entity-filter (.-e scan-d))

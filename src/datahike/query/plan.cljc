@@ -102,16 +102,19 @@
                       e-bound? :lookup
                       (empty? bound-vars) :scan
                       :else :hash)]
-    [{:op :pattern-scan
-      :clause pattern
-      :index index
-      :schema-info schema-info
-      :pushdown-preds effective-preds
-      :estimated-card est
-      :join-method join-method
-      :vars (:vars pattern-info)
-      :e-ground (when e? e)
-      :v-ground (when v? v)}
+    [(cond-> {:op :pattern-scan
+               :clause pattern
+               :index index
+               :schema-info schema-info
+               :pushdown-preds effective-preds
+               :estimated-card est
+               :join-method join-method
+               :vars (:vars pattern-info)
+               :e-ground (when e? e)
+               :v-ground (when v? v)}
+        ;; Propagate optional flag for get-else-derived scans
+        (:optional? pattern-info)
+        (assoc :optional? true :default-value (:default-value pattern-info)))
      (when (seq effective-preds)
        (into #{} (map :pred-clause) effective-preds))]))
 
@@ -266,18 +269,32 @@
     (if (<= n 2)
       (let [;; Patterns with variable attribute can only be scan, not merge
             mergeable (filterv can-be-merge? pattern-ops)
-            scan-only (filterv #(not (can-be-merge? %)) pattern-ops)]
+            scan-only (filterv #(not (can-be-merge? %)) pattern-ops)
+            ;; Optional ops (from get-else / LOptionalScan) should not drive the scan
+            ;; because entities without the optional attribute would be skipped entirely.
+            ;; Prefer non-optional ops as scan; optional ops as merges.
+            non-optional (filterv #(not (:optional? %)) pattern-ops)]
         (if (seq scan-only)
           ;; Force scan-only pattern as scan, rest as merges
           {:scan (first scan-only) :merges (vec (concat (rest scan-only) mergeable))}
-          ;; All can be merges — pick lowest cardinality as scan
-          (let [sorted (sort-by :estimated-card pattern-ops)]
-            {:scan (first sorted) :merges (vec (rest sorted))})))
-      (let [candidates
+          (if (seq non-optional)
+            ;; Prefer non-optional as scan
+            (let [sorted (sort-by :estimated-card non-optional)]
+              {:scan (first sorted) :merges (vec (concat (rest sorted)
+                                                         (filterv :optional? pattern-ops)))})
+            ;; All optional — pick lowest cardinality as scan
+            (let [sorted (sort-by :estimated-card pattern-ops)]
+              {:scan (first sorted) :merges (vec (rest sorted))}))))
+      (let [has-non-optional? (some #(not (:optional? %)) pattern-ops)
+            candidates
             (for [si (range n)
-                  ;; Only consider scan positions where all remaining ops can be merges
-                  :when (every? can-be-merge?
-                                (keep-indexed (fn [i op] (when (not= i si) op)) pattern-ops))]
+                  ;; Only consider scan positions where all remaining ops can be merges.
+                  ;; Optional ops should not drive scan (entities without the attribute
+                  ;; would be skipped), unless ALL ops are optional.
+                  :when (and (every? can-be-merge?
+                                     (keep-indexed (fn [i op] (when (not= i si) op)) pattern-ops))
+                             (or (not has-non-optional?)
+                                 (not (:optional? (nth pattern-ops si)))))]
               (let [scan-op (nth pattern-ops si)
                     scan-card (double (nth estimates si))
                     merges (into [] (keep-indexed
@@ -321,6 +338,7 @@
         scan-attr-ground? (and (some? a) (not (symbol? a)))
         has-card-many? (boolean (some #(not (get-in % [:schema-info :card-one?] true)) merge-ops))
         has-anti? (boolean (some :anti? merge-ops))
+        has-optional? (boolean (some :optional? merge-ops))
         use-cursors? #?(:clj (and (pos? n-merges)
                                   (or (= index :eavt)
                                       (= index :aevt)
@@ -332,11 +350,13 @@
                                       (pos? n-merges)
                                       scan-attr-ground?
                                       (not has-card-many?)
-                                      (not has-anti?))
+                                      (not has-anti?)
+                                      (not has-optional?))
                             :cljs false)
         attr-refs? (:attribute-refs? (dbi/-config db))
         fused-path (cond
                      (zero? n-merges) :scan-only
+                     has-optional?    :per-cursor-merge
                      has-card-many?   :card-many-merge
                      use-sorted-scan? :sorted-merge
                      :else            :per-cursor-merge)
@@ -444,8 +464,12 @@
         group-card (reduce (fn [card merge-op]
                              (let [merge-est (max 1 (or (:estimated-card merge-op) total-entities))
                                    pass-rate (estimate/estimate-conditional-pass-rate merge-est total-entities)]
-                               (if (:anti? merge-op)
+                               (cond
+                                 ;; Optional merges don't filter — all entities pass
+                                 (:optional? merge-op) card
+                                 (:anti? merge-op)
                                  (long (* card (max 0.01 (- 1.0 pass-rate))))
+                                 :else
                                  (long (* card pass-rate)))))
                            scan-card
                            merge-ops)
