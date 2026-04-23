@@ -98,4 +98,31 @@
            (is (= (set (d/q '[:find ?color (datahike.test.query-aggregates-test/sort-reverse ?x)
                               :in   [[?color ?x]]]
                             data))
-                  result)))))))
+                  result))))))
+
+  (testing "Aggregate with predicate filter"
+    ;; Regression: the columnar aggregate path (via stratum) skipped
+    ;; attached-preds, so predicates in WHERE were ignored for COUNT/SUM.
+    (let [cfg {:store {:backend :memory :id #?(:clj (java.util.UUID/randomUUID)
+                                               :cljs (random-uuid))}
+               :schema-flexibility :write
+               :keep-history? true}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :num/v :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}])
+        (d/transact conn [{:num/v 1} {:num/v 2} {:num/v 3} {:num/v 4} {:num/v 5}])
+        (let [db (d/db conn)]
+          (is (= [[3]] (d/q '{:find [(count ?e)]
+                              :where [[?e :num/v ?v] [(> ?v 2)]]} db))
+              "COUNT with > predicate")
+          (is (= [[12]] (d/q '{:find [(sum ?v)]
+                               :where [[?e :num/v ?v] [(> ?v 2)]]} db))
+              "SUM with > predicate")
+          (is (= [[2]] (d/q '{:find [(count ?e)]
+                              :where [[?e :num/v ?v] [(< ?v 3)]]} db))
+              "COUNT with < predicate"))
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))

@@ -23,6 +23,23 @@
             e a v tx  ;; individual pattern components
             source])  ;; optional source symbol ($2 etc.), nil for default
 
+(defrecord LOptionalScan
+           [clause        ;; synthetic pattern [?e :attr ?v]
+            vars          ;; #{free variables}
+            e a v tx      ;; individual pattern components (tx always nil)
+            source        ;; optional source symbol, nil for default
+            default-value ;; value to produce when attribute is missing (nil or user-supplied default from get-else)
+            binding-var]) ;; the output variable symbol
+
+(defn scan?
+  "True for LScan and LOptionalScan nodes — both carry pattern-scan fields
+   (clause / vars / e / a / v / tx / source) and can be read via keyword
+   accessors uniformly. Use (instance? LOptionalScan n) only when the
+   distinction matters (e.g. to add :optional? / :default-value)."
+  [x]
+  (or (instance? LScan x)
+      (instance? LOptionalScan x)))
+
 (defrecord LFilter
            [clause    ;; original predicate clause [[pred ?x ?y]]
             fn-sym    ;; predicate function symbol

@@ -29,16 +29,22 @@
 ;; reconstruct them from IR record fields.
 
 (defn- scan->classified
-  "Convert an LScan back to a classified clause map for plan helpers."
-  [^datahike.query.ir.LScan scan]
-  {:type :pattern
-   :clause (.-clause scan)
-   :pattern (vec (.-clause scan))
-   :vars (.-vars scan)
-   :e (.-e scan)
-   :a (.-a scan)
-   :v (.-v scan)
-   :tx (.-tx scan)})
+  "Convert an LScan or LOptionalScan back to a classified clause map for
+   plan helpers. Shared pattern fields are read via keyword access; the
+   optional-only extras (`:optional?` / `:default-value`) are attached
+   only when the input is an LOptionalScan."
+  [scan]
+  (cond-> {:type :pattern
+           :clause (:clause scan)
+           :pattern (vec (:clause scan))
+           :vars (:vars scan)
+           :e (:e scan)
+           :a (:a scan)
+           :v (:v scan)
+           :tx (:tx scan)}
+    (instance? datahike.query.ir.LOptionalScan scan)
+    (assoc :optional? true
+           :default-value (:default-value scan))))
 
 (defn- filter->classified
   "Convert an LFilter back to a classified clause map."
@@ -115,7 +121,7 @@
   (reduce
    (fn [acc node]
      (cond
-       (instance? datahike.query.ir.LScan node)
+       (ir/scan? node)
        (conj acc node)
 
        (instance? datahike.query.ir.LEntityJoin node)
@@ -176,10 +182,10 @@
      :consumed new-consumed}))
 
 (defn- lower-standalone-scan
-  "Lower a standalone LScan to a :pattern-scan physical op."
-  [^datahike.query.ir.LScan scan db pushdowns consumed-acc bound-vars]
+  "Lower a standalone LScan or LOptionalScan to a :pattern-scan physical op."
+  [scan db pushdowns consumed-acc bound-vars]
   (let [ci (scan->classified scan)
-        source (.-source scan)
+        source (:source scan)
         schema-info (analyze/pattern-schema-info db ci)
         preds (get pushdowns (:clause ci) [])
         [op consumed-preds] (plan/plan-pattern-op db ci schema-info preds bound-vars)]
@@ -238,8 +244,8 @@
                    (update :ops conj op)
                    (update :actual-consumed into consumed)))
 
-             ;; Standalone LScan → pattern-scan op
-             (instance? datahike.query.ir.LScan node)
+             ;; Standalone LScan or LOptionalScan → pattern-scan op
+             (ir/scan? node)
              (let [{:keys [op consumed]}
                    (lower-standalone-scan node db pushdowns (:actual-consumed acc)
                                           bound-vars)]

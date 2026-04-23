@@ -18,7 +18,7 @@
    #?(:cljs [org.replikativ.persistent-sorted-set.btset :as btset :refer [BTSet]])
    [datahike.db :as db #?@(:cljs [:refer [AsOfDB SinceDB HistoricalDB FilteredDB]])]
    [replikativ.logging :as log])
-  #?(:cljs (:require-macros [datahike.query.execute :refer [scan-filter scan-filter-temporal emit-tuple]]))
+  #?(:cljs (:require-macros [datahike.query.execute :refer [scan-filter scan-filter-temporal emit-tuple check-cancel!]]))
   #?(:clj (:import [datahike.datom Datom]
                    [datahike.db AsOfDB SinceDB HistoricalDB FilteredDB]
                    [org.replikativ.persistent_sorted_set
@@ -32,6 +32,43 @@
 #?(:clj (import 'datahike.query.relation.Relation))
 
 (declare execute-plan)
+
+;; ---------------------------------------------------------------------------
+;; Mid-query cancellation.
+;;
+;; `cancel` is an optional IDeref (typically a Volatile) threaded through the
+;; query context. When its stored value is truthy, the next `check-cancel!`
+;; throws an ex-info with :datahike/canceled true.
+;;
+;; Datahike itself is protocol-agnostic — the raised ex-info carries
+;; :datahike/canceled only. Adapter layers (pgwire, client drivers) map
+;; this to their own error codes at the boundary.
+;;
+;; Cost model: when `cancel` is nil (non-pgwire callers), the nil guard
+;; short-circuits before any deref — a single ifnull + predicted-not-taken
+;; branch per check, far below measurement noise.
+
+(defmacro check-cancel!
+  "Throw :datahike/canceled if `cancel` (a Volatile or Atom, or nil) holds a
+   truthy value. No-op on nil. Hot-path safe: callers should bind the value
+   from `(:cancel ctx)` to a local *outside* any tight loop, then pass the
+   local to this macro inside the loop.
+
+   On the JVM, expands to a direct `.deref` via IDeref (monomorphic when the
+   local is always a Volatile). On CLJS, uses `deref` (protocol dispatch);
+   cancel in CLJS is not currently exercised in the hot path."
+  [cancel]
+  (if (:ns &env)
+    ;; CLJS expansion
+    `(when-let [c# ~cancel]
+       (when (cljs.core/deref c#)
+         (throw (ex-info "query canceled"
+                         {:datahike/canceled true}))))
+    ;; CLJ expansion — direct .deref via IDeref hint
+    `(when-let [^clojure.lang.IDeref c# ~cancel]
+       (when (.deref c#)
+         (throw (ex-info "query canceled"
+                         {:datahike/canceled true}))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cross-platform helpers
@@ -340,7 +377,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Pattern scan → Relation (for legacy-compatible path)
 
-(defn- execute-pattern-scan [db op]
+(defn- execute-pattern-scan [db op cancel]
   (let [{:keys [clause index pushdown-preds]} op
         [e a v tx] clause
         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
@@ -359,7 +396,9 @@
         tuples (into []
                      (comp (if ground-filter (filter ground-filter) identity)
                            (if strict-filter (filter strict-filter) identity)
-                           (map (fn [^Datom d] [(.-e d) (.-a d) (.-v d) (.-tx d) true])))
+                           (map (fn [^Datom d]
+                                  (check-cancel! cancel)
+                                  [(.-e d) (.-a d) (.-v d) (.-tx d) true])))
                      datoms)]
     (rel/->Relation var-map tuples)))
 
@@ -659,12 +698,14 @@
 ;; The macros scan-filter and emit-tuple expand inline within each path.
 
 (defn- execute-scan-only
-  "Path 1: Scan without merges (e.g. Q1). Smallest possible loop."
+  "Path 1: Scan without merges (e.g. Q1). Smallest possible loop.
+   `cancel` is an IDeref (typically Volatile) or nil; checked per iteration
+   via the nil-guarded `check-cancel!` macro."
   [slice ground-filter strict-filter
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n]
+   result-list max-n cancel]
   (let [^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -672,6 +713,7 @@
        (when-let [iter (some-> ^Iterable slice .iterator)]
          (while (and (.hasNext iter)
                      (or (neg? max-n) (< (result-list-size result-list) max-n)))
+           (check-cancel! cancel)
            (let [^Datom scan-d (.next iter)]
              (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
                (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
@@ -679,6 +721,7 @@
        :cljs
        (doseq [scan-d slice
                :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+         (check-cancel! cancel)
          (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
            (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
                        n-find find-source const-vals result-list))))))
@@ -691,7 +734,7 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n n-merges merge-ctx]
+   result-list max-n n-merges merge-ctx cancel]
   (let [^objects merge-attrs (aget ^objects merge-ctx 0)
         ^objects merge-v-ground (aget ^objects merge-ctx 1)
         ^objects merge-v-vals (aget ^objects merge-ctx 2)
@@ -707,6 +750,7 @@
        (when-let [iter (some-> ^Iterable slice .iterator)]
          (while (and (.hasNext iter)
                      (or (neg? max-n) (< (result-list-size result-list) max-n)))
+           (check-cancel! cancel)
            (let [^Datom scan-d (.next iter)]
              (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
                (let [eid (.-e scan-d)]
@@ -748,6 +792,7 @@
        :cljs
        (doseq [scan-d slice
                :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+         (check-cancel! cancel)
          (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
            (let [eid (.-e ^Datom scan-d)]
              (letfn [(process-merges [mi]
@@ -839,7 +884,7 @@
       probe-set probe-datom-field
       collect-set collect-datom-field collect-merge-idx
       merge-datoms n-find find-source const-vals
-      result-list max-n n-merges attr-refs? sorted-ctx]
+      result-list max-n n-merges attr-refs? sorted-ctx cancel]
      (let [sorted-cursor (aget ^objects sorted-ctx 0)
            ^ints sorted-order (aget ^objects sorted-ctx 1)
            ^longs sorted-attrs-long (aget ^objects sorted-ctx 2)
@@ -856,6 +901,7 @@
          ;; Attribute-refs path: long comparison
            (while (and (.hasNext iter)
                        (or (neg? max-n) (< (result-list-size result-list) max-n)))
+             (check-cancel! cancel)
              (let [^Datom scan-d (.next iter)]
                (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
                  (let [eid (.-e scan-d)]
@@ -869,6 +915,7 @@
          ;; Keyword attrs path: compare-based comparison
            (while (and (.hasNext iter)
                        (or (neg? max-n) (< (result-list-size result-list) max-n)))
+             (check-cancel! cancel)
              (let [^Datom scan-d (.next iter)]
                (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
                  (let [eid (.-e scan-d)]
@@ -883,12 +930,12 @@
 (defn- execute-per-cursor-merge
   "Path 4: Per-cursor or lookupGE merge (fallback for anti-merges, non-sorted).
    merge-ctx is [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors
-                 merge-check-scan-v merge-check-scan-tx]."
+                 merge-check-scan-v merge-check-scan-tx merge-optional merge-defaults]."
   [eavt-pss slice ground-filter strict-filter
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n n-merges merge-ctx]
+   result-list max-n n-merges merge-ctx cancel]
   (let [^objects merge-attrs (aget ^objects merge-ctx 0)
         ^objects merge-v-ground (aget ^objects merge-ctx 1)
         ^objects merge-v-vals (aget ^objects merge-ctx 2)
@@ -896,6 +943,8 @@
         ^objects merge-cursors (aget ^objects merge-ctx 4)
         ^objects merge-check-scan-v (aget ^objects merge-ctx 5)
         ^objects merge-check-scan-tx (aget ^objects merge-ctx 6)
+        ^objects merge-optional (when (> (alength ^objects merge-ctx) 7) (aget ^objects merge-ctx 7))
+        ^objects merge-defaults (when (> (alength ^objects merge-ctx) 8) (aget ^objects merge-ctx 8))
         ^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -903,6 +952,7 @@
        (when-let [iter (some-> ^Iterable slice .iterator)]
          (while (and (.hasNext iter)
                      (or (neg? max-n) (< (result-list-size result-list) max-n)))
+           (check-cancel! cancel)
            (let [^Datom scan-d (.next iter)]
              (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
                (let [eid (.-e scan-d)
@@ -929,13 +979,21 @@
                                  (if found?
                                    (do (aset merge-datoms mi d)
                                        (recur (unchecked-inc-int mi) true))
-                                   (recur (unchecked-inc-int mi) false))))))]
+                                   ;; Not found: check if this merge is optional (get-else)
+                                   (if (and merge-optional (aget merge-optional mi))
+                                     ;; Optional: create synthetic datom with default value
+                                     (do (aset merge-datoms mi
+                                               (datom eid ra (aget merge-defaults mi) tx0))
+                                         (recur (unchecked-inc-int mi) true))
+                                     ;; Regular: short-circuit (skip entity)
+                                     (recur (unchecked-inc-int mi) false)))))))]
                  (when ok?
                    (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
                                n-find find-source const-vals result-list)))))))
        :cljs
        (doseq [scan-d slice
                :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+         (check-cancel! cancel)
          (when (scan-filter scan-d ground-filter strict-filter probe-set probe-datom-field)
            (let [eid (.-e ^Datom scan-d)
                  ok? (loop [mi (int 0) ok? true]
@@ -958,7 +1016,12 @@
                              (if found?
                                (do (aset merge-datoms mi d)
                                    (recur (inc mi) true))
-                               (recur (inc mi) false))))))]
+                               ;; Not found: check optional
+                               (if (and merge-optional (aget merge-optional mi))
+                                 (do (aset merge-datoms mi
+                                           (datom eid ra (aget merge-defaults mi) tx0))
+                                     (recur (inc mi) true))
+                                 (recur (inc mi) false)))))))]
              (when ok?
                (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
                            n-find find-source const-vals result-list))))))))
@@ -1035,7 +1098,7 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n temporal-tx-filter scan-added-val]
+   result-list max-n temporal-tx-filter scan-added-val cancel]
   (let [^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -1043,6 +1106,7 @@
        (when-let [iter (some-> ^Iterable slice .iterator)]
          (while (and (.hasNext iter)
                      (or (neg? max-n) (< (result-list-size result-list) max-n)))
+           (check-cancel! cancel)
            (let [^Datom scan-d (.next iter)]
              (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
                         (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
@@ -1051,6 +1115,7 @@
        :cljs
        (doseq [scan-d slice
                :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+         (check-cancel! cancel)
          (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
                     (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
            (emit-tuple scan-d collect-set collect-datom-field collect-merge-idx merge-datoms
@@ -1063,7 +1128,7 @@
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    merge-datoms n-find find-source const-vals
-   result-list max-n n-merges temporal-ctx]
+   result-list max-n n-merges temporal-ctx cancel]
   (let [^objects merge-attrs (aget ^objects temporal-ctx 0)
         ^objects merge-v-ground (aget ^objects temporal-ctx 1)
         ^objects merge-v-vals (aget ^objects temporal-ctx 2)
@@ -1087,6 +1152,7 @@
        (when-let [iter (some-> ^Iterable slice .iterator)]
          (while (and (.hasNext iter)
                      (or (neg? max-n) (< (result-list-size result-list) max-n)))
+           (check-cancel! cancel)
            (let [^Datom scan-d (.next iter)]
              (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
                         (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
@@ -1202,6 +1268,7 @@
        :cljs
        (doseq [scan-d slice
                :while (or (neg? max-n) (< (result-list-size result-list) max-n))]
+         (check-cancel! cancel)
          (when (and (scan-filter-temporal scan-d ground-filter strict-filter probe-set probe-datom-field temporal-tx-filter)
                     (or (nil? scan-added-val) (= (datom/datom-added scan-d) scan-added-val)))
            (let [eid (.-e ^Datom scan-d)]
@@ -1248,13 +1315,15 @@
   "Execute an entity-group (or single pattern-scan) fused, writing results
    directly into a result list. Computes shared setup, then dispatches to
    a path-specific function (each small enough for JIT C2/Graal compilation).
-   When temporal is non-nil, uses temporal-aware scan slicing and loop functions."
+   When temporal is non-nil, uses temporal-aware scan slicing and loop functions.
+   `:cancel` (optional) is an IDeref/Volatile checked per iteration in the
+   path function's inner loop — nil when caller doesn't need cancellation."
   [db scan-op merge-ops find-vars consts
    result-list
    probe-set probe-datom-field
    collect-set collect-datom-field collect-merge-idx
    max-results
-   & {:keys [scan-estimate pipeline temporal]}]
+   & {:keys [scan-estimate pipeline temporal cancel]}]
   (let [{:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         ;; For temporal queries, resolve against the unwrapped origin-db
@@ -1296,6 +1365,9 @@
                                           (or (= temporal-type :historical)
                                               (not (get-in op [:schema-info :card-one?] true))))
                                         merge-ops))
+        ;; Optional merge arrays (for get-else optimization)
+        ^objects merge-optional (to-array (mapv #(boolean (:optional? %)) merge-ops))
+        ^objects merge-defaults (to-array (mapv :default-value merge-ops))
 
         ;; Temporal-only merge arrays (nil when non-temporal)
         merge-added-filter (when temporal
@@ -1401,7 +1473,7 @@
                                     probe-set probe-datom-field
                                     collect-set collect-datom-field collect-merge-idx
                                     merge-datoms n-find find-source const-vals
-                                    result-list max-n temporal-tx-filter scan-added-val)
+                                    result-list max-n temporal-tx-filter scan-added-val cancel)
         (execute-temporal-merge db eavt-pss slice ground-filter strict-filter
                                 probe-set probe-datom-field
                                 collect-set collect-datom-field collect-merge-idx
@@ -1413,7 +1485,8 @@
                                                merge-temporal-only merge-cursor-cache
                                                temporal-eavt-pss temporal-cursors
                                                temporal-type temporal-tx-filter
-                                               scan-added-val origin-db])))
+                                               scan-added-val origin-db])
+                                cancel))
 
       ;; Non-temporal dispatch via fused-path keyword
       (case fused-path
@@ -1422,7 +1495,7 @@
                            probe-set probe-datom-field
                            collect-set collect-datom-field collect-merge-idx
                            merge-datoms n-find find-source const-vals
-                           result-list max-n)
+                           result-list max-n cancel)
 
         :card-many-merge
         (let [merge-cursors #?(:clj (when use-cursors?
@@ -1440,7 +1513,7 @@
                                    probe-set probe-datom-field
                                    collect-set collect-datom-field collect-merge-idx
                                    merge-datoms n-find find-source const-vals
-                                   result-list max-n n-merges merge-ctx))
+                                   result-list max-n n-merges merge-ctx cancel))
 
         :sorted-merge
         #?(:clj
@@ -1466,7 +1539,8 @@
                                    (object-array [sorted-cursor sorted-order
                                                   sorted-attrs-long sorted-attrs-obj
                                                   merge-v-ground merge-v-vals
-                                                  merge-check-scan-v merge-check-scan-tx])))
+                                                  merge-check-scan-v merge-check-scan-tx])
+                                   cancel))
            :cljs nil)
 
         :per-cursor-merge
@@ -1485,7 +1559,9 @@
                                     merge-datoms n-find find-source const-vals
                                     result-list max-n n-merges
                                     (object-array [merge-attrs merge-v-ground merge-v-vals merge-anti merge-cursors
-                                                   merge-check-scan-v merge-check-scan-tx])))))
+                                                   merge-check-scan-v merge-check-scan-tx
+                                                   merge-optional merge-defaults])
+                                    cancel))))
 
     result-list))
 
@@ -1832,8 +1908,10 @@
    Supports single-group and multi-group (value join via hash-probe) plans.
    max-results: when non-nil, stop after collecting this many results (for offset+limit).
    consts: map of var-sym → constant value for scalar :in bindings.
+   cancel: optional IDeref/Volatile; when its value is truthy the query
+     raises :datahike/canceled at the next check point.
    Returns the HashSet, or nil if the plan can't be executed directly."
-  [plan db find-vars max-results consts]
+  [plan db find-vars max-results consts cancel]
   (let [ops (:ops plan)
         temporal (temporal-info db)]
     (when (and (not (:has-passthrough? plan))
@@ -1868,7 +1946,8 @@
             (execute-group-direct db scan-op merge-ops g-emit consts
                                   result-list nil 0 nil 0 -1
                                   max-results
-                                  :temporal temporal :pipeline (:pipeline g))
+                                  :temporal temporal :pipeline (:pipeline g)
+                                  :cancel cancel)
             (when (seq g-attached)
               (apply-attached-preds result-list g-attached
                                     (vec (or (:output-vars g) (:vars g)))
@@ -1920,7 +1999,8 @@
                                               max-results
                                               :temporal temporal
                                               :scan-estimate (:estimated-card g)
-                                              :pipeline (:pipeline g))
+                                              :pipeline (:pipeline g)
+                                              :cancel cancel)
                         ;; Apply consumer attached-preds (if any)
                         (when (seq c-attached)
                           (apply-attached-preds result-list c-attached c-all-vars c-all-vars consts))
@@ -2001,7 +2081,8 @@
                         ;; Execute producer with all vars
                           (execute-group-direct db p-scan-op p-merge-ops p-all-vars consts
                                                 result-list nil 0 nil 0 -1 nil
-                                                :temporal temporal :pipeline (:pipeline g))
+                                                :temporal temporal :pipeline (:pipeline g)
+                                                :cancel cancel)
                         ;; Apply producer attached-preds
                           (when (seq p-attached)
                             (let [var-idx (into {} (map-indexed (fn [i v] [v i])) p-all-vars)]
@@ -2032,7 +2113,8 @@
                                                 (int (or (:producer-datom-field collect-field-info) 0))
                                                 (int (or (:producer-merge-idx collect-field-info) -1))
                                                 nil
-                                                :temporal temporal :pipeline (:pipeline g))
+                                                :temporal temporal :pipeline (:pipeline g)
+                                                :cancel cancel)
                           (recur (inc gi)
                                  (if collect-set
                                    (assoc probe-sets gi collect-set)
@@ -2122,8 +2204,9 @@
    instead of a HashSet. This bridges the gap: queries that need aggregates,
    pull, :with, or other post-processing still get the fused scan speed
    instead of the slow per-clause Relation pipeline.
+   cancel: optional IDeref; see execute-plan-direct.
    Returns nil if the plan can't be fused."
-  [plan db]
+  [plan db cancel]
   (let [ops (:ops plan)]
     (when (and (not (:has-passthrough? plan))
                ;; direct-rel only handles pure group plans — no predicates/functions
@@ -2145,7 +2228,8 @@
             (let [ti (temporal-info db)]
               (execute-group-direct db scan-op merge-ops all-vars nil
                                     result-list nil 0 nil 0 -1 nil
-                                    :temporal ti :pipeline (:pipeline g)))
+                                    :temporal ti :pipeline (:pipeline g)
+                                    :cancel cancel))
             ;; Apply attached predicates (group-level filters from Step 4c)
             (when-let [attached (seq (:attached-preds g))]
               (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-vars)]
@@ -2180,7 +2264,8 @@
 (defn- execute-fused-scan-rel
   "Execute an entity-group as a fused scan, returning a Relation."
   [db scan-op merge-ops context]
-  (let [{:keys [clause index pushdown-preds]} scan-op
+  (let [cancel (:cancel context)
+        {:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         resolved-a (when (and (some? a) (not (symbol? a))) (resolve-attr db a))
         resolved-e (when (and (some? e) (not (symbol? e)) (number? e)) #?(:clj (long e) :cljs e))
@@ -2337,16 +2422,28 @@
                               (let [^Datom d (pss-lookup-ge eavt-pss (datom eid ra vgv tx0))
                                     check-v? (aget merge-check-scan-v mi)
                                     check-tx? (aget merge-check-scan-tx mi)
-                                    found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))]
-                                (if anti?
+                                    found? (and d (merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d))
+                                    merge-op (nth merge-ops mi)
+                                    optional? (:optional? merge-op)]
+                                (cond
+                                  anti?
                                   (when (not found?)
                                     (process-merges scan-d eid (inc mi) tuple))
-                                  (when found?
-                                    (process-merges scan-d eid (inc mi)
-                                                    (cond-> tuple
-                                                      has-v-var? (conj (.-v d))
-                                                      has-tx-var? (conj (.-tx d)))))))))))]
+
+                                  found?
+                                  (process-merges scan-d eid (inc mi)
+                                                  (cond-> tuple
+                                                    has-v-var? (conj (.-v d))
+                                                    has-tx-var? (conj (.-tx d))))
+
+                                  ;; Optional merge (get-else): produce default value on miss
+                                  optional?
+                                  (process-merges scan-d eid (inc mi)
+                                                  (cond-> tuple
+                                                    has-v-var? (conj (:default-value merge-op))
+                                                    has-tx-var? (conj 0)))))))))]
                 (run! (fn [^Datom scan-d]
+                        (check-cancel! cancel)
                         (when (or (nil? entity-filter)
                                   #?(:clj (es/entity-bitset-contains? entity-filter (.-e scan-d))
                                      :cljs true))
@@ -3049,7 +3146,8 @@
              idx 0]
         (if (>= idx (count (:ops plan)))
           ctx
-          (let [op (nth (:ops plan) idx)
+          (let [_ (check-cancel! (:cancel ctx))
+                op (nth (:ops plan) idx)
                 estimated-card (:estimated-card op)
                 ;; Resolve the db for this op — may differ from default $ for multi-source queries
                 op-db (if-let [src (:source op)]
@@ -3140,7 +3238,7 @@
                                     (replan-fn plan (+ idx (dec consumed)) actual-card op-db)
                                     plan)]
                         (recur ctx' plan' (long (+ idx consumed))))
-                      (let [new-rel (execute-pattern-scan op-db op)
+                      (let [new-rel (execute-pattern-scan op-db op (:cancel ctx))
                             ctx' (binding [rel/*implicit-source* op-db
                                            rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
                                    (update ctx :rels rel/collapse-rels new-rel))
@@ -3215,8 +3313,9 @@
      agg-specs:  [[agg-op col-keyword] ...] — e.g. [[:avg :salary] [:count]]
 
    find-elements: parsed find elements (Variable, Aggregate)
+   cancel: optional IDeref; see execute-plan-direct.
    plan, db: as usual"
-     [plan db find-elements aggregate-fn]
+     [plan db find-elements aggregate-fn cancel]
      (let [ops (:ops plan)]
        (when (and (not (:has-passthrough? plan))
                   (seq ops)
@@ -3235,7 +3334,15 @@
                result-list (make-result-list 4000)]
            (execute-group-direct db scan-op merge-ops all-vars nil
                                  result-list nil 0 nil 0 -1 nil
-                                 :pipeline (:pipeline g))
+                                 :pipeline (:pipeline g)
+                                 :cancel cancel)
+           ;; Apply attached predicates (post-scan filters from pushdown)
+           ;; These are predicates that were attached to the group during planning
+           ;; but not pushed into index bounds — they filter result tuples.
+           (when-let [attached (seq (:attached-preds g))]
+             (apply-attached-preds result-list attached
+                                   (vec (or (:output-vars g) (:vars g)))
+                                   all-vars nil))
            (let [n (.size ^java.util.ArrayList result-list)]
              (when (pos? n)
                (let [attrs (into {} (map-indexed (fn [i v] [v i]) all-vars))

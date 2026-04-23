@@ -69,8 +69,13 @@
 
 ;; Records
 
-(defrecord Context [rels sources rules consts settings])
-(defrecord StatContext [rels sources rules consts stats settings])
+;; `cancel`: optional clojure.lang.Volatile holding a boolean. When truthy,
+;; query execution raises :datahike/canceled at the next check point. `nil`
+;; means no cancellation (zero cost in the hot path). Protocol adapters
+;; (pgwire, etc.) map :datahike/canceled to their own error codes at the
+;; boundary — datahike core stays protocol-agnostic.
+(defrecord Context [rels sources rules consts settings cancel])
+(defrecord StatContext [rels sources rules consts stats settings cancel])
 
 ;; Relation record is defined in datahike.query.relation
 ;; Imported via :refer [->Relation] and (:import [datahike.query.relation Relation])
@@ -91,7 +96,7 @@
                      (log/warn :datahike/query-input-ignored {:query query}))
                    (:args query-input))
                arg-inputs)
-        extra-ks [:offset :limit :order-by :stats? :settings]]
+        extra-ks [:offset :limit :order-by :stats? :settings :cancel]]
     (cond-> {:query (apply dissoc query extra-ks)
              :args args}
       (map? query-input)
@@ -2674,7 +2679,7 @@
   #?(:clj
      (let [{:keys [query args]} (normalize-q-input query inputs)
            {:keys [qfind qin]} (memoized-parse-query query)
-           context-in (-> (Context. [] {} {} {} default-settings)
+           context-in (-> (Context. [] {} {} {} default-settings nil)
                           (resolve-ins qin args))
            db (get (:sources context-in) '$)
            bound-vars (context-bound-vars context-in)
@@ -2893,8 +2898,15 @@
                                                          (when (contains? indexed-attrs a)
                                                            [:= (attr-col-key a) (if (keyword? v-ground) (str v-ground) v-ground)]))))
                                                    sub-ops))
-                         ;; WHERE: translate predicates on covered columns
-                         pred-ops (filter #(= :predicate (:op %)) (:ops plan))
+                         ;; WHERE: translate predicates on covered columns.
+                         ;; Collect both top-level predicate ops AND attached-preds
+                         ;; on scan/entity-group ops (predicates that were attached
+                         ;; during pushdown and are no longer standalone ops).
+                         pred-ops (into (vec (filter #(= :predicate (:op %)) (:ops plan)))
+                                        (mapcat (fn [op]
+                                                  (when-let [ap (:attached-preds op)]
+                                                    (filter #(= :predicate (:op %)) ap)))
+                                                (:ops plan)))
                          where-predicates (vec (keep (fn [pred-op]
                                                        (let [fn-sym (:fn-sym pred-op)
                                                              stratum-op (get pred-sym->stratum-op fn-sym)
@@ -2955,7 +2967,7 @@
    (defn- try-columnar-aggregate
      "Path 2: Aggregate via PSS scan + column extraction → stratum.
       Returns result tuples or nil if not applicable."
-     [plan db find-elements]
+     [plan db find-elements cancel]
      (try
        (let [agg-ops (vec (keep (fn [fe]
                                   (when (instance? Aggregate fe)
@@ -2967,7 +2979,8 @@
                (let [exec-col-agg (requiring-resolve 'datahike.query.execute/execute-columnar-aggregate)]
                  (exec-col-agg plan db find-elements
                                (fn [column-map group-keys agg-specs]
-                                 (col-agg-fn column-map group-keys agg-specs find-elements))))))))
+                                 (col-agg-fn column-map group-keys agg-specs find-elements))
+                               cancel))))))
        (catch Exception e
          (log/debug "columnar-aggregate not applicable:" (.getMessage e))
          nil))))
@@ -3011,7 +3024,7 @@
       (let [exec-direct #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct)
                            :cljs execute/execute-plan-direct)
             find-var-syms (mapv (fn [^Variable el] (.-symbol el)) (:elements qfind))]
-        (exec-direct plan db find-var-syms nil (:consts context-in))))))
+        (exec-direct plan db find-var-syms nil (:consts context-in) (:cancel context-in))))))
 
 (defn- post-process-result
   "Shared post-processing pipeline for both planned-relation and legacy paths.
@@ -3031,7 +3044,7 @@
           (comp (if offset (drop offset) identity)
                 (if (and limit (pos? limit)) (take limit) identity)))
     stats?                                        (#(-> context-out
-                                                        (dissoc :rels :sources :settings)
+                                                        (dissoc :rels :sources :settings :cancel)
                                                         (assoc :ret % :query query)))))
 
 (defn- execute-planned-relation
@@ -3042,7 +3055,7 @@
    stats? qreturnmaps]
   (let [exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
                            :cljs execute/execute-plan-direct-rel)
-        fused-rel (try (exec-direct-rel plan db)
+        fused-rel (try (exec-direct-rel plan db (:cancel context-in))
                        (catch #?(:clj Exception :cljs :default) e
                          (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
                          nil))
@@ -3090,14 +3103,14 @@
     (post-process-result deduped context-in context-out query qfind find-elements
                          result-arity order-spec offset limit stats? qreturnmaps)))
 
-(defn- raw-q* [{:keys [query args offset limit order-by stats? settings] :as _query-map}]
+(defn- raw-q* [{:keys [query args offset limit order-by stats? settings cancel] :as _query-map}]
   (let [t0 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
         settings (merge default-settings settings)
         {:keys [qfind qwith qreturnmaps qin]} (memoized-parse-query query)
         t1 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
         context-in (-> (if stats?
-                         (StatContext. [] {} {} {} [] settings)
-                         (Context. [] {} {} {} settings))
+                         (StatContext. [] {} {} {} [] settings cancel)
+                         (Context. [] {} {} {} settings cancel))
                        (resolve-ins qin args))
         t2 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
 
@@ -3172,7 +3185,7 @@
                   columnar-result
                   (when columnar-eligible?
                     #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
-                                (try-columnar-aggregate plan db find-elements))
+                                (try-columnar-aggregate plan db find-elements (:cancel context-in)))
                        :cljs nil))
                   tc (when *profile?* #?(:clj (System/nanoTime) :cljs 0))]
               (if columnar-result
@@ -3237,7 +3250,7 @@
                (let [find-elements (dpip/find-elements qfind)]
                  (when (and (some #(instance? Aggregate %) find-elements)
                             (not (some #(instance? Pull %) find-elements)))
-                   (let [context-in (-> (Context. [] {} {} {} (merge default-settings nil))
+                   (let [context-in (-> (Context. [] {} {} {} (merge default-settings nil) nil)
                                         (resolve-ins qin args))
                          clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                          bound-vars (context-bound-vars context-in)

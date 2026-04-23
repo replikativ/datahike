@@ -35,23 +35,25 @@
        (not (analyze/free-var? (:e ci)))
        (contains? rules (:e ci))))
 
+(defn- blank-var?
+  "Blank/anonymous Datalog variable — a symbol whose name starts with `_`.
+   Each occurrence should get its own group so patterns don't accidentally
+   share an entity."
+  [x]
+  (and (symbol? x)
+       #?(:clj  (.startsWith (name x) "_")
+          :cljs (= "_" (subs (name x) 0 1)))))
+
 (defn- entity-group-key
-  "Grouping key for scans: [entity-var source].
-   Blank/anonymous vars (_ prefix) each get a unique group."
+  "Grouping key for scans: [entity-var source]. Blank/anonymous vars
+   each get a unique group. Works with both LScan and LOptionalScan
+   since both expose :e and :source via keyword access."
   [scan blank-counter]
-  (let [e-var (.-e ^datahike.query.ir.LScan scan)]
-    (cond
-      (analyze/free-var? e-var)
-      [e-var (.-source ^datahike.query.ir.LScan scan)]
-
-      (and (symbol? e-var)
-           #?(:clj  (.startsWith (name e-var) "_")
-              :cljs (= "_" (subs (name e-var) 0 1))))
-      [(symbol (str "_anon_" (swap! blank-counter inc)))
-       (.-source ^datahike.query.ir.LScan scan)]
-
-      :else
-      [e-var (.-source ^datahike.query.ir.LScan scan)])))
+  (let [e-var  (:e scan)
+        source (:source scan)]
+    (if (blank-var? e-var)
+      [(symbol (str "_anon_" (swap! blank-counter inc))) source]
+      [e-var source])))
 
 ;; ---------------------------------------------------------------------------
 ;; NOT → anti-scan folding
@@ -132,11 +134,38 @@
                   (update acc :filters conj
                           (ir/->LFilter (:clause ci) (:fn-sym ci) (:args ci) (:vars ci)))
 
-                  ;; Function binding → LBind
+                  ;; Function binding → LBind (or LOptionalScan for get-else)
                   :function
-                  (update acc :binds conj
-                          (ir/->LBind (:clause ci) (:fn-sym ci) (:args ci)
-                                      (:binding ci) (:vars ci)))
+                  (if (and (= 'get-else (:fn-sym ci))
+                           ;; Preserve legacy `get-else` semantics: a nil
+                           ;; default is rejected at runtime with
+                           ;; "get-else: nil default value is not supported".
+                           ;; Fall through to LBind so that check still fires.
+                           (some? (nth (:args ci) 3 nil)))
+                    ;; Recognize get-else as an optional scan:
+                    ;; [(get-else $ ?e :attr default) ?v]
+                    ;; args = ($ ?e :attr default), binding = ?v
+                    (let [args (:args ci)
+                          e-var (second args)
+                          attr (nth args 2)
+                          default-val (nth args 3)
+                          bind-var (:binding ci)
+                          scan-vars (cond-> #{bind-var}
+                                      (and (symbol? e-var)
+                                           (analyze/free-var? e-var))
+                                      (conj e-var))]
+                      (update acc :scans conj
+                              (ir/->LOptionalScan
+                               [e-var attr bind-var]  ;; synthetic clause
+                               scan-vars
+                               e-var attr bind-var nil ;; e a v tx
+                               nil                     ;; source
+                               default-val             ;; default value
+                               bind-var)))             ;; binding var
+                    ;; Regular function → LBind
+                    (update acc :binds conj
+                            (ir/->LBind (:clause ci) (:fn-sym ci) (:args ci)
+                                        (:binding ci) (:vars ci))))
 
                   ;; NOT → collect for anti-merge folding
                   :not
@@ -220,8 +249,8 @@
           (fn [[[e-var source] group-scans]]
             (let [anti-entries (get foldable-nots [e-var source])
                   anti-scans (mapv :anti-scan anti-entries)
-                  all-vars (into (into #{} (mapcat #(.-vars ^datahike.query.ir.LScan %)) group-scans)
-                                 (mapcat #(.-vars ^datahike.query.ir.LScan %)) anti-scans)]
+                  all-vars (into (into #{} (mapcat :vars) group-scans)
+                                 (mapcat :vars) anti-scans)]
               (if (and (= 1 (count group-scans)) (empty? anti-scans))
                 ;; Single scan, no anti-merges → standalone LScan
                 (first group-scans)
