@@ -982,7 +982,7 @@
                                    (if (and merge-optional (aget merge-optional mi))
                                      ;; Optional: create synthetic datom with default value
                                      (do (aset merge-datoms mi
-                                                (datom eid ra (aget merge-defaults mi) tx0))
+                                               (datom eid ra (aget merge-defaults mi) tx0))
                                          (recur (unchecked-inc-int mi) true))
                                      ;; Regular: short-circuit (skip entity)
                                      (recur (unchecked-inc-int mi) false)))))))]

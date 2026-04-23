@@ -112,26 +112,26 @@
   (is (= #{[10]}
          (d/q '[:find ?a
                 :where [?e :age ?a]
-                       (or-join [?a] [(= ?a 10)])]
+                (or-join [?a] [(= ?a 10)])]
               @test-db))
       "or-join with single predicate branch")
   (is (= #{[10] [20]}
          (d/q '[:find ?a
                 :where [?e :age ?a]
-                       (or-join [?a] [(= ?a 10)] [(= ?a 20)])]
+                (or-join [?a] [(= ?a 10)] [(= ?a 20)])]
               @test-db))
       "or-join with two predicate branches")
   (is (= #{[10]}
          (d/q '[:find ?a
                 :where [?e :age ?a]
-                       (or [(= ?a 10)])]
+                (or [(= ?a 10)])]
               @test-db))
       "or with single predicate branch")
   ;; NOT wrapping predicate-only or-join
   (is (= #{[20]}
          (d/q '[:find ?a
                 :where [?e :age ?a]
-                       (not (or-join [?a] [(= ?a 10)]))]
+                (not (or-join [?a] [(= ?a 10)]))]
               @test-db))
       "not wrapping predicate-only or-join"))
 
@@ -149,11 +149,11 @@
     (is (= #{[2 20]}
            (d/q '[:find ?i ?k
                   :where [?e :t/i ?i]
-                         (or-join [?i ?k]
-                                  (and [?e2 :j/i ?i] [?e2 :j/k ?k])
-                                  (and (not-join [?i] [?e2 :j/i ?i])
-                                       [(ground -1) ?k]))
-                         [(= ?k 20)]]
+                  (or-join [?i ?k]
+                           (and [?e2 :j/i ?i] [?e2 :j/k ?k])
+                           (and (not-join [?i] [?e2 :j/i ?i])
+                                [(ground -1) ?k]))
+                  [(= ?k 20)]]
                 db))
         "predicate on or-join output var filters correctly")))
 

@@ -103,18 +103,18 @@
                       (empty? bound-vars) :scan
                       :else :hash)]
     [(cond-> {:op :pattern-scan
-               :clause pattern
-               :index index
-               :schema-info schema-info
-               :pushdown-preds effective-preds
-               :estimated-card est
-               :join-method join-method
-               :vars (:vars pattern-info)
-               :e-ground (when e? e)
-               :v-ground (when v? v)}
+              :clause pattern
+              :index index
+              :schema-info schema-info
+              :pushdown-preds effective-preds
+              :estimated-card est
+              :join-method join-method
+              :vars (:vars pattern-info)
+              :e-ground (when e? e)
+              :v-ground (when v? v)}
         ;; Propagate optional flag for get-else-derived scans
-        (:optional? pattern-info)
-        (assoc :optional? true :default-value (:default-value pattern-info)))
+       (:optional? pattern-info)
+       (assoc :optional? true :default-value (:default-value pattern-info)))
      (when (seq effective-preds)
        (into #{} (map :pred-clause) effective-preds))]))
 

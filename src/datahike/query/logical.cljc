@@ -151,9 +151,9 @@
                           default-val (nth args 3)
                           bind-var (:binding ci)
                           scan-vars (cond-> #{bind-var}
-                                     (and (symbol? e-var)
-                                          (analyze/free-var? e-var))
-                                     (conj e-var))]
+                                      (and (symbol? e-var)
+                                           (analyze/free-var? e-var))
+                                      (conj e-var))]
                       (update acc :scans conj
                               (ir/->LOptionalScan
                                [e-var attr bind-var]  ;; synthetic clause
