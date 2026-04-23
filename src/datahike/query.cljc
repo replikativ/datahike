@@ -70,8 +70,10 @@
 ;; Records
 
 ;; `cancel`: optional clojure.lang.Volatile holding a boolean. When truthy,
-;; query execution raises :datahike/canceled (SQLSTATE 57014) at the next
-;; check point. `nil` means no cancellation (zero cost in the hot path).
+;; query execution raises :datahike/canceled at the next check point. `nil`
+;; means no cancellation (zero cost in the hot path). Protocol adapters
+;; (pgwire, etc.) map :datahike/canceled to their own error codes at the
+;; boundary — datahike core stays protocol-agnostic.
 (defrecord Context [rels sources rules consts settings cancel])
 (defrecord StatContext [rels sources rules consts stats settings cancel])
 

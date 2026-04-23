@@ -52,7 +52,6 @@
 
 (defn- cancel-exception? [e]
   (and (instance? clojure.lang.ExceptionInfo e)
-       (= "57014" (:sqlstate (ex-data e)))
        (true? (:datahike/canceled (ex-data e)))))
 
 (deftest cancel-nil-is-free
@@ -71,7 +70,7 @@
         (is (= r1 r3))))))
 
 (deftest preset-cancel-raises-fast
-  (testing "pre-set cancel flag raises 57014 at first check point"
+  (testing "pre-set cancel flag raises :datahike/canceled at first check point"
     (binding [q/*force-legacy* false]
       (let [db (d/db *conn*)
             thrown (try

@@ -38,8 +38,11 @@
 ;;
 ;; `cancel` is an optional IDeref (typically a Volatile) threaded through the
 ;; query context. When its stored value is truthy, the next `check-cancel!`
-;; throws an ex-info with :sqlstate "57014" (PostgreSQL query_canceled) and
-;; :datahike/canceled true.
+;; throws an ex-info with :datahike/canceled true.
+;;
+;; Datahike itself is protocol-agnostic — the raised ex-info carries
+;; :datahike/canceled only. Adapter layers (pgwire, client drivers) map
+;; this to their own error codes at the boundary.
 ;;
 ;; Cost model: when `cancel` is nil (non-pgwire callers), the nil guard
 ;; short-circuits before any deref — a single ifnull + predicted-not-taken
@@ -60,14 +63,12 @@
     `(when-let [c# ~cancel]
        (when (cljs.core/deref c#)
          (throw (ex-info "query canceled"
-                         {:sqlstate "57014"
-                          :datahike/canceled true}))))
+                         {:datahike/canceled true}))))
     ;; CLJ expansion — direct .deref via IDeref hint
     `(when-let [^clojure.lang.IDeref c# ~cancel]
        (when (.deref c#)
          (throw (ex-info "query canceled"
-                         {:sqlstate "57014"
-                          :datahike/canceled true}))))))
+                         {:datahike/canceled true}))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cross-platform helpers
@@ -1908,7 +1909,7 @@
    max-results: when non-nil, stop after collecting this many results (for offset+limit).
    consts: map of var-sym → constant value for scalar :in bindings.
    cancel: optional IDeref/Volatile; when its value is truthy the query
-     raises :datahike/canceled (SQLSTATE 57014) at the next check point.
+     raises :datahike/canceled at the next check point.
    Returns the HashSet, or nil if the plan can't be executed directly."
   [plan db find-vars max-results consts cancel]
   (let [ops (:ops plan)
