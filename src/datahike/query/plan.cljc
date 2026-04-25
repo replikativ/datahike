@@ -372,14 +372,31 @@
                 true (conj (ir/->PEmitTuple 0)))]
     (ir/->PPipeline (vec steps) fused-path use-cursors? (boolean attr-refs?))))
 
+(defn- args-free-vars
+  "Walk an :args list recursively, collecting every free variable that
+   appears anywhere inside. Mirrors `analyze/extract-vars`, which is
+   already the recursive contract for `:vars` on every clause type.
+
+   Why recurse: SQL translators (and any other producer of nested
+   boolean / arithmetic expressions) emit clauses like
+       [(and (= ?x ?p) (some? ?y)) ?out]
+   The :args here are seq forms, not symbols. A flat top-level
+   `(filter free-var?)` returns #{}, so the planner thinks the op has
+   no inputs and orders it before its producers — leaving the legacy
+   bind-by-fn path to fail with nil ctx until the next iteration.
+   The legacy engine is fine with nested expressions because it walks
+   them at runtime via `interpret-form`; the planner just has to
+   recognise the same shape during ordering."
+  [args]
+  (into #{} (mapcat analyze/extract-vars) args))
+
 (defn- op-input-vars
   "Return only the *input* vars of an op — vars it consumes, not vars it produces.
    For :function ops, output vars (bound by the function) are excluded.
    For all other ops, :vars is already the set of input vars."
   [op]
   (if (= :function (:op op))
-    ;; Input vars are the free variables in :args
-    (into #{} (filter analyze/free-var?) (:args op))
+    (args-free-vars (:args op))
     (:vars op)))
 
 (defn post-op-direct-eligible?
@@ -771,7 +788,10 @@
     (if (every? #(contains? bound-vars %) (:vars op)) 0 max-cost)
 
     :function
-    (let [input-vars (into #{} (filter analyze/free-var?) (:args op))]
+    ;; Use args-free-vars (recursive) so nested expressions like
+    ;; (and (= ?x 1) (not ?y)) correctly report ?x and ?y as inputs
+    ;; instead of an empty set. See args-free-vars docstring.
+    (let [input-vars (args-free-vars (:args op))]
       (if (every? #(contains? bound-vars %) input-vars) 1 max-cost))
 
     :external-engine
@@ -783,7 +803,7 @@
           (or (:estimated-card op) 100)
           max-cost))
       ;; Filter/retrieval: check args for free var deps
-      (let [input-vars (into #{} (filter analyze/free-var?) (:args op))]
+      (let [input-vars (args-free-vars (:args op))]
         (if (every? #(contains? bound-vars %) input-vars)
           (or (:estimated-card op) 100)
           max-cost)))

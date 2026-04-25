@@ -3249,11 +3249,36 @@
                                     plan)]
                         (recur ctx' plan' (inc idx)))))))
 
+              ;; Why `(or next-ctx ctx)` instead of `next-ctx`:
+              ;; legacy/filter-by-pred and legacy/bind-by-fn return nil
+              ;; when not all of the clause's argument vars are bound
+              ;; yet — the legacy interpreter's main loop catches this
+              ;; with a "retry-later" pass (see `resolve-clauses` in
+              ;; query.cljc), but the planner here processes ops in a
+              ;; single linear pass. Without the `or`, the next iter
+              ;; sees ctx = nil, every subsequent op reads :consts /
+              ;; :sources / :rels off nil, and any :in-bound function
+              ;; (e.g. a fn passed in as `?my-fn`) fails to resolve via
+              ;; `context-resolve-val` and raises "Unknown function".
+              ;;
+              ;; Falling back to the original ctx is safe: when the
+              ;; clause genuinely couldn't bind anything, the relations
+              ;; stay unchanged and downstream ops see exactly the same
+              ;; state they would have without the (deferred) clause.
+              ;; Repro: any d/q with a fn in :in plus an unrelated
+              ;; predicate / function clause whose arg isn't yet bound
+              ;; from a prior op.
               :predicate
-              (recur (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred)) ctx (:clause op)) plan (inc idx))
+              (let [next-ctx (#?(:clj legacy/filter-by-pred
+                                 :cljs (rel/get-legacy-fn :filter-by-pred))
+                              ctx (:clause op))]
+                (recur (or next-ctx ctx) plan (inc idx)))
 
               :function
-              (recur (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx (:clause op)) plan (inc idx))
+              (let [next-ctx (#?(:clj legacy/bind-by-fn
+                                 :cljs (rel/get-legacy-fn :bind-by-fn))
+                              ctx (:clause op))]
+                (recur (or next-ctx ctx) plan (inc idx)))
 
               :or (recur (execute-or op-db op ctx) plan (inc idx))
               :or-join (recur (execute-or-join op-db op ctx) plan (inc idx))
