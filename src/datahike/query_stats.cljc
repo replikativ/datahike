@@ -17,17 +17,22 @@
                (:rels context))})
 
 (defn update-ctx-with-stats
-  "update-fn must expect [context] as argument"
+  "update-fn must expect [context] as argument.
+   Returns nil when update-fn returns nil — that is the iterative
+   resolver's defer signal (datahike.tools/resolve-clauses re-queues
+   the clause for the next pass). Without the nil propagation, stats
+   collection would silently keep a half-built map and confuse retries."
   [context clause update-fn]
   (if (:stats context)
-    (let [{:keys [res t]} (dt/timed #(update-fn context))
-          clause-stats (merge (get-stats res)
-                              {:clause clause
-                               :t t}
-                              (:tmp-stats res))]
-      (-> res
-          (update :stats conj clause-stats)
-          (dissoc :tmp-stats)))
+    (let [{:keys [res t]} (dt/timed #(update-fn context))]
+      (when res
+        (let [clause-stats (merge (get-stats res)
+                                  {:clause clause
+                                   :t t}
+                                  (:tmp-stats res))]
+          (-> res
+              (update :stats conj clause-stats)
+              (dissoc :tmp-stats)))))
     (update-fn context)))
 
 (defn extend-stat

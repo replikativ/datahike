@@ -176,31 +176,19 @@
     (shift-in #{[4 3] [3 3] [4 4]} [0 1] ref-e0)))
 
 (deftest test-insufficient-bindings
-  (if datahike.test.core-test/compiled-engine?
-    ;; Compiled engine reorders NOT after its bindings — reorderable cases are valid queries
-    (do
-      (testing "reorderable NOT — compiled engine handles correctly"
-        (is (set? (d/q '[:find ?e :where (not [?e :mname "Ivan"]) [?e :mname]] test-db))))
-      (testing "NOT-JOIN with inner vars bound within body"
-        (is (set? (d/q '[:find ?e :where [?e :mname]
-                         (not-join [?e] (not [1 :age ?a]) [?e :age ?a])]
-                       test-db)))))
-    ;; Legacy engine requires bindings before NOT
-    (are [q msg] (thrown-with-msg? Throwable msg
-                                   (d/q (into '[:find ?e :where] q)
-                                        test-db))
-      '[(not [?e :mname "Ivan"])
-        [?e :mname]]
-      #"Insufficient bindings: none of #\{\?e\} is bound"
+  ;; Both engines now accept NOT before its binder — see
+  ;; datahike.test.query-not-test for the rationale (legacy engine's
+  ;; iterative resolver defers and retries NOT/predicate clauses).
+  (testing "reorderable NOT — both engines handle correctly"
+    (is (set? (d/q '[:find ?e :where (not [?e :mname "Ivan"]) [?e :mname]] test-db))))
+  (testing "NOT-JOIN with inner vars bound within body"
+    (is (set? (d/q '[:find ?e :where [?e :mname]
+                     (not-join [?e] (not [1 :age ?a]) [?e :age ?a])]
+                   test-db))))
 
-      '[[?e :mname]
-        (not-join [?e]
-                  (not [1 :age ?a])
-                  [?e :age ?a])]
-      #"Insufficient bindings: none of #\{\?a\} is bound"))
-
-  ;; Both engines: truly unbound vars must throw
+  ;; Truly unbound vars still error — message changes from
+  ;; "Insufficient bindings" to "Cannot resolve any more clauses".
   (testing "truly unbound vars throw"
-    (is (thrown-with-msg? Throwable #"Insufficient bindings"
+    (is (thrown-with-msg? Throwable #"Cannot resolve any more clauses|Insufficient bindings"
                           (d/q '[:find ?e :where [?e :mname] (not [?a :mname "Ivan"])]
                                test-db)))))

@@ -172,32 +172,74 @@
     #{[4 3] [3 3] [4 4]}))
 
 (deftest test-insufficient-bindings
-  (if datahike.test.core-test/compiled-engine?
-    ;; Compiled engine reorders NOT after its bindings — these are valid queries
-    (do
-      (testing "reorderable NOT — compiled engine handles correctly"
-        (is (= #{[3] [4]}
-               (d/q '[:find ?e :where (not [?e :name "Ivan"]) [?e :name]] @test-db))))
-      (testing "NOT-JOIN with inner vars bound within body"
-        (is (= #{[1] [3] [5]}
-               (d/q '[:find ?e :where [?e :name]
-                      (not-join [?e] (not [1 :age ?a]) [?e :age ?a])]
-                    @test-db)))))
-    ;; Legacy engine requires bindings before NOT
-    (are [q msg] (thrown-with-msg? Throwable msg
-                                   (d/q (into '[:find ?e :where] (quote q)) @test-db))
-      [(not [?e :name "Ivan"])
-       [?e :name]]
-      #"Insufficient bindings: none of #\{\?e\} is bound"
+  ;; Both engines now accept NOT before its binder — the legacy engine's
+  ;; iterative resolver defers an unresolvable NOT and retries it after
+  ;; binders fire (datahike/tools.cljc:resolve-clauses), matching the
+  ;; compiled engine's plan-time topological reordering. Previously the
+  ;; legacy engine raised "Insufficient bindings" eagerly.
+  (testing "reorderable NOT — both engines handle correctly"
+    (is (= #{[3] [4]}
+           (d/q '[:find ?e :where (not [?e :name "Ivan"]) [?e :name]] @test-db))))
+  (testing "NOT-JOIN with inner vars bound within body"
+    (is (= #{[1] [3] [5]}
+           (d/q '[:find ?e :where [?e :name]
+                  (not-join [?e] (not [1 :age ?a]) [?e :age ?a])]
+                @test-db))))
 
-      [[?e :name]
-       (not-join [?e]
-                 (not [1 :age ?a])
-                 [?e :age ?a])]
-      #"Insufficient bindings: none of #\{\?a\} is bound"))
-
-  ;; Both engines: truly unbound vars must throw
+  ;; Truly unbound vars must still error — the iterative resolver gives
+  ;; up after a fixed-point pass with no progress, raising
+  ;; "Cannot resolve any more clauses" with the failed-clauses list.
   (testing "truly unbound vars throw"
-    (is (thrown-with-msg? Throwable #"Insufficient bindings"
+    (is (thrown-with-msg? Throwable #"Cannot resolve any more clauses|Insufficient bindings"
                           (d/q '[:find ?e :where [?e :name] (not [?a :name "Ivan"])]
                                @test-db)))))
+
+(deftest test-deferred-clause-binding
+  ;; Regression test for a planner gap: clauses that gate on bound vars
+  ;; (predicates, NOT, NOT-JOIN, OR-JOIN-with-required-vars) used to
+  ;; raise "Insufficient bindings" on the first pass instead of deferring
+  ;; like bind-by-fn does. When their inputs traced back to a deferred
+  ;; binder (e.g. a get-else whose entity var was itself bound by a
+  ;; later pattern), the eager raise masked perfectly resolvable queries.
+  ;;
+  ;; The user-facing repro lives in pgwire-datahike: a SQL `WHERE
+  ;; format_type(a.atttypid, a.atttypmod) NOT IN (…)` translated to:
+  ;;   [?e :pg_attribute/db-row-exists true]      ; row marker — last
+  ;;   [(get-else $ ?e :…/atttypid :__null__) ?a] ; deferred until ?e bound
+  ;;   [(get-else $ ?e :…/atttypmod :__null__) ?b]
+  ;;   [(?fmt ?a ?b) ?v1]                          ; deferred until ?a ?b bound
+  ;;   (not [(contains? #{…} ?v1)])               ; deferred until ?v1 bound
+  ;; Old planner: raised on the (not …) before the chain could fire.
+  ;; New: each clause defers, the resolver iterates, all clauses resolve.
+  (let [db (d/db-with (db/empty-db)
+                      [{:db/id 1 :name "Ivan"}
+                       {:db/id 2 :name "Oleg"}
+                       {:db/id 3 :name "Ivan"}])]
+    (testing "predicate before its binder defers"
+      (is (= #{[1] [3]}
+             (d/q '[:find ?e
+                    :where [(= ?n "Ivan")]
+                    [?e :name ?n]]
+                  db))))
+
+    (testing "NOT before its binder defers"
+      (is (= #{[2]}
+             (d/q '[:find ?e
+                    :where (not [?e :name "Ivan"])
+                    [?e :name]]
+                  db))))
+
+    (testing "fn-call deferred chain feeding (not [pred])"
+      ;; ?upper resolves only after both the binder and the deferred
+      ;; fn-call run; the NOT clause must wait through the cascade.
+      ;; Tests both engines:
+      ;;  - Legacy: iterative resolver retries the deferred clauses.
+      ;;  - New planner: relies on lower.cljc's NOT validation reading
+      ;;    :function ops' :binding (was :bind-vars — wrong key, never set).
+      (is (= #{[2]}
+             (d/q '[:find ?e
+                    :in $ ?up
+                    :where (not [(contains? #{"IVAN"} ?upper)])
+                    [(?up ?n) ?upper]
+                    [?e :name ?n]]
+                  db (fn [^String s] (.toUpperCase s))))))))

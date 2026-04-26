@@ -397,19 +397,14 @@
                                     [(= ?age 37)]]}
                    :args [db]})
              #{[2] [3]}))
-      (if core-test/compiled-engine?
-        ;; Compiled engine reorders predicate after its binding
-        (is (= #{[2] [3]}
-               (d/q {:query '{:find [?e]
-                              :where [[(= ?age 37)]
-                                      [?e :age ?age]]}
-                     :args [db]})))
-        ;; Legacy engine requires correct ordering
-        (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?age\} not bound"
-                              (d/q {:query '{:find [?e]
-                                             :where [[(= ?age 37)]
-                                                     [?e :age ?age]]}
-                                    :args [db]})))))))
+      ;; Both engines handle predicate-before-binding now — the legacy
+      ;; engine's iterative resolver defers the predicate and retries
+      ;; after the pattern binds ?age, matching the compiled engine.
+      (is (= #{[2] [3]}
+             (d/q {:query '{:find [?e]
+                            :where [[(= ?age 37)]
+                                    [?e :age ?age]]}
+                   :args [db]}))))))
 
 (deftest test-zeros-in-pattern
   (let [cfg {:store {:backend :memory
@@ -991,3 +986,34 @@ we query all (parent, child) pairs."
   (let [f (dq/basic-index-selector 5)]
     (is (= [10 7] ((f [1 3]) [9 10 4 7 1234])))
     (is (= [7 10] ((f [3 1]) [9 10 4 7 1234])))))
+
+(deftest test-find-arity-greater-than-32
+  ;; Regression for the executor's row-materialization path: it used
+  ;; `clojure.lang.PersistentVector/adopt` to wrap the result Object[]
+  ;; without copying. That call is only correct for arrays of length
+  ;; ≤ 32 — for longer arrays it builds a corrupt PersistentVector
+  ;; (cnt > 32 with root = EMPTY_NODE), which silently NPEs on the
+  ;; first `seq`/`nth`/`take`. Exercised in production via Odoo's
+  ;; res_partner SELECT with 34 columns.
+  (let [n 35
+        attrs (vec (for [i (range n)]
+                     (keyword "t" (str "c" i))))
+        db (-> (db/empty-db)
+               (d/db-with (vec (for [a attrs]
+                                 {:db/ident a :db/valueType :db.type/long :db/cardinality :db.cardinality/one})))
+               (d/db-with [(into {} (map-indexed (fn [i a] [a i]) attrs))]))
+        q `{:find ~(vec (map #(symbol (str "?v" %)) (range n)))
+            :where ~(vec (map-indexed
+                          (fn [i a] ['?e a (symbol (str "?v" i))])
+                          attrs))}
+        result (d/q q db)
+        row (first result)]
+    (is (= n (count row)))
+    (testing "row is a valid PersistentVector — seq/nth/take all succeed"
+      (is (= (vec (range n)) (vec (seq row))))
+      (is (= 0 (nth row 0)))
+      (is (= 17 (nth row 17)))
+      (is (= 34 (nth row 34)))
+      (is (= (vec (range n)) (vec (take 100 row)))))
+    (testing "round-trip through (vec (take k row)) — the pgwire pattern"
+      (is (= (vec (range 30)) (vec (take 30 row)))))))

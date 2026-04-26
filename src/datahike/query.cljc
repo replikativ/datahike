@@ -1227,9 +1227,22 @@
          :rels (->> (:rels context)
                     (keep #(limit-rel % vars)))))
 
+(defn- ctx-bound-vars [context]
+  (set (concat (mapcat #(keys (:attrs %)) (:rels context))
+               (keys (:consts context)))))
+
+(defn all-bound?
+  "True iff every var in `vars` is currently bound in `context`."
+  [context vars]
+  (set/subset? (set vars) (ctx-bound-vars context)))
+
+(defn some-bound?
+  "True iff at least one var in `vars` is currently bound in `context`."
+  [context vars]
+  (boolean (seq (set/intersection (set vars) (ctx-bound-vars context)))))
+
 (defn check-all-bound [context vars form]
-  (let [bound (set (concat (mapcat #(keys (:attrs %)) (:rels context))
-                           (keys (:consts context))))]
+  (let [bound (ctx-bound-vars context)]
     (when-not (set/subset? vars bound)
       (let [missing (set/difference (set vars) bound)]
         (log/raise "Insufficient bindings: " missing " not bound in " form
@@ -1238,12 +1251,10 @@
                     :vars missing})))))
 
 (defn check-some-bound [context vars form]
-  (let [bound (set (concat (mapcat #(keys (:attrs %)) (:rels context))
-                           (keys (:consts context))))]
-    (when (empty? (set/intersection vars bound))
-      (log/raise "Insufficient bindings: none of " vars " is bound in " form
-                 {:error :query/where
-                  :form form}))))
+  (when (empty? (set/intersection vars (ctx-bound-vars context)))
+    (log/raise "Insufficient bindings: none of " vars " is bound in " form
+               {:error :query/where
+                :form form})))
 
 (defn resolve-context [context clauses]
   (dt/resolve-clauses resolve-clause context clauses))
@@ -1894,8 +1905,14 @@
   ([context clause orig-clause]
    (condp looks-like? clause
      [[symbol? '*]] ;; predicate [(pred ?a ?b ?c)]
-     (do (check-all-bound context (identity (filter free-var? (first clause))) orig-clause)
-         (filter-by-pred context clause))
+     ;; Defer if any input var isn't bound yet — the iterative resolver
+     ;; (datahike.tools/resolve-clauses) will retry once binders fire.
+     ;; If the var is never bound, the resolver raises "Cannot resolve any
+     ;; more clauses" with the full pending list, which is more useful
+     ;; than a misleading single-clause error from this site.
+     (let [vars (filter free-var? (first clause))]
+       (when (all-bound? context vars)
+         (filter-by-pred context clause)))
 
      [[symbol? '*] '_] ;; function [(fn ?a ?b) ?res]
      (bind-by-fn context clause)
@@ -1918,8 +1935,8 @@
 
      '[or-join [[*] *] *] ;; (or-join [[req-vars] vars] ...)
      (let [[_ [req-vars & vars] & branches] clause]
-       (check-all-bound context req-vars orig-clause)
-       (recur context (list* 'or-join (concat req-vars vars) branches) clause))
+       (when (all-bound? context req-vars)
+         (recur context (list* 'or-join (concat req-vars vars) branches) clause)))
 
      '[or-join [*] *] ;; (or-join [vars] ...)
      ;; TODO required vars
@@ -1953,34 +1970,34 @@
 
      '[not *] ;; (not ...)
      (let [[_ & clauses] clause
-           negation-vars (collect-vars clauses)
-           _ (check-some-bound context negation-vars orig-clause)
-           join-rel (reduce hash-join (:rels context))
-           negation-context (-> context
-                                (assoc :rels [join-rel])
-                                (assoc :stats [])
-                                (resolve-context clauses))
-           negation-join-rel (reduce hash-join (:rels negation-context))
-           negation (subtract-rel join-rel negation-join-rel)]
-       (cond-> (assoc context :rels [negation])
-         (:stats context) (assoc :tmp-stats {:type :not
-                                             :branches (:stats negation-context)})))
+           negation-vars (collect-vars clauses)]
+       (when (some-bound? context negation-vars)
+         (let [join-rel (reduce hash-join (:rels context))
+               negation-context (-> context
+                                    (assoc :rels [join-rel])
+                                    (assoc :stats [])
+                                    (resolve-context clauses))
+               negation-join-rel (reduce hash-join (:rels negation-context))
+               negation (subtract-rel join-rel negation-join-rel)]
+           (cond-> (assoc context :rels [negation])
+             (:stats context) (assoc :tmp-stats {:type :not
+                                                 :branches (:stats negation-context)})))))
 
      '[not-join [*] *] ;; (not-join [vars] ...)
-     (let [[_ vars & clauses] clause
-           _ (check-all-bound context vars orig-clause)
-           join-rel (reduce hash-join (:rels context))
-           negation-context (-> context
-                                (assoc :rels [join-rel])
-                                (assoc :stats [])
-                                (limit-context vars)
-                                (resolve-context clauses)
-                                (limit-context vars))
-           negation-join-rel (reduce hash-join (:rels negation-context))
-           negation (subtract-rel join-rel negation-join-rel)]
-       (cond-> (assoc context :rels [negation])
-         (:stats context) (assoc :tmp-stats {:type :not
-                                             :branches (:stats negation-context)})))
+     (let [[_ vars & clauses] clause]
+       (when (all-bound? context vars)
+         (let [join-rel (reduce hash-join (:rels context))
+               negation-context (-> context
+                                    (assoc :rels [join-rel])
+                                    (assoc :stats [])
+                                    (limit-context vars)
+                                    (resolve-context clauses)
+                                    (limit-context vars))
+               negation-join-rel (reduce hash-join (:rels negation-context))
+               negation (subtract-rel join-rel negation-join-rel)]
+           (cond-> (assoc context :rels [negation])
+             (:stats context) (assoc :tmp-stats {:type :not
+                                                 :branches (:stats negation-context)})))))
 
      '[*] ;; pattern
      (let [source rel/*implicit-source*

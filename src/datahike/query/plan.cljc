@@ -1397,7 +1397,15 @@
                                 :entity-group (into (:vars (:scan-op op))
                                                     (mapcat :vars (:merge-ops op)))
                                 :pattern-scan (:vars op)
-                                :function (into #{} (filter analyze/free-var?) (:bind-vars op))
+                                ;; plan-function-op stores the result var(s) in
+                                ;; :binding (scalar, tuple, list, or map). The
+                                ;; legacy `:bind-vars` key is never set —
+                                ;; reading it lost the result-var contribution
+                                ;; and falsely tripped the NOT validation when
+                                ;; a function-chain output was the only var
+                                ;; reaching a NOT clause. Mirror lower.cljc's
+                                ;; identical loop.
+                                :function (analyze/extract-vars (:binding op))
                                 nil))))))]
 
      {:ops ordered-ops

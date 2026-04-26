@@ -246,9 +246,27 @@
                    d)))))))))
 
 (defn- adopt-vector
-  "Create a PersistentVector from an object array without copying."
+  "Create a PersistentVector from an object array.
+
+   `clojure.lang.PersistentVector/adopt` is fast (zero-copy) but only
+   correct when `arr.length <= 32`. It constructs the vector with
+   `root = EMPTY_NODE` and the data in the tail, which is the
+   PersistentVector internal layout for short vectors. For arrays
+   longer than 32 the result is silently corrupt: `cnt > 32` but
+   `tailoff() = cnt-32 > 0`, and any `arrayFor(i)` for i < tailoff
+   walks `EMPTY_NODE.array` and NPEs on the first level.
+
+   Real-world repro: SELECT against a 33+-column table from pgwire
+   (Odoo's res_partner has 34 columns). The corrupt row crashes at
+   the first `seq`/`nth`/`take` with `Cannot read field \"array\"
+   because \"node\" is null`.
+
+   `LazilyPersistentVector/createOwning` does the right dispatch:
+   the cheap adopt for length ≤ 32, and `PersistentVector/create`
+   (transient-build, valid tree) for longer arrays. Still no copy
+   in the short path."
   [^objects arr]
-  #?(:clj  (clojure.lang.PersistentVector/adopt arr)
+  #?(:clj  (clojure.lang.LazilyPersistentVector/createOwning arr)
      :cljs (vec arr)))
 
 ;; ---------------------------------------------------------------------------

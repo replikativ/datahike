@@ -407,7 +407,24 @@
                      (filterv #(#{:entity-group :pattern-scan} (:op %)) ordered-ops))
 
         ;; ---------------------------------------------------------------
-        ;; Step 7: NOT binding validation
+        ;; Step 7: NOT binding validation.
+        ;; Walks the ordered ops in execution order, tracking which vars
+        ;; are bound after each op runs. NOT/NOT-JOIN must have at least
+        ;; one of its vars bound by a prior op (legacy semantics).
+        ;;
+        ;; The per-op contribution-set must mirror what the executor
+        ;; will actually bind:
+        ;;  - :entity-group → scan + merge vars
+        ;;  - :pattern-scan → pattern vars
+        ;;  - :function     → the result-binding var (`:binding` from
+        ;;                    plan-function-op). Predicates produce no
+        ;;                    new bindings; or/or-join handle their own
+        ;;                    binding internally.
+        ;; Earlier this case used `(:bind-vars op)` which plan-function-op
+        ;; never sets — function ops looked like they bound nothing, so
+        ;; any subsequent NOT/predicate whose only required var came from
+        ;; a function chain (e.g. `format_type(...)` feeding NOT IN) was
+        ;; falsely rejected with "Insufficient bindings".
         _ (loop [remaining ordered-ops
                  vars-so-far bound-vars]
             (when (seq remaining)
@@ -425,7 +442,7 @@
                                :entity-group (into (:vars (:scan-op op))
                                                    (mapcat :vars (:merge-ops op)))
                                :pattern-scan (:vars op)
-                               :function (into #{} (filter analyze/free-var?) (:bind-vars op))
+                               :function (analyze/extract-vars (:binding op))
                                nil))))))]
 
     {:ops ordered-ops
