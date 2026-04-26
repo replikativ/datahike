@@ -203,7 +203,11 @@
                                           [?e :age ?a])]
                              @test-db)))
 
-  (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?e\} not bound"
+  ;; or-join with required vars defers if those vars aren't bound.
+  ;; When no other clause can bind them, the iterative resolver raises
+  ;; "Cannot resolve any more clauses" instead of the previous eager
+  ;; "Insufficient bindings" — same semantics, less misleading message.
+  (is (thrown-with-msg? Throwable #"Cannot resolve any more clauses|Insufficient bindings"
                         (d/q '[:find ?e
                                :where (or-join [[?e]]
                                                [?e :name "Ivan"])]

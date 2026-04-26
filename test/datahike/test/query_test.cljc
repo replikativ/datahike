@@ -397,19 +397,14 @@
                                     [(= ?age 37)]]}
                    :args [db]})
              #{[2] [3]}))
-      (if core-test/compiled-engine?
-        ;; Compiled engine reorders predicate after its binding
-        (is (= #{[2] [3]}
-               (d/q {:query '{:find [?e]
-                              :where [[(= ?age 37)]
-                                      [?e :age ?age]]}
-                     :args [db]})))
-        ;; Legacy engine requires correct ordering
-        (is (thrown-with-msg? Throwable #"Insufficient bindings: #\{\?age\} not bound"
-                              (d/q {:query '{:find [?e]
-                                             :where [[(= ?age 37)]
-                                                     [?e :age ?age]]}
-                                    :args [db]})))))))
+      ;; Both engines handle predicate-before-binding now — the legacy
+      ;; engine's iterative resolver defers the predicate and retries
+      ;; after the pattern binds ?age, matching the compiled engine.
+      (is (= #{[2] [3]}
+             (d/q {:query '{:find [?e]
+                            :where [[(= ?age 37)]
+                                    [?e :age ?age]]}
+                   :args [db]}))))))
 
 (deftest test-zeros-in-pattern
   (let [cfg {:store {:backend :memory
