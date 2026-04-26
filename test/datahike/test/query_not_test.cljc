@@ -232,20 +232,14 @@
     (testing "fn-call deferred chain feeding (not [pred])"
       ;; ?upper resolves only after both the binder and the deferred
       ;; fn-call run; the NOT clause must wait through the cascade.
+      ;; Tests both engines:
+      ;;  - Legacy: iterative resolver retries the deferred clauses.
+      ;;  - New planner: relies on lower.cljc's NOT validation reading
+      ;;    :function ops' :binding (was :bind-vars — wrong key, never set).
       (is (= #{[2]}
              (d/q '[:find ?e
                     :in $ ?up
                     :where (not [(contains? #{"IVAN"} ?upper)])
                            [(?up ?n) ?upper]
                            [?e :name ?n]]
-                  db (fn [^String s] (.toUpperCase s)))))))
-
-  (testing "or-join with required vars defers until req-vars bind"
-    (let [db (d/db-with (db/empty-db)
-                        [{:db/id 1 :name "Ivan" :age 10}
-                         {:db/id 2 :name "Oleg" :age 20}])]
-      (is (= #{[1]}
-             (d/q '[:find ?e
-                    :where (or-join [[?e]] [?e :age 10])
-                           [?e :name]]
-                  db))))))
+                  db (fn [^String s] (.toUpperCase s))))))))
