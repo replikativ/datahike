@@ -219,14 +219,14 @@
       (is (= #{[1] [3]}
              (d/q '[:find ?e
                     :where [(= ?n "Ivan")]
-                           [?e :name ?n]]
+                    [?e :name ?n]]
                   db))))
 
     (testing "NOT before its binder defers"
       (is (= #{[2]}
              (d/q '[:find ?e
                     :where (not [?e :name "Ivan"])
-                           [?e :name]]
+                    [?e :name]]
                   db))))
 
     (testing "fn-call deferred chain feeding (not [pred])"
@@ -240,6 +240,6 @@
              (d/q '[:find ?e
                     :in $ ?up
                     :where (not [(contains? #{"IVAN"} ?upper)])
-                           [(?up ?n) ?upper]
-                           [?e :name ?n]]
+                    [(?up ?n) ?upper]
+                    [?e :name ?n]]
                   db (fn [^String s] (.toUpperCase s))))))))
