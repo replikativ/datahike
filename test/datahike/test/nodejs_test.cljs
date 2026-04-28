@@ -5,7 +5,17 @@
             [konserve.core :as k]
             [konserve.node-filestore] ;; Register :file backend for Node.js
             [cljs.core.async :refer [go <!] :include-macros true]
-            [cljs.nodejs :as nodejs]))
+            [cljs.nodejs :as nodejs]
+            ;; Sibling test namespaces — included so `bb node-cljs-test`
+            ;; covers them too.
+            [datahike.test.cljs-pattern-scan-test]))
+
+;; Hook cljs.test's end-of-run callback so the Node process exits with
+;; status 0 only when all tests pass. The previous setup always exited
+;; 0 (via a fixed `(.exit js/process 0)` inside the last deftest's
+;; finally-clause), which silently masked failing tests in CI.
+(defmethod t/report [::t/default :end-run-tests] [m]
+  (.exit js/process (if (t/successful? m) 0 1)))
 
 (def fs (nodejs/require "fs"))
 (def path (nodejs/require "path"))
@@ -338,10 +348,8 @@
              (catch js/Error e
                (is false (str "Error in online-gc-multi-branch-safety-test: " (.-message e))))
              (finally
-               (done)
-               (js/process.nextTick
-                (fn []
-                  (.exit js/process 0))))))))
+               (done))))))
 
 (defn -main []
-  (t/run-tests 'datahike.test.nodejs-test))
+  (t/run-tests 'datahike.test.nodejs-test
+               'datahike.test.cljs-pattern-scan-test))
