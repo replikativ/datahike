@@ -1,4 +1,5 @@
-(ns datahike.db.interface)
+(ns datahike.db.interface
+  (:require [replikativ.logging :as log]))
 
 ;; Database Protocols
 
@@ -117,3 +118,10 @@
 (defprotocol IHistory
   (-time-point [db])
   (-origin [db]))
+
+(defn ident-for [db a-ref missing-strategy]
+  (or (-ident-for db a-ref)
+      (case missing-strategy
+        :error-on-missing (throw (ex-info "Attribute ref not found"
+                                          {:ref a-ref}))
+        :allow-missing nil)))

@@ -118,7 +118,7 @@
           (assoc :recursion rec)))))
 
 (defn db-ident-and-id [db x]
-  (let [{:keys [ident ref]} (dbu/attr-info db x)]
+  (let [{:keys [ident ref]} (dbu/attr-info db x :allow-missing)]
     (if (dbu/ident-name? ident)
       {:db/id ref :db/ident ident}
       {:db/id ref})))
@@ -253,7 +253,7 @@
 (defn pull-wildcard-expand
   [db frame frames eid pattern]
   (let [datoms (group-by (fn [d] (if (:attribute-refs? (dbi/-config db))
-                                   (dbi/-ident-for db (.-a ^Datom d))
+                                   (dbi/ident-for db (.-a ^Datom d) :error-on-missing)
                                    (.-a ^Datom d)))
                          (dbi/datoms db :eavt [eid]))
         {:keys [attr recursion]} frame

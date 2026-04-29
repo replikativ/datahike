@@ -17,7 +17,7 @@
           :cljs [^boolean is-attr?]) [db attr property]
   (let [a-ident (if (and (:attribute-refs? (dbi/-config db))
                          (number? attr))
-                  (dbi/-ident-for db attr)
+                  (dbi/ident-for db attr :error-on-missing)
                   attr)]
     (contains? (dbi/-attrs-by db property) a-ident)))
 
@@ -159,12 +159,13 @@
 
 (defn attr-info
   "Returns identifier name and reference value of an attributes. Both values are identical for non-reference databases."
-  [db attr]
-  (if (attr-has-ref? db attr)
-    (if (number? attr)
-      {:ident (dbi/-ident-for db attr) :ref attr}
-      {:ident attr :ref (dbi/-ref-for db attr)})
-    {:ident attr :ref attr}))
+  ([db attr] (attr-info db attr :allow-missing))
+  ([db attr missing-strategy]
+   (if (attr-has-ref? db attr)
+     (if (number? attr)
+       {:ident (dbi/ident-for db attr missing-strategy) :ref attr}
+       {:ident attr :ref (dbi/-ref-for db attr)})
+     {:ident attr :ref attr})))
 
 (defn ident-name? [x]
   (or (keyword? x) (string? x)))
@@ -187,7 +188,7 @@
                  {:error :transact/schema :attribute a-ident :context at}))))
 
 (defn resolve-datom [db e a v t default-e default-tx]
-  (let [{a-ident :ident a-db :ref} (attr-info db a)]
+  (let [{a-ident :ident a-db :ref} (attr-info db a :allow-missing)]
     (when a-ident (validate-attr-ident a-ident (list 'resolve-datom 'db e a v t) db))
     (datom
      (or (entid-some db e) default-e)                       ;; e

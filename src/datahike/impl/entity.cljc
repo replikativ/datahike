@@ -197,7 +197,7 @@
   (reduce (fn [acc partition]
             (let [a-db (:a (first partition))
                   a-ident (if (:attribute-refs? (dbi/-config db))
-                            (dbi/-ident-for db a-db)
+                            (dbi/ident-for db a-db :error-on-missing)
                             a-db)]
               (assoc acc a-ident (entity-attr db a-ident partition))))
           {} (partition-by :a datoms)))
