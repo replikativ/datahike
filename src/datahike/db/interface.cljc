@@ -124,10 +124,4 @@
       (case missing-strategy
         :error-on-missing (throw (ex-info "Attribute ref not found"
                                           {:ref a-ref}))
-        ;; TODO: Occurrences of calls with :warn-on-missing should be
-        ;; considered a code smell and an indication that the logic at
-        ;; the call site is not clear and needs to be improved.
-        :warn-on-missing (do (log/warn :datahike/attribute-ref-not-found
-                                       {:ref a-ref})
-                             nil)
         :allow-missing nil)))
