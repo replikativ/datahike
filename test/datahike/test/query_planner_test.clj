@@ -103,7 +103,20 @@
 
   (testing "Equality predicate"
     (assert-engines-agree @test-db
-                          '[:find ?e ?a :where [?e :age ?a] [(= ?a 37)]])))
+                          '[:find ?e ?a :where [?e :age ?a] [(= ?a 37)]]))
+
+  (testing "not= predicate on AVET-indexed attribute — version 0 excluded"
+    ;; Regression: planner was consuming not= as a pushdown but silently dropping it,
+    ;; causing the predicate to be ignored and all values returned.
+    (let [db (d/db-with (db/empty-db {:version/id {:db/unique :db.unique/identity}})
+                        [{:version/id 0} {:version/id 1} {:version/id 2}])]
+      (assert-engines-agree db '[:find ?v :where [?e :version/id ?v] [(not= ?v 0)]])))
+
+  (testing "== predicate on AVET-indexed attribute — numeric equality"
+    ;; Regression: planner was consuming == as a pushdown but silently dropping it.
+    (let [db (d/db-with (db/empty-db {:version/id {:db/unique :db.unique/identity}})
+                        [{:version/id 0} {:version/id 1} {:version/id 2}])]
+      (assert-engines-agree db '[:find ?v :where [?e :version/id ?v] [(== ?v 1)]]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Phase 2: Value joins (Q5)

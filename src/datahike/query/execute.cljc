@@ -372,8 +372,13 @@
   (when (seq strict-preds)
     (fn [^Datom d]
       (let [dv (case (int datom-field-idx) 0 (.-e d) 1 (.-a d) 2 (.-v d) 3 (.-tx d))]
-        (every? (fn [{:keys [op const-val]}]
-                  (case op > (> (compare dv const-val) 0) < (< (compare dv const-val) 0) true))
+        (every? (fn [{:keys [op const-val] :as pred}]
+                  (case op
+                    > (> (compare dv const-val) 0)
+                    < (< (compare dv const-val) 0)
+                    not= (not= dv const-val)
+                    (throw (ex-info "Unhandled op in build-strict-filter — every op pushdown-to-bounds writes into :strict-preds must have a case arm here"
+                                    {:op op :pred pred}))))
                 strict-preds)))))
 
 (defn- compute-slice-bounds
