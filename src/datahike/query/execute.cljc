@@ -3238,16 +3238,33 @@
                 ;; Temporal/non-standard DB — fall back to per-clause legacy lookup.
                 ;; lookup-batch-search takes [source context orig-pattern resolved-pattern];
                 ;; passing clause twice is intentional (no resolution needed in fallback).
+                ;;
+                ;; Optional merges (LOptionalScan from get-else) require left-outer
+                ;; semantics with a default-on-miss. lookup-batch-search is inner-join,
+                ;; so we route optional merges through bind-by-fn (which evaluates
+                ;; -get-else per row, mirroring the legacy engine).
                 (let [scan-clause (:clause (:scan-op op))
-                      merge-clauses (mapv :clause
-                                          (remove :anti? (:merge-ops op)))
-                      anti-clauses (mapv :clause
-                                         (filter :anti? (:merge-ops op)))
-                      all-clauses (into [scan-clause] merge-clauses)
+                      all-merge-ops (:merge-ops op)
+                      regular-merge-clauses (mapv :clause
+                                                  (filter (fn [m] (not (or (:anti? m) (:optional? m))))
+                                                          all-merge-ops))
+                      optional-merge-ops (filterv :optional? all-merge-ops)
+                      anti-clauses (mapv :clause (filter :anti? all-merge-ops))
+                      all-clauses (into [scan-clause] regular-merge-clauses)
                       ctx' (binding [rel/*implicit-source* op-db]
                              (reduce (fn [c clause]
                                        (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db c clause clause))
                                      ctx all-clauses))
+                      ;; Optional merges via per-row bind-by-fn(get-else). Synthetic
+                      ;; clause is [e-var attr bind-var] (attr already resolved to eid
+                      ;; in :attribute-refs? mode by logical.cljc).
+                      ctx' (binding [rel/*implicit-source* op-db]
+                             (reduce (fn [c opt-merge]
+                                       (let [[e-var attr bind-var] (:clause opt-merge)
+                                             default-val (:default-value opt-merge)
+                                             fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
+                                         (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) c fn-clause)))
+                                     ctx' optional-merge-ops))
                       ;; Apply anti-merges: look up each anti clause and subtract its matches
                       ctx' (binding [rel/*implicit-source* op-db]
                              (reduce (fn [c anti-clause]
@@ -3276,8 +3293,20 @@
                   ;; Temporal/non-standard DB — use legacy lookup with search context.
                   ;; lookup-batch-search takes [source context orig-pattern resolved-pattern];
                   ;; passing clause twice — no resolution needed in fallback.
+                  ;; If this op is a standalone LOptionalScan-derived pattern-scan
+                  ;; (get-else where the entity isn't shared with another scan in
+                  ;; the same scope, e.g. `?e` only appears inside OR branches),
+                  ;; the legacy lookup-batch-search would inner-join and drop
+                  ;; entities lacking the attribute. Route through bind-by-fn for
+                  ;; left-outer-with-default semantics, matching the legacy
+                  ;; engine's behavior for [(get-else …) ?v].
                   (let [ctx' (binding [rel/*implicit-source* op-db]
-                               (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op)))]
+                               (if (:optional? op)
+                                 (let [[e-var attr bind-var] (:clause op)
+                                       default-val (:default-value op)
+                                       fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
+                                   (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx fn-clause))
+                                 (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op))))]
                     (recur ctx' plan (inc idx)))
                 ;; DB source — use fused scan or single pattern scan
                   (let [;; Check if next ops form an ad-hoc fusable group
