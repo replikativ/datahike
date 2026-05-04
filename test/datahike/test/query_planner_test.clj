@@ -659,3 +659,67 @@
       (is (= #{[4] [6]}
              (binding [q/*force-legacy* false] (d/q query db)))
           "Entities 4 and 6 match: both have val-a == val-b"))))
+
+;; ---------------------------------------------------------------------------
+;; get-else with :attribute-refs? on temporal DB (legacy lookup path)
+
+(deftest test-get-else-attribute-refs-on-as-of
+  ;; Regression: when :attribute-refs? is enabled, every other clause has its
+  ;; keyword attribute resolved to the attribute eid before the planner sees
+  ;; it (via resolve-pattern-lookup-refs). The function form
+  ;; [(get-else $ ?e :attr default) ?v] is classified as :function, so its
+  ;; inner :attr keyword was never visited by that resolution pass — the
+  ;; synthetic LOptionalScan clause carried a keyword while the surrounding
+  ;; merge-clauses carried eids. The fused entity-group execution path
+  ;; resolves keywords at runtime via build-merge-attrs, so the bug only
+  ;; manifested on the legacy (lookup-batch-search) path used by AsOfDB,
+  ;; SinceDB and other temporal wrappers, where the keyword-as-attribute
+  ;; matched nothing in the eid-keyed index → 0 datoms returned for the
+  ;; optional merge → the surrounding entity-group's relation collapsed to
+  ;; 0 tuples via inner-join, even for entities that *did* have the
+  ;; attribute populated.
+  ;;
+  ;; Reported by Jonas Östlund (jobtech-taxonomy-api), where show-versions
+  ;; queries against (d/get-db cfg :next) returned empty result sets.
+  ;;
+  ;; This test only exercises the resolution fix: every entity in the data
+  ;; has the optional attribute populated, so the inner-join path that the
+  ;; legacy lookup still uses for optional merges does not drop any rows.
+  ;; The "default value on miss" semantics of get-else on the temporal path
+  ;; are a separate bug (the legacy path treats every merge — optional or
+  ;; not — as an inner-join) and are out of scope here.
+  (let [cfg {:store {:backend :memory
+                     :id (java.util.UUID/randomUUID)}
+             :attribute-refs? true
+             :keep-history? true
+             :schema-flexibility :write}
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        conn (d/connect cfg)
+        _ (d/transact conn
+                      [{:db/ident :concept/id :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                       {:db/ident :concept/type :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}
+                       {:db/ident :concept/legacy-id :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}])
+        _ (d/transact conn [{:concept/id "A" :concept/type "T"
+                             :concept/legacy-id "1384"}
+                            {:concept/id "B" :concept/type "T"
+                             :concept/legacy-id "5678"}])
+        ;; Drive both engines through an as-of DB so the :entity-group op
+        ;; falls into the legacy lookup-batch-search path. Without the fix,
+        ;; the LOptionalScan-derived merge clause keeps :concept/legacy-id
+        ;; as a keyword while the other merge clauses carry attribute eids,
+        ;; the AVET lookup finds nothing, and the planner returns #{}.
+        db (d/as-of @conn (java.util.Date.))
+        query '[:find ?id ?legacy
+                :in $ [?type ...]
+                :where [?c :concept/id ?id]
+                       [?c :concept/type ?type]
+                       [(get-else $ ?c :concept/legacy-id "missing") ?legacy]]]
+    (assert-engines-agree db query [["T"]])
+    (is (= #{["A" "1384"] ["B" "5678"]}
+           (binding [q/*force-legacy* false] (d/q query db ["T"])))
+        "Both concepts found via planner with the synthetic clause's keyword resolved.")
+    (d/release conn)))

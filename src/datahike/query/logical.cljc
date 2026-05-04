@@ -11,7 +11,8 @@
    are made here — those belong in the lowering pass (lower.cljc)."
   (:require
    [datahike.query.analyze :as analyze]
-   [datahike.query.ir :as ir]))
+   [datahike.query.ir :as ir]
+   [datahike.db.interface :as dbi]))
 
 #?(:clj (set! *warn-on-reflection* true))
 
@@ -145,9 +146,24 @@
                     ;; Recognize get-else as an optional scan:
                     ;; [(get-else $ ?e :attr default) ?v]
                     ;; args = ($ ?e :attr default), binding = ?v
+                    ;;
+                    ;; In :attribute-refs? mode every other data-pattern clause
+                    ;; has its keyword attribute resolved to the attribute eid by
+                    ;; resolve-pattern-lookup-refs before the planner sees it.
+                    ;; The function form [(get-else $ ?e :attr default) ?v] is
+                    ;; classified as :function, so its inner attr keyword is
+                    ;; never visited by that resolution pass — we must resolve
+                    ;; it here, otherwise the synthetic [?e attr ?v] clause
+                    ;; carries a keyword while merge-clauses around it carry
+                    ;; eids, and the index lookup returns 0 datoms (datoms are
+                    ;; stored with eid attributes in this mode).
                     (let [args (:args ci)
                           e-var (second args)
-                          attr (nth args 2)
+                          raw-attr (nth args 2)
+                          attr (if (and (keyword? raw-attr)
+                                        (:attribute-refs? (dbi/-config db)))
+                                 (dbi/-ref-for db raw-attr)
+                                 raw-attr)
                           default-val (nth args 3)
                           bind-var (:binding ci)
                           scan-vars (cond-> #{bind-var}
