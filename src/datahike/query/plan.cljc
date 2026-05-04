@@ -70,7 +70,12 @@
        =  (-> bounds
               (assoc :from-v const-val)
               (assoc :to-v const-val))
-       bounds))
+       == (-> bounds
+              (assoc :from-v const-val)
+              (assoc :to-v const-val))
+       not= (update bounds :strict-preds (fnil conj []) pred)
+       (throw (ex-info "Unhandled op in pushdown-to-bounds — every op in analyze/range-ops must have a case arm here"
+                       {:op op :pred pred}))))
    {:from-v nil :to-v nil}
    pushdown-preds))
 
