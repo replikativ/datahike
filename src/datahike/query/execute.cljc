@@ -1175,6 +1175,12 @@
         temporal-tx-filter (aget ^objects temporal-ctx 13)
         scan-added-val (aget ^objects temporal-ctx 14)
         origin-db (aget ^objects temporal-ctx 15)
+        ;; Optional merge arrays (added for get-else on temporal DBs).
+        ;; Nil-safe so callers built before this slot was added still work.
+        ^objects merge-optional (when (> (alength ^objects temporal-ctx) 16)
+                                  (aget ^objects temporal-ctx 16))
+        ^objects merge-defaults (when (> (alength ^objects temporal-ctx) 17)
+                                  (aget ^objects temporal-ctx 17))
         ^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -1252,9 +1258,16 @@
                                          found? (and d (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter))]
                                      (if anti?
                                        (when (not found?) (process-merges (inc mi)))
-                                       (when found?
-                                         (aset merge-datoms mi d)
-                                         (process-merges (inc mi)))))
+                                       (cond
+                                         found?
+                                         (do (aset merge-datoms mi d)
+                                             (process-merges (inc mi)))
+                                         ;; Optional merge (get-else): emit synthetic
+                                         ;; default-valued datom on miss.
+                                         (and merge-optional (aget merge-optional mi))
+                                         (do (aset merge-datoms mi
+                                                   (datom eid ra (aget merge-defaults mi) tx0))
+                                             (process-merges (inc mi))))))
                                  ;; Temporal card-one: for as-of/since, try direct lookupGE
                                  ;; on current EAVT (avoids lazy-seq merge overhead per entity).
                                    (if (and (not= temporal-type :historical) temporal-tx-filter)
@@ -1278,8 +1291,19 @@
                                                  (if anti? nil
                                                      (do (aset merge-datoms mi td)
                                                          (process-merges (inc mi))))
-                                                 (when anti? (process-merges (inc mi)))))
-                                             (when anti? (process-merges (inc mi)))))))
+                                                 (cond
+                                                   anti? (process-merges (inc mi))
+                                                   ;; Optional merge: emit default on miss
+                                                   (and merge-optional (aget merge-optional mi))
+                                                   (do (aset merge-datoms mi
+                                                             (datom eid ra (aget merge-defaults mi) tx0))
+                                                       (process-merges (inc mi))))))
+                                             (cond
+                                               anti? (process-merges (inc mi))
+                                               (and merge-optional (aget merge-optional mi))
+                                               (do (aset merge-datoms mi
+                                                         (datom eid ra (aget merge-defaults mi) tx0))
+                                                   (process-merges (inc mi))))))))
                                    ;; Historical: full temporal-merge-slice (needs all versions)
                                      (let [from-d (datom eid ra (when vg? vgv) tx0)
                                            to-d (datom eid ra (when vg? vgv) txmax)
@@ -1289,11 +1313,16 @@
                                        (if anti?
                                          (when (not-any? (fn [^Datom d] (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)) mslice)
                                            (process-merges (inc mi)))
-                                         (when-let [^Datom d (some (fn [^Datom d]
-                                                                     (when (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter) d))
-                                                                   mslice)]
-                                           (aset merge-datoms mi d)
-                                           (process-merges (inc mi)))))))))))]
+                                         (if-let [^Datom d (some (fn [^Datom d]
+                                                                   (when (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter) d))
+                                                                 mslice)]
+                                           (do (aset merge-datoms mi d)
+                                               (process-merges (inc mi)))
+                                           ;; Optional merge: emit default when no version matched
+                                           (when (and merge-optional (aget merge-optional mi))
+                                             (aset merge-datoms mi
+                                                   (datom eid ra (aget merge-defaults mi) tx0))
+                                             (process-merges (inc mi))))))))))))]
                    (process-merges 0)))))))
        :cljs
        (doseq [scan-d slice
@@ -1334,8 +1363,14 @@
                                    found? (and d (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter))]
                                (if anti?
                                  (when (not found?) (process-merges (inc mi)))
-                                 (when found?
-                                   (aset merge-datoms mi d) (process-merges (inc mi)))))))))]
+                                 (cond
+                                   found?
+                                   (do (aset merge-datoms mi d) (process-merges (inc mi)))
+                                   ;; Optional merge: emit synthetic default datom on miss
+                                   (and merge-optional (aget merge-optional mi))
+                                   (do (aset merge-datoms mi
+                                             (datom eid ra (aget merge-defaults mi) tx0))
+                                       (process-merges (inc mi))))))))))]
                (process-merges 0))))))))
 
 ;; ---------------------------------------------------------------------------
@@ -1515,7 +1550,8 @@
                                                merge-temporal-only merge-cursor-cache
                                                temporal-eavt-pss temporal-cursors
                                                temporal-type temporal-tx-filter
-                                               scan-added-val origin-db])
+                                               scan-added-val origin-db
+                                               merge-optional merge-defaults])
                                 cancel))
 
       ;; Non-temporal dispatch via fused-path keyword
