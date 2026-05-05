@@ -281,6 +281,18 @@
      :idx-ident idx-ident
      :engine-meta engine-meta
      :accepts-entity-filter? (:accepts-entity-filter? engine-meta false)
+     ;; The engine declares its binding requirements via the :input-vars
+     ;; key in its var metadata. Recognised values:
+     ;;   :all-bound  → every input arg must be bound (the safe default;
+     ;;                 matches stratum's three exposed engines, all of
+     ;;                 which need their referenced columns materialised
+     ;;                 before they can run).
+     ;;   :any-bound  → at least one input arg must be bound (for solvers
+     ;;                 that can work backwards from any known value).
+     ;;   nil         → fall back to :all-bound at op-cost time (strict
+     ;;                 default — engines that need looser semantics must
+     ;;                 declare them explicitly).
+     :input-vars-spec (:input-vars engine-meta)
      :estimated-card (or (:estimated-card cost) 100)}))
 
 (defn- function-binding-vars
@@ -903,79 +915,141 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Cost-based ordering for mixed ops (groups + predicates + functions + OR/NOT)
+;;
+;; The contract: each op type declares which vars MUST be bound for the op to
+;; run correctly at execute time. `op-required-vars` is the single source of
+;; truth — adding a new op type means extending this function. `op-cost` then
+;; uses it to decide whether an op is runnable (and at what cost) given the
+;; current bound-vars set.
+;;
+;; The split between "input" vars (must be bound) and "output" vars (produced
+;; by the op) was historically encoded ad-hoc per op type inside op-cost,
+;; which led to drift: e.g. `:external-engine` solver mode used `(some
+;; bound-vars op-vars)` while filter/retrieval used `(every? bound-vars
+;; input-args)`, even though both have the same fundamental need (input
+;; columns must be materialised before the engine can use them). Centralising
+;; the contract here makes it easy to audit and to extend.
 
 (def ^:private max-cost #?(:clj Long/MAX_VALUE :cljs (.-MAX_SAFE_INTEGER js/Number)))
 
-(defn op-cost [op bound-vars]
+(defn op-required-vars
+  "The set of vars that MUST be bound before `op` can execute correctly.
+
+   Returns a tuple [vars policy] where `policy` is one of:
+     :all     — every var in `vars` must be bound
+     :any     — at least one var in `vars` must be bound (used by external
+                engines that can solve from any known column)
+     :none    — op can run unconditionally (producer ops)
+
+   This is consumed by `op-cost`: returning :none means the op is always
+   runnable; :all/:any check `bound-vars` accordingly. `vars` is empty
+   when policy is :none.
+
+   Per op type (see also docstrings in plan-*-op constructors):
+
+     :entity-group, :pattern-scan
+       Producer; emits all its free-var positions. EXCEPT when
+       :optional? is set (LOptionalScan from get-else, which routes
+       through bind-by-fn at execute time and silently binds the e-var
+       to nil if it isn't yet in ctx.rels — see commit c8a11a0e).
+
+     :predicate
+       Pure filter; needs every var it references bound — there are no
+       outputs.
+
+     :function
+       Computes a value from `:args`, binds it to `:binding`. Inputs
+       are the free-var symbols inside :args, recursively.
+
+     :external-engine
+       Honours the `:input-vars` declaration on the engine's var
+       metadata (`:datahike/external-engine`). Stratum's three engines
+       all declare `:all-bound`. A nil/absent declaration falls back
+       to :all on input-args — the safe default. An engine that can
+       work backwards from any one column declares `:any-bound`.
+
+     :rule-lookup
+       Producer; reads from `:rule-accumulators` in ctx (populated by
+       the surrounding :recursive-rule fixpoint), so its dependency is
+       structural, not bound-vars-based.
+
+     :recursive-rule
+       Currently strict: every var in :vars (= all free call-args)
+       must be bound. This prevents the rule from running as a
+       pure producer. Loosening would require knowing per-rule which
+       call-args are inputs vs outputs, which requires rule-body
+       analysis — left for follow-up. Documented here for reference.
+
+     :or, :or-join
+       Branches collectively produce join-vars; we require AT LEAST
+       ONE join-var bound so the branches have some upstream
+       constraint to filter against. Stricter ('all bound') would
+       prevent the OR from running as a producer; looser ('none')
+       would risk Cartesian fan-out from the branches.
+
+     :not, :not-join
+       Anti-join; needs the WHOLE set of join-vars / referenced vars
+       bound so we can subtract from a fully-formed candidate set.
+
+     :passthrough, anything else
+       Unknown / fallback op — treated as un-runnable until it gets
+       a concrete contract."
+  [op]
   (case (:op op)
     (:entity-group :pattern-scan)
-    ;; Optional pattern-scans (LOptionalScan from get-else) need their
-    ;; entity var BOUND before they execute — at runtime the optional path
-    ;; goes through bind-by-fn(get-else), which evaluates per-row over
-    ;; ctx.rels. If the e-var is still free, get-else gets a nil entity
-    ;; and binds the default value with the e-var ALSO nil-bound in the
-    ;; resulting tuple. That nil propagates through subsequent ops as a
-    ;; sentinel "row" the planner thinks is real, producing
-    ;; all-nil-tuple rows in the find result. Source order normally
-    ;; guarantees the binder runs first; the cost-based reorder doesn't,
-    ;; so we have to encode the dependency: an :optional? scan's
-    ;; effective cost is max-cost (un-runnable) until its e-var is in
-    ;; bound-vars. Once bound, it costs the same as a regular pattern-scan.
     (if (and (:optional? op)
              (let [e (first (:clause op))]
-               (and (analyze/free-var? e)
-                    (not (contains? bound-vars e)))))
-      max-cost
-      (group-effective-card op))
+               (analyze/free-var? e)))
+      [#{(first (:clause op))} :all]
+      [#{} :none])
 
     :predicate
-    (if (every? #(contains? bound-vars %) (:vars op)) 0 max-cost)
+    [(set (:vars op)) :all]
 
     :function
-    ;; Use args-free-vars (recursive) so nested expressions like
-    ;; (and (= ?x 1) (not ?y)) correctly report ?x and ?y as inputs
-    ;; instead of an empty set. See args-free-vars docstring.
-    (let [input-vars (args-free-vars (:args op))]
-      (if (every? #(contains? bound-vars %) input-vars) 1 max-cost))
+    [(args-free-vars (:args op)) :all]
 
     :external-engine
-    (if (= :solver (:mode op))
-      ;; Solver mode needs populated context — require at least some of its
-      ;; vars to be bound first (shared vars come from entity-group patterns)
-      (let [op-vars (into #{} (filter analyze/free-var?) (:vars op))]
-        (if (some #(contains? bound-vars %) op-vars)
-          (or (:estimated-card op) 100)
-          max-cost))
-      ;; Filter/retrieval: check args for free var deps
-      (let [input-vars (args-free-vars (:args op))]
-        (if (every? #(contains? bound-vars %) input-vars)
-          (or (:estimated-card op) 100)
-          max-cost)))
+    (let [input-args (args-free-vars (:args op))
+          spec (:input-vars-spec op)]
+      (case spec
+        :any-bound [input-args :any]
+        ;; :all-bound and any unrecognised value default to strict.
+        ;; nil (no declaration) also defaults to strict — the safe
+        ;; assumption.
+        [input-args :all]))
 
     :rule-lookup
-    (or (:estimated-card op) 100)
+    [#{} :none]
 
-    ;; NOT/NOT-JOIN: require ALL referenced vars bound (negation needs full context)
-    (:not :not-join :recursive-rule)
-    (let [required (or (:join-vars op) (:vars op))]
-      (if (every? #(contains? bound-vars %) required)
-        (or (:estimated-card op) 100)
-        max-cost))
+    :recursive-rule
+    [(set (or (:join-vars op) (:vars op))) :all]
 
-    ;; OR/OR-JOIN: join-vars include both input vars (bound from outer context)
-    ;; and output vars (produced by branches). Only input vars need pre-binding.
-    ;; The branches handle unbound join-vars by producing them.
-    ;; execute-or-join's limited-ctx correctly projects to only the bound vars.
+    (:not :not-join)
+    [(set (or (:join-vars op) (:vars op))) :all]
+
     (:or :or-join)
-    (let [join-vars (or (:join-vars op) (:vars op))
-          bound-join (clojure.set/intersection join-vars bound-vars)]
-      (if (seq bound-join)
-        ;; At least one join-var is bound — branches have some constraint
-        (or (:estimated-card op) 100)
-        ;; No join-vars bound yet — can't execute until at least one is bound
-        max-cost))
+    [(set (or (:join-vars op) (:vars op))) :any]
 
-    max-cost))
+    ;; Unknown / passthrough — gate forever (caller must decide what to do).
+    [#{} :all]))
+
+(defn op-cost [op bound-vars]
+  (let [[required policy] (op-required-vars op)
+        ready? (case policy
+                 :none true
+                 :all  (or (empty? required)
+                           (every? #(contains? bound-vars %) required))
+                 :any  (some #(contains? bound-vars %) required))]
+    (if-not ready?
+      max-cost
+      ;; Per-op cost when ready: producers use cardinality, filters cost 0,
+      ;; functions cost 1, others use :estimated-card or fall back to 100.
+      (case (:op op)
+        (:entity-group :pattern-scan) (group-effective-card op)
+        :predicate                    0
+        :function                     1
+        (or (:estimated-card op) 100)))))
 
 (defn order-plan-ops
   "Order plan operations using DP for entity-group ordering and greedy
