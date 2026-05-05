@@ -3244,17 +3244,42 @@
                 ;; so we route optional merges through bind-by-fn (which evaluates
                 ;; -get-else per row, mirroring the legacy engine).
                 (let [scan-clause (:clause (:scan-op op))
+                      scan-evar (first scan-clause)
                       all-merge-ops (:merge-ops op)
                       regular-merge-clauses (mapv :clause
                                                   (filter (fn [m] (not (or (:anti? m) (:optional? m))))
                                                           all-merge-ops))
                       optional-merge-ops (filterv :optional? all-merge-ops)
                       anti-clauses (mapv :clause (filter :anti? all-merge-ops))
-                      all-clauses (into [scan-clause] regular-merge-clauses)
+                      ;; Run scan with full ctx so upstream constants/constraints
+                      ;; (e.g. const-bound safe-vars, lookup-refs in v) feed into
+                      ;; the scan's substitution.
+                      ctx-after-scan (binding [rel/*implicit-source* op-db]
+                                       (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
+                                        op-db ctx scan-clause scan-clause))
+                      ;; For each merge clause, trim ctx to rels connected to the
+                      ;; scan entity-var. Independent upstream rels (no shared var
+                      ;; with scan-derived rels) would otherwise cause
+                      ;; lookup-batch-search to substitute the cartesian of all
+                      ;; bound rels — a blowup when upstream and scan-rel are
+                      ;; both large but disjoint. After lookup we re-add the
+                      ;; aside rels; collapse-rels hash-joins on shared vars
+                      ;; (e.g. the merge-introduced v-var) — semantically
+                      ;; equivalent to cartesian-then-filter, but avoids the
+                      ;; quadratic substitution.
+                      contains-scan-evar? (fn [r] (contains? (set (keys (:attrs r))) scan-evar))
                       ctx' (binding [rel/*implicit-source* op-db]
                              (reduce (fn [c clause]
-                                       (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db c clause clause))
-                                     ctx all-clauses))
+                                       (let [{scan-rels true other-rels false}
+                                             (group-by contains-scan-evar? (:rels c))
+                                             trimmed-ctx (assoc c :rels (vec scan-rels))
+                                             after-merge (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
+                                                          op-db trimmed-ctx clause clause)
+                                             final-rels (reduce rel/collapse-rels
+                                                                (:rels after-merge)
+                                                                (or other-rels []))]
+                                         (assoc c :rels final-rels)))
+                                     ctx-after-scan regular-merge-clauses))
                       ;; Optional merges via per-row bind-by-fn(get-else). Synthetic
                       ;; clause is [e-var attr bind-var] (attr already resolved to eid
                       ;; in :attribute-refs? mode by logical.cljc).
