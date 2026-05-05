@@ -1,5 +1,7 @@
 (ns datahike.test.chess-model-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test.check.clojure-test :refer [defspec]]
+            [clojure.test.check.generators :as gen]
+            [clojure.test.check.properties :as prop]
             [datahike.api :as d]
             [datahike.test.model.rng :as rng])
   (:import [java.util UUID]))
@@ -58,15 +60,15 @@
              (rng/rand-nth-rng rng X)
              (rng/rand-nth-rng rng Y)
              (rng/random-branch rng
-               nil
-               (let [all-ids (vec (into #{} (keep (comp :piece/id val)) board))
-                     default-next-id (inc (apply max entity-id-start all-ids))]
-                 {:piece/type (rng/rand-nth-rng rng [:rook :knight :bishop :pawn :queen :king])
-                  :piece/id (if (seq all-ids)
-                              (rng/random-branch rng
-                                default-next-id
-                                (rng/rand-nth-rng rng all-ids))
-                              default-next-id)}))))
+                                nil
+                                (let [all-ids (vec (into #{} (keep (comp :piece/id val)) board))
+                                      default-next-id (inc (apply max entity-id-start all-ids))]
+                                  {:piece/type (rng/rand-nth-rng rng [:rook :knight :bishop :pawn :queen :king])
+                                   :piece/id (if (seq all-ids)
+                                               (rng/random-branch rng
+                                                                  default-next-id
+                                                                  (rng/rand-nth-rng rng all-ids))
+                                               default-next-id)}))))
 
 (defn step-board-n [board rng n]
   (if (<= n 0)
@@ -116,36 +118,41 @@
         (d/datoms db :eavt)))
 
 (defn check-history [history db]
-  (doseq [[tx-id expected-datoms] (take-last 3 history)]
-    (let [historic-db (d/as-of db tx-id)
-          from-db (set (db-datoms historic-db))
-          from-model (set expected-datoms)]
-      (is (= from-model from-db)
-          (str "History mismatch at tx " tx-id)))))
+  (every? (fn [[tx-id expected-datoms]]
+            (let [historic-db (d/as-of db tx-id)
+                  from-db (set (db-datoms historic-db))
+                  from-model (set expected-datoms)]
+              (= from-model from-db)))
+          (take-last 3 history)))
 
-(deftest test-chess-board-sync
-  (testing "database stays in sync with board model through random mutations"
-    (let [rng (rng/create 42)
-          conn (create-chess-db)
-          iterations 20]
-      (loop [i 0
-             board empty-board
-             prev-datoms []
-             history []]
-        (if (< i iterations)
-          (let [board' (step-board-n board rng 4)
-                new-datoms (board-datoms board')
-                tx (tx-data prev-datoms new-datoms)
-                tx-id (when (seq tx)
-                        (:max-tx (:db-after (d/transact conn {:tx-data tx}))))
-                db (d/db conn)
-                from-db (set (db-datoms db))
-                from-board (set new-datoms)]
-            (is (= from-board from-db)
-                (str "Mismatch at iteration " i))
-            (let [history' (if tx-id
-                             (conj history [tx-id new-datoms])
-                             history)]
-              (check-history history' db)
-              (recur (inc i) board' new-datoms history')))
-          history)))))
+(def seed-gen (gen/choose 0 9223372036854775807))
+
+(defn chess-sync-prop []
+  (prop/for-all [seed seed-gen]
+                (let [rng (rng/create seed)
+                      conn (create-chess-db)
+                      iterations 20]
+                  (loop [i 0
+                         board empty-board
+                         prev-datoms []
+                         history []]
+                    (if (>= i iterations)
+                      true
+                      (let [board' (step-board-n board rng 4)
+                            new-datoms (board-datoms board')
+                            tx (tx-data prev-datoms new-datoms)
+                            tx-id (when (seq tx)
+                                    (:max-tx (:db-after (d/transact conn {:tx-data tx}))))
+                            db (d/db conn)
+                            from-db (set (db-datoms db))
+                            from-board (set new-datoms)
+                            history' (if tx-id
+                                       (conj history [tx-id new-datoms])
+                                       history)]
+                        (if (and (= from-board from-db)
+                                 (check-history history' db))
+                          (recur (inc i) board' new-datoms history')
+                          false)))))))
+
+(defspec chess-board-sync 30
+  (chess-sync-prop))
