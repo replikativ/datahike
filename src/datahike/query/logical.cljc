@@ -295,14 +295,24 @@
                   anti-scans (mapv :anti-scan anti-entries)
                   all-vars (into (into #{} (mapcat :vars) group-scans)
                                  (mapcat :vars) anti-scans)
-                  min-idx (apply min Long/MAX_VALUE
-                                 (keep #(:source-idx (meta %)) group-scans))]
+                  min-idx (let [idxs (keep #(:source-idx (meta %)) group-scans)]
+                            (if (seq idxs)
+                              (apply min idxs)
+                              ;; Sentinel: scans without :source-idx (e.g.
+                              ;; from AND-flattening sub-plans) keep their
+                              ;; existing meta — the LEntityJoin then has
+                              ;; no source-idx and lower.cljc treats it as
+                              ;; "process last" via the JS-portable
+                              ;; max-source-idx fallback there.
+                              nil))]
               (if (and (= 1 (count group-scans)) (empty? anti-scans))
                 ;; Single scan, no anti-merges → standalone LScan
                 (first group-scans)
-                ;; Multi-scan group → LEntityJoin
-                (vary-meta (ir/->LEntityJoin e-var (vec group-scans) anti-scans all-vars source)
-                           assoc :source-idx min-idx))))
+                ;; Multi-scan group → LEntityJoin (only tag if we have a
+                ;; concrete index; an absent tag is handled by lower.cljc's
+                ;; default-to-end fallback)
+                (cond-> (ir/->LEntityJoin e-var (vec group-scans) anti-scans all-vars source)
+                  min-idx (vary-meta assoc :source-idx min-idx)))))
           scan-groups)
 
          ;; Remaining NOTs (not folded into entity groups). Each LAntiJoin

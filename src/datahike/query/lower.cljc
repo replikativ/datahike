@@ -312,8 +312,13 @@
         ;; this clause." The execution path itself is reordered later by
         ;; order-plan-ops based on actual cost, independent of this.
         node->output-cards (zipmap nodes (map #(estimate-node-output-cards % db) nodes))
+        ;; Nodes without :source-idx (AND-flattened sub-plans, etc.) are
+        ;; treated as "comes last" via a sentinel beyond any real index.
+        ;; #?(:clj Long/MAX_VALUE :cljs js/Number.MAX_SAFE_INTEGER) keeps
+        ;; this portable across both the JVM and the Node target.
+        max-src-idx #?(:clj Long/MAX_VALUE :cljs (.-MAX_SAFE_INTEGER js/Number))
         node->src-idx (into {} (map (fn [n] [n (or (:source-idx (meta n))
-                                                    Long/MAX_VALUE)])) nodes)
+                                                    max-src-idx)])) nodes)
         initial-bvc (cond (map? bound-vars) bound-vars
                           :else (zipmap (or bound-vars #{}) (repeat 1)))
         merge-cards (fn [acc-map outs]
