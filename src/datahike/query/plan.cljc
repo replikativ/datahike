@@ -1180,17 +1180,55 @@
                                        [(list 'identity orig) safe])))
                              (map vector call-args-safe call-args))
         replacements (zipmap rule-args call-args-safe)
-        ;; Resolve keyword attrs to entity refs in attribute-refs mode
+        ;; Resolve keyword attrs to entity refs in attribute-refs mode.
+        ;;
+        ;; The resolution must recurse through compound clause forms
+        ;; (or, or-join, and, not, not-join, source-prefixed) to reach
+        ;; data patterns nested inside them. Without recursion, a rule
+        ;; body like `(or-join [...] [?e :attr ?v] ...)` would keep its
+        ;; inner pattern's attribute as a keyword while the outer
+        ;; query's clauses get resolved by substitute-consts-with-lookup-refs
+        ;; — at execute-time the lookup-batch-search path then slices
+        ;; AEVT for the keyword, finds zero datoms (datoms in
+        ;; :attribute-refs? mode are stored with attr=eid, not keyword),
+        ;; and the rule branch silently produces empty results. Surface
+        ;; symptom in jobtech: 3 changelog tests on HistoricalDB return
+        ;; 0 rows instead of the expected change events.
         attr-refs? (:attribute-refs? (dbi/-config db))
-        resolve-clause (fn [clause]
-                         (if (and attr-refs?
-                                  (vector? clause)
-                                  (not (sequential? (first clause)))
-                                  (keyword? (second clause)))
-                           (assoc clause 1 (dbi/-ref-for db (second clause)))
-                           clause))
+        data-pattern? (fn [x]
+                        (and (vector? x)
+                             (let [f (first x)]
+                               (or (and (symbol? f) (analyze/free-var? f))
+                                   (number? f)
+                                   (and (vector? f) (= 2 (count f)))))
+                             (or (keyword? (second x))
+                                 (and (symbol? (second x)) (analyze/free-var? (second x)))
+                                 (number? (second x)))))
+        resolve-attr-in-pattern (fn [pat]
+                                  (if (and attr-refs? (keyword? (second pat)))
+                                    (assoc pat 1 (dbi/-ref-for db (second pat)))
+                                    pat))
+        resolve-recursive (fn resolve-recursive [form]
+                            (cond
+                              ;; Data pattern: resolve its attr.
+                              (data-pattern? form)
+                              (resolve-attr-in-pattern form)
+
+                              ;; Compound list form (or, or-join, and, not, not-join, etc.)
+                              ;; — recurse into elements that look like clauses.
+                              (and (sequential? form)
+                                   (symbol? (first form))
+                                   (#{'or 'or-join 'and 'not 'not-join} (first form)))
+                              (let [head (first form)
+                                    ;; or-join / not-join have a vars vector after the head
+                                    [pre-rest body] (case head
+                                                      (or-join not-join) [(take 2 form) (drop 2 form)]
+                                                      [(take 1 form) (rest form)])]
+                                (concat pre-rest (map resolve-recursive body)))
+
+                              :else form))
         renamed (mapv (fn [c]
-                        (resolve-clause
+                        (resolve-recursive
                          (clojure.walk/postwalk
                           (fn [x]
                             (if (analyze/free-var? x)
