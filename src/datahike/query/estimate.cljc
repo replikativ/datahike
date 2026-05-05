@@ -245,17 +245,22 @@
      - Neither bound: existing estimate-pattern result.
 
    When `bound-var-cards` is empty, returns the same value as the 3-arity
-   `estimate-pattern`."
+   `estimate-pattern`. Defensive: if a caller still passes a plain set
+   instead of a map (legacy interface), entries are treated as bound with
+   unknown cardinality — fall back to 3-arity behavior for those vars."
   [db pattern-info schema-info bound-var-cards]
-  (let [base (estimate-pattern db pattern-info schema-info)]
+  (let [base (estimate-pattern db pattern-info schema-info)
+        ;; Tolerate both map (var → card) and set (legacy) forms.
+        card-of (fn [m k]
+                  (when (contains? m k)
+                    (let [v (get m k)]
+                      (when (number? v) (long v)))))]
     (if (or (empty? bound-var-cards) (nil? base))
       base
       (let [{:keys [e v]} pattern-info
             free-var? analyze/free-var?
-            e-card (when (and (free-var? e) (contains? bound-var-cards e))
-                     (long (get bound-var-cards e)))
-            v-card (when (and (free-var? v) (contains? bound-var-cards v))
-                     (long (get bound-var-cards v)))]
+            e-card (when (free-var? e) (card-of bound-var-cards e))
+            v-card (when (free-var? v) (card-of bound-var-cards v))]
         (cond
           ;; No bound free vars in this pattern — base estimate stands.
           (and (nil? e-card) (nil? v-card))

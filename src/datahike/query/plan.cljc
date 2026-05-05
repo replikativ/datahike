@@ -82,10 +82,25 @@
 ;; ---------------------------------------------------------------------------
 ;; Pattern plan ops
 
+(defn- pattern-output-var-cards
+  "Per-output-var cardinality upper bounds for a pattern-scan op.
+   Each free var in the pattern is bounded by the pattern's estimated-card
+   (the slice size). For card-one attributes the bound is tight on the
+   entity position; for card-many it is conservative. Refining (e.g. with
+   distinct-v sampling) can tighten value-position bounds in a follow-up."
+  [pattern-info est]
+  (into {}
+        (map (fn [v] [v est]))
+        (filter analyze/free-var? (:vars pattern-info))))
+
 (defn plan-pattern-op
   "Create a plan operation for a pattern clause.
+   `bound-var-cards` is a {var → cardinality} map of upstream-bound vars
+   used for cardinality estimation. Membership-check semantics (`contains?`)
+   match the prior `bound-vars` set, so internal logic that only checks
+   binding without using the cardinality is unchanged.
    Returns [op actually-consumed-pred-clauses]."
-  [db pattern-info schema-info pushdown-preds bound-vars]
+  [db pattern-info schema-info pushdown-preds bound-var-cards]
   (let [{:keys [e a v tx pattern]} pattern-info
         ground? (fn [x] (and (some? x) (not (symbol? x))))
         e? (ground? e)
@@ -94,7 +109,8 @@
         has-avet? (boolean (:avet db))
         index (select-index pattern-info schema-info has-avet? (seq pushdown-preds))
         effective-preds (if (= :avet index) pushdown-preds [])
-        base-est (or (estimate/estimate-pattern db pattern-info schema-info)
+        base-est (or (estimate/estimate-pattern-with-bindings
+                      db pattern-info schema-info (or bound-var-cards {}))
                      (di/-count (:eavt db)))
         ;; Build a partial scan-op for sampling context
         scan-ctx {:clause (:clause pattern-info) :index index}
@@ -102,10 +118,10 @@
               (estimate/estimate-pushdown-range base-est effective-preds db scan-ctx)
               base-est)
         e-bound? (and (analyze/free-var? e)
-                      (contains? bound-vars e))
+                      (contains? bound-var-cards e))
         join-method (cond
                       e-bound? :lookup
-                      (empty? bound-vars) :scan
+                      (empty? bound-var-cards) :scan
                       :else :hash)]
     [(cond-> {:op :pattern-scan
               :clause pattern
@@ -113,6 +129,7 @@
               :schema-info schema-info
               :pushdown-preds effective-preds
               :estimated-card est
+              :output-var-cards (pattern-output-var-cards pattern-info est)
               :join-method join-method
               :vars (:vars pattern-info)
               :e-ground (when e? e)
@@ -230,6 +247,45 @@
      :accepts-entity-filter? (:accepts-entity-filter? engine-meta false)
      :estimated-card (or (:estimated-card cost) 100)}))
 
+(defn- function-binding-vars
+  "Extract free vars from a function-clause :binding spec.
+   Handles BindScalar, BindColl, BindTuple, BindIgnore — but at the planner
+   level :binding is most often the raw symbol or vector form, so we just
+   collect free-var symbols recursively."
+  [binding]
+  (into #{} (filter analyze/free-var?) (analyze/extract-vars binding)))
+
+(defn- function-output-var-cards
+  "Per-binding-var cardinality bounds for a function op.
+     - (identity X)  → bind-var card = 1 (single value)
+     - (ground COLL) → bind-var card = (count COLL) when literal; else nil
+   For other functions we don't know the output cardinality at plan time
+   without sampling, so omit them — downstream tightens via :estimated-card."
+  [fn-sym args binding]
+  (let [bvars (function-binding-vars binding)]
+    (case fn-sym
+      identity
+      (when (= 1 (count bvars))
+        (zipmap bvars (repeat 1)))
+
+      ground
+      (let [coll (first args)]
+        (cond
+          (and (= 1 (count bvars)) (counted? coll))
+          (zipmap bvars (repeat (max 1 (count coll))))
+
+          ;; (ground [[?a ?b]]) tuple-binding shape — coll is a single-element
+          ;; vector wrapping a tuple destructure; the bindings are produced
+          ;; collectively, count is # of tuples in the source.
+          (and (counted? coll) (sequential? (first coll)))
+          (zipmap bvars (repeat (max 1 (count coll))))
+
+          :else nil))
+
+      ;; Unknown function → omit; ops that consume this rel still see
+      ;; :estimated-card for ordering.
+      nil)))
+
 (defn plan-function-op
   "Create a plan op for a function clause. Checks for external engine metadata."
   ([fn-info] (plan-function-op fn-info nil))
@@ -237,13 +293,16 @@
    (let [engine-meta (resolve-external-engine-meta (:fn-sym fn-info))]
      (if engine-meta
        (plan-external-engine-op fn-info engine-meta db)
-       {:op :function
-        :clause (:clause fn-info)
-        :fn-sym (:fn-sym fn-info)
-        :args (:args fn-info)
-        :binding (:binding fn-info)
-        :vars (:vars fn-info)
-        :estimated-card nil}))))
+       (let [out-cards (function-output-var-cards
+                        (:fn-sym fn-info) (:args fn-info) (:binding fn-info))]
+         (cond-> {:op :function
+                  :clause (:clause fn-info)
+                  :fn-sym (:fn-sym fn-info)
+                  :args (:args fn-info)
+                  :binding (:binding fn-info)
+                  :vars (:vars fn-info)
+                  :estimated-card nil}
+           out-cards (assoc :output-var-cards out-cards)))))))
 
 (defn plan-passthrough-op [clause-info]
   {:op :passthrough
@@ -496,6 +555,16 @@
                            scan-card
                            merge-ops)
         output-vars (into #{} (mapcat :vars) (into pattern-ops anti-ops))
+        ;; Per-output-var cardinality. The group's output rel size is `group-card`,
+        ;; which bounds every var the group produces. For tighter per-var bounds
+        ;; we'd need to track which patterns produce which vars + their individual
+        ;; cardinalities — for now the group-level bound suffices for downstream
+        ;; planning decisions (it differentiates a 4k-tuple group from a 150k one).
+        group-card-final (max 1 group-card)
+        output-var-cards (into {}
+                               (comp (filter analyze/free-var?)
+                                     (map (fn [v] [v group-card-final])))
+                               output-vars)
         ;; Merge-ops' pushdown preds can't be applied (merge uses EAVT lookupGE,
         ;; not AVET scan). Collect them so they can be restored as standalone preds.
         merge-lost-preds (into #{} (comp (mapcat :pushdown-preds) (map :pred-clause)) merge-ops)
@@ -506,8 +575,9 @@
                        :scan-op final-scan
                        :merge-ops final-merges
                        :output-vars output-vars
+                       :output-var-cards output-var-cards
                        :vars output-vars
-                       :estimated-card (max 1 group-card)
+                       :estimated-card group-card-final
                        :pipeline (build-pipeline final-scan final-merges db)}
                 source (assoc :source source))]
     {:op eg-op
