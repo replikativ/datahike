@@ -15,6 +15,8 @@
    consumed by execute.cljc."
   (:require
    [clojure.set]
+   [datahike.db.interface :as dbi]
+   [datahike.index.interface :as di]
    [datahike.query.analyze :as analyze]
    [datahike.query.estimate :as estimate]
    [datahike.query.ir :as ir]
@@ -136,6 +138,68 @@
 ;; plan/build-pipeline, plan/structurally-fusable?
 
 ;; ---------------------------------------------------------------------------
+;; Per-node output cardinality estimates for outer bound-var-cards propagation
+;;
+;; To make scan-vs-merge selection inside a rule body / OR branch / entity-group
+;; aware of how constrained an upstream-bound var actually is, we estimate per-LP-
+;; node output-var cardinalities BEFORE lowering, then for each node N feed the
+;; UNION of OTHER nodes' estimates as `bound-var-cards` into N's lowering. This
+;; replaces the prior "vars are either bound or free" model with "vars are
+;; either bound with-known-cardinality or free", so estimate-pattern-with-bindings
+;; can produce differentiated estimates instead of returning the attribute-total
+;; for every pattern with the same attribute.
+
+(defn- estimate-node-output-cards
+  "Estimate output cardinality per free-var for an LP node, without lowering it.
+   Returns {var-symbol → long} or nil if the estimate isn't useful.
+
+   Currently handles pure data-pattern nodes (LScan, LOptionalScan) where the
+   estimate is direct and cheap. Other node types return nil — their downstream
+   propagation falls back to the existing all-vars-treated-as-free behavior.
+   Extensions for LEntityJoin / LRuleCall / LUnion can be added in follow-ups
+   as we measure their planning impact."
+  [node db]
+  (cond
+    (ir/scan? node)
+    (let [ci (scan->classified node)
+          si (analyze/pattern-schema-info db ci)
+          est (or (estimate/estimate-pattern db ci si)
+                  (di/-count (:eavt db)))
+          free-output-vars (filter analyze/free-var? (:vars ci))]
+      (when (seq free-output-vars)
+        (zipmap free-output-vars (repeat (long est)))))
+
+    :else nil))
+
+(defn- bound-var-cards-for-node
+  "Compute the bound-var-cards map to pass when lowering `node`: the merge of
+   every OTHER node's output-card estimate plus the static initial bound-vars
+   (treated as known but with unknown cardinality — placeholder card 1 since
+   :in-bound vars are typically singletons in practice and a placeholder is
+   safer than omitting them entirely).
+
+   When duplicate vars appear across multiple producers, take the MIN — the
+   tightest known bound."
+  [node node->cards initial-bound-vars]
+  (let [merged (reduce-kv (fn [acc other-node other-cards]
+                            (if (or (identical? other-node node) (nil? other-cards))
+                              acc
+                              (reduce-kv (fn [acc' v c]
+                                           (let [prev (get acc' v)]
+                                             (assoc acc' v (if prev (min prev c) c))))
+                                         acc
+                                         other-cards)))
+                          {}
+                          node->cards)]
+    ;; Add initial :in-bound vars with placeholder cardinality.
+    ;; Existing call sites that pass a Set still work via estimate-pattern-with-bindings'
+    ;; defensive lookup, but going forward callers within the planner should pass
+    ;; this enriched map.
+    (reduce (fn [m v] (if (contains? m v) m (assoc m v 1)))
+            merged
+            (seq initial-bound-vars))))
+
+;; ---------------------------------------------------------------------------
 ;; Entity group construction from LEntityJoin
 
 (defn- lower-entity-join
@@ -231,55 +295,61 @@
         ;; Step 2: Lower each node to physical op(s)
         total-entities (estimate/estimate-total-entities db)
 
+        ;; Pre-compute per-node output-cards estimates, then derive each node's
+        ;; bound-var-cards from the OTHER nodes' estimates.
+        node->output-cards (zipmap nodes (map #(estimate-node-output-cards % db) nodes))
+        node->bound-cards (zipmap nodes (map #(bound-var-cards-for-node % node->output-cards bound-vars) nodes))
+
         {:keys [ops actual-consumed not-ops]}
         (reduce
          (fn [acc node]
-           (cond
-             ;; LEntityJoin → entity-group op
-             (instance? datahike.query.ir.LEntityJoin node)
-             (let [{:keys [op consumed]}
-                   (lower-entity-join node db pushdowns (:actual-consumed acc)
-                                      bound-vars total-entities)]
-               (-> acc
-                   (update :ops conj op)
-                   (update :actual-consumed into consumed)))
+           (let [bvc (get node->bound-cards node bound-vars)]
+             (cond
+               ;; LEntityJoin → entity-group op
+               (instance? datahike.query.ir.LEntityJoin node)
+               (let [{:keys [op consumed]}
+                     (lower-entity-join node db pushdowns (:actual-consumed acc)
+                                        bvc total-entities)]
+                 (-> acc
+                     (update :ops conj op)
+                     (update :actual-consumed into consumed)))
 
-             ;; Standalone LScan or LOptionalScan → pattern-scan op
-             (ir/scan? node)
-             (let [{:keys [op consumed]}
-                   (lower-standalone-scan node db pushdowns (:actual-consumed acc)
-                                          bound-vars)]
-               (-> acc
-                   (update :ops conj op)
-                   (update :actual-consumed into consumed)))
+               ;; Standalone LScan or LOptionalScan → pattern-scan op
+               (ir/scan? node)
+               (let [{:keys [op consumed]}
+                     (lower-standalone-scan node db pushdowns (:actual-consumed acc)
+                                            bvc)]
+                 (-> acc
+                     (update :ops conj op)
+                     (update :actual-consumed into consumed)))
 
-             ;; LFilter → deferred predicate (may be consumed by pushdown)
-             (instance? datahike.query.ir.LFilter node)
-             (update acc :ops conj [:maybe-pred (filter->classified node)])
+               ;; LFilter → deferred predicate (may be consumed by pushdown)
+               (instance? datahike.query.ir.LFilter node)
+               (update acc :ops conj [:maybe-pred (filter->classified node)])
 
-             ;; LBind → function op
-             (instance? datahike.query.ir.LBind node)
-             (update acc :ops conj (plan/plan-function-op (bind->classified node) db))
+               ;; LBind → function op
+               (instance? datahike.query.ir.LBind node)
+               (update acc :ops conj (plan/plan-function-op (bind->classified node) db))
 
-             ;; LAntiJoin → NOT/NOT-JOIN op (delegate to plan.cljc)
-             (instance? datahike.query.ir.LAntiJoin node)
-             (let [ci (anti-join->classified node)
-                   join-vars? (= :not-join (.-type ^datahike.query.ir.LAntiJoin node))
-                   op (plan/plan-not-op db ci all-clause-vars rules join-vars?)]
-               (if join-vars?
-                 (update acc :ops conj op)
-                 (update acc :not-ops conj op)))
+               ;; LAntiJoin → NOT/NOT-JOIN op (delegate to plan.cljc)
+               (instance? datahike.query.ir.LAntiJoin node)
+               (let [ci (anti-join->classified node)
+                     join-vars? (= :not-join (.-type ^datahike.query.ir.LAntiJoin node))
+                     op (plan/plan-not-op db ci all-clause-vars rules join-vars?)]
+                 (if join-vars?
+                   (update acc :ops conj op)
+                   (update acc :not-ops conj op)))
 
-             ;; LUnion → OR/OR-JOIN op (delegate to plan.cljc)
-             (instance? datahike.query.ir.LUnion node)
-             (let [ci (union->classified node)
-                   join-vars? (= :or-join (.-type ^datahike.query.ir.LUnion node))]
-               (update acc :ops conj (plan/plan-or-op db ci all-clause-vars rules join-vars?)))
+               ;; LUnion → OR/OR-JOIN op (delegate to plan.cljc)
+               (instance? datahike.query.ir.LUnion node)
+               (let [ci (union->classified node)
+                     join-vars? (= :or-join (.-type ^datahike.query.ir.LUnion node))]
+                 (update acc :ops conj (plan/plan-or-op db ci bvc rules join-vars?)))
 
-             ;; LRuleCall → delegate to plan/plan-rule-op
-             (instance? datahike.query.ir.LRuleCall node)
-             (let [ci (rule-call->classified node)]
-               (update acc :ops conj (plan/plan-rule-op db ci all-clause-vars rules scc-info)))
+               ;; LRuleCall → delegate to plan/plan-rule-op
+               (instance? datahike.query.ir.LRuleCall node)
+               (let [ci (rule-call->classified node)]
+                 (update acc :ops conj (plan/plan-rule-op db ci bvc rules scc-info)))
 
              ;; LRuleLookup → rule lookup op
              (instance? datahike.query.ir.LRuleLookup node)
@@ -311,10 +381,10 @@
                  ;; Regular passthrough
                  (update acc :ops conj (plan/plan-passthrough-op ci))))
 
-             ;; Anything else → passthrough
-             :else
-             (update acc :ops conj (plan/plan-passthrough-op
-                                    {:clause nil :type :unknown :vars #{}}))))
+               ;; Anything else → passthrough
+               :else
+               (update acc :ops conj (plan/plan-passthrough-op
+                                      {:clause nil :type :unknown :vars #{}})))))
          {:ops [] :actual-consumed #{} :not-ops []}
          nodes)
 

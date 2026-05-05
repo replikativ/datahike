@@ -109,14 +109,26 @@
         has-avet? (boolean (:avet db))
         index (select-index pattern-info schema-info has-avet? (seq pushdown-preds))
         effective-preds (if (= :avet index) pushdown-preds [])
-        base-est (or (estimate/estimate-pattern-with-bindings
-                      db pattern-info schema-info (or bound-var-cards {}))
+        ;; Base estimate (unconstrained by upstream bindings) — preserves the
+        ;; existing assemble-entity-group pass-rate semantics (pass-rate is
+        ;; merge-est / total-entities, which assumes merge-est is the full
+        ;; attribute count, not a bound-aware filtered count).
+        base-est (or (estimate/estimate-pattern db pattern-info schema-info)
                      (di/-count (:eavt db)))
         ;; Build a partial scan-op for sampling context
         scan-ctx {:clause (:clause pattern-info) :index index}
         est (if (seq effective-preds)
               (estimate/estimate-pushdown-range base-est effective-preds db scan-ctx)
               base-est)
+        ;; Bound-aware estimate — used for scan-vs-merge selection inside an
+        ;; entity-group (and other op-ordering decisions that should reflect
+        ;; upstream constraints). Defaults to the base estimate when
+        ;; bound-var-cards is empty.
+        scan-est (if (seq bound-var-cards)
+                   (or (estimate/estimate-pattern-with-bindings
+                        db pattern-info schema-info bound-var-cards)
+                       est)
+                   est)
         e-bound? (and (analyze/free-var? e)
                       (contains? bound-var-cards e))
         join-method (cond
@@ -129,6 +141,7 @@
               :schema-info schema-info
               :pushdown-preds effective-preds
               :estimated-card est
+              :scan-card scan-est
               :output-var-cards (pattern-output-var-cards pattern-info est)
               :join-method join-method
               :vars (:vars pattern-info)
@@ -321,12 +334,25 @@
   (let [a (second (:clause op))]
     (and (some? a) (not (symbol? a)))))
 
+(defn- scan-cost-of
+  "Cost a pattern would have if used as the entity-group's scan, based on
+   bound-aware :scan-card when available, falling back to :estimated-card."
+  [op]
+  (long (or (:scan-card op) (:estimated-card op) 0)))
+
 (defn dp-order-fuse-ops
   "For N pattern ops on same entity var, find optimal (scan, merge-order).
    Uses short-circuit AND ordering: sort merges by ascending
-   merge-cost / (1 - pass-rate). Try each pattern as scan, pick minimum total cost."
+   merge-cost / (1 - pass-rate). Try each pattern as scan, pick minimum total cost.
+
+   Scan selection uses bound-aware :scan-card so a pattern whose value is
+   constrained by upstream context (smaller effective scan size) is preferred
+   over a pattern with all-free positions on the same attribute. Pass-rate
+   computation still uses :estimated-card (the base attribute count) to
+   preserve the existing per-entity match-probability semantics."
   [db pattern-ops total-entities]
   (let [n (count pattern-ops)
+        ;; Pass-rate estimates use base (unconstrained) cardinality.
         estimates (mapv (fn [op]
                           (max 1 (or (:estimated-card op) total-entities)))
                         pattern-ops)]
@@ -342,12 +368,12 @@
           ;; Force scan-only pattern as scan, rest as merges
           {:scan (first scan-only) :merges (vec (concat (rest scan-only) mergeable))}
           (if (seq non-optional)
-            ;; Prefer non-optional as scan
-            (let [sorted (sort-by :estimated-card non-optional)]
+            ;; Prefer non-optional as scan; pick the lowest BOUND-AWARE cost.
+            (let [sorted (sort-by scan-cost-of non-optional)]
               {:scan (first sorted) :merges (vec (concat (rest sorted)
                                                          (filterv :optional? pattern-ops)))})
-            ;; All optional — pick lowest cardinality as scan
-            (let [sorted (sort-by :estimated-card pattern-ops)]
+            ;; All optional — pick lowest scan-cost as scan
+            (let [sorted (sort-by scan-cost-of pattern-ops)]
               {:scan (first sorted) :merges (vec (rest sorted))}))))
       (let [has-non-optional? (some #(not (:optional? %)) pattern-ops)
             candidates
@@ -360,7 +386,10 @@
                              (or (not has-non-optional?)
                                  (not (:optional? (nth pattern-ops si)))))]
               (let [scan-op (nth pattern-ops si)
-                    scan-card (double (nth estimates si))
+                    ;; Use bound-aware :scan-card for the scan-side cost; merges
+                    ;; still use the unconstrained :estimated-card via `estimates`
+                    ;; for pass-rate computation.
+                    scan-card (double (scan-cost-of scan-op))
                     merges (into [] (keep-indexed
                                      (fn [i op]
                                        (when (not= i si)
@@ -381,8 +410,8 @@
         (if (seq candidates)
           (apply min-key :cost candidates)
           ;; Fallback: if no valid scan/merge partitioning exists (multiple variable-attr ops),
-          ;; just pick lowest cardinality as scan
-          (let [sorted (sort-by :estimated-card pattern-ops)]
+          ;; pick lowest BOUND-AWARE cardinality as scan
+          (let [sorted (sort-by scan-cost-of pattern-ops)]
             {:scan (first sorted) :merges (vec (rest sorted))}))))))
 
 ;; ---------------------------------------------------------------------------
@@ -1199,8 +1228,16 @@
                                                 (not (some is-scc-call? body))))
                                    base-bs (filterv is-base? rn-branches)
                                    rec-bs (filterv (complement is-base?) rn-branches)
-                          ;; Head vars are bound within rule branches (from call args / accumulator)
-                                   branch-bound (into bound-vars (filter analyze/free-var?) free-call-args)
+                          ;; Head vars are bound within rule branches (from call args / accumulator).
+                          ;; Recursive rules: head-vars take their values from the accumulator
+                          ;; (one row of the recursive rel) — treat them as bound with a
+                          ;; conservative card-1 placeholder under the bound-var-cards model.
+                                   free-args (filter analyze/free-var? free-call-args)
+                                   branch-bound (cond
+                                                  (map? bound-vars)
+                                                  (into bound-vars (map (fn [v] [v 1])) free-args)
+                                                  :else
+                                                  (into bound-vars free-args))
                                    base-ps (mapv (fn [b]
                                                    (let [renamed (rename-branch-vars b free-call-args seqid db)]
                                                      (create-plan db (vec renamed) branch-bound rules)))
@@ -1268,8 +1305,28 @@
           (let [seqid (gensym "r")
                 expanded (for [branch branches]
                            (rename-branch-vars branch call-args seqid db))
-                ;; Call args that are free vars are bound within the rule body
-                rule-bound (into bound-vars (filter analyze/free-var?) call-args)
+                ;; Build the rule body's bound-var-cards:
+                ;;   - existing outer bound-vars/cards stay (vars truly bound from outside)
+                ;;   - synthetic safe-vars for non-var call-args get card 1 (each is a
+                ;;     single const value, bound by the [(identity X) safe-var] preamble
+                ;;     that rename-branch-vars prepends to the body)
+                ;;   - free call-args that aren't already in bound-vars are rule OUTPUTS,
+                ;;     not body inputs — do NOT add them; estimate-pattern-with-bindings
+                ;;     correctly treats them as free for selectivity.
+                ;;
+                ;; This shape mirrors call-args-safe inside rename-branch-vars; we
+                ;; recompute it here to avoid leaking it across the API.
+                const-safe-vars (keep-indexed
+                                 (fn [i arg]
+                                   (when-not (analyze/free-var? arg)
+                                     (symbol (str "?__const__" i "__auto__" seqid))))
+                                 call-args)
+                ;; Tolerate both legacy set-form bound-vars and new map-form bound-var-cards.
+                rule-bound (cond
+                             (map? bound-vars)
+                             (into bound-vars (map (fn [v] [v 1])) const-safe-vars)
+                             :else
+                             (into bound-vars const-safe-vars))
                 sub-plans (mapv #(create-plan db (vec %) rule-bound rules) expanded)
                 total-est (reduce + 0 (keep (fn [p] (some :estimated-card (:ops p))) sub-plans))]
             {:op :or
@@ -1317,7 +1374,12 @@
          ;; This includes vars from patterns inside NOT/OR/source-prefix.
          ;; Used as enriched bound-vars when building sub-plans, so nested
          ;; NOT/OR know what vars will be available from the outer context.
-         all-clause-vars (into bound-vars
+         ;; bound-vars may be either a Set (legacy) or a Map (var → card).
+         ;; Normalise here: keys + extracted vars build a SET, since this only
+         ;; feeds membership checks (e.g. is-rule? / NOT join-vars validation).
+         all-clause-vars (into (cond (map? bound-vars) (set (keys bound-vars))
+                                     (set? bound-vars) bound-vars
+                                     :else (set bound-vars))
                                (mapcat analyze/extract-vars)
                                where-clauses)
 
@@ -1456,7 +1518,12 @@
          ;; This correctly handles reordering: (not [?e ...]) [?e :name] gets
          ;; reordered to [?e :name] (not [?e ...]), and ?e is bound before NOT.
          _ (loop [remaining ordered-ops
-                  vars-so-far bound-vars]
+                  ;; bound-vars may be a set (legacy) or a map (var → card).
+                  ;; vars-so-far is purely a membership set for NOT validation,
+                  ;; so normalise to a set up front.
+                  vars-so-far (cond (map? bound-vars) (set (keys bound-vars))
+                                    (set? bound-vars) bound-vars
+                                    :else (set bound-vars))]
              (when (seq remaining)
                (let [op (first remaining)]
                  (when (#{:not :not-join} (:op op))
