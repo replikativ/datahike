@@ -318,7 +318,7 @@
         ;; this portable across both the JVM and the Node target.
         max-src-idx #?(:clj Long/MAX_VALUE :cljs (.-MAX_SAFE_INTEGER js/Number))
         node->src-idx (into {} (map (fn [n] [n (or (:source-idx (meta n))
-                                                    max-src-idx)])) nodes)
+                                                   max-src-idx)])) nodes)
         initial-bvc (cond (map? bound-vars) bound-vars
                           :else (zipmap (or bound-vars #{}) (repeat 1)))
         merge-cards (fn [acc-map outs]
@@ -399,34 +399,34 @@
                  (update acc :ops conj (plan/plan-rule-op db ci bvc rules scc-info)))
 
              ;; LRuleLookup → rule lookup op
-             (instance? datahike.query.ir.LRuleLookup node)
-             (let [ci (rule-lookup->classified node)]
-               (update acc :ops conj
-                       (plan/plan-rule-lookup-op ci (.-mode ^datahike.query.ir.LRuleLookup node))))
+               (instance? datahike.query.ir.LRuleLookup node)
+               (let [ci (rule-lookup->classified node)]
+                 (update acc :ops conj
+                         (plan/plan-rule-lookup-op ci (.-mode ^datahike.query.ir.LRuleLookup node))))
 
              ;; LPassthrough → passthrough op
-             (instance? datahike.query.ir.LPassthrough node)
-             (let [ci (passthrough->classified node)
-                   ptype (.-type ^datahike.query.ir.LPassthrough node)]
-               (if (= :source-prefix ptype)
+               (instance? datahike.query.ir.LPassthrough node)
+               (let [ci (passthrough->classified node)
+                     ptype (.-type ^datahike.query.ir.LPassthrough node)]
+                 (if (= :source-prefix ptype)
                  ;; Source-prefix passthrough: re-classify inner clause and delegate
-                 (let [clause (.-clause ^datahike.query.ir.LPassthrough node)
-                       source-sym (first clause)
-                       inner-clause (vec (rest clause))
-                       inner-ci (analyze/classify-clause inner-clause)
-                       inner-ci (assoc inner-ci :source source-sym)]
-                   (case (:type inner-ci)
-                     :not (let [op (plan/plan-not-op db inner-ci all-clause-vars rules)]
-                            (update acc :ops conj (assoc op :source source-sym)))
-                     :not-join (let [op (plan/plan-not-op db inner-ci all-clause-vars rules true)]
-                                 (update acc :ops conj (assoc op :source source-sym)))
-                     :or (update acc :ops conj
-                                 (assoc (plan/plan-or-op db inner-ci all-clause-vars rules) :source source-sym))
-                     :or-join (update acc :ops conj
-                                      (assoc (plan/plan-or-op db inner-ci all-clause-vars rules true) :source source-sym))
-                     (update acc :ops conj (plan/plan-passthrough-op ci))))
+                   (let [clause (.-clause ^datahike.query.ir.LPassthrough node)
+                         source-sym (first clause)
+                         inner-clause (vec (rest clause))
+                         inner-ci (analyze/classify-clause inner-clause)
+                         inner-ci (assoc inner-ci :source source-sym)]
+                     (case (:type inner-ci)
+                       :not (let [op (plan/plan-not-op db inner-ci all-clause-vars rules)]
+                              (update acc :ops conj (assoc op :source source-sym)))
+                       :not-join (let [op (plan/plan-not-op db inner-ci all-clause-vars rules true)]
+                                   (update acc :ops conj (assoc op :source source-sym)))
+                       :or (update acc :ops conj
+                                   (assoc (plan/plan-or-op db inner-ci all-clause-vars rules) :source source-sym))
+                       :or-join (update acc :ops conj
+                                        (assoc (plan/plan-or-op db inner-ci all-clause-vars rules true) :source source-sym))
+                       (update acc :ops conj (plan/plan-passthrough-op ci))))
                  ;; Regular passthrough
-                 (update acc :ops conj (plan/plan-passthrough-op ci))))
+                   (update acc :ops conj (plan/plan-passthrough-op ci))))
 
                ;; Anything else → passthrough
                :else

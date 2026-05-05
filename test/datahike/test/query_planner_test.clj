@@ -713,8 +713,8 @@
         query '[:find ?id ?legacy
                 :in $ [?type ...]
                 :where [?c :concept/id ?id]
-                       [?c :concept/type ?type]
-                       [(get-else $ ?c :concept/legacy-id "missing") ?legacy]]]
+                [?c :concept/type ?type]
+                [(get-else $ ?c :concept/legacy-id "missing") ?legacy]]]
     (assert-engines-agree db query [["T"]])
     (is (= #{["A" "1384"] ["B" "missing"]}
            (binding [q/*force-legacy* false] (d/q query db ["T"])))
@@ -734,8 +734,8 @@
 (deftest test-estimate-pattern-with-bindings
   (let [;; A schema with one indexed cardinality-one ref attr
         db (d/db-with (db/empty-db {:friend {:db/valueType   :db.type/ref
-                                              :db/cardinality :db.cardinality/one
-                                              :db/index       true}})
+                                             :db/cardinality :db.cardinality/one
+                                             :db/index       true}})
                       [{:db/id 1}
                        {:db/id 2 :friend 1}
                        {:db/id 3 :friend 1}

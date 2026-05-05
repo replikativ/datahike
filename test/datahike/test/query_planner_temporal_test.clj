@@ -62,14 +62,14 @@
         (d/create-database cfg)
         (let [conn (d/connect cfg)]
           (d/transact conn
-                       [{:db/ident :version/id
-                         :db/cardinality :db.cardinality/one
-                         :db/valueType :db.type/long
-                         :db/unique :db.unique/identity
-                         :db/index true}
-                        {:db/ident :version/tx
-                         :db/cardinality :db.cardinality/one
-                         :db/valueType :db.type/ref}])
+                      [{:db/ident :version/id
+                        :db/cardinality :db.cardinality/one
+                        :db/valueType :db.type/long
+                        :db/unique :db.unique/identity
+                        :db/index true}
+                       {:db/ident :version/tx
+                        :db/cardinality :db.cardinality/one
+                        :db/valueType :db.type/ref}])
           ;; Two version markers, each linked to its own creation tx
           (d/transact conn [{:version/id 1 :version/tx "datomic.tx"}])
           (d/transact conn [{:version/id 2 :version/tx "datomic.tx"}])
@@ -86,12 +86,12 @@
                 ;; rather than an orthogonal legacy edge case.
                 rules   '[[(->inst ?in ?ret)
                            (or-join [?in ?ret]
-                             (and [(int? ?in)]
-                                  [?v :version/id ?in]
-                                  [?v :version/tx ?tx]
-                                  [?tx :db/txInstant ?ret])
-                             (and [(inst? ?in)]
-                                  [(identity ?in) ?ret]))]]
+                                    (and [(int? ?in)]
+                                         [?v :version/id ?in]
+                                         [?v :version/tx ?tx]
+                                         [?tx :db/txInstant ?ret])
+                                    (and [(inst? ?in)]
+                                         [(identity ?in) ?ret]))]]
                 q-form  '[:find ?ret
                           :in $ % ?in-input
                           :where
@@ -133,13 +133,13 @@
         (d/create-database cfg)
         (let [conn (d/connect cfg)]
           (d/transact conn
-                       [{:db/ident :event/marker
-                         :db/cardinality :db.cardinality/one
-                         :db/valueType :db.type/string
-                         :db/index true}
-                        {:db/ident :event/category
-                         :db/cardinality :db.cardinality/one
-                         :db/valueType :db.type/string}])
+                      [{:db/ident :event/marker
+                        :db/cardinality :db.cardinality/one
+                        :db/valueType :db.type/string
+                        :db/index true}
+                       {:db/ident :event/category
+                        :db/cardinality :db.cardinality/one
+                        :db/valueType :db.type/string}])
           ;; Three transactions with distinct txInstants. A predicate
           ;; bounded between tx2 and tx3 must keep ONLY the middle event.
           (d/transact conn [{:event/marker "e1" :event/category "alpha"}])
@@ -221,20 +221,20 @@
         (d/create-database cfg)
         (let [conn (d/connect cfg)]
           (d/transact conn
-                       [{:db/ident :concept/id
-                         :db/cardinality :db.cardinality/one
-                         :db/valueType :db.type/string
-                         :db/unique :db.unique/identity
-                         :db/index true}
-                        {:db/ident :relation/concept-1
-                         :db/cardinality :db.cardinality/one
-                         :db/valueType :db.type/ref}
-                        {:db/ident :relation/concept-2
-                         :db/cardinality :db.cardinality/one
-                         :db/valueType :db.type/ref}
-                        {:db/ident :relation/percentage
-                         :db/cardinality :db.cardinality/one
-                         :db/valueType :db.type/long}])
+                      [{:db/ident :concept/id
+                        :db/cardinality :db.cardinality/one
+                        :db/valueType :db.type/string
+                        :db/unique :db.unique/identity
+                        :db/index true}
+                       {:db/ident :relation/concept-1
+                        :db/cardinality :db.cardinality/one
+                        :db/valueType :db.type/ref}
+                       {:db/ident :relation/concept-2
+                        :db/cardinality :db.cardinality/one
+                        :db/valueType :db.type/ref}
+                       {:db/ident :relation/percentage
+                        :db/cardinality :db.cardinality/one
+                        :db/valueType :db.type/long}])
           (d/transact conn [{:concept/id "C1"} {:concept/id "C2"}])
           (let [c1 (ffirst (d/q '[:find ?e :where [?e :concept/id "C1"]] (d/db conn)))
                 c2 (ffirst (d/q '[:find ?e :where [?e :concept/id "C2"]] (d/db conn)))]
