@@ -3300,7 +3300,28 @@
                                                         (reduce rel/hash-join (:rels neg-ctx)))
                                              result (if neg-join (rel/subtract-rel join-rel neg-join) join-rel)]
                                          (assoc c :rels [result])))
-                                     ctx' anti-clauses))]
+                                     ctx' anti-clauses))
+                      ;; Apply pushed-down predicates as post-filters. The
+                      ;; planner records each push-down predicate's original
+                      ;; clause in the scan-op's :pushdown-preds list and adds
+                      ;; the clause to the plan's :consumed-preds set, so the
+                      ;; clause-level predicate isn't emitted as its own
+                      ;; :predicate op. The fused PSS scan path applies these
+                      ;; via slice bounds + strict-filter inside
+                      ;; execute-fused-scan-rel; the temporal fallback uses
+                      ;; lookup-batch-search which doesn't honor :pushdown-preds,
+                      ;; so without a post-filter the predicate is silently
+                      ;; dropped — surfaced in jobtech daynotes tests as rows
+                      ;; matching ?inst < ?from-version that should have been
+                      ;; filtered out.
+                      pushdown-pred-clauses
+                      (concat (mapv :pred-clause (:pushdown-preds (:scan-op op)))
+                              (mapcat #(mapv :pred-clause (:pushdown-preds %)) all-merge-ops))
+                      ctx' (binding [rel/*implicit-source* op-db]
+                             (reduce (fn [c pred-clause]
+                                       (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                        c pred-clause))
+                                     ctx' (filter some? pushdown-pred-clauses)))]
                   (recur ctx' plan (inc idx))))
 
               ;; Single pattern scan
