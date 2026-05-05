@@ -909,7 +909,24 @@
 (defn op-cost [op bound-vars]
   (case (:op op)
     (:entity-group :pattern-scan)
-    (group-effective-card op)
+    ;; Optional pattern-scans (LOptionalScan from get-else) need their
+    ;; entity var BOUND before they execute — at runtime the optional path
+    ;; goes through bind-by-fn(get-else), which evaluates per-row over
+    ;; ctx.rels. If the e-var is still free, get-else gets a nil entity
+    ;; and binds the default value with the e-var ALSO nil-bound in the
+    ;; resulting tuple. That nil propagates through subsequent ops as a
+    ;; sentinel "row" the planner thinks is real, producing
+    ;; all-nil-tuple rows in the find result. Source order normally
+    ;; guarantees the binder runs first; the cost-based reorder doesn't,
+    ;; so we have to encode the dependency: an :optional? scan's
+    ;; effective cost is max-cost (un-runnable) until its e-var is in
+    ;; bound-vars. Once bound, it costs the same as a regular pattern-scan.
+    (if (and (:optional? op)
+             (let [e (first (:clause op))]
+               (and (analyze/free-var? e)
+                    (not (contains? bound-vars e)))))
+      max-cost
+      (group-effective-card op))
 
     :predicate
     (if (every? #(contains? bound-vars %) (:vars op)) 0 max-cost)
@@ -967,8 +984,25 @@
    total intermediate cardinality. The greedy phase then inserts non-group
    ops at the earliest point where their dependencies are satisfied."
   [ops]
-  (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
-        non-groups (filterv #(not (#{:entity-group :pattern-scan} (:op %))) ops)]
+  (let [;; LOptionalScan-derived pattern-scans (get-else with default) need
+        ;; their entity var bound BEFORE they execute — at runtime the
+        ;; optional path goes through bind-by-fn(get-else) which evaluates
+        ;; per-row, and a row without the e-var bound emits a tuple where
+        ;; e-var is nil and the bind-var is the default value. That nil-e
+        ;; row poisons every downstream op that uses ?e, surfacing as
+        ;; all-nil-tuple find results in jobtech daynotes tests. Treating
+        ;; optional scans as regular groups lets dp-order-groups place
+        ;; them by cardinality alone (no dependency awareness), so they
+        ;; can land before their binders. Demoting them to non-groups
+        ;; routes them through the cost-based interleaver, which checks
+        ;; bound-vars via op-cost and waits until the e-var is bound.
+        optional-scan? (fn [op]
+                         (and (= :pattern-scan (:op op))
+                              (:optional? op)))
+        groups (filterv #(and (#{:entity-group :pattern-scan} (:op %))
+                              (not (optional-scan? %))) ops)
+        non-groups (filterv #(or (not (#{:entity-group :pattern-scan} (:op %)))
+                                 (optional-scan? %)) ops)]
     (if (empty? groups)
       ;; No groups — pure greedy on non-group ops
       (loop [remaining (set ops)

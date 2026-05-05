@@ -183,3 +183,85 @@
             (is (= #{["e2"] ["e3"]} (set planner))
                 "planner result must drop e1 (whose ?inst < ?from-inst)")))
         (finally (d/delete-database cfg))))))
+
+;; ---------------------------------------------------------------------------
+;; Bug 3 — LOptionalScan reordered before its entity-var binders
+;;
+;; The planner classifies LOptionalScan ops (synthesized from a
+;; `[(get-else $ ?e :attr default) ?v]` clause) as :pattern-scan in the
+;; physical plan. order-plan-ops puts every :pattern-scan into the
+;; "groups" partition and feeds those to dp-order-groups, which only
+;; considers shared-var connectivity for the join graph — it has no
+;; awareness of the optional scan's runtime constraint that ?e MUST be
+;; bound BEFORE the scan executes. At runtime, the :optional? branch in
+;; execute-plan routes through `legacy/bind-by-fn` with a synthetic
+;; `(get-else $ ?e :attr default)` fn-clause; bind-by-fn evaluates the
+;; fn per row in ctx.rels — and if ?e is still free, the fn gets a nil
+;; entity, returns the default value, and binds the bind-var on a row
+;; where ?e itself is also nil. That nil-?e tuple then propagates
+;; through downstream ops as if it were a real binding, producing
+;; all-nil-tuple find results.
+;;
+;; Surface symptom in jobtech: 2 daynotes test-relation-changes tests
+;; got `event-concept-1 = nil` because fetch-relation-txs (an outer
+;; query with `[?c :concept/id ?input-concept-id]` followed by two
+;; `(or ...)` clauses, three `(get-else …)` clauses, and a range
+;; predicate) had the optional scan for
+;; `:relation/substitutability-percentage` placed BEFORE the OR that
+;; binds ?r. Fixed in src/datahike/query/plan.cljc order-plan-ops by
+;; routing optional pattern-scans through the non-groups partition,
+;; which uses op-cost+bound-vars to wait until the e-var binder has
+;; run.
+
+(deftest test-optional-scan-after-binder
+  (testing "LOptionalScan (get-else with default) is ordered after its
+            entity-var binder so its e-var isn't nil at execute time"
+    (let [cfg (fresh-cfg)]
+      (try
+        (d/create-database cfg)
+        (let [conn (d/connect cfg)]
+          (d/transact conn
+                       [{:db/ident :concept/id
+                         :db/cardinality :db.cardinality/one
+                         :db/valueType :db.type/string
+                         :db/unique :db.unique/identity
+                         :db/index true}
+                        {:db/ident :relation/concept-1
+                         :db/cardinality :db.cardinality/one
+                         :db/valueType :db.type/ref}
+                        {:db/ident :relation/concept-2
+                         :db/cardinality :db.cardinality/one
+                         :db/valueType :db.type/ref}
+                        {:db/ident :relation/percentage
+                         :db/cardinality :db.cardinality/one
+                         :db/valueType :db.type/long}])
+          (d/transact conn [{:concept/id "C1"} {:concept/id "C2"}])
+          (let [c1 (ffirst (d/q '[:find ?e :where [?e :concept/id "C1"]] (d/db conn)))
+                c2 (ffirst (d/q '[:find ?e :where [?e :concept/id "C2"]] (d/db conn)))]
+            (d/transact conn [{:relation/concept-1 c1
+                               :relation/concept-2 c2
+                               :relation/percentage 50}]))
+
+          (let [hdb (d/history (d/db conn))
+                ;; The query that triggered the bug: ?r is introduced by
+                ;; the (or ...) clause, BEFORE the get-else expects it.
+                ;; The cost-based reorderer must NOT lift the optional
+                ;; scan above the OR.
+                q-form '[:find ?r ?pct
+                         :in $
+                         :where
+                         [?c :concept/id ?cid]
+                         (or [?r :relation/concept-1 ?c]
+                             [?r :relation/concept-2 ?c])
+                         [(get-else $ ?r :relation/percentage 0) ?pct]]
+                {:keys [legacy planner]} (run-both q-form hdb)]
+            (is (= 1 (count legacy))
+                "legacy returns one row with ?r and ?pct bound")
+            (is (= legacy planner)
+                "planner must match legacy — the optional scan must run
+                  AFTER ?r is bound, not before")
+            (is (every? some? (first planner))
+                "planner row must have non-nil values — a pre-fix run
+                  produces a tuple of all-nils because the optional scan
+                  ran with ?r still free")))
+        (finally (d/delete-database cfg))))))
