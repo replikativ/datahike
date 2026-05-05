@@ -124,11 +124,34 @@
         ;; entity-group (and other op-ordering decisions that should reflect
         ;; upstream constraints). Defaults to the base estimate when
         ;; bound-var-cards is empty.
-        scan-est (if (seq bound-var-cards)
-                   (or (estimate/estimate-pattern-with-bindings
-                        db pattern-info schema-info bound-var-cards)
-                       est)
-                   est)
+        ;;
+        ;; SCAN COST vs OUTPUT CARD: estimate-pattern-with-bindings models
+        ;; the OUTPUT cardinality after applying upstream constraints. For
+        ;; an INDEXED attribute on the v-position, OUTPUT ≈ SCAN COST
+        ;; because AVET yields exactly the matching slice. For a
+        ;; NON-INDEXED v-bound pattern, we lack AVET — execution must scan
+        ;; AEVT for the full attribute and post-filter, so the actual scan
+        ;; cost is `base` regardless of how selective v is. dp-order-fuse-ops
+        ;; uses scan-card as a SCAN COST proxy when picking the entity-
+        ;; group's driving scan; using OUTPUT here would mis-rate a
+        ;; non-indexed v-bound pattern as a cheap scan candidate.
+        v-bound? (and (analyze/free-var? v)
+                      (contains? bound-var-cards v)
+                      (let [vc (get bound-var-cards v)] (number? vc)))
+        bound-aware (when (seq bound-var-cards)
+                      (estimate/estimate-pattern-with-bindings
+                       db pattern-info schema-info bound-var-cards))
+        scan-est (cond
+                   (empty? bound-var-cards) est
+                   ;; Non-indexed attr with v as the only bound free var:
+                   ;; scan cost = base (full AEVT scan + post-filter).
+                   (and (not (:indexed? schema-info))
+                        v-bound?
+                        (or e? (analyze/free-var? e))
+                        (not (and (analyze/free-var? e)
+                                  (contains? bound-var-cards e))))
+                   est
+                   :else (or bound-aware est))
         e-bound? (and (analyze/free-var? e)
                       (contains? bound-var-cards e))
         join-method (cond
@@ -1374,14 +1397,28 @@
          ;; This includes vars from patterns inside NOT/OR/source-prefix.
          ;; Used as enriched bound-vars when building sub-plans, so nested
          ;; NOT/OR know what vars will be available from the outer context.
-         ;; bound-vars may be either a Set (legacy) or a Map (var → card).
-         ;; Normalise here: keys + extracted vars build a SET, since this only
-         ;; feeds membership checks (e.g. is-rule? / NOT join-vars validation).
-         all-clause-vars (into (cond (map? bound-vars) (set (keys bound-vars))
-                                     (set? bound-vars) bound-vars
-                                     :else (set bound-vars))
-                               (mapcat analyze/extract-vars)
-                               where-clauses)
+         ;;
+         ;; bound-vars may be a Map (var → card) under the bound-var-cards
+         ;; model or a Set (legacy interface). When a Map: preserve the
+         ;; outer entries verbatim (so cards reach inner pattern estimation
+         ;; via plan-or-op / plan-rule-op / plan-not-op → create-plan), and
+         ;; mark newly-extracted in-scope vars with a non-numeric sentinel.
+         ;; estimate-pattern-with-bindings's card-of returns nil for
+         ;; non-numbers, so sentinel entries are ignored for cardinality
+         ;; estimation while still passing `contains?` membership checks
+         ;; needed for join-var validation and rule-call detection.
+         all-clause-vars (let [extracted (into #{} (mapcat analyze/extract-vars) where-clauses)]
+                           (cond
+                             (map? bound-vars)
+                             (into bound-vars
+                                   (map (fn [v] [v ::in-scope]))
+                                   (remove (set (keys bound-vars)) extracted))
+
+                             (set? bound-vars)
+                             (into bound-vars extracted)
+
+                             :else
+                             (into (set bound-vars) extracted)))
 
          ;; Pre-compute SCC info for rules (once per plan, not per rule-op)
          scc-info (when rules (compute-rule-sccs rules))
@@ -1389,19 +1426,66 @@
          ;; Step 2: Detect pushdown candidates
          {:keys [pushdowns consumed]} (analyze/detect-pushdown classified bound-vars)
 
-         ;; Step 3: Build raw ops — track consumed pushdown preds
+         ;; Step 3: Build raw ops — track consumed pushdown preds.
+         ;;
+         ;; bvc-eff threads cardinality propagation through the clause stream
+         ;; in classification order: each op's :output-var-cards extends the
+         ;; effective bound-var-cards for SUBSEQUENT ops in the same plan
+         ;; scope. Critical for queries where a function or pattern
+         ;; introduces a tightly-bounded var that a later pattern can use as
+         ;; a probe constraint — e.g. the `(ground inv-map) [[?type ?reverse-type]]`
+         ;; preamble inside the -reverse-edge rule body, which binds
+         ;; ?reverse-type to a card-N collection that the next pattern
+         ;; `[?r :type ?reverse-type]` should use as scan-card. Without
+         ;; this thread, every pattern in the body sees only outer
+         ;; bound-vars and falls back to base attribute estimates,
+         ;; producing wrong scan-vs-merge selection (the regression that
+         ;; made the GraphQL edge fetcher 40×+ slower than legacy).
+         init-bvc (cond (map? bound-vars) bound-vars
+                        (set? bound-vars) (zipmap bound-vars (repeat ::in-scope))
+                        :else (zipmap (set bound-vars) (repeat ::in-scope)))
          {:keys [ops actual-consumed not-ops]}
          (reduce
           (fn [acc ci]
             ;; Check for rule calls (classified as :pattern but first elem is rule name)
-            (let [is-rule-call? (and rules
+            (let [bvc-eff (:bvc-eff acc)
+                  is-rule-call? (and rules
                                      (= :pattern (:type ci))
                                      (symbol? (:e ci))
                                      (not (analyze/free-var? (:e ci)))
                                      (contains? rules (:e ci)))
                   ;; Check for metadata-tagged rule-lookup (from clause version generation)
                   lookup-mode (when is-rule-call?
-                                (:rule-lookup-mode (meta (:clause ci))))]
+                                (:rule-lookup-mode (meta (:clause ci))))
+                  ;; Extend an acc's :bvc-eff with op's :output-var-cards
+                  ;; (numeric entries only — sentinels untouched). Returns acc'.
+                  ;; MIN on collisions keeps the tightest known bound.
+                  ;;
+                  ;; Restricted to FUNCTION ops only: pattern-scan ops also expose
+                  ;; :output-var-cards, but propagating them eagerly would mark
+                  ;; sibling pattern entity-vars (e.g. ?r in `[?r :concept-1 ?c]`
+                  ;; followed by `[?r :type ?t]`) as upstream-bound when planning
+                  ;; the next pattern. dp-order-fuse-ops fuses these into a
+                  ;; single entity-group at execution time — the scan PRODUCES
+                  ;; ?r, it doesn't consume it — so estimating later patterns
+                  ;; with ?r bound yields the both-bound branch min(e,v,base)
+                  ;; which underestimates by ~base/distinct-v×. Function ops
+                  ;; (identity / ground) genuinely bind their output vars
+                  ;; before subsequent ops execute, so threading those is safe.
+                  extend-bvc (fn [acc' op]
+                               (if (and (map? op) (= :function (:op op)))
+                                 (if-let [out (:output-var-cards op)]
+                                   (assoc acc' :bvc-eff
+                                          (reduce-kv
+                                           (fn [m v c]
+                                             (let [cur (get m v)]
+                                               (cond
+                                                 (and (number? cur) (number? c)) (assoc m v (long (min cur c)))
+                                                 (number? c) (assoc m v c)
+                                                 :else m)))
+                                           (:bvc-eff acc') out))
+                                   acc')
+                                 acc'))]
               (if (and is-rule-call? guarded-rules
                        (contains? guarded-rules (:e ci)))
                 ;; Inside a recursive branch plan — emit :rule-lookup
@@ -1411,26 +1495,31 @@
                   (update acc :ops conj (plan-rule-lookup-op rule-ci mode)))
                 (if is-rule-call?
                   (let [rule-ci (assoc ci :type :rule-call
-                                       :vars (into #{} (filter analyze/free-var?) (rest (:clause ci))))]
-                    (update acc :ops conj (plan-rule-op db rule-ci all-clause-vars rules scc-info)))
+                                       :vars (into #{} (filter analyze/free-var?) (rest (:clause ci))))
+                        op (plan-rule-op db rule-ci bvc-eff rules scc-info)]
+                    (-> acc (update :ops conj op) (extend-bvc op)))
 
                   (case (:type ci)
                     :pattern
                     (let [schema-info (analyze/pattern-schema-info db ci)
                           preds (get pushdowns (:clause ci) [])
-                          [op consumed-preds] (plan-pattern-op db ci schema-info preds bound-vars)]
+                          [op consumed-preds] (plan-pattern-op db ci schema-info preds bvc-eff)]
                       (-> acc
                           (update :ops conj op)
-                          (update :actual-consumed into (or consumed-preds #{}))))
+                          (update :actual-consumed into (or consumed-preds #{}))
+                          (extend-bvc op)))
 
-                    :function (update acc :ops conj (plan-function-op ci db))
+                    :function (let [op (plan-function-op ci db)]
+                                (-> acc (update :ops conj op) (extend-bvc op)))
                     :predicate (update acc :ops conj [:maybe-pred ci])
-                    :or (update acc :ops conj (plan-or-op db ci all-clause-vars rules))
-                    :or-join (update acc :ops conj (plan-or-op db ci all-clause-vars rules true))
+                    :or (let [op (plan-or-op db ci bvc-eff rules)]
+                          (-> acc (update :ops conj op) (extend-bvc op)))
+                    :or-join (let [op (plan-or-op db ci bvc-eff rules true)]
+                               (-> acc (update :ops conj op) (extend-bvc op)))
                     ;; Collect NOT ops separately for anti-merge folding
-                    :not (update acc :not-ops conj (plan-not-op db ci all-clause-vars rules))
-                    :not-join (update acc :ops conj (plan-not-op db ci all-clause-vars rules true))
-                    :and (let [sub-plan (create-plan db (vec (:sub-clauses ci)) all-clause-vars rules)]
+                    :not (update acc :not-ops conj (plan-not-op db ci bvc-eff rules))
+                    :not-join (update acc :ops conj (plan-not-op db ci bvc-eff rules true))
+                    :and (let [sub-plan (create-plan db (vec (:sub-clauses ci)) bvc-eff rules)]
                            (update acc :ops into (:ops sub-plan)))
 
                     ;; Source-prefixed clause: ($2 not ...) or [$2 ?e :attr ?v]
@@ -1443,23 +1532,23 @@
                       (case (:type inner-ci)
                         :pattern
                         (let [schema-info (analyze/pattern-schema-info db inner-ci)
-                              [op _] (plan-pattern-op db inner-ci schema-info [] bound-vars)]
-                          (update acc :ops conj (assoc op :source source-sym)))
+                              [op _] (plan-pattern-op db inner-ci schema-info [] bvc-eff)]
+                          (-> acc (update :ops conj (assoc op :source source-sym)) (extend-bvc op)))
                         :not
-                        (let [op (plan-not-op db inner-ci all-clause-vars rules)]
+                        (let [op (plan-not-op db inner-ci bvc-eff rules)]
                           (update acc :ops conj (assoc op :source source-sym)))
                         :not-join
-                        (let [op (plan-not-op db inner-ci all-clause-vars rules true)]
+                        (let [op (plan-not-op db inner-ci bvc-eff rules true)]
                           (update acc :ops conj (assoc op :source source-sym)))
                         :or
-                        (update acc :ops conj (assoc (plan-or-op db inner-ci all-clause-vars rules) :source source-sym))
+                        (update acc :ops conj (assoc (plan-or-op db inner-ci bvc-eff rules) :source source-sym))
                         :or-join
-                        (update acc :ops conj (assoc (plan-or-op db inner-ci all-clause-vars rules true) :source source-sym))
+                        (update acc :ops conj (assoc (plan-or-op db inner-ci bvc-eff rules true) :source source-sym))
                         ;; Source-prefix wrapping another source-prefix or unknown
                         (update acc :ops conj (plan-passthrough-op ci))))
 
                     (update acc :ops conj (plan-passthrough-op ci)))))))
-          {:ops [] :actual-consumed #{} :not-ops []}
+          {:ops [] :actual-consumed #{} :not-ops [] :bvc-eff init-bvc}
           classified)
 
          ;; Collect pattern ops first for predicate sampling

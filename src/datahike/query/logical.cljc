@@ -100,10 +100,23 @@
                                (mapcat analyze/extract-vars)
                                where-clauses)
 
-         ;; Walk classified clauses → accumulate IR node collections
+         ;; Walk classified clauses → accumulate IR node collections.
+         ;; Each created LP node is tagged via metadata with `:source-idx` —
+         ;; the position of its originating clause in the user's source order.
+         ;; lower.cljc uses this to compute each node's bound-var-cards from
+         ;; outputs of PRECEDING source-order nodes only, so a rule call's
+         ;; planning bvc doesn't include outputs of later patterns that
+         ;; consume the rule's outputs (the directional over-binding that
+         ;; otherwise makes the rule body pick wrong scans). Source order is
+         ;; a sound heuristic: it's the order Datalog programmers write
+         ;; clauses to encode dependencies, and the engine's later
+         ;; `order-plan-ops` is free to reorder execution without affecting
+         ;; correctness — it only affects estimate accuracy.
+         tag-src (fn [node idx]
+                   (vary-meta node assoc :source-idx idx))
          {:keys [scans filters binds nots or-nodes rule-nodes passthrough-nodes and-nodes]}
          (reduce
-          (fn [acc ci]
+          (fn [acc [idx ci]]
             (let [is-rule? (rule-call? ci rules)
                   lookup-mode (when is-rule?
                                 (:rule-lookup-mode (meta (:clause ci))))]
@@ -114,26 +127,29 @@
                 (let [rule-vars (into #{} (filter analyze/free-var?) (rest (:clause ci)))
                       mode (or lookup-mode :main)]
                   (update acc :rule-nodes conj
-                          (ir/->LRuleLookup (:clause ci) (:e ci)
-                                            (vec (rest (:clause ci))) mode rule-vars)))
+                          (tag-src (ir/->LRuleLookup (:clause ci) (:e ci)
+                                                     (vec (rest (:clause ci))) mode rule-vars)
+                                   idx)))
 
                 ;; Normal rule call — opaque node for lowering to expand
                 is-rule?
                 (let [rule-vars (into #{} (filter analyze/free-var?) (rest (:clause ci)))]
                   (update acc :rule-nodes conj
-                          (ir/->LRuleCall (:clause ci) (:e ci)
-                                          (vec (rest (:clause ci))) rule-vars)))
+                          (tag-src (ir/->LRuleCall (:clause ci) (:e ci)
+                                                   (vec (rest (:clause ci))) rule-vars)
+                                   idx)))
 
                 :else
                 (case (:type ci)
                   ;; Data pattern → LScan
                   :pattern
-                  (update acc :scans conj (make-scan ci nil))
+                  (update acc :scans conj (tag-src (make-scan ci nil) idx))
 
                   ;; Predicate → LFilter
                   :predicate
                   (update acc :filters conj
-                          (ir/->LFilter (:clause ci) (:fn-sym ci) (:args ci) (:vars ci)))
+                          (tag-src (ir/->LFilter (:clause ci) (:fn-sym ci) (:args ci) (:vars ci))
+                                   idx))
 
                   ;; Function binding → LBind (or LOptionalScan for get-else)
                   :function
@@ -171,36 +187,40 @@
                                            (analyze/free-var? e-var))
                                       (conj e-var))]
                       (update acc :scans conj
-                              (ir/->LOptionalScan
-                               [e-var attr bind-var]  ;; synthetic clause
-                               scan-vars
-                               e-var attr bind-var nil ;; e a v tx
-                               nil                     ;; source
-                               default-val             ;; default value
-                               bind-var)))             ;; binding var
+                              (tag-src (ir/->LOptionalScan
+                                        [e-var attr bind-var]  ;; synthetic clause
+                                        scan-vars
+                                        e-var attr bind-var nil ;; e a v tx
+                                        nil                     ;; source
+                                        default-val             ;; default value
+                                        bind-var)               ;; binding var
+                                       idx)))
                     ;; Regular function → LBind
                     (update acc :binds conj
-                            (ir/->LBind (:clause ci) (:fn-sym ci) (:args ci)
-                                        (:binding ci) (:vars ci))))
+                            (tag-src (ir/->LBind (:clause ci) (:fn-sym ci) (:args ci)
+                                                 (:binding ci) (:vars ci))
+                                     idx)))
 
                   ;; NOT → collect for anti-merge folding
                   :not
-                  (update acc :nots conj {:ci ci :type :not :source nil})
+                  (update acc :nots conj {:ci ci :type :not :source nil :source-idx idx})
 
                   ;; NOT-JOIN → always stays separate (has explicit join vars)
                   :not-join
-                  (update acc :nots conj {:ci ci :type :not-join :source nil})
+                  (update acc :nots conj {:ci ci :type :not-join :source nil :source-idx idx})
 
                   ;; OR → LUnion (branches built by lowering)
                   :or
                   (update acc :or-nodes conj
-                          (ir/->LUnion (:clause ci) nil (:vars ci) nil :or))
+                          (tag-src (ir/->LUnion (:clause ci) nil (:vars ci) nil :or)
+                                   idx))
 
                   ;; OR-JOIN → LUnion with join vars
                   :or-join
                   (update acc :or-nodes conj
-                          (ir/->LUnion (:clause ci) nil (:vars ci)
-                                       (set (:join-vars ci)) :or-join))
+                          (tag-src (ir/->LUnion (:clause ci) nil (:vars ci)
+                                                (set (:join-vars ci)) :or-join)
+                                   idx))
 
                   ;; AND → flatten: build sub-plan (which does its own entity
                   ;; grouping) and merge resulting nodes into parent as-is
@@ -217,23 +237,26 @@
                         inner-ci (analyze/classify-clause inner)]
                     (case (:type inner-ci)
                       :pattern
-                      (update acc :scans conj (make-scan inner-ci source-sym))
+                      (update acc :scans conj (tag-src (make-scan inner-ci source-sym) idx))
 
                       ;; Source-prefixed NOT/OR → LPassthrough (lowering delegates)
                       (:not :not-join :or :or-join)
                       (update acc :passthrough-nodes conj
-                              (ir/->LPassthrough (:clause ci) :source-prefix (:vars ci)))
+                              (tag-src (ir/->LPassthrough (:clause ci) :source-prefix (:vars ci))
+                                       idx))
 
                       ;; Other source-prefix → passthrough
                       (update acc :passthrough-nodes conj
-                              (ir/->LPassthrough (:clause ci) :source-prefix (:vars ci)))))
+                              (tag-src (ir/->LPassthrough (:clause ci) :source-prefix (:vars ci))
+                                       idx))))
 
                   ;; Unknown → passthrough
                   (update acc :passthrough-nodes conj
-                          (ir/->LPassthrough (:clause ci) (:type ci) (:vars ci)))))))
+                          (tag-src (ir/->LPassthrough (:clause ci) (:type ci) (:vars ci))
+                                   idx))))))
           {:scans [] :filters [] :binds [] :nots [] :or-nodes []
            :rule-nodes [] :passthrough-nodes [] :and-nodes []}
-          classified)
+          (map-indexed vector classified))
 
          ;; ---------------------------------------------------------------
          ;; Group scans by entity variable
@@ -259,22 +282,32 @@
                                             (map (comp :clause :ci :not-entry) entries)))
                                   foldable-nots)
 
-         ;; Build entity join nodes from scan groups
+         ;; Build entity join nodes from scan groups. An LEntityJoin folds
+         ;; multiple scans on the same entity-var into a single node — the
+         ;; node's source-idx is the MIN of its component scans' indices,
+         ;; so it inherits the position of the earliest scan in user
+         ;; source order. Standalone scans pass through their tag from
+         ;; build above.
          entity-nodes
          (mapv
           (fn [[[e-var source] group-scans]]
             (let [anti-entries (get foldable-nots [e-var source])
                   anti-scans (mapv :anti-scan anti-entries)
                   all-vars (into (into #{} (mapcat :vars) group-scans)
-                                 (mapcat :vars) anti-scans)]
+                                 (mapcat :vars) anti-scans)
+                  min-idx (apply min Long/MAX_VALUE
+                                 (keep #(:source-idx (meta %)) group-scans))]
               (if (and (= 1 (count group-scans)) (empty? anti-scans))
                 ;; Single scan, no anti-merges → standalone LScan
                 (first group-scans)
                 ;; Multi-scan group → LEntityJoin
-                (ir/->LEntityJoin e-var (vec group-scans) anti-scans all-vars source))))
+                (vary-meta (ir/->LEntityJoin e-var (vec group-scans) anti-scans all-vars source)
+                           assoc :source-idx min-idx))))
           scan-groups)
 
-         ;; Remaining NOTs (not folded into entity groups)
+         ;; Remaining NOTs (not folded into entity groups). Each LAntiJoin
+         ;; inherits the source-idx from the not-entry (recorded during the
+         ;; classified walk above).
          remaining-nots
          (into []
                (comp
@@ -284,10 +317,11 @@
                          ;; Already an IR node from AND flattening
                          ir-node
                          ;; Build LAntiJoin from clause-info
-                         (let [{:keys [ci type]} not-entry]
-                           (ir/->LAntiJoin (:clause ci) (:sub-clauses ci) (:vars ci)
-                                           (when (= type :not-join) (set (:join-vars ci)))
-                                           type))))))
+                         (let [{:keys [ci type source-idx]} not-entry]
+                           (cond-> (ir/->LAntiJoin (:clause ci) (:sub-clauses ci) (:vars ci)
+                                                   (when (= type :not-join) (set (:join-vars ci)))
+                                                   type)
+                             source-idx (vary-meta assoc :source-idx source-idx)))))))
                nots)
 
          ;; Assemble all nodes (UNORDERED — ordering is physical)

@@ -295,15 +295,57 @@
         ;; Step 2: Lower each node to physical op(s)
         total-entities (estimate/estimate-total-entities db)
 
-        ;; Pre-compute per-node output-cards estimates, then derive each node's
-        ;; bound-var-cards from the OTHER nodes' estimates.
+        ;; Per-node output-card estimates + initial bound-vars (Map form).
+        ;; SOURCE-ORDER directional bvc: each node's bound-var-cards is the
+        ;; union of `initial-bvc` and outputs of every node with a STRICTLY
+        ;; LOWER `:source-idx` (set by build-logical-plan). This avoids the
+        ;; over-binding bug where build-logical-plan groups all
+        ;; entity-nodes BEFORE rule-nodes, causing the lower.cljc reduce
+        ;; to add later-in-source patterns' outputs to the rule call's
+        ;; bvc — making the rule body's planner treat consumed-by-later
+        ;; vars (e.g. ?related-c in the edge query) as upstream-bound
+        ;; probe constraints. Source order is sound (Datalog is set
+        ;; semantics; correctness doesn't depend on bvc accuracy — only
+        ;; estimate quality and downstream scan choice). Datalog
+        ;; programmers conventionally write clauses in dependency order,
+        ;; so source-idx is a reasonable proxy for "what's bound entering
+        ;; this clause." The execution path itself is reordered later by
+        ;; order-plan-ops based on actual cost, independent of this.
         node->output-cards (zipmap nodes (map #(estimate-node-output-cards % db) nodes))
-        node->bound-cards (zipmap nodes (map #(bound-var-cards-for-node % node->output-cards bound-vars) nodes))
+        node->src-idx (into {} (map (fn [n] [n (or (:source-idx (meta n))
+                                                    Long/MAX_VALUE)])) nodes)
+        initial-bvc (cond (map? bound-vars) bound-vars
+                          :else (zipmap (or bound-vars #{}) (repeat 1)))
+        merge-cards (fn [acc-map outs]
+                      (reduce-kv
+                       (fn [m v c]
+                         (let [cur (get m v)]
+                           (cond
+                             (and (number? cur) (number? c)) (assoc m v (long (min cur c)))
+                             (number? c) (assoc m v c)
+                             :else m)))
+                       acc-map outs))
+        ;; Pre-compute bvc per node from PRECEDING source-idx nodes' outputs.
+        node->bvc (into {}
+                        (map (fn [n]
+                               (let [my-idx (node->src-idx n)
+                                     prior (filter (fn [other]
+                                                     (let [oi (node->src-idx other)]
+                                                       (and (not (identical? other n))
+                                                            (< oi my-idx))))
+                                                   nodes)
+                                     bvc (reduce (fn [acc o]
+                                                   (if-let [outs (node->output-cards o)]
+                                                     (merge-cards acc outs)
+                                                     acc))
+                                                 initial-bvc prior)]
+                                 [n bvc])))
+                        nodes)
 
         {:keys [ops actual-consumed not-ops]}
         (reduce
          (fn [acc node]
-           (let [bvc (get node->bound-cards node bound-vars)]
+           (let [bvc (get node->bvc node initial-bvc)]
              (cond
                ;; LEntityJoin → entity-group op
                (instance? datahike.query.ir.LEntityJoin node)
