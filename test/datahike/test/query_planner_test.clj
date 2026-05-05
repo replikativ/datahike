@@ -659,3 +659,114 @@
       (is (= #{[4] [6]}
              (binding [q/*force-legacy* false] (d/q query db)))
           "Entities 4 and 6 match: both have val-a == val-b"))))
+
+;; ---------------------------------------------------------------------------
+;; get-else with :attribute-refs? on temporal DB (legacy lookup path)
+
+(deftest test-get-else-attribute-refs-on-as-of
+  ;; Regression for two bugs in the planner's handling of get-else on temporal
+  ;; DBs (AsOfDB / SinceDB / HistoricalDB):
+  ;;
+  ;; 1. KEYWORD RESOLUTION. When :attribute-refs? is enabled, every other
+  ;;    data-pattern clause has its keyword attribute resolved to the
+  ;;    attribute eid by resolve-pattern-lookup-refs. The function form
+  ;;    [(get-else $ ?e :attr default) ?v] is classified as :function, so
+  ;;    its inner :attr keyword was never visited by that pass — the
+  ;;    synthetic LOptionalScan clause carried a keyword while surrounding
+  ;;    merge-clauses carried eids. Fused-path resolves keywords at runtime
+  ;;    via build-merge-attrs/resolve-attr, so the bug only manifested on
+  ;;    the legacy lookup-batch-search path. Fixed by resolving the attr
+  ;;    when constructing LOptionalScan in logical.cljc.
+  ;;
+  ;; 2. INNER-JOIN INSTEAD OF LEFT-OUTER. The legacy entity-group path
+  ;;    treats every merge as an inner-join via lookup-batch-search,
+  ;;    including LOptionalScan-derived merges. That drops upstream tuples
+  ;;    whose entity lacks the optional attribute, instead of emitting them
+  ;;    with the default value. Fixed in execute.cljc by routing optional
+  ;;    merges through bind-by-fn (which evaluates -get-else per row),
+  ;;    matching the legacy engine's behavior for the same query.
+  ;;
+  ;; Reported by Jonas Östlund (jobtech-taxonomy-api), where show-versions
+  ;; queries against (d/get-db cfg :next) returned empty result sets.
+  (let [cfg {:store {:backend :memory
+                     :id (java.util.UUID/randomUUID)}
+             :attribute-refs? true
+             :keep-history? true
+             :schema-flexibility :write}
+        _ (d/delete-database cfg)
+        _ (d/create-database cfg)
+        conn (d/connect cfg)
+        _ (d/transact conn
+                      [{:db/ident :concept/id :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                       {:db/ident :concept/type :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}
+                       {:db/ident :concept/legacy-id :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one}])
+        ;; "A" has the optional attribute, "B" does not — second bug exposed.
+        _ (d/transact conn [{:concept/id "A" :concept/type "T"
+                             :concept/legacy-id "1384"}
+                            {:concept/id "B" :concept/type "T"}])
+        ;; Drive both engines through an as-of DB so the :entity-group op
+        ;; falls into the legacy lookup path.
+        db (d/as-of @conn (java.util.Date.))
+        query '[:find ?id ?legacy
+                :in $ [?type ...]
+                :where [?c :concept/id ?id]
+                [?c :concept/type ?type]
+                [(get-else $ ?c :concept/legacy-id "missing") ?legacy]]]
+    (assert-engines-agree db query [["T"]])
+    (is (= #{["A" "1384"] ["B" "missing"]}
+           (binding [q/*force-legacy* false] (d/q query db ["T"])))
+        "Both concepts returned: A with its legacy-id, B with the default.")
+    (d/release conn)))
+
+;; ---------------------------------------------------------------------------
+;; estimate-pattern-with-bindings — bound-aware cardinality estimation
+;;
+;; Without bound-var-cards, every pattern with `[?e a ?v]` (a ground, e/v free)
+;; on the same attribute returns the same estimate (= attribute-count). This
+;; collapses scan-vs-merge selection in entity groups when patterns differ only
+;; in which free var is bound from upstream — see the eures regression where
+;; the planner picks the worst pattern as scan. estimate-pattern-with-bindings
+;; uses bound-var cardinalities to differentiate.
+
+(deftest test-estimate-pattern-with-bindings
+  (let [;; A schema with one indexed cardinality-one ref attr
+        db (d/db-with (db/empty-db {:friend {:db/valueType   :db.type/ref
+                                             :db/cardinality :db.cardinality/one
+                                             :db/index       true}})
+                      [{:db/id 1}
+                       {:db/id 2 :friend 1}
+                       {:db/id 3 :friend 1}
+                       {:db/id 4 :friend 2}
+                       {:db/id 5 :friend 3}])
+        ;; Look up the resolved attribute for use in pattern-info
+        analyze (requiring-resolve 'datahike.query.analyze/pattern-schema-info)
+        estimate-with-bindings (requiring-resolve 'datahike.query.estimate/estimate-pattern-with-bindings)
+        estimate (requiring-resolve 'datahike.query.estimate/estimate-pattern)
+        ;; pattern: [?e :friend ?f] — both free
+        pi-free      {:e '?e :a :friend :v '?f :pattern '[?e :friend ?f]}
+        si           (analyze db pi-free)
+        ;; with no bindings, returns attr-total-count
+        base         (estimate db pi-free si)
+        ;; with ?e bound (3 entities have :friend), card-one → ≤ 3
+        with-e-bound (estimate-with-bindings db pi-free si {'?e 3})
+        ;; with ?f bound (small number of distinct friend targets), value-side fan-out
+        with-v-bound (estimate-with-bindings db pi-free si {'?f 1})
+        ;; with both bound: point lookup
+        with-both    (estimate-with-bindings db pi-free si {'?e 3 '?f 1})]
+    (testing "base estimate (no bindings) returns attribute total"
+      (is (>= base 4)
+          (str "base should be ≥ 4 datoms with :friend, got " base)))
+    (testing "entity-bound is ≤ entity cardinality (card-one)"
+      (is (<= with-e-bound 3)
+          (str "with ?e bound to 3 entities, expected ≤ 3, got " with-e-bound)))
+    (testing "value-bound for indexed attr is per-value fan-out"
+      (is (< with-v-bound base)
+          (str "with ?v bound, expected < base " base ", got " with-v-bound)))
+    (testing "both bound is a point lookup"
+      (is (<= with-both 3)
+          (str "both-bound should be ≤ min(3,1,base)≤3, got " with-both)))
+    (testing "empty bindings = base"
+      (is (= base (estimate-with-bindings db pi-free si {}))))))

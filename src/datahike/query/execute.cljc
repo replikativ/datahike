@@ -1175,6 +1175,12 @@
         temporal-tx-filter (aget ^objects temporal-ctx 13)
         scan-added-val (aget ^objects temporal-ctx 14)
         origin-db (aget ^objects temporal-ctx 15)
+        ;; Optional merge arrays (added for get-else on temporal DBs).
+        ;; Nil-safe so callers built before this slot was added still work.
+        ^objects merge-optional (when (> (alength ^objects temporal-ctx) 16)
+                                  (aget ^objects temporal-ctx 16))
+        ^objects merge-defaults (when (> (alength ^objects temporal-ctx) 17)
+                                  (aget ^objects temporal-ctx 17))
         ^objects merge-datoms merge-datoms
         ^ints find-source find-source
         ^objects const-vals const-vals]
@@ -1252,9 +1258,16 @@
                                          found? (and d (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter))]
                                      (if anti?
                                        (when (not found?) (process-merges (inc mi)))
-                                       (when found?
-                                         (aset merge-datoms mi d)
-                                         (process-merges (inc mi)))))
+                                       (cond
+                                         found?
+                                         (do (aset merge-datoms mi d)
+                                             (process-merges (inc mi)))
+                                         ;; Optional merge (get-else): emit synthetic
+                                         ;; default-valued datom on miss.
+                                         (and merge-optional (aget merge-optional mi))
+                                         (do (aset merge-datoms mi
+                                                   (datom eid ra (aget merge-defaults mi) tx0))
+                                             (process-merges (inc mi))))))
                                  ;; Temporal card-one: for as-of/since, try direct lookupGE
                                  ;; on current EAVT (avoids lazy-seq merge overhead per entity).
                                    (if (and (not= temporal-type :historical) temporal-tx-filter)
@@ -1278,8 +1291,19 @@
                                                  (if anti? nil
                                                      (do (aset merge-datoms mi td)
                                                          (process-merges (inc mi))))
-                                                 (when anti? (process-merges (inc mi)))))
-                                             (when anti? (process-merges (inc mi)))))))
+                                                 (cond
+                                                   anti? (process-merges (inc mi))
+                                                   ;; Optional merge: emit default on miss
+                                                   (and merge-optional (aget merge-optional mi))
+                                                   (do (aset merge-datoms mi
+                                                             (datom eid ra (aget merge-defaults mi) tx0))
+                                                       (process-merges (inc mi))))))
+                                             (cond
+                                               anti? (process-merges (inc mi))
+                                               (and merge-optional (aget merge-optional mi))
+                                               (do (aset merge-datoms mi
+                                                         (datom eid ra (aget merge-defaults mi) tx0))
+                                                   (process-merges (inc mi))))))))
                                    ;; Historical: full temporal-merge-slice (needs all versions)
                                      (let [from-d (datom eid ra (when vg? vgv) tx0)
                                            to-d (datom eid ra (when vg? vgv) txmax)
@@ -1289,11 +1313,16 @@
                                        (if anti?
                                          (when (not-any? (fn [^Datom d] (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter)) mslice)
                                            (process-merges (inc mi)))
-                                         (when-let [^Datom d (some (fn [^Datom d]
-                                                                     (when (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter) d))
-                                                                   mslice)]
-                                           (aset merge-datoms mi d)
-                                           (process-merges (inc mi)))))))))))]
+                                         (if-let [^Datom d (some (fn [^Datom d]
+                                                                   (when (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter) d))
+                                                                 mslice)]
+                                           (do (aset merge-datoms mi d)
+                                               (process-merges (inc mi)))
+                                           ;; Optional merge: emit default when no version matched
+                                           (when (and merge-optional (aget merge-optional mi))
+                                             (aset merge-datoms mi
+                                                   (datom eid ra (aget merge-defaults mi) tx0))
+                                             (process-merges (inc mi))))))))))))]
                    (process-merges 0)))))))
        :cljs
        (doseq [scan-d slice
@@ -1334,8 +1363,14 @@
                                    found? (and d (temporal-merge-datom-match? d eid ra vg? vgv check-v? check-tx? scan-d temporal-tx-filter added-filter))]
                                (if anti?
                                  (when (not found?) (process-merges (inc mi)))
-                                 (when found?
-                                   (aset merge-datoms mi d) (process-merges (inc mi)))))))))]
+                                 (cond
+                                   found?
+                                   (do (aset merge-datoms mi d) (process-merges (inc mi)))
+                                   ;; Optional merge: emit synthetic default datom on miss
+                                   (and merge-optional (aget merge-optional mi))
+                                   (do (aset merge-datoms mi
+                                             (datom eid ra (aget merge-defaults mi) tx0))
+                                       (process-merges (inc mi))))))))))]
                (process-merges 0))))))))
 
 ;; ---------------------------------------------------------------------------
@@ -1515,7 +1550,8 @@
                                                merge-temporal-only merge-cursor-cache
                                                temporal-eavt-pss temporal-cursors
                                                temporal-type temporal-tx-filter
-                                               scan-added-val origin-db])
+                                               scan-added-val origin-db
+                                               merge-optional merge-defaults])
                                 cancel))
 
       ;; Non-temporal dispatch via fused-path keyword
@@ -3202,16 +3238,58 @@
                 ;; Temporal/non-standard DB — fall back to per-clause legacy lookup.
                 ;; lookup-batch-search takes [source context orig-pattern resolved-pattern];
                 ;; passing clause twice is intentional (no resolution needed in fallback).
+                ;;
+                ;; Optional merges (LOptionalScan from get-else) require left-outer
+                ;; semantics with a default-on-miss. lookup-batch-search is inner-join,
+                ;; so we route optional merges through bind-by-fn (which evaluates
+                ;; -get-else per row, mirroring the legacy engine).
                 (let [scan-clause (:clause (:scan-op op))
-                      merge-clauses (mapv :clause
-                                          (remove :anti? (:merge-ops op)))
-                      anti-clauses (mapv :clause
-                                         (filter :anti? (:merge-ops op)))
-                      all-clauses (into [scan-clause] merge-clauses)
+                      scan-evar (first scan-clause)
+                      all-merge-ops (:merge-ops op)
+                      regular-merge-clauses (mapv :clause
+                                                  (filter (fn [m] (not (or (:anti? m) (:optional? m))))
+                                                          all-merge-ops))
+                      optional-merge-ops (filterv :optional? all-merge-ops)
+                      anti-clauses (mapv :clause (filter :anti? all-merge-ops))
+                      ;; Run scan with full ctx so upstream constants/constraints
+                      ;; (e.g. const-bound safe-vars, lookup-refs in v) feed into
+                      ;; the scan's substitution.
+                      ctx-after-scan (binding [rel/*implicit-source* op-db]
+                                       (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
+                                        op-db ctx scan-clause scan-clause))
+                      ;; For each merge clause, trim ctx to rels connected to the
+                      ;; scan entity-var. Independent upstream rels (no shared var
+                      ;; with scan-derived rels) would otherwise cause
+                      ;; lookup-batch-search to substitute the cartesian of all
+                      ;; bound rels — a blowup when upstream and scan-rel are
+                      ;; both large but disjoint. After lookup we re-add the
+                      ;; aside rels; collapse-rels hash-joins on shared vars
+                      ;; (e.g. the merge-introduced v-var) — semantically
+                      ;; equivalent to cartesian-then-filter, but avoids the
+                      ;; quadratic substitution.
+                      contains-scan-evar? (fn [r] (contains? (set (keys (:attrs r))) scan-evar))
                       ctx' (binding [rel/*implicit-source* op-db]
                              (reduce (fn [c clause]
-                                       (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db c clause clause))
-                                     ctx all-clauses))
+                                       (let [{scan-rels true other-rels false}
+                                             (group-by contains-scan-evar? (:rels c))
+                                             trimmed-ctx (assoc c :rels (vec scan-rels))
+                                             after-merge (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search))
+                                                          op-db trimmed-ctx clause clause)
+                                             final-rels (reduce rel/collapse-rels
+                                                                (:rels after-merge)
+                                                                (or other-rels []))]
+                                         (assoc c :rels final-rels)))
+                                     ctx-after-scan regular-merge-clauses))
+                      ;; Optional merges via per-row bind-by-fn(get-else). Synthetic
+                      ;; clause is [e-var attr bind-var] (attr already resolved to eid
+                      ;; in :attribute-refs? mode by logical.cljc).
+                      ctx' (binding [rel/*implicit-source* op-db]
+                             (reduce (fn [c opt-merge]
+                                       (let [[e-var attr bind-var] (:clause opt-merge)
+                                             default-val (:default-value opt-merge)
+                                             fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
+                                         (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) c fn-clause)))
+                                     ctx' optional-merge-ops))
                       ;; Apply anti-merges: look up each anti clause and subtract its matches
                       ctx' (binding [rel/*implicit-source* op-db]
                              (reduce (fn [c anti-clause]
@@ -3222,7 +3300,28 @@
                                                         (reduce rel/hash-join (:rels neg-ctx)))
                                              result (if neg-join (rel/subtract-rel join-rel neg-join) join-rel)]
                                          (assoc c :rels [result])))
-                                     ctx' anti-clauses))]
+                                     ctx' anti-clauses))
+                      ;; Apply pushed-down predicates as post-filters. The
+                      ;; planner records each push-down predicate's original
+                      ;; clause in the scan-op's :pushdown-preds list and adds
+                      ;; the clause to the plan's :consumed-preds set, so the
+                      ;; clause-level predicate isn't emitted as its own
+                      ;; :predicate op. The fused PSS scan path applies these
+                      ;; via slice bounds + strict-filter inside
+                      ;; execute-fused-scan-rel; the temporal fallback uses
+                      ;; lookup-batch-search which doesn't honor :pushdown-preds,
+                      ;; so without a post-filter the predicate is silently
+                      ;; dropped — surfaced in jobtech daynotes tests as rows
+                      ;; matching ?inst < ?from-version that should have been
+                      ;; filtered out.
+                      pushdown-pred-clauses
+                      (concat (mapv :pred-clause (:pushdown-preds (:scan-op op)))
+                              (mapcat #(mapv :pred-clause (:pushdown-preds %)) all-merge-ops))
+                      ctx' (binding [rel/*implicit-source* op-db]
+                             (reduce (fn [c pred-clause]
+                                       (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                        c pred-clause))
+                                     ctx' (filter some? pushdown-pred-clauses)))]
                   (recur ctx' plan (inc idx))))
 
               ;; Single pattern scan
@@ -3240,8 +3339,20 @@
                   ;; Temporal/non-standard DB — use legacy lookup with search context.
                   ;; lookup-batch-search takes [source context orig-pattern resolved-pattern];
                   ;; passing clause twice — no resolution needed in fallback.
+                  ;; If this op is a standalone LOptionalScan-derived pattern-scan
+                  ;; (get-else where the entity isn't shared with another scan in
+                  ;; the same scope, e.g. `?e` only appears inside OR branches),
+                  ;; the legacy lookup-batch-search would inner-join and drop
+                  ;; entities lacking the attribute. Route through bind-by-fn for
+                  ;; left-outer-with-default semantics, matching the legacy
+                  ;; engine's behavior for [(get-else …) ?v].
                   (let [ctx' (binding [rel/*implicit-source* op-db]
-                               (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op)))]
+                               (if (:optional? op)
+                                 (let [[e-var attr bind-var] (:clause op)
+                                       default-val (:default-value op)
+                                       fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
+                                   (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx fn-clause))
+                                 (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op))))]
                     (recur ctx' plan (inc idx)))
                 ;; DB source — use fused scan or single pattern scan
                   (let [;; Check if next ops form an ad-hoc fusable group

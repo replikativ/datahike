@@ -161,6 +161,138 @@
     (estimate-pattern-counted db pattern-info schema-info)
     (estimate-pattern-heuristic db pattern-info schema-info)))
 
+;; ---------------------------------------------------------------------------
+;; Distinct-value sampling for fan-out estimation
+;;
+;; When a pattern's value position is a free var that's bound from upstream,
+;; the effective per-call cardinality is the AVERAGE matches per value, not
+;; the total attribute count. We approximate this as
+;;     attr-total-count / distinct-value-count
+;; sampling distinct values from the AVET / AEVT slice.
+
+(defn- sample-distinct-v-count
+  "Estimate the number of distinct values for a ground attribute.
+   For unique attrs, returns attr-count (1:1). For others, samples up to
+   `sample-size` datoms from AVET (preferred) or AEVT and counts distinct vals,
+   extrapolating against the total slice count.
+   Returns a positive long, or nil if estimation isn't possible."
+  [db pattern-info schema-info]
+  (let [{:keys [a]} pattern-info
+        ground? (fn [x] (and (some? x) (not (symbol? x))))]
+    (when (ground? a)
+      (let [resolved-a (if (and (:attribute-refs? (dbi/-config db)) (keyword? a))
+                         (dbi/-ref-for db a)
+                         a)
+            attr-count (di/-count-slice (:aevt db)
+                                        (datom e0 resolved-a nil tx0)
+                                        (datom emax resolved-a nil txmax)
+                                        cmp-attr-only)]
+        (cond
+          (zero? attr-count) 1
+          (:unique? schema-info) attr-count
+          :else
+          (let [;; Prefer AVET (already sorted by value) — distinct values appear in runs
+                index-key (if (:indexed? schema-info) :avet :aevt)
+                index (get db index-key)]
+            (if (or (not index) (<= attr-count sample-size))
+              ;; Small enough to count exactly via the full slice
+              (let [datoms (di/-slice (or index (:aevt db))
+                                      (datom e0 resolved-a nil tx0)
+                                      (datom emax resolved-a nil txmax)
+                                      (or index-key :aevt))]
+                (max 1 (count (into #{} (map (fn [^datahike.datom.Datom d] (.-v d))) datoms))))
+              ;; Sample first N datoms; count distinct, extrapolate.
+              (let [datoms (into [] (take sample-size)
+                                 (di/-slice index
+                                            (datom e0 resolved-a nil tx0)
+                                            (datom emax resolved-a nil txmax)
+                                            index-key))
+                    n-sampled (count datoms)
+                    n-distinct (count (into #{} (map (fn [^datahike.datom.Datom d] (.-v d))) datoms))]
+                (if (zero? n-sampled)
+                  attr-count
+                  (max 1 (long (* attr-count
+                                  (/ (double n-distinct) (double n-sampled))))))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Bound-aware pattern cardinality estimation
+;;
+;; A free-var position whose var is bound from upstream context is effectively
+;; a probe constraint, not a free position: at execution time the lookup is
+;; per-bound-value, not a full attribute scan. The CARDINALITY OF THE BOUND VAR
+;; is the deciding factor:
+;;   - Bound var with N values × per-value fan-out = effective scan size
+;;   - Free var → attr-total-count (the existing estimator's answer)
+;;
+;; `bound-var-cards` is a {var-symbol → cardinality-upper-bound} map. Vars not
+;; in the map are treated as free.
+
+(defn estimate-pattern-with-bindings
+  "Estimate cardinality for a pattern clause, factoring in upstream-bound
+   free variables. `bound-var-cards` maps each bound var symbol to its known
+   cardinality upper bound (output rel size of the producing op). Vars not in
+   the map are treated as free (pre-existing behavior).
+
+   Semantics:
+     - Both e and v positions bound (or one bound + the other ground):
+         min(bound-card, base) — at most this many matches across all probes.
+     - Only e bound (free or ground v):
+         For card-one: e-card (each entity has at most 1 match for this attr).
+         For card-many: e-card × (attr-total / max-eid) approximation.
+     - Only v bound (free e), attr indexed:
+         v-card × (attr-total / distinct-v) — per-value fan-out from AVET.
+     - Only v bound, attr not indexed: v-card × small-factor (capped by base).
+     - Neither bound: existing estimate-pattern result.
+
+   When `bound-var-cards` is empty, returns the same value as the 3-arity
+   `estimate-pattern`. Defensive: if a caller still passes a plain set
+   instead of a map (legacy interface), entries are treated as bound with
+   unknown cardinality — fall back to 3-arity behavior for those vars."
+  [db pattern-info schema-info bound-var-cards]
+  (let [base (estimate-pattern db pattern-info schema-info)
+        ;; Tolerate both map (var → card) and set (legacy) forms.
+        card-of (fn [m k]
+                  (when (contains? m k)
+                    (let [v (get m k)]
+                      (when (number? v) (long v)))))]
+    (if (or (empty? bound-var-cards) (nil? base))
+      base
+      (let [{:keys [e v]} pattern-info
+            free-var? analyze/free-var?
+            e-card (when (free-var? e) (card-of bound-var-cards e))
+            v-card (when (free-var? v) (card-of bound-var-cards v))]
+        (cond
+          ;; No bound free vars in this pattern — base estimate stands.
+          (and (nil? e-card) (nil? v-card))
+          base
+
+          ;; Both bound — point lookup; matches ≤ min(both cards, base).
+          (and e-card v-card)
+          (max 1 (long (min e-card v-card (or base 1))))
+
+          ;; Entity bound: per-entity probes.
+          e-card
+          (if (:card-one? schema-info)
+            ;; Each bound entity contributes at most 1 datom for this attr.
+            (max 1 (long (min e-card base)))
+            ;; Cardinality-many: rough per-entity fan-out.
+            (let [max-eid (max 1 (long (dbi/-max-eid db)))
+                  fan-out (max 1 (long (/ base max-eid)))]
+              (max 1 (long (min base (* e-card fan-out))))))
+
+          ;; Value bound: per-value probes via AVET (or non-indexed fallback).
+          v-card
+          (if (:indexed? schema-info)
+            (let [distinct-v (or (sample-distinct-v-count db pattern-info schema-info)
+                                 (max 1 (long (/ base 10))))
+                  per-v (max 1 (long (/ base (max 1 distinct-v))))]
+              (max 1 (long (min base (* v-card per-v)))))
+            ;; Non-indexed attr: lacking AVET, use a softer reduction.
+            ;; The existing legacy/temporal path will scan AEVT, so we still
+            ;; pay attribute-count cost; cap at attr-count to avoid false
+            ;; over-estimates of selectivity.
+            (max 1 (long (min base (* v-card 10))))))))))
+
 (defn estimate-predicate-selectivity-heuristic
   "Heuristic selectivity estimate for a predicate operator.
    Used as fallback when sampling is not possible."

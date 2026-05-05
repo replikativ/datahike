@@ -82,10 +82,25 @@
 ;; ---------------------------------------------------------------------------
 ;; Pattern plan ops
 
+(defn- pattern-output-var-cards
+  "Per-output-var cardinality upper bounds for a pattern-scan op.
+   Each free var in the pattern is bounded by the pattern's estimated-card
+   (the slice size). For card-one attributes the bound is tight on the
+   entity position; for card-many it is conservative. Refining (e.g. with
+   distinct-v sampling) can tighten value-position bounds in a follow-up."
+  [pattern-info est]
+  (into {}
+        (map (fn [v] [v est]))
+        (filter analyze/free-var? (:vars pattern-info))))
+
 (defn plan-pattern-op
   "Create a plan operation for a pattern clause.
+   `bound-var-cards` is a {var → cardinality} map of upstream-bound vars
+   used for cardinality estimation. Membership-check semantics (`contains?`)
+   match the prior `bound-vars` set, so internal logic that only checks
+   binding without using the cardinality is unchanged.
    Returns [op actually-consumed-pred-clauses]."
-  [db pattern-info schema-info pushdown-preds bound-vars]
+  [db pattern-info schema-info pushdown-preds bound-var-cards]
   (let [{:keys [e a v tx pattern]} pattern-info
         ground? (fn [x] (and (some? x) (not (symbol? x))))
         e? (ground? e)
@@ -94,6 +109,10 @@
         has-avet? (boolean (:avet db))
         index (select-index pattern-info schema-info has-avet? (seq pushdown-preds))
         effective-preds (if (= :avet index) pushdown-preds [])
+        ;; Base estimate (unconstrained by upstream bindings) — preserves the
+        ;; existing assemble-entity-group pass-rate semantics (pass-rate is
+        ;; merge-est / total-entities, which assumes merge-est is the full
+        ;; attribute count, not a bound-aware filtered count).
         base-est (or (estimate/estimate-pattern db pattern-info schema-info)
                      (di/-count (:eavt db)))
         ;; Build a partial scan-op for sampling context
@@ -101,11 +120,43 @@
         est (if (seq effective-preds)
               (estimate/estimate-pushdown-range base-est effective-preds db scan-ctx)
               base-est)
+        ;; Bound-aware estimate — used for scan-vs-merge selection inside an
+        ;; entity-group (and other op-ordering decisions that should reflect
+        ;; upstream constraints). Defaults to the base estimate when
+        ;; bound-var-cards is empty.
+        ;;
+        ;; SCAN COST vs OUTPUT CARD: estimate-pattern-with-bindings models
+        ;; the OUTPUT cardinality after applying upstream constraints. For
+        ;; an INDEXED attribute on the v-position, OUTPUT ≈ SCAN COST
+        ;; because AVET yields exactly the matching slice. For a
+        ;; NON-INDEXED v-bound pattern, we lack AVET — execution must scan
+        ;; AEVT for the full attribute and post-filter, so the actual scan
+        ;; cost is `base` regardless of how selective v is. dp-order-fuse-ops
+        ;; uses scan-card as a SCAN COST proxy when picking the entity-
+        ;; group's driving scan; using OUTPUT here would mis-rate a
+        ;; non-indexed v-bound pattern as a cheap scan candidate.
+        v-bound? (and (analyze/free-var? v)
+                      (contains? bound-var-cards v)
+                      (let [vc (get bound-var-cards v)] (number? vc)))
+        bound-aware (when (seq bound-var-cards)
+                      (estimate/estimate-pattern-with-bindings
+                       db pattern-info schema-info bound-var-cards))
+        scan-est (cond
+                   (empty? bound-var-cards) est
+                   ;; Non-indexed attr with v as the only bound free var:
+                   ;; scan cost = base (full AEVT scan + post-filter).
+                   (and (not (:indexed? schema-info))
+                        v-bound?
+                        (or e? (analyze/free-var? e))
+                        (not (and (analyze/free-var? e)
+                                  (contains? bound-var-cards e))))
+                   est
+                   :else (or bound-aware est))
         e-bound? (and (analyze/free-var? e)
-                      (contains? bound-vars e))
+                      (contains? bound-var-cards e))
         join-method (cond
                       e-bound? :lookup
-                      (empty? bound-vars) :scan
+                      (empty? bound-var-cards) :scan
                       :else :hash)]
     [(cond-> {:op :pattern-scan
               :clause pattern
@@ -113,6 +164,8 @@
               :schema-info schema-info
               :pushdown-preds effective-preds
               :estimated-card est
+              :scan-card scan-est
+              :output-var-cards (pattern-output-var-cards pattern-info est)
               :join-method join-method
               :vars (:vars pattern-info)
               :e-ground (when e? e)
@@ -228,7 +281,58 @@
      :idx-ident idx-ident
      :engine-meta engine-meta
      :accepts-entity-filter? (:accepts-entity-filter? engine-meta false)
+     ;; The engine declares its binding requirements via the :input-vars
+     ;; key in its var metadata. Recognised values:
+     ;;   :all-bound  → every input arg must be bound (the safe default;
+     ;;                 matches stratum's three exposed engines, all of
+     ;;                 which need their referenced columns materialised
+     ;;                 before they can run).
+     ;;   :any-bound  → at least one input arg must be bound (for solvers
+     ;;                 that can work backwards from any known value).
+     ;;   nil         → fall back to :all-bound at op-cost time (strict
+     ;;                 default — engines that need looser semantics must
+     ;;                 declare them explicitly).
+     :input-vars-spec (:input-vars engine-meta)
      :estimated-card (or (:estimated-card cost) 100)}))
+
+(defn- function-binding-vars
+  "Extract free vars from a function-clause :binding spec.
+   Handles BindScalar, BindColl, BindTuple, BindIgnore — but at the planner
+   level :binding is most often the raw symbol or vector form, so we just
+   collect free-var symbols recursively."
+  [binding]
+  (into #{} (filter analyze/free-var?) (analyze/extract-vars binding)))
+
+(defn- function-output-var-cards
+  "Per-binding-var cardinality bounds for a function op.
+     - (identity X)  → bind-var card = 1 (single value)
+     - (ground COLL) → bind-var card = (count COLL) when literal; else nil
+   For other functions we don't know the output cardinality at plan time
+   without sampling, so omit them — downstream tightens via :estimated-card."
+  [fn-sym args binding]
+  (let [bvars (function-binding-vars binding)]
+    (case fn-sym
+      identity
+      (when (= 1 (count bvars))
+        (zipmap bvars (repeat 1)))
+
+      ground
+      (let [coll (first args)]
+        (cond
+          (and (= 1 (count bvars)) (counted? coll))
+          (zipmap bvars (repeat (max 1 (count coll))))
+
+          ;; (ground [[?a ?b]]) tuple-binding shape — coll is a single-element
+          ;; vector wrapping a tuple destructure; the bindings are produced
+          ;; collectively, count is # of tuples in the source.
+          (and (counted? coll) (sequential? (first coll)))
+          (zipmap bvars (repeat (max 1 (count coll))))
+
+          :else nil))
+
+      ;; Unknown function → omit; ops that consume this rel still see
+      ;; :estimated-card for ordering.
+      nil)))
 
 (defn plan-function-op
   "Create a plan op for a function clause. Checks for external engine metadata."
@@ -237,13 +341,16 @@
    (let [engine-meta (resolve-external-engine-meta (:fn-sym fn-info))]
      (if engine-meta
        (plan-external-engine-op fn-info engine-meta db)
-       {:op :function
-        :clause (:clause fn-info)
-        :fn-sym (:fn-sym fn-info)
-        :args (:args fn-info)
-        :binding (:binding fn-info)
-        :vars (:vars fn-info)
-        :estimated-card nil}))))
+       (let [out-cards (function-output-var-cards
+                        (:fn-sym fn-info) (:args fn-info) (:binding fn-info))]
+         (cond-> {:op :function
+                  :clause (:clause fn-info)
+                  :fn-sym (:fn-sym fn-info)
+                  :args (:args fn-info)
+                  :binding (:binding fn-info)
+                  :vars (:vars fn-info)
+                  :estimated-card nil}
+           out-cards (assoc :output-var-cards out-cards)))))))
 
 (defn plan-passthrough-op [clause-info]
   {:op :passthrough
@@ -262,12 +369,25 @@
   (let [a (second (:clause op))]
     (and (some? a) (not (symbol? a)))))
 
+(defn- scan-cost-of
+  "Cost a pattern would have if used as the entity-group's scan, based on
+   bound-aware :scan-card when available, falling back to :estimated-card."
+  [op]
+  (long (or (:scan-card op) (:estimated-card op) 0)))
+
 (defn dp-order-fuse-ops
   "For N pattern ops on same entity var, find optimal (scan, merge-order).
    Uses short-circuit AND ordering: sort merges by ascending
-   merge-cost / (1 - pass-rate). Try each pattern as scan, pick minimum total cost."
+   merge-cost / (1 - pass-rate). Try each pattern as scan, pick minimum total cost.
+
+   Scan selection uses bound-aware :scan-card so a pattern whose value is
+   constrained by upstream context (smaller effective scan size) is preferred
+   over a pattern with all-free positions on the same attribute. Pass-rate
+   computation still uses :estimated-card (the base attribute count) to
+   preserve the existing per-entity match-probability semantics."
   [db pattern-ops total-entities]
   (let [n (count pattern-ops)
+        ;; Pass-rate estimates use base (unconstrained) cardinality.
         estimates (mapv (fn [op]
                           (max 1 (or (:estimated-card op) total-entities)))
                         pattern-ops)]
@@ -283,12 +403,12 @@
           ;; Force scan-only pattern as scan, rest as merges
           {:scan (first scan-only) :merges (vec (concat (rest scan-only) mergeable))}
           (if (seq non-optional)
-            ;; Prefer non-optional as scan
-            (let [sorted (sort-by :estimated-card non-optional)]
+            ;; Prefer non-optional as scan; pick the lowest BOUND-AWARE cost.
+            (let [sorted (sort-by scan-cost-of non-optional)]
               {:scan (first sorted) :merges (vec (concat (rest sorted)
                                                          (filterv :optional? pattern-ops)))})
-            ;; All optional — pick lowest cardinality as scan
-            (let [sorted (sort-by :estimated-card pattern-ops)]
+            ;; All optional — pick lowest scan-cost as scan
+            (let [sorted (sort-by scan-cost-of pattern-ops)]
               {:scan (first sorted) :merges (vec (rest sorted))}))))
       (let [has-non-optional? (some #(not (:optional? %)) pattern-ops)
             candidates
@@ -301,7 +421,10 @@
                              (or (not has-non-optional?)
                                  (not (:optional? (nth pattern-ops si)))))]
               (let [scan-op (nth pattern-ops si)
-                    scan-card (double (nth estimates si))
+                    ;; Use bound-aware :scan-card for the scan-side cost; merges
+                    ;; still use the unconstrained :estimated-card via `estimates`
+                    ;; for pass-rate computation.
+                    scan-card (double (scan-cost-of scan-op))
                     merges (into [] (keep-indexed
                                      (fn [i op]
                                        (when (not= i si)
@@ -322,8 +445,8 @@
         (if (seq candidates)
           (apply min-key :cost candidates)
           ;; Fallback: if no valid scan/merge partitioning exists (multiple variable-attr ops),
-          ;; just pick lowest cardinality as scan
-          (let [sorted (sort-by :estimated-card pattern-ops)]
+          ;; pick lowest BOUND-AWARE cardinality as scan
+          (let [sorted (sort-by scan-cost-of pattern-ops)]
             {:scan (first sorted) :merges (vec (rest sorted))}))))))
 
 ;; ---------------------------------------------------------------------------
@@ -496,6 +619,16 @@
                            scan-card
                            merge-ops)
         output-vars (into #{} (mapcat :vars) (into pattern-ops anti-ops))
+        ;; Per-output-var cardinality. The group's output rel size is `group-card`,
+        ;; which bounds every var the group produces. For tighter per-var bounds
+        ;; we'd need to track which patterns produce which vars + their individual
+        ;; cardinalities — for now the group-level bound suffices for downstream
+        ;; planning decisions (it differentiates a 4k-tuple group from a 150k one).
+        group-card-final (max 1 group-card)
+        output-var-cards (into {}
+                               (comp (filter analyze/free-var?)
+                                     (map (fn [v] [v group-card-final])))
+                               output-vars)
         ;; Merge-ops' pushdown preds can't be applied (merge uses EAVT lookupGE,
         ;; not AVET scan). Collect them so they can be restored as standalone preds.
         merge-lost-preds (into #{} (comp (mapcat :pushdown-preds) (map :pred-clause)) merge-ops)
@@ -506,8 +639,9 @@
                        :scan-op final-scan
                        :merge-ops final-merges
                        :output-vars output-vars
+                       :output-var-cards output-var-cards
                        :vars output-vars
-                       :estimated-card (max 1 group-card)
+                       :estimated-card group-card-final
                        :pipeline (build-pipeline final-scan final-merges db)}
                 source (assoc :source source))]
     {:op eg-op
@@ -781,62 +915,141 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Cost-based ordering for mixed ops (groups + predicates + functions + OR/NOT)
+;;
+;; The contract: each op type declares which vars MUST be bound for the op to
+;; run correctly at execute time. `op-required-vars` is the single source of
+;; truth — adding a new op type means extending this function. `op-cost` then
+;; uses it to decide whether an op is runnable (and at what cost) given the
+;; current bound-vars set.
+;;
+;; The split between "input" vars (must be bound) and "output" vars (produced
+;; by the op) was historically encoded ad-hoc per op type inside op-cost,
+;; which led to drift: e.g. `:external-engine` solver mode used `(some
+;; bound-vars op-vars)` while filter/retrieval used `(every? bound-vars
+;; input-args)`, even though both have the same fundamental need (input
+;; columns must be materialised before the engine can use them). Centralising
+;; the contract here makes it easy to audit and to extend.
 
 (def ^:private max-cost #?(:clj Long/MAX_VALUE :cljs (.-MAX_SAFE_INTEGER js/Number)))
 
-(defn op-cost [op bound-vars]
+(defn op-required-vars
+  "The set of vars that MUST be bound before `op` can execute correctly.
+
+   Returns a tuple [vars policy] where `policy` is one of:
+     :all     — every var in `vars` must be bound
+     :any     — at least one var in `vars` must be bound (used by external
+                engines that can solve from any known column)
+     :none    — op can run unconditionally (producer ops)
+
+   This is consumed by `op-cost`: returning :none means the op is always
+   runnable; :all/:any check `bound-vars` accordingly. `vars` is empty
+   when policy is :none.
+
+   Per op type (see also docstrings in plan-*-op constructors):
+
+     :entity-group, :pattern-scan
+       Producer; emits all its free-var positions. EXCEPT when
+       :optional? is set (LOptionalScan from get-else, which routes
+       through bind-by-fn at execute time and silently binds the e-var
+       to nil if it isn't yet in ctx.rels — see commit c8a11a0e).
+
+     :predicate
+       Pure filter; needs every var it references bound — there are no
+       outputs.
+
+     :function
+       Computes a value from `:args`, binds it to `:binding`. Inputs
+       are the free-var symbols inside :args, recursively.
+
+     :external-engine
+       Honours the `:input-vars` declaration on the engine's var
+       metadata (`:datahike/external-engine`). Stratum's three engines
+       all declare `:all-bound`. A nil/absent declaration falls back
+       to :all on input-args — the safe default. An engine that can
+       work backwards from any one column declares `:any-bound`.
+
+     :rule-lookup
+       Producer; reads from `:rule-accumulators` in ctx (populated by
+       the surrounding :recursive-rule fixpoint), so its dependency is
+       structural, not bound-vars-based.
+
+     :recursive-rule
+       Currently strict: every var in :vars (= all free call-args)
+       must be bound. This prevents the rule from running as a
+       pure producer. Loosening would require knowing per-rule which
+       call-args are inputs vs outputs, which requires rule-body
+       analysis — left for follow-up. Documented here for reference.
+
+     :or, :or-join
+       Branches collectively produce join-vars; we require AT LEAST
+       ONE join-var bound so the branches have some upstream
+       constraint to filter against. Stricter ('all bound') would
+       prevent the OR from running as a producer; looser ('none')
+       would risk Cartesian fan-out from the branches.
+
+     :not, :not-join
+       Anti-join; needs the WHOLE set of join-vars / referenced vars
+       bound so we can subtract from a fully-formed candidate set.
+
+     :passthrough, anything else
+       Unknown / fallback op — treated as un-runnable until it gets
+       a concrete contract."
+  [op]
   (case (:op op)
     (:entity-group :pattern-scan)
-    (group-effective-card op)
+    (if (and (:optional? op)
+             (let [e (first (:clause op))]
+               (analyze/free-var? e)))
+      [#{(first (:clause op))} :all]
+      [#{} :none])
 
     :predicate
-    (if (every? #(contains? bound-vars %) (:vars op)) 0 max-cost)
+    [(set (:vars op)) :all]
 
     :function
-    ;; Use args-free-vars (recursive) so nested expressions like
-    ;; (and (= ?x 1) (not ?y)) correctly report ?x and ?y as inputs
-    ;; instead of an empty set. See args-free-vars docstring.
-    (let [input-vars (args-free-vars (:args op))]
-      (if (every? #(contains? bound-vars %) input-vars) 1 max-cost))
+    [(args-free-vars (:args op)) :all]
 
     :external-engine
-    (if (= :solver (:mode op))
-      ;; Solver mode needs populated context — require at least some of its
-      ;; vars to be bound first (shared vars come from entity-group patterns)
-      (let [op-vars (into #{} (filter analyze/free-var?) (:vars op))]
-        (if (some #(contains? bound-vars %) op-vars)
-          (or (:estimated-card op) 100)
-          max-cost))
-      ;; Filter/retrieval: check args for free var deps
-      (let [input-vars (args-free-vars (:args op))]
-        (if (every? #(contains? bound-vars %) input-vars)
-          (or (:estimated-card op) 100)
-          max-cost)))
+    (let [input-args (args-free-vars (:args op))
+          spec (:input-vars-spec op)]
+      (case spec
+        :any-bound [input-args :any]
+        ;; :all-bound and any unrecognised value default to strict.
+        ;; nil (no declaration) also defaults to strict — the safe
+        ;; assumption.
+        [input-args :all]))
 
     :rule-lookup
-    (or (:estimated-card op) 100)
+    [#{} :none]
 
-    ;; NOT/NOT-JOIN: require ALL referenced vars bound (negation needs full context)
-    (:not :not-join :recursive-rule)
-    (let [required (or (:join-vars op) (:vars op))]
-      (if (every? #(contains? bound-vars %) required)
-        (or (:estimated-card op) 100)
-        max-cost))
+    :recursive-rule
+    [(set (or (:join-vars op) (:vars op))) :all]
 
-    ;; OR/OR-JOIN: join-vars include both input vars (bound from outer context)
-    ;; and output vars (produced by branches). Only input vars need pre-binding.
-    ;; The branches handle unbound join-vars by producing them.
-    ;; execute-or-join's limited-ctx correctly projects to only the bound vars.
+    (:not :not-join)
+    [(set (or (:join-vars op) (:vars op))) :all]
+
     (:or :or-join)
-    (let [join-vars (or (:join-vars op) (:vars op))
-          bound-join (clojure.set/intersection join-vars bound-vars)]
-      (if (seq bound-join)
-        ;; At least one join-var is bound — branches have some constraint
-        (or (:estimated-card op) 100)
-        ;; No join-vars bound yet — can't execute until at least one is bound
-        max-cost))
+    [(set (or (:join-vars op) (:vars op))) :any]
 
-    max-cost))
+    ;; Unknown / passthrough — gate forever (caller must decide what to do).
+    [#{} :all]))
+
+(defn op-cost [op bound-vars]
+  (let [[required policy] (op-required-vars op)
+        ready? (case policy
+                 :none true
+                 :all  (or (empty? required)
+                           (every? #(contains? bound-vars %) required))
+                 :any  (some #(contains? bound-vars %) required))]
+    (if-not ready?
+      max-cost
+      ;; Per-op cost when ready: producers use cardinality, filters cost 0,
+      ;; functions cost 1, others use :estimated-card or fall back to 100.
+      (case (:op op)
+        (:entity-group :pattern-scan) (group-effective-card op)
+        :predicate                    0
+        :function                     1
+        (or (:estimated-card op) 100)))))
 
 (defn order-plan-ops
   "Order plan operations using DP for entity-group ordering and greedy
@@ -845,8 +1058,25 @@
    total intermediate cardinality. The greedy phase then inserts non-group
    ops at the earliest point where their dependencies are satisfied."
   [ops]
-  (let [groups (filterv #(#{:entity-group :pattern-scan} (:op %)) ops)
-        non-groups (filterv #(not (#{:entity-group :pattern-scan} (:op %))) ops)]
+  (let [;; LOptionalScan-derived pattern-scans (get-else with default) need
+        ;; their entity var bound BEFORE they execute — at runtime the
+        ;; optional path goes through bind-by-fn(get-else) which evaluates
+        ;; per-row, and a row without the e-var bound emits a tuple where
+        ;; e-var is nil and the bind-var is the default value. That nil-e
+        ;; row poisons every downstream op that uses ?e, surfacing as
+        ;; all-nil-tuple find results in jobtech daynotes tests. Treating
+        ;; optional scans as regular groups lets dp-order-groups place
+        ;; them by cardinality alone (no dependency awareness), so they
+        ;; can land before their binders. Demoting them to non-groups
+        ;; routes them through the cost-based interleaver, which checks
+        ;; bound-vars via op-cost and waits until the e-var is bound.
+        optional-scan? (fn [op]
+                         (and (= :pattern-scan (:op op))
+                              (:optional? op)))
+        groups (filterv #(and (#{:entity-group :pattern-scan} (:op %))
+                              (not (optional-scan? %))) ops)
+        non-groups (filterv #(or (not (#{:entity-group :pattern-scan} (:op %)))
+                                 (optional-scan? %)) ops)]
     (if (empty? groups)
       ;; No groups — pure greedy on non-group ops
       (loop [remaining (set ops)
@@ -1058,17 +1288,55 @@
                                        [(list 'identity orig) safe])))
                              (map vector call-args-safe call-args))
         replacements (zipmap rule-args call-args-safe)
-        ;; Resolve keyword attrs to entity refs in attribute-refs mode
+        ;; Resolve keyword attrs to entity refs in attribute-refs mode.
+        ;;
+        ;; The resolution must recurse through compound clause forms
+        ;; (or, or-join, and, not, not-join, source-prefixed) to reach
+        ;; data patterns nested inside them. Without recursion, a rule
+        ;; body like `(or-join [...] [?e :attr ?v] ...)` would keep its
+        ;; inner pattern's attribute as a keyword while the outer
+        ;; query's clauses get resolved by substitute-consts-with-lookup-refs
+        ;; — at execute-time the lookup-batch-search path then slices
+        ;; AEVT for the keyword, finds zero datoms (datoms in
+        ;; :attribute-refs? mode are stored with attr=eid, not keyword),
+        ;; and the rule branch silently produces empty results. Surface
+        ;; symptom in jobtech: 3 changelog tests on HistoricalDB return
+        ;; 0 rows instead of the expected change events.
         attr-refs? (:attribute-refs? (dbi/-config db))
-        resolve-clause (fn [clause]
-                         (if (and attr-refs?
-                                  (vector? clause)
-                                  (not (sequential? (first clause)))
-                                  (keyword? (second clause)))
-                           (assoc clause 1 (dbi/-ref-for db (second clause)))
-                           clause))
+        data-pattern? (fn [x]
+                        (and (vector? x)
+                             (let [f (first x)]
+                               (or (and (symbol? f) (analyze/free-var? f))
+                                   (number? f)
+                                   (and (vector? f) (= 2 (count f)))))
+                             (or (keyword? (second x))
+                                 (and (symbol? (second x)) (analyze/free-var? (second x)))
+                                 (number? (second x)))))
+        resolve-attr-in-pattern (fn [pat]
+                                  (if (and attr-refs? (keyword? (second pat)))
+                                    (assoc pat 1 (dbi/-ref-for db (second pat)))
+                                    pat))
+        resolve-recursive (fn resolve-recursive [form]
+                            (cond
+                              ;; Data pattern: resolve its attr.
+                              (data-pattern? form)
+                              (resolve-attr-in-pattern form)
+
+                              ;; Compound list form (or, or-join, and, not, not-join, etc.)
+                              ;; — recurse into elements that look like clauses.
+                              (and (sequential? form)
+                                   (symbol? (first form))
+                                   (#{'or 'or-join 'and 'not 'not-join} (first form)))
+                              (let [head (first form)
+                                    ;; or-join / not-join have a vars vector after the head
+                                    [pre-rest body] (case head
+                                                      (or-join not-join) [(take 2 form) (drop 2 form)]
+                                                      [(take 1 form) (rest form)])]
+                                (concat pre-rest (map resolve-recursive body)))
+
+                              :else form))
         renamed (mapv (fn [c]
-                        (resolve-clause
+                        (resolve-recursive
                          (clojure.walk/postwalk
                           (fn [x]
                             (if (analyze/free-var? x)
@@ -1129,8 +1397,16 @@
                                                 (not (some is-scc-call? body))))
                                    base-bs (filterv is-base? rn-branches)
                                    rec-bs (filterv (complement is-base?) rn-branches)
-                          ;; Head vars are bound within rule branches (from call args / accumulator)
-                                   branch-bound (into bound-vars (filter analyze/free-var?) free-call-args)
+                          ;; Head vars are bound within rule branches (from call args / accumulator).
+                          ;; Recursive rules: head-vars take their values from the accumulator
+                          ;; (one row of the recursive rel) — treat them as bound with a
+                          ;; conservative card-1 placeholder under the bound-var-cards model.
+                                   free-args (filter analyze/free-var? free-call-args)
+                                   branch-bound (cond
+                                                  (map? bound-vars)
+                                                  (into bound-vars (map (fn [v] [v 1])) free-args)
+                                                  :else
+                                                  (into bound-vars free-args))
                                    base-ps (mapv (fn [b]
                                                    (let [renamed (rename-branch-vars b free-call-args seqid db)]
                                                      (create-plan db (vec renamed) branch-bound rules)))
@@ -1198,8 +1474,28 @@
           (let [seqid (gensym "r")
                 expanded (for [branch branches]
                            (rename-branch-vars branch call-args seqid db))
-                ;; Call args that are free vars are bound within the rule body
-                rule-bound (into bound-vars (filter analyze/free-var?) call-args)
+                ;; Build the rule body's bound-var-cards:
+                ;;   - existing outer bound-vars/cards stay (vars truly bound from outside)
+                ;;   - synthetic safe-vars for non-var call-args get card 1 (each is a
+                ;;     single const value, bound by the [(identity X) safe-var] preamble
+                ;;     that rename-branch-vars prepends to the body)
+                ;;   - free call-args that aren't already in bound-vars are rule OUTPUTS,
+                ;;     not body inputs — do NOT add them; estimate-pattern-with-bindings
+                ;;     correctly treats them as free for selectivity.
+                ;;
+                ;; This shape mirrors call-args-safe inside rename-branch-vars; we
+                ;; recompute it here to avoid leaking it across the API.
+                const-safe-vars (keep-indexed
+                                 (fn [i arg]
+                                   (when-not (analyze/free-var? arg)
+                                     (symbol (str "?__const__" i "__auto__" seqid))))
+                                 call-args)
+                ;; Tolerate both legacy set-form bound-vars and new map-form bound-var-cards.
+                rule-bound (cond
+                             (map? bound-vars)
+                             (into bound-vars (map (fn [v] [v 1])) const-safe-vars)
+                             :else
+                             (into bound-vars const-safe-vars))
                 sub-plans (mapv #(create-plan db (vec %) rule-bound rules) expanded)
                 total-est (reduce + 0 (keep (fn [p] (some :estimated-card (:ops p))) sub-plans))]
             {:op :or
@@ -1247,9 +1543,28 @@
          ;; This includes vars from patterns inside NOT/OR/source-prefix.
          ;; Used as enriched bound-vars when building sub-plans, so nested
          ;; NOT/OR know what vars will be available from the outer context.
-         all-clause-vars (into bound-vars
-                               (mapcat analyze/extract-vars)
-                               where-clauses)
+         ;;
+         ;; bound-vars may be a Map (var → card) under the bound-var-cards
+         ;; model or a Set (legacy interface). When a Map: preserve the
+         ;; outer entries verbatim (so cards reach inner pattern estimation
+         ;; via plan-or-op / plan-rule-op / plan-not-op → create-plan), and
+         ;; mark newly-extracted in-scope vars with a non-numeric sentinel.
+         ;; estimate-pattern-with-bindings's card-of returns nil for
+         ;; non-numbers, so sentinel entries are ignored for cardinality
+         ;; estimation while still passing `contains?` membership checks
+         ;; needed for join-var validation and rule-call detection.
+         all-clause-vars (let [extracted (into #{} (mapcat analyze/extract-vars) where-clauses)]
+                           (cond
+                             (map? bound-vars)
+                             (into bound-vars
+                                   (map (fn [v] [v ::in-scope]))
+                                   (remove (set (keys bound-vars)) extracted))
+
+                             (set? bound-vars)
+                             (into bound-vars extracted)
+
+                             :else
+                             (into (set bound-vars) extracted)))
 
          ;; Pre-compute SCC info for rules (once per plan, not per rule-op)
          scc-info (when rules (compute-rule-sccs rules))
@@ -1257,19 +1572,66 @@
          ;; Step 2: Detect pushdown candidates
          {:keys [pushdowns consumed]} (analyze/detect-pushdown classified bound-vars)
 
-         ;; Step 3: Build raw ops — track consumed pushdown preds
+         ;; Step 3: Build raw ops — track consumed pushdown preds.
+         ;;
+         ;; bvc-eff threads cardinality propagation through the clause stream
+         ;; in classification order: each op's :output-var-cards extends the
+         ;; effective bound-var-cards for SUBSEQUENT ops in the same plan
+         ;; scope. Critical for queries where a function or pattern
+         ;; introduces a tightly-bounded var that a later pattern can use as
+         ;; a probe constraint — e.g. the `(ground inv-map) [[?type ?reverse-type]]`
+         ;; preamble inside the -reverse-edge rule body, which binds
+         ;; ?reverse-type to a card-N collection that the next pattern
+         ;; `[?r :type ?reverse-type]` should use as scan-card. Without
+         ;; this thread, every pattern in the body sees only outer
+         ;; bound-vars and falls back to base attribute estimates,
+         ;; producing wrong scan-vs-merge selection (the regression that
+         ;; made the GraphQL edge fetcher 40×+ slower than legacy).
+         init-bvc (cond (map? bound-vars) bound-vars
+                        (set? bound-vars) (zipmap bound-vars (repeat ::in-scope))
+                        :else (zipmap (set bound-vars) (repeat ::in-scope)))
          {:keys [ops actual-consumed not-ops]}
          (reduce
           (fn [acc ci]
             ;; Check for rule calls (classified as :pattern but first elem is rule name)
-            (let [is-rule-call? (and rules
+            (let [bvc-eff (:bvc-eff acc)
+                  is-rule-call? (and rules
                                      (= :pattern (:type ci))
                                      (symbol? (:e ci))
                                      (not (analyze/free-var? (:e ci)))
                                      (contains? rules (:e ci)))
                   ;; Check for metadata-tagged rule-lookup (from clause version generation)
                   lookup-mode (when is-rule-call?
-                                (:rule-lookup-mode (meta (:clause ci))))]
+                                (:rule-lookup-mode (meta (:clause ci))))
+                  ;; Extend an acc's :bvc-eff with op's :output-var-cards
+                  ;; (numeric entries only — sentinels untouched). Returns acc'.
+                  ;; MIN on collisions keeps the tightest known bound.
+                  ;;
+                  ;; Restricted to FUNCTION ops only: pattern-scan ops also expose
+                  ;; :output-var-cards, but propagating them eagerly would mark
+                  ;; sibling pattern entity-vars (e.g. ?r in `[?r :concept-1 ?c]`
+                  ;; followed by `[?r :type ?t]`) as upstream-bound when planning
+                  ;; the next pattern. dp-order-fuse-ops fuses these into a
+                  ;; single entity-group at execution time — the scan PRODUCES
+                  ;; ?r, it doesn't consume it — so estimating later patterns
+                  ;; with ?r bound yields the both-bound branch min(e,v,base)
+                  ;; which underestimates by ~base/distinct-v×. Function ops
+                  ;; (identity / ground) genuinely bind their output vars
+                  ;; before subsequent ops execute, so threading those is safe.
+                  extend-bvc (fn [acc' op]
+                               (if (and (map? op) (= :function (:op op)))
+                                 (if-let [out (:output-var-cards op)]
+                                   (assoc acc' :bvc-eff
+                                          (reduce-kv
+                                           (fn [m v c]
+                                             (let [cur (get m v)]
+                                               (cond
+                                                 (and (number? cur) (number? c)) (assoc m v (long (min cur c)))
+                                                 (number? c) (assoc m v c)
+                                                 :else m)))
+                                           (:bvc-eff acc') out))
+                                   acc')
+                                 acc'))]
               (if (and is-rule-call? guarded-rules
                        (contains? guarded-rules (:e ci)))
                 ;; Inside a recursive branch plan — emit :rule-lookup
@@ -1279,26 +1641,31 @@
                   (update acc :ops conj (plan-rule-lookup-op rule-ci mode)))
                 (if is-rule-call?
                   (let [rule-ci (assoc ci :type :rule-call
-                                       :vars (into #{} (filter analyze/free-var?) (rest (:clause ci))))]
-                    (update acc :ops conj (plan-rule-op db rule-ci all-clause-vars rules scc-info)))
+                                       :vars (into #{} (filter analyze/free-var?) (rest (:clause ci))))
+                        op (plan-rule-op db rule-ci bvc-eff rules scc-info)]
+                    (-> acc (update :ops conj op) (extend-bvc op)))
 
                   (case (:type ci)
                     :pattern
                     (let [schema-info (analyze/pattern-schema-info db ci)
                           preds (get pushdowns (:clause ci) [])
-                          [op consumed-preds] (plan-pattern-op db ci schema-info preds bound-vars)]
+                          [op consumed-preds] (plan-pattern-op db ci schema-info preds bvc-eff)]
                       (-> acc
                           (update :ops conj op)
-                          (update :actual-consumed into (or consumed-preds #{}))))
+                          (update :actual-consumed into (or consumed-preds #{}))
+                          (extend-bvc op)))
 
-                    :function (update acc :ops conj (plan-function-op ci db))
+                    :function (let [op (plan-function-op ci db)]
+                                (-> acc (update :ops conj op) (extend-bvc op)))
                     :predicate (update acc :ops conj [:maybe-pred ci])
-                    :or (update acc :ops conj (plan-or-op db ci all-clause-vars rules))
-                    :or-join (update acc :ops conj (plan-or-op db ci all-clause-vars rules true))
+                    :or (let [op (plan-or-op db ci bvc-eff rules)]
+                          (-> acc (update :ops conj op) (extend-bvc op)))
+                    :or-join (let [op (plan-or-op db ci bvc-eff rules true)]
+                               (-> acc (update :ops conj op) (extend-bvc op)))
                     ;; Collect NOT ops separately for anti-merge folding
-                    :not (update acc :not-ops conj (plan-not-op db ci all-clause-vars rules))
-                    :not-join (update acc :ops conj (plan-not-op db ci all-clause-vars rules true))
-                    :and (let [sub-plan (create-plan db (vec (:sub-clauses ci)) all-clause-vars rules)]
+                    :not (update acc :not-ops conj (plan-not-op db ci bvc-eff rules))
+                    :not-join (update acc :ops conj (plan-not-op db ci bvc-eff rules true))
+                    :and (let [sub-plan (create-plan db (vec (:sub-clauses ci)) bvc-eff rules)]
                            (update acc :ops into (:ops sub-plan)))
 
                     ;; Source-prefixed clause: ($2 not ...) or [$2 ?e :attr ?v]
@@ -1311,23 +1678,23 @@
                       (case (:type inner-ci)
                         :pattern
                         (let [schema-info (analyze/pattern-schema-info db inner-ci)
-                              [op _] (plan-pattern-op db inner-ci schema-info [] bound-vars)]
-                          (update acc :ops conj (assoc op :source source-sym)))
+                              [op _] (plan-pattern-op db inner-ci schema-info [] bvc-eff)]
+                          (-> acc (update :ops conj (assoc op :source source-sym)) (extend-bvc op)))
                         :not
-                        (let [op (plan-not-op db inner-ci all-clause-vars rules)]
+                        (let [op (plan-not-op db inner-ci bvc-eff rules)]
                           (update acc :ops conj (assoc op :source source-sym)))
                         :not-join
-                        (let [op (plan-not-op db inner-ci all-clause-vars rules true)]
+                        (let [op (plan-not-op db inner-ci bvc-eff rules true)]
                           (update acc :ops conj (assoc op :source source-sym)))
                         :or
-                        (update acc :ops conj (assoc (plan-or-op db inner-ci all-clause-vars rules) :source source-sym))
+                        (update acc :ops conj (assoc (plan-or-op db inner-ci bvc-eff rules) :source source-sym))
                         :or-join
-                        (update acc :ops conj (assoc (plan-or-op db inner-ci all-clause-vars rules true) :source source-sym))
+                        (update acc :ops conj (assoc (plan-or-op db inner-ci bvc-eff rules true) :source source-sym))
                         ;; Source-prefix wrapping another source-prefix or unknown
                         (update acc :ops conj (plan-passthrough-op ci))))
 
                     (update acc :ops conj (plan-passthrough-op ci)))))))
-          {:ops [] :actual-consumed #{} :not-ops []}
+          {:ops [] :actual-consumed #{} :not-ops [] :bvc-eff init-bvc}
           classified)
 
          ;; Collect pattern ops first for predicate sampling
@@ -1386,7 +1753,12 @@
          ;; This correctly handles reordering: (not [?e ...]) [?e :name] gets
          ;; reordered to [?e :name] (not [?e ...]), and ?e is bound before NOT.
          _ (loop [remaining ordered-ops
-                  vars-so-far bound-vars]
+                  ;; bound-vars may be a set (legacy) or a map (var → card).
+                  ;; vars-so-far is purely a membership set for NOT validation,
+                  ;; so normalise to a set up front.
+                  vars-so-far (cond (map? bound-vars) (set (keys bound-vars))
+                                    (set? bound-vars) bound-vars
+                                    :else (set bound-vars))]
              (when (seq remaining)
                (let [op (first remaining)]
                  (when (#{:not :not-join} (:op op))

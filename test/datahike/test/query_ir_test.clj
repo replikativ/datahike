@@ -332,3 +332,113 @@
           "Both predicates must be applied — merge-op pushdowns must be restored")
       (is (< (count planner-result) 100)
           "Result should be filtered by both predicates"))))
+
+;; ---------------------------------------------------------------------------
+;; op-required-vars contract — single source of truth for per-op-type binding
+;; requirements consumed by op-cost during cost-based ordering. Tests assert
+;; the documented contract per op type so future refactors don't drift.
+
+(deftest test-op-required-vars
+  (testing ":entity-group / non-optional :pattern-scan are producers"
+    (is (= [#{} :none] (plan/op-required-vars
+                        {:op :pattern-scan :clause '[?e :name ?n] :vars #{'?e '?n}})))
+    (is (= [#{} :none] (plan/op-required-vars
+                        {:op :entity-group :clause '[?e :name ?n] :vars #{'?e '?n}}))))
+
+  (testing ":pattern-scan with :optional? requires its e-var bound"
+    ;; LOptionalScan synthesised from get-else; e is the first clause element.
+    (is (= [#{'?e} :all]
+           (plan/op-required-vars
+            {:op :pattern-scan :optional? true
+             :clause '[?e :concept/deprecated ?d]
+             :default-value false
+             :vars #{'?e '?d}})))
+    ;; If e is ground (a number), no var to require.
+    (is (= [#{} :none]
+           (plan/op-required-vars
+            {:op :pattern-scan :optional? true
+             :clause '[42 :concept/deprecated ?d]
+             :default-value false
+             :vars #{'?d}}))))
+
+  (testing ":predicate requires every referenced var"
+    (is (= [#{'?x '?y} :all]
+           (plan/op-required-vars
+            {:op :predicate :fn-sym '< :args ['?x '?y] :vars #{'?x '?y}}))))
+
+  (testing ":function requires every input-arg var (excludes output binding)"
+    (is (= [#{'?x} :all]
+           (plan/op-required-vars
+            {:op :function :fn-sym 'inc :args ['?x] :binding '?y :vars #{'?x '?y}}))))
+
+  (testing ":external-engine honours :input-vars-spec"
+    ;; :all-bound (or absent) → strict: every input-arg must be bound.
+    ;; args-free-vars filters to free-vars (?…), excluding source symbols
+    ;; like $ — source symbols are always available, never need binding.
+    (let [op {:op :external-engine
+              :args ['$ '?col1 '?col2]
+              :binding '[[?out]]
+              :vars #{'?col1 '?col2 '?out}
+              :input-vars-spec :all-bound}
+          [vars policy] (plan/op-required-vars op)]
+      (is (= :all policy))
+      (is (= #{'?col1 '?col2} vars)))
+    ;; Default (no spec declared) is :all — safer than the legacy `some`
+    ;; check that used to live in op-cost.
+    (let [op {:op :external-engine
+              :args ['$ '?col1]
+              :binding '[?out]
+              :vars #{'?col1 '?out}}
+          [_ policy] (plan/op-required-vars op)]
+      (is (= :all policy)))
+    ;; :any-bound declared → :any.
+    (let [op {:op :external-engine
+              :args ['$ '?col1 '?col2]
+              :binding '[?out]
+              :vars #{'?col1 '?col2 '?out}
+              :input-vars-spec :any-bound}
+          [_ policy] (plan/op-required-vars op)]
+      (is (= :any policy))))
+
+  (testing ":rule-lookup is a producer (accumulator-driven, no pre-bound deps)"
+    (is (= [#{} :none] (plan/op-required-vars
+                        {:op :rule-lookup :rule-name 'some-rule
+                         :call-args ['?a '?b] :mode :main :vars #{'?a '?b}}))))
+
+  (testing ":not / :not-join require the full set of join-vars / referenced vars"
+    (is (= [#{'?e '?n} :all]
+           (plan/op-required-vars {:op :not :vars #{'?e '?n}})))
+    (is (= [#{'?e} :all]
+           (plan/op-required-vars
+            {:op :not-join :vars #{'?e '?n} :join-vars #{'?e}}))))
+
+  (testing ":or / :or-join require AT LEAST one join-var bound"
+    (is (= [#{'?e '?v} :any]
+           (plan/op-required-vars {:op :or :vars #{'?e '?v}})))
+    (is (= [#{'?e} :any]
+           (plan/op-required-vars
+            {:op :or-join :vars #{'?e '?v} :join-vars #{'?e}})))))
+
+(deftest test-op-cost-ready-vs-blocked
+  (testing "op-cost returns max-cost for unsatisfied required vars,
+            finite cost when satisfied"
+    ;; predicate — costs 0 when ready (cheapest filter)
+    (let [op {:op :predicate :args ['?x '?y] :vars #{'?x '?y}}]
+      (is (= 0 (plan/op-cost op #{'?x '?y}))
+          "predicate is the cheapest op type when its inputs are bound")
+      (is (= Long/MAX_VALUE (plan/op-cost op #{'?x}))
+          "missing one input var → blocked"))
+    ;; function — costs 1 when ready
+    (let [op {:op :function :args ['?x] :binding '?y :vars #{'?x '?y}}]
+      (is (= 1 (plan/op-cost op #{'?x}))
+          "function costs 1 when its inputs are bound")
+      (is (= Long/MAX_VALUE (plan/op-cost op #{}))
+          "no input bound → blocked"))
+    ;; or-join — :any policy: at least one join-var must be bound
+    (let [op {:op :or-join :vars #{'?e '?v} :join-vars #{'?e '?v}
+              :estimated-card 50}]
+      (is (= Long/MAX_VALUE (plan/op-cost op #{}))
+          "no join-var bound → blocked")
+      (is (< (plan/op-cost op #{'?e}) Long/MAX_VALUE)
+          "one join-var bound → ready under :any policy"))))
+
