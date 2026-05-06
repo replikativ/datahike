@@ -932,6 +932,61 @@
 
 (def ^:private max-cost #?(:clj Long/MAX_VALUE :cljs (.-MAX_SAFE_INTEGER js/Number)))
 
+(declare branch-produced-vars)
+
+(defn- op-produced-vars
+  "Which free-vars an op binds when it runs (its outputs). Used by
+   `branch-produced-vars` to compute what an OR-JOIN branch contributes
+   to its result rel before limit-rel projects to join-vars.
+
+   - Pattern-scans / entity-groups produce all free-var positions of
+     their clause(s).
+   - Function / external-engine produce their :binding free-vars.
+   - Predicate, NOT, NOT-JOIN produce nothing (pure filters).
+   - OR / OR-JOIN: every branch must produce a var for it to be a
+     produced var of the OR — recurse via `branch-produced-vars` and
+     intersect across branches.
+   - Rule calls produce free call-args (the rule body fills them in).
+   - Rule-lookup produces its call-args (read from accumulator).
+   - Anything unknown produces nothing — the safe assumption."
+  [op]
+  (case (:op op)
+    (:entity-group :pattern-scan)
+    (let [scans (cons (:scan-op op) (:merge-ops op))
+          all-clauses (filter some? (cons (:clause op) (map :clause scans)))]
+      (into #{} (filter analyze/free-var?) (mapcat seq all-clauses)))
+
+    :function
+    (into #{} (filter analyze/free-var?) (analyze/extract-vars (:binding op)))
+
+    :external-engine
+    (into #{} (filter analyze/free-var?) (analyze/extract-vars (:binding op)))
+
+    (:rule-call :recursive-rule :rule-lookup)
+    (into #{} (filter analyze/free-var?) (:call-args op))
+
+    (:or :or-join)
+    ;; Vars EVERY branch produces. (See branch-produced-vars / OR-JOIN
+    ;; required-vars docstring for the full reasoning.)
+    (let [branches (:branches op)
+          per-branch (mapv branch-produced-vars branches)]
+      (if (seq per-branch)
+        (reduce clojure.set/intersection (map set per-branch))
+        #{}))
+
+    ;; :predicate, :not, :not-join, :passthrough, :maybe-pred, anything
+    ;; unknown → no produced vars.
+    #{}))
+
+(defn- branch-produced-vars
+  "Vars that an OR-JOIN branch's sub-plan produces internally — the
+   union of `op-produced-vars` over the branch's :ops. Used to compute
+   the OR(-JOIN)'s required-from-outer set."
+  [sub-plan]
+  (reduce (fn [acc op] (clojure.set/union acc (op-produced-vars op)))
+          #{}
+          (:ops sub-plan)))
+
 (defn op-required-vars
   "The set of vars that MUST be bound before `op` can execute correctly.
 
@@ -981,11 +1036,26 @@
        analysis — left for follow-up. Documented here for reference.
 
      :or, :or-join
-       Branches collectively produce join-vars; we require AT LEAST
-       ONE join-var bound so the branches have some upstream
-       constraint to filter against. Stricter ('all bound') would
-       prevent the OR from running as a producer; looser ('none')
-       would risk Cartesian fan-out from the branches.
+       For an OR(-JOIN) to produce a sound rel, every branch's
+       output (after limit-rel projects to join-vars) must contain
+       the FULL set of join-vars; otherwise the cross-branch sum-rel
+       fails with a different-attrs error. A branch's output covers
+       the join-vars produced by its own ops PLUS the join-vars
+       carried in via limited-ctx from the outer scope. So the OR's
+       binding contract is:
+         required-from-outer = join-vars - vars-EVERY-branch-produces
+       i.e. for every join-var, either every branch produces it
+       internally, or it must already be in the outer ctx. Computed
+       here from the planned sub-plans via `branch-produced-vars`,
+       which walks each branch's :ops and unions the vars its
+       producer ops bind. Policy is :all on the resulting set.
+
+       Surface symptom in jobtech: the changelog `(or-join […] …)`
+       has a NOT-only branch that binds nothing of `[?c ?tx ?tx-kind]`
+       except `?tx-kind` (via ground); under the previous :any
+       policy the planner reordered the binder pattern AFTER the
+       OR-JOIN and the NOT-only branch produced a rel without
+       `?tx`, tripping sum-rel against the other branches.
 
      :not, :not-join
        Anti-join; needs the WHOLE set of join-vars / referenced vars
@@ -1029,7 +1099,16 @@
     [(set (or (:join-vars op) (:vars op))) :all]
 
     (:or :or-join)
-    [(set (or (:join-vars op) (:vars op))) :any]
+    ;; Required-from-outer = join-vars MINUS the vars EVERY branch
+    ;; produces. Vars that only some branches produce can't be
+    ;; relied on across the union — they must come from outer ctx.
+    (let [join-vars (set (or (:join-vars op) (:vars op)))
+          per-branch (mapv branch-produced-vars (:branches op))
+          covered    (if (seq per-branch)
+                       (reduce clojure.set/intersection (map set per-branch))
+                       #{})
+          required   (clojure.set/difference join-vars covered)]
+      [required :all])
 
     ;; Unknown / passthrough — gate forever (caller must decide what to do).
     [#{} :all]))
@@ -1070,7 +1149,7 @@
    we treat the outer scope as empty."
   ([ops] (order-plan-ops ops nil))
   ([ops outer-bound-vars]
-  (let [;; LOptionalScan-derived pattern-scans (get-else with default) need
+   (let [;; LOptionalScan-derived pattern-scans (get-else with default) need
         ;; their entity var bound BEFORE they execute — at runtime the
         ;; optional path goes through bind-by-fn(get-else) which evaluates
         ;; per-row, and a row without the e-var bound emits a tuple where
@@ -1082,69 +1161,69 @@
         ;; can land before their binders. Demoting them to non-groups
         ;; routes them through the cost-based interleaver, which checks
         ;; bound-vars via op-cost and waits until the e-var is bound.
-        optional-scan? (fn [op]
-                         (and (= :pattern-scan (:op op))
-                              (:optional? op)))
-        groups (filterv #(and (#{:entity-group :pattern-scan} (:op %))
-                              (not (optional-scan? %))) ops)
-        non-groups (filterv #(or (not (#{:entity-group :pattern-scan} (:op %)))
-                                 (optional-scan? %)) ops)
-        seed-bound (cond
-                     (nil? outer-bound-vars) #{}
-                     (set? outer-bound-vars) outer-bound-vars
-                     (map? outer-bound-vars) (set (keys outer-bound-vars))
-                     :else (set outer-bound-vars))]
-    (if (empty? groups)
+         optional-scan? (fn [op]
+                          (and (= :pattern-scan (:op op))
+                               (:optional? op)))
+         groups (filterv #(and (#{:entity-group :pattern-scan} (:op %))
+                               (not (optional-scan? %))) ops)
+         non-groups (filterv #(or (not (#{:entity-group :pattern-scan} (:op %)))
+                                  (optional-scan? %)) ops)
+         seed-bound (cond
+                      (nil? outer-bound-vars) #{}
+                      (set? outer-bound-vars) outer-bound-vars
+                      (map? outer-bound-vars) (set (keys outer-bound-vars))
+                      :else (set outer-bound-vars))]
+     (if (empty? groups)
       ;; No groups — pure greedy on non-group ops
-      (loop [remaining (set ops)
-             bound-vars seed-bound
-             ordered []]
-        (if (empty? remaining)
-          ordered
-          (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
-                executable (filter #(< (second %) max-cost) scored)
-                best (first (sort-by second (if (seq executable) executable scored)))
-                [chosen-op _] best]
-            (recur (disj remaining chosen-op)
-                   (into bound-vars (:vars chosen-op))
-                   (conj ordered chosen-op)))))
+       (loop [remaining (set ops)
+              bound-vars seed-bound
+              ordered []]
+         (if (empty? remaining)
+           ordered
+           (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
+                 executable (filter #(< (second %) max-cost) scored)
+                 best (first (sort-by second (if (seq executable) executable scored)))
+                 [chosen-op _] best]
+             (recur (disj remaining chosen-op)
+                    (into bound-vars (:vars chosen-op))
+                    (conj ordered chosen-op)))))
       ;; DP-order groups, then greedily interleave non-group ops
-      (let [dp-order (dp-order-groups groups)
-            ordered-groups (mapv #(nth groups %) dp-order)]
-        (if (empty? non-groups)
-          ordered-groups
+       (let [dp-order (dp-order-groups groups)
+             ordered-groups (mapv #(nth groups %) dp-order)]
+         (if (empty? non-groups)
+           ordered-groups
           ;; Interleave: walk the group order, inserting non-group ops
           ;; as soon as their dependencies are satisfied
-          (loop [group-q (seq ordered-groups)
-                 remaining (set non-groups)
-                 bound-vars seed-bound
-                 result []]
-            (if (and (nil? group-q) (empty? remaining))
-              result
+           (loop [group-q (seq ordered-groups)
+                  remaining (set non-groups)
+                  bound-vars seed-bound
+                  result []]
+             (if (and (nil? group-q) (empty? remaining))
+               result
               ;; First, flush any non-group ops whose deps are now satisfied
-              (let [ready (filterv (fn [op] (< (op-cost op bound-vars) max-cost)) remaining)]
-                (if (seq ready)
+               (let [ready (filterv (fn [op] (< (op-cost op bound-vars) max-cost)) remaining)]
+                 (if (seq ready)
                   ;; Insert the cheapest ready non-group op
-                  (let [best (first (sort-by #(op-cost % bound-vars) ready))]
-                    (recur group-q
-                           (disj remaining best)
-                           (into bound-vars (:vars best))
-                           (conj result best)))
+                   (let [best (first (sort-by #(op-cost % bound-vars) ready))]
+                     (recur group-q
+                            (disj remaining best)
+                            (into bound-vars (:vars best))
+                            (conj result best)))
                   ;; No ready non-group ops — emit next group
-                  (if group-q
-                    (let [g (first group-q)]
-                      (recur (next group-q)
-                             remaining
-                             (into bound-vars (:vars g))
-                             (conj result g)))
+                   (if group-q
+                     (let [g (first group-q)]
+                       (recur (next group-q)
+                              remaining
+                              (into bound-vars (:vars g))
+                              (conj result g)))
                     ;; No more groups but remaining ops still unready — force them
-                    (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
-                          best (first (sort-by second scored))
-                          [chosen-op _] best]
-                      (recur nil
-                             (disj remaining chosen-op)
-                             (into bound-vars (:vars chosen-op))
-                             (conj result chosen-op))))))))))))))
+                     (let [scored (map (fn [op] [op (op-cost op bound-vars)]) remaining)
+                           best (first (sort-by second scored))
+                           [chosen-op _] best]
+                       (recur nil
+                              (disj remaining chosen-op)
+                              (into bound-vars (:vars chosen-op))
+                              (conj result chosen-op))))))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT / Rule plan ops
