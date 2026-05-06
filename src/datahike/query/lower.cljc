@@ -312,6 +312,38 @@
         ;; this clause." The execution path itself is reordered later by
         ;; order-plan-ops based on actual cost, independent of this.
         node->output-cards (zipmap nodes (map #(estimate-node-output-cards % db) nodes))
+        ;; Per-node BINDING vars — the free vars a node binds for
+        ;; downstream consumption. Distinct from output-cards (which
+        ;; carries numeric cardinality estimates and is restricted to
+        ;; scan nodes to avoid the sibling-pattern-bound regression
+        ;; called out in the extend-bvc comment block in plan.cljc).
+        ;; Bindedness is the contract that the post-ordering NOT
+        ;; validation and op-required-vars runnability checks rely
+        ;; on; without it, an or-join branch whose :not references a
+        ;; var bound by an outer get-else / function clause is
+        ;; rejected with `Insufficient bindings` even though the var
+        ;; is bound at execute time. We add bindings as ::in-scope
+        ;; sentinels — estimate-pattern-with-bindings' card-of treats
+        ;; non-numeric entries as "bound but unknown card", so this
+        ;; doesn't perturb cardinality estimation.
+        node-binding-vars (fn [^datahike.query.ir.LogicalPlan _logical n]
+                            (cond
+                              (ir/scan? n)
+                              (filter analyze/free-var? (:vars (scan->classified n)))
+                              (instance? datahike.query.ir.LBind n)
+                              (analyze/extract-vars (.-binding ^datahike.query.ir.LBind n))
+                              (instance? datahike.query.ir.LEntityJoin n)
+                              (let [scans (concat (.-scans ^datahike.query.ir.LEntityJoin n) [])]
+                                (mapcat (fn [s] (filter analyze/free-var? (:vars (scan->classified s))))
+                                        scans))
+                              (instance? datahike.query.ir.LUnion n)
+                              (let [jv (.-join_vars ^datahike.query.ir.LUnion n)]
+                                (when jv (vec jv)))
+                              (instance? datahike.query.ir.LRuleCall n)
+                              (let [args (.-call_args ^datahike.query.ir.LRuleCall n)]
+                                (filter analyze/free-var? args))
+                              :else nil))
+        node->binding-vars (zipmap nodes (map #(node-binding-vars logical-plan %) nodes))
         ;; Nodes without :source-idx (AND-flattened sub-plans, etc.) are
         ;; treated as "comes last" via a sentinel beyond any real index.
         ;; #?(:clj Long/MAX_VALUE :cljs js/Number.MAX_SAFE_INTEGER) keeps
@@ -330,7 +362,14 @@
                              (number? c) (assoc m v c)
                              :else m)))
                        acc-map outs))
-        ;; Pre-compute bvc per node from PRECEDING source-idx nodes' outputs.
+        merge-bindings (fn [acc-map vs]
+                         (reduce (fn [m v]
+                                   (if (contains? m v) m (assoc m v ::in-scope)))
+                                 acc-map
+                                 (or vs [])))
+        ;; Pre-compute bvc per node from PRECEDING source-idx nodes'
+        ;; outputs (cardinality, scan-only) and bindings (every binder
+        ;; node).
         node->bvc (into {}
                         (map (fn [n]
                                (let [my-idx (node->src-idx n)
@@ -340,9 +379,11 @@
                                                             (< oi my-idx))))
                                                    nodes)
                                      bvc (reduce (fn [acc o]
-                                                   (if-let [outs (node->output-cards o)]
-                                                     (merge-cards acc outs)
-                                                     acc))
+                                                   (cond-> acc
+                                                     (some? (node->output-cards o))
+                                                     (merge-cards (node->output-cards o))
+                                                     (seq (node->binding-vars o))
+                                                     (merge-bindings (node->binding-vars o))))
                                                  initial-bvc prior)]
                                  [n bvc])))
                         nodes)

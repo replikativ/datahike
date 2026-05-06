@@ -412,10 +412,11 @@
            (plan/op-required-vars
             {:op :not-join :vars #{'?e '?n} :join-vars #{'?e}}))))
 
-  (testing ":or / :or-join require AT LEAST one join-var bound"
-    (is (= [#{'?e '?v} :any]
+  (testing ":or / :or-join require all join-vars NOT covered by every branch"
+    ;; No :branches → no branch covers any var → all join-vars required.
+    (is (= [#{'?e '?v} :all]
            (plan/op-required-vars {:op :or :vars #{'?e '?v}})))
-    (is (= [#{'?e} :any]
+    (is (= [#{'?e} :all]
            (plan/op-required-vars
             {:op :or-join :vars #{'?e '?v} :join-vars #{'?e}})))))
 
@@ -434,11 +435,14 @@
           "function costs 1 when its inputs are bound")
       (is (= Long/MAX_VALUE (plan/op-cost op #{}))
           "no input bound → blocked"))
-    ;; or-join — :any policy: at least one join-var must be bound
+    ;; or-join — :all policy on join-vars NOT covered by every branch.
+    ;; With no :branches, no var is covered → all join-vars required.
     (let [op {:op :or-join :vars #{'?e '?v} :join-vars #{'?e '?v}
               :estimated-card 50}]
       (is (= Long/MAX_VALUE (plan/op-cost op #{}))
           "no join-var bound → blocked")
-      (is (< (plan/op-cost op #{'?e}) Long/MAX_VALUE)
-          "one join-var bound → ready under :any policy"))))
+      (is (= Long/MAX_VALUE (plan/op-cost op #{'?e}))
+          "one join-var bound but not all → still blocked under :all policy")
+      (is (< (plan/op-cost op #{'?e '?v}) Long/MAX_VALUE)
+          "all join-vars bound → ready"))))
 
