@@ -1056,8 +1056,20 @@
    interleaving for dependency-constrained ops (predicates, functions, etc.).
    The DP phase finds the optimal group execution order by minimizing
    total intermediate cardinality. The greedy phase then inserts non-group
-   ops at the earliest point where their dependencies are satisfied."
-  [ops]
+   ops at the earliest point where their dependencies are satisfied.
+
+   `outer-bound-vars` (optional) seeds the local bound-vars accumulator
+   used by op-cost runnability checks. When this fn is called for a
+   nested plan (e.g. an or-join branch's sub-plan, or a :not body),
+   the outer scope's already-bound vars (or-join shared-vars,
+   ancestor-bound function outputs, …) MUST be seeded — otherwise
+   ops like `:not` whose op-required-vars contract demands those vars
+   bound will be marked unrunnable and surface as `Insufficient
+   bindings` even though they're well-formed at execute time. Top-
+   level callers (create-plan's outer scope) pass `nil` / omit and
+   we treat the outer scope as empty."
+  ([ops] (order-plan-ops ops nil))
+  ([ops outer-bound-vars]
   (let [;; LOptionalScan-derived pattern-scans (get-else with default) need
         ;; their entity var bound BEFORE they execute — at runtime the
         ;; optional path goes through bind-by-fn(get-else) which evaluates
@@ -1076,11 +1088,16 @@
         groups (filterv #(and (#{:entity-group :pattern-scan} (:op %))
                               (not (optional-scan? %))) ops)
         non-groups (filterv #(or (not (#{:entity-group :pattern-scan} (:op %)))
-                                 (optional-scan? %)) ops)]
+                                 (optional-scan? %)) ops)
+        seed-bound (cond
+                     (nil? outer-bound-vars) #{}
+                     (set? outer-bound-vars) outer-bound-vars
+                     (map? outer-bound-vars) (set (keys outer-bound-vars))
+                     :else (set outer-bound-vars))]
     (if (empty? groups)
       ;; No groups — pure greedy on non-group ops
       (loop [remaining (set ops)
-             bound-vars #{}
+             bound-vars seed-bound
              ordered []]
         (if (empty? remaining)
           ordered
@@ -1100,7 +1117,7 @@
           ;; as soon as their dependencies are satisfied
           (loop [group-q (seq ordered-groups)
                  remaining (set non-groups)
-                 bound-vars #{}
+                 bound-vars seed-bound
                  result []]
             (if (and (nil? group-q) (empty? remaining))
               result
@@ -1127,7 +1144,7 @@
                       (recur nil
                              (disj remaining chosen-op)
                              (into bound-vars (:vars chosen-op))
-                             (conj result chosen-op)))))))))))))
+                             (conj result chosen-op))))))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; OR / NOT / Rule plan ops
@@ -1397,16 +1414,37 @@
                                                 (not (some is-scc-call? body))))
                                    base-bs (filterv is-base? rn-branches)
                                    rec-bs (filterv (complement is-base?) rn-branches)
-                          ;; Head vars are bound within rule branches (from call args / accumulator).
-                          ;; Recursive rules: head-vars take their values from the accumulator
-                          ;; (one row of the recursive rel) — treat them as bound with a
-                          ;; conservative card-1 placeholder under the bound-var-cards model.
-                                   free-args (filter analyze/free-var? free-call-args)
-                                   branch-bound (cond
-                                                  (map? bound-vars)
-                                                  (into bound-vars (map (fn [v] [v 1])) free-args)
-                                                  :else
-                                                  (into bound-vars free-args))
+                          ;; Head vars are NOT pre-bound at the start of either
+                          ;; base or recursive branch bodies:
+                          ;;
+                          ;;  - Base branch: head-vars are produced by the body
+                          ;;    (a pattern binds them, a function computes them).
+                          ;;  - Recursive branch: head-vars are produced by the
+                          ;;    branch's rule-lookup op (the accumulator scan),
+                          ;;    which is itself a regular op the planner orders.
+                          ;;    Rule-lookup's outputs propagate through the
+                          ;;    bindedness tracker like any other producer.
+                          ;;
+                          ;; Earlier code added head-vars to branch-bound with a
+                          ;; conservative card-1 placeholder, intending it as a
+                          ;; cardinality hint. Under the new op-required-vars
+                          ;; contract, however, any entry in bound-vars is
+                          ;; treated as runnability-bound — so :function ops
+                          ;; that reference a head-var (e.g. `[(str ?id "/")
+                          ;; ?path]`) would appear runnable from clause-zero,
+                          ;; get cost-ordered AHEAD of the pattern that
+                          ;; actually binds the var, and produce a relation
+                          ;; missing the function's output binding. The
+                          ;; downstream rel-dedup-into! then sees a head-var
+                          ;; missing from :attrs and NPEs.
+                          ;;
+                          ;; Fix: keep branch-bound = the OUTER scope's bound
+                          ;; vars only. Cardinality estimation for patterns
+                          ;; that reference head-vars now correctly treats them
+                          ;; as free (worst-case attribute-total estimate)
+                          ;; until the body's own producer op binds them with
+                          ;; a known card.
+                                   branch-bound bound-vars
                                    base-ps (mapv (fn [b]
                                                    (let [renamed (rename-branch-vars b free-call-args seqid db)]
                                                      (create-plan db (vec renamed) branch-bound rules)))
@@ -1474,29 +1512,30 @@
           (let [seqid (gensym "r")
                 expanded (for [branch branches]
                            (rename-branch-vars branch call-args seqid db))
-                ;; Build the rule body's bound-var-cards:
-                ;;   - existing outer bound-vars/cards stay (vars truly bound from outside)
-                ;;   - synthetic safe-vars for non-var call-args get card 1 (each is a
-                ;;     single const value, bound by the [(identity X) safe-var] preamble
-                ;;     that rename-branch-vars prepends to the body)
-                ;;   - free call-args that aren't already in bound-vars are rule OUTPUTS,
-                ;;     not body inputs — do NOT add them; estimate-pattern-with-bindings
-                ;;     correctly treats them as free for selectivity.
+                ;; Body's bound-vars = outer scope's bound-vars only.
                 ;;
-                ;; This shape mirrors call-args-safe inside rename-branch-vars; we
-                ;; recompute it here to avoid leaking it across the API.
-                const-safe-vars (keep-indexed
-                                 (fn [i arg]
-                                   (when-not (analyze/free-var? arg)
-                                     (symbol (str "?__const__" i "__auto__" seqid))))
-                                 call-args)
-                ;; Tolerate both legacy set-form bound-vars and new map-form bound-var-cards.
-                rule-bound (cond
-                             (map? bound-vars)
-                             (into bound-vars (map (fn [v] [v 1])) const-safe-vars)
-                             :else
-                             (into bound-vars const-safe-vars))
-                sub-plans (mapv #(create-plan db (vec %) rule-bound rules) expanded)
+                ;; The const-safe-vars (synthetic vars wrapping non-var call-args)
+                ;; are produced by the [(identity X) safe-var] preamble that
+                ;; rename-branch-vars prepends to each branch body. They are
+                ;; NOT bound at the start of the body — they're bound by the
+                ;; identity op's execution. Pre-binding them in rule-bound
+                ;; would look like a cardinality hint (card 1, since identity
+                ;; produces a single value) but under the central op-required-
+                ;; vars contract, any entry in bound-vars is read as runnability
+                ;; -bound. A predicate `[(< ?safe 100)]` referencing a pre-
+                ;; bound safe-var would then appear runnable from clause-zero,
+                ;; cost-order ahead of the identity preamble, and run against
+                ;; an empty :rels at execute time.
+                ;;
+                ;; The card-1 cardinality hint we want for downstream
+                ;; estimation reaches subsequent clauses naturally via
+                ;; bvc-eff threading: identity is the first clause processed
+                ;; in create-plan's reduce, its function-output-var-cards
+                ;; map (?safe → 1) is folded into bvc-eff by extend-bvc, and
+                ;; every later clause sees safe-var → 1 in its planning
+                ;; environment without it leaking into the runnability
+                ;; check's seed-bound set.
+                sub-plans (mapv #(create-plan db (vec %) bound-vars rules) expanded)
                 total-est (reduce + 0 (keep (fn [p] (some :estimated-card (:ops p))) sub-plans))]
             {:op :or
              :clause (:clause clause-info)
@@ -1739,9 +1778,16 @@
          ;; Strip internal :merge-lost-preds from entity-group ops
          entity-groups (mapv #(dissoc % :merge-lost-preds) entity-groups)
 
-         ;; Step 4: Order everything together
+         ;; Step 4: Order everything together. Seed the cost-based
+         ;; runnability check with the outer scope's bound-vars so
+         ;; nested plans (or-join branches, :not bodies, …) recognise
+         ;; vars bound by their ancestors. Without the seed, an
+         ;; or-join branch that wraps a `:not` referencing a shared-var
+         ;; bound from the outer scope is rejected with `Insufficient
+         ;; bindings` — the shared-var is bound at execute time but
+         ;; the local order-plan-ops doesn't know that.
          all-ops (into (into (vec entity-groups) other-ops) remaining-nots)
-         ordered-ops (order-plan-ops all-ops)
+         ordered-ops (order-plan-ops all-ops bound-vars)
 
          ;; Step 5: Detect inter-group value joins
          group-joins (detect-inter-group-joins
@@ -1808,5 +1854,9 @@
                                  (assoc op :estimated-card (or new-est (:estimated-card op))))
                                op))
                            remaining-ops)
-        re-ordered (order-plan-ops re-estimated)]
+        ;; Seed re-ordering with bound-vars from the already-executed
+        ;; prefix: the runnability check for the remaining ops has to
+        ;; honour what's already bound or :not / :predicate / :function
+        ;; ops will be wrongly marked as Insufficient.
+        re-ordered (order-plan-ops re-estimated bound-vars)]
     (assoc plan :ops (into (vec executed-ops) re-ordered))))
