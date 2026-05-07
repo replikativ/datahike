@@ -77,3 +77,9 @@ konserve
 konserve-sync
 persistent-sorted-set
 /.agent-shell/
+
+# Local-only tooling/scratch artefacts
+.codex
+**/.settings/
+/plugins/
+/test/integration/

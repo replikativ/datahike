@@ -22,7 +22,21 @@
         com.github.pkpkpk/cljs-cache                {:mvn/version "1.0.21"}
         org.roaringbitmap/RoaringBitmap             {:mvn/version "1.3.0"}}
 
- :paths ["src" "target/classes" "resources"]
+ ;; The published jar packs `src` + `src-kabel` + `src-hitchhiker-tree`
+ ;; (see `config.edn` `:build :clj :src-dirs`). Listing them here keeps
+ ;; `:local/root` consumers' classpath aligned with mvn-consumer's, so
+ ;; downstream code that uses `datahike.kabel.*` or
+ ;; `datahike.index.hitchhiker-tree` works the same regardless of how
+ ;; the dependency is wired. Their *runtime* deps (kabel,
+ ;; io.replikativ/hitchhiker-tree) remain in the `:test` alias — opt-in,
+ ;; same as for mvn consumers, who must declare those themselves to use
+ ;; the optional namespaces.
+ ;;
+ ;; The longer-term direction is a real split into separate artifacts
+ ;; (`datahike-kabel`, `datahike-hitchhiker-tree`) so the optional bits
+ ;; aren't on every consumer's classpath unconditionally; this layout
+ ;; is the preparation step.
+ :paths ["src" "src-kabel" "src-hitchhiker-tree" "target/classes" "resources"]
 
  :deps/prep-lib {:ensure "target/classes"
                  :alias :build
