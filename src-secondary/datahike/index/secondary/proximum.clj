@@ -10,9 +10,11 @@
                        :db.secondary/config {:dim 384 :distance :cosine
                                              :store-config {...}}}}"
   (:require
+   [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [proximum.core :as prox]
+   [proximum.crypto :as pcrypto]
    [proximum.writing :as pwr]
    [proximum.versioning :as pver]
    [proximum.vectors :as pvec]
@@ -64,13 +66,14 @@
       sec/IVersionedSecondaryIndex
       (-sec-flush [_ _store branch]
         ;; Proximum manages its own konserve store internally.
-        ;; Sync writes pending data to its store.
+        ;; Sync writes pending data to its store. The merkle-root for
+        ;; audit is exposed via IAuditable below, computed from
+        ;; proximum's own commit-id.
         (async/<!! (pvec/sync! prox-idx))
-        (let [commit-id (phi/commit-id prox-idx)]
-          {:type :proximum
-           :branch (name branch)
-           :commit-id commit-id
-           :store-config (:store-config config)}))
+        {:type :proximum
+         :branch (name branch)
+         :commit-id (phi/commit-id prox-idx)
+         :store-config (:store-config config)})
 
       (-sec-restore [_ _store key-map]
         ;; Restore from proximum's own store using commit ID
@@ -86,6 +89,26 @@
       (-sec-mark [_]
         ;; Proximum uses its own konserve store, not datahike's
         #{})
+
+      audit/IAuditable
+      (-merkle-root [_]
+        ;; Proximum's commit-id is a content hash of the HNSW graph
+        ;; + vectors state.
+        (or (phi/commit-id prox-idx)
+            (throw (ex-info "Proximum index has no commit-id yet"
+                            {:type :audit/merkle-root-unsupported
+                             :index :proximum}))))
+      (-recompute-merkle-root [this]
+        ;; Re-read vectors + edges from cold storage and verify each
+        ;; chunk's hash against the recorded commit chain.
+        (let [store-config (:store-config config)
+              branch (or (:branch config) :main)
+              result (pcrypto/verify-from-cold store-config branch)]
+          (if (:valid? result)
+            (audit/-merkle-root this)
+            (throw (ex-info "proximum: verify-from-cold failed"
+                            {:type :audit/merkle-mismatch
+                             :result result})))))
 
       (-transact [_ tx-report]
         ;; tx-report: {:datom datom :added? bool}

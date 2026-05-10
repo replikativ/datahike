@@ -121,37 +121,51 @@
   (assoc db :rschema (dbu/rschema (:schema db))))
 
 #?(:clj
-   (defn- maybe-create-secondary-index
-     "When a secondary index schema entity is fully defined (has both
-      :db.secondary/type and :db.secondary/attrs) and no index instance exists
-      yet, create an empty index instance and wire it into the db.
-      Sets :db.secondary/status to :building and records :building-since-tx."
-     [db ^Datom datom]
-     (let [e (.-e datom)
-           schema (:schema db)
-           ;; The entity's ident is stored in schema[e] as a keyword
-           idx-ident (get schema e)
-           idx-schema (when (keyword? idx-ident) (get schema idx-ident))]
-       (if (and (map? idx-schema)
-                (:db.secondary/type idx-schema)
-                (:db.secondary/attrs idx-schema)
-                ;; Don't create if already exists
-                (not (get-in db [:secondary-indices idx-ident])))
-         (let [idx-type (:db.secondary/type idx-schema)
-               idx-attrs (set (:db.secondary/attrs idx-schema))
-               idx-config (merge (:db.secondary/config idx-schema)
-                                 {:attrs idx-attrs})
-               idx-config (cond-> idx-config
-                            (seq (:ident-ref-map db))
-                            (assoc :ident-ref-map (:ident-ref-map db)))
-               idx (sec/create-index idx-type idx-config nil)]
-           (-> db
-               (assoc-in [:secondary-indices idx-ident] idx)
-               (assoc-in [:schema idx-ident :db.secondary/status] :building)
-               (assoc-in [:schema idx-ident :db.secondary/building-since-tx] (:max-tx db))))
-         db)))
+   (defn- instantiate-secondary
+     "Create the secondary-index instance for `idx-ident` from a fully
+      populated schema entry. Used at end-of-tx so the factory sees the
+      complete config (including `:db.secondary/config`, which may have
+      been applied as a later datom within the same tx)."
+     [db idx-ident idx-schema]
+     (let [idx-type (:db.secondary/type idx-schema)
+           idx-attrs (set (:db.secondary/attrs idx-schema))
+           idx-config (cond-> (merge (:db.secondary/config idx-schema)
+                                     {:attrs idx-attrs})
+                        (seq (:ident-ref-map db))
+                        (assoc :ident-ref-map (:ident-ref-map db)))
+           idx (sec/create-index idx-type idx-config nil)]
+       (-> db
+           (assoc-in [:secondary-indices idx-ident] idx)
+           (assoc-in [:schema idx-ident :db.secondary/status] :building)
+           (assoc-in [:schema idx-ident :db.secondary/building-since-tx] (:max-tx db)))))
    :cljs
-   (defn- maybe-create-secondary-index [db _datom] db))
+   (defn- instantiate-secondary [db _idx-ident _idx-schema] db))
+
+#?(:clj
+   (defn finalize-secondary-indices
+     "Walk the post-tx schema for secondary-index entities that have
+      `:db.secondary/type` + `:db.secondary/attrs` but no instance yet,
+      and create them with their full config.
+
+      Called at the end of `transact-tx-data` so the factory sees a
+      complete schema entry — fixes the race where instantiating per-
+      datom would call the factory before `:db.secondary/config` had
+      been applied. The writer's auto-backfill (status :building →
+      `build-secondary-index!`) populates the new index from AEVT, so
+      data datoms applied in the same tx are picked up asynchronously."
+     [db]
+     (reduce-kv
+      (fn [d k entry]
+        (if (and (keyword? k)
+                 (map? entry)
+                 (:db.secondary/type entry)
+                 (:db.secondary/attrs entry)
+                 (not (get-in d [:secondary-indices k])))
+          (instantiate-secondary d k entry)
+          d))
+      db (:schema db)))
+   :cljs
+   (defn finalize-secondary-indices [db] db))
 
 (defn remove-schema [db ^Datom datom]
   (let [schema (dbi/-schema db)
@@ -228,8 +242,7 @@
         true (advance-max-eid (.-e datom))
         true (update :hash + (hash datom))
         schema? (-> (update-schema datom)
-                    update-rschema
-                    (maybe-create-secondary-index datom))
+                    update-rschema)
         true (update :op-count inc))
 
       (if-some [removing ^Datom (first (dbi/search db [(.-e datom) (.-a datom) (.-v datom)]))]
@@ -334,8 +347,7 @@
       true    (advance-max-eid (.-e datom))
       true    (update :hash + (hash datom))
       schema? (-> (update-schema datom)
-                  update-rschema
-                  (maybe-create-secondary-index datom)))))
+                  update-rschema))))
 
 (defn- transact-report
   ([report datom] (transact-report report datom false))
@@ -895,7 +907,8 @@
           (-> report
               (assoc-in [:tempids :db/current-tx] (current-tx report))
               (update-in [:db-after :max-tx] inc)
-              (update :db-after persistent!))
+              (update :db-after persistent!)
+              (update :db-after finalize-secondary-indices))
 
           (nil? entity)
           (recur report entities)
@@ -966,7 +979,8 @@
           (update-in [:db-after :migration] #(if %
                                                (merge % migration-state)
                                                migration-state))
-          (update :db-after persistent!))
+          (update :db-after persistent!)
+          (update :db-after finalize-secondary-indices))
       (let [[entity & entities] es
             {:keys [config] :as db} (:db-after report)
             [e a v t op] entity

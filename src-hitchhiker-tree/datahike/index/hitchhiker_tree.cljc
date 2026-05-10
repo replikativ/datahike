@@ -11,6 +11,7 @@
             [datahike.datom :as dd]
             [datahike.constants :refer [e0 tx0 emax txmax]]
             [clojure.spec.alpha :as s]
+            [datahike.index.audit :as audit :refer [IAuditable]]
             [datahike.index.interface :as di :refer [IIndex]])
   #?(:clj (:import [clojure.lang AMapEntry]
                    [hitchhiker.tree DataNode IndexNode]
@@ -177,6 +178,15 @@
     (identity tree))
   (-mark [tree]
     (mark tree)))
+
+;; HHT does not currently expose a content-addressed merkle root. Audit
+;; falls back to advisory mode when this index is in use.
+(let [unsupported (fn [_]
+                    (throw (ex-info "merkle-root not implemented for hitchhiker-tree"
+                                    {:type :audit/merkle-root-unsupported
+                                     :index :datahike.index/hitchhiker-tree})))]
+  (extend DataNode  IAuditable {:-merkle-root unsupported :-recompute-merkle-root unsupported})
+  (extend IndexNode IAuditable {:-merkle-root unsupported :-recompute-merkle-root unsupported}))
 
 (defn empty-tree [b-factor data-node-size log-size]
   (async/<?? (tree/b-tree (tree/->Config b-factor data-node-size log-size))))

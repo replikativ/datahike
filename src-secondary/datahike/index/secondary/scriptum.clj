@@ -9,6 +9,7 @@
                      :db.secondary/attrs [:person/name :person/bio]
                      :db.secondary/config {:path \"/tmp/idx\" :analyzer :standard}}}"
   (:require
+   [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [scriptum.core :as sc]
@@ -98,7 +99,10 @@
       (-sec-flush [_ _store branch]
         ;; Scriptum manages its own storage (Lucene files), not konserve.
         ;; Commit the current state and return a key-map for restore.
-        (sc/commit! writer "datahike-flush" {"datahike.branch" (name branch)})
+        ;; The merkle-root for audit is exposed via IAuditable below,
+        ;; computed from the writer's most recent content-hash.
+        (sc/commit! writer "datahike-flush"
+                    {"datahike.branch" (name branch)})
         {:type :scriptum
          :path (:path config)
          :branch (or (:branch config) "main")})
@@ -120,6 +124,38 @@
       (-sec-mark [_]
         ;; Scriptum uses filesystem, not konserve — nothing to mark
         #{})
+
+      audit/IAuditable
+      (-merkle-root [_]
+        ;; Scriptum's content-hash is the merkle root over its Lucene
+        ;; segments. Available only when the writer was constructed with
+        ;; :crypto-hash? true. `writer` here is a ScriptumWriter record
+        ;; — unwrap to the Java BranchIndexWriter via sc/->writer.
+        ;; getLastContentHash returns a String; coerce to java.util.UUID
+        ;; for uniformity with the other audit roots.
+        (let [bw (sc/->writer writer)
+              h (.getLastContentHash bw)]
+          (if h
+            (java.util.UUID/fromString h)
+            (throw (ex-info "scriptum writer has no content-hash (was :crypto-hash? enabled?)"
+                            {:type :audit/merkle-root-unsupported
+                             :index :scriptum})))))
+      (-recompute-merkle-root [_]
+        ;; Walk the segment chain. sc/verify-commit returns
+        ;; {:valid? :commit-id :errors}. On success, return the current
+        ;; content-hash — the same merkle root the caller compares
+        ;; against.
+        (let [r (sc/verify-commit writer)]
+          (if (:valid? r)
+            (let [bw (sc/->writer writer)
+                  h (.getLastContentHash bw)]
+              (if h
+                (java.util.UUID/fromString h)
+                (throw (ex-info "verify ok but no content-hash"
+                                {:type :audit/merkle-root-unsupported}))))
+            (throw (ex-info "scriptum: verify-commit failed"
+                            {:type :audit/merkle-mismatch
+                             :errors (:errors r)})))))
 
       (-transact [this tx-report]
         ;; tx-report: {:datom datom :added? bool}

@@ -12,6 +12,7 @@
                        [cljs.cache.wrapped :as wrapped]])
             [datahike.datom :as dd :refer [index-type->cmp-quick]]
             [datahike.constants :refer [tx0 txmax]]
+            [datahike.index.audit :as audit :refer [IAuditable]]
             [datahike.index.interface :as di :refer [IIndex]]
             [datahike.tools :as dt]
             [konserve.core :as k]
@@ -212,6 +213,22 @@
     (persistent! pset))
   (-mark [^PersistentSortedSet pset]
     (mark pset)))
+
+(extend-type #?(:clj PersistentSortedSet :cljs BTSet)
+  IAuditable
+  (-merkle-root [^PersistentSortedSet pset]
+    ;; gen-address (above) makes every node UUID a recursive content
+    ;; hash of its datoms under :crypto-hash?, so the root _address
+    ;; captures the whole tree. Set by psset/store during -flush.
+    (or (.-_address pset)
+        (throw (ex-info "PersistentSortedSet must be flushed before merkle-root"
+                        {:type :audit/merkle-root-unsupported
+                         :reason :unflushed}))))
+  (-recompute-merkle-root [^PersistentSortedSet pset]
+    ;; Konserve's content-addressed read in :crypto-hash? mode already
+    ;; verifies each node's bytes match its address UUID on access —
+    ;; recomputation is implicit. Returning -merkle-root is correct here.
+    (audit/-merkle-root pset)))
 
 (defn- gen-address [^ANode node crypto-hash?]
   (if crypto-hash?

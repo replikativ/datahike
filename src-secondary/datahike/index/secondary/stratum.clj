@@ -19,6 +19,7 @@
    The secondary index path is preferred when available — it avoids the
    PSS scan + column extraction overhead entirely."
   (:require
+   [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [datahike.db.interface :as dbi]
@@ -418,12 +419,18 @@
 
   sec/IVersionedSecondaryIndex
   (-sec-flush [_ store branch]
-    ;; Persist dataset to konserve via stratum's sync!
+    ;; Persist dataset to konserve via stratum's sync!. The dataset
+    ;; commit-id IS a content-addressed hash of the persisted state,
+    ;; so we surface it under both :dataset-commit-id (existing)
+    ;; and the standardized :merkle-root that datahike's audit-chain
+    ;; folds into the commit-id.
     (if dataset
-      (let [synced-ds (sd/sync! dataset store (name branch))]
+      (let [synced-ds (sd/sync! dataset store (name branch))
+            commit-id (get-in synced-ds [:commit-info :id])]
         {:type :stratum
          :branch (name branch)
-         :dataset-commit-id (get-in synced-ds [:commit-info :id])})
+         :dataset-commit-id commit-id
+         :merkle-root commit-id})
       {:type :stratum :branch (name branch) :dataset-commit-id nil}))
 
   (-sec-restore [_ store key-map]
@@ -446,6 +453,23 @@
     ;; doesn't have access to the store. GC uses mark-from-key-map instead,
     ;; which gets the key-map + store from the stored commit.
     #{})
+
+  audit/IAuditable
+  ;; The live instance's `dataset` field is immutable; the synced
+  ;; commit-id is only available locally inside -sec-flush. The
+  ;; flush-time merkle-root is captured via the :merkle-root key in
+  ;; -sec-flush's return map, and writing.cljc folds it into the cid.
+  (-merkle-root [_]
+    (or (some-> dataset :commit-info :id)
+        (throw (ex-info "Stratum dataset has no committed merkle-root yet"
+                        {:type :audit/merkle-root-unsupported
+                         :reason :unsynced}))))
+  (-recompute-merkle-root [_]
+    ;; Stratum does not currently expose a from-cold verify function.
+    ;; Deep audit treats this as :unsupported rather than :mismatch.
+    (throw (ex-info "stratum does not implement deep verify-from-cold"
+                    {:type :audit/recompute-unsupported
+                     :index :stratum})))
 
   sec/IColumnarAggregate
   (-columnar-aggregate [this query-spec]
