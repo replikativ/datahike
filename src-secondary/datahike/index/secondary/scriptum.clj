@@ -126,36 +126,41 @@
         #{})
 
       audit/IAuditable
+      ;; Scriptum's content-hash is the merkle root over its Lucene
+      ;; segments. Available only when the writer was constructed with
+      ;; :crypto-hash? true. `writer` here is a ScriptumWriter record
+      ;; — unwrap to the Java BranchIndexWriter via sc/->writer.
+      ;; getLastContentHash returns a String; coerce to java.util.UUID
+      ;; for uniformity with the other audit roots.
       (-merkle-root [_]
-        ;; Scriptum's content-hash is the merkle root over its Lucene
-        ;; segments. Available only when the writer was constructed with
-        ;; :crypto-hash? true. `writer` here is a ScriptumWriter record
-        ;; — unwrap to the Java BranchIndexWriter via sc/->writer.
-        ;; getLastContentHash returns a String; coerce to java.util.UUID
-        ;; for uniformity with the other audit roots.
+        ;; Returns nil when no commit has happened yet or :crypto-hash?
+        ;; was off; never throws.
         (let [bw (sc/->writer writer)
               h (.getLastContentHash bw)]
-          (if h
-            (java.util.UUID/fromString h)
-            (throw (ex-info "scriptum writer has no content-hash (was :crypto-hash? enabled?)"
-                            {:type :audit/merkle-root-unsupported
-                             :index :scriptum})))))
+          (when h (java.util.UUID/fromString h))))
       (-recompute-merkle-root [_]
-        ;; Walk the segment chain. sc/verify-commit returns
-        ;; {:valid? :commit-id :errors}. On success, return the current
-        ;; content-hash — the same merkle root the caller compares
-        ;; against.
-        (let [r (sc/verify-commit writer)]
-          (if (:valid? r)
-            (let [bw (sc/->writer writer)
-                  h (.getLastContentHash bw)]
-              (if h
-                (java.util.UUID/fromString h)
-                (throw (ex-info "verify ok but no content-hash"
-                                {:type :audit/merkle-root-unsupported}))))
-            (throw (ex-info "scriptum: verify-commit failed"
-                            {:type :audit/merkle-mismatch
-                             :errors (:errors r)})))))
+        ;; Once scriptum.audit ships its own IAuditable, we'll delegate
+        ;; via lazy resolve like the stratum bridge does. Until then
+        ;; this calls sc/verify-commit and translates the
+        ;; {:valid? :commit-id :errors} shape into the unified result
+        ;; map. Returns :unsupported when :crypto-hash? was off (no
+        ;; content-hash is available).
+        (let [bw (sc/->writer writer)
+              h (.getLastContentHash bw)]
+          (cond
+            (nil? h)
+            {:status :unsupported :reason :crypto-hash-disabled}
+
+            :else
+            (let [r (sc/verify-commit writer)
+                  root (java.util.UUID/fromString h)]
+              (if (:valid? r)
+                {:status :ok :root root}
+                {:status :mismatch :root nil
+                 :errors [{:type :audit/merkle-mismatch
+                           :address root
+                           :expected root
+                           :details (:errors r)}]})))))
 
       (-transact [this tx-report]
         ;; tx-report: {:datom datom :added? bool}
