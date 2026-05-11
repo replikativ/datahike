@@ -244,22 +244,23 @@
 ;; ============================================================================
 
 (deftest deep-verify-mismatch-from-fake-index
-  (testing ":deep? reports :mismatch when an IAuditable impl signals
-            :audit/merkle-mismatch from -recompute-merkle-root"
+  (testing ":deep? reports :mismatch when an IAuditable impl returns
+            :status :mismatch from -recompute-merkle-root"
     (let [[conn cfg] (bootstrap true)]
       (try
         (let [db (d/db conn)
               fake-stored-root #?(:clj (java.util.UUID/randomUUID) :cljs (random-uuid))
               ;; Splice a fake secondary index into the live db + stored
               ;; commit so the auditor walks it. The fake's
-              ;; -recompute-merkle-root throws :audit/merkle-mismatch.
+              ;; -recompute-merkle-root returns a :mismatch result map.
               fake-index (reify
                            idx-audit/IAuditable
                            (-merkle-root [_] fake-stored-root)
                            (-recompute-merkle-root [_]
-                             (throw (ex-info "fake: bytes tampered"
-                                             {:type :audit/merkle-mismatch
-                                              :details :fake}))))
+                             {:status :mismatch
+                              :root nil
+                              :errors [{:type :audit/merkle-mismatch
+                                        :details :fake}]}))
               db-with-fake (assoc db :secondary-indices {:idx/fake fake-index})
               head (get-in db [:meta :datahike/commit-id])
               head-stored (k/get (:store db) head nil {:sync? true})
@@ -348,16 +349,17 @@
              (let [conn2 (d/connect cfg)
                    r     (audit/verify-chain (d/db conn2) nil {:deep? true})
                    diffs (-> r :deep :diffs)
-                   eavt-diff (first (filter #(= :eavt-key (:index %)) diffs))]
+                   eavt-diff (first (filter #(= :eavt-key (:index %)) diffs))
+                   first-err (-> eavt-diff :errors first)]
                (is (= :mismatch (:status r))
                    "deep tampering must surface as overall :mismatch")
                (is (= :mismatch (-> r :deep :status)))
                (is (some? eavt-diff)
                    ":eavt-key (the index we tampered through) must appear in :diffs")
-               (is (= :audit/merkle-mismatch (-> eavt-diff :errors :type)))
-               (is (= leaf-addr (-> eavt-diff :errors :expected))
+               (is (= :audit/merkle-mismatch (:type first-err)))
+               (is (= leaf-addr (:expected first-err))
                    "the mismatch points at the actual tampered address")
-               (is (every? #(= leaf-addr (-> % :errors :expected)) diffs)
+               (is (every? #(= leaf-addr (-> % :errors first :expected)) diffs)
                    "all diffs (e.g. temporal-eavt sharing the same leaf
                     by content-address) point at the same physical leaf")
                (d/release conn2)))
@@ -393,11 +395,12 @@
              (let [conn2 (d/connect cfg)
                    r     (audit/verify-chain (d/db conn2) nil {:deep? true})
                    diffs (-> r :deep :diffs)
-                   eavt-diff (first (filter #(= :eavt-key (:index %)) diffs))]
+                   eavt-diff (first (filter #(= :eavt-key (:index %)) diffs))
+                   first-err (-> eavt-diff :errors first)]
                (is (= :mismatch (:status r)))
                (is (some? eavt-diff))
-               (is (= :audit/merkle-mismatch (-> eavt-diff :errors :type)))
-               (is (= root-addr (-> eavt-diff :errors :expected))
+               (is (= :audit/merkle-mismatch (:type first-err)))
+               (is (= root-addr (:expected first-err))
                    "we tampered the root branch itself; mismatch is at root")
                (d/release conn2)))
            (finally (try (d/delete-database cfg) (catch Throwable _))))))))

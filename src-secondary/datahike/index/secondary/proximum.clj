@@ -93,22 +93,23 @@
       audit/IAuditable
       (-merkle-root [_]
         ;; Proximum's commit-id is a content hash of the HNSW graph
-        ;; + vectors state.
-        (or (phi/commit-id prox-idx)
-            (throw (ex-info "Proximum index has no commit-id yet"
-                            {:type :audit/merkle-root-unsupported
-                             :index :proximum}))))
+        ;; + vectors state. Returns nil pre-commit; never throws.
+        (phi/commit-id prox-idx))
       (-recompute-merkle-root [this]
         ;; Re-read vectors + edges from cold storage and verify each
-        ;; chunk's hash against the recorded commit chain.
+        ;; chunk's hash against the recorded commit chain. Returns the
+        ;; standardized result map instead of throwing.
         (let [store-config (:store-config config)
               branch (or (:branch config) :main)
-              result (pcrypto/verify-from-cold store-config branch)]
+              result (pcrypto/verify-from-cold store-config branch)
+              root (audit/-merkle-root this)]
           (if (:valid? result)
-            (audit/-merkle-root this)
-            (throw (ex-info "proximum: verify-from-cold failed"
-                            {:type :audit/merkle-mismatch
-                             :result result})))))
+            {:status :ok :root root}
+            {:status :mismatch :root nil
+             :errors [{:type :audit/merkle-mismatch
+                       :address root
+                       :expected root
+                       :details result}]})))
 
       (-transact [_ tx-report]
         ;; tx-report: {:datom datom :added? bool}

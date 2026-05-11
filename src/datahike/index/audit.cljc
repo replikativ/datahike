@@ -12,24 +12,34 @@
    New index implementations only need to extend `IAuditable` to opt
    in. Existing impls without the extension are flagged `:advisory` by
    the auditor (their state still gets folded into the commit, but
-   audit can't attest it).")
+   audit can't attest it).
+
+   Conventions across replikativ repos (datahike, stratum):
+   the protocol shape and result-map keys are intentionally identical so
+   bridges (e.g. datahike's stratum secondary) can pass results through
+   without translation.")
 
 (defprotocol IAuditable
   (-merkle-root [this]
-    "Content-addressed UUID of the index's current state. Cheap — post-
-     flush this returns a value the underlying library already computed.
-     Throws `{:type :audit/merkle-root-unsupported}` when the impl
-     can't provide one (e.g. unflushed, or the storage layer doesn't
-     content-address).")
+    "Cheap. Returns the cached/known content-addressed UUID of this
+     thing's current state — post-flush this is a value the underlying
+     library already computed. Returns `nil` when no root is available
+     (e.g. unflushed, or storage layer doesn't content-address). Never
+     throws.")
 
   (-recompute-merkle-root [this]
-    "Walk every node from the underlying storage and re-derive the
-     merkle root, asserting that each address really is the content
-     hash of the bytes stored under it. Returns the recomputed root —
-     identical to `-merkle-root` on an intact tree. Detects bytes-level
-     tampering of storage that wouldn't otherwise change the in-memory
-     `_address` or the cached `:merkle-roots` on the commit (konserve
-     does not verify content on read; impls must do this themselves).
-     May load and walk all reachable nodes — used only by deep audit.
-     Throws `{:type :audit/merkle-mismatch}` on detected corruption or
-     `{:type :audit/recompute-unsupported}` when not implemented."))
+    "Expensive. Walks the underlying storage and re-derives the merkle
+     root, asserting that every reachable node's bytes really hash back
+     to its address. Returns a result map; never throws on a detected
+     mismatch:
+
+       {:status :ok          :root <uuid>}
+       {:status :mismatch    :root <recomputed-uuid?>
+                             :errors [{:address, :expected, :recomputed,
+                                       :node-class, :type}]}
+       {:status :unsupported :reason <kw>}
+
+     Use `:status` for branching. `:errors` carries one entry per
+     anomaly the walker found (mismatch, missing node, or unexpected
+     node class). Konserve does not verify content on read, so impls
+     must do the walking themselves."))

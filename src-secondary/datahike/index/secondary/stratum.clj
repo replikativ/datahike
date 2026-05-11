@@ -460,16 +460,12 @@
   ;; flush-time merkle-root is captured via the :merkle-root key in
   ;; -sec-flush's return map, and writing.cljc folds it into the cid.
   (-merkle-root [_]
-    (or (some-> dataset :commit-info :id)
-        (throw (ex-info "Stratum dataset has no committed merkle-root yet"
-                        {:type :audit/merkle-root-unsupported
-                         :reason :unsynced}))))
+    ;; Returns nil when unsynced; never throws.
+    (some-> dataset :commit-info :id))
   (-recompute-merkle-root [_]
     ;; Stratum does not currently expose a from-cold verify function.
-    ;; Deep audit treats this as :unsupported rather than :mismatch.
-    (throw (ex-info "stratum does not implement deep verify-from-cold"
-                    {:type :audit/recompute-unsupported
-                     :index :stratum})))
+    ;; Until stratum.audit ships, deep audit reports :unsupported.
+    {:status :unsupported :reason :no-deep-verify})
 
   sec/IColumnarAggregate
   (-columnar-aggregate [this query-spec]

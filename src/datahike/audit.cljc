@@ -65,22 +65,6 @@
 ;; Deep verification — re-derive merkle roots from live storage for the
 ;; head snapshot and compare with the cached roots.
 
-(defn- recompute-or-unsupported
-  "Try to recompute the merkle root for a live index. Returns
-   `[:ok uuid]` on success, `[:unsupported reason]` when the impl
-   doesn't support deep verification (e.g. live instance can't sync
-   without external state), or `[:mismatch errors]` if the impl
-   detected corruption."
-  [live]
-  (try
-    [:ok (idx-audit/-recompute-merkle-root live)]
-    (catch #?(:clj clojure.lang.ExceptionInfo :cljs js/Error) e
-      (case (:type (ex-data e))
-        :audit/merkle-mismatch [:mismatch (ex-data e)]
-        :audit/merkle-root-unsupported [:unsupported (:reason (ex-data e))]
-        :audit/recompute-unsupported [:unsupported :impl-not-supported]
-        [:unsupported (or (:type (ex-data e)) :unknown)]))))
-
 (defn- deep-verify-head
   "Walk every live index in `db` and ask each to recompute its merkle
    root. Compare against the stored roots. Returns
@@ -89,17 +73,24 @@
    Diffs are genuine mismatches (the impl recomputed something and it
    didn't match). Unsupported entries flag indexes whose impl can't
    deep-verify on the current snapshot — they're surfaced but don't
-   degrade the overall :ok status."
+   degrade the overall :ok status.
+
+   The protocol returns a result map (`{:status :ok|:mismatch|:unsupported …}`)
+   so this function only dispatches on :status."
   [db stored-head]
   (let [stored-roots (:merkle-roots stored-head)
         check (fn [idx-key live]
                 (let [stored (get stored-roots idx-key)
-                      [outcome v] (recompute-or-unsupported live)]
-                  (case outcome
-                    :ok (when (not= stored v)
-                          {:kind :diff :index idx-key :stored stored :recomputed v})
-                    :unsupported {:kind :unsupported :index idx-key :reason v}
-                    :mismatch {:kind :diff :index idx-key :stored stored :errors v})))
+                      result (idx-audit/-recompute-merkle-root live)]
+                  (case (:status result)
+                    :ok          (when (not= stored (:root result))
+                                   {:kind :diff :index idx-key
+                                    :stored stored :recomputed (:root result)})
+                    :unsupported {:kind :unsupported :index idx-key
+                                  :reason (:reason result)}
+                    :mismatch    {:kind :diff :index idx-key
+                                  :stored stored :errors (:errors result)
+                                  :recomputed (:root result)})))
         primary (keep identity
                       [(check :eavt-key (:eavt db))
                        (check :aevt-key (:aevt db))
