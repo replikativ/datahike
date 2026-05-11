@@ -214,10 +214,62 @@
   (-mark [^PersistentSortedSet pset]
     (mark pset)))
 
+(defn- gen-address [^ANode node crypto-hash?]
+  (if crypto-hash?
+    (if (instance? Branch node)
+      (uuid (vec (.addresses ^Branch node)))
+      (uuid (mapv (comp vec seq) (.keys node))))
+    (squuid)))  ;; Sequential UUID for better index locality
+
+#?(:clj
+   (defn- recompute-pss-address!
+     "Read the node at `address` directly from konserve, recompute its
+      content-addressed UUID, and confirm it matches `address`. Recurses
+      into Branch children. Throws `:audit/merkle-mismatch` when the
+      bytes at `address` no longer hash back to it (tampering detected),
+      `:audit/node-missing` when the blob is gone.
+
+      `verified` is an atom holding the addresses already proven good in
+      this verification pass. Subtrees rooted at a verified address are
+      skipped — useful when the same cache is threaded across multiple
+      `-recompute-merkle-root` calls (e.g. parents in a chain walk).
+      Within a single tree the cache is a no-op, since B-tree nodes have
+      exactly one parent.
+
+      Reads go through `k/get store` directly, bypassing the live
+      `CachedStorage` LRU; otherwise a hot in-memory copy could mask a
+      tampered on-disk blob."
+     [store address verified]
+     (when-not (contains? @verified address)
+       (let [node (k/get store address nil {:sync? true})]
+         (when (nil? node)
+           (throw (ex-info "Node missing from store while recomputing merkle root"
+                           {:type :audit/node-missing
+                            :address address})))
+         (let [recomputed (cond
+                            (instance? Branch node)
+                            (uuid (vec (.addresses ^Branch node)))
+                            (instance? Leaf node)
+                            (uuid (mapv (comp vec seq) (.keys ^Leaf node)))
+                            :else
+                            (throw (ex-info "Unknown PSS node class while recomputing merkle root"
+                                            {:type :audit/recompute-unsupported
+                                             :node-class (some-> node class .getName)})))]
+           (when (not= address recomputed)
+             (throw (ex-info "Merkle root mismatch — content does not hash back to its address"
+                             {:type :audit/merkle-mismatch
+                              :expected address
+                              :recomputed recomputed
+                              :node-class (some-> node class .getName)})))
+           (when (instance? Branch node)
+             (doseq [child-addr (.addresses ^Branch node)]
+               (recompute-pss-address! store child-addr verified)))
+           (swap! verified conj address))))))
+
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IAuditable
   (-merkle-root [^PersistentSortedSet pset]
-    ;; gen-address (above) makes every node UUID a recursive content
+    ;; gen-address (below) makes every node UUID a recursive content
     ;; hash of its datoms under :crypto-hash?, so the root _address
     ;; captures the whole tree. Set by psset/store during -flush.
     (or (.-_address pset)
@@ -225,17 +277,31 @@
                         {:type :audit/merkle-root-unsupported
                          :reason :unflushed}))))
   (-recompute-merkle-root [^PersistentSortedSet pset]
-    ;; Konserve's content-addressed read in :crypto-hash? mode already
-    ;; verifies each node's bytes match its address UUID on access —
-    ;; recomputation is implicit. Returning -merkle-root is correct here.
-    (audit/-merkle-root pset)))
-
-(defn- gen-address [^ANode node crypto-hash?]
-  (if crypto-hash?
-    (if (instance? Branch node)
-      (uuid (vec (.addresses ^Branch node)))
-      (uuid (mapv (comp vec seq) (.keys node))))
-    (squuid)))  ;; Sequential UUID for better index locality
+    ;; Walk the tree from konserve, deserialize each node, and confirm
+    ;; its bytes hash back to its address. Konserve does NOT verify
+    ;; content on read, so without this walk a tampered .ksv file would
+    ;; round-trip undetected — only the in-memory `_address` would still
+    ;; look correct.
+    #?(:clj
+       (let [address (.-_address pset)
+             storage (.-_storage pset)
+             store   (some-> storage :store)]
+         (cond
+           (nil? address)
+           (throw (ex-info "PersistentSortedSet must be flushed before merkle-root"
+                           {:type :audit/merkle-root-unsupported
+                            :reason :unflushed}))
+           (nil? store)
+           (throw (ex-info "PersistentSortedSet has no konserve store; cannot recompute merkle root"
+                           {:type :audit/recompute-unsupported
+                            :reason :no-store}))
+           :else
+           (do (recompute-pss-address! store address (atom #{}))
+               address)))
+       :cljs
+       (throw (ex-info "Deep recompute not implemented for cljs PSS"
+                       {:type :audit/recompute-unsupported
+                        :reason :cljs-not-implemented})))))
 
 (defn- freelist-pop!
   "Atomically pop an address from the freelist. Returns nil if empty."

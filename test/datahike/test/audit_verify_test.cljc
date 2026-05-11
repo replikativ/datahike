@@ -19,6 +19,7 @@
                      [clojure.test :as t :refer [is deftest testing]]
                      [datahike.api :as d]
                      [datahike.audit :as audit]
+                     [datahike.datom :as dd]
                      [datahike.index.audit :as idx-audit]
                      [konserve.core :as k])))
 
@@ -271,6 +272,135 @@
           (is (some #(= :idx/fake (:index %)) (-> r :deep :diffs))
               "the fake index is flagged in :diffs"))
         (finally (cleanup conn cfg))))))
+
+;; ============================================================================
+;; PSS deep-verify — actual walk of konserve nodes, with tampering directly
+;; at the underlying store. These exercise the per-index
+;; `-recompute-merkle-root` walker in datahike.index.persistent-set, not just
+;; the protocol contract.
+;; ============================================================================
+
+#?(:clj
+   (defn- tamper-leaf!
+     "Overwrite one leaf in `pset`'s konserve store: read the leaf at
+      `leaf-addr`, perturb its first datom's :v, and write the modified
+      Leaf back at the SAME address — so the address no longer matches
+      the content. Returns the leaf address that was tampered."
+     [store leaf-addr]
+     (let [orig          (k/get store leaf-addr nil {:sync? true})
+           keys-list     (vec (.keys ^org.replikativ.persistent_sorted_set.Leaf orig))
+           first-d       (first keys-list)
+           tampered-d    (dd/datom (:e first-d) (:a first-d)
+                                   (str (:v first-d) "-TAMPERED")
+                                   (:tx first-d) (:added first-d))
+           tampered-keys (java.util.Arrays/asList
+                          (into-array Object (cons tampered-d (rest keys-list))))
+           settings      (.-_settings ^org.replikativ.persistent_sorted_set.Leaf orig)
+           tampered-leaf (org.replikativ.persistent_sorted_set.Leaf.
+                          tampered-keys settings)]
+       (k/assoc store leaf-addr tampered-leaf {:sync? true})
+       leaf-addr)))
+
+#?(:clj
+   (defn- bootstrap-pss-deep
+     "Build a file-backed db with enough datoms to force a multi-level
+      PSS B-tree (root Branch + child Leaves) under :crypto-hash?.
+      Returns [conn cfg]."
+     []
+     (let [cfg (file-cfg true)]
+       (d/create-database cfg)
+       (let [conn (d/connect cfg)]
+         (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one}])
+         ;; ~5000 datoms across batches → branching factor 512 forces a Branch root
+         (doseq [batch (partition-all 1000 (range 5000))]
+           (d/transact conn (vec (for [i batch] {:name (str "u" i)}))))
+         [conn cfg]))))
+
+#?(:clj
+   (deftest pss-deep-verify-clean-is-ok
+     (testing ":deep? true on an untampered PSS-backed db reports :ok"
+       (let [[conn cfg] (bootstrap-pss-deep)]
+         (try
+           (let [r (audit/verify-chain (d/db conn) nil {:deep? true})]
+             (is (= :ok (:status r)))
+             (is (= :ok (-> r :deep :status)))
+             (is (empty? (-> r :deep :diffs))))
+           (finally (cleanup conn cfg)))))))
+
+#?(:clj
+   (deftest pss-deep-verify-detects-leaf-tampering
+     (testing "rewriting a single PSS leaf at the konserve store level
+               makes :deep? true report :mismatch with the affected
+               primary index in :diffs"
+       (let [[conn cfg] (bootstrap-pss-deep)]
+         (try
+           (let [db        (d/db conn)
+                 store     (:store db)
+                 root-addr (idx-audit/-merkle-root (:eavt db))
+                 ^org.replikativ.persistent_sorted_set.Branch root-node
+                 (k/get store root-addr nil {:sync? true})
+                 leaf-addr (first (.addresses root-node))
+                 _ (tamper-leaf! store leaf-addr)]
+             ;; Drop the live conn so subsequent reads cannot serve a hot,
+             ;; pre-tamper copy from the writer's in-memory CachedStorage.
+             (d/release conn)
+             (let [conn2 (d/connect cfg)
+                   r     (audit/verify-chain (d/db conn2) nil {:deep? true})
+                   diffs (-> r :deep :diffs)
+                   eavt-diff (first (filter #(= :eavt-key (:index %)) diffs))]
+               (is (= :mismatch (:status r))
+                   "deep tampering must surface as overall :mismatch")
+               (is (= :mismatch (-> r :deep :status)))
+               (is (some? eavt-diff)
+                   ":eavt-key (the index we tampered through) must appear in :diffs")
+               (is (= :audit/merkle-mismatch (-> eavt-diff :errors :type)))
+               (is (= leaf-addr (-> eavt-diff :errors :expected))
+                   "the mismatch points at the actual tampered address")
+               (is (every? #(= leaf-addr (-> % :errors :expected)) diffs)
+                   "all diffs (e.g. temporal-eavt sharing the same leaf
+                    by content-address) point at the same physical leaf")
+               (d/release conn2)))
+           (finally (try (d/delete-database cfg) (catch Throwable _))))))))
+
+#?(:clj
+   (deftest pss-deep-verify-detects-branch-tampering
+     (testing "rewriting a PSS branch (changing one of its child
+               addresses to a bogus uuid) is also detected"
+       (let [[conn cfg] (bootstrap-pss-deep)]
+         (try
+           (let [db        (d/db conn)
+                 store     (:store db)
+                 root-addr (idx-audit/-merkle-root (:eavt db))
+                 ^org.replikativ.persistent_sorted_set.Branch root-node
+                 (k/get store root-addr nil {:sync? true})
+                 keys-list (.keys root-node)
+                 keys-arr  (.toArray keys-list (make-array Object 0))
+                 addrs     (.addresses root-node)
+                 new-addrs-arr (into-array Object
+                                           (cons (java.util.UUID/randomUUID)
+                                                 (rest addrs)))
+                 settings  (.-_settings root-node)
+                 tampered  (org.replikativ.persistent_sorted_set.Branch.
+                            (.level root-node)
+                            (count keys-list)
+                            keys-arr
+                            new-addrs-arr
+                            nil
+                            settings)
+                 _ (k/assoc store root-addr tampered {:sync? true})]
+             (d/release conn)
+             (let [conn2 (d/connect cfg)
+                   r     (audit/verify-chain (d/db conn2) nil {:deep? true})
+                   diffs (-> r :deep :diffs)
+                   eavt-diff (first (filter #(= :eavt-key (:index %)) diffs))]
+               (is (= :mismatch (:status r)))
+               (is (some? eavt-diff))
+               (is (= :audit/merkle-mismatch (-> eavt-diff :errors :type)))
+               (is (= root-addr (-> eavt-diff :errors :expected))
+                   "we tampered the root branch itself; mismatch is at root")
+               (d/release conn2)))
+           (finally (try (d/delete-database cfg) (catch Throwable _))))))))
 
 #?(:clj
    (def ^:private scriptum-available?

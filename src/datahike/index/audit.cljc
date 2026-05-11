@@ -23,10 +23,13 @@
      content-address).")
 
   (-recompute-merkle-root [this]
-    "Walk storage and re-derive the merkle root. The caller compares
-     against `-merkle-root` to detect bytes-level tampering. May load
-     and walk all data — used only by deep audit. The default behavior
-     for storage layers that already content-address on read (e.g.
-     konserve in `:crypto-hash?` mode) is to return `(-merkle-root this)`.
+    "Walk every node from the underlying storage and re-derive the
+     merkle root, asserting that each address really is the content
+     hash of the bytes stored under it. Returns the recomputed root —
+     identical to `-merkle-root` on an intact tree. Detects bytes-level
+     tampering of storage that wouldn't otherwise change the in-memory
+     `_address` or the cached `:merkle-roots` on the commit (konserve
+     does not verify content on read; impls must do this themselves).
+     May load and walk all reachable nodes — used only by deep audit.
      Throws `{:type :audit/merkle-mismatch}` on detected corruption or
      `{:type :audit/recompute-unsupported}` when not implemented."))
