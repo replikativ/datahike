@@ -12,6 +12,7 @@
                        [cljs.cache.wrapped :as wrapped]])
             [datahike.datom :as dd :refer [index-type->cmp-quick]]
             [datahike.constants :refer [tx0 txmax]]
+            [datahike.index.audit :as audit :refer [IAuditable]]
             [datahike.index.interface :as di :refer [IIndex]]
             [datahike.tools :as dt]
             [konserve.core :as k]
@@ -219,6 +220,93 @@
       (uuid (vec (.addresses ^Branch node)))
       (uuid (mapv (comp vec seq) (.keys node))))
     (squuid)))  ;; Sequential UUID for better index locality
+
+#?(:clj
+   (defn- walk-pss-address!
+     "Read the node at `address` directly from konserve, recompute its
+      content-addressed UUID, and confirm it matches `address`. Recurses
+      into Branch children, accumulating any anomalies into the
+      `errors` atom (instead of throwing).
+
+      Each error has shape:
+        {:type :audit/merkle-mismatch | :audit/node-missing | :audit/unknown-node-class
+         :address <expected-address>
+         :recomputed <uuid?>           ;; only for :merkle-mismatch
+         :node-class <class-name?>}
+
+      `verified` holds addresses already proven good in this pass; the
+      walker prunes their subtrees. Within a single tree this is a
+      no-op (B-tree nodes have one parent) but it keeps the function
+      composable across multiple calls sharing the same atom.
+
+      Reads go through `k/get store` directly, bypassing the live
+      `CachedStorage` LRU; otherwise a hot in-memory copy could mask a
+      tampered on-disk blob."
+     [store address verified errors]
+     (when-not (contains? @verified address)
+       (let [node (k/get store address nil {:sync? true})]
+         (cond
+           (nil? node)
+           (swap! errors conj {:type :audit/node-missing :address address})
+
+           :else
+           (let [recomputed (cond
+                              (instance? Branch node)
+                              (uuid (vec (.addresses ^Branch node)))
+                              (instance? Leaf node)
+                              (uuid (mapv (comp vec seq) (.keys ^Leaf node))))]
+             (cond
+               (nil? recomputed)
+               (swap! errors conj {:type :audit/unknown-node-class
+                                   :address address
+                                   :node-class (some-> node class .getName)})
+
+               (not= address recomputed)
+               (swap! errors conj {:type :audit/merkle-mismatch
+                                   :address address
+                                   :expected address
+                                   :recomputed recomputed
+                                   :node-class (some-> node class .getName)})
+
+               :else
+               (do
+                 (when (instance? Branch node)
+                   (doseq [child-addr (.addresses ^Branch node)]
+                     (walk-pss-address! store child-addr verified errors)))
+                 (swap! verified conj address)))))))))
+
+(extend-type #?(:clj PersistentSortedSet :cljs BTSet)
+  IAuditable
+  (-merkle-root [^PersistentSortedSet pset]
+    ;; gen-address (below) makes every node UUID a recursive content
+    ;; hash of its datoms under :crypto-hash?, so the root _address
+    ;; captures the whole tree. Set by psset/store during -flush.
+    ;; Returns nil when unflushed; never throws.
+    (.-_address pset))
+  (-recompute-merkle-root [^PersistentSortedSet pset]
+    ;; Walk the tree from konserve, deserialize each node, and confirm
+    ;; its bytes hash back to its address. Konserve does NOT verify
+    ;; content on read, so without this walk a tampered .ksv file would
+    ;; round-trip undetected — only the in-memory `_address` would still
+    ;; look correct. Returns a result map; never throws on mismatch.
+    #?(:clj
+       (let [address (.-_address pset)
+             storage (.-_storage pset)
+             store   (some-> storage :store)]
+         (cond
+           (nil? address)
+           {:status :unsupported :reason :unflushed}
+           (nil? store)
+           {:status :unsupported :reason :no-store}
+           :else
+           (let [verified (atom #{})
+                 errors   (atom [])]
+             (walk-pss-address! store address verified errors)
+             (if (seq @errors)
+               {:status :mismatch :root nil :errors @errors}
+               {:status :ok :root address}))))
+       :cljs
+       {:status :unsupported :reason :cljs-not-implemented})))
 
 (defn- freelist-pop!
   "Atomically pop an address from the freelist. Returns nil if empty."

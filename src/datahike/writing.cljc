@@ -5,6 +5,7 @@
             [datahike.db.utils :as dbu]
             [datahike.db.interface :as dbi]
             [datahike.index :as di]
+            [datahike.index.audit :as audit]
             [datahike.index.secondary :as sec]
             [datahike.store :as ds]
             [datahike.tools :as dt]
@@ -68,35 +69,84 @@
                                   [schema-meta-key schema-meta])]
     (when-not (sc/cache-has? schema-meta-key)
       (sc/cache-miss schema-meta-key schema-meta))
-    [schema-meta-kv-to-write ;; Return [key value] pair or nil
-     (merge
-      {:schema-meta-key  schema-meta-key
-       :config          config
-       :meta            meta
-       :hash            hash
-       :max-tx          max-tx
-       :max-eid         max-eid
-       :op-count        op-count
-       ;; di/-flush will now add [k v] to pending-writes via CachedStorage
-       :eavt-key        (cond-> eavt flush! (di/-flush backend))
-       :aevt-key        (cond-> aevt flush! (di/-flush backend))
-       :avet-key        (cond-> avet flush! (di/-flush backend))}
-      (when (:keep-history? config)
-        {:temporal-eavt-key (cond-> temporal-eavt flush! (di/-flush backend))
-         :temporal-aevt-key (cond-> temporal-aevt flush! (di/-flush backend))
-         :temporal-avet-key (cond-> temporal-avet flush! (di/-flush backend))})
-      ;; Secondary indices manage their own storage (Lucene files, konserve, mmap)
-      ;; so they must always be flushed regardless of the primary store backend.
-      #?(:clj
-         (when (and flush? (seq (:secondary-indices db)))
-           {:secondary-index-keys
-            (reduce-kv
-             (fn [acc idx-ident idx]
-               (if (satisfies? sec/IVersionedSecondaryIndex idx)
-                 (assoc acc idx-ident (sec/-sec-flush idx store (:branch config)))
-                 acc))
-             {} (:secondary-indices db))})
-         :cljs nil))]))
+    (let [;; Flush primary indices, capturing the post-flush instances so
+          ;; we can both serialize their storage keys and ask each for a
+          ;; merkle-root via the IAuditable protocol.
+          eavt'          (cond-> eavt flush! (di/-flush backend))
+          aevt'          (cond-> aevt flush! (di/-flush backend))
+          avet'          (cond-> avet flush! (di/-flush backend))
+          temporal-eavt' (when (:keep-history? config)
+                           (cond-> temporal-eavt flush! (di/-flush backend)))
+          temporal-aevt' (when (:keep-history? config)
+                           (cond-> temporal-aevt flush! (di/-flush backend)))
+          temporal-avet' (when (:keep-history? config)
+                           (cond-> temporal-avet flush! (di/-flush backend)))
+          ;; Secondary indices manage their own storage (Lucene files,
+          ;; konserve, mmap) so they must always be flushed regardless of
+          ;; the primary store backend.
+          secondary-index-keys
+          #?(:clj
+             (when (and flush? (seq (:secondary-indices db)))
+               (reduce-kv
+                (fn [acc idx-ident idx]
+                  (if (satisfies? sec/IVersionedSecondaryIndex idx)
+                    (assoc acc idx-ident (sec/-sec-flush idx store (:branch config)))
+                    acc))
+                {} (:secondary-indices db)))
+             :cljs nil)
+          ;; Audit roots: per-index content-addressed UUIDs that feed
+          ;; into the commit-id via merkle-leaves.
+          ;;
+          ;; Primary indexes implement IAuditable: their flushed instance
+          ;; carries the merkle root (e.g. PSS `_address` is post-flush).
+          ;;
+          ;; Secondary indexes can produce their merkle root in two
+          ;; ways: (a) extend IAuditable when their live instance has
+          ;; post-flush state (scriptum's Java writer; proximum's
+          ;; index handle); (b) surface `:merkle-root` in their
+          ;; -sec-flush return map when sync produces a new immutable
+          ;; value the live instance doesn't capture (stratum). The
+          ;; reader below tries (a) first, then (b).
+          safe-root      (fn [x]
+                           (when x
+                             (try (audit/-merkle-root x)
+                                  (catch #?(:clj Throwable :cljs js/Error) _ nil))))
+          sec-roots      (when (seq (:secondary-indices db))
+                           (reduce-kv
+                            (fn [acc idx-ident idx]
+                              (assoc acc idx-ident
+                                     (or (safe-root idx)
+                                         (:merkle-root (get secondary-index-keys idx-ident)))))
+                            {} (:secondary-indices db)))
+          merkle-roots
+          (cond-> {:eavt-key (safe-root eavt')
+                   :aevt-key (safe-root aevt')
+                   :avet-key (safe-root avet')}
+            (:keep-history? config)
+            (assoc :temporal-eavt-key (safe-root temporal-eavt')
+                   :temporal-aevt-key (safe-root temporal-aevt')
+                   :temporal-avet-key (safe-root temporal-avet'))
+            sec-roots
+            (assoc :secondary sec-roots))]
+      [schema-meta-kv-to-write
+       (merge
+        {:schema-meta-key  schema-meta-key
+         :config          config
+         :meta            meta
+         :hash            hash
+         :max-tx          max-tx
+         :max-eid         max-eid
+         :op-count        op-count
+         :merkle-roots    merkle-roots
+         :eavt-key        eavt'
+         :aevt-key        aevt'
+         :avet-key        avet'}
+        (when (:keep-history? config)
+          {:temporal-eavt-key temporal-eavt'
+           :temporal-aevt-key temporal-aevt'
+           :temporal-avet-key temporal-avet'})
+        (when secondary-index-keys
+          {:secondary-index-keys secondary-index-keys}))])))
 
 (defn- restore-secondary-indices
   "Restore secondary index instances from stored key-maps.
@@ -109,17 +159,30 @@
         (if (and (map? entry) (:db.secondary/type entry))
           (let [idx-type (:db.secondary/type entry)
                 idx-attrs (set (:db.secondary/attrs entry))
-                idx-config (merge (:db.secondary/config entry)
-                                  {:attrs idx-attrs})
-                idx-config (cond-> idx-config
+                key-map (get secondary-index-keys ident)
+                idx-config (cond-> (merge (:db.secondary/config entry)
+                                          {:attrs idx-attrs})
                              (seq ident-ref-map)
-                             (assoc :ident-ref-map ident-ref-map))
-                key-map (get secondary-index-keys ident)]
+                             (assoc :ident-ref-map ident-ref-map)
+                             ;; When a key-map carries a branch, route the
+                             ;; skeleton into that branch too — otherwise
+                             ;; the factory defaults to "main" and a non-
+                             ;; main connection re-opens the main writer,
+                             ;; contending for its per-branch lock.
+                             (:branch key-map)
+                             (assoc :branch (:branch key-map)))]
             (try
               (let [skeleton (sec/create-index idx-type idx-config nil)]
                 (if (and key-map (satisfies? sec/IVersionedSecondaryIndex skeleton))
-                  ;; Restore from durable storage
-                  (assoc acc ident (sec/-sec-restore skeleton store key-map))
+                  ;; Restore from durable storage. The skeleton existed
+                  ;; only to satisfy the protocol check; close its native
+                  ;; resources (e.g. Lucene's per-branch write lock)
+                  ;; before `-sec-restore` opens its own writer at the
+                  ;; same path/branch — otherwise the two contend.
+                  (do (when (instance? java.io.Closeable skeleton)
+                        (try (.close ^java.io.Closeable skeleton)
+                             (catch Exception _)))
+                      (assoc acc ident (sec/-sec-restore skeleton store key-map)))
                   ;; No stored keys — empty index, needs backfill
                   (assoc acc ident skeleton)))
               (catch Exception e
@@ -187,12 +250,39 @@
                                           :parent p}))
                             commit-id)))))))
 
-(defn create-commit-id [db]
-  (let [{:keys [hash max-tx max-eid meta config]} db
-        content-uuid (uuid [hash max-tx max-eid meta])]
-    (if (:crypto-hash? config)
-      content-uuid
-      (squuid content-uuid))))  ;; Sequential UUID for better index locality
+(defn- audit-grade?
+  "Audit-grade cids require :crypto-hash? on a persistent backend,
+   plus a `:merkle-roots` map computed during `db->stored` whose
+   primary entries (eavt-key/aevt-key/avet-key) are non-nil — i.e.
+   the primary index impl extends `IAuditable`."
+  [config stored-db]
+  (and (:crypto-hash? config)
+       (not= :memory (get-in config [:store :backend]))
+       (some? stored-db)
+       (every? some?
+               (vals (select-keys (:merkle-roots stored-db)
+                                  [:eavt-key :aevt-key :avet-key])))))
+
+(defn create-commit-id
+  "Compute the commit-id for `db`.
+
+   In audit-grade mode, returns a content-addressed UUID-5 over the
+   stored `:merkle-roots` map + schema-meta-key + max-tx + max-eid +
+   meta. Otherwise falls back to `[hash max-tx max-eid meta]`, wrapped
+   in `squuid` when `:crypto-hash?` is off."
+  ([db] (create-commit-id db nil))
+  ([db stored-db]
+   (let [{:keys [hash max-tx max-eid meta config]} db
+         content (if (audit-grade? config stored-db)
+                   [(:merkle-roots stored-db)
+                    (:schema-meta-key stored-db)
+                    max-tx max-eid
+                    (dissoc meta :datahike/commit-id)]
+                   [hash max-tx max-eid meta])
+         content-uuid (uuid content)]
+     (if (:crypto-hash? config)
+       content-uuid
+       (squuid content-uuid)))))
 
 (defn write-pending-kvs!
   "Writes a collection of key-value pairs to the store.
@@ -214,14 +304,17 @@
                 (let [{:keys [store config]} db
                       parents       (or parents #{(get config :branch)})
                       parents       (branch-heads-as-commits store parents)
-                      cid           (create-commit-id db)
-                      db            (-> db
-                                        (assoc-in [:meta :datahike/commit-id] cid)
-                                        (assoc-in [:meta :datahike/parents] parents))
-                      ;; db->stored now returns [schema-meta-kv-to-write db-to-store]
-                      ;; and index flushes will have populated pending-writes
-                      [schema-meta-kv-to-write db-to-store] (db->stored db true)
-                      ;; Get all pending [k v] pairs (e.g., from index flushes)
+                      ;; Stamp parents BEFORE flushing so they're in the
+                      ;; stored form the cid will be derived from.
+                      db            (assoc-in db [:meta :datahike/parents] parents)
+                      ;; Flush first → cid sees post-flush storage
+                      ;; addresses (true merkle leaves under crypto-hash?).
+                      [schema-meta-kv-to-write db-to-store-pre]
+                      (db->stored db true)
+                      cid           (create-commit-id db db-to-store-pre)
+                      db            (assoc-in db [:meta :datahike/commit-id] cid)
+                      db-to-store   (assoc-in db-to-store-pre
+                                              [:meta :datahike/commit-id] cid)
                       pending-kvs   (get-and-clear-pending-kvs! store)]
 
                   (if (multi-key-capable? store)
@@ -312,29 +405,49 @@
                  config max-tx max-eid op-count hash meta] :as db}
          (db/empty-db nil config store)
          backend (di/konserve-backend (:index config) store)
-         cid (create-commit-id db)
-         meta (assoc meta :datahike/commit-id cid)
          schema-meta {:schema schema
                       :rschema rschema
                       :system-entities system-entities
                       :ident-ref-map ident-ref-map
                       :ref-ident-map ref-ident-map}
          schema-meta-key (uuid schema-meta)
-         ;; di/-flush calls will populate pending-writes via CachedStorage
-         db-to-store (merge {:max-tx          max-tx
-                             :max-eid         max-eid
-                             :op-count        op-count
-                             :hash            hash
-                             :schema-meta-key schema-meta-key
-                             :config          (update config :initial-tx (comp not empty?))
-                             :meta            meta
-                             :eavt-key        (di/-flush eavt backend)
-                             :aevt-key        (di/-flush aevt backend)
-                             :avet-key        (di/-flush avet backend)}
-                            (when keep-history?
-                              {:temporal-eavt-key (di/-flush temporal-eavt backend)
-                               :temporal-aevt-key (di/-flush temporal-aevt backend)
-                               :temporal-avet-key (di/-flush temporal-avet backend)}))]
+         ;; Flush first → cid sees post-flush storage addresses.
+         eavt'          (di/-flush eavt backend)
+         aevt'          (di/-flush aevt backend)
+         avet'          (di/-flush avet backend)
+         temporal-eavt' (when keep-history? (di/-flush temporal-eavt backend))
+         temporal-aevt' (when keep-history? (di/-flush temporal-aevt backend))
+         temporal-avet' (when keep-history? (di/-flush temporal-avet backend))
+         safe-root      (fn [x]
+                          (when x
+                            (try (audit/-merkle-root x)
+                                 (catch Throwable _ nil))))
+         merkle-roots   (cond-> {:eavt-key (safe-root eavt')
+                                 :aevt-key (safe-root aevt')
+                                 :avet-key (safe-root avet')}
+                          keep-history?
+                          (assoc :temporal-eavt-key (safe-root temporal-eavt')
+                                 :temporal-aevt-key (safe-root temporal-aevt')
+                                 :temporal-avet-key (safe-root temporal-avet')))
+         pre-cid-stored
+         (merge {:max-tx          max-tx
+                 :max-eid         max-eid
+                 :op-count        op-count
+                 :hash            hash
+                 :merkle-roots    merkle-roots
+                 :schema-meta-key schema-meta-key
+                 :config          (update config :initial-tx (comp not empty?))
+                 :meta            meta
+                 :eavt-key        eavt'
+                 :aevt-key        aevt'
+                 :avet-key        avet'}
+                (when keep-history?
+                  {:temporal-eavt-key temporal-eavt'
+                   :temporal-aevt-key temporal-aevt'
+                   :temporal-avet-key temporal-avet'}))
+         cid (create-commit-id db pre-cid-stored)
+         meta (assoc meta :datahike/commit-id cid)
+         db-to-store (assoc pre-cid-stored :meta meta)]
      ;;we just created the first data base in this store, so the write cache is empty
      (<?- (k/assoc store schema-meta-key schema-meta opts))
      (sc/add-to-write-cache (:store config) schema-meta-key)

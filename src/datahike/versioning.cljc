@@ -165,12 +165,17 @@
      (async+sync sync? *default-sync-translation*
                  (go-try-
                   (let [store (:store db)
-                        cid (create-commit-id db)
-                        db-with-meta (-> db
-                                         (assoc-in [:config :branch] branch)
-                                         (assoc-in [:meta :datahike/parents] parents)
-                                         (assoc-in [:meta :datahike/commit-id] cid))
-                        [schema-meta-kv-to-write db-to-store] (db->stored db-with-meta true)
+                        ;; Flush first, then compute the audit-grade cid
+                        ;; from the post-flush stored form (true merkle
+                        ;; root). Same pattern as datahike.writing/commit!.
+                        db-with-parents (-> db
+                                            (assoc-in [:config :branch] branch)
+                                            (assoc-in [:meta :datahike/parents] parents))
+                        [schema-meta-kv-to-write pre-cid-store]
+                        (db->stored db-with-parents true)
+                        cid (create-commit-id db-with-parents pre-cid-store)
+                        db-to-store (assoc-in pre-cid-store
+                                              [:meta :datahike/commit-id] cid)
                         pending-kvs (get-and-clear-pending-kvs! store)]
 
                   ;; Update the set of known branches

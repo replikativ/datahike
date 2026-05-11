@@ -10,9 +10,11 @@
                        :db.secondary/config {:dim 384 :distance :cosine
                                              :store-config {...}}}}"
   (:require
+   [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [proximum.core :as prox]
+   [proximum.crypto :as pcrypto]
    [proximum.writing :as pwr]
    [proximum.versioning :as pver]
    [proximum.vectors :as pvec]
@@ -64,13 +66,14 @@
       sec/IVersionedSecondaryIndex
       (-sec-flush [_ _store branch]
         ;; Proximum manages its own konserve store internally.
-        ;; Sync writes pending data to its store.
+        ;; Sync writes pending data to its store. The merkle-root for
+        ;; audit is exposed via IAuditable below, computed from
+        ;; proximum's own commit-id.
         (async/<!! (pvec/sync! prox-idx))
-        (let [commit-id (phi/commit-id prox-idx)]
-          {:type :proximum
-           :branch (name branch)
-           :commit-id commit-id
-           :store-config (:store-config config)}))
+        {:type :proximum
+         :branch (name branch)
+         :commit-id (phi/commit-id prox-idx)
+         :store-config (:store-config config)})
 
       (-sec-restore [_ _store key-map]
         ;; Restore from proximum's own store using commit ID
@@ -86,6 +89,32 @@
       (-sec-mark [_]
         ;; Proximum uses its own konserve store, not datahike's
         #{})
+
+      audit/IAuditable
+      (-merkle-root [_]
+        ;; Proximum's commit-id is a content hash of the HNSW graph
+        ;; + vectors state. Returns nil pre-commit; never throws.
+        (phi/commit-id prox-idx))
+      (-recompute-merkle-root [this]
+        ;; When proximum.audit (>= the audit-chain release) is on the
+        ;; classpath, delegate the live-index walk to it — that gives
+        ;; us actual chunk-level tamper detection (the older
+        ;; verify-from-cold only checked existence). Older proximum
+        ;; versions fall back to the local translation.
+        (or (when-let [recompute (try (requiring-resolve 'proximum.audit/-recompute-merkle-root)
+                                      (catch Throwable _ nil))]
+              (recompute prox-idx))
+            (let [store-config (:store-config config)
+                  branch (or (:branch config) :main)
+                  result (pcrypto/verify-from-cold store-config branch)
+                  root (audit/-merkle-root this)]
+              (if (:valid? result)
+                {:status :ok :root root}
+                {:status :mismatch :root nil
+                 :errors [{:type :audit/merkle-mismatch
+                           :address root
+                           :expected root
+                           :details result}]}))))
 
       (-transact [_ tx-report]
         ;; tx-report: {:datom datom :added? bool}

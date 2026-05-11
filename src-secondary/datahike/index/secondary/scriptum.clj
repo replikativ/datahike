@@ -9,6 +9,7 @@
                      :db.secondary/attrs [:person/name :person/bio]
                      :db.secondary/config {:path \"/tmp/idx\" :analyzer :standard}}}"
   (:require
+   [datahike.index.audit :as audit]
    [datahike.index.secondary :as sec]
    [datahike.index.entity-set :as es]
    [scriptum.core :as sc]
@@ -98,7 +99,10 @@
       (-sec-flush [_ _store branch]
         ;; Scriptum manages its own storage (Lucene files), not konserve.
         ;; Commit the current state and return a key-map for restore.
-        (sc/commit! writer "datahike-flush" {"datahike.branch" (name branch)})
+        ;; The merkle-root for audit is exposed via IAuditable below,
+        ;; computed from the writer's most recent content-hash.
+        (sc/commit! writer "datahike-flush"
+                    {"datahike.branch" (name branch)})
         {:type :scriptum
          :path (:path config)
          :branch (or (:branch config) "main")})
@@ -120,6 +124,40 @@
       (-sec-mark [_]
         ;; Scriptum uses filesystem, not konserve — nothing to mark
         #{})
+
+      audit/IAuditable
+      ;; Scriptum's content-hash is the merkle root over its Lucene
+      ;; segments. Available only when the writer was constructed with
+      ;; :crypto-hash? true.
+      (-merkle-root [_]
+        ;; Returns nil pre-commit / pre-crypto-hash; never throws.
+        (let [bw (sc/->writer writer)
+              h (.getLastContentHash bw)]
+          (when h (java.util.UUID/fromString h))))
+      (-recompute-merkle-root [_]
+        ;; When scriptum.audit (>= 0.1.x audit-chain release) is on the
+        ;; classpath we delegate the deep walk to it. Older scriptum
+        ;; versions degrade to a local translation of
+        ;; sc/verify-commit's {:valid? :commit-id :errors} shape.
+        (or (when-let [recompute (try (requiring-resolve 'scriptum.audit/-recompute-merkle-root)
+                                      (catch Throwable _ nil))]
+              (recompute writer))
+            (let [bw (sc/->writer writer)
+                  h (.getLastContentHash bw)]
+              (cond
+                (nil? h)
+                {:status :unsupported :reason :crypto-hash-disabled}
+
+                :else
+                (let [r (sc/verify-commit writer)
+                      root (java.util.UUID/fromString h)]
+                  (if (:valid? r)
+                    {:status :ok :root root}
+                    {:status :mismatch :root nil
+                     :errors [{:type :audit/merkle-mismatch
+                               :address root
+                               :expected root
+                               :details (:errors r)}]}))))))
 
       (-transact [this tx-report]
         ;; tx-report: {:datom datom :added? bool}
