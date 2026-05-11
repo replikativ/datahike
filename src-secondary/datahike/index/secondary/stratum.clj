@@ -463,9 +463,20 @@
     ;; Returns nil when unsynced; never throws.
     (some-> dataset :commit-info :id))
   (-recompute-merkle-root [_]
-    ;; Stratum does not currently expose a from-cold verify function.
-    ;; Until stratum.audit ships, deep audit reports :unsupported.
-    {:status :unsupported :reason :no-deep-verify})
+    ;; Stratum's audit ns ships the same IAuditable shape, so when it's
+    ;; on the classpath we delegate the deep walk to it. Older stratum
+    ;; versions (pre-audit) make this resolve nil and we degrade to
+    ;; :unsupported. Resolved lazily so this bridge keeps loading
+    ;; against any stratum version.
+    (cond
+      (nil? dataset)
+      {:status :unsupported :reason :unsynced}
+
+      :else
+      (if-let [recompute (try (requiring-resolve 'stratum.audit/-recompute-merkle-root)
+                              (catch Throwable _ nil))]
+        (recompute dataset)
+        {:status :unsupported :reason :stratum-audit-unavailable})))
 
   sec/IColumnarAggregate
   (-columnar-aggregate [this query-spec]

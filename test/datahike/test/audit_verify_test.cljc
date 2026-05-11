@@ -175,17 +175,28 @@
              (finally (cleanup conn cfg))))))
 
      (deftest stratum-deep-verify-ok
-       (testing ":deep? true succeeds when primary storage is intact;
-                 stratum's secondary deep-verify is flagged unsupported
-                 (no verify-from-cold in stratum yet)"
+       (testing ":deep? true succeeds when primary storage is intact.
+                 Stratum's secondary delegates the deep walk to
+                 stratum.audit when it's on the classpath; otherwise
+                 (older published stratum) it degrades to :unsupported
+                 with reason :stratum-audit-unavailable. Either way the
+                 overall report stays :ok and the secondary lives in
+                 :deep :unsupported."
          (let [[conn cfg] (bootstrap-stratum)]
            (try
-             (let [r (audit/verify-chain (d/db conn) nil {:deep? true})]
+             (let [r (audit/verify-chain (d/db conn) nil {:deep? true})
+                   strat-uns (first (filter #(= :idx/strat (:index %))
+                                            (-> r :deep :unsupported)))]
                (is (= :ok (:status r)) "overall :ok — no mismatches")
                (is (= :ok (-> r :deep :status)))
                (is (empty? (-> r :deep :diffs)) "no diffs")
-               (is (some #(= :idx/strat (:index %)) (-> r :deep :unsupported))
-                   "stratum surfaces unsupported via :audit/recompute-unsupported"))
+               (is (some? strat-uns)
+                   "stratum surfaces under :unsupported")
+               (is (contains? #{:advisory :stratum-audit-unavailable
+                                :no-store :unsynced}
+                              (:reason strat-uns))
+                   "reason depends on whether stratum.audit is loaded
+                    and whether the dataset opted into :crypto-hash?"))
              (finally (cleanup conn cfg))))))
 
      (deftest stratum-secondary-root-tampering-detected
