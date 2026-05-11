@@ -102,11 +102,14 @@
           ;;
           ;; Secondary indexes can produce their merkle root in two
           ;; ways: (a) extend IAuditable when their live instance has
-          ;; post-flush state (scriptum's Java writer; proximum's
-          ;; index handle); (b) surface `:merkle-root` in their
-          ;; -sec-flush return map when sync produces a new immutable
-          ;; value the live instance doesn't capture (stratum). The
-          ;; reader below tries (a) first, then (b).
+          ;; post-flush state visible to the bridge — scriptum, whose
+          ;; underlying Java writer is mutable so `(.getLastContentHash
+          ;; bw)` reflects the latest commit on the same handle; (b)
+          ;; surface `:merkle-root` in their -sec-flush return map when
+          ;; sync produces a new immutable value the bridge field
+          ;; doesn't capture — stratum and proximum, whose record-typed
+          ;; live values stay pinned to the pre-sync state. The reader
+          ;; below tries (a) first, then (b).
           safe-root      (fn [x]
                            (when x
                              (try (audit/-merkle-root x)

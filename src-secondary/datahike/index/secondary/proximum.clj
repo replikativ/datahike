@@ -15,9 +15,9 @@
    [datahike.index.entity-set :as es]
    [proximum.core :as prox]
    [proximum.crypto :as pcrypto]
+   [proximum.protocols :as pproto]
    [proximum.writing :as pwr]
    [proximum.versioning :as pver]
-   [proximum.vectors :as pvec]
    [proximum.hnsw.internal :as phi]
    [replikativ.logging :as log]
    [clojure.core.async :as async]))
@@ -65,15 +65,31 @@
 
       sec/IVersionedSecondaryIndex
       (-sec-flush [_ _store branch]
-        ;; Proximum manages its own konserve store internally.
-        ;; Sync writes pending data to its store. The merkle-root for
-        ;; audit is exposed via IAuditable below, computed from
-        ;; proximum's own commit-id.
-        (async/<!! (pvec/sync! prox-idx))
-        {:type :proximum
-         :branch (name branch)
-         :commit-id (phi/commit-id prox-idx)
-         :store-config (:store-config config)})
+        ;; Proximum manages its own konserve store internally. The
+        ;; protocol method `proximum.protocols/sync!` returns a chan
+        ;; that yields a NEW immutable index value carrying the post-
+        ;; sync commit-id; the live `prox-idx` field is the pre-sync
+        ;; value and stays that way (the bridge has nowhere to put the
+        ;; new one). So we wait, read commit-id off `synced`, and
+        ;; surface it under both :commit-id (for restore) and
+        ;; :merkle-root (for audit's key-map fallback path b in
+        ;; writing.cljc) — IAuditable below can't see the post-sync
+        ;; state on the live record.
+        ;;
+        ;; NOTE on the <!!: writing.cljc invokes -sec-flush from inside
+        ;; commit!'s go-try-, so blocking from here parks a core.async
+        ;; pool thread. Under load this can deadlock the writer. The
+        ;; correct fix is making -sec-flush async in the protocol;
+        ;; tracked separately. This call is the minimal fix to stop
+        ;; throwing NPE (which was caused by previously calling the
+        ;; wrong, VectorStore-shaped sync! against an HnswIndex).
+        (let [synced (async/<!! (pproto/sync! prox-idx))
+              cid    (phi/commit-id synced)]
+          {:type :proximum
+           :branch (name branch)
+           :commit-id cid
+           :merkle-root cid
+           :store-config (:store-config config)}))
 
       (-sec-restore [_ _store key-map]
         ;; Restore from proximum's own store using commit ID
@@ -150,10 +166,10 @@
 (defmethod sec/branch-from-key-map :proximum [key-map _store _from-branch new-branch]
   (let [idx (pwr/load-commit (:store-config key-map) (:commit-id key-map)
                              {:branch (keyword (:branch key-map))})
-        branched (pver/branch! idx (keyword new-branch))]
-    (async/<!! (pvec/sync! branched))
-    (let [new-commit-id (phi/commit-id branched)]
-      (pvec/close! branched)
-      (assoc key-map
-             :branch (name new-branch)
-             :commit-id new-commit-id))))
+        branched (pver/branch! idx (keyword new-branch))
+        synced (async/<!! (pproto/sync! branched))
+        new-commit-id (phi/commit-id synced)]
+    (pproto/close! synced)
+    (assoc key-map
+           :branch (name new-branch)
+           :commit-id new-commit-id)))
