@@ -240,6 +240,64 @@
              (finally (cleanup conn cfg))))))))
 
 ;; ============================================================================
+;; Proximum end-to-end through commit!. The whole point of this test is to
+;; drive `d/transact` so it goes through `commit!` → `db->stored` → the
+;; proximum bridge's `-sec-flush`. If the bridge calls the wrong sync! (an
+;; earlier regression invoked the low-level VectorStore sync! against the
+;; HnswIndex, NPE'd, and got past CI because no existing test exercised
+;; this path), we catch it here.
+;;
+;; We don't transact any embedding values — registering the secondary alone
+;; is enough to exercise the flush. Transacting actual float-array values
+;; would require either type=bytes (won't hash for the merkle leaf) or
+;; schema-flexibility :read with a hasch coercion for [F (separate issue).
+;; ============================================================================
+
+#?(:clj
+   (def ^:private proximum-available?
+     (try (require 'datahike.index.secondary.proximum) true
+          (catch Throwable _ false))))
+
+#?(:clj
+   (when proximum-available?
+     (deftest proximum-secondary-contributes-merkle-root
+       (testing "proximum's commit-id surfaces under
+                 :merkle-roots :secondary via the -sec-flush key-map
+                 (path b); audit walks clean. Regression guard for the
+                 NPE caused by calling the wrong (VectorStore-shaped)
+                 sync! against the HnswIndex from -sec-flush."
+         (let [cfg (file-cfg true)]
+           (d/create-database cfg)
+           (let [conn (d/connect cfg)]
+             (try
+               (d/transact conn
+                           [{:db/ident :idx/vectors
+                             :db.secondary/type :proximum
+                             :db.secondary/attrs [:person/embedding]
+                             :db.secondary/config
+                             {:dim 4 :distance :cosine
+                              :store-config {:backend :memory
+                                             :id (java.util.UUID/randomUUID)}
+                              :crypto-hash? true}}])
+               (let [db (d/db conn)
+                     head (get-in db [:meta :datahike/commit-id])
+                     stored (k/get (:store db) head nil {:sync? true})
+                     prox-root (get-in stored [:merkle-roots :secondary :idx/vectors])
+                     prox-key (get-in stored [:secondary-index-keys :idx/vectors])
+                     report (audit/verify-chain db)]
+                 (is (some? prox-root)
+                     "proximum must contribute a non-nil merkle-root")
+                 (is (uuid? prox-root))
+                 (is (= prox-root (:merkle-root prox-key))
+                     "the key-map's :merkle-root and the folded root must match")
+                 (is (= prox-root (:commit-id prox-key))
+                     "key-map :commit-id stays the post-sync cid (was previously
+                      reading the pre-sync value off the bridge's discarded sync result)")
+                 (is (= :ok (:status report))
+                     "with proximum contributing a real root, audit walks clean"))
+               (finally (cleanup conn cfg)))))))))
+
+;; ============================================================================
 ;; Scriptum without crypto-hash → advisory.
 ;; (Scriptum WITH crypto-hash is blocked by a pre-existing upstream bug:
 ;;  maybe-create-secondary-index instantiates as soon as :type+:attrs are
