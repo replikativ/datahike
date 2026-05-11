@@ -96,20 +96,25 @@
         ;; + vectors state. Returns nil pre-commit; never throws.
         (phi/commit-id prox-idx))
       (-recompute-merkle-root [this]
-        ;; Re-read vectors + edges from cold storage and verify each
-        ;; chunk's hash against the recorded commit chain. Returns the
-        ;; standardized result map instead of throwing.
-        (let [store-config (:store-config config)
-              branch (or (:branch config) :main)
-              result (pcrypto/verify-from-cold store-config branch)
-              root (audit/-merkle-root this)]
-          (if (:valid? result)
-            {:status :ok :root root}
-            {:status :mismatch :root nil
-             :errors [{:type :audit/merkle-mismatch
-                       :address root
-                       :expected root
-                       :details result}]})))
+        ;; When proximum.audit (>= the audit-chain release) is on the
+        ;; classpath, delegate the live-index walk to it — that gives
+        ;; us actual chunk-level tamper detection (the older
+        ;; verify-from-cold only checked existence). Older proximum
+        ;; versions fall back to the local translation.
+        (or (when-let [recompute (try (requiring-resolve 'proximum.audit/-recompute-merkle-root)
+                                      (catch Throwable _ nil))]
+              (recompute prox-idx))
+            (let [store-config (:store-config config)
+                  branch (or (:branch config) :main)
+                  result (pcrypto/verify-from-cold store-config branch)
+                  root (audit/-merkle-root this)]
+              (if (:valid? result)
+                {:status :ok :root root}
+                {:status :mismatch :root nil
+                 :errors [{:type :audit/merkle-mismatch
+                           :address root
+                           :expected root
+                           :details result}]}))))
 
       (-transact [_ tx-report]
         ;; tx-report: {:datom datom :added? bool}

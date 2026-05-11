@@ -128,39 +128,36 @@
       audit/IAuditable
       ;; Scriptum's content-hash is the merkle root over its Lucene
       ;; segments. Available only when the writer was constructed with
-      ;; :crypto-hash? true. `writer` here is a ScriptumWriter record
-      ;; — unwrap to the Java BranchIndexWriter via sc/->writer.
-      ;; getLastContentHash returns a String; coerce to java.util.UUID
-      ;; for uniformity with the other audit roots.
+      ;; :crypto-hash? true.
       (-merkle-root [_]
-        ;; Returns nil when no commit has happened yet or :crypto-hash?
-        ;; was off; never throws.
+        ;; Returns nil pre-commit / pre-crypto-hash; never throws.
         (let [bw (sc/->writer writer)
               h (.getLastContentHash bw)]
           (when h (java.util.UUID/fromString h))))
       (-recompute-merkle-root [_]
-        ;; Once scriptum.audit ships its own IAuditable, we'll delegate
-        ;; via lazy resolve like the stratum bridge does. Until then
-        ;; this calls sc/verify-commit and translates the
-        ;; {:valid? :commit-id :errors} shape into the unified result
-        ;; map. Returns :unsupported when :crypto-hash? was off (no
-        ;; content-hash is available).
-        (let [bw (sc/->writer writer)
-              h (.getLastContentHash bw)]
-          (cond
-            (nil? h)
-            {:status :unsupported :reason :crypto-hash-disabled}
+        ;; When scriptum.audit (>= 0.1.x audit-chain release) is on the
+        ;; classpath we delegate the deep walk to it. Older scriptum
+        ;; versions degrade to a local translation of
+        ;; sc/verify-commit's {:valid? :commit-id :errors} shape.
+        (or (when-let [recompute (try (requiring-resolve 'scriptum.audit/-recompute-merkle-root)
+                                      (catch Throwable _ nil))]
+              (recompute writer))
+            (let [bw (sc/->writer writer)
+                  h (.getLastContentHash bw)]
+              (cond
+                (nil? h)
+                {:status :unsupported :reason :crypto-hash-disabled}
 
-            :else
-            (let [r (sc/verify-commit writer)
-                  root (java.util.UUID/fromString h)]
-              (if (:valid? r)
-                {:status :ok :root root}
-                {:status :mismatch :root nil
-                 :errors [{:type :audit/merkle-mismatch
-                           :address root
-                           :expected root
-                           :details (:errors r)}]})))))
+                :else
+                (let [r (sc/verify-commit writer)
+                      root (java.util.UUID/fromString h)]
+                  (if (:valid? r)
+                    {:status :ok :root root}
+                    {:status :mismatch :root nil
+                     :errors [{:type :audit/merkle-mismatch
+                               :address root
+                               :expected root
+                               :details (:errors r)}]}))))))
 
       (-transact [this tx-report]
         ;; tx-report: {:datom datom :added? bool}
