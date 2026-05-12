@@ -23,23 +23,6 @@
   (let [logical (logical/build-logical-plan db clauses #{} nil)]
     (lower/lower logical db nil)))
 
-(defn- plan-match?
-  "Check that IR pipeline and create-plan produce structurally equivalent plans.
-   The IR path may attach predicates to groups (optimization); normalize by
-   flattening attached-preds back to standalone ops for comparison."
-  [db clauses]
-  (let [old (plan/create-plan db clauses #{} nil)
-        new (ir-plan db clauses)
-        ;; Normalize: flatten attached-preds back to standalone ops
-        normalize-ops (fn [ops]
-                        (mapv :op (into [] (mapcat (fn [op]
-                                                     (if (seq (:attached-preds op))
-                                                       (cons op (:attached-preds op))
-                                                       [op])))
-                                        ops)))]
-    (and (= (mapv :op (:ops old)) (normalize-ops (:ops new)))
-         (= (:group-joins old) (:group-joins new)))))
-
 (defn- query-both
   "Run a query through both planner and legacy paths, return [planner legacy]."
   [query db]
@@ -132,41 +115,26 @@
     (is (every? #(instance? datahike.query.ir.LScan %) nodes))))
 
 ;; ---------------------------------------------------------------------------
-;; Lowering equivalence tests
+;; Lowering shape tests
+;;
+;; These tests previously cross-checked the IR pipeline against the legacy
+;; physical-only `plan/create-plan` to guard the migration. Now that the
+;; legacy path is gone (PR removing `create-plan`) and every sub-plan
+;; routes through the IR pipeline, the comparison would be a tautology.
+;; End-to-end correctness is covered by `test-end-to-end-queries` (below)
+;; and by the broader suite (`query-rules-test`, `jobtech-patterns-test`,
+;; the planner-vs-legacy diff harness in `assert-engines-agree`).
 
-(deftest test-lower-matches-create-plan
-  (let [db (db/empty-db {:name {:db/index true} :age {} :email {} :flag {} :friend {}})]
-    (testing "Single pattern"
-      (is (plan-match? db '[[?e :name "Alice"]])))
-    (testing "Entity join"
-      (is (plan-match? db '[[?e :name ?n] [?e :age ?a]])))
-    (testing "3-way entity join"
-      (is (plan-match? db '[[?e :name ?n] [?e :age ?a] [?e :email ?em]])))
-    (testing "Value join"
-      (is (plan-match? db '[[?e :name ?n] [?e2 :friend ?n]])))
-    (testing "With predicate"
-      (is (plan-match? db '[[?e :age ?a] [(> ?a 18)]])))
-    (testing "Pushdown predicate"
-      (is (plan-match? db '[[?e :name ?n] [(> ?n "M")]])))
-    (testing "Anti-merge"
-      (is (plan-match? db '[[?e :name ?n] [?e :age ?a] (not [?e :flag :deleted])])))
-    (testing "OR clause"
-      (is (plan-match? db '[[?e :name ?n] (or [?e :age 30] [?e :age 25])])))))
-
-(deftest test-lower-deep-structural-equality
-  (testing "Entity group internals match exactly"
+(deftest test-lowered-entity-group-shape
+  (testing "Lowered entity-group has the structural fields callers expect"
     (let [db (db/empty-db {:name {} :age {} :email {}})
           clauses '[[?e :name ?n] [?e :age ?a] [?e :email ?em]]
-          old-eg (first (:ops (plan/create-plan db clauses #{} nil)))
-          new-eg (first (:ops (ir-plan db clauses)))]
-      (is (= (:clause (:scan-op old-eg)) (:clause (:scan-op new-eg))))
-      (is (= (:index (:scan-op old-eg)) (:index (:scan-op new-eg))))
-      (is (= (mapv :clause (:merge-ops old-eg)) (mapv :clause (:merge-ops new-eg))))
-      (is (= (mapv :index (:merge-ops old-eg)) (mapv :index (:merge-ops new-eg))))
-      (is (= (:output-vars old-eg) (:output-vars new-eg)))
-      (is (= old-eg new-eg) "Full entity-group equality (both paths now produce :pipeline)")
-      (is (some? (:pipeline new-eg)) "IR plan has :pipeline annotation")
-      (is (some? (:pipeline old-eg)) "Legacy plan has :pipeline annotation"))))
+          eg (first (:ops (ir-plan db clauses)))]
+      (is (= :entity-group (:op eg)))
+      (is (= '?e (:entity-var eg)))
+      (is (some? (:scan-op eg)))
+      (is (vector? (:merge-ops eg)))
+      (is (some? (:pipeline eg))))))
 
 ;; ---------------------------------------------------------------------------
 ;; End-to-end query correctness tests
@@ -217,11 +185,8 @@
    test-db))
 
 (deftest test-ir-pipeline-with-in-bindings
-  (let [[current ir] (query-both '[:find ?e :in $ ?name :where [?e :name ?name]]
-                                 test-db)]
-    ;; Can't use assert-ir-match directly since d/q needs extra args
-    ;; Test the plan equivalence instead
-    (is (plan-match? (db/empty-db {:name {}}) '[[?e :name ?name]]))))
+  (testing "IR plan builds cleanly for a `:in ?name` binding shape"
+    (is (seq (:ops (ir-plan (db/empty-db {:name {}}) '[[?e :name ?name]]))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Pipeline annotation tests
