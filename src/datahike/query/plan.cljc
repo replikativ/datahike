@@ -1552,18 +1552,25 @@
                                     :base-plans base-ps
                                     :rec-clause-versions rec-cvs}])))
                       scc-rule-names)
-                ;; Check if any base case lacks data patterns (e.g. [(identity ?a) ?c]).
-                ;; Such base cases can't be executed by the planned fixpoint engine
-                ;; because head vars have no data source — fall back to legacy.
-                has-scanless-base?
-                (some (fn [[_ {:keys [base-plans]}]]
-                        (some (fn [bp]
-                                (not (some #(#{:entity-group :pattern-scan} (:op %))
-                                           (:ops bp))))
-                              base-plans))
-                      scc-rule-plans)
-                ;; If scanless base cases, nil out scc-rule-plans to trigger legacy fallback
-                scc-rule-plans (when-not has-scanless-base? scc-rule-plans)
+                ;; Note: an earlier `has-scanless-base?` guard nilled out
+                ;; `scc-rule-plans` whenever a base case lacked an
+                ;; `:entity-group` / `:pattern-scan` op (e.g. SQL
+                ;; `WITH RECURSIVE … (SELECT 1 …)` anchor lowering to
+                ;; `[(identity 1) ?n]`, or a `[(ground […]) [?v ...]]`
+                ;; collection seed), routing such rules to `legacy/solve-rule`.
+                ;; Legacy can't evaluate recursive bodies that bind head vars
+                ;; through `:function` ops and then filter them with predicates
+                ;; — those queries hung or failed.
+                ;;
+                ;; The fixpoint executor already handles function-only base
+                ;; cases: `execute-branch-plans` runs the base plan against
+                ;; an empty ctx, `legacy/bind-by-fn` produces a single-tuple
+                ;; Relation, and the recursive branch's `rule-lookup` ops feed
+                ;; off the accumulator as usual. Magic sets are silently
+                ;; skipped when `base-scan-attr` is nil (the
+                ;; `and magic-demand base-scan-attr …` check in
+                ;; `execute-recursive-rule`). The guard was redundant and
+                ;; introduced a real regression for scanless-base recursion.
                 ;; Extract base scan attribute for magic set optimization
                 base-scan-attr
                 (when scc-rule-plans
