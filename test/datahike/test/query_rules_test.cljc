@@ -160,6 +160,40 @@
                    [(>= ?a 18)]]])
            #{["Oleg"]}))))
 
+(deftest test-get-else-inside-rule-body
+  ;; Regression for plan-rule-op routing branch bodies through the
+  ;; logical IR pipeline. Top-level queries get `[(get-else $ ?e :a v)
+  ;; ?x]` promoted to an LOptionalScan that binds ?e via an attribute
+  ;; scan; previously rule body planning skipped that pass and ?e was
+  ;; left unbound, so the same body returned `#{[nil …]}` instead of
+  ;; actual matches.
+  (let [db (d/db-with (db/empty-db {:concept/id         {:db/unique :db.unique/identity}
+                                    :concept/preferred  {}
+                                    :concept/deprecated {}})
+                      [{:db/id 1 :concept/id "c1" :concept/preferred "Alice"}
+                       {:db/id 2 :concept/id "c2" :concept/preferred "Bob" :concept/deprecated true}
+                       {:db/id 3 :concept/id "c3" :concept/preferred "Carol"}])]
+    (testing "scalar get-else binds the entity through the optional scan"
+      (is (= (d/q '{:find [?id ?dep]
+                    :in [$ %]
+                    :where [(maybe-dep ?id ?dep)]}
+                  db
+                  '[[(maybe-dep ?id ?dep)
+                     [(get-else $ ?e :concept/deprecated false) ?dep]
+                     [?e :concept/id ?id]]])
+             #{["c1" false] ["c2" true] ["c3" false]})))
+
+    (testing "predicate on get-else output inside a rule"
+      (is (= (d/q '{:find [?id]
+                    :in [$ %]
+                    :where [(active? ?id)]}
+                  db
+                  '[[(active? ?id)
+                     [?e :concept/id ?id]
+                     [(get-else $ ?e :concept/deprecated false) ?dep]
+                     [(not ?dep)]]])
+             #{["c1"] ["c3"]})))))
+
 ;; https://github.com/tonsky/datahike/issues/218
 
 (deftest test-false-arguments

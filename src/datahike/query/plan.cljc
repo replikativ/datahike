@@ -1524,9 +1524,35 @@
                           ;; until the body's own producer op binds them with
                           ;; a known card.
                                    branch-bound bound-vars
+                                   ;; Route rule branch bodies through the full IR pipeline
+                                   ;; (build-logical-plan → lower) rather than the physical-only
+                                   ;; create-plan. Top-level queries get the logical pass for free
+                                   ;; from `create-plan-via-ir` in query.cljc; rule bodies didn't,
+                                   ;; so kernel features that depend on logical recognition (most
+                                   ;; visibly `[(get-else $ ?e :attr default) ?v]` being promoted
+                                   ;; to an `LOptionalScan` that binds `?e`) silently degraded
+                                   ;; inside rule bodies. requiring-resolve breaks the cycle:
+                                   ;; lower.cljc already requires plan.cljc, and plan-rule-op needs
+                                   ;; to call lower for each rule branch.
+                                   build-logical (requiring-resolve
+                                                  'datahike.query.logical/build-logical-plan)
+                                   lower-fn (requiring-resolve
+                                             'datahike.query.lower/lower)
+                                   ;; build-logical-plan expects a set, but bound-vars
+                                   ;; can arrive as a {var → cardinality} map (lower.cljc
+                                   ;; passes bvc here). lower itself accepts either form.
+                                   branch-bound-set (cond (map? branch-bound) (set (keys branch-bound))
+                                                          (set? branch-bound) branch-bound
+                                                          :else (set branch-bound))
+                                   plan-branch (fn plan-branch
+                                                 [branch-clauses guarded]
+                                                 (let [logical (build-logical
+                                                                db branch-clauses branch-bound-set
+                                                                rules guarded)]
+                                                   (lower-fn logical db rules)))
                                    base-ps (mapv (fn [b]
                                                    (let [renamed (rename-branch-vars b free-call-args seqid db)]
-                                                     (create-plan db (vec renamed) branch-bound rules)))
+                                                     (plan-branch (vec renamed) nil)))
                                                  base-bs)
                                    rec-cvs
                                    (vec (mapcat
@@ -1545,7 +1571,7 @@
                                                                        (if (= i delta-idx) :delta :main)})
                                                                     c))
                                                                 renamed))]
-                                                      (create-plan db versioned branch-bound rules scc-rule-names)))
+                                                      (plan-branch versioned scc-rule-names)))
                                                   scc-indices)))
                                          rec-bs))]
                                [rn {:head-vars free-call-args
@@ -1621,7 +1647,25 @@
                 ;; every later clause sees safe-var → 1 in its planning
                 ;; environment without it leaking into the runnability
                 ;; check's seed-bound set.
-                sub-plans (mapv #(create-plan db (vec %) bound-vars rules) expanded)
+                ;; Same IR-pipeline routing as the recursive branch above —
+                ;; rule bodies need the logical pass so `[(get-else …) ?v]`
+                ;; becomes `LOptionalScan` (otherwise `?e` stays unbound
+                ;; in the rule body). requiring-resolve breaks the
+                ;; plan↔lower cycle.
+                build-logical (requiring-resolve
+                               'datahike.query.logical/build-logical-plan)
+                lower-fn (requiring-resolve
+                          'datahike.query.lower/lower)
+                ;; See the recursive-branch comment above: bound-vars may
+                ;; arrive as a Map (var → card); build-logical-plan wants a Set.
+                bound-set (cond (map? bound-vars) (set (keys bound-vars))
+                                (set? bound-vars) bound-vars
+                                :else (set bound-vars))
+                sub-plans (mapv (fn [branch-clauses]
+                                  (let [logical (build-logical
+                                                 db (vec branch-clauses) bound-set rules)]
+                                    (lower-fn logical db rules)))
+                                expanded)
                 total-est (reduce + 0 (keep (fn [p] (some :estimated-card (:ops p))) sub-plans))]
             {:op :or
              :clause (:clause clause-info)
