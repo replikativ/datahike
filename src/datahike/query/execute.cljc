@@ -2903,8 +2903,38 @@
                                                      (some #(#{:entity-group :pattern-scan} (:op %))
                                                            (:ops cv-plan)))
                                                    rec-clause-versions)
+                                  ;; delta-driven-expand emits `[entity-id,
+                                  ;; propagated-y]` per AVET hit. That's correct
+                                  ;; only for simple transitive closure shapes
+                                  ;; — `(rule ?x ?y) [?x :attr ?prev-y]
+                                  ;; (rule ?prev-y ?z)` and the like, where the
+                                  ;; recursive body is exhausted by the
+                                  ;; reverse-index step. Any `:function` (e.g.
+                                  ;; arithmetic on a counter, get-else
+                                  ;; column-extraction), `:predicate`
+                                  ;; (filtering on a get-else output), or
+                                  ;; `:attached-preds` on the entity-group is
+                                  ;; SILENTLY SKIPPED by the shortcut, producing
+                                  ;; wrong tuples (eg `[entity-id, 0]` instead
+                                  ;; of `[node-id, depth+1]` for a tree-walk
+                                  ;; CTE). Only fire the optimization when every
+                                  ;; recursive-clause version is reducible to
+                                  ;; `:rule-lookup` + one `:entity-group` /
+                                  ;; `:pattern-scan` with no attached predicates.
+                                           rec-shape-simple?
+                                           (every? (fn [cv-plan]
+                                                     (every? (fn [op]
+                                                               (case (:op op)
+                                                                 (:rule-lookup :pattern-scan)
+                                                                 true
+                                                                 :entity-group
+                                                                 (empty? (:attached-preds op))
+                                                                 false))
+                                                             (:ops cv-plan)))
+                                                   rec-clause-versions)
                                            use-delta-driven? (and base-scan-attr
                                                                   rec-has-db-pattern?
+                                                                  rec-shape-simple?
                                                                   (= rn rule-name)
                                                                   (= 1 (count scc-rule-names))
                                                                   (= 2 (count head-vars))
