@@ -21,7 +21,11 @@
    [replikativ.logging :as log]
    [datahike.query.analyze :as analyze]
    [datahike.query.estimate :as estimate]
-   [datahike.query.ir :as ir]))
+   [datahike.query.ir :as ir]
+   ;; logical doesn't require plan, so a direct require is fine. lower
+   ;; DOES require plan (for plan-pattern-op etc.), so we still need
+   ;; requiring-resolve to call into lower from here.
+   [datahike.query.logical :as logical]))
 
 #?(:clj (set! *warn-on-reflection* true))
 
@@ -1531,13 +1535,12 @@
                                    ;; so kernel features that depend on logical recognition (most
                                    ;; visibly `[(get-else $ ?e :attr default) ?v]` being promoted
                                    ;; to an `LOptionalScan` that binds `?e`) silently degraded
-                                   ;; inside rule bodies. requiring-resolve breaks the cycle:
-                                   ;; lower.cljc already requires plan.cljc, and plan-rule-op needs
-                                   ;; to call lower for each rule branch.
-                                   build-logical (requiring-resolve
-                                                  'datahike.query.logical/build-logical-plan)
-                                   lower-fn (requiring-resolve
-                                             'datahike.query.lower/lower)
+                                   ;; inside rule bodies. requiring-resolve on `lower` breaks the
+                                   ;; cycle: lower.cljc requires plan.cljc (plan-pattern-op
+                                   ;; et al), so plan.cljc can't load lower at compile time.
+                                   ;; logical.cljc has no dep on plan and is required normally
+                                   ;; in the ns form.
+                                   lower-fn (requiring-resolve 'datahike.query.lower/lower)
                                    ;; build-logical-plan expects a set, but bound-vars
                                    ;; can arrive as a {var → cardinality} map (lower.cljc
                                    ;; passes bvc here). lower itself accepts either form.
@@ -1546,7 +1549,7 @@
                                                           :else (set branch-bound))
                                    plan-branch (fn plan-branch
                                                  [branch-clauses guarded]
-                                                 (let [logical (build-logical
+                                                 (let [logical (logical/build-logical-plan
                                                                 db branch-clauses branch-bound-set
                                                                 rules guarded)]
                                                    (lower-fn logical db rules)))
@@ -1650,19 +1653,16 @@
                 ;; Same IR-pipeline routing as the recursive branch above —
                 ;; rule bodies need the logical pass so `[(get-else …) ?v]`
                 ;; becomes `LOptionalScan` (otherwise `?e` stays unbound
-                ;; in the rule body). requiring-resolve breaks the
-                ;; plan↔lower cycle.
-                build-logical (requiring-resolve
-                               'datahike.query.logical/build-logical-plan)
-                lower-fn (requiring-resolve
-                          'datahike.query.lower/lower)
+                ;; in the rule body). `lower` is loaded via
+                ;; requiring-resolve to break the plan↔lower cycle.
+                lower-fn (requiring-resolve 'datahike.query.lower/lower)
                 ;; See the recursive-branch comment above: bound-vars may
                 ;; arrive as a Map (var → card); build-logical-plan wants a Set.
                 bound-set (cond (map? bound-vars) (set (keys bound-vars))
                                 (set? bound-vars) bound-vars
                                 :else (set bound-vars))
                 sub-plans (mapv (fn [branch-clauses]
-                                  (let [logical (build-logical
+                                  (let [logical (logical/build-logical-plan
                                                  db (vec branch-clauses) bound-set rules)]
                                     (lower-fn logical db rules)))
                                 expanded)
