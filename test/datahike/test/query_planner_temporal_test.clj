@@ -185,6 +185,79 @@
         (finally (d/delete-database cfg))))))
 
 ;; ---------------------------------------------------------------------------
+;; Bug 2b — same shape as Bug 2 but for the STANDALONE pattern-scan path
+;;
+;; Bug 2 fixed the entity-group temporal branch. A separate code path —
+;; `execute-plan`'s `:pattern-scan` case (single pattern, no merges to
+;; fuse) — also delegates to `legacy/lookup-batch-search` on a temporal
+;; DB and was symmetrically missing the post-filter step for
+;; :pushdown-preds. So a query whose WHERE has a SINGLE pattern plus a
+;; range predicate that the planner pushes onto it surfaces the bug all
+;; over again on HistoricalDB / AsOfDB / SinceDB.
+;;
+;; Surface symptom: any temporal range query of the shape
+;;   [?tx :db/txInstant ?inst] [(<= ?from ?inst)]
+;; would over-return — the pushed-down `?from ≤ ?inst` predicate would
+;; be consumed at plan time and silently dropped at execute time.
+;;
+;; Fixed in src/datahike/query/execute.cljc `:pattern-scan` temporal
+;; branch by re-applying op-level :pushdown-preds via
+;; legacy/filter-by-pred after lookup-batch-search.
+
+(deftest test-temporal-standalone-pattern-scan-pushdown-pred
+  (testing "range predicate pushed onto a STANDALONE pattern-scan is
+            applied on HistoricalDB"
+    (let [cfg (fresh-cfg)]
+      (try
+        (d/create-database cfg)
+        (let [conn (d/connect cfg)]
+          (d/transact conn
+                      [{:db/ident :event/marker
+                        :db/cardinality :db.cardinality/one
+                        :db/valueType :db.type/string}])
+          ;; Three txs producing three distinct txInstants. The query
+          ;; below has the txInstant pattern as a standalone
+          ;; :pattern-scan op (not part of an entity-group). The
+          ;; `[?m ...]` collection binding forces non-empty :rels in
+          ;; the context, which makes execute-plan-direct ineligible
+          ;; and the plan is executed through `execute-plan` — that's
+          ;; the path with the temporal-pattern-scan pushdown-pred
+          ;; drop bug.
+          (d/transact conn [{:event/marker "e1"}])
+          (Thread/sleep 5)
+          (d/transact conn [{:event/marker "e2"}])
+          (Thread/sleep 5)
+          (d/transact conn [{:event/marker "e3"}])
+
+          (let [hdb (d/history (d/db conn))
+                tx-instants (sort
+                             (mapv first
+                                   (d/q '[:find ?inst
+                                          :where
+                                          [_ :event/marker _ ?tx true]
+                                          [?tx :db/txInstant ?inst]]
+                                        hdb)))
+                e1-inst (nth tx-instants 0)
+                from-inst (java.util.Date/from
+                           (.plus (.toInstant ^java.util.Date e1-inst)
+                                  1 java.time.temporal.ChronoUnit/MILLIS))
+                q-form '[:find ?inst
+                         :in $ ?from-inst [?m ...]
+                         :where
+                         [?e :event/marker ?m]
+                         [_ _ _ ?tx true]
+                         [?tx :db/txInstant ?inst]
+                         [(<= ?from-inst ?inst)]]
+                {:keys [legacy planner]} (run-both q-form hdb from-inst ["e1" "e2" "e3"])]
+            (is (= (set legacy) (set planner))
+                "planner must match legacy — pushed-down predicate
+                  must be re-applied in the standalone pattern-scan
+                  temporal fallback path")
+            (is (not (some #(= e1-inst (first %)) planner))
+                "planner result must drop the e1 tx (whose ?inst < ?from-inst)")))
+        (finally (d/delete-database cfg))))))
+
+;; ---------------------------------------------------------------------------
 ;; Bug 3 — LOptionalScan reordered before its entity-var binders
 ;;
 ;; The planner classifies LOptionalScan ops (synthesized from a
