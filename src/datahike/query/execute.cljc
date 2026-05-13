@@ -3382,7 +3382,18 @@
                                        default-val (:default-value op)
                                        fn-clause [(list 'get-else '$ e-var attr default-val) bind-var]]
                                    (#?(:clj legacy/bind-by-fn :cljs (rel/get-legacy-fn :bind-by-fn)) ctx fn-clause))
-                                 (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op))))]
+                                 (#?(:clj legacy/lookup-batch-search :cljs (rel/get-legacy-fn :lookup-batch-search)) op-db ctx (:clause op) (:clause op))))
+                        ;; Re-apply pushed-down predicates as a post-filter.
+                        ;; lookup-batch-search doesn't honor :pushdown-preds and
+                        ;; the planner has already consumed the clause-level
+                        ;; predicate (:consumed-preds), so without this filter
+                        ;; the predicate is silently dropped. Symmetric with
+                        ;; the entity-group branch above.
+                        ctx' (binding [rel/*implicit-source* op-db]
+                               (reduce (fn [c pred-clause]
+                                         (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                          c pred-clause))
+                                       ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
                     (recur ctx' plan (inc idx)))
                 ;; DB source — use fused scan or single pattern scan
                   (let [;; Check if next ops form an ad-hoc fusable group
