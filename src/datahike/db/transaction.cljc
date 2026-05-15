@@ -200,16 +200,49 @@
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
 
+(def ^:private meta-attrs-for-secondary
+  "Tx-meta attrs surfaced to secondary indices on each `-transact` call.
+   See `datahike.index.secondary/ISecondaryIndex` — adapters that want
+   vt-pushdown read these from `tx-report :tx-meta`."
+  #{:db/txInstant :db.valid/from :db.valid/to})
+
+(defn- tx-meta-for-secondary
+  "Extract the current tx's meta-attrs from the in-progress db state.
+   Tx-entity meta-datoms were added by `flush-tx-meta` BEFORE user
+   datoms reach `with-datom`, so a single EAVT seek on the tx-id is
+   sufficient. Returns nil when nothing is set (cheap no-op for
+   non-vt-bearing txes)."
+  [db ^Datom datom]
+  (let [tx-id (dd/datom-tx datom)
+        config (dbi/-config db)
+        ref? (:attribute-refs? config)
+        ident (fn [a] (if (and ref? (number? a)) (dbi/-ident-for db a) a))
+        m (reduce
+           (fn [m ^Datom d]
+             (let [a-ident (ident (.-a d))]
+               (if (contains? meta-attrs-for-secondary a-ident)
+                 (assoc m a-ident (.-v d))
+                 m)))
+           {}
+           (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db)))]
+    (not-empty m)))
+
 (defn- update-secondary-indices
   "Update all secondary indices that cover the given attribute.
    When the index supports ITransientSecondaryIndex (batch mode), uses
    -transact! (mutates in place, no assoc). Otherwise falls back to
    -transact (persistent, returns new instance).
-   Returns updated db with modified secondary-indices map."
+   Returns updated db with modified secondary-indices map.
+
+   Per bitemporal-v1, `tx-report` also carries `:tx-meta` — the
+   tx-entity's `:db/txInstant` / `:db.valid/from` / `:db.valid/to`
+   attrs — so adapters that implement `IValidTimeAware` can persist
+   the tx's valid-time window alongside their content keys."
   [db a-ident ^Datom datom added?]
   (let [sec-idx-map (get-in db [:rschema :db.secondary/index a-ident])]
     (if (seq sec-idx-map)
-      (let [tx-report {:datom datom :added? added?}]
+      (let [tx-report (cond-> {:datom datom :added? added?}
+                        true (assoc :tx-meta (tx-meta-for-secondary db datom)))]
         (reduce (fn [db' idx-ident]
                   (let [status (get-in db' [:schema idx-ident :db.secondary/status])]
                     ;; Skip disabled indices — they are no longer maintained

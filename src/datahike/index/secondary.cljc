@@ -32,7 +32,12 @@
 
   (-transact [this tx-report]
     "Update index with transaction data. Called in-transaction (synchronous).
-     tx-report contains at minimum :datom and :added? keys.
+     `tx-report` carries at minimum `:datom` and `:added?`. Since
+     bitemporal-v1 it also carries `:tx-meta` — a map of the current
+     transaction's meta-attrs (`:db/txInstant`, `:db.valid/from`,
+     `:db.valid/to`) when present. Adapters that don't need vt simply
+     ignore the key; adapters that DO want vt-pushdown read it here and
+     persist alongside their content keys.
      Returns updated index instance (must be persistent/immutable)."))
 
 (defprotocol ITransientSecondaryIndex
@@ -101,6 +106,36 @@
     "Return the set of konserve keys referenced by this index instance.
      Used by GC to mark reachable storage. Indices using external storage
      (e.g., scriptum/Lucene filesystem) return #{}."))
+
+(defprotocol IValidTimeAware
+  "Optional protocol for secondary indices that natively understand the
+   tx-meta valid-time axis (`:db.valid/from` / `:db.valid/to`).
+
+   Indices that implement this can push the `valid-at` / `valid-between`
+   filter into their own query plan — for example, stratum can range-
+   prune on `_valid_from` / `_valid_to` columns at scan time; a
+   scriptum implementation can search per-vt-period segments.
+
+   Indices that DON'T implement this still produce correct vt-filtered
+   results — the secondary-search call site composes their plain
+   `-search` output with a post-hoc filter via kontor's primary AVET
+   on `:db.valid/from`. See `search-with-vt-filter` below."
+  (-search-at-vt [this query-spec entity-filter valid-at-window]
+    "Like `-search`, but restrict to entities whose tx-meta valid-time
+     window contains `valid-at-window`. `valid-at-window` is either:
+
+       a `java.util.Date`        — point-in-vt membership semantics
+                                   (equivalent to `valid-at` rule).
+       `[from to]` — half-open  — interval semantics (equivalent to
+                                   `valid-between` rule).
+
+     Returns the same shape as `-search` — an EntityBitSet or
+     ColumnSlice."))
+
+(defn vt-aware?
+  "True iff `index` implements `IValidTimeAware`."
+  [index]
+  (satisfies? IValidTimeAware index))
 
 ;; ---------------------------------------------------------------------------
 ;; GC: static key-map marking (avoids loading full index just for GC)
