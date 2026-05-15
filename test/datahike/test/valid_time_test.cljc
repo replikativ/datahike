@@ -120,3 +120,90 @@
       (testing "vt-from alone is sufficient; vt-to may be omitted"
         (is (= #inst "2024-01-01" (:db.valid/from pulled)))
         (is (nil? (:db.valid/to pulled)))))))
+
+(deftest system-attrs-show-up-as-indexed
+  ;; Regression: `:db.valid/from` / `:db.valid/to` must appear in
+  ;; rschema's `:db/index` set so `(dbu/indexing? db ...)` returns
+  ;; true and the planner's AVET pushdown for predicates pivoting on
+  ;; these attrs actually fires. Without it, `[(<= ?vf ?at)]` after
+  ;; `[?tx :db.valid/from ?vf]` silently returned 0 results (the
+  ;; planner computed pushdown bounds but the seek path treated the
+  ;; attr as non-indexed).
+  ;;
+  ;; Note: `:db/txInstant` is deliberately NOT in this set in
+  ;; non-attribute-refs mode — adding it would land every tx's
+  ;; `:db/txInstant` datom in AVET, a semantic change that breaks
+  ;; existing tests + the existing `:db/txInstant`-by-tx lookup
+  ;; path. See `non-ref-implicit-schema` in constants.cljc.
+  (let [conn (fresh-conn)
+        db   (d/db conn)
+        rs   (datahike.db.interface/-rschema db)]
+    (testing ":db.valid/from and :db.valid/to are recognised as indexed"
+      (is (contains? (:db/index rs) :db.valid/from))
+      (is (contains? (:db/index rs) :db.valid/to)))))
+
+(deftest built-in-rules-work-without-in-percent
+  ;; `valid-at` / `valid-between` / `valid-during` / `period-overlaps?`
+  ;; should be invokable in `:where` without the user declaring `%` in
+  ;; `:in`. The auto-inject inside `normalize-q-input` adds `%` and
+  ;; the built-in rule defs transparently.
+  (let [conn (fresh-conn)]
+    (d/transact conn [{:db/ident :emp/name
+                       :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one
+                       :db/unique :db.unique/identity}
+                      {:db/ident :emp/salary
+                       :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one}])
+    (d/transact conn [{:emp/name "Bob" :emp/salary 100000}])
+    (d/transact conn [{:db/id "datomic.tx"
+                       :db.valid/from #inst "2024-01-01"
+                       :db.valid/to   #inst "2024-07-01"}
+                      {:emp/name "Bob" :emp/salary 110000}])
+    (d/transact conn [{:db/id "datomic.tx"
+                       :db.valid/from #inst "2024-07-01"}
+                      {:emp/name "Bob" :emp/salary 120000}])
+    (let [hist (d/history (d/db conn))]
+      ;; NOTE: `d/history` returns BOTH added and retracted datoms. A
+      ;; cardinality-one upsert (like the salary updates here) produces
+      ;; one retraction + one assertion per tx. The valid-at filter
+      ;; runs PER-TX (it filters the tx's vt-window, not per-datom
+      ;; add/retract polarity), so a tx whose vt-window includes
+      ;; ?at returns ALL its salary datoms — both the retracted and
+      ;; the newly-asserted value. Use the 5-tuple `[e a v t added?]`
+      ;; pattern to filter to additions only.
+      (testing "valid-at — Bob's salary as of mid-April-2024"
+        (let [r (d/q '[:find ?s :in $ ?at :where
+                       (valid-at ?tx ?at)
+                       [?e :emp/salary ?s ?tx true]]
+                     hist #inst "2024-04-15")]
+          (is (= #{[110000]} r))))
+      (testing "valid-at — Bob's salary as of mid-August-2024"
+        (let [r (d/q '[:find ?s :in $ ?at :where
+                       (valid-at ?tx ?at)
+                       [?e :emp/salary ?s ?tx true]]
+                     hist #inst "2024-08-15")]
+          (is (= #{[120000]} r))))
+      (testing "valid-between — salaries with vt-window intersecting Q2 2024"
+        (let [r (d/q '[:find ?s :in $ ?from ?to :where
+                       (valid-between ?tx ?from ?to)
+                       [?e :emp/salary ?s ?tx true]]
+                     hist #inst "2024-04-01" #inst "2024-07-01")]
+          (is (= #{[110000]} r))))
+      (testing "user-supplied % overrides built-ins on name collision"
+        ;; Define a no-op `valid-at` that matches every tx; built-in
+        ;; should be shadowed and the result includes all salaries.
+        (let [user-rules '[[(valid-at ?tx ?at) [?tx :db/txInstant _]]]
+              r (d/q '[:find ?s :in $ % ?at :where
+                       (valid-at ?tx ?at)
+                       [?e :emp/salary ?s ?tx true]]
+                     hist user-rules #inst "2024-04-15")]
+          (is (= #{[100000] [110000] [120000]} r))))
+      (testing "native < <= > >= work on Dates inside predicates"
+        ;; Regression for the planner-pushdown-on-system-attrs bug.
+        (let [r (d/q '[:find ?s :in $ ?at :where
+                       [?tx :db.valid/from ?vf]
+                       [(<= ?vf ?at)]
+                       [?e :emp/salary ?s ?tx true]]
+                     hist #inst "2024-08-15")]
+          (is (= #{[110000] [120000]} r)))))))
