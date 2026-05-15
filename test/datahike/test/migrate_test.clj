@@ -80,7 +80,20 @@
               [:db/ident :db.type/double 536870912 true]
               [:db/doc "An attribute's value type" 536870912 true]
               [:db/doc "An attribute's documentation" 536870912 true]
-              [:db/ident :db.type/keyword 536870912 true]])
+              [:db/ident :db.type/keyword 536870912 true]
+              ;; Bitemporal valid-time tx-meta — system-schema (commit 1 of
+              ;; feature/bitemporal-v1). Two new idents + two doc strings;
+              ;; the valueType (22 = :db.type/instant), cardinality (11),
+              ;; and `:db/index true` ref-datoms collapse with existing
+              ;; entries when materialised through `into #{}`.
+              [:db/ident :db.valid/from 536870912 true]
+              [:db/ident :db.valid/to 536870912 true]
+              [:db/doc
+               "A transaction's valid-time lower bound (inclusive).\n             Every datom in the tx inherits this vt-from. When\n             absent the transaction's `:db/txInstant` is used."
+               536870912 true]
+              [:db/doc
+               "A transaction's valid-time upper bound (exclusive).\n             When absent the interval is open-ended (treated as\n             +∞ by the bitemporal resolver)."
+               536870912 true]])
 
 (deftest export-import-test
   (let [os-prefix (case (System/getProperty "os.name")

@@ -113,7 +113,27 @@
    {:db/id 37
     :db/ident :db/tupleAttrs}
    {:db/id 38
-    :db/ident :db.type/tuple}])
+    :db/ident :db.type/tuple}
+   ;; Bitemporal valid-time tx-meta — graduated from kontor-side
+   ;; userland into system schema. Tx-attached, half-open
+   ;; [from, to). Both AVET-indexed so the query planner can seek
+   ;; into them via the `valid-at` / `valid-between` rule rewrites.
+   {:db/id 39
+    :db/ident :db.valid/from
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc "A transaction's valid-time lower bound (inclusive).
+             Every datom in the tx inherits this vt-from. When
+             absent the transaction's `:db/txInstant` is used."
+    :db/index true}
+   {:db/id 40
+    :db/ident :db.valid/to
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc "A transaction's valid-time upper bound (exclusive).
+             When absent the interval is open-ended (treated as
+             +∞ by the bitemporal resolver)."
+    :db/index true}])
 
 (def ^:const system-entities
   "Holds the entity IDs of system attributes"
