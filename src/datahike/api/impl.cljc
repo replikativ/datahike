@@ -154,61 +154,132 @@
     {:vf :db.valid/from
      :vt :db.valid/to}))
 
+(defn- tx-covers-at?
+  "Does the tx-entity `tx-id`'s vt-window contain `at`? Reads
+   `:db.valid/from` / `:db.valid/to` off the tx-entity. Missing
+   `:db.valid/from` is treated as -∞; missing `:db.valid/to` as +∞,
+   so non-vt-aware data passes through unchanged. Memoized via
+   `cover-cache` (tx-id → Boolean)."
+  [db tx-id ^java.util.Date at ^java.util.concurrent.ConcurrentHashMap cover-cache]
+  (let [cached (.get cover-cache tx-id)]
+    (if (some? cached)
+      cached
+      (let [{:keys [vf vt]} (vt-meta-attrs db)
+            tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
+            vf-val (some (fn [^datahike.datom.Datom td]
+                           (when (= vf (.-a td)) (.-v td))) tx-datoms)
+            vt-val (some (fn [^datahike.datom.Datom td]
+                           (when (= vt (.-a td)) (.-v td))) tx-datoms)
+            ok? (and (or (nil? vf-val) (not (.after ^java.util.Date vf-val at)))
+                     (or (nil? vt-val) (.after ^java.util.Date vt-val at)))]
+        (.put cover-cache tx-id ok?)
+        ok?))))
+
+(defn- find-eav-winner
+  "Among all historical datoms about `(e, a, v)`, return the one whose
+   tx-id is the greatest AND whose tx-vt-window contains `at` — the
+   'supersession winner' for this fact at this valid-time. Returns
+   `nil` if no candidate. Implements bitemporal supersession at query time: the
+   topmost event at `(qvt, current-sys-time)` is the one whose tx-id
+   is highest among those covering `qvt`. Memoized via
+   `winner-cache` ([e a v] → Datom or ::miss)."
+  [db e a v ^java.util.Date at cover-cache
+   ^java.util.concurrent.ConcurrentHashMap winner-cache]
+  (let [k [e a v]
+        cached (.get winner-cache k)]
+    (cond
+      (= cached ::miss) nil
+      (some? cached)    cached
+      :else
+      (let [datoms (dbi/-datoms db :eavt [e a v] (dbi/-search-context db))
+            winner (reduce
+                    (fn [w ^datahike.datom.Datom d]
+                      (if (tx-covers-at? db (datahike.datom/datom-tx d) at cover-cache)
+                        (if (or (nil? w)
+                                (> (datahike.datom/datom-tx d)
+                                   (datahike.datom/datom-tx ^datahike.datom.Datom w)))
+                          d w)
+                        w))
+                    nil datoms)]
+        (.put winner-cache k (or winner ::miss))
+        winner))))
+
 (defn- mk-vt-pred
-  "Build a `d/filter` predicate `(fn [db datom])` that keeps datoms
-   whose asserting tx's vt-window contains `at`. The pred maintains
-   an internal `tx-id → bool` HashMap cache so each unique tx-id
-   triggers only one EAVT seek — same asymptotic cost as AsOfDB's
-   `filter-txInstant` dedup, just a different mechanism (HashMap
-   probe rather than transducer-distinct). Txes whose tx-entity has
-   no `:db.valid/from` are treated as `_valid_from = -∞` — i.e.
-   non-vt-aware data passes through unchanged."
+  "Build a `d/filter` predicate `(fn [db datom])` implementing
+   supersession-aware valid-time filtering at point `at`. Algorithm
+   implements bitemporal supersession at read time:
+
+     for each datom D = (e, a, v, tx, op):
+       1. require tx's vt-window covers `at`;
+       2. among ALL historical datoms about (e, a, v), find the one
+          whose tx is the greatest AND whose tx-vt covers `at` — the
+          'winner';
+       3. admit D iff D is the winner.
+
+   On current-view (no history) the (e, a, v) scan returns the single
+   live datom; the algorithm degrades to today's single-axis
+   filter. On `(d/history db)` it gives back-correction-correct
+   semantics: a later tx with overlapping vt supersedes an earlier
+   one at the relevant vt-points.
+
+   Two caches:
+     * `cover-cache` (tx-id → Boolean): one EAVT seek per unique tx.
+     * `winner-cache` ([e a v] → Datom): one EAVT seek per unique fact.
+
+   The fast path for high-throughput vt queries is the
+   `:datahike/valid-at` meta marker → `IValidTimeAware/-search-at-vt`
+   on a vt-aware secondary index (e.g. stratum), which precomputes
+   the polygon at write time. This predicate is the
+   semantically-correct fallback for paths that don't route through
+   a secondary."
   [^java.util.Date at]
-  (let [cache (java.util.concurrent.ConcurrentHashMap.)]
+  (let [cover-cache  (java.util.concurrent.ConcurrentHashMap.)
+        winner-cache (java.util.concurrent.ConcurrentHashMap.)]
     (fn vt-pred [db ^datahike.datom.Datom d]
-      ;; (datom-tx d) returns the absolute tx-id (retractions store it
-      ;; negated). Always-positive — safe to pass to entity lookups.
-      (let [tx-id (datahike.datom/datom-tx d)
-            cached (.get cache tx-id)]
-        (if (some? cached)
-          cached
-          (let [{:keys [vf vt]} (vt-meta-attrs db)
-                tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
-                vf-val (some (fn [^datahike.datom.Datom td]
-                               (when (= vf (.-a td)) (.-v td))) tx-datoms)
-                vt-val (some (fn [^datahike.datom.Datom td]
-                               (when (= vt (.-a td)) (.-v td))) tx-datoms)
-                ok? (and (or (nil? vf-val) (not (.after ^java.util.Date vf-val at)))
-                         (or (nil? vt-val) (.after ^java.util.Date vt-val at)))]
-            (.put cache tx-id ok?)
-            ok?))))))
+      ;; (datom-tx d) is always-positive (retractions store it negated).
+      (when (tx-covers-at? db (datahike.datom/datom-tx d) at cover-cache)
+        (when-let [^datahike.datom.Datom w
+                   (find-eav-winner db (.-e d) (.-a d) (.-v d) at
+                                    cover-cache winner-cache)]
+          (= (datahike.datom/datom-tx d)
+             (datahike.datom/datom-tx w)))))))
 
 (defn valid-at
-  "Filter `db` to datoms whose asserting tx's valid-time window
-   contains `time-point`. Returns a `FilteredDB` whose predicate
-   reads the tx-entity's `:db.valid/from` / `:db.valid/to` and admits
-   a datom iff `vf <= time-point < vt` (open-ended `vt = nil` is
-   treated as unbounded; missing `vf` is treated as `-∞`).
+  "Snapshot `db` at valid-time `time-point` with **supersession**
+   semantics: among historical events about the same `(e, a, v)`, the
+   tx with the greatest tx-id whose vt-window covers `time-point`
+   wins. Earlier assertions whose vt-window also covers
+   `time-point` are filtered out as superseded.
 
-   Unlike `as-of`/`since`/`history` (tx-time axes), valid-at is a
-   valid-time axis: the *time something was true in the modelled
-   world* rather than *the tx that recorded it*. Composes cleanly
-   with the tx-time wrappers — e.g.
-     `(d/valid-at (d/as-of db tx-time) vt-inst)`
-   yields the snapshot at tx-time `tx-time`, further filtered to
-   datoms whose vt-window contains `vt-inst`.
+   This implements bitemporal supersession at the read layer: a
+   back-correction that asserts a new value with an overlapping
+   vt-window supersedes the prior claim at every vt-point ≥ the
+   correction's vt-from, without rewriting history. Composes with
+   `d/history` (recommended — exposes the events the supersession
+   algorithm needs) and `d/as-of` (bounds the supersession horizon
+   to a given tx-time).
 
-   The returned db also carries `:datahike/valid-at` on its meta so
-   vt-aware secondary indices (implementing `IValidTimeAware`) push
-   the filter into `-search-at-vt` for native pushdown — the
-   FilteredDB predicate is then the fallback for paths that don't
-   route through a secondary index.
+   The result is a `FilteredDB` whose predicate enforces supersession
+   per-datom on every read path (`d/q`, `d/datoms`, `d/pull`,
+   `d/entity`, `d/seek-datoms`, `d/index-range`).
 
-   `time-point` is a `java.util.Date`; `nil` only clears the
-   `:datahike/valid-at` marker (so vt-aware secondary indices stop
-   routing) — `FilteredDB` predicates are AND-composed and cannot be
-   surgically removed, so any active filter remains in effect. To
-   truly drop the filter, start from the original unwrapped db."
+   Returns the unwrapped db when `time-point` is `nil`, after
+   clearing any `:datahike/valid-at` meta marker. Carries
+   `:datahike/valid-at <time-point>` on meta so vt-aware secondary
+   indices (`IValidTimeAware`) can push the filter into a native
+   `-search-at-vt` — those secondaries (e.g. stratum vt-mode) are
+   the fast path; this FilteredDB predicate is the
+   semantically-correct fallback.
+
+   Non-vt-aware data (txes without `:db.valid/from`) is treated as
+   having an open-ended `[-∞, ∞)` window — it remains visible at
+   every valid-time. Mixing vt-aware and non-vt-aware data therefore
+   degrades gracefully (the non-vt facts pass through).
+
+   Performance note: the supersession check costs one EAVT scan per
+   unique `(e, a, v)` triple in the result set, cached for the
+   lifetime of the wrapper. For high-throughput vt queries, route
+   through a vt-aware secondary index."
   [db time-point]
   (if (nil? time-point)
     (vary-meta db dissoc :datahike/valid-at)

@@ -363,3 +363,70 @@
                             (d/db conn))]
         (testing "tx-instant falls in [before, after] window"
           (is (<= before (.getTime ^java.util.Date tx-instant) after)))))))
+
+(deftest valid-at-filters-all-read-apis
+  ;; Locks in the invariant: the FilteredDB returned by `d/valid-at`
+  ;; carries its predicate via `-search-context`'s xform-after, so every
+  ;; read path that flows through `dbi/datoms` / `dbi/search` honours it
+  ;; — not just `d/q`. Setup: one entity with three attributes asserted
+  ;; in a single tx whose vt-window is [Jan, Jul). A `valid-at` inside
+  ;; the window admits all three datoms; one before the window admits
+  ;; none.
+  (let [conn (fresh-conn)
+        _ (d/transact conn [{:db/ident :emp/name
+                             :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one
+                             :db/unique :db.unique/identity}
+                            {:db/ident :emp/department
+                             :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one
+                             :db/index true}
+                            {:db/ident :emp/salary
+                             :db/valueType :db.type/long
+                             :db/cardinality :db.cardinality/one
+                             :db/index true}])
+        _ (d/transact conn {:tx-data [{:emp/name "Bob"
+                                       :emp/department "eng"
+                                       :emp/salary 100000}]
+                            :tx-meta {:db.valid/from #inst "2024-01-01"
+                                      :db.valid/to   #inst "2024-07-01"}})
+        db        (d/db conn)
+        ;; resolve Bob's numeric eid on the *unfiltered* db once; we use
+        ;; the numeric form below so the lookup-ref doesn't bottom out on
+        ;; the filtered view (which would correctly throw — that's a
+        ;; separate, already-tested property).
+        bob       (d/q '[:find ?e . :where [?e :emp/name "Bob"]] db)
+        in-window  (d/valid-at db #inst "2024-04-15")
+        out-window (d/valid-at db #inst "2023-06-01")]
+    (testing "d/q on plain db sees Bob"
+      (is (= #{["Bob"]} (d/q '[:find ?n :where [_ :emp/name ?n]] db))))
+    (testing "d/q honours valid-at"
+      (is (= #{["Bob"]} (d/q '[:find ?n :where [_ :emp/name ?n]] in-window))
+          "in-window: Bob visible")
+      (is (= #{}        (d/q '[:find ?n :where [_ :emp/name ?n]] out-window))
+          "out-window: Bob filtered out"))
+    (testing "d/datoms honours valid-at"
+      (is (seq  (d/datoms in-window  :avet :emp/name))
+          "in-window: AVET scan returns Bob's name datom")
+      (is (empty? (d/datoms out-window :avet :emp/name))
+          "out-window: AVET scan returns nothing"))
+    (testing "d/pull honours valid-at"
+      (is (= {:db/id bob :emp/name "Bob" :emp/salary 100000}
+             (d/pull in-window  [:db/id :emp/name :emp/salary] bob))
+          "in-window: pull resolves both attrs by numeric eid")
+      (is (nil? (d/pull out-window [:db/id :emp/name :emp/salary] bob))
+          "out-window: pull returns nil because no datoms survive the filter"))
+    (testing "d/entity honours valid-at"
+      (is (= "Bob"   (:emp/name   (d/entity in-window  bob))))
+      (is (= 100000  (:emp/salary (d/entity in-window  bob))))
+      (is (nil? (:emp/name   (d/entity out-window bob)))
+          "out-window: entity lookup returns nil for filtered attrs")
+      (is (nil? (:emp/salary (d/entity out-window bob)))))
+    (testing "d/seek-datoms and d/index-range honour valid-at"
+      (is (seq (d/seek-datoms in-window :avet :emp/salary)))
+      (is (empty?
+            (filter #(= :emp/salary (:a %))
+                    (d/seek-datoms out-window :avet :emp/salary))))
+      (is (seq (d/index-range in-window {:attrid :emp/salary :start 0 :end 200000})))
+      (is (empty?
+            (d/index-range out-window {:attrid :emp/salary :start 0 :end 200000}))))))
