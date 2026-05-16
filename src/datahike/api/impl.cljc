@@ -147,22 +147,73 @@
     (HistoricalDB. db)
     (log/raise "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
+(defn- vt-meta-attrs [db]
+  (if (:attribute-refs? (dbi/-config db))
+    {:vf (dbi/-ref-for db :db.valid/from)
+     :vt (dbi/-ref-for db :db.valid/to)}
+    {:vf :db.valid/from
+     :vt :db.valid/to}))
+
+(defn- mk-vt-pred
+  "Build a `d/filter` predicate `(fn [db datom])` that keeps datoms
+   whose asserting tx's vt-window contains `at`. The pred maintains
+   an internal `tx-id → bool` HashMap cache so each unique tx-id
+   triggers only one EAVT seek — same asymptotic cost as AsOfDB's
+   `filter-txInstant` dedup, just a different mechanism (HashMap
+   probe rather than transducer-distinct). Txes whose tx-entity has
+   no `:db.valid/from` are treated as `_valid_from = -∞` — i.e.
+   non-vt-aware data passes through unchanged."
+  [^java.util.Date at]
+  (let [cache (java.util.concurrent.ConcurrentHashMap.)]
+    (fn vt-pred [db ^datahike.datom.Datom d]
+      ;; (datom-tx d) returns the absolute tx-id (retractions store it
+      ;; negated). Always-positive — safe to pass to entity lookups.
+      (let [tx-id (datahike.datom/datom-tx d)
+            cached (.get cache tx-id)]
+        (if (some? cached)
+          cached
+          (let [{:keys [vf vt]} (vt-meta-attrs db)
+                tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
+                vf-val (some (fn [^datahike.datom.Datom td]
+                               (when (= vf (.-a td)) (.-v td))) tx-datoms)
+                vt-val (some (fn [^datahike.datom.Datom td]
+                               (when (= vt (.-a td)) (.-v td))) tx-datoms)
+                ok? (and (or (nil? vf-val) (not (.after ^java.util.Date vf-val at)))
+                         (or (nil? vt-val) (.after ^java.util.Date vt-val at)))]
+            (.put cache tx-id ok?)
+            ok?))))))
+
 (defn valid-at
-  "Tag `db` with a `:datahike/valid-at` marker so vt-aware secondary
-   indices (those implementing `IValidTimeAware`) push the filter
-   into their own query plan instead of returning the full match set.
+  "Filter `db` to datoms whose asserting tx's valid-time window
+   contains `time-point`. Returns a `FilteredDB` whose predicate
+   reads the tx-entity's `:db.valid/from` / `:db.valid/to` and admits
+   a datom iff `vf <= time-point < vt` (open-ended `vt = nil` is
+   treated as unbounded; missing `vf` is treated as `-∞`).
 
-   Unlike `as-of`/`since`/`history` (which are *tx-time* axes managed
-   by datahike's core), valid-at is a *valid-time* axis managed by
-   secondary indices. Datalog patterns that don't route through a
-   vt-aware index are unaffected — those queries must still use the
-   `(valid-at ?tx ?at)` built-in rule explicitly.
+   Unlike `as-of`/`since`/`history` (tx-time axes), valid-at is a
+   valid-time axis: the *time something was true in the modelled
+   world* rather than *the tx that recorded it*. Composes cleanly
+   with the tx-time wrappers — e.g.
+     `(d/valid-at (d/as-of db tx-time) vt-inst)`
+   yields the snapshot at tx-time `tx-time`, further filtered to
+   datoms whose vt-window contains `vt-inst`.
 
-   `time-point` is a `java.util.Date` or `nil` (clears the marker)."
+   The returned db also carries `:datahike/valid-at` on its meta so
+   vt-aware secondary indices (implementing `IValidTimeAware`) push
+   the filter into `-search-at-vt` for native pushdown — the
+   FilteredDB predicate is then the fallback for paths that don't
+   route through a secondary index.
+
+   `time-point` is a `java.util.Date`; `nil` only clears the
+   `:datahike/valid-at` marker (so vt-aware secondary indices stop
+   routing) — `FilteredDB` predicates are AND-composed and cannot be
+   surgically removed, so any active filter remains in effect. To
+   truly drop the filter, start from the original unwrapped db."
   [db time-point]
   (if (nil? time-point)
     (vary-meta db dissoc :datahike/valid-at)
-    (vary-meta db assoc :datahike/valid-at time-point)))
+    (-> (dcore/filter db (mk-vt-pred time-point))
+        (vary-meta assoc :datahike/valid-at time-point))))
 
 (defn index-range [db {:keys [attrid start end]}]
   (dbi/index-range db attrid start end))

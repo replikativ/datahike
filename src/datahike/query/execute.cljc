@@ -548,9 +548,18 @@
 (defn- temporal-info
   "Extract temporal metadata from a DB wrapper.
    Date-based time-points are resolved to numeric tx-ids via AVET lookup on the origin DB.
-   Returns nil for regular DBs."
+   Returns nil for regular DBs.
+
+   Recurses through `FilteredDB` so a composition like
+   `(d/valid-at (d/as-of db t) inst)` — FilteredDB wrapping AsOfDB —
+   still reports `:as-of` to the planner. The FilteredDB's predicate
+   stays on the outer `db`'s search-context and fires via
+   `post-process-datoms` alongside the AsOf timepred."
   [db]
   (cond
+    (instance? FilteredDB db)
+    (temporal-info (.-unfiltered-db ^FilteredDB db))
+
     (instance? HistoricalDB db)
     {:type :historical :origin-db (dbi/-origin db)}
 
@@ -665,18 +674,42 @@
                                      (recur (next-ok-a)
                                             (when (.hasNext iter-b) (.next iter-b))))))))))))))))
 
+(defn- maybe-post-process
+  "Pipe `slice` through `post-process-datoms` iff the wrapper `db`'s
+   search-context carries an xform-after (set by FilteredDB or any
+   future wrapper) or a timepred (legacy temporal path). When neither
+   is set the slice is returned unchanged — `post-process-datoms`'s
+   `:else` branch short-circuits, so this guard avoids the
+   `(into [] xform datoms)` realization cost on plain dbs.
+
+   This is what lifts FilteredDB's predicate into the planner's hot
+   scan: without this hook the planner short-circuited filtered dbs
+   into raw slices, silently dropping the predicate. `d/valid-at`
+   rides on the same hook via a `(d/filter db vt-pred)` wrap."
+  [slice db origin-db]
+  (let [ctx (dbi/-search-context db)]
+    (if (or (dbi/context-xform ctx) (dbi/context-time-pred ctx))
+      (db/post-process-datoms slice origin-db ctx)
+      slice)))
+
 (defn- temporal-merge-slice
   "Get merged datoms for [eid attr] from current+temporal indexes.
    For historical: merge via distinct-datoms (all versions).
-   For as-of/since: merge + post-process-datoms (time filter + assemble)."
+   For as-of/since: merge + post-process-datoms (time filter + assemble).
+   For regular DB: pass through `maybe-post-process` so FilteredDB
+   (and `d/valid-at`, which is `(d/filter db vt-pred)` underneath)
+   actually fires."
   [origin-db from-d to-d temporal-type temporal-tx-filter db]
   (let [current-slice (di/-slice (:eavt origin-db) from-d to-d :eavt)]
     (case temporal-type
       :historical
-      (let [temporal-index (:temporal-eavt origin-db)]
-        (dbu/distinct-datoms origin-db :eavt
-                             current-slice
-                             (di/-slice temporal-index from-d to-d :eavt)))
+      (let [temporal-index (:temporal-eavt origin-db)
+            merged (dbu/distinct-datoms origin-db :eavt
+                                        current-slice
+                                        (di/-slice temporal-index from-d to-d :eavt))]
+        ;; Same xform-after lift as the as-of/since branch — keeps
+        ;; FilteredDB-around-HistoricalDB working.
+        (maybe-post-process merged db origin-db))
 
       (:as-of :since)
       (let [temporal-index (:temporal-eavt origin-db)
@@ -687,7 +720,7 @@
         (db/post-process-datoms merged origin-db ctx))
 
       ;; regular DB
-      current-slice)))
+      (maybe-post-process current-slice db origin-db))))
 
 (defn- build-scan-slice
   "Build the scan slice for execute-group-direct / execute-fused-scan-rel.
@@ -695,7 +728,10 @@
    db is the temporal wrapper (needed for search-context), origin-db is the unwrapped DB."
   [db db-index from-datom to-datom index temporal origin-db resolved-a]
   (if-not temporal
-    (di/-slice db-index from-datom to-datom index)
+    ;; Regular DB hot path: still let FilteredDB / d/valid-at fire via
+    ;; the wrapper's xform-after on the search-context. No-op when
+    ;; neither xform nor timepred is set (vast majority of queries).
+    (maybe-post-process (di/-slice db-index from-datom to-datom index) db origin-db)
     (let [temporal-type (:type temporal)
           as-of-at-max-tx? (and (= temporal-type :as-of)
                                 (= (long (:time-point temporal))
@@ -703,16 +739,19 @@
           temporal-index-key (keyword (str "temporal-" (name index)))]
       (case temporal-type
         :historical
-        (let [temporal-index (get origin-db temporal-index-key)]
-          #?(:clj (fast-merge-scan db-index from-datom to-datom
-                                   temporal-index index origin-db resolved-a)
-             :cljs (dbu/distinct-datoms origin-db index
-                                        (di/-slice db-index from-datom to-datom index)
-                                        (di/-slice temporal-index from-datom to-datom index))))
+        (let [temporal-index (get origin-db temporal-index-key)
+              raw #?(:clj (fast-merge-scan db-index from-datom to-datom
+                                           temporal-index index origin-db resolved-a)
+                     :cljs (dbu/distinct-datoms origin-db index
+                                                (di/-slice db-index from-datom to-datom index)
+                                                (di/-slice temporal-index from-datom to-datom index)))]
+          ;; Wrapper (e.g. FilteredDB-around-HistoricalDB for valid-at on history)
+          ;; still gets its xform-after applied.
+          (maybe-post-process raw db origin-db))
 
         (:as-of :since)
         (if as-of-at-max-tx?
-          (di/-slice db-index from-datom to-datom index)
+          (maybe-post-process (di/-slice db-index from-datom to-datom index) db origin-db)
           (let [temporal-index (get origin-db temporal-index-key)
                 merged (dbu/distinct-datoms origin-db index
                                             (di/-slice db-index from-datom to-datom index)
@@ -720,8 +759,8 @@
                 ctx (dbi/-search-context db)]
             (db/post-process-datoms merged origin-db ctx)))
 
-        ;; default: regular slice
-        (di/-slice db-index from-datom to-datom index)))))
+        ;; default: regular slice — still apply xform-after if set
+        (maybe-post-process (di/-slice db-index from-datom to-datom index) db origin-db)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Path functions — each small enough for JIT C2/Graal compilation.
