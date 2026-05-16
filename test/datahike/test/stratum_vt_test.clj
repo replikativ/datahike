@@ -64,9 +64,14 @@
       (testing "vt cols exist on the empty initial dataset"
         (is (contains? (set (keys (st/columns ds))) :_valid_from))
         (is (contains? (set (keys (st/columns ds))) :_valid_to)))
-      (testing "metadata round-trips the vt-config"
+      (testing "metadata round-trips the valid-axis config"
+        ;; Stratum's bitemporal config carries both axes by default —
+        ;; we assert the valid axis specifically.
         (is (= {:from-col :_valid_from :to-col :_valid_to :unit :micros}
-               (:valid-time (:metadata ds))))))))
+               (get-in (:metadata ds) [:bitemporal :valid]))))
+      (testing "system-time axis is present for SCD2 audit symmetry"
+        (is (= {:from-col :_system_from :to-col :_system_to :unit :micros}
+               (get-in (:metadata ds) [:bitemporal :system])))))))
 
 ;; ============================================================================
 ;; SCD2 layout — close-on-upsert
@@ -138,8 +143,8 @@
                              :db.secondary/config {}
                              :db.secondary/status :ready}])
         ds (index-dataset conn :idx/employees-plain)]
-    (testing "no :valid-time in metadata → no vt-config exposed"
-      (is (nil? (:valid-time (:metadata ds)))))
+    (testing "no :bitemporal in metadata → no vt-config exposed"
+      (is (nil? (:bitemporal (:metadata ds)))))
     (testing "no _valid_from / _valid_to columns"
       (is (not (contains? (set (keys (st/columns ds))) :_valid_from)))
       (is (not (contains? (set (keys (st/columns ds))) :_valid_to))))))
@@ -183,7 +188,7 @@
                   post-rows (vt-rows conn2 :idx/employees)]
               (testing "vt metadata round-trips through konserve"
                 (is (= {:from-col :_valid_from :to-col :_valid_to :unit :micros}
-                       (:valid-time (:metadata ds)))))
+                       (get-in (:metadata ds) [:bitemporal :valid]))))
               (testing "vt columns are tagged :micros on restore"
                 (is (= :micros (:temporal-unit (get (st/columns ds) :_valid_from))))
                 (is (= :micros (:temporal-unit (get (st/columns ds) :_valid_to)))))
@@ -258,7 +263,7 @@
             (testing "feature branch inherits vt-mode metadata"
               (let [ds (index-dataset feat-conn :idx/employees)]
                 (is (= {:from-col :_valid_from :to-col :_valid_to :unit :micros}
-                       (:valid-time (:metadata ds))))))
+                       (get-in (:metadata ds) [:bitemporal :valid])))))
             (testing "feature branch sees the same SCD2 rows"
               (is (= (set main-rows)
                      (set (vt-rows feat-conn :idx/employees)))))
@@ -274,3 +279,44 @@
       (finally
         (d/release conn)
         (d/delete-database cfg)))))
+
+;; ============================================================================
+;; System-time symmetry on SCD2 surgery (DH-5 / Phase E)
+;;
+;; When the vt-mode adapter closes an old row's `_valid_to`, it must
+;; also close that row's `_system_to` to the current tx's instant, so
+;; a `FOR SYSTEM_TIME AS OF <pre-correction>` query still sees the
+;; row as "open at the time the DB knew it." Without this, backdated
+;; corrections silently rewrite past system-time views — the very
+;; bug stratum's P0-1 fixed at the dataset layer.
+;; ============================================================================
+
+(deftest scd2-closes-system-to-on-old-row
+  (let [conn (fresh-conn)]
+    (register-vt-index! conn)
+    (d/transact conn {:tx-meta {:db/txInstant #inst "2024-06-01T00:00:00Z"
+                                :db.valid/from #inst "2024-01-01"}
+                      :tx-data [{:emp/name "Bob" :emp/salary 100000}]})
+    (d/transact conn {:tx-meta {:db/txInstant #inst "2024-08-01T00:00:00Z"
+                                :db.valid/from #inst "2024-07-01"}
+                      :tx-data [{:emp/name "Bob" :emp/salary 110000}]})
+    (let [ds (index-dataset conn :idx/employees)
+          rows (vec (st/q {:from ds
+                           :select [:eid :salary :_valid_from :_valid_to
+                                    :_system_from :_system_to]}))]
+      (testing "two rows present after the SCD2 update"
+        (is (= 2 (count rows))))
+      (let [closed (first (filter #(not= Long/MAX_VALUE (:_valid_to %)) rows))
+            new-row (first (filter #(= Long/MAX_VALUE (:_valid_to %)) rows))]
+        (testing "closed row's _system_to advanced to second tx's instant"
+          (is (some? closed))
+          (is (= (* 1000 (.getTime #inst "2024-08-01T00:00:00Z"))
+                 (:_system_to closed))
+              "closed row's _system_to should equal the correcting tx's txInstant"))
+        (testing "new row's _system_from is the correcting tx's instant"
+          (is (some? new-row))
+          (is (= (* 1000 (.getTime #inst "2024-08-01T00:00:00Z"))
+                 (:_system_from new-row))
+              "new row's _system_from should equal the tx's txInstant"))
+        (testing "new row's _system_to is open (MAX_VALUE)"
+          (is (= Long/MAX_VALUE (:_system_to new-row))))))))

@@ -278,6 +278,8 @@
 
 (def ^:private vt-from-col :_valid_from)
 (def ^:private vt-to-col   :_valid_to)
+(def ^:private sys-from-col :_system_from)
+(def ^:private sys-to-col   :_system_to)
 (def ^:private vt-open-sentinel Long/MAX_VALUE)
 ;; A vt-from that is older than any real tx-meta; rows seeded from
 ;; pre-existing AEVT data in build-initial-dataset use it so they appear
@@ -312,26 +314,45 @@
     (date->micros v)
     vt-open-sentinel))
 
+(defn- tx-meta->sf
+  "Pick the row's `_system_from` for this tx — the instant the DB
+   first knew about the row. Comes from `:db/txInstant` (the
+   transactor stamps it on every tx) or the legacy
+   `:datahike/created-at` fallback, or wall-clock now if neither
+   is set."
+  ^long [tx-meta]
+  (date->micros (or (:db/txInstant tx-meta)
+                    (:datahike/created-at tx-meta)
+                    (java.util.Date.))))
+
 (defn- ds-metadata
-  "Build the `:metadata` map passed to `st/make-dataset` for this index.
-   In vt-mode it carries `:valid-time` so stratum tags the two vt columns
-   with `:temporal-unit :micros` and round-trips the config through
-   sync!/load."
+  "Build the `:metadata` map passed to `st/make-dataset` for this
+   index. In vt-mode it carries `:bitemporal {:valid … :system …}`
+   matching stratum's current API: stratum tags all four temporal
+   columns with `:temporal-unit :micros` and round-trips the config
+   through `sync!`/`load`. Both axes are always present in vt-mode
+   so SCD2 surgery can advance the system-time axis when correcting
+   a valid-time window — the audit guarantee that backdated
+   corrections don't silently rewrite past `FOR SYSTEM_TIME` views."
   [config]
   (if (vt-mode? config)
-    {:valid-time {:from-col vt-from-col :to-col vt-to-col :unit :micros}}
+    {:bitemporal {:valid  {:from-col vt-from-col  :to-col vt-to-col   :unit :micros}
+                  :system {:from-col sys-from-col :to-col sys-to-col :unit :micros}}}
     {}))
 
 (defn- with-vt-cols
-  "If vt-mode, attach empty `:_valid_from`/`:_valid_to` columns (n long zeros)
-   alongside the per-attribute columns. The caller will fill them when
-   building rows; this helper just makes sure the columns exist before
-   `make-dataset` infers the schema."
+  "If vt-mode, attach empty `_valid_from`/`_valid_to`/`_system_from`/
+   `_system_to` columns (n long zeros) alongside the per-attribute
+   columns. The caller fills them when building rows; this helper
+   just makes sure the columns exist before `make-dataset` infers
+   the schema."
   [col-map config n]
   (if (vt-mode? config)
     (assoc col-map
-           vt-from-col (long-array n)
-           vt-to-col   (long-array n))
+           vt-from-col  (long-array n)
+           vt-to-col    (long-array n)
+           sys-from-col (long-array n)
+           sys-to-col   (long-array n))
     col-map))
 
 (defn- make-vt-dataset
@@ -422,15 +443,27 @@
               ;; In vt-mode, seed every pre-existing row with the maximally-
               ;; permissive vt-window [MIN, MAX). Subsequent vt-aware txes
               ;; close these windows when the entity is updated.
-              vt-from-arr (when (vt-mode? config)
-                            (let [arr (long-array n)]
-                              (java.util.Arrays/fill arr vt-from-floor) arr))
-              vt-to-arr   (when (vt-mode? config)
-                            (let [arr (long-array n)]
-                              (java.util.Arrays/fill arr vt-open-sentinel) arr))
+              ;; The system-time axis on seeded rows uses [MIN, MAX) too —
+              ;; we don't know when the DB first knew about pre-existing
+              ;; data; treating it as known-since-time-began matches the
+              ;; vt-axis convention.
+              vt-from-arr  (when (vt-mode? config)
+                             (let [arr (long-array n)]
+                               (java.util.Arrays/fill arr vt-from-floor) arr))
+              vt-to-arr    (when (vt-mode? config)
+                             (let [arr (long-array n)]
+                               (java.util.Arrays/fill arr vt-open-sentinel) arr))
+              sys-from-arr (when (vt-mode? config)
+                             (let [arr (long-array n)]
+                               (java.util.Arrays/fill arr vt-from-floor) arr))
+              sys-to-arr   (when (vt-mode? config)
+                             (let [arr (long-array n)]
+                               (java.util.Arrays/fill arr vt-open-sentinel) arr))
               col-map (cond-> (assoc attr-arrays :eid entity-ids)
-                        (vt-mode? config) (assoc vt-from-col vt-from-arr
-                                                 vt-to-col   vt-to-arr))]
+                        (vt-mode? config) (assoc vt-from-col  vt-from-arr
+                                                 vt-to-col    vt-to-arr
+                                                 sys-from-col sys-from-arr
+                                                 sys-to-col   sys-to-arr))]
           (sd/ensure-indexed (make-vt-dataset col-map config)))))))
 
 ;; ---------------------------------------------------------------------------
@@ -895,8 +928,16 @@
       (StratumIndex. dataset attrs attr-refs config)
       (let [vf (tx-meta->vf tx-meta)
             new-vt (tx-meta->vt tx-meta)
+            ;; System-time for this batch: the tx's `:db/txInstant` (or
+            ;; now if absent). Every SCD2 surgery in this batch shares
+            ;; the same `sys-now` — closing rows close their system-to
+            ;; to it and new rows stamp their system-from with it. This
+            ;; preserves the audit invariant that a `FOR SYSTEM_TIME AS
+            ;; OF <past>` query returns the pre-correction state.
+            sys-now (tx-meta->sf tx-meta)
             attr-col-keys (mapv attr-col-key attrs)
-            col-keys (into [:eid vt-from-col vt-to-col] attr-col-keys)
+            col-keys (into [:eid vt-from-col vt-to-col sys-from-col sys-to-col]
+                           attr-col-keys)
             current-cols (when dataset (st/columns dataset))
             current-n (if dataset (st/row-count dataset) 0)
             close-eids (let [s (java.util.HashSet.)]
@@ -923,7 +964,16 @@
                                         (= vto vt-open-sentinel))]
                       (conj! rows
                              (-> (persistent! row)
-                                 (cond-> closing? (assoc vt-to-col vf)))))))
+                                 (cond-> closing?
+                                   ;; Close both vt-to AND system-to on
+                                   ;; supersession. The vt-close is the
+                                   ;; classical SCD2 step; the system-to
+                                   ;; close is what gives us the audit
+                                   ;; guarantee (`FOR SYSTEM_TIME AS OF
+                                   ;; <pre-correction>` sees this row as
+                                   ;; still open at that instant).
+                                   (assoc vt-to-col   vf
+                                          sys-to-col  sys-now)))))))
                 (persistent! rows)))
             ;; Snapshot previous-open attrs per entity for value-merging on
             ;; new rows (so partial attribute updates inherit the rest).
@@ -951,8 +1001,13 @@
                       (let [prev (when eid->prev-open (.get ^java.util.HashMap eid->prev-open eid))]
                         (-> (merge (or prev {}) em)
                             (assoc :eid eid
-                                   vt-from-col vf
-                                   vt-to-col   new-vt))))
+                                   vt-from-col  vf
+                                   vt-to-col    new-vt
+                                   ;; New rows stamp `sys-now` on
+                                   ;; `_system_from` so they're only
+                                   ;; visible at system-times >= now.
+                                   sys-from-col sys-now
+                                   sys-to-col   vt-open-sentinel))))
                     (seq pending-adds)))
             all-rows (into current-rows (or new-rows []))]
         (if (empty? all-rows)
