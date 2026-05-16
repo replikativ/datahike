@@ -24,6 +24,7 @@
             [datahike.api :as d]
             [datahike.index.secondary :as sec]
             [datahike.index.secondary.stratum]
+            [datahike.versioning :as dv]
             [stratum.api :as st]))
 
 (defn- fresh-conn []
@@ -152,3 +153,94 @@
     (testing "no _valid_from / _valid_to columns"
       (is (not (contains? (set (keys (st/columns ds))) :_valid_from)))
       (is (not (contains? (set (keys (st/columns ds))) :_valid_to))))))
+
+;; ============================================================================
+;; Versioning — release/reconnect + branch round-trip preserve SCD2 layout
+;;
+;; The adapter implements IVersionedSecondaryIndex (-sec-flush calls
+;; `stratum.dataset/sync!`, -sec-restore calls `stratum.dataset/load`).
+;; Stratum commit 1 (feature/valid-time) made `:metadata {:valid-time
+;; ...}` round-trip through sync!/load; these tests confirm the
+;; integration end-to-end through the datahike write/read path.
+
+(defn- file-cfg []
+  {:store {:backend :file
+           :id (java.util.UUID/randomUUID)
+           :path (str "/tmp/datahike-stratum-vt-test-" (random-uuid))}
+   :keep-history? true
+   :schema-flexibility :write})
+
+(deftest vt-mode-survives-release-and-reconnect
+  (let [cfg (file-cfg)
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (try
+      (register-vt-index! conn)
+      (d/transact conn [{:db/id "datomic.tx"
+                         :db.valid/from #inst "2024-01-01"
+                         :db.valid/to   #inst "2024-07-01"}
+                        {:emp/name "Bob" :emp/salary 100000}])
+      (d/transact conn [{:db/id "datomic.tx"
+                         :db.valid/from #inst "2024-07-01"}
+                        {:emp/name "Bob" :emp/salary 110000}])
+      (Thread/sleep 300)
+      (let [pre-rows (vt-rows conn :idx/employees)]
+        (testing "two rows present before release"
+          (is (= 2 (count pre-rows))))
+        (d/release conn)
+        (let [conn2 (d/connect cfg)]
+          (try
+            (Thread/sleep 300)
+            (let [ds (index-dataset conn2 :idx/employees)
+                  post-rows (vt-rows conn2 :idx/employees)]
+              (testing "vt metadata round-trips through konserve"
+                (is (= {:from-col :_valid_from :to-col :_valid_to :unit :micros}
+                       (:valid-time (:metadata ds)))))
+              (testing "vt columns are tagged :micros on restore"
+                (is (= :micros (:temporal-unit (get (st/columns ds) :_valid_from))))
+                (is (= :micros (:temporal-unit (get (st/columns ds) :_valid_to)))))
+              (testing "SCD2 row set is identical after reconnect"
+                (is (= (set pre-rows) (set post-rows)))))
+            (finally
+              (d/release conn2)))))
+      (finally
+        (d/delete-database cfg)))))
+
+(deftest vt-mode-survives-branch
+  (let [cfg (file-cfg)
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (try
+      (register-vt-index! conn)
+      (d/transact conn [{:db/id "datomic.tx"
+                         :db.valid/from #inst "2024-01-01"
+                         :db.valid/to   #inst "2024-07-01"}
+                        {:emp/name "Bob" :emp/salary 100000}])
+      (Thread/sleep 200)
+      (let [main-rows (vt-rows conn :idx/employees)]
+        (testing "main has one row"
+          (is (= 1 (count main-rows))))
+        (dv/branch! conn :db :feature)
+        (let [feat-conn (d/connect (assoc cfg :branch :feature))]
+          (try
+            (Thread/sleep 300)
+            (testing "feature branch inherits vt-mode metadata"
+              (let [ds (index-dataset feat-conn :idx/employees)]
+                (is (= {:from-col :_valid_from :to-col :_valid_to :unit :micros}
+                       (:valid-time (:metadata ds))))))
+            (testing "feature branch sees the same SCD2 rows"
+              (is (= (set main-rows)
+                     (set (vt-rows feat-conn :idx/employees)))))
+            (testing "writing to feature branch keeps main unchanged"
+              (d/transact feat-conn [{:db/id "datomic.tx"
+                                      :db.valid/from #inst "2024-07-01"}
+                                     {:emp/name "Bob" :emp/salary 200000}])
+              (Thread/sleep 300)
+              (is (= 2 (count (vt-rows feat-conn :idx/employees))))
+              (is (= 1 (count (vt-rows conn :idx/employees)))
+                  "main branch should still show only the original row"))
+            (finally
+              (d/release feat-conn)))))
+      (finally
+        (d/release conn)
+        (d/delete-database cfg)))))
