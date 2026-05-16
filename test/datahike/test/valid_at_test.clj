@@ -79,6 +79,26 @@
     (testing "nil clears the meta marker"
       (is (nil? (:datahike/valid-at (meta cleared)))))))
 
+(deftest as-of-rejects-vt-marked-input
+  ;; Wrapping order matters: d/as-of must be wrapped FIRST, then
+  ;; d/valid-at outermost — otherwise the supersession check inside
+  ;; valid-at's predicate captures an unbounded db and reads future
+  ;; txes. d/as-of throws if it sees a vt-marked db to surface the
+  ;; mistake at call-site rather than silently returning wrong
+  ;; answers.
+  (let [conn (fresh-conn)
+        _ (setup-vt-data! conn)
+        vt-marked (d/valid-at (d/db conn) #inst "2024-04-15")]
+    (testing "wrong order throws :temporal/wrap-order"
+      (is (thrown-with-msg?
+            clojure.lang.ExceptionInfo
+            #"Cannot wrap d/as-of around a db already filtered by d/valid-at"
+            (d/as-of vt-marked #inst "2024-08-01"))))
+    (testing "correct order works"
+      (is (some? (-> (d/db conn)
+                     (d/as-of #inst "2024-08-01")
+                     (d/valid-at #inst "2024-04-15")))))))
+
 (deftest valid-at-composes-with-as-of
   ;; Tx1 (vt 2024-Q1) created Bob with salary 100k.
   ;; Tx2 (vt 2024-Q3) updated Bob's salary to 110k.

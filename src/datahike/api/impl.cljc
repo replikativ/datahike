@@ -132,7 +132,29 @@
     (SinceDB. db time-point)
     (log/raise "since is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
-(defn as-of [db time-point]
+(defn as-of
+  "Snapshot `db` at tx-time `time-point` (a `java.util.Date` or
+   tx-id long). Returns an `AsOfDB` wrapper whose reads filter to
+   datoms asserted by txes ≤ `time-point`. Composes with
+   `d/history` and `d/valid-at`.
+
+   Composition with `d/valid-at`: wrap `d/as-of` FIRST, then
+   `d/valid-at` outermost — e.g. `(d/valid-at (d/as-of db t) v)`.
+   The supersession check inside `d/valid-at`'s predicate captures
+   whatever db it was passed; if you wrap `d/as-of` outside, the
+   captured db has no tx-time bound and the supersession scan reads
+   future txes, producing incorrect results. This wrapper throws
+   when invoked on a `d/valid-at`-wrapped db to surface the
+   inversion at call-site rather than silently."
+  [db time-point]
+  (when (some? (:datahike/valid-at (meta db)))
+    (log/raise (str "Cannot wrap d/as-of around a db already filtered by "
+                    "d/valid-at — the supersession check would not see the "
+                    "tx-time bound. Compose as (d/valid-at (d/as-of db t) v) "
+                    "instead.")
+               {:error :temporal/wrap-order
+                :inner-marker :datahike/valid-at
+                :outer-wrapper 'as-of}))
   (if (dbi/-temporal-index? db)
     (if (int? time-point)
       (if (<= const/tx0 time-point)
@@ -258,6 +280,14 @@
    `d/history` (recommended — exposes the events the supersession
    algorithm needs) and `d/as-of` (bounds the supersession horizon
    to a given tx-time).
+
+   **Composition order matters.** Wrap `d/as-of` first, then
+   `d/valid-at` outermost: `(d/valid-at (d/as-of db t) v)`. The
+   supersession check captures whatever db it was passed; wrapping
+   `d/as-of` *outside* leaves the inner predicate with an unbounded
+   db and the supersession scan reads future txes. `d/as-of` will
+   throw if invoked on a vt-marked db to catch this mistake at
+   call-site.
 
    The result is a `FilteredDB` whose predicate enforces supersession
    per-datom on every read path (`d/q`, `d/datoms`, `d/pull`,
