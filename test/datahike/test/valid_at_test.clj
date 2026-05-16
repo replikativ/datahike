@@ -325,3 +325,41 @@
                     [(not= ?a ?b)] [(< ?an ?bn)]
                     (interval-meets? ?af ?at ?bf ?bt)]
                   (d/db conn)))))))
+
+;; ============================================================================
+;; Clock pinning for repeatable tests (DH-4)
+;;
+;; Per-call dynamic bindings (`(binding [tools/get-date ...] ...)`)
+;; don't reach the writer thread, which runs transactions on a
+;; background go-loop. Two patterns work across the thread hop:
+;; (a) tx-meta `:db/txInstant` override (recommended), or
+;; (b) `alter-var-root` on `get-date` (whole-suite fixture).
+;; ============================================================================
+
+(deftest tx-meta-txInstant-override-pins-time
+  (testing "tx-meta :db/txInstant overrides the default :db/txInstant"
+    (let [pinned-date #inst "2024-01-01T00:00:00.000-00:00"
+          conn (fresh-conn)]
+      (d/transact conn {:tx-meta {:db/txInstant pinned-date}
+                        :tx-data [{:db/ident :foo/x
+                                   :db/valueType :db.type/long
+                                   :db/cardinality :db.cardinality/one}]})
+      (let [tx-instant (d/q '[:find ?t .
+                              :where [_ :db/ident :foo/x] [_ :db/txInstant ?t]]
+                            (d/db conn))]
+        (is (= pinned-date tx-instant)
+            "tx-meta :db/txInstant should pin the tx-instant deterministically")))))
+
+(deftest default-tx-instant-is-wall-clock
+  (testing "Without tx-meta override, :db/txInstant is wall-clock now"
+    (let [conn (fresh-conn)
+          before (System/currentTimeMillis)]
+      (d/transact conn [{:db/ident :foo/x
+                         :db/valueType :db.type/long
+                         :db/cardinality :db.cardinality/one}])
+      (let [after (System/currentTimeMillis)
+            tx-instant (d/q '[:find ?t .
+                              :where [_ :db/ident :foo/x] [_ :db/txInstant ?t]]
+                            (d/db conn))]
+        (testing "tx-instant falls in [before, after] window"
+          (is (<= before (.getTime ^java.util.Date tx-instant) after)))))))
