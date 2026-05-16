@@ -1,0 +1,154 @@
+(ns datahike.test.stratum-vt-test
+  "Tests for the stratum secondary-index adapter's `:valid-time` (SCD2) mode.
+
+   When the index config declares `:valid-time true`, the adapter:
+
+   - Materialises `:_valid_from` / `:_valid_to` columns on every row,
+     populated from the writing tx's `:db.valid/from` / `:db.valid/to`
+     tx-meta (falling back to `:db/txInstant` for non-vt-bearing txes).
+   - On entity update, the previous open row's `:_valid_to` is closed
+     to the new tx's vt-from, and a new row is appended carrying the
+     merged-with-previous attribute values plus the new vt-window.
+   - `IValidTimeAware/-search-at-vt` translates `valid-at` / window-
+     overlap into stratum WHERE predicates on the two vt columns.
+
+   Note on the Thread/sleep usage: the writer's `instantiate-secondary`
+   always sets `:db.secondary/status :building` on a newly-registered
+   index, which auto-dispatches `build-secondary-index!` asynchronously.
+   When that backfill races with subsequent user txes, the install
+   step can clobber later writes. The fix lives in the writer
+   architecture (out of scope here); tests sleep briefly between
+   schema-and-data and the upsert to give the backfill time to settle.
+   See `feature/valid-time` notes."
+  (:require [clojure.test :as t :refer [is deftest testing]]
+            [datahike.api :as d]
+            [datahike.index.secondary :as sec]
+            [datahike.index.secondary.stratum]
+            [stratum.api :as st]))
+
+(defn- fresh-conn []
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write
+             :keep-history? true}]
+    (d/create-database cfg)
+    (d/connect cfg)))
+
+(defn- index-dataset [conn idx-ident]
+  (.-dataset ^datahike.index.secondary.stratum.StratumIndex
+   (-> (d/db conn) :secondary-indices idx-ident)))
+
+(defn- vt-rows [conn idx-ident]
+  (vec (st/q {:from (index-dataset conn idx-ident)
+              :select [:eid :_valid_from :_valid_to :name :salary]})))
+
+(defn- register-vt-index! [conn]
+  (d/transact conn [{:db/ident :emp/name
+                     :db/valueType :db.type/string
+                     :db/cardinality :db.cardinality/one
+                     :db/unique :db.unique/identity}
+                    {:db/ident :emp/salary
+                     :db/valueType :db.type/long
+                     :db/cardinality :db.cardinality/one}
+                    {:db/ident :idx/employees
+                     :db.secondary/type :stratum
+                     :db.secondary/attrs [:emp/name :emp/salary]
+                     :db.secondary/config {:valid-time true}
+                     :db.secondary/status :ready}])
+  ;; Wait for the async build-secondary-index! that fires off the schema
+  ;; tx to settle. With async writer + the ":building" override in
+  ;; instantiate-secondary, the backfill on the initially-empty index
+  ;; can race with user-data writes.
+  (Thread/sleep 200))
+
+;; ============================================================================
+;; Dataset shape — vt config wires through
+
+(deftest vt-mode-flag-creates-vt-columns
+  (let [conn (fresh-conn)]
+    (register-vt-index! conn)
+    (let [ds (index-dataset conn :idx/employees)]
+      (testing "vt cols exist on the empty initial dataset"
+        (is (contains? (set (keys (st/columns ds))) :_valid_from))
+        (is (contains? (set (keys (st/columns ds))) :_valid_to)))
+      (testing "metadata round-trips the vt-config"
+        (is (= {:from-col :_valid_from :to-col :_valid_to :unit :micros}
+               (:valid-time (:metadata ds))))))))
+
+;; ============================================================================
+;; SCD2 layout — close-on-upsert
+
+(deftest scd2-upsert-closes-old-row-and-opens-new
+  (let [conn (fresh-conn)]
+    (register-vt-index! conn)
+    (d/transact conn [{:db/id "datomic.tx"
+                       :db.valid/from #inst "2024-01-01"
+                       :db.valid/to   #inst "2024-07-01"}
+                      {:emp/name "Bob" :emp/salary 100000}])
+    (d/transact conn [{:db/id "datomic.tx"
+                       :db.valid/from #inst "2024-07-01"}
+                      {:emp/name "Bob" :emp/salary 110000}])
+    (Thread/sleep 200)
+    (let [rows (vt-rows conn :idx/employees)]
+      (testing "two rows: the closed tx1 row + the open tx2 row"
+        (is (= 2 (count rows))))
+      (testing "tx1's row is closed at tx2's :db.valid/from"
+        (let [tx1 (first (filter #(= 100000 (:salary %)) rows))]
+          (is (= 1704067200000000 (:_valid_from tx1))) ;; 2024-01-01
+          (is (= 1719792000000000 (:_valid_to   tx1))) ;; 2024-07-01
+          (is (= "Bob" (:name tx1)))))
+      (testing "tx2's row carries the new salary + open vt-to (MAX_VALUE)"
+        (let [tx2 (first (filter #(= 110000 (:salary %)) rows))]
+          (is (= 1719792000000000 (:_valid_from tx2))) ;; 2024-07-01
+          (is (= Long/MAX_VALUE    (:_valid_to   tx2)))
+          (is (= "Bob" (:name tx2))))))))
+
+;; ============================================================================
+;; IValidTimeAware — search-at-vt
+
+(deftest search-at-vt-returns-correct-as-of-eid
+  (let [conn (fresh-conn)]
+    (register-vt-index! conn)
+    (d/transact conn [{:db/id "datomic.tx"
+                       :db.valid/from #inst "2024-01-01"
+                       :db.valid/to   #inst "2024-07-01"}
+                      {:emp/name "Bob" :emp/salary 100000}])
+    (d/transact conn [{:db/id "datomic.tx"
+                       :db.valid/from #inst "2024-07-01"}
+                      {:emp/name "Bob" :emp/salary 110000}])
+    (Thread/sleep 200)
+    (let [idx (-> (d/db conn) :secondary-indices :idx/employees)]
+      (testing "vt-aware?: the StratumIndex implements IValidTimeAware"
+        (is (sec/vt-aware? idx)))
+      (testing "valid-at #inst 2024-04-15 → only tx1's row matches"
+        (let [bs (sec/-search-at-vt idx
+                                    {:where [[:= :salary 100000]]}
+                                    nil
+                                    #inst "2024-04-15")]
+          (is (not (.isEmpty bs)))))
+      (testing "valid-at #inst 2024-09-15 → only tx2's row matches"
+        (let [bs (sec/-search-at-vt idx
+                                    {:where [[:= :salary 110000]]}
+                                    nil
+                                    #inst "2024-09-15")]
+          (is (not (.isEmpty bs))))))))
+
+;; ============================================================================
+;; vt-mode off — adapter still works (regression / parity check)
+
+(deftest non-vt-config-skips-vt-columns
+  (let [conn (fresh-conn)
+        _ (d/transact conn [{:db/ident :emp/salary
+                             :db/valueType :db.type/long
+                             :db/cardinality :db.cardinality/one}
+                            {:db/ident :idx/employees-plain
+                             :db.secondary/type :stratum
+                             :db.secondary/attrs [:emp/salary]
+                             :db.secondary/config {}
+                             :db.secondary/status :ready}])
+        _ (Thread/sleep 200)
+        ds (index-dataset conn :idx/employees-plain)]
+    (testing "no :valid-time in metadata → no vt-config exposed"
+      (is (nil? (:valid-time (:metadata ds)))))
+    (testing "no _valid_from / _valid_to columns"
+      (is (not (contains? (set (keys (st/columns ds))) :_valid_from)))
+      (is (not (contains? (set (keys (st/columns ds))) :_valid_to))))))

@@ -200,21 +200,19 @@
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
 
-(def ^:private meta-attrs-for-secondary
+(def meta-attrs-for-secondary
   "Tx-meta attrs surfaced to secondary indices on each `-transact` call.
    See `datahike.index.secondary/ISecondaryIndex` — adapters that want
    vt-pushdown read these from `tx-report :tx-meta`."
   #{:db/txInstant :db.valid/from :db.valid/to})
 
-(defn- tx-meta-for-secondary
-  "Extract the current tx's meta-attrs from the in-progress db state.
-   Tx-entity meta-datoms were added by `flush-tx-meta` BEFORE user
-   datoms reach `with-datom`, so a single EAVT seek on the tx-id is
-   sufficient. Returns nil when nothing is set (cheap no-op for
-   non-vt-bearing txes)."
-  [db ^Datom datom]
-  (let [tx-id (dd/datom-tx datom)
-        config (dbi/-config db)
+(defn meta-for-tx-id
+  "Return the meta-attrs map for the given tx-id by EAVT-seeking the tx
+   entity. Public so writing/build-secondary-index! can reconstruct
+   tx-meta during backfill (where the writing tx is not the in-progress
+   tx). Returns nil when no meta-attrs are set on that tx."
+  [db ^long tx-id]
+  (let [config (dbi/-config db)
         ref? (:attribute-refs? config)
         ident (fn [a] (if (and ref? (number? a)) (dbi/-ident-for db a) a))
         m (reduce
@@ -226,6 +224,15 @@
            {}
            (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db)))]
     (not-empty m)))
+
+(defn- tx-meta-for-secondary
+  "Tx-meta for the *current* in-progress tx. We use `(inc max-tx)` —
+   incrementing matches the final bump in the transact loop's exit
+   branch — rather than `(dd/datom-tx datom)`. Retract datoms carry
+   the original asserting tx's id, but vt-aware adapters need the
+   writing tx's meta to close `_valid_to` correctly."
+  [db ^Datom _datom]
+  (meta-for-tx-id db (inc (long (:max-tx db)))))
 
 (defn- update-secondary-indices
   "Update all secondary indices that cover the given attribute.

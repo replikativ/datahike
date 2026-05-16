@@ -2,6 +2,7 @@
   "Manage all state changes and access to state of durable store."
   (:require [datahike.connections :refer [delete-connection! *connections*]]
             [datahike.db :as db]
+            [datahike.db.transaction :as dbtx]
             [datahike.db.utils :as dbu]
             [datahike.db.interface :as dbi]
             [datahike.index :as di]
@@ -560,7 +561,13 @@
                                             (> (.-tx ^datahike.datom.Datom d) building-since-tx))
                                      idx
                                      (do (swap! n inc)
-                                         (let [tx-report {:datom d :added? true}]
+                                         ;; Reconstruct each datom's tx-meta from the
+                                         ;; historical EAVT seek on its tx-id. Without
+                                         ;; this, vt-aware adapters miss the writing-tx
+                                         ;; `:db.valid/from` and degrade to `txInstant`.
+                                         (let [tx-id (.-tx ^datahike.datom.Datom d)
+                                               tx-report {:datom d :added? true
+                                                          :tx-meta (dbtx/meta-for-tx-id db tx-id)}]
                                            (if use-transient?
                                              (do (sec/-transact! idx tx-report) idx)
                                              (sec/-transact idx tx-report))))))
