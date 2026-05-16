@@ -958,6 +958,23 @@
                       initial-es)
         initial-report (update initial-report :tx-meta
                                #(merge {:db/txInstant (get-date)} %))
+        ;; Reject zero-width or reverse valid-time windows. A tx
+        ;; with `:db.valid/from >= :db.valid/to` would produce a
+        ;; tx-entity that no `d/valid-at` query can ever match
+        ;; (the AVET predicate is `vf <= at < vt`, unsatisfiable
+        ;; when from >= to) — a silent data-quality bug. Throw at
+        ;; the transactor so it surfaces immediately.
+        _ (let [tm (:tx-meta initial-report)
+                vf (:db.valid/from tm)
+                vt (:db.valid/to tm)]
+            (when (and vf vt (not (.before ^java.util.Date vf
+                                           ^java.util.Date vt)))
+              (log/raise (str "Invalid valid-time window: :db.valid/from "
+                              "must be strictly before :db.valid/to "
+                              "(got from=" vf ", to=" vt ")")
+                         {:error :transact/invalid-valid-times
+                          :db.valid/from vf
+                          :db.valid/to vt})))
         meta-entities (flush-tx-meta initial-report)]
     (loop [report (update initial-report :db-after transient)
            es (if (dbi/-keep-history? db-before)

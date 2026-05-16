@@ -215,6 +215,95 @@
     (-> (dcore/filter db (mk-vt-pred time-point))
         (vary-meta assoc :datahike/valid-at time-point))))
 
+(defn- mk-vt-overlap-pred
+  "Pred that admits a datom iff its tx's vt-window *overlaps*
+   `[from, to)`. Open-ended `vt = nil` is treated as `+∞`; missing
+   `vf` is `-∞`. The overlap condition is `(vf < to) AND (vt > from)`."
+  [^java.util.Date from ^java.util.Date to]
+  (let [cache (java.util.concurrent.ConcurrentHashMap.)]
+    (fn vt-overlap-pred [db ^datahike.datom.Datom d]
+      (let [tx-id (datahike.datom/datom-tx d)
+            cached (.get cache tx-id)]
+        (if (some? cached)
+          cached
+          (let [{:keys [vf vt]} (vt-meta-attrs db)
+                tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
+                vf-val (some (fn [^datahike.datom.Datom td]
+                               (when (= vf (.-a td)) (.-v td))) tx-datoms)
+                vt-val (some (fn [^datahike.datom.Datom td]
+                               (when (= vt (.-a td)) (.-v td))) tx-datoms)
+                ok? (and (or (nil? vf-val) (.before ^java.util.Date vf-val to))
+                         (or (nil? vt-val) (.after ^java.util.Date vt-val from)))]
+            (.put cache tx-id ok?)
+            ok?))))))
+
+(defn- mk-vt-during-pred
+  "Pred that admits a datom iff its tx's vt-window is *fully
+   contained* in `[from, to)`. Strict containment: missing `vf` or
+   `vt` fail (an unbounded interval can't be fully contained in a
+   bounded one)."
+  [^java.util.Date from ^java.util.Date to]
+  (let [cache (java.util.concurrent.ConcurrentHashMap.)]
+    (fn vt-during-pred [db ^datahike.datom.Datom d]
+      (let [tx-id (datahike.datom/datom-tx d)
+            cached (.get cache tx-id)]
+        (if (some? cached)
+          cached
+          (let [{:keys [vf vt]} (vt-meta-attrs db)
+                tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
+                vf-val (some (fn [^datahike.datom.Datom td]
+                               (when (= vf (.-a td)) (.-v td))) tx-datoms)
+                vt-val (some (fn [^datahike.datom.Datom td]
+                               (when (= vt (.-a td)) (.-v td))) tx-datoms)
+                ok? (and (some? vf-val) (some? vt-val)
+                         (not (.before ^java.util.Date vf-val from))
+                         (not (.after ^java.util.Date vt-val to)))]
+            (.put cache tx-id ok?)
+            ok?))))))
+
+(defn valid-between
+  "Filter `db` to datoms whose asserting tx's vt-window *overlaps*
+   `[from, to)`. SQL:2011 `FOR VALID_TIME BETWEEN from AND to`
+   maps to this. Both endpoints are `java.util.Date`s.
+
+   Carries `:datahike/valid-between [from to]` on the returned db
+   for vt-aware secondary-index pushdown.
+
+   Passing `nil` for either endpoint clears the marker only and
+   does not narrow the FilteredDB predicate — to truly drop the
+   filter start from the unwrapped db."
+  [db from to]
+  (if (or (nil? from) (nil? to))
+    (vary-meta db dissoc :datahike/valid-between)
+    (-> (dcore/filter db (mk-vt-overlap-pred from to))
+        (vary-meta assoc :datahike/valid-between [from to]))))
+
+(defn valid-during
+  "Filter `db` to datoms whose asserting tx's vt-window is *fully
+   contained* in `[from, to)`. Stricter than `valid-between`:
+   tx-windows that merely overlap the query window but extend past
+   either endpoint are excluded. Useful for 'find all corrections
+   whose effective period was wholly within Q2 2024' style queries.
+
+   Carries `:datahike/valid-during [from to]` on the returned db."
+  [db from to]
+  (if (or (nil? from) (nil? to))
+    (vary-meta db dissoc :datahike/valid-during)
+    (-> (dcore/filter db (mk-vt-during-pred from to))
+        (vary-meta assoc :datahike/valid-during [from to]))))
+
+(defn valid-all
+  "Clear any active valid-time marker so the db sees its full
+   vt-history. Equivalent to passing `nil` to `valid-at` /
+   `valid-between` / `valid-during`: it strips the meta markers so
+   vt-aware secondary indices stop routing, but does not unwrap a
+   FilteredDB if one is already in place. Idempotent."
+  [db]
+  (vary-meta db dissoc
+             :datahike/valid-at
+             :datahike/valid-between
+             :datahike/valid-during))
+
 (defn index-range [db {:keys [attrid start end]}]
   (dbi/index-range db attrid start end))
 

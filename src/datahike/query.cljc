@@ -654,7 +654,49 @@
       [(<= ?vt ?to)]]
      ;; period-overlaps? — Allen-relation alias for valid-between
      [(period-overlaps? ?tx ?from ?to)
-      (valid-between ?tx ?from ?to)]]))
+      (valid-between ?tx ?from ?to)]
+
+     ;; ----- Allen interval predicates (4-arg, generic) ---------------------
+     ;; Each takes two half-open intervals `[?af, ?at)` and `[?bf, ?bt)`
+     ;; and asserts the Allen relation. Generic over any orderable type
+     ;; the `<` / `<=` / `>` / `>=` predicates dispatch on (java.util.Date
+     ;; via CollectionOrder, java.lang.Long, etc.). Use for
+     ;; application-domain interval comparisons (lease vs contract dates,
+     ;; not just the bitemporal axis). Mirrors stratum's 4-arg SQL
+     ;; functions (OVERLAPS, EQUALS_PERIOD, CONTAINS_PERIOD, …).
+     [(interval-overlaps? ?af ?at ?bf ?bt)
+      [(< ?af ?bt)]
+      [(< ?bf ?at)]]
+     [(interval-equals? ?af ?at ?bf ?bt)
+      [(= ?af ?bf)]
+      [(= ?at ?bt)]]
+     ;; A contains B: A.from <= B.from AND A.to >= B.to
+     [(interval-contains? ?af ?at ?bf ?bt)
+      [(<= ?af ?bf)]
+      [(>= ?at ?bt)]]
+     ;; A strictly contains B: A.from < B.from AND A.to > B.to
+     [(interval-strictly-contains? ?af ?at ?bf ?bt)
+      [(< ?af ?bf)]
+      [(> ?at ?bt)]]
+     ;; A precedes B: A's end at-or-before B's start (touching allowed)
+     [(interval-precedes? ?af ?at ?bf ?bt)
+      [(<= ?at ?bf)]]
+     [(interval-strictly-precedes? ?af ?at ?bf ?bt)
+      [(< ?at ?bf)]]
+     ;; A immediately precedes B (A meets B): A.end == B.from
+     [(interval-immediately-precedes? ?af ?at ?bf ?bt)
+      [(= ?at ?bf)]]
+     ;; A succeeds B: A's start at-or-after B's end (touching allowed)
+     [(interval-succeeds? ?af ?at ?bf ?bt)
+      [(>= ?af ?bt)]]
+     [(interval-strictly-succeeds? ?af ?at ?bf ?bt)
+      [(> ?af ?bt)]]
+     ;; A immediately succeeds B: A.from == B.to
+     [(interval-immediately-succeeds? ?af ?at ?bf ?bt)
+      [(= ?af ?bt)]]
+     ;; A meets B — alias for interval-immediately-precedes?
+     [(interval-meets? ?af ?at ?bf ?bt)
+      (interval-immediately-precedes? ?af ?at ?bf ?bt)]]))
 
 (def ^:private built-in-rule-names
   "Set of rule-head symbols recognised as built-ins. Used by

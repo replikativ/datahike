@@ -519,6 +519,51 @@
                  :code "(q '[:find ?n :where [_ :name ?n]] (valid-at @conn #inst \"2024-04-15\"))"}]
      :impl datahike.api.impl/valid-at}
 
+    valid-between
+    {:args [:=> [:cat :datahike/SDB :any :any] :datahike/SDB]
+     :ret :datahike/SDB
+     :categories [:temporal :query]
+     :stability :experimental
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Filter `db` to datoms whose asserting tx's vt-window overlaps the
+           half-open interval `[from, to)`. SQL:2011 `FOR VALID_TIME BETWEEN
+           from AND to` maps to this. Carries
+           `:datahike/valid-between [from to]` on the result for vt-aware
+           secondary-index pushdown."
+     :examples [{:desc "Datoms whose tx vt-window overlaps Q2 2024"
+                 :code "(q '[:find ?n :where [_ :name ?n]] (valid-between @conn #inst \"2024-04-01\" #inst \"2024-07-01\"))"}]
+     :impl datahike.api.impl/valid-between}
+
+    valid-during
+    {:args [:=> [:cat :datahike/SDB :any :any] :datahike/SDB]
+     :ret :datahike/SDB
+     :categories [:temporal :query]
+     :stability :experimental
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Filter `db` to datoms whose tx's vt-window is *fully contained*
+           in `[from, to)`. Stricter than `valid-between` — overlapping
+           windows that extend past either endpoint are excluded. Useful
+           for 'corrections wholly within Q2' style queries."
+     :examples [{:desc "Corrections whose vt-window was wholly inside Q2"
+                 :code "(q '[:find ?e :where [?e :name _]] (valid-during @conn #inst \"2024-04-01\" #inst \"2024-07-01\"))"}]
+     :impl datahike.api.impl/valid-during}
+
+    valid-all
+    {:args [:=> [:cat :datahike/SDB] :datahike/SDB]
+     :ret :datahike/SDB
+     :categories [:temporal :query]
+     :stability :experimental
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Strip any valid-time markers from `db` so the full vt-history is
+           visible. Idempotent. Does not unwrap an existing FilteredDB; to
+           drop an active filter, start from the unwrapped db."
+     :examples [{:desc "Drop vt-marker for full-history query"
+                 :code "(q '[:find ?n :where [_ :name ?n]] (valid-all @conn))"}]
+     :impl datahike.api.impl/valid-all}
+
     ;; =========================================================================
     ;; Versioning Operations
     ;; =========================================================================
