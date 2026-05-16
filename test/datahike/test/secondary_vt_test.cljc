@@ -58,18 +58,12 @@
     (d/transact conn [{:db/id "datomic.tx"
                        :db.valid/from #inst "2024-07-01"}
                       {:db/id -1 :emp/salary 110000}])
-    ;; Let the async build-secondary-index! (kicked off when the schema
-    ;; tx promotes the index to :building) finish replaying — its
-    ;; tx-meta reconstruction (see writing.cljc) emits extra events
-    ;; with tx-meta from EAVT lookups.
-    (Thread/sleep 300)
     (let [idx (get-in (d/db conn) [:secondary-indices :idx/employees])
           seen @(.-seen idx)
           ;; The transactor may invoke `-transact` more than once per
-          ;; user-datom (retract-old-then-add pattern under upsert); the
-          ;; async build-secondary-index! may also replay user-datoms
-          ;; with reconstructed tx-meta. We filter to the distinct set
-          ;; of :db.valid/from values seen with a tx-meta payload.
+          ;; user-datom (retract-old-then-add pattern under upsert); we
+          ;; assert on the set of distinct :db.valid/from values seen
+          ;; with a tx-meta payload, not a strict count.
           vt-events (filter #(get-in % [:tx-meta :db.valid/from]) seen)
           vt-froms (set (map #(get-in % [:tx-meta :db.valid/from]) vt-events))]
       (testing "the adapter saw at least one :transact call per user write"

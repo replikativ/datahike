@@ -121,11 +121,31 @@
   (assoc db :rschema (dbu/rschema (:schema db))))
 
 #?(:clj
+   (defn- attrs-have-datoms?
+     "True iff at least one of `attrs` has any datoms in `db`'s AEVT index.
+      Used by `instantiate-secondary` to skip the async backfill path when
+      the index is being registered on an empty (or empty-for-these-attrs)
+      database — eliminating the writer race between
+      `build-secondary-index!` and subsequent user writes that would
+      otherwise clobber the live updates with an empty rebuild."
+     [db attrs]
+     (let [ctx (dbi/-search-context db)]
+       (boolean
+        (some (fn [a] (seq (dbi/-datoms db :aevt [a] ctx))) attrs)))))
+
+#?(:clj
    (defn- instantiate-secondary
      "Create the secondary-index instance for `idx-ident` from a fully
       populated schema entry. Used at end-of-tx so the factory sees the
       complete config (including `:db.secondary/config`, which may have
-      been applied as a later datom within the same tx)."
+      been applied as a later datom within the same tx).
+
+      Status auto-detection: if AEVT has no datoms for any of the
+      indexed attrs, the index is ready immediately (no backfill
+      needed) and status is `:ready`. Otherwise status is `:building`
+      and the writer auto-dispatches `build-secondary-index!` to
+      backfill from AEVT. Common case (register on a fresh-or-empty
+      db) avoids the async-build race entirely."
      [db idx-ident idx-schema]
      (let [idx-type (:db.secondary/type idx-schema)
            idx-attrs (set (:db.secondary/attrs idx-schema))
@@ -133,11 +153,16 @@
                                      {:attrs idx-attrs})
                         (seq (:ident-ref-map db))
                         (assoc :ident-ref-map (:ident-ref-map db)))
-           idx (sec/create-index idx-type idx-config nil)]
-       (-> db
-           (assoc-in [:secondary-indices idx-ident] idx)
-           (assoc-in [:schema idx-ident :db.secondary/status] :building)
-           (assoc-in [:schema idx-ident :db.secondary/building-since-tx] (:max-tx db)))))
+           idx (sec/create-index idx-type idx-config nil)
+           needs-backfill? (attrs-have-datoms? db idx-attrs)
+           base (-> db
+                    (assoc-in [:secondary-indices idx-ident] idx)
+                    (assoc-in [:schema idx-ident :db.secondary/status]
+                              (if needs-backfill? :building :ready)))]
+       (if needs-backfill?
+         (assoc-in base [:schema idx-ident :db.secondary/building-since-tx]
+                   (:max-tx db))
+         base)))
    :cljs
    (defn- instantiate-secondary [db _idx-ident _idx-schema] db))
 

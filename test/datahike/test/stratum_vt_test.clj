@@ -12,14 +12,12 @@
    - `IValidTimeAware/-search-at-vt` translates `valid-at` / window-
      overlap into stratum WHERE predicates on the two vt columns.
 
-   Note on the Thread/sleep usage: the writer's `instantiate-secondary`
-   always sets `:db.secondary/status :building` on a newly-registered
-   index, which auto-dispatches `build-secondary-index!` asynchronously.
-   When that backfill races with subsequent user txes, the install
-   step can clobber later writes. The fix lives in the writer
-   architecture (out of scope here); tests sleep briefly between
-   schema-and-data and the upsert to give the backfill time to settle.
-   See `feature/valid-time` notes."
+   No Thread/sleep is needed: `instantiate-secondary` auto-detects
+   whether AEVT has any datoms for the indexed attrs at registration
+   time. When the index is registered on an empty (or empty-for-
+   these-attrs) DB, status is set to `:ready` directly and no async
+   `build-secondary-index!` dispatch fires — eliminating the race
+   between the async backfill and subsequent user writes."
   (:require [clojure.test :as t :refer [is deftest testing]]
             [datahike.api :as d]
             [datahike.index.secondary :as sec]
@@ -54,12 +52,7 @@
                      :db.secondary/type :stratum
                      :db.secondary/attrs [:emp/name :emp/salary]
                      :db.secondary/config {:valid-time true}
-                     :db.secondary/status :ready}])
-  ;; Wait for the async build-secondary-index! that fires off the schema
-  ;; tx to settle. With async writer + the ":building" override in
-  ;; instantiate-secondary, the backfill on the initially-empty index
-  ;; can race with user-data writes.
-  (Thread/sleep 200))
+                     :db.secondary/status :ready}]))
 
 ;; ============================================================================
 ;; Dataset shape — vt config wires through
@@ -88,7 +81,6 @@
     (d/transact conn [{:db/id "datomic.tx"
                        :db.valid/from #inst "2024-07-01"}
                       {:emp/name "Bob" :emp/salary 110000}])
-    (Thread/sleep 200)
     (let [rows (vt-rows conn :idx/employees)]
       (testing "two rows: the closed tx1 row + the open tx2 row"
         (is (= 2 (count rows))))
@@ -116,7 +108,6 @@
     (d/transact conn [{:db/id "datomic.tx"
                        :db.valid/from #inst "2024-07-01"}
                       {:emp/name "Bob" :emp/salary 110000}])
-    (Thread/sleep 200)
     (let [idx (-> (d/db conn) :secondary-indices :idx/employees)]
       (testing "vt-aware?: the StratumIndex implements IValidTimeAware"
         (is (sec/vt-aware? idx)))
@@ -146,7 +137,6 @@
                              :db.secondary/attrs [:emp/salary]
                              :db.secondary/config {}
                              :db.secondary/status :ready}])
-        _ (Thread/sleep 200)
         ds (index-dataset conn :idx/employees-plain)]
     (testing "no :valid-time in metadata → no vt-config exposed"
       (is (nil? (:valid-time (:metadata ds)))))
@@ -183,14 +173,12 @@
       (d/transact conn [{:db/id "datomic.tx"
                          :db.valid/from #inst "2024-07-01"}
                         {:emp/name "Bob" :emp/salary 110000}])
-      (Thread/sleep 300)
       (let [pre-rows (vt-rows conn :idx/employees)]
         (testing "two rows present before release"
           (is (= 2 (count pre-rows))))
         (d/release conn)
         (let [conn2 (d/connect cfg)]
           (try
-            (Thread/sleep 300)
             (let [ds (index-dataset conn2 :idx/employees)
                   post-rows (vt-rows conn2 :idx/employees)]
               (testing "vt metadata round-trips through konserve"
@@ -219,7 +207,6 @@
     (d/transact conn [{:db/id "datomic.tx"
                        :db.valid/from #inst "2024-07-01"}
                       {:emp/name "Bob" :emp/salary 110000}])
-    (Thread/sleep 200)
     (let [db (d/db conn)
           idx (-> db :secondary-indices :idx/employees)]
       (testing "valid-at marker lands on the db's metadata"
@@ -262,14 +249,12 @@
                          :db.valid/from #inst "2024-01-01"
                          :db.valid/to   #inst "2024-07-01"}
                         {:emp/name "Bob" :emp/salary 100000}])
-      (Thread/sleep 200)
       (let [main-rows (vt-rows conn :idx/employees)]
         (testing "main has one row"
           (is (= 1 (count main-rows))))
         (dv/branch! conn :db :feature)
         (let [feat-conn (d/connect (assoc cfg :branch :feature))]
           (try
-            (Thread/sleep 300)
             (testing "feature branch inherits vt-mode metadata"
               (let [ds (index-dataset feat-conn :idx/employees)]
                 (is (= {:from-col :_valid_from :to-col :_valid_to :unit :micros}
@@ -281,7 +266,6 @@
               (d/transact feat-conn [{:db/id "datomic.tx"
                                       :db.valid/from #inst "2024-07-01"}
                                      {:emp/name "Bob" :emp/salary 200000}])
-              (Thread/sleep 300)
               (is (= 2 (count (vt-rows feat-conn :idx/employees))))
               (is (= 1 (count (vt-rows conn :idx/employees)))
                   "main branch should still show only the original row"))
