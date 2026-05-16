@@ -3155,10 +3155,10 @@
          :retrieval
          (if idx
            (let [query-args (vec (drop 1 args))
-                 results (sec/-slice-ordered idx
-                                             {:query (first query-args)
-                                              :field (second query-args)}
-                                             nil nil nil nil)
+                 results (sec/slice-ordered-with-vt db idx
+                                                    {:query (first query-args)
+                                                     :field (second query-args)}
+                                                    nil nil nil nil)
                  ;; Map binding vars to column indices
                  attrs (into {} (map-indexed (fn [i v] [v i]) binding-vars))
                  ;; Build tuples from results

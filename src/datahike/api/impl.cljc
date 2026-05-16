@@ -226,7 +226,7 @@
         (.put winner-cache k (or winner ::miss))
         winner))))
 
-(defn- mk-vt-pred
+(defn mk-vt-pred
   "Build a `d/filter` predicate `(fn [db datom])` implementing
    supersession-aware valid-time filtering at point `at`. Algorithm
    implements bitemporal supersession at read time:

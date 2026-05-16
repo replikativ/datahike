@@ -2,7 +2,9 @@
   "Pluggable secondary index protocol and registry.
    Secondary indices are declared through schema and maintained in-transaction.
    Anyone can register their own index type — the planner treats all uniformly."
-  (:require [replikativ.logging :as log]))
+  (:require [replikativ.logging :as log]
+            [datahike.db.interface :as dbi]
+            [datahike.index.entity-set :as es]))
 
 ;; ---------------------------------------------------------------------------
 ;; Protocol
@@ -116,10 +118,12 @@
    prune on `_valid_from` / `_valid_to` columns at scan time; a
    scriptum implementation can search per-vt-period segments.
 
-   Indices that DON'T implement this still produce correct vt-filtered
-   results — the secondary-search call site composes their plain
-   `-search` output with a post-hoc filter via kontor's primary AVET
-   on `:db.valid/from`. See `search-with-vt-filter` below."
+   Indices that DON'T implement this still produce correct results —
+   `search-with-vt` / `slice-ordered-with-vt` apply a generic post-hoc
+   filter that drops eids whose tx-vt-supersession-winner doesn't admit
+   them at the query's valid-time. The post-hoc filter is correct but
+   slower than a native `-search-at-vt`; vt-aware adapters are the
+   fast path."
   (-search-at-vt [this query-spec entity-filter valid-at-window]
     "Like `-search`, but restrict to entities whose tx-meta valid-time
      window contains `valid-at-window`. `valid-at-window` is either:
@@ -132,32 +136,129 @@
      Returns the same shape as `-search` — an EntityBitSet or
      ColumnSlice."))
 
+(defprotocol IValidTimeStable
+  "Optional opt-out protocol for secondary indices whose data is
+   invariant under valid-time — e.g., schema-only indices, hashes,
+   content-addressed indices. When `(-vt-stable? this)` returns true,
+   `search-with-vt` / `slice-ordered-with-vt` bypass the post-hoc vt
+   filter entirely (the data has no vt-shadowing to compute).
+
+   Default for indices that don't implement this protocol: NOT
+   vt-stable (the safe assumption — apply the filter)."
+  (-vt-stable? [this]
+    "True iff this index's data is invariant under valid-time."))
+
 (defn vt-aware?
   "True iff `index` implements `IValidTimeAware`."
   [index]
   (satisfies? IValidTimeAware index))
 
+(defn vt-stable?
+  "True iff `index` opts out of vt-filtering via `IValidTimeStable`."
+  [index]
+  (and (satisfies? IValidTimeStable index)
+       (boolean (-vt-stable? index))))
+
+;; ---------------------------------------------------------------------------
+;; Post-hoc vt filter for non-vt-aware secondaries
+;;
+;; A non-vt-aware secondary returns candidates that ignore valid-time;
+;; we keep only those whose entity has at least one datom visible to
+;; `d/valid-at`'s supersession-aware predicate. The check uses the same
+;; pred `d/valid-at` builds (cached per query call), so the algorithmic
+;; cost mirrors that of routing the same query through datalog's
+;; FilteredDB.
+;;
+;; Shape dispatch:
+;;   EntityBitSet                       → new EntityBitSet, survivors only
+;;   vec of {:entity-id …}              → filterv on :entity-id (preserves
+;;                                         per-result columns like :score
+;;                                         and :distance from -slice-ordered)
+;;   nil / empty                        → returned as-is
+;;
+;; Other shapes pass through untouched with a warning; ColumnSlice
+;; support is a follow-up once a non-vt-aware ColumnSlice-returning
+;; secondary actually exists.
+
+(defn- entity-bitset? [x]
+  #?(:clj  (instance? org.roaringbitmap.RoaringBitmap x)
+     :cljs (set? x)))
+
+(defn- post-filter-vt
+  "Filter a secondary's result-set to entities whose `(e, a, v)` survives
+   `d/valid-at`'s supersession-aware predicate at valid-time `at`."
+  [db at result]
+  (let [;; Build the same pred d/valid-at would install. mk-vt-pred is
+        ;; resolved lazily so secondary.cljc need not require api.impl
+        ;; statically (avoiding a circular-load risk).
+        mk-pred  (or (resolve 'datahike.api.impl/mk-vt-pred)
+                     (throw (ex-info "mk-vt-pred not on classpath" {})))
+        vt-pred  (@mk-pred at)
+        keep?    (fn [eid]
+                   ;; Enumerate the entity's datoms and ask the pred.
+                   ;; Any survivor → entity is visible. Caches inside
+                   ;; vt-pred amortize across eids.
+                   (some (fn [d] (vt-pred db d))
+                         (dbi/datoms db :eavt [eid])))]
+    (cond
+      (nil? result) result
+
+      (entity-bitset? result)
+      (es/entity-bitset-from-longs
+        (filter keep? (es/entity-bitset-seq result)))
+
+      (sequential? result)
+      (filterv (fn [m] (keep? (or (:entity-id m) (get m :entity-id)))) result)
+
+      :else
+      (do
+        (log/warn :datahike/post-filter-vt-unknown-shape
+                  {:type (type result)})
+        result))))
+
 (defn search-with-vt
-  "Dispatch a secondary-index search, optionally routed through `-search-at-vt`
-   when the db carries a `:datahike/valid-at` marker (set by `d/valid-at`).
+  "Dispatch a secondary-index search with valid-time routing.
 
-   Routing:
-   - db has `:datahike/valid-at` AND index is `IValidTimeAware`
-       → `(-search-at-vt index query-spec entity-filter <valid-at>)`
-   - db has `:datahike/valid-at` AND index is NOT vt-aware
-       → `(-search ...)` for now; non-vt-aware adapters can be wrapped
-         post-hoc by the caller using kontor's `(valid-at ?tx ?at)` rule.
-   - no `:datahike/valid-at` marker
-       → `(-search index query-spec entity-filter)`
+   Routing when the db carries a `:datahike/valid-at` marker
+   (set by `d/valid-at`):
 
-   Centralises the read-of-the-marker so query-engine call sites stay
-   uniform — they call `search-with-vt` and don't need to know about vt."
+     1. index satisfies `IValidTimeAware`
+          → `-search-at-vt` (native fast path)
+     2. index satisfies `IValidTimeStable` (returns true)
+          → `-search` (no filtering needed — data is vt-invariant)
+     3. otherwise
+          → `-search` then `post-filter-vt` (correct, slower fallback)
+
+   No marker → `-search` directly.
+
+   The post-filter dispatches on the result shape (EntityBitSet or
+   vec-of-maps-with-:entity-id), so non-vt-aware adapters get
+   correctness for free; they only need to opt into `IValidTimeAware`
+   if perf matters."
   [db index query-spec entity-filter]
   (if-let [at (:datahike/valid-at (meta db))]
-    (if (vt-aware? index)
-      (-search-at-vt index query-spec entity-filter at)
-      (-search index query-spec entity-filter))
+    (cond
+      (vt-aware? index)  (-search-at-vt index query-spec entity-filter at)
+      (vt-stable? index) (-search index query-spec entity-filter)
+      :else              (post-filter-vt db at
+                                         (-search index query-spec entity-filter)))
     (-search index query-spec entity-filter)))
+
+(defn slice-ordered-with-vt
+  "Like `search-with-vt` but for `-slice-ordered`. Same routing rules.
+   Used by `:retrieval`-mode plan nodes that want both eids and a
+   per-result column (score/distance)."
+  [db index query-spec entity-filter attr direction limit]
+  (let [unfiltered (-slice-ordered index query-spec entity-filter attr direction limit)]
+    (if-let [at (:datahike/valid-at (meta db))]
+      (cond
+        ;; Native fast path: only if the index also implements vt-aware
+        ;; slice-ordered. Stratum doesn't ship that yet (a TODO), so for
+        ;; now even vt-aware indices flow through post-filter for the
+        ;; -slice-ordered axis. Add `-slice-ordered-at-vt` when needed.
+        (vt-stable? index) unfiltered
+        :else              (post-filter-vt db at unfiltered))
+      unfiltered)))
 
 ;; ---------------------------------------------------------------------------
 ;; GC: static key-map marking (avoids loading full index just for GC)
