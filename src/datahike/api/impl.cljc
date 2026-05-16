@@ -147,6 +147,23 @@
     (HistoricalDB. db)
     (log/raise "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
+(defn valid-at
+  "Tag `db` with a `:datahike/valid-at` marker so vt-aware secondary
+   indices (those implementing `IValidTimeAware`) push the filter
+   into their own query plan instead of returning the full match set.
+
+   Unlike `as-of`/`since`/`history` (which are *tx-time* axes managed
+   by datahike's core), valid-at is a *valid-time* axis managed by
+   secondary indices. Datalog patterns that don't route through a
+   vt-aware index are unaffected — those queries must still use the
+   `(valid-at ?tx ?at)` built-in rule explicitly.
+
+   `time-point` is a `java.util.Date` or `nil` (clears the marker)."
+  [db time-point]
+  (if (nil? time-point)
+    (vary-meta db dissoc :datahike/valid-at)
+    (vary-meta db assoc :datahike/valid-at time-point)))
+
 (defn index-range [db {:keys [attrid start end]}]
   (dbi/index-range db attrid start end))
 

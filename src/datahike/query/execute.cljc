@@ -3089,12 +3089,14 @@
                  resolved-fn (when (and (symbol? fn-sym) (namespace fn-sym))
                                (some-> (resolve fn-sym) deref))
                  result-bs (if resolved-fn
-                             ;; Call the function which should return results
-                             ;; For filter mode, we use sec/-search
-                             (sec/-search idx
-                                          {:query (first resolved-args)
-                                           :field (second resolved-args)}
-                                          nil)
+                             ;; Call the function which should return results.
+                             ;; `search-with-vt` reads the db's `:datahike/valid-at`
+                             ;; marker (set by `d/valid-at`) and routes through
+                             ;; `-search-at-vt` for vt-aware indices.
+                             (sec/search-with-vt db idx
+                                                 {:query (first resolved-args)
+                                                  :field (second resolved-args)}
+                                                 nil)
                              (es/entity-bitset))
                  ;; Create relation from entity IDs
                  entity-var (first binding-vars)

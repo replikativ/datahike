@@ -206,6 +206,52 @@
       (finally
         (d/delete-database cfg)))))
 
+;; ============================================================================
+;; d/valid-at marker + search-with-vt routing
+
+(deftest valid-at-marker-routes-to-search-at-vt
+  (let [conn (fresh-conn)]
+    (register-vt-index! conn)
+    (d/transact conn [{:db/id "datomic.tx"
+                       :db.valid/from #inst "2024-01-01"
+                       :db.valid/to   #inst "2024-07-01"}
+                      {:emp/name "Bob" :emp/salary 100000}])
+    (d/transact conn [{:db/id "datomic.tx"
+                       :db.valid/from #inst "2024-07-01"}
+                      {:emp/name "Bob" :emp/salary 110000}])
+    (Thread/sleep 200)
+    (let [db (d/db conn)
+          idx (-> db :secondary-indices :idx/employees)]
+      (testing "valid-at marker lands on the db's metadata"
+        (let [marked (d/valid-at db #inst "2024-04-15")]
+          (is (= #inst "2024-04-15"
+                 (:datahike/valid-at (meta marked))))))
+      (testing "valid-at nil clears the marker"
+        (let [marked (d/valid-at db #inst "2024-04-15")
+              cleared (d/valid-at marked nil)]
+          (is (nil? (:datahike/valid-at (meta cleared))))))
+      (testing "search-with-vt routes through -search-at-vt when marker is set + index is vt-aware"
+        (let [marked (d/valid-at db #inst "2024-04-15")
+              bs (sec/search-with-vt marked idx
+                                     {:where [[:= :salary 100000]]}
+                                     nil)]
+          (is (not (.isEmpty bs)))))
+      (testing "search-with-vt without marker → plain -search (no vt filter applied)"
+        (let [bs-no-marker (sec/search-with-vt db idx
+                                               {:where [[:= :salary 100000]]}
+                                               nil)
+              bs-marker (sec/search-with-vt
+                         (d/valid-at db #inst "2024-09-15")  ;; after the closed window
+                         idx
+                         {:where [[:= :salary 100000]]}
+                         nil)]
+          ;; Both queries ask for salary=100000. Without marker → returns
+          ;; entity 4 (the row with salary 100k exists in the dataset).
+          ;; With marker at 2024-09-15 → that row's window is [2024-01-01,
+          ;; 2024-07-01), which doesn't contain 2024-09-15 → no match.
+          (is (not (.isEmpty bs-no-marker)) "without marker, plain search finds salary=100k")
+          (is (.isEmpty bs-marker) "with valid-at after the window, vt-pushdown filters the row out"))))))
+
 (deftest vt-mode-survives-branch
   (let [cfg (file-cfg)
         _ (d/create-database cfg)

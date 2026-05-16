@@ -137,6 +137,28 @@
   [index]
   (satisfies? IValidTimeAware index))
 
+(defn search-with-vt
+  "Dispatch a secondary-index search, optionally routed through `-search-at-vt`
+   when the db carries a `:datahike/valid-at` marker (set by `d/valid-at`).
+
+   Routing:
+   - db has `:datahike/valid-at` AND index is `IValidTimeAware`
+       → `(-search-at-vt index query-spec entity-filter <valid-at>)`
+   - db has `:datahike/valid-at` AND index is NOT vt-aware
+       → `(-search ...)` for now; non-vt-aware adapters can be wrapped
+         post-hoc by the caller using kontor's `(valid-at ?tx ?at)` rule.
+   - no `:datahike/valid-at` marker
+       → `(-search index query-spec entity-filter)`
+
+   Centralises the read-of-the-marker so query-engine call sites stay
+   uniform — they call `search-with-vt` and don't need to know about vt."
+  [db index query-spec entity-filter]
+  (if-let [at (:datahike/valid-at (meta db))]
+    (if (vt-aware? index)
+      (-search-at-vt index query-spec entity-filter at)
+      (-search index query-spec entity-filter))
+    (-search index query-spec entity-filter)))
+
 ;; ---------------------------------------------------------------------------
 ;; GC: static key-map marking (avoids loading full index just for GC)
 

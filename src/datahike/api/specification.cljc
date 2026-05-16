@@ -504,6 +504,21 @@
                  :code "(as-of @conn 536870913)"}]
      :impl datahike.api.impl/as-of}
 
+    valid-at
+    {:args [:=> [:cat :datahike/SDB :any] :datahike/SDB]
+     :ret :datahike/SDB
+     :categories [:temporal :query]
+     :stability :experimental
+     :supports-remote? true
+     :referentially-transparent? true
+     :doc "Tag `db` with a `:datahike/valid-at` marker so vt-aware secondary
+           indices push the filter through `-search-at-vt`. Valid-time is a
+           secondary-index axis; regular datalog patterns still require the
+           built-in `(valid-at ?tx ?at)` rule to filter by vt explicitly."
+     :examples [{:desc "Query as of valid-time"
+                 :code "(q '[:find ?n :where [_ :name ?n]] (valid-at @conn #inst \"2024-04-15\"))"}]
+     :impl datahike.api.impl/valid-at}
+
     ;; =========================================================================
     ;; Versioning Operations
     ;; =========================================================================
