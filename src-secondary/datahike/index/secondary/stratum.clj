@@ -918,102 +918,123 @@
                                   arr))])))
           col-keys)))
 
+(defn- materialize-existing-rows
+  "Walk every row in the current dataset and produce a vec of row-maps.
+   Rows whose `:eid` is in `close-eids` AND whose `_valid_to` is still
+   open (= `Long/MAX_VALUE`) get their `_valid_to` closed to `vt-close`
+   AND their `_system_to` closed to `sys-now`. Closing both axes in
+   the same step is what gives us the audit guarantee that a
+   `FOR SYSTEM_TIME AS OF <pre-correction>` query still sees the old
+   row as 'open at that instant'."
+  [current-cols current-n col-keys
+   ^java.util.HashSet close-eids vt-close sys-now]
+  (if (or (zero? (long current-n)) (nil? current-cols))
+    []
+    (let [eid-col (get current-cols :eid)
+          vto-col (get current-cols vt-to-col)
+          rows    (transient [])]
+      (dotimes [i current-n]
+        (let [row (transient {})]
+          (doseq [k col-keys]
+            (let [v (materialize-col-value (get current-cols k) i)]
+              (when (some? v) (assoc! row k v))))
+          (let [eid       (long (or (materialize-col-value eid-col i) 0))
+                vto       (long (or (materialize-col-value vto-col i)
+                                    vt-open-sentinel))
+                closing?  (and (.contains close-eids eid)
+                               (= vto vt-open-sentinel))]
+            (conj! rows
+                   (cond-> (persistent! row)
+                     closing? (assoc vt-to-col  vt-close
+                                     sys-to-col sys-now))))))
+      (persistent! rows))))
+
+(defn- snapshot-prev-open-attrs
+  "For each eid in `pending-adds`, find its currently-open row in the
+   dataset and capture the attribute values. Used to merge partial
+   updates into the new row so unchanged attributes carry over."
+  [current-cols ^long current-n ^java.util.HashMap pending-adds attr-col-keys]
+  (let [m (java.util.HashMap.)]
+    (when (and (pos? current-n) current-cols)
+      (let [eid-col (get current-cols :eid)
+            vto-col (get current-cols vt-to-col)]
+        (dotimes [i current-n]
+          (let [eid (long (materialize-col-value eid-col i))
+                vto (long (or (materialize-col-value vto-col i) vt-open-sentinel))]
+            (when (and (= vto vt-open-sentinel)
+                       (.containsKey pending-adds eid))
+              (let [prev (into {}
+                               (keep (fn [k]
+                                       (when-let [v (materialize-col-value
+                                                     (get current-cols k) i)]
+                                         [k v])))
+                               attr-col-keys)]
+                (.put m eid prev)))))))
+    m))
+
+(defn- build-new-rows
+  "For each `[eid attr-map]` in `pending-adds`, build the row to append:
+   merge `attr-map` over the prev-open snapshot (so partial updates
+   inherit unchanged attrs), then stamp the four temporal columns.
+   `sys-now` is the batch's system-time event; every new row gets
+   `_system_from = sys-now` so AS-OF queries at past system-times do
+   not see it."
+  [^java.util.HashMap pending-adds ^java.util.HashMap eid->prev-open
+   vt-from vt-to sys-now]
+  (mapv (fn [[eid em]]
+          (let [prev (.get eid->prev-open eid)]
+            (-> (merge (or prev {}) em)
+                (assoc :eid         eid
+                       vt-from-col  vt-from
+                       vt-to-col    vt-to
+                       sys-from-col sys-now
+                       sys-to-col   vt-open-sentinel))))
+        (seq pending-adds)))
+
 (defn- vt-persist-transient-stratum-index
-  [dataset attrs attr-refs config ^java.util.HashMap pending-adds
-   ^java.util.HashSet pending-retracts tx-meta]
-  (let [has-adds?     (pos? (.size pending-adds))
-        has-retracts? (pos? (.size pending-retracts))
+  "SCD2 surgery for vt-mode: materialize every current row,
+   close-on-supersession (both axes), append the new rows, and
+   rebuild the dataset. The rebuild pattern is what lets us derive
+   column types from values on first insert; subsequent txes still
+   go through the same path for consistency.
+
+   System-time symmetry: every batch shares one `sys-now`; closing
+   rows close their `_system_to` to it and new rows stamp their
+   `_system_from` with it, preserving the
+   `FOR SYSTEM_TIME AS OF <pre-correction>` audit semantic."
+  [dataset attrs attr-refs config
+   ^java.util.HashMap pending-adds ^java.util.HashSet pending-retracts tx-meta]
+  (let [has-adds?      (pos? (.size pending-adds))
+        has-retracts?  (pos? (.size pending-retracts))
         nothing-to-do? (and (not has-adds?) (not has-retracts?))]
     (if nothing-to-do?
       (StratumIndex. dataset attrs attr-refs config)
-      (let [vf (tx-meta->vf tx-meta)
-            new-vt (tx-meta->vt tx-meta)
-            ;; System-time for this batch: the tx's `:db/txInstant` (or
-            ;; now if absent). Every SCD2 surgery in this batch shares
-            ;; the same `sys-now` — closing rows close their system-to
-            ;; to it and new rows stamp their system-from with it. This
-            ;; preserves the audit invariant that a `FOR SYSTEM_TIME AS
-            ;; OF <past>` query returns the pre-correction state.
-            sys-now (tx-meta->sf tx-meta)
+      (let [vt-from       (tx-meta->vf tx-meta)
+            vt-to         (tx-meta->vt tx-meta)
+            sys-now       (tx-meta->sf tx-meta)
             attr-col-keys (mapv attr-col-key attrs)
-            col-keys (into [:eid vt-from-col vt-to-col sys-from-col sys-to-col]
-                           attr-col-keys)
-            current-cols (when dataset (st/columns dataset))
-            current-n (if dataset (st/row-count dataset) 0)
-            close-eids (let [s (java.util.HashSet.)]
-                         (when has-adds? (.addAll s (.keySet pending-adds)))
-                         (when has-retracts? (.addAll s pending-retracts))
-                         s)
-            ;; Materialize current rows. Walk index/data arrays directly via
-            ;; materialize-col-value.
-            current-rows
-            (if (or (zero? current-n) (nil? current-cols))
-              []
-              (let [eid-col (get current-cols :eid)
-                    vto-col (get current-cols vt-to-col)
-                    rows (transient [])]
-                (dotimes [i current-n]
-                  (let [row (transient {})]
-                    (doseq [k col-keys]
-                      (let [v (materialize-col-value (get current-cols k) i)]
-                        (when (some? v) (assoc! row k v))))
-                    (let [eid (long (or (materialize-col-value eid-col i) 0))
-                          vto (long (or (materialize-col-value vto-col i)
-                                        vt-open-sentinel))
-                          closing? (and (.contains close-eids eid)
-                                        (= vto vt-open-sentinel))]
-                      (conj! rows
-                             (-> (persistent! row)
-                                 (cond-> closing?
-                                   ;; Close both vt-to AND system-to on
-                                   ;; supersession. The vt-close is the
-                                   ;; classical SCD2 step; the system-to
-                                   ;; close is what gives us the audit
-                                   ;; guarantee (`FOR SYSTEM_TIME AS OF
-                                   ;; <pre-correction>` sees this row as
-                                   ;; still open at that instant).
-                                   (assoc vt-to-col   vf
-                                          sys-to-col  sys-now)))))))
-                (persistent! rows)))
-            ;; Snapshot previous-open attrs per entity for value-merging on
-            ;; new rows (so partial attribute updates inherit the rest).
-            eid->prev-open
-            (when has-adds?
-              (let [m (java.util.HashMap.)]
-                (dotimes [i current-n]
-                  (let [eid (long (materialize-col-value (get current-cols :eid) i))
-                        vto (long (or (materialize-col-value
-                                       (get current-cols vt-to-col) i)
-                                      vt-open-sentinel))]
-                    (when (and (= vto vt-open-sentinel)
-                               (.containsKey pending-adds eid))
-                      (let [prev (into {}
-                                       (keep (fn [k]
-                                               (when-let [v (materialize-col-value
-                                                             (get current-cols k) i)]
-                                                 [k v])))
-                                       attr-col-keys)]
-                        (.put m eid prev)))))
-                m))
-            new-rows
-            (when has-adds?
-              (mapv (fn [[eid em]]
-                      (let [prev (when eid->prev-open (.get ^java.util.HashMap eid->prev-open eid))]
-                        (-> (merge (or prev {}) em)
-                            (assoc :eid eid
-                                   vt-from-col  vf
-                                   vt-to-col    new-vt
-                                   ;; New rows stamp `sys-now` on
-                                   ;; `_system_from` so they're only
-                                   ;; visible at system-times >= now.
-                                   sys-from-col sys-now
-                                   sys-to-col   vt-open-sentinel))))
-                    (seq pending-adds)))
-            all-rows (into current-rows (or new-rows []))]
+            col-keys      (into [:eid vt-from-col vt-to-col sys-from-col sys-to-col]
+                                attr-col-keys)
+            current-cols  (when dataset (st/columns dataset))
+            current-n     (if dataset (st/row-count dataset) 0)
+            close-eids    (let [s (java.util.HashSet.)]
+                            (when has-adds?     (.addAll s (.keySet pending-adds)))
+                            (when has-retracts? (.addAll s pending-retracts))
+                            s)
+            existing-rows (materialize-existing-rows
+                            current-cols current-n col-keys
+                            close-eids vt-from sys-now)
+            new-rows      (when has-adds?
+                            (let [prev-open (snapshot-prev-open-attrs
+                                              current-cols current-n
+                                              pending-adds attr-col-keys)]
+                              (build-new-rows pending-adds prev-open
+                                              vt-from vt-to sys-now)))
+            all-rows      (into existing-rows (or new-rows []))]
         (if (empty? all-rows)
           (StratumIndex. nil attrs attr-refs config)
           (let [col-map (row->col-map all-rows col-keys)
-                ds (sd/ensure-indexed (make-vt-dataset col-map config))]
+                ds      (sd/ensure-indexed (make-vt-dataset col-map config))]
             (StratumIndex. ds attrs attr-refs config)))))))
 
 ;; ---------------------------------------------------------------------------
