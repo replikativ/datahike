@@ -40,10 +40,11 @@
     {:pattern :query
      :java-call "Datahike.q(CTypeConversion.toJavaString(query_edn), loadInputs(num_inputs, input_formats, raw_inputs))"}
 
-    ;; Transaction
+    ;; Transaction. :java-call is intentionally absent — the :transact pattern
+    ;; emits a multi-line body that does its own Datahike.connect / loadInput /
+    ;; conditional JSON-coercion / transact sequence; see generate-transact.
     transact
-    {:pattern :transact
-     :java-call "((java.util.Map)Datahike.transact(Datahike.connect(readConfig(db_config)), (java.util.List)loadInput(tx_format, tx_data))).get(Util.kwd(\":tx-meta\"))"}
+    {:pattern :transact}
 
     ;; Pull API
     pull
@@ -232,8 +233,15 @@
 
 (defn generate-transact
   "Generate entry point for transact operation.
-   Pattern: (db_config, tx_format, tx_data) -> tx-meta"
-  [op-name {:keys [java-call doc-comment] :as config}]
+   Pattern: (db_config, tx_format, tx_data) -> tx-meta
+
+   Emits a JSON-aware transact body: when input_format is 'json', the parsed
+   tx-data is passed through libdatahike.transformJSONForTx so values are
+   coerced against the schema (e.g. Integer → Long for :db.type/long attrs).
+   Without this pass, JSON inserts against a strict schema fail with
+   :transact/schema validation errors — see
+   pydatahike/tests/test_basic.py::test_transact_with_explicit_schema."
+  [op-name {:keys [doc-comment] :as config}]
   (let [c-name (get-c-name op-name config)]
     (format "%s
     @CEntryPoint(name = \"%s\")
@@ -245,12 +253,22 @@
             @CConst CCharPointer output_format,
             @CConst OutputReader output_reader) {
         try {
-            output_reader.call(toOutput(output_format, %s));
+            Object conn = Datahike.connect(readConfig(db_config));
+            Object txData = loadInput(tx_format, tx_data);
+
+            // JSON inputs need schema-aware coercion (e.g. Integer → Long
+            // for :db.type/long attrs). EDN/CBOR carry types natively.
+            String format = CTypeConversion.toJavaString(tx_format);
+            if (\"json\".equals(format)) {
+                txData = libdatahike.transformJSONForTx(txData, conn);
+            }
+
+            output_reader.call(toOutput(output_format, ((java.util.Map)Datahike.transact(conn, (java.util.List)txData)).get(Util.kwd(\":tx-meta\"))));
         } catch (Exception e) {
             output_reader.call(toException(e));
         }
     }"
-            (or doc-comment "") c-name c-name java-call)))
+            (or doc-comment "") c-name c-name)))
 
 (defn generate-db-only
   "Generate entry point for db-only operations.
@@ -552,7 +570,12 @@ public final class LibDatahike extends LibDatahikeBase {
     ;; Validate coverage
     (validation/validate-coverage "Native" native-operations native-excluded-operations)
     (validation/validate-exclusion-reasons "Native" native-excluded-operations)
-    (validation/validate-overlay-completeness "Native" native-operations [:pattern :java-call])
+    ;; :transact pattern emits a self-contained body and doesn't need :java-call;
+    ;; exclude it from the :java-call completeness check.
+    (validation/validate-overlay-completeness
+     "Native"
+     (into {} (remove (fn [[_ cfg]] (= :transact (:pattern cfg))) native-operations))
+     [:pattern :java-call])
 
     ;; Generate bindings
     (write-libdatahike! output-dir)
