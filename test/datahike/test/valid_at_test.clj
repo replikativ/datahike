@@ -91,9 +91,9 @@
         vt-marked (d/valid-at (d/db conn) #inst "2024-04-15")]
     (testing "wrong order throws :temporal/wrap-order"
       (is (thrown-with-msg?
-            clojure.lang.ExceptionInfo
-            #"Cannot wrap d/as-of around a db already filtered by d/valid-at"
-            (d/as-of vt-marked #inst "2024-08-01"))))
+           clojure.lang.ExceptionInfo
+           #"Cannot wrap d/as-of around a db already filtered by d/valid-at"
+           (d/as-of vt-marked #inst "2024-08-01"))))
     (testing "correct order works"
       (is (some? (-> (d/db conn)
                      (d/as-of #inst "2024-08-01")
@@ -150,34 +150,34 @@
   (testing "Tx with :db.valid/from > :db.valid/to throws at transact"
     (let [conn (fresh-conn)]
       (is (thrown-with-msg?
-            clojure.lang.ExceptionInfo #"Invalid valid-time window"
-            (d/transact conn
-                        {:tx-meta {:db.valid/from #inst "2024-07-01"
-                                   :db.valid/to   #inst "2024-01-01"}
-                         :tx-data [{:db/ident :foo
-                                    :db/valueType :db.type/long
-                                    :db/cardinality :db.cardinality/one}]}))))))
+           clojure.lang.ExceptionInfo #"Invalid valid-time window"
+           (d/transact conn
+                       {:tx-meta {:db.valid/from #inst "2024-07-01"
+                                  :db.valid/to   #inst "2024-01-01"}
+                        :tx-data [{:db/ident :foo
+                                   :db/valueType :db.type/long
+                                   :db/cardinality :db.cardinality/one}]}))))))
 
 (deftest transact-rejects-zero-width-valid-window
   (testing "Tx with :db.valid/from == :db.valid/to throws at transact"
     (let [conn (fresh-conn)]
       (is (thrown-with-msg?
-            clojure.lang.ExceptionInfo #"Invalid valid-time window"
-            (d/transact conn
-                        {:tx-meta {:db.valid/from #inst "2024-04-01"
-                                   :db.valid/to   #inst "2024-04-01"}
-                         :tx-data [{:db/ident :foo
-                                    :db/valueType :db.type/long
-                                    :db/cardinality :db.cardinality/one}]}))))))
+           clojure.lang.ExceptionInfo #"Invalid valid-time window"
+           (d/transact conn
+                       {:tx-meta {:db.valid/from #inst "2024-04-01"
+                                  :db.valid/to   #inst "2024-04-01"}
+                        :tx-data [{:db/ident :foo
+                                   :db/valueType :db.type/long
+                                   :db/cardinality :db.cardinality/one}]}))))))
 
 (deftest transact-accepts-open-ended-valid-window
   (testing "Tx with :db.valid/from but no :db.valid/to succeeds"
     (let [conn (fresh-conn)]
       (is (some? (d/transact conn
-                              {:tx-meta {:db.valid/from #inst "2024-01-01"}
-                               :tx-data [{:db/ident :foo
-                                          :db/valueType :db.type/long
-                                          :db/cardinality :db.cardinality/one}]}))))))
+                             {:tx-meta {:db.valid/from #inst "2024-01-01"}
+                              :tx-data [{:db/ident :foo
+                                         :db/valueType :db.type/long
+                                         :db/cardinality :db.cardinality/one}]}))))))
 
 ;; ============================================================================
 ;; valid-between / valid-during / valid-all wrappers (DH-2)
@@ -336,13 +336,13 @@
                   (d/db conn)))))
     (testing "A strictly-precedes B fails on touching"
       (is (empty?
-            (d/q '[:find ?an ?bn
-                   :where
-                   [?a :iv/name ?an] [?a :iv/from ?af] [?a :iv/to ?at]
-                   [?b :iv/name ?bn] [?b :iv/from ?bf] [?b :iv/to ?bt]
-                   [(not= ?a ?b)] [(< ?an ?bn)]
-                   (interval-strictly-precedes? ?af ?at ?bf ?bt)]
-                 (d/db conn)))))
+           (d/q '[:find ?an ?bn
+                  :where
+                  [?a :iv/name ?an] [?a :iv/from ?af] [?a :iv/to ?at]
+                  [?b :iv/name ?bn] [?b :iv/from ?bf] [?b :iv/to ?bt]
+                  [(not= ?a ?b)] [(< ?an ?bn)]
+                  (interval-strictly-precedes? ?af ?at ?bf ?bt)]
+                (d/db conn)))))
     (testing "A meets B (alias for immediately-precedes)"
       (is (= #{["A" "B"]}
              (d/q '[:find ?an ?bn
@@ -452,8 +452,8 @@
     (testing "d/seek-datoms and d/index-range honour valid-at"
       (is (seq (d/seek-datoms in-window :avet :emp/salary)))
       (is (empty?
-            (filter #(= :emp/salary (:a %))
-                    (d/seek-datoms out-window :avet :emp/salary))))
+           (filter #(= :emp/salary (:a %))
+                   (d/seek-datoms out-window :avet :emp/salary))))
       (is (seq (d/index-range in-window {:attrid :emp/salary :start 0 :end 200000})))
       (is (empty?
-            (d/index-range out-window {:attrid :emp/salary :start 0 :end 200000}))))))
+           (d/index-range out-window {:attrid :emp/salary :start 0 :end 200000}))))))

@@ -55,10 +55,10 @@
                        :db/valueType :db.type/long
                        :db/cardinality :db.cardinality/one}])
     (let [report (d/transact conn
-                              [{:db/id "datomic.tx"
-                                :db.valid/from #inst "2024-01-01"
-                                :db.valid/to   #inst "2024-07-01"}
-                               {:pos/x 42}])
+                             [{:db/id "datomic.tx"
+                               :db.valid/from #inst "2024-01-01"
+                               :db.valid/to   #inst "2024-07-01"}
+                              {:pos/x 42}])
           tx    (get-in report [:tempids "datomic.tx"])
           db    (d/db conn)
           pulled (d/pull db '[*] tx)]
@@ -112,9 +112,9 @@
                        :db/valueType :db.type/long
                        :db/cardinality :db.cardinality/one}])
     (let [report (d/transact conn
-                              [{:db/id "datomic.tx"
-                                :db.valid/from #inst "2024-01-01"}
-                               {:pos/x 1}])
+                             [{:db/id "datomic.tx"
+                               :db.valid/from #inst "2024-01-01"}
+                              {:pos/x 1}])
           tx    (get-in report [:tempids "datomic.tx"])
           pulled (d/pull (d/db conn) '[*] tx)]
       (testing "vt-from alone is sufficient; vt-to may be omitted"

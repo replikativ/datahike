@@ -205,7 +205,7 @@
 
       (entity-bitset? result)
       (es/entity-bitset-from-longs
-        (filter keep? (es/entity-bitset-seq result)))
+       (filter keep? (es/entity-bitset-seq result)))
 
       (sequential? result)
       (filterv (fn [m] (keep? (or (:entity-id m) (get m :entity-id)))) result)
