@@ -333,7 +333,7 @@ public final class LibDatahike extends LibDatahikeBase {
         }
     }
     /**
-     * Applies transaction to the database and updates connection.
+     * Applies transaction to the database and updates connection. Blocks until committed. WARNING: Do not call from listener callbacks or transaction functions — use transact! instead to avoid deadlocks.
    * 
    * Examples:
    *   Add single datom:
@@ -359,8 +359,8 @@ public final class LibDatahike extends LibDatahikeBase {
             Object conn = Datahike.connect(readConfig(db_config));
             Object txData = loadInput(tx_format, tx_data);
 
-            // Apply schema-aware type conversions for JSON format
-            // (e.g., Integer → Long for :db.type/long attributes)
+            // JSON inputs need schema-aware coercion (e.g. Integer → Long
+            // for :db.type/long attrs). EDN/CBOR carry types natively.
             String format = CTypeConversion.toJavaString(tx_format);
             if ("json".equals(format)) {
                 txData = libdatahike.transformJSONForTx(txData, conn);

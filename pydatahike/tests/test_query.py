@@ -1,99 +1,81 @@
-"""Tests for query and data retrieval operations."""
-import json
+"""Tests for query and data retrieval operations.
+
+These exercise the high-level Database API (db.transact / db.q / db.pull)
+inside the database() context manager. The low-level functional API
+(transact / q / pull on bare config strings) is covered by test_basic.py."""
 import pytest
-from datahike import (
-    create_database,
-    delete_database,
-    transact,
-    q,
-    pull,
-    database,
-)
+from datahike import database
+
+
+def _unwrap_set(result):
+    """Strip the !set wrapper from JSON-formatted query results."""
+    if isinstance(result, list) and len(result) == 2 and result[0] == '!set':
+        return result[1]
+    return result
 
 
 def test_transact_and_query_json(mem_config_flexible):
-    """Test transact and query with JSON format."""
-    with database(mem_config_flexible) as cfg:
-        # Transact data using JSON format
-        tx_data = json.dumps([
+    """Transact via JSON, query via Datalog."""
+    with database(mem_config_flexible) as db:
+        db.transact([
             {"name": "Alice", "age": 30},
             {"name": "Bob", "age": 25}
         ])
-        result = transact(cfg, tx_data, input_format='json')
-        assert result is not None
 
-        # Query for Alice
-        query_result = q(
+        results = db.q(
             '[:find ?e ?name :where [?e :name ?name] [?e :name "Alice"]]',
-            [('db', cfg)],
             output_format='json'
         )
-        assert len(query_result) > 0
+        assert len(_unwrap_set(results)) > 0
 
 
 def test_pull_entity(mem_config_flexible):
-    """Test pull API to retrieve entity."""
-    with database(mem_config_flexible) as cfg:
-        # Transact data
-        tx_data = json.dumps([{"name": "Alice", "age": 30}])
-        transact(cfg, tx_data, input_format='json')
+    """Pull an entity by id after transacting."""
+    with database(mem_config_flexible) as db:
+        db.transact([{"name": "Alice", "age": 30}])
 
-        # Query to get entity ID
-        query_result = q(
+        results = _unwrap_set(db.q(
             '[:find ?e ?name :where [?e :name ?name] [?e :name "Alice"]]',
-            [('db', cfg)],
             output_format='json'
-        )
+        ))
+        entity_id = results[0][0]
 
-        # Extract entity ID from result
-        actual_results = query_result[1] if query_result[0] == '!set' else query_result
-        entity_id = actual_results[0][0]
-
-        # Pull entity
-        entity = pull(cfg, '[*]', entity_id, output_format='json')
+        entity = db.pull('[*]', entity_id, output_format='json')
         assert entity.get('name') == 'Alice' or entity.get(':name') == 'Alice'
 
 
 def test_query_with_multiple_results(mem_config_flexible):
-    """Test query returning multiple results."""
-    with database(mem_config_flexible) as cfg:
-        # Transact multiple entities
-        tx_data = json.dumps([
+    """Query returns one row per matching entity."""
+    with database(mem_config_flexible) as db:
+        db.transact([
             {"name": "Alice", "age": 30},
             {"name": "Bob", "age": 25},
             {"name": "Charlie", "age": 35}
         ])
-        transact(cfg, tx_data, input_format='json')
 
-        # Query all names
-        query_result = q(
+        results = _unwrap_set(db.q(
             '[:find ?name :where [?e :name ?name]]',
-            [('db', cfg)],
             output_format='json'
-        )
-
-        # Should have 3 results
-        actual_results = query_result[1] if query_result[0] == '!set' else query_result
-        assert len(actual_results) == 3
+        ))
+        assert len(results) == 3
 
 
 def test_query_with_parameters(mem_config_flexible):
-    """Test query with input parameters."""
-    with database(mem_config_flexible) as cfg:
-        # Transact data
-        tx_data = json.dumps([
+    """Query with a bound parameter passed as an additional input source.
+
+    libdatahike's loadInput supports input formats: db / history / since /
+    asof / json / edn / cbor. Parameters are passed as ('edn', '<edn-form>')
+    pairs — the EDN parser produces a plain Clojure value bound to the
+    query's :in variable."""
+    with database(mem_config_flexible) as db:
+        db.transact([
             {"name": "Alice", "age": 30},
             {"name": "Bob", "age": 25}
         ])
-        transact(cfg, tx_data, input_format='json')
 
-        # Query with parameter
-        query_result = q(
+        results = _unwrap_set(db.q(
             '[:find ?e :in $ ?name :where [?e :name ?name]]',
-            [('db', cfg), ('param', '"Alice"')],
+            ('edn', '"Alice"'),
             output_format='json'
-        )
-
-        # Should find Alice
-        actual_results = query_result[1] if query_result[0] == '!set' else query_result
-        assert len(actual_results) > 0
+        ))
+        assert len(results) > 0

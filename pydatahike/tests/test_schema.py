@@ -1,17 +1,21 @@
 """Tests for schema operations."""
 import pytest
-from datahike import (
-    transact,
-    schema,
-    q,
-    database,
-)
+from datahike import database
+
+
+def _unwrap_set(result):
+    if isinstance(result, list) and len(result) == 2 and result[0] == '!set':
+        return result[1]
+    return result
 
 
 def test_explicit_schema(mem_config):
-    """Test transact and query with explicit schema."""
-    with database(mem_config) as cfg:
-        # Transact schema using EDN format
+    """Transact an explicit schema, then JSON data; the schema-aware coercion
+    in libdatahike's transact entry point should convert JSON Integer values
+    to Java Long for :db.type/long attributes. This is the canary for the
+    codegen template's JSON-aware transact body (see
+    src/datahike/codegen/native.clj generate-transact)."""
+    with database(mem_config) as db:
         schema_tx = '''[
             {:db/ident :name
              :db/valueType :db.type/string
@@ -20,36 +24,31 @@ def test_explicit_schema(mem_config):
              :db/valueType :db.type/long
              :db/cardinality :db.cardinality/one}
         ]'''
-        transact(cfg, schema_tx, input_format='edn')
+        db.transact(schema_tx, input_format='edn')
 
-        # Check schema was added
-        db_schema = schema(cfg, output_format='json')
+        # Schema should be present
+        db_schema = db.schema(output_format='json')
         assert db_schema is not None
 
-        # Transact data using EDN
-        tx_data = '[{:name "Charlie" :age 35} {:name "Diana" :age 28}]'
-        transact(cfg, tx_data, input_format='edn')
+        # JSON data — values get coerced via the schema (Integer → Long for :age)
+        db.transact([
+            {"name": "Charlie", "age": 35},
+            {"name": "Diana", "age": 28}
+        ])
 
-        # Query
-        query_result = q(
+        results = _unwrap_set(db.q(
             '[:find ?e ?name ?age :where [?e :name ?name] [?e :age ?age]]',
-            [('db', cfg)],
             output_format='json'
-        )
-        actual_results = query_result[1] if query_result[0] == '!set' else query_result
-        assert len(actual_results) == 2
+        ))
+        assert len(results) == 2
 
 
 def test_schema_flexibility_read(mem_config_flexible):
-    """Test schema-flexibility :read allows dynamic attributes."""
-    with database(mem_config_flexible) as cfg:
-        # Transact data without predefined schema
-        tx_data = '[{:dynamic-attr "test" :another-attr 42}]'
-        transact(cfg, tx_data, input_format='edn')
+    """Schema-flexibility :read accepts dynamic attributes without a declared
+    schema."""
+    with database(mem_config_flexible) as db:
+        db.transact('[{:dynamic-attr "test" :another-attr 42}]',
+                    input_format='edn')
 
-        # Query should work
-        query_result = q(
-            '[:find ?e ?val :where [?e :dynamic-attr ?val]]',
-            [('db', cfg)]
-        )
-        assert len(query_result) > 0
+        results = db.q('[:find ?e ?val :where [?e :dynamic-attr ?val]]')
+        assert len(results) > 0
