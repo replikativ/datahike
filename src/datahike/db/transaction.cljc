@@ -125,13 +125,15 @@
    (`:max-tx`). Returns nil only on a truly empty DB that has not
    even seen the bootstrap tx — in practice always returns at least
    the epoch sentinel from `tx0`."
-  ^Date [db]
+  [db]
   (let [max-tx (:max-tx db)
         ctx    (dbi/-search-context db)
         a      (if (:attribute-refs? (dbi/-config db))
                  (dbi/-ref-for db :db/txInstant)
                  :db/txInstant)]
-    (some-> ^Datom (first (dbi/-datoms db :eavt [max-tx a] ctx)) .-v)))
+    (some-> #?(:clj ^Datom (first (dbi/-datoms db :eavt [max-tx a] ctx))
+               :cljs (first (dbi/-datoms db :eavt [max-tx a] ctx)))
+            .-v)))
 
 (defn ^:dynamic next-tx-instant
   "Strictly-monotonic `:db/txInstant` allocator. Returns
@@ -158,12 +160,14 @@
    the default path.
 
    See ADR for the design rationale."
-  ^Date [db-before]
-  (let [now-ms  (.getTime ^Date (get-date))
-        prev-ms (some-> (last-tx-instant db-before) .getTime)]
-    (Date. ^long (if (or (nil? prev-ms) (< (long prev-ms) now-ms))
-                   now-ms
-                   (inc (long prev-ms))))))
+  [db-before]
+  (let [now-ms  (#?(:clj .getTime :cljs .getTime) (get-date))
+        prev-ms (some-> (last-tx-instant db-before) .getTime)
+        ms      (if (or (nil? prev-ms) (< (long prev-ms) (long now-ms)))
+                  (long now-ms)
+                  (inc (long prev-ms)))]
+    #?(:clj  (Date. ms)
+       :cljs (js/Date. ms))))
 
 #?(:clj
    (defn- attrs-have-datoms?
