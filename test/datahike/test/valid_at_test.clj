@@ -104,19 +104,26 @@
   ;; Tx2 (vt 2024-Q3) updated Bob's salary to 110k.
   ;; Tx3 (vt 2024-Q1) created Alice with salary 80k.
   ;;
-  ;; as-of at tx2-instant => sees tx1+tx2 (not tx3): so Bob 100k + 110k.
+  ;; as-of at tx2-id => sees tx1+tx2 (not tx3): so Bob 100k + 110k.
   ;; valid-at "mid-Q2" on top: vt-window for Bob's 100k is Q1..Q3 — contains mid-Q2 → match.
   ;; Bob's 110k vt-window is Q3..MAX — doesn't contain mid-Q2 → no match.
   ;; Result: just 100000.
+  ;;
+  ;; Cuts by tx-id rather than tx-instant: tx-ids are strictly
+  ;; monotonic by definition, while :db/txInstant could tie when
+  ;; multiple writes land in the same wall-clock ms. The Datomic
+  ;; idiom for "exact tx as the cut point" is `as-of <tx-id>`.
+  ;; (Today next-tx-instant also enforces strict monotonicity on
+  ;; auto-stamped :db/txInstant, but tx-id is the correct primitive
+  ;; for an unambiguous snapshot cut.)
   (let [conn (fresh-conn)
         _ (setup-vt-data! conn)
-        tx2-instant (d/q '[:find ?t .
-                           :where [?tx :db.valid/from #inst "2024-07-01"]
-                           [?tx :db/txInstant ?t]]
-                         (d/history (d/db conn)))
+        tx2-id (d/q '[:find ?tx .
+                      :where [?tx :db.valid/from #inst "2024-07-01"]]
+                    (d/history (d/db conn)))
         composed (-> (d/db conn)
                      (d/history)
-                     (d/as-of tx2-instant)
+                     (d/as-of tx2-id)
                      (d/valid-at #inst "2024-04-15"))]
     (testing "as-of tx2 then valid-at mid-Q2 → only Bob's 100k row"
       (is (= #{[100000]}

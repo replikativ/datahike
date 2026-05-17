@@ -120,6 +120,51 @@
 (defn update-rschema [db]
   (assoc db :rschema (dbu/rschema (:schema db))))
 
+(defn- last-tx-instant
+  "Read the :db/txInstant value of the most-recently-committed tx
+   (`:max-tx`). Returns nil only on a truly empty DB that has not
+   even seen the bootstrap tx — in practice always returns at least
+   the epoch sentinel from `tx0`."
+  ^Date [db]
+  (let [max-tx (:max-tx db)
+        ctx    (dbi/-search-context db)
+        a      (if (:attribute-refs? (dbi/-config db))
+                 (dbi/-ref-for db :db/txInstant)
+                 :db/txInstant)]
+    (some-> ^Datom (first (dbi/-datoms db :eavt [max-tx a] ctx)) .-v)))
+
+(defn ^:dynamic next-tx-instant
+  "Strictly-monotonic `:db/txInstant` allocator. Returns
+   `max(get-date, prev-tx-instant + 1ms)` so back-to-back writes
+   that share a wall-clock millisecond still get distinct,
+   strictly-ordered instants — matching Datomic's contract for
+   auto-stamped `:db/txInstant` and removing the `d/as-of <Date>`
+   tied-instant ambiguity at the source.
+
+   Reads the wall-clock via `datahike.tools/get-date`, so the
+   existing dynamic-binding clock-pinning patterns keep working.
+   A pinned constant clock turns into a *logical clock* for free:
+   the allocator advances by 1ms per tx, producing deterministic
+   monotonic stamps across the whole binding without any separate
+   logical-clock mode.
+
+   User-provided `:db/txInstant` in `:tx-meta` still wins over the
+   allocator's default; historical imports and SCD2 surgery tests
+   that intentionally back-date are unaffected.
+
+   Cost: one EAVT seek (~1µs on PSS in-memory at 10k txes; <0.3%
+   of `d/transact`). The `^:dynamic` shape leaves room for a
+   future caller-supplied allocator (e.g., HLC) without breaking
+   the default path.
+
+   See ADR for the design rationale."
+  ^Date [db-before]
+  (let [now-ms  (.getTime ^Date (get-date))
+        prev-ms (some-> (last-tx-instant db-before) .getTime)]
+    (Date. ^long (if (or (nil? prev-ms) (< (long prev-ms) now-ms))
+                   now-ms
+                   (inc (long prev-ms))))))
+
 #?(:clj
    (defn- attrs-have-datoms?
      "True iff at least one of `attrs` has any datoms in `db`'s AEVT index.
@@ -127,11 +172,22 @@
       the index is being registered on an empty (or empty-for-these-attrs)
       database — eliminating the writer race between
       `build-secondary-index!` and subsequent user writes that would
-      otherwise clobber the live updates with an empty rebuild."
+      otherwise clobber the live updates with an empty rebuild.
+
+      Attrs not declared in the schema have no datoms by definition;
+      `dbi/-datoms` validates the attr ident and throws otherwise. A
+      secondary-index spec can legitimately reference an attr that
+      hasn't been declared yet (schema-flexibility :read, or the index
+      is registered before any data writes touch the attr), so we
+      gate the lookup on schema membership."
      [db attrs]
-     (let [ctx (dbi/-search-context db)]
+     (let [ctx    (dbi/-search-context db)
+           schema (dbi/-schema db)]
        (boolean
-        (some (fn [a] (seq (dbi/-datoms db :aevt [a] ctx))) attrs)))))
+        (some (fn [a]
+                (and (contains? schema a)
+                     (seq (dbi/-datoms db :aevt [a] ctx))))
+              attrs)))))
 
 #?(:clj
    (defn- instantiate-secondary
@@ -957,7 +1013,7 @@
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)
         initial-report (update initial-report :tx-meta
-                               #(merge {:db/txInstant (get-date)} %))
+                               #(merge {:db/txInstant (next-tx-instant db-before)} %))
         ;; Reject zero-width or reverse valid-time windows. A tx
         ;; with `:db.valid/from >= :db.valid/to` would produce a
         ;; tx-entity that no `d/valid-at` query can ever match
