@@ -73,10 +73,7 @@
                                ;; secondary index integrations (for testing)
                                org.replikativ/proximum       {:mvn/version "0.1.25"}
                                org.replikativ/scriptum       {:mvn/version "0.1.27"}
-                               ;; Local stratum checkout while feature/valid-time is in flight.
-                               ;; Revert to :mvn/version once stratum cuts a release with the
-                               ;; :valid-time column convention (kontor doc/research/57).
-                               org.replikativ/stratum        {:local/root "../stratum"}
+                               org.replikativ/stratum        {:mvn/version "0.3.69"}
 
                                ;; kabel integration for distributed datahike
                                org.replikativ/kabel          {:mvn/version "0.3.95"}
