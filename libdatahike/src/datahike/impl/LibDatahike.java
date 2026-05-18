@@ -312,6 +312,65 @@ public final class LibDatahike extends LibDatahikeBase {
         }
     }
     /**
+     * Retrieve parent commit ids from this database value.
+   * 
+   * Examples:
+   *   Get parent commits:
+   *     (parent-commit-ids @conn)
+     */
+    @CEntryPoint(name = "parent_commit_ids")
+    public static void parent_commit_ids(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.parentCommitIds(loadInput(input_format, raw_input))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * List all known branch names. Returns set of keywords.
+   * 
+   * Examples:
+   *   List branches:
+   *     (branches conn)
+     */
+    @CEntryPoint(name = "branches")
+    public static void branches(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.branches(Datahike.connect(readConfig(db_config)))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Remove a branch. The branch data remains accessible until the next GC.
+   * 
+   * Examples:
+   *   Delete branch:
+   *     (delete-branch! conn :experiment)
+     */
+    @CEntryPoint(name = "delete_branch")
+    public static void delete_branch(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer branch_kwd,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.deleteBranchAsync(Datahike.connect(readConfig(db_config)), parseKeyword(branch_kwd))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
      * Checks if a database exists via configuration map.
    * 
    * Examples:
@@ -372,6 +431,48 @@ public final class LibDatahike extends LibDatahikeBase {
         }
     }
     /**
+     * Create a merge commit combining the current branch with parent branches/commits. The caller provides the merged tx-data. Routed through the writer for serialization. Blocks until committed. WARNING: Do not call from listener callbacks — use merge-db! instead to avoid deadlocks.
+   * 
+   * Examples:
+   *   Merge feature into main:
+   *     (d/merge-db conn #{:feature} [{:name "merged entity"}])
+   *   Merge with metadata:
+   *     (d/merge-db conn #{:feature} [{:name "merged"}] {:source :merge})
+     */
+    @CEntryPoint(name = "merge_db")
+    public static void merge_db(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer parents_edn,
+            @CConst CCharPointer tx_format,
+            @CConst CCharPointer tx_data,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            Object conn = Datahike.connect(readConfig(db_config));
+            Object parents = libdatahike.parseEdn(CTypeConversion.toJavaString(parents_edn));
+            Object txData = loadInput(tx_format, tx_data);
+
+            // JSON inputs need schema-aware coercion (see generate-transact).
+            String format = CTypeConversion.toJavaString(tx_format);
+            if ("json".equals(format)) {
+                txData = libdatahike.transformJSONForTx(txData, conn);
+            }
+
+            // Don't extract from the TxReport directly — the defrecord
+            // field accessors haven't proven reliable across binding
+            // contexts (see PR #831 for diagnostic notes). Run the merge,
+            // then re-deref the connection to read the new head commit-id.
+            // This mirrors what `commit_id` returns, so the API is
+            // consistent: every versioning write-op returns a UUID you
+            // can use to query history or chain further operations.
+            Datahike.mergeDb(conn, (java.util.Set)parents, (java.util.List)txData);
+            output_reader.call(toOutput(output_format, Datahike.commitId(Datahike.deref(conn))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
      * Like datoms, but returns datoms starting from specified components through end of index.
    * 
    * Examples:
@@ -388,6 +489,52 @@ public final class LibDatahike extends LibDatahikeBase {
             @CConst OutputReader output_reader) {
         try {
             output_reader.call(toOutput(output_format, datomsToVecs((Iterable<?>)Datahike.seekDatoms(loadInput(input_format, raw_input), parseKeyword(index_edn)))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Retrieve the commit-id for this database value.
+   * 
+   * Examples:
+   *   Get commit id:
+   *     (commit-id @conn)
+     */
+    @CEntryPoint(name = "commit_id")
+    public static void commit_id(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer input_format,
+            @CConst CCharPointer raw_input,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, Datahike.commitId(loadInput(input_format, raw_input))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }
+    /**
+     * Create a new branch from an existing branch or commit. Secondary indices are CoW-branched automatically.
+   * 
+   * Examples:
+   *   Branch from main:
+   *     (branch! conn :db :experiment)
+   *   Branch from specific commit:
+   *     (branch! conn #uuid "..." :hotfix)
+     */
+    @CEntryPoint(name = "branch")
+    public static void branch(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer from_edn,
+            @CConst CCharPointer new_branch_kwd,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            Object conn = Datahike.connect(readConfig(db_config));
+            Object from = libdatahike.parseEdn(CTypeConversion.toJavaString(from_edn));
+            Object newBranch = parseKeyword(new_branch_kwd);
+            output_reader.call(toOutput(output_format, Datahike.branchAsync(conn, from, newBranch)));
         } catch (Exception e) {
             output_reader.call(toException(e));
         }

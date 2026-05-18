@@ -88,6 +88,13 @@ from .generated import (
     reverse_schema,
     metrics,
     gc_storage,
+    # Versioning
+    branches,
+    branch,
+    delete_branch,
+    commit_id,
+    parent_commit_ids,
+    merge_db,
 )
 
 __all__ = [
@@ -131,4 +138,12 @@ __all__ = [
     'reverse_schema',
     'metrics',
     'gc_storage',
+
+    # Versioning
+    'branches',
+    'branch',
+    'delete_branch',
+    'commit_id',
+    'parent_commit_ids',
+    'merge_db',
 ]

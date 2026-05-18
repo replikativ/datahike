@@ -94,7 +94,35 @@
     gc-storage
     {:pattern :config-timestamp
      :c-name "gc_storage"
-     :java-call "Datahike.gcStorage(Datahike.connect(readConfig(db_config)), new Date(before_tx_unix_time_ms))"}})
+     :java-call "Datahike.gcStorage(Datahike.connect(readConfig(db_config)), new Date(before_tx_unix_time_ms))"}
+
+    ;; Versioning — read side
+    branches
+    {:pattern :config-query
+     :java-call "Datahike.branches(Datahike.connect(readConfig(db_config)))"}
+
+    commit-id
+    {:pattern :db-only
+     :c-name "commit_id"
+     :java-call "Datahike.commitId(loadInput(input_format, raw_input))"}
+
+    parent-commit-ids
+    {:pattern :db-only
+     :c-name "parent_commit_ids"
+     :java-call "Datahike.parentCommitIds(loadInput(input_format, raw_input))"}
+
+    ;; Versioning — write side
+    branch!
+    {:pattern :branch}
+
+    delete-branch!
+    {:pattern :config-keyword
+     :c-name "delete_branch"
+     :java-call "Datahike.deleteBranchAsync(Datahike.connect(readConfig(db_config)), parseKeyword(branch_kwd))"}
+
+    merge-db
+    {:pattern :merge
+     :c-name "merge_db"}})
 
 (def native-excluded-operations
   "Operations explicitly excluded from native C API with documented reasons.
@@ -116,7 +144,12 @@
     is-filtered "Returns boolean about DB state - limited utility in FFI context"
     transact! "Alias for transact - only need one binding"
     load-entities "Batch loading better done via repeated transact calls"
-    query-stats "Query statistics not yet exposed in native API"})
+    query-stats "Query statistics not yet exposed in native API"
+    ;; Versioning ops that don't fit the native shape
+    branch-as-db "Returns DB object - use input_format='branch:NAME' instead"
+    commit-as-db "Returns DB object - use input_format='commit:UUID' instead"
+    merge-db! "Async variant - use merge-db (FFI calls are naturally synchronous)"
+    force-branch! "Takes DB value as input + reset-hard semantics - deferred to a follow-up PR"})
 
 ;; =============================================================================
 ;; Naming Conventions
@@ -426,6 +459,103 @@
     }"
             (or doc-comment "") c-name c-name java-call)))
 
+(defn generate-config-keyword
+  "Generate entry point for config + keyword operations.
+   Pattern: (db_config, keyword) -> result
+   Used by: delete-branch!"
+  [op-name {:keys [java-call doc-comment] :as config}]
+  (let [c-name (get-c-name op-name config)]
+    (format "%s
+    @CEntryPoint(name = \"%s\")
+    public static void %s(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer branch_kwd,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            output_reader.call(toOutput(output_format, %s));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }"
+            (or doc-comment "") c-name c-name java-call)))
+
+(defn generate-branch
+  "Generate entry point for branch! — config + (keyword|uuid) + new-branch.
+   Pattern: (db_config, from_edn, new_branch_kwd) -> result
+
+   from_edn is parsed via libdatahike.parseEdn, so callers pass either an
+   EDN keyword (e.g. \":db\") or an EDN UUID (e.g. '#uuid \"...\"').
+   Both shapes are accepted by Datahike.branchAsync."
+  [op-name {:keys [doc-comment] :as config}]
+  (let [c-name (get-c-name op-name config)]
+    (format "%s
+    @CEntryPoint(name = \"%s\")
+    public static void %s(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer from_edn,
+            @CConst CCharPointer new_branch_kwd,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            Object conn = Datahike.connect(readConfig(db_config));
+            Object from = libdatahike.parseEdn(CTypeConversion.toJavaString(from_edn));
+            Object newBranch = parseKeyword(new_branch_kwd);
+            output_reader.call(toOutput(output_format, Datahike.branchAsync(conn, from, newBranch)));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }"
+            (or doc-comment "") c-name c-name)))
+
+(defn generate-merge
+  "Generate entry point for merge-db — config + parents-set + tx-data.
+   Pattern: (db_config, parents_edn, tx_format, tx_data) -> result
+
+   parents_edn is an EDN set whose elements are keywords (branch names)
+   or UUIDs (commit ids); both shapes are accepted by Datahike.mergeDb.
+   tx-data follows the same input_format convention as transact, and
+   gets the same schema-aware JSON coercion."
+  [op-name {:keys [doc-comment] :as config}]
+  (let [c-name (get-c-name op-name config)]
+    (format "%s
+    @CEntryPoint(name = \"%s\")
+    public static void %s(
+            @CEntryPoint.IsolateThreadContext long isolateId,
+            @CConst CCharPointer db_config,
+            @CConst CCharPointer parents_edn,
+            @CConst CCharPointer tx_format,
+            @CConst CCharPointer tx_data,
+            @CConst CCharPointer output_format,
+            @CConst OutputReader output_reader) {
+        try {
+            Object conn = Datahike.connect(readConfig(db_config));
+            Object parents = libdatahike.parseEdn(CTypeConversion.toJavaString(parents_edn));
+            Object txData = loadInput(tx_format, tx_data);
+
+            // JSON inputs need schema-aware coercion (see generate-transact).
+            String format = CTypeConversion.toJavaString(tx_format);
+            if (\"json\".equals(format)) {
+                txData = libdatahike.transformJSONForTx(txData, conn);
+            }
+
+            // Don't extract from the TxReport directly — the defrecord
+            // field accessors haven't proven reliable across binding
+            // contexts (see PR #831 for diagnostic notes). Run the merge,
+            // then re-deref the connection to read the new head commit-id.
+            // This mirrors what `commit_id` returns, so the API is
+            // consistent: every versioning write-op returns a UUID you
+            // can use to query history or chain further operations.
+            Datahike.mergeDb(conn, (java.util.Set)parents, (java.util.List)txData);
+            output_reader.call(toOutput(output_format, Datahike.commitId(Datahike.deref(conn))));
+        } catch (Exception e) {
+            output_reader.call(toException(e));
+        }
+    }"
+            (or doc-comment "") c-name c-name)))
+
 ;; =============================================================================
 ;; Entry Point Generation
 ;; =============================================================================
@@ -456,6 +586,9 @@
                     :db-index generate-db-index
                     :db-index-range generate-db-index-range
                     :config-timestamp generate-config-timestamp
+                    :config-keyword generate-config-keyword
+                    :branch generate-branch
+                    :merge generate-merge
                     (throw (ex-info (str "Unknown pattern: " (:pattern overlay))
                                     {:op-name op-name :overlay overlay})))]
     (generator op-name config)))
@@ -570,11 +703,13 @@ public final class LibDatahike extends LibDatahikeBase {
     ;; Validate coverage
     (validation/validate-coverage "Native" native-operations native-excluded-operations)
     (validation/validate-exclusion-reasons "Native" native-excluded-operations)
-    ;; :transact pattern emits a self-contained body and doesn't need :java-call;
-    ;; exclude it from the :java-call completeness check.
+    ;; These patterns emit self-contained bodies and don't need :java-call;
+    ;; exclude them from the :java-call completeness check.
     (validation/validate-overlay-completeness
      "Native"
-     (into {} (remove (fn [[_ cfg]] (= :transact (:pattern cfg))) native-operations))
+     (into {}
+           (remove (fn [[_ cfg]] (contains? #{:transact :branch :merge} (:pattern cfg)))
+                   native-operations))
      [:pattern :java-call])
 
     ;; Generate bindings

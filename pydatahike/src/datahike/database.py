@@ -572,6 +572,78 @@ class Database:
         """
         return DatabaseSnapshot(self._config, 'history')
 
+    # =========================================================================
+    # Versioning
+    # =========================================================================
+
+    def branches(self, output_format: OutputFormat = 'cbor') -> Any:
+        """List all known branch names.
+
+        Returns:
+            Set of branch keywords (unwrapped from the result tag).
+        """
+        return _gen.branches(self._config, output_format=output_format)
+
+    def branch(self, from_: str, new_branch: str) -> Any:
+        """Create a new branch from an existing branch or commit.
+
+        Args:
+            from_: Source branch name or commit UUID (as string).
+            new_branch: New branch name.
+        """
+        return _gen.branch(self._config, from_, new_branch)
+
+    def delete_branch(self, branch: str) -> Any:
+        """Remove a branch. The branch data remains accessible until the next GC."""
+        return _gen.delete_branch(self._config, branch)
+
+    def commit_id(self) -> Optional[str]:
+        """Get the current branch head's commit UUID."""
+        return _gen.commit_id(self._config)
+
+    def parent_commit_ids(self) -> Optional[Any]:
+        """Get the parent commit ids of the current branch head."""
+        return _gen.parent_commit_ids(self._config)
+
+    def merge_db(
+        self,
+        parents,
+        tx_data: Union[str, List, Dict],
+        input_format: str = 'json'
+    ) -> Any:
+        """Create a merge commit combining the current branch with the given parents.
+
+        Args:
+            parents: Iterable of branch names or commit UUID strings to merge in.
+            tx_data: Merged transaction data (Python objects or pre-serialised string).
+            input_format: 'json' (default) or 'edn'.
+
+        Returns:
+            The new merge commit's UUID (same shape as db.commit_id()).
+        """
+        if isinstance(tx_data, str):
+            payload = tx_data
+        elif isinstance(tx_data, (list, dict)):
+            if input_format == 'json':
+                payload = json.dumps(tx_data)
+            elif input_format == 'edn':
+                payload = _python_to_edn(tx_data)
+            else:
+                raise ValueError(f"Unknown format: {input_format}")
+        else:
+            raise TypeError(f"Cannot merge tx-data of type: {type(tx_data)}")
+        return _gen.merge_db(self._config, parents, payload, input_format=input_format)
+
+    def branch_as_db(self, name: str) -> 'DatabaseSnapshot':
+        """Get a read-only snapshot pinned to a branch head."""
+        if name.startswith(':'):
+            name = name[1:]
+        return DatabaseSnapshot(self._config, f'branch:{name}')
+
+    def commit_as_db(self, commit_uuid: str) -> 'DatabaseSnapshot':
+        """Get a read-only snapshot pinned to a specific commit UUID."""
+        return DatabaseSnapshot(self._config, f'commit:{commit_uuid}')
+
     def __enter__(self):
         """Context manager entry - create database."""
         self.create()
