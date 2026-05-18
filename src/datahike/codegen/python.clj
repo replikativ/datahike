@@ -89,7 +89,37 @@
     gc-storage
     {:pattern :config-timestamp
      :c-name "gc_storage"
-     :return-type "Any"}})
+     :return-type "Any"}
+
+    ;; Versioning — read side
+    branches
+    {:pattern :config-query
+     :return-type "Any"}
+
+    commit-id
+    {:pattern :db-only
+     :c-name "commit_id"
+     :return-type "Optional[str]"}
+
+    parent-commit-ids
+    {:pattern :db-only
+     :c-name "parent_commit_ids"
+     :return-type "Optional[Any]"}
+
+    ;; Versioning — write side
+    branch!
+    {:pattern :branch
+     :return-type "Any"}
+
+    delete-branch!
+    {:pattern :config-keyword
+     :c-name "delete_branch"
+     :return-type "Any"}
+
+    merge-db
+    {:pattern :merge
+     :c-name "merge_db"
+     :return-type "Dict[str, Any]"}})
 
 (def python-excluded-operations
   "Operations explicitly excluded from Python FFI bindings with documented reasons.
@@ -112,7 +142,12 @@
     is-filtered "Returns boolean about DB state - limited utility in FFI context"
     transact! "Alias for transact - only need one binding"
     load-entities "Batch loading better done via repeated transact calls"
-    query-stats "Query statistics not yet exposed in Python FFI"})
+    query-stats "Query statistics not yet exposed in Python FFI"
+    ;; Versioning ops that don't fit the FFI shape
+    branch-as-db "Returns DB object - use input_format='branch:NAME' instead"
+    commit-as-db "Returns DB object - use input_format='commit:UUID' instead"
+    merge-db! "Async variant - use merge-db (FFI calls are naturally synchronous)"
+    force-branch! "Takes DB value as input + reset-hard semantics - deferred to a follow-up PR"})
 
 ;; =============================================================================
 ;; Type Derivation: Malli → Python
@@ -671,6 +706,152 @@ def %s(
 "
             py-name return-type doc return-type c-name)))
 
+(defn generate-config-keyword
+  "Generate Python function for config + keyword operations.
+   Used by: delete-branch!"
+  [op-name {:keys [return-type doc] :as config}]
+  (let [py-name (clj-name->python-name op-name)
+        c-name (get-c-name op-name config)]
+    (format "
+def %s(
+    config: str,
+    branch: str,
+    output_format: str = 'cbor'
+) -> %s:
+    '''%s
+
+    Args:
+        config: Database configuration as EDN string
+        branch: Branch keyword as EDN string (e.g. ':feature' or 'feature')
+        output_format: Output format ('json', 'edn', or 'cbor')
+
+    Returns:
+        %s
+    '''
+    # Accept bare names; the C side parses with parseKeyword which expects
+    # a leading colon. Normalise so callers can pass either form.
+    if not branch.startswith(':'):
+        branch = ':' + branch
+
+    callback, get_result = make_callback(output_format)
+    get_dll().%s(
+        get_isolatethread(),
+        config.encode('utf8'),
+        branch.encode('utf8'),
+        output_format.encode('utf8'),
+        callback
+    )
+    return get_result()
+"
+            py-name return-type doc return-type c-name)))
+
+(defn generate-branch
+  "Generate Python function for branch! — config + (keyword|uuid) + new-branch.
+
+   `from_` accepts either a keyword name (string, with or without leading
+   ':') or a commit UUID (string). The Python wrapper EDN-encodes it before
+   handing to the C side, where parseEdn produces a Keyword or UUID."
+  [op-name {:keys [return-type doc] :as config}]
+  (let [py-name (clj-name->python-name op-name)
+        c-name (get-c-name op-name config)]
+    (format "
+def %s(
+    config: str,
+    from_: str,
+    new_branch: str,
+    output_format: str = 'cbor'
+) -> %s:
+    '''%s
+
+    Args:
+        config: Database configuration as EDN string
+        from_: Source branch name (string) or commit UUID (string)
+        new_branch: New branch keyword (with or without leading ':')
+        output_format: Output format ('json', 'edn', or 'cbor')
+
+    Returns:
+        %s
+    '''
+    import uuid as _uuid
+
+    # EDN-encode the source. UUIDs become '#uuid \"...\"', branch names
+    # become ':NAME'. The C side parses with parseEdn.
+    try:
+        _uuid.UUID(from_)
+        from_edn = '#uuid \"' + from_ + '\"'
+    except (ValueError, AttributeError):
+        from_edn = from_ if from_.startswith(':') else ':' + from_
+
+    if not new_branch.startswith(':'):
+        new_branch = ':' + new_branch
+
+    callback, get_result = make_callback(output_format)
+    get_dll().%s(
+        get_isolatethread(),
+        config.encode('utf8'),
+        from_edn.encode('utf8'),
+        new_branch.encode('utf8'),
+        output_format.encode('utf8'),
+        callback
+    )
+    return get_result()
+"
+            py-name return-type doc return-type c-name)))
+
+(defn generate-merge
+  "Generate Python function for merge-db — config + parents + tx-data.
+
+   `parents` is a Python iterable of branch names or UUID strings; we
+   EDN-encode it as a set on the way to the C side. `tx_data` follows
+   the same input_format convention as transact."
+  [op-name {:keys [return-type doc] :as config}]
+  (let [py-name (clj-name->python-name op-name)
+        c-name (get-c-name op-name config)]
+    (format "
+def %s(
+    config: str,
+    parents,
+    tx_data: str,
+    input_format: str = 'json',
+    output_format: str = 'cbor'
+) -> %s:
+    '''%s
+
+    Args:
+        config: Database configuration as EDN string
+        parents: Iterable of branch names or commit UUID strings
+        tx_data: Transaction data in the chosen input_format
+        input_format: Input data format ('json', 'edn', or 'cbor')
+        output_format: Output format ('json', 'edn', or 'cbor')
+
+    Returns:
+        %s
+    '''
+    import uuid as _uuid
+
+    def _edn_parent(p):
+        try:
+            _uuid.UUID(p)
+            return '#uuid \"' + p + '\"'
+        except (ValueError, AttributeError):
+            return p if p.startswith(':') else ':' + p
+
+    parents_edn = '#{' + ' '.join(_edn_parent(p) for p in parents) + '}'
+
+    callback, get_result = make_callback(output_format)
+    get_dll().%s(
+        get_isolatethread(),
+        config.encode('utf8'),
+        parents_edn.encode('utf8'),
+        input_format.encode('utf8'),
+        tx_data.encode('utf8'),
+        output_format.encode('utf8'),
+        callback
+    )
+    return get_result()
+"
+            py-name return-type doc return-type c-name)))
+
 ;; =============================================================================
 ;; Function Generation
 ;; =============================================================================
@@ -707,6 +888,9 @@ def %s(
                     :db-index generate-db-index
                     :db-index-range generate-db-index-range
                     :config-timestamp generate-config-timestamp
+                    :config-keyword generate-config-keyword
+                    :branch generate-branch
+                    :merge generate-merge
                     (throw (ex-info (str "Unknown pattern: " (:pattern overlay))
                                     {:op-name op-name :overlay overlay})))]
     (generator op-name config)))
