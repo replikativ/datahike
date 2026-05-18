@@ -174,8 +174,17 @@ def test_merge_records_multi_parent_commit():
         feature_cfg = cfg.replace('}}', '} :branch :feature}')
         transact(feature_cfg, '[{:widget/sku "B"}]', input_format='edn')
 
-        # Merge :feature's new datom into :db
-        merge_db(cfg, ['feature'], '[{:widget/sku "B"}]', input_format='edn')
+        # Merge :feature's new datom into :db. merge_db returns the new
+        # merge commit's UUID — same shape as commit_id.
+        merge_cid_raw = merge_db(cfg, ['feature'], '[{:widget/sku "B"}]',
+                                  input_format='edn', output_format='json')
+        merge_cid = _unwrap(merge_cid_raw)
+        assert isinstance(merge_cid, str)
+        _uuid.UUID(merge_cid)  # round-trips as a UUID
+
+        # The returned id matches the connection's new head.
+        head_cid = _unwrap(commit_id(cfg, output_format='json'))
+        assert merge_cid == head_cid
 
         # :db now sees both rows
         result = q('[:find ?sku :where [?e :widget/sku ?sku]]',

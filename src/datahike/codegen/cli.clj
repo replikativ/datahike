@@ -211,12 +211,13 @@
    :advanced "Advanced Operations"
    :write "Write Operations"
    :read "Read Operations"
+   :versioning "Versioning Operations"
    :diagnostics "Diagnostics"
    :maintenance "Maintenance"})
 
 (def category-order
   "Order for displaying categories in help."
-  [:database :connection :transaction :query :pull :schema :diagnostics :maintenance])
+  [:database :connection :transaction :query :pull :schema :versioning :diagnostics :maintenance])
 
 (defn generate-help
   "Generate hierarchical help text from API specification."

@@ -459,13 +459,15 @@ public final class LibDatahike extends LibDatahikeBase {
                 txData = libdatahike.transformJSONForTx(txData, conn);
             }
 
-            // The full TxReport (a defrecord) contains Datom values that
-            // clj-cbor can't serialise; the field-by-field accessors haven't
-            // proven reliable across binding contexts. Execute the merge for
-            // its side effect and return null — callers verify the merge by
-            // re-reading commit-id / parent-commit-ids.
+            // Don't extract from the TxReport directly — the defrecord
+            // field accessors haven't proven reliable across binding
+            // contexts (see PR #831 for diagnostic notes). Run the merge,
+            // then re-deref the connection to read the new head commit-id.
+            // This mirrors what `commit_id` returns, so the API is
+            // consistent: every versioning write-op returns a UUID you
+            // can use to query history or chain further operations.
             Datahike.mergeDb(conn, (java.util.Set)parents, (java.util.List)txData);
-            output_reader.call(toOutput(output_format, null));
+            output_reader.call(toOutput(output_format, Datahike.commitId(Datahike.deref(conn))));
         } catch (Exception e) {
             output_reader.call(toException(e));
         }

@@ -619,7 +619,7 @@ class Database:
             input_format: 'json' (default) or 'edn'.
 
         Returns:
-            None on success — verify with db.commit_id() / db.parent_commit_ids().
+            The new merge commit's UUID (same shape as db.commit_id()).
         """
         if isinstance(tx_data, str):
             payload = tx_data
