@@ -645,6 +645,12 @@
                               [:db.ensure/preds eid ensure preds]]))))
       entities)))
 
+(defn- vt-meta-attr?
+  "Cheap branch — true iff the resolved a-ident is one of the bitemporal
+   tx-meta attrs. Two keyword compares; called once per :db/add."
+  [a-ident]
+  (or (= a-ident :db.valid/from) (= a-ident :db.valid/to)))
+
 (defn- transact-add [{:keys [db-after] :as report} [_ e a v tx :as ent]]
   (let [a (dbu/normalize-and-validate-attr a ent db-after)
         _ (validate-val v ent db-after)
@@ -655,7 +661,21 @@
         a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
         v (if (dbu/ref? db a-ident) (dbu/entid-strict db v) v)
         new-datom (datom e a v tx)
-        upsert? (not (dbu/multival? db a))]
+        upsert? (not (dbu/multival? db a))
+        ;; Cross-tx vf<vt guard: when a :db.valid/from or :db.valid/to
+        ;; is written onto a PRIOR tx-entity, queue that tx-eid for
+        ;; end-of-loop validation. Pattern mirrors ::queued-tuples
+        ;; (composite-tuple recomputation). Validation itself is
+        ;; deferred so that the same tx writing BOTH halves on the
+        ;; same prior tx-entity is checked against the final combined
+        ;; state, not the half-way state. Retracts can only broaden
+        ;; the window so they're skipped — a retract+add in the same
+        ;; tx is caught by the add side.
+        report (cond-> report
+                 (and (vt-meta-attr? a-ident)
+                      (>= ^long e ^long tx0)
+                      (not= e (current-tx report)))
+                 (update ::pending-vt-validation (fnil conj #{}) e))]
     (transact-report report new-datom upsert?)))
 
 (defn- transact-retract-datom
@@ -1007,6 +1027,41 @@
                         " (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)")
                    {:error :transact/syntax, :operation op, :tx-data op-vec})))))
 
+(defn- validate-cross-tx-vt-windows!
+  "Cross-tx vf<vt guard. For each prior tx-entity that received a
+   retroactive :db.valid/from or :db.valid/to write in this tx (see
+   `transact-add` ::pending-vt-validation queue), look up the
+   resulting (vf, vt) pair on db-after and raise if vf >= vt.
+
+   Single EAVT seek per affected tx-entity (3 datoms returned —
+   txInstant + vf + vt). No-op when no such writes occurred (the
+   ::pending-vt-validation set is absent).
+
+   Mirrors the pre-loop guard at the top of `transact-tx-data` which
+   checks the *current* tx's :tx-meta; this one covers the closure
+   formed by editing a *prior* tx-entity's vt-meta.
+
+   Throws `:transact/invalid-valid-times-cross-tx` on first violation."
+  [{:keys [db-after] :as report}]
+  (when-let [pending (::pending-vt-validation report)]
+    (let [attr-refs? (:attribute-refs? (dbi/-config db-after))
+          vf-a (if attr-refs? (dbi/-ref-for db-after :db.valid/from) :db.valid/from)
+          vt-a (if attr-refs? (dbi/-ref-for db-after :db.valid/to) :db.valid/to)
+          sc (dbi/-search-context db-after)]
+      (doseq [tx-eid pending]
+        (let [datoms (dbi/-datoms db-after :eavt [tx-eid] sc)
+              vf (some (fn [^Datom d] (when (= vf-a (.-a d)) (.-v d))) datoms)
+              vt (some (fn [^Datom d] (when (= vt-a (.-a d)) (.-v d))) datoms)]
+          (when (and vf vt (not (.before ^java.util.Date vf
+                                         ^java.util.Date vt)))
+            (log/raise (str "Invalid cross-tx valid-time window: tx-entity "
+                            tx-eid " would have :db.valid/from >= :db.valid/to "
+                            "(from=" vf ", to=" vt ") after this commit")
+                       {:error :transact/invalid-valid-times-cross-tx
+                        :tx-eid tx-eid
+                        :db.valid/from vf
+                        :db.valid/to vt})))))))
+
 (defn transact-tx-data [{:keys [db-before] :as initial-report} initial-es]
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
@@ -1046,11 +1101,20 @@
             db db-after]
         (cond
           (empty? es)
-          (-> report
-              (assoc-in [:tempids :db/current-tx] (current-tx report))
-              (update-in [:db-after :max-tx] inc)
-              (update :db-after persistent!)
-              (update :db-after finalize-secondary-indices))
+          (do
+            ;; Cross-tx vf<vt validation: any prior tx-entity touched
+            ;; by this commit's vt-meta writes is checked against the
+            ;; final combined state. Throws on invalid window. The
+            ;; ::pending-vt-validation bookkeeping is stripped before
+            ;; the report exits, matching the ::queued-tuples cleanup
+            ;; discipline.
+            (validate-cross-tx-vt-windows! report)
+            (-> report
+                (dissoc ::pending-vt-validation)
+                (assoc-in [:tempids :db/current-tx] (current-tx report))
+                (update-in [:db-after :max-tx] inc)
+                (update :db-after persistent!)
+                (update :db-after finalize-secondary-indices)))
 
           (nil? entity)
           (recur report entities)
