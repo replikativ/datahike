@@ -124,15 +124,20 @@
     :db/cardinality :db.cardinality/one
     :db/doc "A transaction's valid-time lower bound (inclusive).
              Every datom in the tx inherits this vt-from. When
-             absent the transaction's `:db/txInstant` is used."
+             absent the transaction's `:db/txInstant` is used.
+             See `doc/valid_time.md` for usage."
     :db/index true}
    {:db/id 40
     :db/ident :db.valid/to
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one
     :db/doc "A transaction's valid-time upper bound (exclusive).
-             When absent the interval is open-ended (treated as
-             +∞ by the bitemporal resolver)."
+             When absent the interval is open-ended (treated as +∞).
+             May be written retroactively on a prior tx-entity to
+             close that tx's window; the write is a normal commit,
+             the prior tx's hash is unchanged, and the transactor
+             enforces a cross-tx `vf < vt` check on the combined
+             state. See `doc/valid_time.md` for usage."
     :db/index true}])
 
 (def ^:const system-entities
