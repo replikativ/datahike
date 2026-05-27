@@ -1,10 +1,9 @@
 # Optimistic Overlay (`datahike.optimistic`)
 
-**Status: Experimental** — Stable enough for client-side prototyping.
-Exercised under same-conn concurrency (concurrent `opt/transact!`s,
-interleaved direct `d/transact!`s, writer batching, Case J unique-
-collisions); not yet exercised across multiple peers writing to the
-same store over a real Kabel connection.
+**Status: Experimental** — Stable enough for client-side
+prototyping. Exercised under same-conn concurrency (concurrent
+`opt/transact!`s, interleaved direct `d/transact!`s, writer
+batching, unique-constraint collisions).
 
 ## What it does
 
@@ -54,18 +53,23 @@ but the overlay won't *invent* a merged state.
 
 ;; one-time wiring per conn
 (opt/register! conn
-  {:ttl-ms 30000                                  ;; default per-entry timeout
-   :on-conflict (fn [conflicts]                   ;; see Conflicts below
+  {:ttl-ms 30000                              ;; per-entry timeout
+   :on-conflict (fn [conflicts]               ;; toast on conflict (set-changed)
                   (toast "your edit may not save"))})
 
-;; subscribe — fires on every effective-db change with the new db
+;; pick the listener style that matches your UI:
+;;
+;; (a) re-render the world from a db value (Reagent + datascript-style,
+;;     vanilla React with state derived from @conn). Coalesced — one
+;;     fire per @conn change or overlay change:
 (opt/listen! conn ::ui
              (fn [eff-db] (rerender-ui! eff-db)))
 
-;; or, for differential UI layers (posh-style materialized views,
-;; redux-style reducers), subscribe to tx-reports instead
+;; (b) keep a materialized view in sync via deltas (posh, redux-style
+;;     reducers, re-frame subscriptions). Per-event — one fire per
+;;     logical change, with the tx-data delta to apply:
 (opt/listen-tx! conn ::ui
-                (fn [{:keys [db-before db-after tx-data origin ov-id]}]
+                (fn [{:keys [tx-data origin]}]
                   (apply-deltas-to-ui-state! tx-data)))
 
 ;; submit an optimistic write
@@ -95,29 +99,52 @@ Attach / detach the overlay state. Idempotent. `opts`:
   {:type :optimistic/timeout})`.
 - `:on-conflict` (function, optional) — `(fn [conflicts])`, fires
   when the set of conflicting entries changes. See
-  [Conflicts (Case J)](#conflicts-case-j).
+  [Conflicts](#conflicts).
 
 `unregister!` cancels in-flight entries with an
 `:optimistic/cancelled` error on their `:result`.
 
 ### `(listen! conn k f)` / `(unlisten! conn k)`
 
-Register `(fn [effective-db])` under key `k`. Fires whenever the
-overlay or `@conn` changes. The argument is the *effective* db —
-`@conn` with all applicable overlay entries layered on top.
-Conflicting entries (see Case J) are excluded from the view.
+Register `(fn [effective-db])` under key `k`. **Coalesced**: fires
+once per @conn change or overlay change with the current
+effective-db (= `@conn` with all applicable overlay entries on top;
+conflicting entries excluded from the view).
+
+For UIs that just re-render from the new db value.
 
 ### `(listen-tx! conn k f)` / `(unlisten-tx! conn k)`
 
-Register `(fn [tx-report])` under key `k`. Fires once per logical
-change with a Datahike-style tx-report carrying the delta a consumer
-should apply to their derived view. See
+Register `(fn [tx-report])` under key `k`. **Per-event**: fires once
+per logical change with a Datahike-style tx-report carrying the
+*delta* to apply to a derived view. See
 [Tx-report events](#tx-report-events).
+
+For UIs that maintain a materialized view incrementally (posh,
+redux-style reducers, etc.).
+
+`listen!` and `listen-tx!` are complementary, not alternatives:
+they answer different questions ("what's the new state?" vs "what
+deltas should I apply?") at different granularities (coalesced vs
+per-event). Pick whichever matches your UI layer; you can register
+both if some parts of your UI prefer one and others the other.
 
 ### `(on-conflict! conn k f)` / `(off-conflict! conn k)`
 
-Additional conflict listeners beyond the one registerable at
-`register!` time. Same signature, same semantics.
+Register a *set-changed* callback `(fn [conflicts])` — fires when
+the set of conflicting overlay entries gains or loses members, with
+the current vector of conflicting entries (each carrying `:ov-id`,
+`:tx-data`, `:predicted-tx-data`, `:last-conflict-error`). For UI
+patterns like "show a 'your edit may not save' toast when conflicts
+exist."
+
+This is *not* a tx-report stream — for tx-data deltas on conflict
+transitions, use `listen-tx!` and filter for the `:overlay-conflict`
+and `:overlay-resolve` origins.
+
+A single callback can also be passed via `:on-conflict` in
+`register!`; `on-conflict!` adds further callbacks under different
+keys.
 
 ### `(transact! conn tx-data opts?)`
 
@@ -205,7 +232,7 @@ writer's tx-report for `:conn-advance`).
 | `:overlay-add`      | `opt/transact!` accepted, entry added                                     | Predicted datoms from eager `d/with`                                    |
 | `:conn-advance`     | Any `d/transact!` through this conn (own *or* a direct call by other code) | The durable writer's `:tx-data`                                         |
 | `:overlay-realized` | Own entry's `:expected-max-tx` was reached; the entry was dropped         | Retracts of any *stale* predictions (EID-shift cleanup; empty when not needed) |
-| `:overlay-conflict` | Entry became un-applicable on top of current `@conn` (Case J)             | Retracts of the entry's prediction                                      |
+| `:overlay-conflict` | Entry became un-applicable on top of current `@conn`                      | Retracts of the entry's prediction                                      |
 | `:overlay-resolve`  | Previously-conflicting entry became applicable again                      | Re-adds of the entry's prediction                                       |
 | `:overlay-drop`     | Dispatch failed for a non-conflicting entry                               | Retracts of the entry's prediction                                      |
 | `:ttl`              | Entry's TTL elapsed                                                       | Retracts of the entry's prediction                                      |
@@ -388,7 +415,7 @@ For foreign `d/transact!`s on the same conn, the writer-listener
 still fires and emits `:conn-advance` — eff-db consumers see those
 durable changes — but nothing gets cached (no ov-id is involved).
 
-### Conflicts (Case J)
+### Conflicts
 
 An overlay entry can become *un-applicable* on top of `@conn` — for
 example, a concurrent peer or direct `d/transact!` commits a value
@@ -462,33 +489,18 @@ EIDs match — `retract-stale` returns empty and no
 
 ## v1 limits
 
-- **Cross-peer scenarios are unstudied.** Same-conn concurrency
-  (concurrent `opt/transact!`s, interleaved direct `d/transact!`s,
-  Case J unique-collisions, writer batching) is exercised by the
-  smoke tests. *Multiple* peers writing to the same store over a
-  real Kabel connection — where `@conn` may advance via
-  `on-db-sync!` from a write none of your dispatches knows about —
-  is structurally supported by the `:max-tx` watermark argument but
-  hasn't been put on the bench yet.
 - **`:conn-advance` only fires for writes routed through
   `d/transact!`.** The writer-listener hook is registered via
   `d/listen`, which only triggers when `d/transact!` completes (the
-  writer walks `(:listeners (meta connection))` after each successful
-  commit). Two scenarios advance `@conn` without going through that
-  path, and tx-listeners miss the delta in both:
-    - A custom `:dispatch-fn` that never calls `d/transact!` (e.g.,
-      fires off an HTTP POST against a non-Datahike server and the
-      durable state lives only on the remote side). The overlay's
-      `:overlay-add` still fires, but if `@conn` never gets the
-      durable change there's no `:conn-advance` to follow it.
-      Mitigation: route the durable write through `d/transact!`
-      somewhere — even just to mirror server state into the local
-      conn.
-    - A foreign Kabel-peer write that echoes in via `on-db-sync!`
-      and `reset!`s the atom directly. `add-watch` fires (so eff-db
-      `listen!` consumers see it), but `d/listen` does not.
-      Mitigation: none in v1; an open follow-up would emit a
-      `:conn-advance` from `on-db-sync!`.
+  writer walks `(:listeners (meta connection))` after each
+  successful commit). A custom `:dispatch-fn` that never calls
+  `d/transact!` (e.g., fires off an HTTP POST against a non-Datahike
+  server and the durable state lives only on the remote side) won't
+  produce a `:conn-advance` for that durable write. The overlay's
+  `:overlay-add` still fires, but if `@conn` never gets the durable
+  change there's no `:conn-advance` to follow it. Mitigation: route
+  the durable write through `d/transact!` somewhere — even just to
+  mirror server state into the local conn.
 - **`retract-stale` precision requires default-dispatch.** Only
   `default-dispatch` correlates writer-tx-data with `:ov-id` (it
   has both in scope when its per-call promise resolves) and caches
