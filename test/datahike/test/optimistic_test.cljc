@@ -104,15 +104,16 @@
     (opt/unregister! conn)))
 
 ;; A gate-as-dispatch lets us hold a transact!'s reply until we choose.
-;; New contract: dispatch-fn yields {:reply X :max-tx N}. We set N = 0 so
-;; the wrapper's sync drop check (@conn :max-tx >= 0) drops the entry
-;; immediately on resolution — no flapping while @conn marches on.
+;; The `:dispatch-fn` contract is "returns a `core.async` channel
+;; yielding a single value," so we use `promise-chan` on both
+;; platforms. The value is `{:reply ... :max-tx 0}` so the wrapper's
+;; sync drop check (`@conn :max-tx >= 0`) drops the entry immediately
+;; on resolution — no flapping while @conn marches on.
 (defn- make-gate []
-  #?(:clj (promise) :cljs (a/chan 1)))
+  (a/promise-chan))
 
 (defn- open-gate! [gate]
-  #?(:clj (deliver gate {:reply {:ok true} :max-tx 0})
-     :cljs (a/put! gate {:reply {:ok true} :max-tx 0})))
+  (a/put! gate {:reply {:ok true} :max-tx 0}))
 
 (deftest-async concurrent-transacts-keep-each-other-visible
   ;; An in-flight optimistic entry must stay visible while another
@@ -188,19 +189,11 @@
             (opt/transact! conn [{:name "carol"}]
                            {:dispatch-fn
                             (fn []
-                              #?(:clj
-                                 (let [p (promise)]
-                                   (future
-                                     (let [r @(d/transact! conn [{:name "carol"}])]
-                                       (deliver p {:reply r
+                              (let [out (a/chan 1)]
+                                (go (let [r (<! (d/transact! conn [{:name "carol"}]))]
+                                      (a/put! out {:reply r
                                                    :max-tx (:max-tx (:db-after r))})))
-                                   p)
-                                 :cljs
-                                 (let [ch (a/chan 1)]
-                                   (go (let [r (<! (d/transact! conn [{:name "carol"}]))]
-                                         (a/put! ch {:reply r
-                                                     :max-tx (:max-tx (:db-after r))})))
-                                   ch)))})]
+                                out))})]
         (<! result)
         (is (contains? (set (names (opt/effective-db conn))) "carol"))
         (is (= 0 (count (opt/pending conn))) "overlay drained after dispatch resolved")))
@@ -210,9 +203,11 @@
 ;; closes or yields a value. Used to hold an optimistic entry in
 ;; flight while the test asserts intermediate state.
 ;;
+;; Returns a `core.async` channel (the `:dispatch-fn` contract).
+;;
 ;; `resolver` may return either:
-;;   - a plain value (delivered as-is when release fires), or
-;;   - a `core.async` channel (whose value, when taken, is delivered).
+;;   - a plain value (placed on the channel as-is when release fires),
+;;   - or a `core.async` channel (whose value, when taken, is placed).
 ;;
 ;; Channel-return is necessary when the resolver wants to do its own
 ;; `<!` takes (e.g. waiting on `(d/transact! ...)`), because `<!` is
@@ -224,24 +219,16 @@
 ;; have no async work to do.
 (defn- gated-dispatch [release-ch resolver]
   (fn []
-    #?(:clj
-       (let [p (promise)]
-         (go
-           (a/<! release-ch)
-           (let [r (resolver)]
-             (deliver p (if (satisfies? clojure.core.async.impl.protocols/ReadPort r)
-                          (a/<! r)
-                          r))))
-         p)
-       :cljs
-       (let [out (a/chan 1)]
-         (go
-           (a/<! release-ch)
-           (let [r (resolver)]
-             (a/put! out (if (satisfies? cljs.core.async.impl.protocols/ReadPort r)
-                           (a/<! r)
-                           r))))
-         out))))
+    (let [out (a/chan 1)]
+      (go
+        (a/<! release-ch)
+        (let [r (resolver)]
+          (a/put! out (if (satisfies? #?(:clj clojure.core.async.impl.protocols/ReadPort
+                                         :cljs cljs.core.async.impl.protocols/ReadPort)
+                                      r)
+                        (a/<! r)
+                        r))))
+      out)))
 
 (deftest-async conflict-surfaces-via-on-conflict
   ;; Case J: an in-flight overlay entry becomes un-applicable because a
