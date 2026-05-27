@@ -1,14 +1,12 @@
 # Optimistic Overlay (`datahike.optimistic`)
 
-**Status: Experimental** — The API may still change. Stable enough for
-client-side prototyping; not yet exercised under multi-writer or
-concurrent-peer load.
+**Status: Experimental** — Stable enough for client-side prototyping;
+not yet exercised under multi-writer or concurrent-peer load.
 
 The `datahike.optimistic` namespace adds a thin overlay on top of a
 Datahike connection that lets UIs render a transaction's effect
-immediately, before the underlying writer has confirmed it. When the
-write lands (or fails), listeners re-fire with the new effective
-database.
+immediately, before the underlying writer has confirmed it. The
+durable update lands later; the overlay reconciles automatically.
 
 The primitive is small (one namespace, no wire-protocol changes) and
 works wherever Datahike runs — JVM, ClojureScript on Node, ClojureScript
@@ -21,8 +19,8 @@ to the user.
 A write through a streaming writer like Kabel goes:
 
 1. `d/transact!` dispatches the tx to the server.
-2. Server applies the tx and replies.
-3. `konserve-sync` echoes the new `:db` key back to the client.
+2. Server applies the tx and replies with a tx-report.
+3. konserve-sync echoes the new `:db` key back to the client.
 4. The client's `@conn` advances; the UI re-renders.
 
 That whole loop is on the user's interaction path. For chat sends,
@@ -39,12 +37,14 @@ via Datahike's `d/with` — and reconcile when the durable update lands.
          '[clojure.core.async :refer [<!]])
 
 ;; one-time wiring per conn
-(opt/register! conn)
+(opt/register! conn
+  {:ttl-ms 30000                            ;; per-entry timeout, default 30s
+   :on-conflict (fn [conflicts]             ;; see "Conflicts" below
+                  (toast "your edit may not save"))})
 
 ;; subscribe — fires on overlay add, overlay drop, and @conn advance,
-;; with the *effective* db (overlay applied on top of @conn)
-(opt/listen! conn ::ui (fn [eff-db]
-                         (rerender-ui! eff-db)))
+;; with the *effective* db (overlay applied on top of @conn).
+(opt/listen! conn ::ui (fn [eff-db] (rerender-ui! eff-db)))
 
 ;; submit an optimistic write
 (let [{:keys [ov-id result]}
@@ -63,59 +63,165 @@ via Datahike's `d/with` — and reconcile when the durable update lands.
 
 `(opt/effective-db conn)` returns the overlay-applied db value
 synchronously, useful for one-shot reads outside a listener context.
-`(opt/pending conn)` returns the current pending entries.
+`(opt/pending conn)` returns the current pending entries (with
+`:conflicting?` and `:last-conflict-error` flags surfaced).
 
-## How it works
+## Consistency Model
 
-Each registered conn carries an *overlay* — a vector of pending
-entries — and a set of listeners.
+The overlay maintains one invariant:
 
-**Append.** `transact!` first runs `d/with` on the current effective
-db. If the tx-data is malformed (schema violation, etc.), the call
-throws synchronously and nothing is added. Otherwise an entry
-`{:ov-id, :tx-data, :status :pending, :submitted-at}` is appended and
-listeners fire with the new effective db.
+> **An entry is visible from `transact!` return until `@conn` has
+> demonstrably reflected its effect, the dispatch failed, or the
+> entry's TTL expired.**
 
-**Effective db.** `(reduce d/db-with @conn @overlay)` — entries marked
-`:transacting?` are skipped (see below).
+Three things make this hold against all the interference modes we've
+tested.
 
-**Dispatch.** The transact wrapper hands the tx to the writer
-(`d/transact!`) by default. A `:dispatch-fn` opt lets the caller
-substitute their own RPC (e.g. an `invoke-remote` that does
-server-side bootstrap beyond a plain Datahike transact); whatever it
-yields gets put on the `:result` channel.
+### 1. `max-tx` is a sound watermark
 
-**Removal.** Entries are matched and removed by `:ov-id`:
+When the dispatch resolves successfully, the reply carries the durable
+write's `:max-tx`. The overlay stamps the entry with that value as
+`:expected-max-tx`. A `@conn` watcher drops the entry the first time
+`(:max-tx @conn) >= :expected-max-tx`.
 
-  - On dispatch success, `transact!` drops the entry; the conn-watcher
-    has already fired listeners with the post-write effective db.
-  - On dispatch failure, `transact!` drops the entry, fires listeners
-    (rolling back the optimistic visibility), and puts the error on
-    `:result`.
-  - `unregister!` drops every entry tied to that conn.
+That's not a property of `:max-tx` as a number; it rests on three
+structural facts of Datahike:
 
-The conn-watcher itself does not remove entries — its only job is to
-fire listeners when `@conn` advances, so UI consumers see the new
-effective db whether the advance came from our own writer or from a
-`konserve-sync` echo of someone else's write.
+- **Monotonic assignment.** The writer assigns `:max-tx` to each
+  commit in strictly increasing order; no two commits get the same
+  value.
+- **Snapshot completeness.** Each `:db` value the writer publishes is
+  a fully indexed, closed snapshot — the result of applying every
+  commit ≤ its own `:max-tx`. The chain of `db_N` values is totally
+  ordered, and each is a superset (in history) of all earlier ones.
+- **Atomic `@conn` update.** konserve-sync's `on-db-sync!` (kabel) and
+  the `:self` writer's commit loop both `reset!` the conn atom with a
+  fully-materialized `:db` value. There is no window where `:max-tx`
+  has advanced but the indexes haven't.
 
-**The `:transacting?` marker.** Just before dispatch, `transact!`
-marks the entry as `:transacting?`. The conn-watcher fires during
-`d/transact!`'s own `swap!`; without the marker, the listener would
-re-apply the entry's tx-data via `d/with` on top of a `@conn` that
-already has those datoms, briefly double-applying them. The marker
-makes `effective-db*` skip that entry while it's mid-flight.
+So when we see `(:max-tx @conn) >= M`, the local `@conn` *is* a
+snapshot `db_N` with `N >= M`, fully materialized, containing every
+commit ≤ M — including ours.
 
-## Identity assumption
+If our entry's datoms have since been retracted by a later commit,
+`@conn`'s current view doesn't have them, and that is the right answer
+— the overlay's job is to predict ahead, not to override the durable
+truth.
+
+### 2. The default writer chain already gates `@conn` advance
+
+Both shipped writers wait for `@conn` to advance before returning the
+tx-report:
+
+- **`:self`** does `(reset! connection commit-db)` *before*
+  `(>! callback tx-report)` (`writer.cljc:128`).
+- **`:kabel`** registers a waiter keyed by `expected-max-tx` and only
+  resolves the dispatch once `on-sync-update!` observes `@conn` past
+  it (`kabel/writer.cljc:99-131`).
+
+The overlay's watermark logic is the structural belt-and-suspenders.
+With these writers, the sync-check immediately after setting
+`:expected-max-tx` finds `@conn` already caught up and drops the entry
+right there.
+
+### 3. Idempotent upsert covers the window
+
+Between `transact!` and the dispatch resolving, multiple things can
+fire the watcher (a concurrent peer write, a direct `d/transact!`, our
+own writer's commit). Each fire recomputes the effective-db by folding
+all overlay entries through `d/with` on top of `@conn`. Per the
+identity assumption (entities keyed by a stable attribute like
+`:entity/uuid`), re-applying an entry whose datoms already landed in
+`@conn` is an idempotent upsert — no double application, no flicker.
+
+## The `:dispatch-fn` Contract
+
+By default, `transact!` routes through the conn's writer
+(`d/transact!`) and extracts `:max-tx` from `(:max-tx (:db-after
+tx-report))`. For app-level RPCs, pass `:dispatch-fn` with this
+contract:
+
+- Takes no arguments.
+- Returns a **deref-able** (CLJ) or **`core.async` channel** (CLJS).
+- On success: yields `{:reply X :max-tx N}` where `N` is the
+  `:max-tx` of the durable commit your RPC produced. `X` is what
+  gets put on `:result`.
+- On failure: throws (CLJ) or yields a `Throwable` / `js/Error`
+  (CLJS). The wrapper normalizes both onto the same failure path —
+  the entry drops, listeners re-fire, the error lands on `:result`.
+
+```clojure
+(opt/transact! conn tx-data
+  {:dispatch-fn
+   (fn []
+     (let [p (promise)]
+       (future
+         (let [report @(d/transact! conn enriched-tx-data)]
+           (deliver p {:reply  report
+                       :max-tx (:max-tx (:db-after report))})))
+       p))})
+```
+
+If your dispatch yields success without `:max-tx`, the wrapper falls
+back to drop-on-resolve — same behavior as a non-streaming `d/transact`
+on the local writer, with the gap acknowledged in the *Identity
+assumption* below.
+
+## Conflicts (Case J)
+
+A pending overlay entry can become un-applicable on top of `@conn`:
+a concurrent peer or direct `d/transact!` may have written something
+the entry's `d/with` would now reject (e.g. a `:db.unique/value`
+collision). When this happens:
+
+- The entry stays in the overlay — we don't yet know the server's
+  verdict.
+- It is **excluded** from `effective-db` — re-applying it would throw.
+- It is **marked** `:conflicting? true` and carries
+  `:last-conflict-error`.
+- The `:on-conflict` callback (if registered) fires whenever the set
+  of conflicting entries changes.
+
+The dispatch is still in flight. When it resolves:
+
+- **Success** (the server reconciled or our timing missed): the entry
+  was actually fine. `@conn` advances with our datoms; the entry's
+  watermark drops it. The view converges.
+- **Failure** (server rejection): the conflict was real. The entry
+  drops, listeners re-fire with the rolled-back view, the throwable
+  lands on `:result`.
+
+The `:on-conflict` callback gives the UI a place to warn the user
+("your edit may not save") *before* the server's verdict arrives —
+useful when the server response is slow.
+
+## TTL
+
+Each entry carries an `:expires-at` (default `now + 30000ms`). A
+per-conn heartbeat ticks once a second and reaps expired entries:
+
+- The entry's `:result` chan receives an `ex-info` tagged
+  `{:type :optimistic/timeout}`.
+- The entry is dropped from the overlay and listeners re-fire.
+- If the server then *eventually* succeeds, the late reply is silently
+  discarded — `:result` is exactly-once-delivery (the `compare-and-set!`
+  on `:result-delivered?` is the gate). The durable effect surfaces
+  via `@conn` advancing through normal sync.
+
+Override the default at registration (`:ttl-ms 60000`, `:ttl-ms nil`
+to disable) or per call (`(opt/transact! conn data {:ttl-ms 60000})`).
+
+## Identity Assumption
 
 Tempid resolution may differ between the overlay's `d/with` and the
-underlying transact (different numeric EIDs for the same logical
+underlying writer (different numeric EIDs for the same logical
 entity). Applications should identify entities by a stable attribute
-— e.g. `:entity/uuid` minted client-side — rather than by EID.
-Overlay applies with one EID, the writer applies with another, both
-resolve the same `:entity/uuid` lookups.
+— e.g. `:entity/uuid` minted client-side — rather than by EID. The
+overlay applies with one EID, the writer applies with another, both
+resolve the same `:entity/uuid` lookups, and re-application on top of
+`@conn` after echo is an idempotent upsert.
 
-## Relation to the Kabel writer
+## Relation to the Kabel Writer
 
 The overlay sits *in front of* the writer; it does not replace it.
 With a Kabel-backed conn:
@@ -129,40 +235,37 @@ With a Kabel-backed conn:
 
 1. Append an overlay entry, fire listeners (UI shows the change).
 2. Dispatch via `d/transact!` → KabelWriter → server transact →
-   konserve-sync echo → `@conn` advances.
-3. Drop the entry; conn-watcher fires listeners with the durable
-   effective db.
+   konserve-sync echo → `@conn` advance → KabelWriter's wait-ch
+   resolves → tx-report delivered.
+3. Stamp the entry with `:expected-max-tx` from the tx-report.
+4. Sync-check: `@conn` is already caught up (Kabel gated on it). Drop.
+5. Deliver the tx-report on `:result`.
 
-If your server side does more than a plain `d/transact` (e.g. creates
-related entities, runs custom validation), pass `:dispatch-fn` so the
-overlay is decoupled from the wire path:
+If your server side does more than a plain `d/transact` (creates
+related entities, runs custom validation, etc.), pass `:dispatch-fn`
+so the overlay is decoupled from the wire path. Remember to include
+`:max-tx` in your success shape.
 
-```clojure
-(opt/transact! conn tx-data
-               {:dispatch-fn #(my-app/create-page-rpc! page-uuid title)})
-```
+## V1 Limits
 
-## Limits in v1
-
+- **Conn-bound branches are stable.** Switching a conn between
+  branches is not supported in Datahike (each branch is its own
+  conn) — so the overlay assumes a stable branch per conn for the
+  lifetime of `register!`.
+- **Writer queue durability is the writer's problem.** If the Kabel
+  WebSocket drops between dispatch and echo, the dispatch fails or
+  the entry's TTL expires. Restoring a pending queue on reconnect
+  belongs in the Kabel writer, not the overlay. Open follow-up.
 - **Single-writer-per-conn assumption.** Overlay entry removal is
-  driven by your own `transact!` calls. Concurrent peers writing to
-  the same store are fine for sync but unstudied for the overlay's
-  reconciliation behaviour.
+  driven by your own `transact!` calls and the watermark logic.
+  Multiple peers writing to the same store are fine for sync but
+  unstudied for adversarial overlay scenarios.
 - **No IndexedDB persistence of pending entries.** Overlay state is
-  in-memory; a page reload drops in-flight optimistic entries. (Linear
-  and InstantDB persist their pending queues; this can be added later.)
-- **No global rejection broadcaster.** A failed transact rejects via
-  the `:result` channel of the caller. There is no separate
-  subscription for "tell me about all failed mutations." If you have a
-  cross-cutting toast layer, wire it from the caller side for now.
-- **Listener fires twice per successful transact** (once on append,
-  once on conn advance). Both events show the correct effective db —
-  no incorrect intermediate state — but it's redundant. Consumers can
-  dedupe by comparing the `:max-tx` if they care.
+  in-memory; a page reload drops in-flight optimistic entries.
 - **Eager validation throws synchronously**; server-side errors arrive
-  on the result channel. Two failure paths, two mental models — kept
-  distinct because programmer errors in tx-data are categorically
-  different from runtime server rejection.
+  on the result channel. Two failure paths, two mental models —
+  programmer errors in tx-data are categorically different from
+  runtime server rejection.
 
 ## See also
 
