@@ -263,7 +263,7 @@ WRITER  (the conn's `d/transact!` flow — :self / :kabel / :datahike-server)
  │                                                                 │  fire-listeners) │
  │                                                                 └──────────────────┘
  │                                                                          │
- │  writer's go-block delivers tx-report to the callback ──────────────────┤
+ │  writer's go-block delivers tx-report to the callback ───────────────────┤
  │  → conn-listener fires (our writer-listener hook):                       │
  │      • caches writer's :tx-data keyed by ov-id (from :tx-meta)           │
  │      • emits :conn-advance tx-report                                     │
