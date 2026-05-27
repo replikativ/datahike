@@ -34,10 +34,15 @@
 (defn- setup []
   (go
     (let [cfg (mk-cfg)
-          _    (<! #?(:clj  (go (d/create-database cfg))
-                      :cljs (d/create-database cfg)))
-          conn (<! #?(:clj  (go (d/connect cfg))
-                      :cljs (d/connect cfg {:sync? false})))
+          ;; CLJ: create/connect are synchronous — call them directly
+          ;; from inside the outer `go`. CLJS: async — `<!` the result.
+          ;; (Wrapping the CLJ calls in nested `go` blocks just to
+          ;; `<!` them would shunt blocking work onto core.async's
+          ;; dispatch threads for no reason.)
+          _    #?(:clj  (d/create-database cfg)
+                  :cljs (<! (d/create-database cfg)))
+          conn #?(:clj  (d/connect cfg)
+                  :cljs (<! (d/connect cfg {:sync? false})))
           _    (<! (d/transact! conn
                                 [{:db/ident :name :db/valueType :db.type/string
                                   :db/cardinality :db.cardinality/one
@@ -236,8 +241,8 @@
   ;; from the view, the :on-conflict callback fires, and once the gate
   ;; opens the server rejects → :result yields the throwable.
   (let [cfg (mk-cfg)
-        _ (<! #?(:clj (go (d/create-database cfg)) :cljs (d/create-database cfg)))
-        conn (<! #?(:clj (go (d/connect cfg)) :cljs (d/connect cfg {:sync? false})))
+        _ #?(:clj (d/create-database cfg) :cljs (<! (d/create-database cfg)))
+        conn #?(:clj (d/connect cfg) :cljs (<! (d/connect cfg {:sync? false})))
         _ (<! (d/transact! conn [{:db/ident :slot :db/valueType :db.type/string
                                   :db/cardinality :db.cardinality/one
                                   :db/unique :db.unique/value}
@@ -350,8 +355,8 @@
      ;; :tx-data retracts the predicted additions, returning the
      ;; consumer's view to the pre-submit baseline.
      (let [cfg (mk-cfg)
-           _ (<! (go (d/create-database cfg)))
-           conn (<! (go (d/connect cfg)))
+           _ (d/create-database cfg)
+           conn (d/connect cfg)
            _ (<! (d/transact! conn [{:db/ident :slot :db/valueType :db.type/string
                                      :db/cardinality :db.cardinality/one
                                      :db/unique :db.unique/value}
@@ -452,6 +457,54 @@
            (is (= consumer after)
                "consumer view returns to baseline after TTL")))
        (a/close! never-release)
+       (opt/unlisten-tx! conn ::probe)
+       (opt/unregister! conn))))
+
+#?(:clj
+   (deftest-async tx-report-watcher-drop-emits-overlay-realized
+     ;; Regression for the case where a custom dispatch resolves with
+     ;; `:max-tx` ahead of `@conn` — the entry can't sync-drop at
+     ;; dispatch time, so the watcher drops it later when @conn
+     ;; catches up. That watcher-drop path must also emit
+     ;; `:overlay-realized` (using the writer-tx-cache) so a tx-report
+     ;; consumer's incremental view still converges to @conn.
+     (let [conn (<! (setup))
+           release (a/chan)
+           tx-events (atom [])
+           predicted-max-tx (inc (:max-tx @conn))]
+       (opt/register! conn {:ttl-ms 60000})
+       (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+       (let [before (user-datoms @conn #{:name})
+             ;; Custom dispatch declares max-tx = (current+1) up front:
+             ;; the entry stays in overlay because @conn hasn't reached
+             ;; it. Open the gate immediately so the dispatch resolves
+             ;; without doing any actual durable write.
+             {:keys [result]}
+             (opt/transact! conn [{:name "ghost-write"}]
+                            {:dispatch-fn (gated-dispatch
+                                           release
+                                           (fn []
+                                             {:reply :stub
+                                              :max-tx predicted-max-tx}))})]
+         (a/close! release)
+         (<! result)
+         (<! (a/timeout 30))
+         (is (some #(= "ghost-write" %) (mapv :v (d/datoms (opt/effective-db conn) :avet :name)))
+             "before the watcher catches up, the optimistic value is still in view")
+         (is (= 1 (count (opt/pending conn)))
+             "entry still pending because @conn hasn't reached its expected-max-tx")
+         ;; Now do an unrelated durable write to advance @conn past
+         ;; the entry's expected-max-tx — triggers the watcher's drop
+         ;; and our `emit-overlay-realized!`.
+         (<! (d/transact! conn [{:name "real-bob"}]))
+         (<! (a/timeout 50))
+         (is (= 0 (count (opt/pending conn))) "watcher dropped the caught-up entry")
+         (is (some #{:overlay-realized} (mapv :origin @tx-events))
+             ":overlay-realized was emitted by the watcher-drop path")
+         (let [consumer (apply-tx-events @tx-events before)
+               after (user-datoms @conn #{:name})]
+           (is (= consumer after)
+               "consumer view converges to @conn after watcher-drop")))
        (opt/unlisten-tx! conn ::probe)
        (opt/unregister! conn))))
 
