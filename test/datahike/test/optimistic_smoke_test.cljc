@@ -383,6 +383,38 @@
        (opt/unregister! conn))))
 
 #?(:clj
+   (deftest-async tx-report-rollback-of-retract-restores-baseline
+     ;; Regression: tx-data with retract-only operations must roll back
+     ;; correctly on failure. The :overlay-add ships a retract; the
+     ;; rollback must re-assert the retracted datom so the consumer
+     ;; view converges to @conn.
+     (let [conn (<! (setup))
+           tx-events (atom [])
+           never (a/chan)]
+       (opt/register! conn {:ttl-ms 800})
+       (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+       (let [before (user-datoms @conn #{:name})
+             ;; The setup helper already transacted alice. Optimistically
+             ;; retract her name, then let the TTL fire (we never resolve
+             ;; the dispatch).
+             {:keys [result]}
+             (opt/transact! conn [[:db/retract [:name "alice"] :name "alice"]]
+                            {:dispatch-fn (gated-dispatch
+                                           never
+                                           (fn [] {:reply :unused :max-tx 0}))})
+             reply (<! result)]
+         (is (instance? Throwable reply))
+         (is (= :optimistic/timeout (:type (ex-data reply))))
+         (<! (a/timeout 50))
+         (let [consumer (apply-tx-events @tx-events before)
+               after (user-datoms @conn #{:name})]
+           (is (= consumer after)
+               "consumer view restores alice after retract was rolled back")))
+       (a/close! never)
+       (opt/unlisten-tx! conn ::probe)
+       (opt/unregister! conn))))
+
+#?(:clj
    (deftest-async tx-report-ttl-emits-ttl-event-with-retract
      ;; A TTL-expired entry must emit a :ttl tx-report retracting its
      ;; predicted additions, so the consumer's view rolls back to the

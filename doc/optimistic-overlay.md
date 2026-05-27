@@ -223,6 +223,23 @@ recompute on every event. `listen-tx!` instead delivers Datahike-style
         (retract-datom! ui-state [(.-e d) (.-a d) (.-v d)])))))
 ```
 
+### Shape compatibility with `d/transact!`
+
+The tx-report is a plain map (not a `TxReport` record), but its core
+keys (`:db-before`, `:db-after`, `:tx-data`) match Datahike's
+`TxReport` exactly — same names, same value types (the datoms in
+`:tx-data` are real `#datahike/Datom` records). On `:overlay-add` and
+`:conn-advance` events the report also carries the originating
+`:tempids` and `:tx-meta`, so a consumer that destructures
+`{:keys [db-before db-after tx-data tempids tx-meta]}` works on both
+optimistic events and Datahike's native tx-reports. On derived events
+(`:overlay-drop`, `:overlay-conflict`, `:overlay-resolve`, `:ttl`,
+`:overlay-realized`) those two keys are absent — there's no underlying
+transact to source them from.
+
+The map additionally carries `:origin` (always) and `:ov-id` (on
+entry-scoped events) so consumers can distinguish event sources.
+
 ### Event types (`:origin`)
 
 | Origin | When it fires | `:tx-data` contains |

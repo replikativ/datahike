@@ -100,13 +100,19 @@
 (defn- key-eav [d]
   [(.-e d) (.-a d) (.-v d)])
 
-(defn- negate-additions
-  "Convert added datoms in `datoms` into their retract form. Skips
-  already-retracted datoms (idempotent)."
+(defn- negate
+  "Flip the added? flag on every datom — assertions become retracts and
+  vice versa. Used to roll back an entry's effect on the consumer's
+  view when the dispatch failed / TTL fired / a conflict appeared.
+
+  Both directions matter: if the original tx-data was a retract (e.g.
+  `[[:db/retract 1 :name \"old\"]]`), the `:overlay-add` event shipped
+  the retract to the consumer; rolling it back means re-asserting."
   [datoms]
-  (->> datoms
-       (filter dd/datom-added)
-       (mapv (fn [d] (dd/datom (.-e d) (.-a d) (.-v d) (dd/datom-tx d) false)))))
+  (mapv (fn [d]
+          (dd/datom (.-e d) (.-a d) (.-v d) (dd/datom-tx d)
+                    (not (dd/datom-added d))))
+        datoms))
 
 (defn- retract-stale
   "Return retract-form datoms for any *added* datoms in `predicted` whose
@@ -157,7 +163,7 @@
         newly-resolved (clojure.set/difference old-conflict-ids new-conflict-ids)]
     (when (seq newly-conflict)
       (let [retracts (vec (mapcat (fn [ov-id]
-                                    (negate-additions
+                                    (negate
                                      (:predicted-tx-data (entries-by-id ov-id))))
                                   newly-conflict))]
         (when (seq retracts)
@@ -166,14 +172,13 @@
                           :tx-data   retracts
                           :origin    :overlay-conflict}))))
     (when (seq newly-resolved)
-      (let [adds (vec (mapcat (fn [ov-id]
-                                (filter dd/datom-added
-                                        (:predicted-tx-data (entries-by-id ov-id))))
-                              newly-resolved))]
-        (when (seq adds)
+      (let [restored (vec (mapcat (fn [ov-id]
+                                    (:predicted-tx-data (entries-by-id ov-id)))
+                                  newly-resolved))]
+        (when (seq restored)
           (emit-tx! conn {:db-before db-before
                           :db-after  db-after
-                          :tx-data   adds
+                          :tx-data   restored
                           :origin    :overlay-resolve}))))))
 
 (defn- fire-listeners! [conn]
@@ -289,7 +294,7 @@
                              (seq (:predicted-tx-data e)))]
             (emit-tx! conn {:db-before db-before
                             :db-after  db-after
-                            :tx-data   (negate-additions (:predicted-tx-data e))
+                            :tx-data   (negate (:predicted-tx-data e))
                             :origin    :ttl
                             :ov-id     (:ov-id e)})))))))
 
@@ -417,6 +422,8 @@
                      (emit-tx! conn {:db-before db-before
                                      :db-after  (effective-db conn)
                                      :tx-data   (vec (:tx-data tx-report))
+                                     :tempids   (:tempids tx-report)
+                                     :tx-meta   (:tx-meta tx-report)
                                      :origin    :conn-advance}))))
        (add-watch conn watch-key
                   (fn [_ _ old new] (on-conn-advance conn old new)))
@@ -573,9 +580,14 @@
      (swap! overlay conj entry)
      (fire-listeners! conn)
      ;; tx-report for the optimistic add. db-after is the new effective-db.
+     ;; :tempids and :tx-meta come from the eager d/with — same shape as
+     ;; a Datahike TxReport so consumers can use one code path for both
+     ;; optimistic and durable reports.
      (emit-tx! conn {:db-before db-before-add
                      :db-after  (effective-db conn)
                      :tx-data   predicted-tx-data
+                     :tempids   (:tempids validate-report)
+                     :tx-meta   (:tx-meta validate-report)
                      :origin    :overlay-add
                      :ov-id     ov-id})
      (a/go
@@ -643,7 +655,7 @@
                  (emit-tx! conn
                            {:db-before db-before-drop
                             :db-after  (effective-db conn)
-                            :tx-data   (negate-additions
+                            :tx-data   (negate
                                         (:predicted-tx-data dropped-entry))
                             :origin    :overlay-drop
                             :ov-id     ov-id}))))
