@@ -27,6 +27,7 @@
   resolution may differ between the overlay's `d/with` and the durable
   writer."
   (:require [datahike.api :as d]
+            [datahike.datom :as dd]
             #?(:clj  [clojure.core.async :as a :refer [chan put! alts! timeout close!]]
                :cljs [clojure.core.async :as a :refer [chan put! alts! timeout close!]])
             [superv.async #?(:clj :refer :cljs :refer-macros) [<?-]]))
@@ -93,6 +94,34 @@
     []))
 
 ;; -----------------------------------------------------------------------------
+;; Datom helpers for tx-report deltas
+;; -----------------------------------------------------------------------------
+
+(defn- key-eav [d]
+  [(.-e d) (.-a d) (.-v d)])
+
+(defn- negate-additions
+  "Convert added datoms in `datoms` into their retract form. Skips
+  already-retracted datoms (idempotent)."
+  [datoms]
+  (->> datoms
+       (filter dd/datom-added)
+       (mapv (fn [d] (dd/datom (.-e d) (.-a d) (.-v d) (dd/datom-tx d) false)))))
+
+(defn- retract-stale
+  "Return retract-form datoms for any *added* datoms in `predicted` whose
+  `[e a v]` does NOT appear (as an addition) in `realized`. Used to roll
+  back stale local-EID predictions when the durable writer commits the
+  same logical entity at a different EID. When predicted and realized
+  EIDs match (common case), returns an empty vector."
+  [predicted realized]
+  (let [realized-keys (into #{} (comp (filter dd/datom-added) (map key-eav)) realized)]
+    (->> predicted
+         (filter dd/datom-added)
+         (remove (fn [d] (realized-keys (key-eav d))))
+         (mapv (fn [d] (dd/datom (.-e d) (.-a d) (.-v d) (dd/datom-tx d) false))))))
+
+;; -----------------------------------------------------------------------------
 ;; Listener firing
 ;; -----------------------------------------------------------------------------
 
@@ -106,18 +135,62 @@
                             :last-conflict-error err)))
                  entries))))
 
+(defn- emit-tx!
+  "Fire all tx-listeners with the given tx-report. Skips silently when
+  no tx-listeners are registered."
+  [conn report]
+  (when-let [{:keys [tx-listeners]} (conn-state conn)]
+    (when (seq @tx-listeners)
+      (doseq [[_ f] @tx-listeners]
+        (try (f report)
+             (catch #?(:clj Throwable :cljs :default) e
+               (println "datahike.optimistic tx-listener error:" e)))))))
+
+(defn- emit-conflict-transitions!
+  "Compare prior and current conflict sets; emit `:overlay-conflict`
+  tx-reports for entries that just became un-applicable, and
+  `:overlay-resolve` tx-reports for entries that just became applicable
+  again. Each emitted report carries the entry's predicted-tx-data
+  (retracted for new conflicts, re-added for resolutions)."
+  [conn old-conflict-ids new-conflict-ids entries-by-id db-before db-after]
+  (let [newly-conflict (clojure.set/difference new-conflict-ids old-conflict-ids)
+        newly-resolved (clojure.set/difference old-conflict-ids new-conflict-ids)]
+    (when (seq newly-conflict)
+      (let [retracts (vec (mapcat (fn [ov-id]
+                                    (negate-additions
+                                     (:predicted-tx-data (entries-by-id ov-id))))
+                                  newly-conflict))]
+        (when (seq retracts)
+          (emit-tx! conn {:db-before db-before
+                          :db-after  db-after
+                          :tx-data   retracts
+                          :origin    :overlay-conflict}))))
+    (when (seq newly-resolved)
+      (let [adds (vec (mapcat (fn [ov-id]
+                                (filter dd/datom-added
+                                        (:predicted-tx-data (entries-by-id ov-id))))
+                              newly-resolved))]
+        (when (seq adds)
+          (emit-tx! conn {:db-before db-before
+                          :db-after  db-after
+                          :tx-data   adds
+                          :origin    :overlay-resolve}))))))
+
 (defn- fire-listeners! [conn]
-  (when-let [{:keys [overlay listeners on-conflicts last-conflict-ids]}
+  (when-let [{:keys [overlay listeners on-conflicts last-conflict-ids last-effective-db]}
              (conn-state conn)]
     (let [snapshot @overlay
           {:keys [db conflicts]} (recompute @conn snapshot)
-          new-conflict-ids (set (keys conflicts))]
+          new-conflict-ids (set (keys conflicts))
+          old-conflict-ids @last-conflict-ids
+          db-before (or @last-effective-db @conn)]
       (mark-conflicts! overlay conflicts)
       (doseq [[_ f] @listeners]
         (try (f db)
              (catch #?(:clj Throwable :cljs :default) e
                (println "datahike.optimistic listener error:" e))))
-      (when (not= new-conflict-ids @last-conflict-ids)
+      ;; Conflict-list listeners (high-level set-changed event)
+      (when (not= new-conflict-ids old-conflict-ids)
         (reset! last-conflict-ids new-conflict-ids)
         (let [sanitized (->> @overlay
                              (filter :conflicting?)
@@ -125,7 +198,13 @@
           (doseq [[_ f] @on-conflicts]
             (try (f sanitized)
                  (catch #?(:clj Throwable :cljs :default) e
-                   (println "datahike.optimistic on-conflict error:" e)))))))))
+                   (println "datahike.optimistic on-conflict error:" e))))))
+      ;; Tx-report emissions for conflict transitions
+      (when (not= new-conflict-ids old-conflict-ids)
+        (let [entries-by-id (into {} (map (juxt :ov-id identity)) @overlay)]
+          (emit-conflict-transitions! conn old-conflict-ids new-conflict-ids
+                                      entries-by-id db-before db)))
+      (reset! last-effective-db db))))
 
 ;; -----------------------------------------------------------------------------
 ;; Exactly-once :result delivery
@@ -180,13 +259,15 @@
 (defn- expire-due!
   "Atomically remove entries whose TTL has elapsed; deliver a
   TimeoutException on each one's :result-ch (exactly-once via
-  `deliver-result!`); fire listeners if anything moved."
+  `deliver-result!`); fire eff-db listeners; emit one :ttl tx-report
+  per expired entry (retracting its predicted-tx-data)."
   [conn]
-  (when-let [{:keys [overlay]} (conn-state conn)]
+  (when-let [{:keys [overlay last-effective-db]} (conn-state conn)]
     (let [now (now-ms)
           expired? (fn [{:keys [expires-at]}]
                      (and expires-at (< expires-at now)))
-          [old new] (swap-vals! overlay #(filterv (complement expired?) %))
+          db-before (or @last-effective-db @conn)
+          [old _] (swap-vals! overlay #(filterv (complement expired?) %))
           gone (filterv expired? old)]
       (when (seq gone)
         (doseq [e gone]
@@ -196,7 +277,21 @@
                                      :ov-id (:ov-id e)
                                      :submitted-at (:submitted-at e)
                                      :expires-at (:expires-at e)})))
-        (fire-listeners! conn)))))
+        ;; Compute new effective-db once and fire eff-db listeners.
+        (fire-listeners! conn)
+        ;; Emit a :ttl tx-report per expired entry — each retracts its
+        ;; predicted additions (unless the entry was already conflicting,
+        ;; in which case its prediction was already retracted via
+        ;; :overlay-conflict and there's nothing further to roll back).
+        (let [db-after (effective-db conn)]
+          (doseq [e gone
+                  :when (and (not (:conflicting? e))
+                             (seq (:predicted-tx-data e)))]
+            (emit-tx! conn {:db-before db-before
+                            :db-after  db-after
+                            :tx-data   (negate-additions (:predicted-tx-data e))
+                            :origin    :ttl
+                            :ov-id     (:ov-id e)})))))))
 
 (defn- start-heartbeat! [conn stop-ch]
   (a/go-loop []
@@ -282,21 +377,47 @@
    (when-not (conn-state conn)
      (let [overlay           (atom [])
            listeners         (atom {})
+           tx-listeners      (atom {})
            on-conflicts      (atom (if on-conflict
                                      {::default-on-conflict on-conflict}
                                      {}))
            last-conflict-ids (atom #{})
+           last-effective-db (atom nil)
            heartbeat-stop    (chan)
            watch-key         (keyword "datahike.optimistic"
-                                      (str "watch-" (random-uuid)))]
+                                      (str "watch-" (random-uuid)))
+           writer-listen-key (keyword "datahike.optimistic"
+                                      (str "writer-" (random-uuid)))]
        (swap! *state assoc conn
               {:overlay           overlay
                :listeners         listeners
+               :tx-listeners      tx-listeners
                :on-conflicts      on-conflicts
                :last-conflict-ids last-conflict-ids
+               :last-effective-db last-effective-db
                :heartbeat-stop    heartbeat-stop
                :ttl-ms            ttl-ms
-               :watch-key         watch-key})
+               :watch-key         watch-key
+               :writer-listen-key writer-listen-key})
+       ;; The conn's writer-listener fires for every successful
+       ;; `d/transact!` through this conn — whether it came from our
+       ;; own `opt/transact!`'s default dispatch OR a direct call by
+       ;; other code. We emit a `:conn-advance` tx-report carrying the
+       ;; writer's `:tx-data` so consumers stay in sync with all
+       ;; durable changes, not just our own.
+       ;;
+       ;; This fires AFTER `reset!` (so @conn is advanced) and BEFORE
+       ;; the d/transact! caller's promise resolves — meaning by the
+       ;; time our own dispatch's go-block resumes, the :conn-advance
+       ;; has already been emitted, and the dispatch path only needs
+       ;; to emit any stale-retract follow-up.
+       (d/listen conn writer-listen-key
+                 (fn [tx-report]
+                   (let [db-before (or @last-effective-db @conn)]
+                     (emit-tx! conn {:db-before db-before
+                                     :db-after  (effective-db conn)
+                                     :tx-data   (vec (:tx-data tx-report))
+                                     :origin    :conn-advance}))))
        (add-watch conn watch-key
                   (fn [_ _ old new] (on-conn-advance conn old new)))
        (start-heartbeat! conn heartbeat-stop)))
@@ -307,8 +428,10 @@
   by delivering an `:optimistic/cancelled` error on their :result chan.
   Stops the heartbeat and clears all overlay state."
   [conn]
-  (when-let [{:keys [watch-key heartbeat-stop overlay]} (conn-state conn)]
+  (when-let [{:keys [watch-key writer-listen-key heartbeat-stop overlay]}
+             (conn-state conn)]
     (remove-watch conn watch-key)
+    (d/unlisten conn writer-listen-key)
     (close! heartbeat-stop)
     (doseq [e @overlay]
       (deliver-result! e
@@ -333,6 +456,43 @@
 (defn unlisten! [conn k]
   (when-let [{:keys [listeners]} (conn-state conn)]
     (swap! listeners dissoc k))
+  nil)
+
+(defn listen-tx!
+  "Register a tx-report listener `(fn [tx-report])` under key `k`.
+  Fires once per logical change to the overlay or @conn, with a
+  Datahike-style tx-report:
+
+    {:db-before <effective-db at the start of the event>
+     :db-after  <effective-db at the end>
+     :tx-data   <vector of #datahike/Datom [e a v t added?]>
+     :origin    :overlay-add | :conn-advance | :overlay-drop
+              | :overlay-conflict | :overlay-resolve | :ttl
+     :ov-id     <uuid, only for entry-scoped origins>}
+
+  The `:tx-data` is the *delta* a consumer should apply to their
+  derived view to bring it in line with `:db-after`. For successful
+  optimistic writes, an `:overlay-add` event ships the predicted
+  datoms; a follow-up `:conn-advance` event ships the durable writer's
+  datoms plus retracts of any prediction datoms that landed at
+  different EIDs (the EID-shift handling — see
+  `doc/optimistic-overlay.md`). On failure / TTL / conflict, the
+  prediction's additions are emitted as retracts so a consumer
+  applying tx-data incrementally always converges to `@conn`.
+
+  Foreign-peer writes that bypass `d/transact!` do not currently emit
+  tx-reports (v1 limit). Standard `listen!` consumers still see
+  `effective-db` updates from foreign writes."
+  [conn k f]
+  (when-not (conn-state conn)
+    (throw (ex-info "Conn not registered for optimistic updates"
+                    {:conn conn})))
+  (swap! (:tx-listeners (conn-state conn)) assoc k f)
+  nil)
+
+(defn unlisten-tx! [conn k]
+  (when-let [{:keys [tx-listeners]} (conn-state conn)]
+    (swap! tx-listeners dissoc k))
   nil)
 
 (defn on-conflict!
@@ -388,9 +548,13 @@
          (or (conn-state conn)
              (throw (ex-info "Conn not registered for optimistic updates"
                              {:conn conn})))
-         ;; Eager validation — throws on schema/type violations,
-         ;; nothing enters the overlay.
-         _validate (d/with (effective-db conn) tx-data)
+         ;; Eager validation against the current effective-db — throws
+         ;; on schema/type violations, nothing enters the overlay. Reuse
+         ;; the result to cache the predicted tx-data shipped to
+         ;; tx-listeners on :overlay-add.
+         db-before-add     (effective-db conn)
+         validate-report   (d/with db-before-add tx-data)
+         predicted-tx-data (vec (:tx-data validate-report))
          ov-id        (random-uuid)
          submitted-at (now-ms)
          ttl-ms       (if (contains? opts :ttl-ms) (:ttl-ms opts) (:ttl-ms st))
@@ -398,6 +562,7 @@
          result-ch    (chan 1)
          entry        {:ov-id               ov-id
                        :tx-data             tx-data
+                       :predicted-tx-data   predicted-tx-data
                        :submitted-at        submitted-at
                        :expires-at          expires-at
                        :expected-max-tx     nil
@@ -407,6 +572,12 @@
                        :result-delivered?   (atom false)}]
      (swap! overlay conj entry)
      (fire-listeners! conn)
+     ;; tx-report for the optimistic add. db-after is the new effective-db.
+     (emit-tx! conn {:db-before db-before-add
+                     :db-after  (effective-db conn)
+                     :tx-data   predicted-tx-data
+                     :origin    :overlay-add
+                     :ov-id     ov-id})
      (a/go
        (try
          (let [val (<?- (if dispatch-fn
@@ -418,9 +589,7 @@
                      {:type :optimistic/invalid-dispatch :got val})))
            (let [{:keys [reply max-tx]} val
                  ;; Mark the entry with its watermark — the watcher
-                 ;; will drop it when @conn :max-tx catches up. If the
-                 ;; entry is no longer present (heartbeat / unregister!
-                 ;; raced ahead), this swap! is a no-op.
+                 ;; will drop it when @conn :max-tx catches up.
                  [_old new-overlay]
                  (swap-vals! overlay
                              (fn [v]
@@ -431,25 +600,52 @@
                                      v)))
                  still-present? (some #(= (:ov-id %) ov-id) new-overlay)]
              (when still-present?
-               ;; Sync drop: if @conn already advanced past max-tx
-               ;; (default `:self` writer commits before returning),
-               ;; the watcher already fired but couldn't drop because
-               ;; :expected-max-tx wasn't set yet. Catch that here.
-               (when (and max-tx (>= (:max-tx @conn) max-tx))
-                 (swap! overlay #(filterv (fn [e] (not= (:ov-id e) ov-id)) %)))
-               ;; If the user's dispatch-fn neglected :max-tx, fall
-               ;; back to drop-on-resolve so the entry doesn't linger
-               ;; forever (silently — documented contract requires it).
-               (when (nil? max-tx)
-                 (swap! overlay #(filterv (fn [e] (not= (:ov-id e) ov-id)) %))))
+               (let [conn-max (:max-tx @conn)
+                     synced? (and max-tx conn-max (>= conn-max max-tx))
+                     force-drop? (nil? max-tx)
+                     dropping? (or synced? force-drop?)
+                     db-before-drop (effective-db conn)
+                     _ (when dropping?
+                         (swap! overlay
+                                #(filterv (fn [e] (not= (:ov-id e) ov-id)) %)))
+                     ;; The writer's tx-data was already emitted as
+                     ;; :conn-advance by our writer-listener. The only
+                     ;; remaining work is the stale-retract follow-up:
+                     ;; if the writer landed our datoms at different
+                     ;; EIDs than our local prediction (tempid shift),
+                     ;; retract the stale prediction here. Use the
+                     ;; reply's :tx-data when we have it (default
+                     ;; dispatch); else empty.
+                     server-tx-data (or (some-> reply :tx-data vec) [])]
+                 (when dropping?
+                   (let [stale-retracts (retract-stale predicted-tx-data
+                                                       server-tx-data)]
+                     (when (seq stale-retracts)
+                       (emit-tx! conn {:db-before db-before-drop
+                                       :db-after  (effective-db conn)
+                                       :tx-data   stale-retracts
+                                       :origin    :overlay-realized
+                                       :ov-id     ov-id}))))))
              (deliver-result! entry reply)))
          (catch #?(:clj Throwable :cljs :default) e
-           ;; Drop the entry if still present; fire listeners; deliver
-           ;; the error. `deliver-result!` is exactly-once, so a prior
-           ;; TTL/cancel won't be clobbered.
-           (let [[old new] (swap-vals! overlay
-                                       #(filterv (fn [x] (not= (:ov-id x) ov-id)) %))]
+           ;; Drop the entry if still present; fire eff-db listeners;
+           ;; emit :overlay-drop tx-report retracting predictions;
+           ;; deliver the error.
+           (let [db-before-drop (effective-db conn)
+                 [old new] (swap-vals! overlay
+                                       #(filterv (fn [x] (not= (:ov-id x) ov-id)) %))
+                 dropped-entry (first (filter #(= (:ov-id %) ov-id) old))]
              (when (not= (count old) (count new))
-               (fire-listeners! conn)))
+               (fire-listeners! conn)
+               (when (and dropped-entry
+                          (not (:conflicting? dropped-entry))
+                          (seq (:predicted-tx-data dropped-entry)))
+                 (emit-tx! conn
+                           {:db-before db-before-drop
+                            :db-after  (effective-db conn)
+                            :tx-data   (negate-additions
+                                        (:predicted-tx-data dropped-entry))
+                            :origin    :overlay-drop
+                            :ov-id     ov-id}))))
            (deliver-result! entry e))))
      {:ov-id ov-id :result result-ch})))

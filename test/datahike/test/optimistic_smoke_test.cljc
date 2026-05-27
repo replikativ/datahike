@@ -16,11 +16,13 @@
      - TTL expiry yields TimeoutException on :result"
   #?(:clj  (:require [clojure.test :refer [deftest is testing]]
                      [datahike.api :as d]
+                     [datahike.datom :as dd]
                      [datahike.optimistic :as opt]
                      [datahike.test.async :refer [deftest-async]]
                      [clojure.core.async :as a :refer [<! go]])
      :cljs (:require [cljs.test :refer [deftest is testing] :include-macros true]
                      [datahike.api :as d]
+                     [datahike.datom :as dd]
                      [datahike.optimistic :as opt]
                      [datahike.test.async :refer-macros [deftest-async]]
                      [clojure.core.async :as a :refer [<!] :refer-macros [go]])))
@@ -276,6 +278,139 @@
     (is (= 0 (count (opt/pending conn))) "overlay drained")
     (is (= [] (last @conflicts)) "on-conflict cleared once entry removed")
     (opt/unregister! conn)))
+
+;; ============================================================================
+;; tx-report listeners
+;; ============================================================================
+
+(defn- key-eav [d]
+  [(:e d) (:a d) (:v d)])
+
+(defn- apply-tx-events
+  "Walk events in order; build the consumer's view as a set of [e a v]
+  tuples. Each event's :tx-data adds or removes from the set based on
+  the datom's added? flag (via the IDatom protocol). Returns the
+  resulting set."
+  [events start-set]
+  (reduce (fn [view event]
+            (reduce (fn [v d]
+                      (if (dd/datom-added d)
+                        (conj v (key-eav d))
+                        (disj v (key-eav d))))
+                    view
+                    (:tx-data event)))
+          start-set
+          events))
+
+(defn- user-datoms
+  "Project @conn datoms to a set of [e a v] for the given attribute set."
+  [db attrs]
+  (->> (d/datoms db :eavt)
+       (filter (fn [d] (attrs (:a d))))
+       (mapv key-eav)
+       set))
+
+(deftest-async tx-report-happy-path-converges-to-conn
+  ;; The consumer's incremental tx-data application should arrive at
+  ;; exactly @conn's state for the attributes touched by the optimistic
+  ;; tx — proving the EID-shift handling works (predicted vs realized
+  ;; tx-data composition).
+  (let [conn (<! (setup))
+        tx-events (atom [])]
+    (opt/register! conn {:ttl-ms nil})
+    (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+    (testing "events fire and consumer view matches @conn"
+      (let [before (user-datoms @conn #{:name})
+            {:keys [result]} (opt/transact! conn [{:name "bob"}])]
+        (<! result)
+        (let [origins (mapv :origin @tx-events)]
+          (is (= :overlay-add (first origins))
+              "first event is :overlay-add")
+          (is (some #{:conn-advance} origins)
+              "a :conn-advance fires from the writer-listener")
+          (is (every? #{:overlay-add :conn-advance :overlay-realized}
+                      origins)
+              "only expected origins for happy path"))
+        (let [consumer (apply-tx-events @tx-events before)
+              after (user-datoms @conn #{:name})]
+          (is (= consumer after)
+              "consumer's incremental view matches @conn"))))
+    (opt/unlisten-tx! conn ::probe)
+    (opt/unregister! conn)))
+
+#?(:clj
+   (deftest-async tx-report-failure-emits-overlay-drop-with-retract
+     ;; A failed dispatch must emit an :overlay-drop tx-report whose
+     ;; :tx-data retracts the predicted additions, returning the
+     ;; consumer's view to the pre-submit baseline.
+     (let [cfg (mk-cfg)
+           _ (<! (go (d/create-database cfg)))
+           conn (<! (go (d/connect cfg)))
+           _ (<! (d/transact! conn [{:db/ident :slot :db/valueType :db.type/string
+                                     :db/cardinality :db.cardinality/one
+                                     :db/unique :db.unique/value}
+                                    {:db/ident :who :db/valueType :db.type/string
+                                     :db/cardinality :db.cardinality/one}]))
+           release (a/chan)
+           tx-events (atom [])]
+       (opt/register! conn {:ttl-ms 5000})
+       (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+       (let [before-snap (user-datoms @conn #{:slot :who})
+             opt-res (opt/transact! conn [{:slot "S" :who "alice"}]
+                                    {:dispatch-fn
+                                     (gated-dispatch
+                                      release
+                                      (fn []
+                                        (let [r (<! (d/transact! conn [{:slot "S" :who "alice"}]))]
+                                          (if (instance? Throwable r)
+                                            r
+                                            {:reply r :max-tx (:max-tx (:db-after r))}))))})]
+         ;; Sneak in a conflicting durable write first.
+         (<! (d/transact! conn [{:slot "S" :who "mallory"}]))
+         (a/close! release)
+         (let [reply (<! (:result opt-res))]
+           (is (instance? Throwable reply) "dispatch returned the rejection"))
+         (<! (a/timeout 50))
+         (let [origins (mapv :origin @tx-events)]
+           (is (some #{:overlay-add} origins) ":overlay-add was emitted")
+           (is (some #{:overlay-drop :overlay-conflict} origins)
+               "either :overlay-drop (server-rejected) or :overlay-conflict (already conflicting before drop)"))
+         (let [consumer (apply-tx-events @tx-events before-snap)
+               after (user-datoms @conn #{:slot :who})]
+           (is (= consumer after)
+               "consumer view converges to @conn after failure path")))
+       (opt/unlisten-tx! conn ::probe)
+       (opt/unregister! conn))))
+
+#?(:clj
+   (deftest-async tx-report-ttl-emits-ttl-event-with-retract
+     ;; A TTL-expired entry must emit a :ttl tx-report retracting its
+     ;; predicted additions, so the consumer's view rolls back to the
+     ;; pre-submit baseline.
+     (let [conn (<! (setup))
+           never-release (a/chan)
+           tx-events (atom [])]
+       (opt/register! conn {:ttl-ms 1000})
+       (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+       (let [before (user-datoms @conn #{:name})
+             {:keys [result]}
+             (opt/transact! conn [{:name "ghost"}]
+                            {:dispatch-fn (gated-dispatch
+                                           never-release
+                                           (fn [] {:reply :unused :max-tx 0}))})
+             reply (<! result)]
+         (is (instance? Throwable reply))
+         (is (= :optimistic/timeout (:type (ex-data reply))))
+         (<! (a/timeout 50))
+         (is (some #{:ttl} (mapv :origin @tx-events))
+             ":ttl tx-report was emitted")
+         (let [consumer (apply-tx-events @tx-events before)
+               after (user-datoms @conn #{:name})]
+           (is (= consumer after)
+               "consumer view returns to baseline after TTL")))
+       (a/close! never-release)
+       (opt/unlisten-tx! conn ::probe)
+       (opt/unregister! conn))))
 
 (deftest-async ttl-expires-then-fires-result
   ;; An entry whose dispatch never resolves expires after :ttl-ms and

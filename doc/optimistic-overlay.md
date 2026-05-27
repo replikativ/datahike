@@ -49,6 +49,13 @@ via Datahike's `d/with` — and reconcile when the durable update lands.
 ;; with the *effective* db (overlay applied on top of @conn).
 (opt/listen! conn ::ui (fn [eff-db] (rerender-ui! eff-db)))
 
+;; or subscribe to tx-reports if you have a differential UI layer
+;; (posh-style materialized views, redux-style reducers, etc.) — see
+;; "Tx-report listeners" below.
+(opt/listen-tx! conn ::ui
+                (fn [{:keys [db-before db-after tx-data origin ov-id]}]
+                  (apply-deltas-to-ui-state! tx-data)))
+
 ;; submit an optimistic write
 (let [{:keys [ov-id result]}
       (opt/transact! conn [{:entity/uuid (random-uuid)
@@ -197,6 +204,76 @@ The dispatch is still in flight. When it resolves:
 The `:on-conflict` callback gives the UI a place to warn the user
 ("your edit may not save") *before* the server's verdict arrives —
 useful when the server response is slow.
+
+## Tx-report listeners
+
+For UI layers that maintain a materialized derived view (posh-style
+query subscriptions, redux-style reducers, anything keyed by
+`[entity attribute value]`), the eff-db listener forces a full
+recompute on every event. `listen-tx!` instead delivers Datahike-style
+**tx-reports** so the UI can apply incremental deltas:
+
+```clojure
+(opt/listen-tx! conn :my-key
+  (fn [{:keys [db-before db-after tx-data origin ov-id]}]
+    ;; tx-data is a vector of #datahike/Datom [e a v t added?]
+    (doseq [d tx-data]
+      (if (dd/datom-added d)
+        (assert-datom! ui-state [(.-e d) (.-a d) (.-v d)])
+        (retract-datom! ui-state [(.-e d) (.-a d) (.-v d)])))))
+```
+
+### Event types (`:origin`)
+
+| Origin | When it fires | `:tx-data` contains |
+|---|---|---|
+| `:overlay-add` | `opt/transact!` accepted, entry added | The predicted datoms from eager `d/with` |
+| `:conn-advance` | Any `d/transact!` through this conn (your own or a direct call) | The durable writer's `:tx-data` |
+| `:overlay-realized` | Your own write's `:expected-max-tx` was reached, entry dropped | Retracts of any *stale predictions* whose EIDs differed from the writer's (empty when EIDs matched) |
+| `:overlay-conflict` | An entry's prediction becomes un-applicable on top of current `@conn` (Case J) | Retracts of the entry's prediction |
+| `:overlay-resolve` | A previously-conflicting entry becomes applicable again | Re-adds of the entry's prediction |
+| `:overlay-drop` | Dispatch failed for a non-conflicting entry | Retracts of the entry's prediction |
+| `:ttl` | Entry's TTL elapsed | Retracts of the entry's prediction |
+
+`:ov-id` is present on entry-scoped events (`:overlay-add`,
+`:overlay-realized`, `:overlay-drop`, `:overlay-conflict`,
+`:overlay-resolve`, `:ttl`). The `:conn-advance` from the writer
+itself has no `:ov-id`.
+
+### Convergence guarantee
+
+Apply the `:tx-data` of every event in order to your derived view
+(asserting added datoms, retracting non-added ones). The result is
+**always equivalent to `:db-after`** — the consumer's incremental
+view stays in sync with `effective-db`, regardless of what happened:
+
+- happy path: `+predicted` then `+writer + retract-stale-predictions`,
+- failure: `+predicted` then `-predicted`,
+- TTL: `+predicted` then `-predicted`,
+- concurrent peer write makes us conflict: `+predicted` then
+  `-predicted`, then `+peer-writes` from `:conn-advance`,
+- concurrent peer's retraction unblocks our entry: `+peer-retract`
+  then `+predicted`.
+
+The EID-shift case (`:db.cardinality/many` with tempids; client- and
+server-assigned EIDs differ) is handled by emitting *retracts of
+stale predictions* alongside the writer's tx-data. Consumers see the
+EID swap explicitly. Keying by stable attributes (`:entity/uuid`) is
+strongly recommended.
+
+### v1 limits on tx-reports
+
+- **Custom `:dispatch-fn` that bypasses `d/transact!`** (e.g., a
+  remote HTTP POST whose echo comes in via a separate mechanism): no
+  `:conn-advance` fires for the durable write. The dispatch path's
+  `:overlay-realized` still emits stale-retract cleanup; for the
+  durable adds, route them through `d/transact!` (or a wrapper) so the
+  writer-listener fires.
+- **Foreign-peer writes via konserve-sync** (multi-peer Kabel
+  scenarios where another peer's write echoes in via `on-db-sync!` but
+  doesn't go through `d/transact!`): no `:conn-advance` fires.
+  Standard `listen!` consumers still see `effective-db` updates from
+  these writes; only `listen-tx!` consumers miss the delta.
 
 ## TTL
 
