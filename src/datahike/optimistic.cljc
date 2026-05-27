@@ -116,37 +116,34 @@
         datoms))
 
 ;; -----------------------------------------------------------------------------
-;; Writer-tx cache (max-tx → tx-data, FIFO-evicted)
+;; Writer-tx cache (ov-id → tx-data)
 ;; -----------------------------------------------------------------------------
-
-(def ^:private writer-tx-cache-max 64)
+;;
+;; Cache is keyed by the per-entry `:ov-id`, NOT by `:max-tx`. The
+;; writer can batch multiple transactions into one commit; in a batch
+;; of N, all N tx-reports get the *same* `:max-tx` (the writer
+;; overwrites `:db-after` with the batch's commit-db before delivering
+;; — see `writer.cljc` commit-loop). Keying by max-tx would collide
+;; across batched entries. Keying by ov-id keeps each entry's writer-
+;; tx-data distinct.
+;;
+;; The ov-id is conveyed via `:tx-meta {::ov-id ov-id}` injected by
+;; `default-dispatch` into the `d/transact!` arg-map; the writer
+;; preserves `:tx-meta` on the tx-report.
 
 (defn- cache-writer-tx!
-  [cache max-tx tx-data]
-  (when max-tx
-    (swap! cache
-           (fn [{:keys [by-tx order]}]
-             (let [by-tx (assoc by-tx max-tx tx-data)
-                   order (conj order max-tx)]
-               (if (> (count order) writer-tx-cache-max)
-                 (let [evict (peek order)]
-                   {:by-tx (dissoc by-tx evict) :order (pop order)})
-                 {:by-tx by-tx :order order}))))))
+  [cache ov-id tx-data]
+  (when ov-id
+    (swap! cache assoc ov-id tx-data)))
 
 (defn- take-writer-tx!
-  "Pop the cached writer tx-data for `max-tx`, removing it from the
-  cache. Returns nil if absent (e.g. for entries whose dispatch
-  bypassed `d/transact!`, in which case no writer-listener fired)."
-  [cache max-tx]
-  (when max-tx
-    (let [[old _] (swap-vals! cache
-                              (fn [{:keys [by-tx order]}]
-                                {:by-tx (dissoc by-tx max-tx)
-                                 :order (into #?(:clj clojure.lang.PersistentQueue/EMPTY
-                                                 :cljs #queue [])
-                                              (remove #(= % max-tx))
-                                              order)}))]
-      (get-in old [:by-tx max-tx]))))
+  "Pop the cached writer tx-data for `ov-id`, removing it from the
+  cache. Returns nil if absent (e.g. for foreign `d/transact!`s or
+  custom dispatches that bypassed our `::ov-id` tx-meta convention)."
+  [cache ov-id]
+  (when ov-id
+    (let [[old _] (swap-vals! cache dissoc ov-id)]
+      (get old ov-id))))
 
 (defn- retract-stale
   "Return retract-form datoms for any *added* datoms in `predicted` whose
@@ -277,62 +274,37 @@
                                (fn [v] (filterv (complement caught-up?) v)))]
     (filterv caught-up? old)))
 
-(defn- enqueue-pending-realized!
-  "Park dropped entries in `pending-realized` until the writer-listener
-  populates the cache. add-watch fires synchronously inside `reset!`,
-  while the conn's writer-listener fires *after* — so at watcher-drop
-  time the cache is empty for own writes. The writer-listener then
-  drains matching entries from this queue once it has the realized
-  tx-data."
-  [pending-realized dropped db-before db-after]
-  (when (seq dropped)
-    (swap! pending-realized
-           into
-           (mapv (fn [e]
-                   {:ov-id             (:ov-id e)
-                    :predicted-tx-data (:predicted-tx-data e)
-                    :expected-max-tx   (:expected-max-tx e)
-                    :db-before         db-before
-                    :db-after          db-after})
-                 dropped))))
-
-(defn- drain-pending-realized!
-  "When the writer-listener fires for `max-tx`, drain any pending
-  entries with `:expected-max-tx == max-tx` and emit their
-  `:overlay-realized` events using the just-cached writer-tx-data."
-  [conn max-tx]
-  (when-let [{:keys [pending-realized writer-tx-cache]} (conn-state conn)]
-    (let [match? (fn [pr] (= (:expected-max-tx pr) max-tx))
-          [old _] (swap-vals! pending-realized
-                              (fn [v] (filterv (complement match?) v)))
-          eligible (filterv match? old)]
-      (doseq [pr eligible]
-        (let [server-tx-data (take-writer-tx! writer-tx-cache max-tx)
-              stale-retracts (when server-tx-data
-                               (retract-stale (:predicted-tx-data pr)
-                                              server-tx-data))]
-          (when (seq stale-retracts)
-            (emit-tx! conn {:db-before (:db-before pr)
-                            :db-after  (:db-after pr)
-                            :tx-data   stale-retracts
-                            :origin    :overlay-realized
-                            :ov-id     (:ov-id pr)})))))))
-
 (defn- on-conn-advance [conn old-db new-db]
   (when (not= (:max-tx old-db) (:max-tx new-db))
-    (let [{:keys [overlay pending-realized last-effective-db]} (conn-state conn)
+    (let [{:keys [overlay last-effective-db]} (conn-state conn)
           db-before (or @last-effective-db @conn)
           dropped (when overlay (drop-caught-up! overlay (:max-tx new-db)))]
-      ;; Fire listeners whether or not anything was dropped — @conn
-      ;; moved, so the effective-db moved with it, and consumers
-      ;; expect a tick.
+      ;; @conn moved — re-fire eff-db listeners with the new view.
       (fire-listeners! conn)
-      ;; The writer-listener (which fires AFTER us for own writes) will
-      ;; drain these and emit :overlay-realized once it has the
-      ;; realized tx-data. Foreign writes leave entries stranded here
-      ;; (no writer-listener fires) — v1 limit, see doc.
-      (enqueue-pending-realized! pending-realized dropped
-                                 db-before (effective-db conn)))))
+      ;; Entries reach this path only via a custom `:dispatch-fn` that
+      ;; resolved with `:max-tx` ahead of `@conn` (and so couldn't
+      ;; sync-drop). For default-dispatch the dispatch's sync-drop
+      ;; runs first — `:expected-max-tx` is still `nil` when this
+      ;; watcher fires (during writer's `reset!`, before the
+      ;; conn-listener), so `drop-caught-up!` skips those.
+      ;;
+      ;; We don't have correlated writer tx-data here (the cache is
+      ;; keyed by ov-id, and the writer-listener that would have
+      ;; cached it didn't fire under that ov-id). Emit full-negate of
+      ;; the prediction — rolls the consumer's view back to baseline.
+      ;; Any concurrent `:conn-advance` from an unrelated `d/transact!`
+      ;; that happened to bump @conn past this entry's expected
+      ;; carries its own tx-data; the consumer composes them.
+      (when (seq dropped)
+        (let [db-after (effective-db conn)]
+          (doseq [e dropped]
+            (let [retracts (negate (:predicted-tx-data e))]
+              (when (seq retracts)
+                (emit-tx! conn {:db-before db-before
+                                :db-after  db-after
+                                :tx-data   retracts
+                                :origin    :overlay-realized
+                                :ov-id     (:ov-id e)})))))))))
 
 ;; -----------------------------------------------------------------------------
 ;; TTL heartbeat
@@ -398,11 +370,18 @@
   `core.async/ReadPort` (and on failure puts the Throwable as a value
   on the inner chan, not as a re-throw). So `<!` works uniformly on
   both platforms — no need to spin a dedicated OS thread via
-  `a/thread` just to wait on the deref."
-  [conn tx-data]
+  `a/thread` just to wait on the deref.
+
+  We inject `::ov-id` into `:tx-meta` so the writer-listener can
+  correlate the resulting tx-report back to the originating overlay
+  entry. The writer preserves `:tx-meta` on its tx-report — even
+  across batched commits, where multiple tx-reports share one
+  `:max-tx`. See the cache-keying notes above."
+  [conn tx-data ov-id]
   (let [out (chan 1)]
     (a/go
-      (let [report (a/<! (d/transact! conn tx-data))]
+      (let [report (a/<! (d/transact! conn {:tx-data tx-data
+                                            :tx-meta {::ov-id ov-id}}))]
         (if (throwable? report)
           (put! out report)
           (put! out {:reply report
@@ -469,19 +448,14 @@
                                         (str "watch-" (random-uuid)))
              writer-listen-key (keyword "datahike.optimistic"
                                         (str "writer-" (random-uuid)))
-             ;; Cache of writer's tx-data per `:max-tx`, populated by
+             ;; Cache of writer's tx-data per `:ov-id`, populated by
              ;; the writer-listener and consumed by the dispatch path
              ;; (and by `drain-pending-realized!` for watcher-dropped
              ;; entries) to compose correct `:overlay-realized`
-             ;; stale-retracts. Capped via FIFO so pathological
-             ;; direct-write traffic can't grow it without bound.
-             writer-tx-cache   (atom {:by-tx {} :order #?(:clj clojure.lang.PersistentQueue/EMPTY
-                                                          :cljs #queue [])})
-             ;; Queue of entries the watcher dropped before the
-             ;; writer-listener had a chance to cache the realized
-             ;; tx-data. The writer-listener drains this when it
-             ;; fires with a matching `:max-tx`.
-             pending-realized  (atom [])]
+             ;; stale-retracts. Bounded naturally by the number of
+             ;; in-flight optimistic transacts — each ov-id is
+             ;; consumed exactly once on its corresponding drop.
+             writer-tx-cache   (atom {})]
          (swap! *state assoc conn
                 {:overlay           overlay
                  :listeners         listeners
@@ -490,7 +464,6 @@
                  :last-conflict-ids last-conflict-ids
                  :last-effective-db last-effective-db
                  :writer-tx-cache   writer-tx-cache
-                 :pending-realized  pending-realized
                  :heartbeat-stop    heartbeat-stop
                  :ttl-ms            ttl-ms
                  :watch-key         watch-key
@@ -504,23 +477,20 @@
          ;; sync with all durable changes.
          (d/listen conn writer-listen-key
                    (fn [tx-report]
-                     (let [max-tx (:max-tx (:db-after tx-report))
-                           tx-data (vec (:tx-data tx-report))
+                     (let [tx-data (vec (:tx-data tx-report))
+                           ov-id (get-in tx-report [:tx-meta ::ov-id])
                            db-before (or @last-effective-db @conn)]
-                       (cache-writer-tx! writer-tx-cache max-tx tx-data)
+                       ;; Cache only for own writes (those carrying our
+                       ;; tx-meta tag) — foreign d/transact!s on this
+                       ;; conn still get a :conn-advance event but
+                       ;; aren't correlated to an overlay entry.
+                       (cache-writer-tx! writer-tx-cache ov-id tx-data)
                        (emit-tx! conn {:db-before db-before
                                        :db-after  (effective-db conn)
                                        :tx-data   tx-data
                                        :tempids   (:tempids tx-report)
                                        :tx-meta   (:tx-meta tx-report)
-                                       :origin    :conn-advance})
-                       ;; The watcher may have already dropped entries
-                       ;; for this `max-tx` (it fires inside `reset!`,
-                       ;; before this conn-listener does); their
-                       ;; `:overlay-realized` event was deferred until
-                       ;; now so we have the realized tx-data to
-                       ;; compose retract-stale against.
-                       (drain-pending-realized! conn max-tx))))
+                                       :origin    :conn-advance}))))
          (add-watch conn watch-key
                     (fn [_ _ old new] (on-conn-advance conn old new)))
          (start-heartbeat! conn heartbeat-stop))))
@@ -695,7 +665,7 @@
        (try
          (let [val (<?- (if dispatch-fn
                           (run-user-dispatch dispatch-fn)
-                          (default-dispatch conn tx-data)))]
+                          (default-dispatch conn tx-data ov-id)))]
            (when-not (and (map? val) (contains? val :reply) (contains? val :max-tx))
              (throw (ex-info
                      "dispatch-fn returned an invalid shape; expected {:reply :max-tx}"
@@ -726,13 +696,15 @@
                          _ (swap! overlay
                                   #(filterv (fn [e] (not= (:ov-id e) ov-id)) %))
                          ;; Use the writer-listener's cached tx-data
-                         ;; (consumed exactly-once). The cache is
-                         ;; empty only when the dispatch bypassed
-                         ;; `d/transact!` — see the v1 limit in the
-                         ;; doc; we skip :overlay-realized in that
-                         ;; case rather than over-retract from a
-                         ;; reply of unknown shape.
-                         server-tx-data (take-writer-tx! writer-tx-cache max-tx)]
+                         ;; keyed by our ov-id (consumed
+                         ;; exactly-once). Empty only when the
+                         ;; dispatch bypassed `d/transact!` or didn't
+                         ;; carry our `::ov-id` tx-meta tag — see
+                         ;; the v1 limit in the doc; we skip
+                         ;; :overlay-realized in that case rather
+                         ;; than over-retract from a reply of unknown
+                         ;; shape.
+                         server-tx-data (take-writer-tx! writer-tx-cache ov-id)]
                      (when server-tx-data
                        (let [stale-retracts (retract-stale predicted-tx-data
                                                            server-tx-data)]

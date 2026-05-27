@@ -508,6 +508,40 @@
        (opt/unlisten-tx! conn ::probe)
        (opt/unregister! conn))))
 
+#?(:clj
+   (deftest-async tx-report-batched-transacts-converge-to-conn
+     ;; Regression for writer batching: the writer's commit-loop drains
+     ;; `commit-queue` greedily, so several `opt/transact!`s submitted
+     ;; back-to-back can land in one durable commit. The writer then
+     ;; delivers N callbacks with N tx-reports that all share the same
+     ;; `:max-tx` (it replaces `:db-after` with the batch's commit-db
+     ;; on each — see writer.cljc commit-loop). Cache-keying by
+     ;; `:max-tx` would collide; we key by `:ov-id` via `::ov-id` in
+     ;; `:tx-meta`. This test pins that each batched entry's
+     ;; `:overlay-realized` follow-up still sees the right writer
+     ;; tx-data and the consumer view converges to @conn.
+     (let [conn (<! (setup))
+           tx-events (atom [])]
+       (opt/register! conn {:ttl-ms nil})
+       (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+       (let [before (user-datoms @conn #{:name})
+             ;; Fire several optimistic transacts with no awaits
+             ;; between them so they batch in the writer's commit-loop.
+             results (mapv (fn [i]
+                             (opt/transact! conn [{:name (str "batched-" i)}]))
+                           (range 8))]
+         (doseq [r results] (<! (:result r)))
+         (<! (a/timeout 50))
+         (is (= 0 (count (opt/pending conn)))
+             "overlay drained — every batched entry's correlation succeeded")
+         (let [consumer (apply-tx-events @tx-events before)
+               after (user-datoms @conn #{:name})]
+           (is (= consumer after)
+               (str "consumer's incremental view matches @conn under batching "
+                    "(no cross-entry cache collisions)"))))
+       (opt/unlisten-tx! conn ::probe)
+       (opt/unregister! conn))))
+
 (deftest-async ttl-expires-then-fires-result
   ;; An entry whose dispatch never resolves expires after :ttl-ms and
   ;; the :result chan yields a TimeoutException tagged
