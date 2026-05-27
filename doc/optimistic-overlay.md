@@ -284,19 +284,30 @@ stale predictions* alongside the writer's tx-data. Consumers see the
 EID swap explicitly. Keying by stable attributes (`:entity/uuid`) is
 strongly recommended.
 
-### v1 limits on tx-reports
+### v1 limit on tx-reports
 
-- **Custom `:dispatch-fn` that bypasses `d/transact!`** (e.g., a
-  remote HTTP POST whose echo comes in via a separate mechanism): no
-  `:conn-advance` fires for the durable write. The dispatch path's
-  `:overlay-realized` still emits stale-retract cleanup; for the
-  durable adds, route them through `d/transact!` (or a wrapper) so the
-  writer-listener fires.
-- **Foreign-peer writes via konserve-sync** (multi-peer Kabel
-  scenarios where another peer's write echoes in via `on-db-sync!` but
-  doesn't go through `d/transact!`): no `:conn-advance` fires.
-  Standard `listen!` consumers still see `effective-db` updates from
-  these writes; only `listen-tx!` consumers miss the delta.
+`:conn-advance` events fire from a `d/listen` hook on the conn,
+which only triggers when `d/transact!` completes (the writer
+walks `(:listeners (meta connection))` after each successful
+commit). Two scenarios advance `@conn` *without* going through
+that path, and tx-listeners miss the delta in both:
+
+- **A custom `:dispatch-fn` that never calls `d/transact!`** — e.g.
+  fires off an HTTP POST against a non-Datahike server and the
+  durable state lives only on the remote side. The overlay's
+  `:overlay-add` and `:overlay-realized` events still fire, but the
+  consumer's incremental view loses the optimistic data on
+  `:overlay-realized` with nothing replacing it. Mitigation:
+  route the durable write through `d/transact!` somewhere — even
+  just to mirror server state into the local conn.
+
+- **A foreign Kabel-peer write** — another peer commits, and your
+  local `@conn` advances via konserve-sync's `on-db-sync!`, which
+  `reset!`s the atom directly. `add-watch` fires (so eff-db
+  `listen!` consumers see it), but `d/listen` does not, so
+  tx-listeners miss the delta. Mitigation: none in v1; an open
+  follow-up would emit a `:conn-advance` tx-report from
+  `on-db-sync!`.
 
 ## TTL
 
