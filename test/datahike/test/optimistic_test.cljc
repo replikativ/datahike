@@ -1,19 +1,18 @@
-(ns datahike.test.optimistic-smoke-test
-  "Cross-platform smoke + invariant tests for `datahike.optimistic`.
+(ns datahike.test.optimistic-test
+  "Cross-platform tests for `datahike.optimistic`.
 
    Covers:
-     - register! / unregister!
-     - listen! / unlisten!
-     - transact! happy path (channel delivers tx-report)
-     - transact! eager-validation rejection (synchronous throw)
-     - effective-db reduces overlay over @conn
-     - external @conn advances re-fire listeners with correct effective-db
-     - concurrent transacts: each entry stays visible while the other is in flight
-     - default-dispatch closes the visibility gap (hammered reads see no flicker)
-     - custom dispatch with :max-tx closes the gap likewise
-     - Case J (conflict): conflicting entry hides from view, surfaces via
-       :on-conflict, drops on dispatch failure
-     - TTL expiry yields TimeoutException on :result"
+     - API surface (register!, listen!, transact!, listen-tx!)
+     - Consistency invariants: default-dispatch closes the visibility
+       gap; custom dispatch with :max-tx does too; concurrent transacts
+       stay mutually visible
+     - Case J (conflict): a conflicting entry hides from view, surfaces
+       via :on-conflict, and drops cleanly on dispatch failure
+     - TTL: expiry yields a tagged TimeoutException on :result and
+       rolls the view back via the tx-report stream
+     - tx-report convergence: incremental application of tx-data through
+       :overlay-add / :conn-advance / :overlay-realized / :overlay-drop
+       / :overlay-conflict / :overlay-resolve / :ttl arrives at @conn"
   #?(:clj  (:require [clojure.test :refer [deftest is testing]]
                      [datahike.api :as d]
                      [datahike.datom :as dd]

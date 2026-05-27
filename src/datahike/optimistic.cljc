@@ -313,46 +313,49 @@
 
 (defn- default-dispatch
   "Wrap the conn's writer (`d/transact!`) and conform to the
-  `{:reply :max-tx}` contract."
+  `{:reply :max-tx}` contract.
+
+  `d/transact!` returns a `throwable-promise` on CLJ which implements
+  `core.async/ReadPort` (and on failure puts the Throwable as a value
+  on the inner chan, not as a re-throw). So `<!` works uniformly on
+  both platforms — no need to spin a dedicated OS thread via
+  `a/thread` just to wait on the deref."
   [conn tx-data]
   (let [out (chan 1)]
-    #?(:clj
-       (a/thread
-         (try
-           (let [report @(d/transact! conn tx-data)]
-             (put! out {:reply report
-                        :max-tx (:max-tx (:db-after report))}))
-           (catch Throwable e (put! out e))))
-       :cljs
-       (a/go
-         (let [report (a/<! (d/transact! conn tx-data))]
-           (if (throwable? report)
-             (put! out report)
-             (put! out {:reply report
-                        :max-tx (:max-tx (:db-after report))})))))
+    (a/go
+      (let [report (a/<! (d/transact! conn tx-data))]
+        (if (throwable? report)
+          (put! out report)
+          (put! out {:reply report
+                     :max-tx (:max-tx (:db-after report))}))))
     out))
 
 (defn- run-user-dispatch
   "Invoke the user's `:dispatch-fn` and route the result (or any
   throw / yielded-error) onto a single channel. Caller reads with
-  `<?-` to unify throw and yield-an-error."
+  `<?-` to unify throw and yield-an-error.
+
+  CLJ: dispatch-fn may return either a `core.async` `ReadPort`
+  (channel / `promise-chan` / `throwable-promise`) or a plain
+  deref-able (`clojure.core/promise`, `future`). ReadPort returns
+  are awaited in a `go` block (no dedicated OS thread); deref-ables
+  fall through to `a/thread`. CLJS: always a channel."
   [dispatch-fn]
   (let [out (chan 1)]
     #?(:clj
-       (a/thread
-         (try
-           (let [v @(dispatch-fn)]
-             ;; @ on a `throwable-promise` throws; on a plain promise
-             ;; with a Throwable value, we'd get the value back — pass
-             ;; it through and let the consumer's <?- normalize.
-             (put! out v))
-           (catch Throwable e (put! out e))))
+       (let [r (try (dispatch-fn) (catch Throwable e e))]
+         (cond
+           (instance? Throwable r) (put! out r)
+           (satisfies? clojure.core.async.impl.protocols/ReadPort r)
+           (a/go (put! out (a/<! r)))
+           :else
+           (a/thread
+             (try (put! out (deref r))
+                  (catch Throwable e (put! out e))))))
        :cljs
        (a/go
-         (try
-           (let [v (a/<! (dispatch-fn))]
-             (put! out v))
-           (catch :default e (put! out e)))))
+         (try (put! out (a/<! (dispatch-fn)))
+              (catch :default e (put! out e)))))
     out))
 
 ;; -----------------------------------------------------------------------------

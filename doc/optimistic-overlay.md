@@ -152,7 +152,9 @@ tx-report))`. For app-level RPCs, pass `:dispatch-fn` with this
 contract:
 
 - Takes no arguments.
-- Returns a **deref-able** (CLJ) or **`core.async` channel** (CLJS).
+- Returns a **`core.async` channel** (preferred; works uniformly on
+  both platforms and parks rather than blocks) or a **deref-able**
+  (CLJ only; spawns an `a/thread` to wait on).
 - On success: yields `{:reply X :max-tx N}` where `N` is the
   `:max-tx` of the durable commit your RPC produced. `X` is what
   gets put on `:result`.
@@ -161,21 +163,23 @@ contract:
   the entry drops, listeners re-fire, the error lands on `:result`.
 
 ```clojure
+(require '[clojure.core.async :as a])
+
 (opt/transact! conn tx-data
   {:dispatch-fn
    (fn []
-     (let [p (promise)]
-       (future
-         (let [report @(d/transact! conn enriched-tx-data)]
-           (deliver p {:reply  report
-                       :max-tx (:max-tx (:db-after report))})))
-       p))})
+     (let [out (a/chan 1)]
+       (a/go
+         (let [report (a/<! (d/transact! conn enriched-tx-data))]
+           (a/put! out {:reply  report
+                        :max-tx (:max-tx (:db-after report))})))
+       out))})
 ```
 
-If your dispatch yields success without `:max-tx`, the wrapper falls
-back to drop-on-resolve — same behavior as a non-streaming `d/transact`
-on the local writer, with the gap acknowledged in the *Identity
-assumption* below.
+`d/transact!` returns a `throwable-promise` which itself implements
+`core.async/ReadPort` (and `put!`s the Throwable as a value on
+failure — no re-throw), so `<!` reads the reply uniformly on both
+platforms. No extra thread, no extra promise.
 
 ## Conflicts (Case J)
 
