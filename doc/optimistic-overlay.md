@@ -245,11 +245,11 @@ USER
  │     1. eager d/with → predicted-tx-data
  │     2. append entry to overlay (with :ov-id, no :expected-max-tx yet)
  │     3. emit :overlay-add tx-report
- │     4. spawn dispatch go-block
+ │     4. spawn dispatch go-block (calls default-dispatch)
  ▼
 WRITER  (the conn's `d/transact!` flow — :self / :kabel / :datahike-server)
  │
- │  default-dispatch injects {::ov-id ov-id} into tx-meta and calls d/transact!
+ │  default-dispatch calls d/transact! and awaits its per-call promise
  │  → writer commits (possibly batching with other in-flight transacts)
  │  → reset! @conn  ────────────────────────────────────────────────────────┐
  │                                                                          │
@@ -263,20 +263,25 @@ WRITER  (the conn's `d/transact!` flow — :self / :kabel / :datahike-server)
  │                                                                 │  fire-listeners) │
  │                                                                 └──────────────────┘
  │                                                                          │
- │  writer's go-block delivers tx-report to the callback ───────────────────┤
- │  → conn-listener fires (our writer-listener hook):                       │
- │      • caches writer's :tx-data keyed by ov-id (from :tx-meta)           │
+ │  writer's go-block delivers per-call tx-report ──────────────────────────┤
+ │  → conn-listener fires (eff-db consumers' :conn-advance event):          │
  │      • emits :conn-advance tx-report                                     │
+ │      • (no caching here — see below)                                     │
  │                                                                          ▼
- │                                                                ┌───────────────────┐
- │  promise resolves → default-dispatch's go-block reads result   │ dispatch go-block │
- │  → optimistic-transact's go-block resumes:                     │ resumes:          │
- │      • set :expected-max-tx                                    │   - dropping? T   │
- │      • dropping? = (:max-tx @conn) >= max-tx ⇒ true            │   - sync-drop     │
- │      • sync-drop entry                                         │   - retract-stale │
- │      • take writer-tx-cache by ov-id; compute retract-stale    │   - emit          │
- │      • emit :overlay-realized (empty when EIDs match)          │   - deliver result│
- │      • put reply on :result                                    └───────────────────┘
+ │  → promise resolves → default-dispatch's go-block reads its       ┌───────────────────┐
+ │    own per-call tx-report (1:1 mapping; batching shares           │ dispatch go-block │
+ │    :max-tx but per-call :tx-data is distinct):                    │ resumes:          │
+ │      • caches writer's :tx-data keyed by ov-id                    │   - dropping? T   │
+ │      • puts {:reply :max-tx} on internal channel                  │   - sync-drop     │
+ │                                                                   │     (swap-vals!,  │
+ │  → optimistic-transact's go-block resumes:                        │      we-dropped?  │
+ │      • set :expected-max-tx                                       │      check)       │
+ │      • dropping? = (:max-tx @conn) >= max-tx ⇒ true               │   - retract-stale │
+ │      • sync-drop entry via swap-vals!; if WE removed it:          │     via cache     │
+ │        - take writer-tx-cache by ov-id                            │   - emit          │
+ │        - compute retract-stale                                    │   - deliver result│
+ │        - emit :overlay-realized (empty when EIDs match)           └───────────────────┘
+ │      • put reply on :result
  ▼
 :result chan yields the tx-report
 ```
@@ -321,26 +326,41 @@ through `:tx-meta` on the durable transact.
 Datahike's writer drains its commit-queue greedily — `writer.cljc`'s
 commit-loop polls for queued transactions and commits them as one
 batch. Inside the batch the writer overwrites each tx-report's
-`:db-after` with the batch's commit-db before delivering to the
-callback. So **N batched transactions report the same `:max-tx`** —
-the watermark works for *all* of them simultaneously, but it can't
-tell them apart.
+`:db-after` with the batch's `commit-db` before delivering to each
+callback. So **N batched transactions all report the same
+`:max-tx`** — the watermark works for all of them simultaneously,
+but it can't tell them apart.
 
-If we keyed the writer-tx cache by `:max-tx`, the N writer-listener
-calls would all write the same slot and overwrite each other; the
-sync-drop paths would read the *last* tx-data for all N entries and
-emit nonsense `retract-stale` events.
+The watcher (`d/listen` hook) sees this batched aggregate semantics:
+N fires, each with its own per-tx `:tx-data` but a shared
+`:max-tx`. Keying a cache by `:max-tx` would collide.
 
-`default-dispatch` injects `{::ov-id ov-id}` into the `d/transact!`
-arg-map's `:tx-meta`. The writer only augments `:tx-meta` (it adds
-`:db/commitId`) — it preserves whatever else is there. Each batched
-tx-report carries its own original `:ov-id`. The writer-listener
-extracts it, caches by ov-id, and each entry's sync-drop reads its
-own writer tx-data back. Cache collisions disappear.
+But each call to **`d/transact!` itself** returns a per-call promise
+that resolves with that specific call's tx-report — the writer
+wires each commit's per-callback channel back to the specific
+caller. So `default-dispatch` does the caching:
 
-Foreign `d/transact!`s on the same conn (no `::ov-id` tag) still
-emit `:conn-advance` to the eff-db listeners — they just don't go
-through the cache (there's nothing to correlate).
+```clojure
+(a/go
+  (let [report (a/<! (d/transact! conn tx-data))]
+    ;; report is THIS call's tx-report, with its own :tx-data
+    (cache-writer-tx! writer-tx-cache ov-id (vec (:tx-data report)))
+    (put! out {:reply report :max-tx (:max-tx (:db-after report))})))
+```
+
+`ov-id` is in lexical scope; the per-call tx-report is what the
+promise yields. No tx-meta round-trip, no schema modification, no
+batching ambiguity.
+
+The watcher then reads the cache by `ov-id` when it drops a stale
+entry. Both paths (dispatch's sync-drop and watcher's
+`drop-caught-up!`) use atomic `swap-vals!` with a `we-dropped?`
+check so only the path that actually removed the entry emits the
+`:overlay-realized` event — no double-emit even if they race.
+
+For foreign `d/transact!`s on the same conn, the writer-listener
+still fires and emits `:conn-advance` — eff-db consumers see those
+durable changes — but nothing gets cached (no ov-id is involved).
 
 ### Conflicts (Case J)
 
@@ -443,14 +463,16 @@ EIDs match — `retract-stale` returns empty and no
       `listen!` consumers see it), but `d/listen` does not.
       Mitigation: none in v1; an open follow-up would emit a
       `:conn-advance` from `on-db-sync!`.
-- **Stale-prediction cleanup (`:overlay-realized`) only fires for
-  default-dispatch and for custom dispatches that route through
-  `d/transact!`.** A custom `:dispatch-fn` that bypasses `d/transact!`
-  doesn't get the `::ov-id` round-trip through `:tx-meta`, so the
-  writer-tx-cache has nothing to correlate against. The consumer's
-  incremental view still rolls back via the watcher-drop path (with
-  full-negate of the prediction) when `@conn` eventually catches up,
-  but the EID-shift refinement is skipped.
+- **EID-shift cleanup (`:overlay-realized` with `retract-stale`)
+  only fires for default-dispatch.** Only `default-dispatch` knows
+  which `d/transact!` call corresponds to which overlay entry
+  (`ov-id` is in scope when the per-call promise resolves, so we
+  cache `:tx-data` by `ov-id` there). A custom `:dispatch-fn` —
+  even one that internally calls `d/transact!` — doesn't share that
+  scope; the writer-tx-cache has nothing to correlate against. The
+  consumer's incremental view still rolls back via the watcher-drop
+  path (full-negate of the prediction) when `@conn` catches up, but
+  the precise EID-shift refinement is skipped.
 - **Pending entries are not persisted.** Overlay state is in-memory;
   a page reload drops in-flight optimistic entries. Persistence
   (IndexedDB on browser, file on Node) is an open follow-up — see
