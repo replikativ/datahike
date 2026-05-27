@@ -207,26 +207,41 @@
         (is (= 0 (count (opt/pending conn))) "overlay drained after dispatch resolved")))
     (opt/unregister! conn)))
 
-;; A dispatch-fn that resolves only when an external `release-ch` closes
-;; or yields a value. Used to hold an optimistic entry in flight while
-;; the test asserts intermediate state. The resolver thunk is called
-;; *after* release; its return must conform to {:reply :max-tx} or be
-;; a Throwable / js/Error (the wrapper normalizes both).
+;; A dispatch-fn that resolves only when an external `release-ch`
+;; closes or yields a value. Used to hold an optimistic entry in
+;; flight while the test asserts intermediate state.
+;;
+;; `resolver` may return either:
+;;   - a plain value (delivered as-is when release fires), or
+;;   - a `core.async` channel (whose value, when taken, is delivered).
+;;
+;; Channel-return is necessary when the resolver wants to do its own
+;; `<!` takes (e.g. waiting on `(d/transact! ...)`), because `<!` is
+;; a macro that's rewritten by the *lexically enclosing* `go` form —
+;; a thunk body containing `<!` compiled outside any `go` expands to
+;; the assert-nil fallback regardless of where it's later called.
+;; Having the resolver build its own `go` and hand back the channel
+;; sidesteps that pitfall. The plain-value form is for resolvers that
+;; have no async work to do.
 (defn- gated-dispatch [release-ch resolver]
   (fn []
     #?(:clj
        (let [p (promise)]
-         (a/thread
-           (a/<!! release-ch)
-           (deliver p (try (resolver)
-                           (catch Throwable e e))))
+         (go
+           (a/<! release-ch)
+           (let [r (resolver)]
+             (deliver p (if (satisfies? clojure.core.async.impl.protocols/ReadPort r)
+                          (a/<! r)
+                          r))))
          p)
        :cljs
        (let [out (a/chan 1)]
          (go
            (a/<! release-ch)
-           (try (a/put! out (resolver))
-                (catch :default e (a/put! out e))))
+           (let [r (resolver)]
+             (a/put! out (if (satisfies? cljs.core.async.impl.protocols/ReadPort r)
+                           (a/<! r)
+                           r))))
          out))))
 
 (deftest-async conflict-surfaces-via-on-conflict
@@ -251,10 +266,13 @@
                                   (gated-dispatch
                                    release
                                    (fn []
-                                     (let [r (<! (d/transact! conn [{:slot "S" :who "alice"}]))]
-                                       (if (instance? #?(:clj Throwable :cljs js/Error) r)
-                                         r
-                                         {:reply r :max-tx (:max-tx (:db-after r))}))))})]
+                                     (let [out (a/chan 1)]
+                                       (go (let [r (<! (d/transact! conn [{:slot "S" :who "alice"}]))]
+                                             (a/put! out
+                                                     (if (instance? #?(:clj Throwable :cljs js/Error) r)
+                                                       r
+                                                       {:reply r :max-tx (:max-tx (:db-after r))}))))
+                                       out)))})]
       (<! (a/timeout 20))
       (is (contains?
            (set (->> (d/q '[:find ?w :where [?e :who ?w]] (opt/effective-db conn))
@@ -273,7 +291,9 @@
       (a/close! release)
       (let [reply (<! (:result opt-res))]
         (is (instance? #?(:clj Throwable :cljs js/Error) reply)
-            ":result yields the server's rejection")))
+            ":result yields the server's rejection")
+        (is (= :transact/unique (:error (ex-data reply)))
+            ":result carries the unique-constraint error (not an AssertionError from misused <!)")))
     (<! (a/timeout 50))
     (is (= 0 (count (opt/pending conn))) "overlay drained")
     (is (= [] (last @conflicts)) "on-conflict cleared once entry removed")
@@ -361,15 +381,20 @@
                                      (gated-dispatch
                                       release
                                       (fn []
-                                        (let [r (<! (d/transact! conn [{:slot "S" :who "alice"}]))]
-                                          (if (instance? Throwable r)
-                                            r
-                                            {:reply r :max-tx (:max-tx (:db-after r))}))))})]
+                                        (let [out (a/chan 1)]
+                                          (go (let [r (<! (d/transact! conn [{:slot "S" :who "alice"}]))]
+                                                (a/put! out
+                                                        (if (instance? Throwable r)
+                                                          r
+                                                          {:reply r :max-tx (:max-tx (:db-after r))}))))
+                                          out)))})]
          ;; Sneak in a conflicting durable write first.
          (<! (d/transact! conn [{:slot "S" :who "mallory"}]))
          (a/close! release)
          (let [reply (<! (:result opt-res))]
-           (is (instance? Throwable reply) "dispatch returned the rejection"))
+           (is (instance? Throwable reply) "dispatch returned the rejection")
+           (is (= :transact/unique (:error (ex-data reply)))
+               ":result carries the server's unique-constraint error"))
          (<! (a/timeout 50))
          (let [origins (mapv :origin @tx-events)]
            (is (some #{:overlay-add} origins) ":overlay-add was emitted")

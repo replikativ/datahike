@@ -378,32 +378,36 @@
   Additional on-conflict listeners can be registered later via
   `on-conflict!`."
   ([conn] (register! conn {}))
-  ([conn {:keys [ttl-ms on-conflict] :or {ttl-ms default-ttl-ms}}]
-   (when-not (conn-state conn)
-     (let [overlay           (atom [])
-           listeners         (atom {})
-           tx-listeners      (atom {})
-           on-conflicts      (atom (if on-conflict
-                                     {::default-on-conflict on-conflict}
-                                     {}))
-           last-conflict-ids (atom #{})
-           last-effective-db (atom nil)
-           heartbeat-stop    (chan)
-           watch-key         (keyword "datahike.optimistic"
-                                      (str "watch-" (random-uuid)))
-           writer-listen-key (keyword "datahike.optimistic"
-                                      (str "writer-" (random-uuid)))]
-       (swap! *state assoc conn
-              {:overlay           overlay
-               :listeners         listeners
-               :tx-listeners      tx-listeners
-               :on-conflicts      on-conflicts
-               :last-conflict-ids last-conflict-ids
-               :last-effective-db last-effective-db
-               :heartbeat-stop    heartbeat-stop
-               :ttl-ms            ttl-ms
-               :watch-key         watch-key
-               :writer-listen-key writer-listen-key})
+  ([conn {:keys [on-conflict] :as opts}]
+   ;; Resolve ttl-ms via `contains?` so an explicit `:ttl-ms nil`
+   ;; reaches us as nil (= disable), instead of being overwritten by
+   ;; an `:or` default.
+   (let [ttl-ms (if (contains? opts :ttl-ms) (:ttl-ms opts) default-ttl-ms)]
+     (when-not (conn-state conn)
+       (let [overlay           (atom [])
+             listeners         (atom {})
+             tx-listeners      (atom {})
+             on-conflicts      (atom (if on-conflict
+                                       {::default-on-conflict on-conflict}
+                                       {}))
+             last-conflict-ids (atom #{})
+             last-effective-db (atom nil)
+             heartbeat-stop    (chan)
+             watch-key         (keyword "datahike.optimistic"
+                                        (str "watch-" (random-uuid)))
+             writer-listen-key (keyword "datahike.optimistic"
+                                        (str "writer-" (random-uuid)))]
+         (swap! *state assoc conn
+                {:overlay           overlay
+                 :listeners         listeners
+                 :tx-listeners      tx-listeners
+                 :on-conflicts      on-conflicts
+                 :last-conflict-ids last-conflict-ids
+                 :last-effective-db last-effective-db
+                 :heartbeat-stop    heartbeat-stop
+                 :ttl-ms            ttl-ms
+                 :watch-key         watch-key
+                 :writer-listen-key writer-listen-key})
        ;; The conn's writer-listener fires for every successful
        ;; `d/transact!` through this conn — whether it came from our
        ;; own `opt/transact!`'s default dispatch OR a direct call by
@@ -416,18 +420,18 @@
        ;; time our own dispatch's go-block resumes, the :conn-advance
        ;; has already been emitted, and the dispatch path only needs
        ;; to emit any stale-retract follow-up.
-       (d/listen conn writer-listen-key
-                 (fn [tx-report]
-                   (let [db-before (or @last-effective-db @conn)]
-                     (emit-tx! conn {:db-before db-before
-                                     :db-after  (effective-db conn)
-                                     :tx-data   (vec (:tx-data tx-report))
-                                     :tempids   (:tempids tx-report)
-                                     :tx-meta   (:tx-meta tx-report)
-                                     :origin    :conn-advance}))))
-       (add-watch conn watch-key
-                  (fn [_ _ old new] (on-conn-advance conn old new)))
-       (start-heartbeat! conn heartbeat-stop)))
+         (d/listen conn writer-listen-key
+                   (fn [tx-report]
+                     (let [db-before (or @last-effective-db @conn)]
+                       (emit-tx! conn {:db-before db-before
+                                       :db-after  (effective-db conn)
+                                       :tx-data   (vec (:tx-data tx-report))
+                                       :tempids   (:tempids tx-report)
+                                       :tx-meta   (:tx-meta tx-report)
+                                       :origin    :conn-advance}))))
+         (add-watch conn watch-key
+                    (fn [_ _ old new] (on-conn-advance conn old new)))
+         (start-heartbeat! conn heartbeat-stop))))
    conn))
 
 (defn unregister!
@@ -595,7 +599,7 @@
          (let [val (<?- (if dispatch-fn
                           (run-user-dispatch dispatch-fn)
                           (default-dispatch conn tx-data)))]
-           (when-not (and (map? val) (contains? val :reply))
+           (when-not (and (map? val) (contains? val :reply) (contains? val :max-tx))
              (throw (ex-info
                      "dispatch-fn returned an invalid shape; expected {:reply :max-tx}"
                      {:type :optimistic/invalid-dispatch :got val})))
@@ -613,9 +617,11 @@
                  still-present? (some #(= (:ov-id %) ov-id) new-overlay)]
              (when still-present?
                (let [conn-max (:max-tx @conn)
-                     synced? (and max-tx conn-max (>= conn-max max-tx))
-                     force-drop? (nil? max-tx)
-                     dropping? (or synced? force-drop?)
+                     ;; `dispatch-fn` contract requires :max-tx, so we
+                     ;; drop the entry iff @conn has caught up. The
+                     ;; watcher will drop it later if @conn is still
+                     ;; behind at this point.
+                     dropping? (and max-tx conn-max (>= conn-max max-tx))
                      db-before-drop (effective-db conn)
                      _ (when dropping?
                          (swap! overlay
