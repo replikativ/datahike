@@ -268,22 +268,33 @@ WRITER  (the conn's `d/transact!` flow — :self / :kabel / :datahike-server)
  │      • emits :conn-advance tx-report                                     │
  │      • (no caching here — see below)                                     │
  │                                                                          ▼
- │  → promise resolves → default-dispatch's go-block reads its       ┌───────────────────┐
- │    own per-call tx-report (1:1 mapping; batching shares           │ dispatch go-block │
- │    :max-tx but per-call :tx-data is distinct):                    │ resumes:          │
- │      • caches writer's :tx-data keyed by ov-id                    │   - dropping? T   │
- │      • puts {:reply :max-tx} on internal channel                  │   - sync-drop     │
- │                                                                   │     (swap-vals!,  │
- │  → optimistic-transact's go-block resumes:                        │      we-dropped?  │
- │      • set :expected-max-tx                                       │      check)       │
- │      • dropping? = (:max-tx @conn) >= max-tx ⇒ true               │   - retract-stale │
- │      • sync-drop entry via swap-vals!; if WE removed it:          │     via cache     │
- │        - take writer-tx-cache by ov-id                            │   - emit          │
- │        - compute retract-stale                                    │   - deliver result│
- │        - emit :overlay-realized (empty when EIDs match)           └───────────────────┘
- │      • put reply on :result
- ▼
-:result chan yields the tx-report
+ │  → promise resolves → default-dispatch's go-block reads its
+ │    own per-call tx-report (1:1 mapping; batching shares
+ │    :max-tx but per-call :tx-data is distinct):
+ │      • caches writer's :tx-data keyed by ov-id
+ │      • puts {:reply :max-tx} on internal channel
+ │
+ │  → optimistic-transact's go-block resumes:
+ │      • set :expected-max-tx on the entry
+ │      • call try-drop-and-emit-realized!  ──────────────────┐
+ │      • deliver reply on :result                            │
+ ▼                                                            ▼
+:result chan yields the tx-report           ┌───────────────────────────────────┐
+                                            │ try-drop-and-emit-realized!       │
+                                            │ (the single drop+emit path; the   │
+                                            │  watcher's on-conn-advance calls  │
+                                            │  it too on later @conn changes):  │
+                                            │   • drop-caught-up! atomically    │
+                                            │     removes entries whose         │
+                                            │     :expected-max-tx ≤ @conn      │
+                                            │     :max-tx, returns the entries  │
+                                            │     THIS swap actually removed    │
+                                            │   • for each dropped entry:       │
+                                            │     - take writer-tx-cache        │
+                                            │     - retract-stale (cache hit)   │
+                                            │       or negate (cache miss)      │
+                                            │     - emit :overlay-realized      │
+                                            └───────────────────────────────────┘
 ```
 
 For the typical happy path (default-dispatch + matching EIDs)
@@ -352,11 +363,26 @@ caller. So `default-dispatch` does the caching:
 promise yields. No tx-meta round-trip, no schema modification, no
 batching ambiguity.
 
-The watcher then reads the cache by `ov-id` when it drops a stale
-entry. Both paths (dispatch's sync-drop and watcher's
-`drop-caught-up!`) use atomic `swap-vals!` with a `we-dropped?`
-check so only the path that actually removed the entry emits the
-`:overlay-realized` event — no double-emit even if they race.
+The drop+emit logic itself lives in a single helper —
+`try-drop-and-emit-realized!` — called from two trigger points:
+
+- The dispatch's own go-block, immediately after stamping
+  `:expected-max-tx`. For default-dispatch on `:self`/`:kabel`,
+  `@conn` is already past `:max-tx` at this moment (the writer's
+  `reset!` ran before our promise delivered), so the helper drops
+  here.
+- `on-conn-advance` (the `add-watch` callback), after
+  `fire-listeners!` on every `@conn` change. This covers the
+  custom-`:dispatch-fn`-with-future-`:max-tx` case, where the
+  dispatch resolves before `@conn` has caught up — the entry waits
+  in the overlay for a later commit to bump `@conn` past its
+  watermark.
+
+The helper uses an atomic `swap-vals!` inside `drop-caught-up!` —
+each entry is removed by exactly one swap. Both triggers can fire
+for the same advance (e.g., when the dispatch resumes immediately
+after a `reset!`), but only one will see the entry "in old, not in
+new" and emit the event. No double-emit.
 
 For foreign `d/transact!`s on the same conn, the writer-listener
 still fires and emits `:conn-advance` — eff-db consumers see those
@@ -463,16 +489,20 @@ EIDs match — `retract-stale` returns empty and no
       `listen!` consumers see it), but `d/listen` does not.
       Mitigation: none in v1; an open follow-up would emit a
       `:conn-advance` from `on-db-sync!`.
-- **EID-shift cleanup (`:overlay-realized` with `retract-stale`)
-  only fires for default-dispatch.** Only `default-dispatch` knows
-  which `d/transact!` call corresponds to which overlay entry
-  (`ov-id` is in scope when the per-call promise resolves, so we
-  cache `:tx-data` by `ov-id` there). A custom `:dispatch-fn` —
-  even one that internally calls `d/transact!` — doesn't share that
-  scope; the writer-tx-cache has nothing to correlate against. The
-  consumer's incremental view still rolls back via the watcher-drop
-  path (full-negate of the prediction) when `@conn` catches up, but
-  the precise EID-shift refinement is skipped.
+- **`retract-stale` precision requires default-dispatch.** Only
+  `default-dispatch` correlates writer-tx-data with `:ov-id` (it
+  has both in scope when its per-call promise resolves) and caches
+  it for later. The drop+emit path uses that cache: on hit,
+  `retract-stale` produces an empty event for matching EIDs and a
+  precise event for EID-shift; on miss, the path falls back to
+  full-negate of the prediction. A custom `:dispatch-fn` — even
+  one that internally calls `d/transact!` — doesn't share
+  `default-dispatch`'s scope, so its entries take the full-negate
+  fallback. The consumer view still converges (the unrelated
+  `:conn-advance` for the durable commit carries its own tx-data
+  on top), but the matching-EID optimization (suppressing the
+  `:overlay-realized` event entirely when nothing needs cleanup)
+  is skipped.
 - **Pending entries are not persisted.** Overlay state is in-memory;
   a page reload drops in-flight optimistic entries. Persistence
   (IndexedDB on browser, file on Node) is an open follow-up — see

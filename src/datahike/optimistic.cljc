@@ -260,13 +260,28 @@
       (put! (:result-ch entry) value))))
 
 ;; -----------------------------------------------------------------------------
-;; Watcher: drop entries whose @conn caught up
+;; Catch-up: drop overlay entries whose @conn caught up, emit :overlay-realized
 ;; -----------------------------------------------------------------------------
+;;
+;; Two events can cause an entry to "catch up" (= `@conn :max-tx` reaches the
+;; entry's `:expected-max-tx`): the dispatch resuming with its watermark for
+;; the default-dispatch case (`@conn` already advanced by the writer), or a
+;; later `@conn` change for the custom-dispatch-with-future-`:max-tx` case.
+;; Both events go through the same code:
+;;
+;;   * `drop-caught-up!`  — atomic `swap-vals!`; returns only the entries
+;;                          this swap actually removed (race-free against a
+;;                          concurrent caller — exactly one swap wins per
+;;                          entry).
+;;   * `emit-overlay-realized!` — for each dropped entry, retract-stale via
+;;                                 the cache when present, else full-negate.
+;;
+;; `try-drop-and-emit-realized!` is the single entry point both triggers call.
 
 (defn- drop-caught-up!
-  "Atomically remove entries whose `:expected-max-tx` is <= the new
-  @conn's `:max-tx`. Returns the seq of removed entries (for the
-  caller to emit `:overlay-realized` events from)."
+  "Atomically remove entries whose `:expected-max-tx` is <= `new-max`.
+  Returns the entries this swap actually removed (race-free: a concurrent
+  caller's swap returns the entries IT removed, with no overlap)."
   [overlay new-max]
   (let [caught-up? (fn [{:keys [expected-max-tx]}]
                      (and expected-max-tx new-max (>= new-max expected-max-tx)))
@@ -274,40 +289,47 @@
                                (fn [v] (filterv (complement caught-up?) v)))]
     (filterv caught-up? old)))
 
+(defn- emit-overlay-realized!
+  "Emit one `:overlay-realized` tx-report per dropped entry.
+
+  Prefer `retract-stale` over the cached writer-tx-data — accurate for
+  both matching-EID (returns empty → no event) and EID-shift (returns
+  only the stale prediction datoms). For entries whose writer-tx-data
+  was never cached (custom-`:dispatch-fn` bypassed `d/transact!`),
+  fall back to full-negate as best-effort cleanup."
+  [conn dropped db-before db-after]
+  (when-let [{:keys [writer-tx-cache]} (conn-state conn)]
+    (doseq [e dropped]
+      (let [server-tx-data (take-writer-tx! writer-tx-cache (:ov-id e))
+            retracts (if server-tx-data
+                       (retract-stale (:predicted-tx-data e) server-tx-data)
+                       (negate (:predicted-tx-data e)))]
+        (when (seq retracts)
+          (emit-tx! conn {:db-before db-before
+                          :db-after  db-after
+                          :tx-data   retracts
+                          :origin    :overlay-realized
+                          :ov-id     (:ov-id e)}))))))
+
+(defn- try-drop-and-emit-realized!
+  "Single entry point for both the watcher and dispatch triggers. Drops
+  any caught-up entries and emits `:overlay-realized` for the entries
+  THIS call actually removed."
+  [conn]
+  (when-let [{:keys [overlay last-effective-db]} (conn-state conn)]
+    (let [db-before (or @last-effective-db @conn)
+          dropped (drop-caught-up! overlay (:max-tx @conn))]
+      (when (seq dropped)
+        (emit-overlay-realized! conn dropped db-before (effective-db conn))))))
+
 (defn- on-conn-advance [conn old-db new-db]
   (when (not= (:max-tx old-db) (:max-tx new-db))
-    (let [{:keys [overlay last-effective-db writer-tx-cache]} (conn-state conn)
-          db-before (or @last-effective-db @conn)
-          dropped (when overlay (drop-caught-up! overlay (:max-tx new-db)))]
-      ;; @conn moved — re-fire eff-db listeners with the new view.
-      (fire-listeners! conn)
-      ;; `drop-caught-up!` returns only the entries this swap actually
-      ;; removed — atomic against a concurrent dispatch-path drop.
-      ;; (Each entry can be dropped by exactly one path. The other path's
-      ;; swap is a no-op and its `we-dropped?` flag will be false, so
-      ;; it won't double-emit.)
-      ;;
-      ;; For each dropped entry, prefer `retract-stale` over the cached
-      ;; writer-tx-data — accurate for both matching-EID (returns empty
-      ;; → no event) and EID-shift (returns only the stale prediction
-      ;; datoms). For entries whose writer-tx-data was never cached
-      ;; (the custom-`:dispatch-fn`-bypasses-`d/transact!` case),
-      ;; fall back to full-negate as best-effort cleanup; the consumer
-      ;; view rolls back to baseline and any concurrent `:conn-advance`
-      ;; from an unrelated commit carries its own tx-data on top.
-      (when (seq dropped)
-        (let [db-after (effective-db conn)]
-          (doseq [e dropped]
-            (let [server-tx-data (take-writer-tx! writer-tx-cache (:ov-id e))
-                  retracts (if server-tx-data
-                             (retract-stale (:predicted-tx-data e) server-tx-data)
-                             (negate (:predicted-tx-data e)))]
-              (when (seq retracts)
-                (emit-tx! conn {:db-before db-before
-                                :db-after  db-after
-                                :tx-data   retracts
-                                :origin    :overlay-realized
-                                :ov-id     (:ov-id e)})))))))))
+    ;; @conn moved — re-fire eff-db listeners with the new view.
+    (fire-listeners! conn)
+    ;; Then catch up any entries whose `:expected-max-tx` was reached
+    ;; by this advance (custom-dispatch-with-future-`:max-tx` case;
+    ;; the default-dispatch path has its own eager call below).
+    (try-drop-and-emit-realized! conn)))
 
 ;; -----------------------------------------------------------------------------
 ;; TTL heartbeat
@@ -621,7 +643,7 @@
   pass `:ttl-ms nil` to disable the TTL for this call."
   ([conn tx-data] (transact! conn tx-data {}))
   ([conn tx-data {:keys [dispatch-fn] :as opts}]
-   (let [{:keys [overlay writer-tx-cache] :as st}
+   (let [{:keys [overlay] :as st}
          (or (conn-state conn)
              (throw (ex-info "Conn not registered for optimistic updates"
                              {:conn conn})))
@@ -669,48 +691,22 @@
              (throw (ex-info
                      "dispatch-fn returned an invalid shape; expected {:reply :max-tx}"
                      {:type :optimistic/invalid-dispatch :got val})))
-           (let [{:keys [reply max-tx]} val
-                 ;; Mark the entry with its watermark — the watcher
-                 ;; will drop it when @conn :max-tx catches up.
-                 [_old new-overlay]
-                 (swap-vals! overlay
-                             (fn [v]
-                               (mapv (fn [e]
-                                       (if (= (:ov-id e) ov-id)
-                                         (assoc e :expected-max-tx max-tx)
-                                         e))
-                                     v)))
-                 still-present? (some #(= (:ov-id %) ov-id) new-overlay)]
-             (when still-present?
-               (let [conn-max (:max-tx @conn)
-                     ;; `dispatch-fn` contract requires :max-tx, so we
-                     ;; drop the entry iff @conn has caught up. If it
-                     ;; hasn't, the watcher will drop it later when
-                     ;; @conn does — and the watcher's path uses the
-                     ;; same cache, so the cleanup is identical.
-                     dropping? (and max-tx conn-max (>= conn-max max-tx))]
-                 (when dropping?
-                   (let [db-before-drop (effective-db conn)
-                         [old new] (swap-vals! overlay
-                                               #(filterv (fn [e] (not= (:ov-id e) ov-id)) %))
-                         ;; Only emit if WE removed the entry. If the
-                         ;; watcher's `drop-caught-up!` already
-                         ;; removed it (because add-watch fired
-                         ;; between `set :expected-max-tx` and here),
-                         ;; the watcher already emitted using the
-                         ;; same cache — don't double-emit.
-                         we-dropped? (not= (count old) (count new))]
-                     (when we-dropped?
-                       (let [server-tx-data (take-writer-tx! writer-tx-cache ov-id)]
-                         (when server-tx-data
-                           (let [stale-retracts (retract-stale predicted-tx-data
-                                                               server-tx-data)]
-                             (when (seq stale-retracts)
-                               (emit-tx! conn {:db-before db-before-drop
-                                               :db-after  (effective-db conn)
-                                               :tx-data   stale-retracts
-                                               :origin    :overlay-realized
-                                               :ov-id     ov-id}))))))))))
+           (let [{:keys [reply max-tx]} val]
+             ;; Stamp the watermark and let the single drop+emit path
+             ;; handle the rest. If @conn has already caught up (the
+             ;; default-dispatch case — writer's `reset!` ran before
+             ;; the per-call promise delivered), `try-drop-and-emit-
+             ;; realized!` drops the entry here. Otherwise it stays
+             ;; until the watcher's `on-conn-advance` triggers the
+             ;; same path on the next @conn change.
+             (swap! overlay
+                    (fn [v]
+                      (mapv (fn [e]
+                              (if (= (:ov-id e) ov-id)
+                                (assoc e :expected-max-tx max-tx)
+                                e))
+                            v)))
+             (try-drop-and-emit-realized! conn)
              (deliver-result! entry reply)))
          (catch #?(:clj Throwable :cljs :default) e
            ;; Drop the entry if still present; fire eff-db listeners;
