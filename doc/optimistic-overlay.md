@@ -1,7 +1,10 @@
 # Optimistic Overlay (`datahike.optimistic`)
 
-**Status: Experimental** — Stable enough for client-side prototyping;
-not yet exercised under multi-writer or concurrent-peer load.
+**Status: Experimental** — Stable enough for client-side prototyping.
+Exercised under same-conn concurrency (concurrent `opt/transact!`s and
+interleaved direct `d/transact!`s, including the unique-collision
+Case J path); not yet exercised across multiple peers writing to the
+same store over a real Kabel connection.
 
 The `datahike.optimistic` namespace adds a thin overlay on top of a
 Datahike connection that lets UIs render a transaction's effect
@@ -256,16 +259,25 @@ so the overlay is decoupled from the wire path. Remember to include
   WebSocket drops between dispatch and echo, the dispatch fails or
   the entry's TTL expires. Restoring a pending queue on reconnect
   belongs in the Kabel writer, not the overlay. Open follow-up.
-- **Single-writer-per-conn assumption.** Overlay entry removal is
-  driven by your own `transact!` calls and the watermark logic.
-  Multiple peers writing to the same store are fine for sync but
-  unstudied for adversarial overlay scenarios.
+- **Cross-peer scenarios are unstudied.** Same-conn concurrency
+  (concurrent `opt/transact!`s on one conn, interleaved direct
+  `d/transact!`s, Case J unique-collision) is exercised by the smoke
+  tests. *Multiple* peers writing to the same store over a real
+  Kabel connection — where `@conn` may advance via `on-db-sync!` from
+  a write none of your dispatches knows about — is structurally
+  supported by the `:max-tx` watermark argument but hasn't been put
+  on the bench yet.
 - **No IndexedDB persistence of pending entries.** Overlay state is
   in-memory; a page reload drops in-flight optimistic entries.
 - **Eager validation throws synchronously**; server-side errors arrive
   on the result channel. Two failure paths, two mental models —
   programmer errors in tx-data are categorically different from
   runtime server rejection.
+- **Listener fires twice per successful `transact!`** (once on
+  overlay add, once when `@conn` advances with the durable datoms).
+  Both events show the correct effective db — no incorrect
+  intermediate state — but it's redundant. Consumers can dedupe by
+  comparing `:max-tx` if they care.
 
 ## See also
 
