@@ -444,19 +444,24 @@
                                        {::default-on-conflict on-conflict}
                                        {}))
              last-conflict-ids (atom #{})
-             last-effective-db (atom nil)
+             ;; Seed `last-effective-db` with the current state so the
+             ;; very first emitted tx-report has an accurate
+             ;; `:db-before` even if a foreign `d/transact!` lands
+             ;; before any overlay activity has fired `fire-listeners!`.
+             last-effective-db (atom @conn)
              heartbeat-stop    (chan)
              watch-key         (keyword "datahike.optimistic"
                                         (str "watch-" (random-uuid)))
              writer-listen-key (keyword "datahike.optimistic"
                                         (str "writer-" (random-uuid)))
              ;; Cache of writer's tx-data per `:ov-id`, populated by
-             ;; the writer-listener and consumed by the dispatch path
-             ;; (and by `drain-pending-realized!` for watcher-dropped
-             ;; entries) to compose correct `:overlay-realized`
-             ;; stale-retracts. Bounded naturally by the number of
-             ;; in-flight optimistic transacts — each ov-id is
-             ;; consumed exactly once on its corresponding drop.
+             ;; `default-dispatch` after its per-call promise resolves
+             ;; (where ov-id is in scope) and consumed by both the
+             ;; dispatch's sync-drop path and the watcher's
+             ;; `on-conn-advance` to compose correct
+             ;; `:overlay-realized` stale-retracts. Bounded naturally
+             ;; by the number of in-flight optimistic transacts —
+             ;; each ov-id is consumed exactly once on its drop.
              writer-tx-cache   (atom {})]
          (swap! *state assoc conn
                 {:overlay           overlay
@@ -470,18 +475,12 @@
                  :ttl-ms            ttl-ms
                  :watch-key         watch-key
                  :writer-listen-key writer-listen-key})
-         ;; The conn's writer-listener fires for every successful
-         ;; `d/transact!` through this conn — whether it came from our
-         ;; own `opt/transact!`'s default dispatch OR a direct call by
-         ;; other code. We cache the writer's `:tx-data` per `:max-tx`
-         ;; (for later `:overlay-realized` composition) AND emit a
-         ;; `:conn-advance` tx-report immediately so consumers stay in
-         ;; sync with all durable changes.
-         ;; Emit :conn-advance for every successful d/transact! through
-         ;; this conn — our own AND foreign. We don't cache here:
-         ;; correlation (writer-tx-data ↔ ov-id) happens directly in
-         ;; `default-dispatch`, where ov-id is naturally in scope when
-         ;; the per-call promise resolves.
+         ;; Emit :conn-advance for every successful d/transact!
+         ;; through this conn — our own AND foreign — so eff-db and
+         ;; tx-report consumers stay in sync with all durable changes.
+         ;; We don't cache here: correlation (writer-tx-data ↔ ov-id)
+         ;; happens directly in `default-dispatch`, where ov-id is
+         ;; naturally in scope when the per-call promise resolves.
          (d/listen conn writer-listen-key
                    (fn [tx-report]
                      (let [db-before (or @last-effective-db @conn)]

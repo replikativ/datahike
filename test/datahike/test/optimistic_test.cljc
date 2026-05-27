@@ -264,7 +264,9 @@
                                                        r
                                                        {:reply r :max-tx (:max-tx (:db-after r))}))))
                                        out)))})]
-      (<! (a/timeout 20))
+      ;; `opt/transact!` is synchronous through the overlay swap! and
+      ;; the :overlay-add fire — alice is in `effective-db` as soon
+      ;; as the call returns. No need to wait.
       (is (contains?
            (set (->> (d/q '[:find ?w :where [?e :who ?w]] (opt/effective-db conn))
                      (map first)))
