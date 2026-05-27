@@ -152,15 +152,17 @@ tx-report))`. For app-level RPCs, pass `:dispatch-fn` with this
 contract:
 
 - Takes no arguments.
-- Returns a **`core.async` channel** (preferred; works uniformly on
-  both platforms and parks rather than blocks) or a **deref-able**
-  (CLJ only; spawns an `a/thread` to wait on).
+- Returns a **`core.async` channel** that yields a single value
+  (typically a `promise-chan` or the channel of an `a/go`/`a/thread`
+  block). Datahike's own `throwable-promise` returned by
+  `d/transact!` implements `ReadPort` and qualifies.
 - On success: yields `{:reply X :max-tx N}` where `N` is the
   `:max-tx` of the durable commit your RPC produced. `X` is what
   gets put on `:result`.
-- On failure: throws (CLJ) or yields a `Throwable` / `js/Error`
-  (CLJS). The wrapper normalizes both onto the same failure path —
-  the entry drops, listeners re-fire, the error lands on `:result`.
+- On failure: throws (CLJ) or yields a `Throwable` / `js/Error` on
+  the channel. The wrapper normalizes both onto the same failure
+  path — the entry drops, listeners re-fire, the error lands on
+  `:result`.
 
 ```clojure
 (require '[clojure.core.async :as a])
@@ -179,7 +181,7 @@ contract:
 `d/transact!` returns a `throwable-promise` which itself implements
 `core.async/ReadPort` (and `put!`s the Throwable as a value on
 failure — no re-throw), so `<!` reads the reply uniformly on both
-platforms. No extra thread, no extra promise.
+platforms.
 
 ## Conflicts (Case J)
 

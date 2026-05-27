@@ -331,31 +331,21 @@
     out))
 
 (defn- run-user-dispatch
-  "Invoke the user's `:dispatch-fn` and route the result (or any
-  throw / yielded-error) onto a single channel. Caller reads with
+  "Invoke the user's `:dispatch-fn` and route its result (or any
+  thrown/yielded error) onto a single channel. Caller reads with
   `<?-` to unify throw and yield-an-error.
 
-  CLJ: dispatch-fn may return either a `core.async` `ReadPort`
-  (channel / `promise-chan` / `throwable-promise`) or a plain
-  deref-able (`clojure.core/promise`, `future`). ReadPort returns
-  are awaited in a `go` block (no dedicated OS thread); deref-ables
-  fall through to `a/thread`. CLJS: always a channel."
+  Contract: dispatch-fn returns a `core.async` channel (typically
+  a `promise-chan` or the channel of an `a/go` / `a/thread` block).
+  This includes Datahike's own `throwable-promise` returned by
+  `d/transact!`, which implements `ReadPort`."
   [dispatch-fn]
   (let [out (chan 1)]
-    #?(:clj
-       (let [r (try (dispatch-fn) (catch Throwable e e))]
-         (cond
-           (instance? Throwable r) (put! out r)
-           (satisfies? clojure.core.async.impl.protocols/ReadPort r)
-           (a/go (put! out (a/<! r)))
-           :else
-           (a/thread
-             (try (put! out (deref r))
-                  (catch Throwable e (put! out e))))))
-       :cljs
-       (a/go
-         (try (put! out (a/<! (dispatch-fn)))
-              (catch :default e (put! out e)))))
+    (a/go
+      (try
+        (put! out (a/<! (dispatch-fn)))
+        (catch #?(:clj Throwable :cljs :default) e
+          (put! out e))))
     out))
 
 ;; -----------------------------------------------------------------------------
@@ -546,13 +536,15 @@
 
   Pass `:dispatch-fn` to substitute your own RPC. Contract:
    - takes no arguments
-   - returns a deref-able (CLJ) or `core.async` channel (CLJS) that
-     either yields `{:reply X :max-tx N}` on success — where `N` is the
-     `:max-tx` of the durable commit produced by your RPC — or
-     throws / yields a `Throwable` / `js/Error` on failure.
-   - The wrapper normalizes throw vs yield-an-error onto the same
-     failure path.
+   - returns a `core.async` channel that yields a single value:
+     either `{:reply X :max-tx N}` on success — where `N` is the
+     `:max-tx` of the durable commit produced by your RPC — or a
+     `Throwable` / `js/Error`. A thrown exception during the call is
+     also accepted; the wrapper normalizes throw and
+     yield-an-error onto the same failure path.
    - `X` is what gets put on `:result`.
+   - Datahike's own `throwable-promise` returned by `d/transact!`
+     implements `ReadPort` and satisfies this contract directly.
 
   Pass `:ttl-ms` to override the conn's default TTL for this call;
   pass `:ttl-ms nil` to disable the TTL for this call."
