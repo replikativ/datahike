@@ -1,4 +1,5 @@
 (ns ^:no-doc datahike.array
+  (:refer-clojure :exclude [bytes?])
   #?(:cljs (:require [goog.array]))
   #?(:clj (:import [java.util Arrays])))
 
@@ -44,7 +45,10 @@
                       (recur (inc i#)))))))
        `(array-compare ~a ~b))))
 
-#?(:cljs
+#?(:clj
+   (defn bytes? [x]
+     (clojure.core/bytes? x))
+   :cljs
    (defn bytes? [x]
      (and (instance? js/ArrayBuffer (.-buffer x))
           (number? (.-byteLength x)))))
