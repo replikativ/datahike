@@ -323,3 +323,15 @@ your purposes.
 - History must be enabled (`:keep-history? true`)
 - Cannot purge schema attributes
 - Use retractions for normal data lifecycle - reserve purging for compliance requirements
+
+### Purge and storage
+
+The example above shows the new commit's indices: the datom is gone from `@conn` and from `(d/history @conn)`. Layers below the new commit need explicit attention:
+
+- **Pre-purge commit.** Each commit owns its own index roots. The commit that existed *before* the purge still references the old tree nodes containing the datom — `(d/commit-as-db conn <pre-purge-uuid>)` still sees the purged data until garbage collection sweeps that intermediate commit. The eviction step is `d/gc-storage` with a grace-period cutoff old enough to drop the pre-purge commit; see [Garbage Collection](./gc.md). Branch heads are always kept; only intermediate commits get swept.
+
+- **Secondary indices.** Purge routes a retraction event in-transaction to every secondary index covering an affected attribute, the same way `:db/retract` does. After purge, Scriptum full-text search, Proximum KNN, and Stratum columnar aggregates no longer return the purged datom on the live store. Scriptum has a filesystem caveat (Lucene tombstones-until-segment-merge); see [Secondary indices: purge propagation](./secondary-indices.md#purge-propagation).
+
+- **Multiple branches.** Purge is a transaction on one branch. If the same datom is reachable from another branch's head, or from its commits inside the GC window, purge that branch too. Structural sharing means the bytes are physically one copy in konserve, but the *paths to reach* them are independent.
+
+- **Backups and storage-layer history.** `purge` operates on the live store. Backups of the konserve store, S3 object versioning, ZFS snapshots, git-backed konserve backends, and logical replicas all retain pre-purge state on their own terms; addressing those is operational policy outside Datahike.
