@@ -212,16 +212,27 @@
     p))
 
 (defn- detect-new-building-indices
-  "Detect secondary indices that were just created (status :building) in a tx-report.
-   Returns a seq of idx-idents that need backfill."
+  "Detect secondary indices that *transitioned* into :building in this tx,
+   i.e. they are :building in db-after but were not already :building in
+   db-before. Returns a seq of idx-idents that need a one-time backfill.
+
+   Comparing against db-before is essential: any transaction applied while
+   an index is still building would otherwise re-dispatch a full backfill,
+   and a second backfill that runs after the first one's
+   install-secondary-index! has dissoc'd :db.secondary/building-since-tx
+   loses the snapshot guard and re-delivers post-creation datoms that were
+   already applied live — double-counting them in the index."
   [tx-report]
-  (when-let [schema (get-in tx-report [:db-after :schema])]
-    (keep (fn [[ident entry]]
-            (when (and (map? entry)
-                       (:db.secondary/type entry)
-                       (= :building (:db.secondary/status entry)))
-              ident))
-          schema)))
+  (let [before (get-in tx-report [:db-before :schema])
+        after  (get-in tx-report [:db-after :schema])]
+    (when after
+      (keep (fn [[ident entry]]
+              (when (and (map? entry)
+                         (:db.secondary/type entry)
+                         (= :building (:db.secondary/status entry))
+                         (not= :building (get-in before [ident :db.secondary/status])))
+                ident))
+            after))))
 
 (defn transact!
   [connection arg-map]

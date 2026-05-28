@@ -5,7 +5,8 @@
    [datahike.api :as d]
    [datahike.db :as db]
    [datahike.index.secondary :as sec]
-   [datahike.index.entity-set :as es]))
+   [datahike.index.entity-set :as es]
+   [datahike.writer :as writer]))
 
 ;; ---------------------------------------------------------------------------
 ;; EntityBitSet tests
@@ -223,3 +224,33 @@
         (finally
           (d/release conn)
           (d/delete-database cfg))))))
+
+;; ---------------------------------------------------------------------------
+;; Backfill dispatch — regression for double-counting
+;;
+;; A secondary index is backfilled asynchronously after the tx that creates it
+;; (status :building). The backfill skips datoms with tx > building-since-tx so
+;; live transactions applied during the build are not re-delivered. The writer
+;; must therefore dispatch the backfill *exactly once* — on the tx that first
+;; flips the index to :building. If a later tx (applied while the index is still
+;; building) also dispatched a backfill, that second build could run after the
+;; first one's install-secondary-index! has dropped :building-since-tx, losing
+;; the guard and re-delivering post-creation datoms that were already applied
+;; live — counting them twice in the index.
+
+(deftest test-backfill-dispatched-once
+  (testing "backfill is dispatched only when an index transitions into :building"
+    (let [detect @#'writer/detect-new-building-indices
+          building {:db.secondary/type :scriptum :db.secondary/status :building}
+          ready    {:db.secondary/type :scriptum :db.secondary/status :ready}]
+      (testing "nil -> :building (index just created): dispatch"
+        (is (= [:idx/a]
+               (vec (detect {:db-before {:schema {}}
+                             :db-after  {:schema {:idx/a building}}})))))
+      (testing ":building -> :building (later tx during backfill): no re-dispatch"
+        (is (empty? (detect {:db-before {:schema {:idx/a building}}
+                             :db-after  {:schema {:idx/a building}}}))))
+      (testing ":ready -> :building (index re-enabled): dispatch"
+        (is (= [:idx/a]
+               (vec (detect {:db-before {:schema {:idx/a ready}}
+                             :db-after  {:schema {:idx/a building}}}))))))))
