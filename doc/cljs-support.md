@@ -92,6 +92,12 @@ This architecture means:
 - Updates are replicated to the client's TieredStore via konserve-sync
 - Queries run locally against the synchronized in-memory store
 
+For UIs where the round-trip latency is user-visible, see the
+[Optimistic Overlay](optimistic-overlay.md) — `datahike.optimistic`
+layers pending transactions on top of `@conn` via `d/with` so
+listeners see the change immediately, then reconcile when the writer
+confirms. Experimental.
+
 ## JavaScript API
 
 For JavaScript/TypeScript applications, Datahike provides a Promise-based API.
