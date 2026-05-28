@@ -70,6 +70,35 @@
                   (byte-array [0 2 3]))))
       (d/release conn))))
 
+(deftest test-bytes-schema-upsert
+  ;; Regression test: upserting a :db.type/bytes attribute used to throw
+  ;; "byte[] cannot be cast to java.lang.Comparable" because compare-value
+  ;; passed byte arrays to clojure.core/compare, which requires Comparable.
+  (let [config {:store {:backend :memory
+                        :id #uuid "00100000-0000-0000-0000-000000000011"}
+                :schema-flexibility :write
+                :initial-tx
+                [{:db/ident :doc/id
+                  :db/unique :db.unique/identity
+                  :db/valueType :db.type/string
+                  :db/cardinality :db.cardinality/one}
+                 {:db/ident :doc/save
+                  :db/valueType :db.type/bytes
+                  :db/cardinality :db.cardinality/one}]}]
+    (d/delete-database config)
+    (d/create-database config)
+    (let [conn (d/connect config)]
+      (testing "first transact with bytes value"
+        (d/transact conn [{:doc/id "k" :doc/save (byte-array [1 2 3])}])
+        (is (some? (d/entity @conn [:doc/id "k"]))))
+      (testing "upsert with identical bytes value"
+        (d/transact conn [{:doc/id "k" :doc/save (byte-array [1 2 3])}])
+        (is (some? (d/entity @conn [:doc/id "k"]))))
+      (testing "upsert with different bytes value"
+        (d/transact conn [{:doc/id "k" :doc/save (byte-array [4 5 6])}])
+        (is (some? (d/entity @conn [:doc/id "k"]))))
+      (d/release conn))))
+
 (deftest test-database-exists-with-invalid-store
   (testing "Store with missing :id"
     (is (thrown-with-msg? #?(:clj Exception :cljs js/Error)

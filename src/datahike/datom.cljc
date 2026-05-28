@@ -1,6 +1,7 @@
 (ns ^:no-doc datahike.datom
   (:require  [clojure.walk]
              [clojure.data]
+             [datahike.array :as da]
              [datahike.constants :refer [tx0]]
              [datahike.tools :refer [combine-hashes]]
              #?(:cljs [goog.array :as garray]))
@@ -261,11 +262,16 @@
 (defn compare-value
   "Compare two values with cross-platform UUID compatibility.
    CLJS UUID comparison is adjusted to match CLJ's signed comparison,
-   ensuring consistent ordering when indices are built on CLJ and queried on CLJS."
+   ensuring consistent ordering when indices are built on CLJ and queried on CLJS.
+   Byte arrays are compared element-wise via datahike.array/compare-arrays,
+   since byte[] does not implement Comparable."
   [v1 v2]
-  #?(:clj (compare v1 v2)
+  #?(:clj (if (and (da/bytes? v1) (da/bytes? v2))
+            (da/compare-arrays v1 v2)
+            (compare v1 v2))
      :cljs
-     (if (and (uuid? v1) (uuid? v2))
+     (cond
+       (and (uuid? v1) (uuid? v2))
        ;; Match Java's signed UUID comparison where MSB is treated as signed
        ;; In signed comparison: 0x8... is negative, so 0x8... < 0x0...
        (let [s1 (.-uuid ^cljs.core/UUID v1)
@@ -279,7 +285,11 @@
            (and neg1 (not neg2)) -1  ;; v1 "negative", v2 "positive" → v1 < v2
            (and neg2 (not neg1)) 1   ;; v2 "negative", v1 "positive" → v1 > v2
            :else (compare s1 s2)))   ;; same sign → string compare works
-       (compare v1 v2))))
+
+       (and (da/bytes? v1) (da/bytes? v2))
+       (da/compare-arrays v1 v2)
+
+       :else (compare v1 v2))))
 
 (defn- safe-compare [a b]
   (try
