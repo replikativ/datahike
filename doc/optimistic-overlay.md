@@ -23,8 +23,8 @@ interaction path.
 The invariant is one sentence:
 
 > **An entry is visible from `transact!` return until `@conn` has
-> demonstrably reflected its effect, the dispatch failed, or the
-> entry's TTL expired.**
+> demonstrably reflected its effect, the durable transact failed,
+> or the entry's TTL expired.**
 
 See [How it works](#how-it-works) for why that holds.
 
@@ -57,20 +57,19 @@ but the overlay won't *invent* a merged state.
    :on-conflict (fn [conflicts]               ;; toast on conflict (set-changed)
                   (toast "your edit may not save"))})
 
-;; pick the listener style that matches your UI:
+;; subscribe to tx-reports — pick the granularity that fits your UI:
 ;;
-;; (a) re-render the world from a db value (Reagent + datascript-style,
-;;     vanilla React with state derived from @conn). Coalesced — one
-;;     fire per @conn change or overlay change:
+;; (a) re-render from a db value (Reagent + datascript-style, vanilla
+;;     React with state derived from @conn). Ignore :tx-data, use
+;;     :db-after directly:
 (opt/listen! conn ::ui
-             (fn [eff-db] (rerender-ui! eff-db)))
+             (fn [{:keys [db-after]}] (rerender-ui! db-after)))
 
 ;; (b) keep a materialized view in sync via deltas (posh, redux-style
-;;     reducers, re-frame subscriptions). Per-event — one fire per
-;;     logical change, with the tx-data delta to apply:
-(opt/listen-tx! conn ::ui
-                (fn [{:keys [tx-data origin]}]
-                  (apply-deltas-to-ui-state! tx-data)))
+;;     reducers, re-frame subscriptions). Use :tx-data and :origin:
+(opt/listen! conn ::ui
+             (fn [{:keys [tx-data origin]}]
+               (apply-deltas-to-ui-state! tx-data)))
 
 ;; submit an optimistic write
 (let [{:keys [ov-id result]} (opt/transact! conn [{:entity/uuid (random-uuid)
@@ -106,28 +105,14 @@ Attach / detach the overlay state. Idempotent. `opts`:
 
 ### `(listen! conn k f)` / `(unlisten! conn k)`
 
-Register `(fn [effective-db])` under key `k`. **Coalesced**: fires
-once per @conn change or overlay change with the current
-effective-db (= `@conn` with all applicable overlay entries on top;
-conflicting entries excluded from the view).
-
-For UIs that just re-render from the new db value.
-
-### `(listen-tx! conn k f)` / `(unlisten-tx! conn k)`
-
-Register `(fn [tx-report])` under key `k`. **Per-event**: fires once
-per logical change with a Datahike-style tx-report carrying the
-*delta* to apply to a derived view. See
+Register `(fn [tx-report])` under key `k`. Fires once per logical
+change to the overlay or `@conn` with a Datahike-style tx-report
+carrying the *delta* to apply to a derived view. See
 [Tx-report events](#tx-report-events).
 
-For UIs that maintain a materialized view incrementally (posh,
-redux-style reducers, etc.).
-
-`listen!` and `listen-tx!` are complementary, not alternatives:
-they answer different questions ("what's the new state?" vs "what
-deltas should I apply?") at different granularities (coalesced vs
-per-event). Pick whichever matches your UI layer; you can register
-both if some parts of your UI prefer one and others the other.
+State-snapshot consumers (Reagent, React from `@conn`) can ignore
+`:tx-data` and re-render from `:db-after`. Delta consumers
+(posh, redux-style reducers) apply `:tx-data` incrementally.
 
 ### `(on-conflict! conn k f)` / `(off-conflict! conn k)`
 
@@ -139,7 +124,7 @@ patterns like "show a 'your edit may not save' toast when conflicts
 exist."
 
 This is *not* a tx-report stream — for tx-data deltas on conflict
-transitions, use `listen-tx!` and filter for the `:overlay-conflict`
+transitions, use `listen!` and filter for the `:overlay-conflict`
 and `:overlay-resolve` origins.
 
 A single callback can also be passed via `:on-conflict` in
@@ -151,12 +136,11 @@ keys.
 Submit an optimistic write. Returns `{:ov-id uuid :result <chan>}`.
 Eagerly validates `tx-data` via `d/with` against the current
 effective-db; on validation failure throws synchronously and the
-overlay is untouched.
+overlay is untouched. Otherwise routes the durable write through
+the conn's writer (`d/transact!`) in the background.
 
 `opts`:
 
-- `:dispatch-fn` — substitute the conn's default writer with your own
-  RPC. See [The `:dispatch-fn` contract](#the-dispatch-fn-contract).
 - `:ttl-ms` — override the conn's default TTL for this call;
   `nil` to disable.
 
@@ -169,44 +153,9 @@ fields stripped — `:ov-id`, `:tx-data`, `:predicted-tx-data`,
 `:submitted-at`, `:expires-at`, `:expected-max-tx`, `:conflicting?`,
 `:last-conflict-error`.
 
-### The `:dispatch-fn` contract
-
-By default, `transact!` routes through the conn's writer (calls
-`d/transact!` internally). For app-level RPCs or server-side
-bootstrap (creating related entities, custom validation, etc.),
-pass a `:dispatch-fn`:
-
-- Takes no arguments.
-- Returns a `core.async` channel that yields a single value: either
-  `{:reply X :max-tx N}` on success — where `N` is the `:max-tx` of
-  the durable commit your RPC produced — or a `Throwable` /
-  `js/Error` on failure. A thrown exception during the call is also
-  accepted; the wrapper normalizes throw and yield-an-error onto the
-  same failure path.
-- `X` is what gets put on `:result`.
-
-```clojure
-(opt/transact! conn tx-data
-  {:dispatch-fn
-   (fn []
-     (let [out (a/chan 1)]
-       (a/go
-         (let [report (a/<! (d/transact! conn enriched-tx-data))]
-           (a/put! out {:reply  report
-                        :max-tx (:max-tx (:db-after report))})))
-       out))})
-```
-
-`d/transact!` returns a `throwable-promise` which itself implements
-`core.async/ReadPort` (and puts the Throwable as a value on failure
-— no re-throw), so `<!` works uniformly on both platforms.
-
-For tx-report consumers (`listen-tx!`) the dispatch-fn affects
-delta-event quality — see [v1 limits](#v1-limits).
-
 ## Tx-report events
 
-`listen-tx!` callbacks receive a Datahike-style tx-report:
+`listen!` callbacks receive a Datahike-style tx-report:
 
 ```clojure
 {:db-before <effective-db at the start of the event>
@@ -255,7 +204,7 @@ single responsibility:
 | Field               | Set when                                                                              | Used for                                                                                                  |
 |---------------------|---------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
 | `:ov-id` (uuid)     | At `opt/transact!` submit, client-minted                                              | **Correlation key** — identifies the entry across the whole lifecycle (overlay mutations, listener events, writer-tx cache lookup). |
-| `:expected-max-tx`  | After dispatch resolves with `{:reply :max-tx N}`                                     | **Watermark** — "drop the entry when `(:max-tx @conn) >= N`."                                            |
+| `:expected-max-tx`  | After `d/transact!` resolves; equals `(:max-tx (:db-after report))`                   | **Watermark** — "drop the entry when `(:max-tx @conn) >= N`."                                            |
 | `:predicted-tx-data` | At submit, from eager `d/with`'s tx-report                                            | Datoms shipped on `:overlay-add`; the input to `retract-stale` on `:overlay-realized`.                    |
 
 `:max-tx` is the watermark; `:ov-id` is the correlation key.
@@ -272,36 +221,35 @@ USER
  │     1. eager d/with → predicted-tx-data
  │     2. append entry to overlay (with :ov-id, no :expected-max-tx yet)
  │     3. emit :overlay-add tx-report
- │     4. spawn dispatch go-block (calls default-dispatch)
+ │     4. spawn dispatch go-block (calls d/transact!)
  ▼
 WRITER  (the conn's `d/transact!` flow — :self / :kabel / :datahike-server)
  │
- │  default-dispatch calls d/transact! and awaits its per-call promise
+ │  go-block awaits the per-call promise from d/transact!
  │  → writer commits (possibly batching with other in-flight transacts)
  │  → reset! @conn  ────────────────────────────────────────────────────────┐
  │                                                                          │
  │                                                                          ▼
  │                                                                 ┌──────────────────┐
  │                                                                 │ add-watch fires  │
- │                                                                 │ (drop-caught-up: │
- │                                                                 │  expected-max-tx │
- │                                                                 │  still nil →     │
- │                                                                 │  no drop;        │
- │                                                                 │  fire-listeners) │
+ │                                                                 │ on-conn-advance: │
+ │                                                                 │ - recompute      │
+ │                                                                 │   conflict set   │
+ │                                                                 │ - try-drop-and-  │
+ │                                                                 │   emit-realized  │
+ │                                                                 │   (no entry yet  │
+ │                                                                 │    has expected- │
+ │                                                                 │    max-tx, so    │
+ │                                                                 │    nothing drops)│
  │                                                                 └──────────────────┘
  │                                                                          │
  │  writer's go-block delivers per-call tx-report ──────────────────────────┤
- │  → conn-listener fires (eff-db consumers' :conn-advance event):          │
- │      • emits :conn-advance tx-report                                     │
- │      • (no caching here — see below)                                     │
+ │  → conn-listener fires :conn-advance tx-report                           │
  │                                                                          ▼
- │  → promise resolves → default-dispatch's go-block reads its
- │    own per-call tx-report (1:1 mapping; batching shares
- │    :max-tx but per-call :tx-data is distinct):
- │      • caches writer's :tx-data keyed by ov-id
- │      • puts {:reply :max-tx} on internal channel
- │
- │  → optimistic-transact's go-block resumes:
+ │  → promise resolves → go-block reads its own per-call tx-report
+ │    (1:1 mapping; batching shares :max-tx but per-call :tx-data
+ │    is distinct):
+ │      • cache writer's :tx-data keyed by ov-id
  │      • set :expected-max-tx on the entry
  │      • call try-drop-and-emit-realized!  ──────────────────┐
  │      • deliver reply on :result                            │
@@ -324,12 +272,12 @@ WRITER  (the conn's `d/transact!` flow — :self / :kabel / :datahike-server)
                                             └───────────────────────────────────┘
 ```
 
-For the typical happy path (default-dispatch + matching EIDs)
-the events to a tx-report consumer are: `:overlay-add` →
-`:conn-advance` → (no `:overlay-realized` — `retract-stale` returns
-empty when prediction EIDs already match the writer's). For the
-EID-shift case (tempids), a final `:overlay-realized` cleans up the
-stale local-EID prediction.
+For the typical happy path (matching EIDs) the events to a
+`listen!` consumer are: `:overlay-add` → `:conn-advance` → (no
+`:overlay-realized` — `retract-stale` returns empty when prediction
+EIDs already match the writer's). For the EID-shift case (tempids),
+a final `:overlay-realized` cleans up the stale local-EID
+prediction.
 
 ### Soundness: `:ov-id` correlates, `:max-tx` watermarks
 
@@ -356,8 +304,9 @@ that snapshot contains every commit ≤ M, including ours.
 
 **Correlation.** Watermark alone doesn't say *which entry* belongs
 to which writer tx-report — and that matters because the writer
-can batch (see below). For correlation we use `:ov-id`, threaded
-through `:tx-meta` on the durable transact.
+can batch (see below). For correlation we use `:ov-id`, which is
+in scope inside `transact!`'s go-block when the per-call promise
+resolves.
 
 ### Correlating by `:ov-id` (handles batching)
 
@@ -369,21 +318,20 @@ callback. So **N batched transactions all report the same
 `:max-tx`** — the watermark works for all of them simultaneously,
 but it can't tell them apart.
 
-The watcher (`d/listen` hook) sees this batched aggregate semantics:
-N fires, each with its own per-tx `:tx-data` but a shared
-`:max-tx`. Keying a cache by `:max-tx` would collide.
+The `d/listen` writer-listener sees this batched aggregate
+semantics: N fires, each with its own per-tx `:tx-data` but a
+shared `:max-tx`. Keying a cache by `:max-tx` would collide.
 
 But each call to **`d/transact!` itself** returns a per-call promise
 that resolves with that specific call's tx-report — the writer
 wires each commit's per-callback channel back to the specific
-caller. So `default-dispatch` does the caching:
+caller. So `transact!`'s go-block caches per-call:
 
 ```clojure
-(a/go
-  (let [report (a/<! (d/transact! conn tx-data))]
-    ;; report is THIS call's tx-report, with its own :tx-data
-    (cache-writer-tx! writer-tx-cache ov-id (vec (:tx-data report)))
-    (put! out {:reply report :max-tx (:max-tx (:db-after report))})))
+(let [report (<?- (d/transact! conn tx-data))]
+  ;; report is THIS call's tx-report, with its own :tx-data
+  (cache-writer-tx! writer-tx-cache ov-id (vec (:tx-data report)))
+  ...)
 ```
 
 `ov-id` is in lexical scope; the per-call tx-report is what the
@@ -393,17 +341,14 @@ batching ambiguity.
 The drop+emit logic itself lives in a single helper —
 `try-drop-and-emit-realized!` — called from two trigger points:
 
-- The dispatch's own go-block, immediately after stamping
-  `:expected-max-tx`. For default-dispatch on `:self`/`:kabel`,
-  `@conn` is already past `:max-tx` at this moment (the writer's
-  `reset!` ran before our promise delivered), so the helper drops
-  here.
-- `on-conn-advance` (the `add-watch` callback), after
-  `fire-listeners!` on every `@conn` change. This covers the
-  custom-`:dispatch-fn`-with-future-`:max-tx` case, where the
-  dispatch resolves before `@conn` has caught up — the entry waits
-  in the overlay for a later commit to bump `@conn` past its
-  watermark.
+- The go-block, immediately after stamping `:expected-max-tx`. For
+  `:self`/`:kabel`, `@conn` is already past `:max-tx` at this
+  moment (the writer's `reset!` ran before our promise delivered),
+  so the helper drops here.
+- `on-conn-advance` (the `add-watch` callback) on every `@conn`
+  change. This covers any case where `@conn`'s advance happens to
+  reach an entry's watermark later — e.g. if the writer's `reset!`
+  lagged our promise.
 
 The helper uses an atomic `swap-vals!` inside `drop-caught-up!` —
 each entry is removed by exactly one swap. Both triggers can fire
@@ -412,8 +357,8 @@ after a `reset!`), but only one will see the entry "in old, not in
 new" and emit the event. No double-emit.
 
 For foreign `d/transact!`s on the same conn, the writer-listener
-still fires and emits `:conn-advance` — eff-db consumers see those
-durable changes — but nothing gets cached (no ov-id is involved).
+still fires and emits `:conn-advance` — consumers see those
+durable changes — but nothing gets cached (no `:ov-id` is involved).
 
 ### Conflicts
 
@@ -428,7 +373,7 @@ claim. When this happens:
 - It's **marked** `:conflicting? true` with `:last-conflict-error`.
 - `:on-conflict` callbacks fire whenever the set of conflicting
   entries changes.
-- A tx-report consumer gets an `:overlay-conflict` event with
+- A `listen!` consumer gets an `:overlay-conflict` event with
   retracts of the entry's prediction; the consumer's incremental
   view excludes the conflicting entry.
 
@@ -458,7 +403,7 @@ per-conn heartbeat ticks once a second and reaps expired entries:
   the late reply is silently discarded — `:result` is exactly-once-
   delivery (`compare-and-set!` on a per-entry flag). The durable
   effect, if any, still surfaces via `@conn` advancing through
-  normal sync (and a `:conn-advance` to tx-listeners).
+  normal sync (and a `:conn-advance` to listeners).
 
 Override per-conn at `register!` (`:ttl-ms 60000`, `:ttl-ms nil` to
 disable) or per call (`(opt/transact! conn data {:ttl-ms 60000})`).
@@ -477,7 +422,7 @@ happens:
   `[e a v]` isn't in the writer's tx-data — cleaning up the stale
   local-EID version.
 
-A `listen-tx!` consumer that keys by `:entity/uuid` sees this as
+A `listen!` consumer that keys by `:entity/uuid` sees this as
 "same logical entity, EID changed." A consumer keyed by EID sees
 two entities momentarily and then the local EID retracted. Use
 uuid-keyed views and you never see the flicker.
@@ -493,28 +438,11 @@ EIDs match — `retract-stale` returns empty and no
   `d/transact!`.** The writer-listener hook is registered via
   `d/listen`, which only triggers when `d/transact!` completes (the
   writer walks `(:listeners (meta connection))` after each
-  successful commit). A custom `:dispatch-fn` that never calls
-  `d/transact!` (e.g., fires off an HTTP POST against a non-Datahike
-  server and the durable state lives only on the remote side) won't
-  produce a `:conn-advance` for that durable write. The overlay's
-  `:overlay-add` still fires, but if `@conn` never gets the durable
-  change there's no `:conn-advance` to follow it. Mitigation: route
-  the durable write through `d/transact!` somewhere — even just to
-  mirror server state into the local conn.
-- **`retract-stale` precision requires default-dispatch.** Only
-  `default-dispatch` correlates writer-tx-data with `:ov-id` (it
-  has both in scope when its per-call promise resolves) and caches
-  it for later. The drop+emit path uses that cache: on hit,
-  `retract-stale` produces an empty event for matching EIDs and a
-  precise event for EID-shift; on miss, the path falls back to
-  full-negate of the prediction. A custom `:dispatch-fn` — even
-  one that internally calls `d/transact!` — doesn't share
-  `default-dispatch`'s scope, so its entries take the full-negate
-  fallback. The consumer view still converges (the unrelated
-  `:conn-advance` for the durable commit carries its own tx-data
-  on top), but the matching-EID optimization (suppressing the
-  `:overlay-realized` event entirely when nothing needs cleanup)
-  is skipped.
+  successful commit). Foreign writes that bypass `d/transact!` (a
+  direct `reset!` on `@conn` from external sync code, for example)
+  don't fire `:conn-advance`. Mitigation: route durable writes
+  through `d/transact!` somewhere — even just to mirror server
+  state into the local conn.
 - **Pending entries are not persisted.** Overlay state is in-memory;
   a page reload drops in-flight optimistic entries. Persistence
   (IndexedDB on browser, file on Node) is an open follow-up — see
@@ -523,11 +451,14 @@ EIDs match — `retract-stale` returns empty and no
   on `:result`. Two failure paths, two mental models — programmer
   errors in tx-data are categorically different from runtime server
   rejection.
-- **Listener fires twice per successful `transact!`** (once on
-  overlay-add, once when `@conn` advances with the durable datoms).
-  Both events show the correct effective db — no incorrect
-  intermediate state — but it's redundant. Consumers can dedupe by
-  comparing `:max-tx` if they care.
+- **`listen!` fires twice per successful `transact!`** (once on
+  `:overlay-add`, once on `:conn-advance` when `@conn` advances with
+  the durable datoms; plus a third on `:overlay-realized` for the
+  EID-shift case). All events show the correct effective db — no
+  incorrect intermediate state — but consumers maintaining a
+  materialized view will process each event. Stateless re-render
+  consumers can dedupe by comparing `:max-tx` of `:db-after` if they
+  care.
 
 ## See also
 

@@ -2,12 +2,13 @@
   "Optimistic-overlay helpers over a Datahike connection.
 
   Layers pending client-submitted transactions on top of the durable @conn
-  value via `d/with`, exposing the result as `effective-db`.
+  value via `d/with`, exposing the effect as a tx-report stream to
+  `listen!` and the resulting effective db value via `effective-db`.
 
   An entry remains visible until @conn has demonstrably caught up to the
-  transaction's effect (the writer-assigned `:max-tx`), the dispatch
-  failed, or a per-entry TTL elapsed. See `doc/optimistic-overlay.md` for
-  the full consistency model.
+  transaction's effect (the writer-assigned `:max-tx`), the durable
+  transact failed, or a per-entry TTL elapsed. See
+  `doc/optimistic-overlay.md` for the full consistency model.
 
   Usage:
 
@@ -16,7 +17,9 @@
     (opt/register! conn
       {:ttl-ms 30000
        :on-conflict (fn [conflicts] ...)})
-    (opt/listen!   conn ::ui (fn [eff-db] (rerender! eff-db)))
+    (opt/listen!   conn ::ui
+                   (fn [{:keys [tx-data db-after origin]}]
+                     (apply-deltas-or-rerender ...)))
     (opt/transact! conn [{:db/id -1 :name \"alice\"}])
     ...
     (opt/unlisten!   conn ::ui)
@@ -104,7 +107,7 @@
 (defn- negate
   "Flip the added? flag on every datom — assertions become retracts and
   vice versa. Used to roll back an entry's effect on the consumer's
-  view when the dispatch failed / TTL fired / a conflict appeared.
+  view when the durable transact failed / TTL fired / a conflict appeared.
 
   Both directions matter: if the original tx-data was a retract (e.g.
   `[[:db/retract 1 :name \"old\"]]`), the `:overlay-add` event shipped
@@ -127,9 +130,11 @@
 ;; across batched entries. Keying by ov-id keeps each entry's writer-
 ;; tx-data distinct.
 ;;
-;; The ov-id is conveyed via `:tx-meta {::ov-id ov-id}` injected by
-;; `default-dispatch` into the `d/transact!` arg-map; the writer
-;; preserves `:tx-meta` on the tx-report.
+;; Each call to `d/transact!` returns its own per-call promise that
+;; yields THIS specific tx's tx-report — even when the writer batched
+;; the commits internally. We cache the writer's `:tx-data` keyed by
+;; `:ov-id` inside `transact!`'s go-block, where both pieces of
+;; information are naturally in scope when the per-call promise resolves.
 
 (defn- cache-writer-tx!
   [cache ov-id tx-data]
@@ -138,8 +143,8 @@
 
 (defn- take-writer-tx!
   "Pop the cached writer tx-data for `ov-id`, removing it from the
-  cache. Returns nil if absent (e.g. for foreign `d/transact!`s or
-  custom dispatches that bypassed our `::ov-id` tx-meta convention)."
+  cache. Returns nil if absent (e.g. foreign `d/transact!`s that
+  bypassed our overlay)."
   [cache ov-id]
   (when ov-id
     (let [[old _] (swap-vals! cache dissoc ov-id)]
@@ -174,14 +179,14 @@
 
 (defn- emit-tx!
   "Fire all tx-listeners with the given tx-report. Skips silently when
-  no tx-listeners are registered."
+  no listeners are registered."
   [conn report]
-  (when-let [{:keys [tx-listeners]} (conn-state conn)]
-    (when (seq @tx-listeners)
-      (doseq [[k f] @tx-listeners]
+  (when-let [{:keys [listeners]} (conn-state conn)]
+    (when (seq @listeners)
+      (doseq [[k f] @listeners]
         (try (f report)
              (catch #?(:clj Throwable :cljs :default) e
-               (log/error :datahike.optimistic/tx-listener-error
+               (log/error :datahike.optimistic/listener-error
                           {:key k :origin (:origin report) :error e})))))))
 
 (defn- emit-conflict-transitions!
@@ -213,8 +218,14 @@
                           :tx-data   restored
                           :origin    :overlay-resolve}))))))
 
-(defn- fire-listeners! [conn]
-  (when-let [{:keys [overlay listeners on-conflicts last-conflict-ids last-effective-db]}
+(defn- recompute-and-emit-conflicts!
+  "Recompute effective-db, mark conflicts on overlay entries, fire
+  on-conflict callbacks if the conflict set changed, and emit
+  conflict-transition tx-reports. Updates `last-effective-db` to the
+  current effective view. Does NOT fire `listen!` callbacks (each
+  caller emits per-event tx-reports via `emit-tx!`)."
+  [conn]
+  (when-let [{:keys [overlay on-conflicts last-conflict-ids last-effective-db]}
              (conn-state conn)]
     (let [snapshot @overlay
           {:keys [db conflicts]} (recompute @conn snapshot)
@@ -222,12 +233,6 @@
           old-conflict-ids @last-conflict-ids
           db-before (or @last-effective-db @conn)]
       (mark-conflicts! overlay conflicts)
-      (doseq [[k f] @listeners]
-        (try (f db)
-             (catch #?(:clj Throwable :cljs :default) e
-               (log/error :datahike.optimistic/listener-error
-                          {:key k :error e}))))
-      ;; Conflict-list listeners (high-level set-changed event)
       (when (not= new-conflict-ids old-conflict-ids)
         (reset! last-conflict-ids new-conflict-ids)
         (let [sanitized (->> @overlay
@@ -237,9 +242,7 @@
             (try (f sanitized)
                  (catch #?(:clj Throwable :cljs :default) e
                    (log/error :datahike.optimistic/on-conflict-error
-                              {:key k :error e}))))))
-      ;; Tx-report emissions for conflict transitions
-      (when (not= new-conflict-ids old-conflict-ids)
+                              {:key k :error e})))))
         (let [entries-by-id (into {} (map (juxt :ov-id identity)) @overlay)]
           (emit-conflict-transitions! conn old-conflict-ids new-conflict-ids
                                       entries-by-id db-before db)))
@@ -264,10 +267,10 @@
 ;; -----------------------------------------------------------------------------
 ;;
 ;; Two events can cause an entry to "catch up" (= `@conn :max-tx` reaches the
-;; entry's `:expected-max-tx`): the dispatch resuming with its watermark for
-;; the default-dispatch case (`@conn` already advanced by the writer), or a
-;; later `@conn` change for the custom-dispatch-with-future-`:max-tx` case.
-;; Both events go through the same code:
+;; entry's `:expected-max-tx`): the dispatch resuming with its watermark
+;; (`@conn` already advanced by the writer), or a later `@conn` change
+;; (the writer's `reset!` lagged the per-call promise delivery). Both
+;; events go through the same code:
 ;;
 ;;   * `drop-caught-up!`  — atomic `swap-vals!`; returns only the entries
 ;;                          this swap actually removed (race-free against a
@@ -292,11 +295,11 @@
 (defn- emit-overlay-realized!
   "Emit one `:overlay-realized` tx-report per dropped entry.
 
-  Prefer `retract-stale` over the cached writer-tx-data — accurate for
-  both matching-EID (returns empty → no event) and EID-shift (returns
-  only the stale prediction datoms). For entries whose writer-tx-data
-  was never cached (custom-`:dispatch-fn` bypassed `d/transact!`),
-  fall back to full-negate as best-effort cleanup."
+  `retract-stale` is accurate for both matching-EID (returns empty →
+  event suppressed) and EID-shift (returns only the stale prediction
+  datoms). For entries whose writer-tx-data was never cached (foreign
+  `d/transact!`s that bypassed our overlay), fall back to full-negate
+  as best-effort cleanup."
   [conn dropped db-before db-after]
   (when-let [{:keys [writer-tx-cache]} (conn-state conn)]
     (doseq [e dropped]
@@ -324,11 +327,9 @@
 
 (defn- on-conn-advance [conn old-db new-db]
   (when (not= (:max-tx old-db) (:max-tx new-db))
-    ;; @conn moved — re-fire eff-db listeners with the new view.
-    (fire-listeners! conn)
-    ;; Then catch up any entries whose `:expected-max-tx` was reached
-    ;; by this advance (custom-dispatch-with-future-`:max-tx` case;
-    ;; the default-dispatch path has its own eager call below).
+    ;; @conn moved — recompute conflict set, then catch up any entries
+    ;; whose `:expected-max-tx` was reached by this advance.
+    (recompute-and-emit-conflicts! conn)
     (try-drop-and-emit-realized! conn)))
 
 ;; -----------------------------------------------------------------------------
@@ -340,7 +341,7 @@
 (defn- expire-due!
   "Atomically remove entries whose TTL has elapsed; deliver a
   TimeoutException on each one's :result-ch (exactly-once via
-  `deliver-result!`); fire eff-db listeners; emit one :ttl tx-report
+  `deliver-result!`); recompute conflict set; emit one :ttl tx-report
   per expired entry (retracting its predicted-tx-data)."
   [conn]
   (when-let [{:keys [overlay last-effective-db]} (conn-state conn)]
@@ -358,8 +359,7 @@
                                      :ov-id (:ov-id e)
                                      :submitted-at (:submitted-at e)
                                      :expires-at (:expires-at e)})))
-        ;; Compute new effective-db once and fire eff-db listeners.
-        (fire-listeners! conn)
+        (recompute-and-emit-conflicts! conn)
         ;; Emit a :ttl tx-report per expired entry — each retracts its
         ;; predicted additions (unless the entry was already conflicting,
         ;; in which case its prediction was already retracted via
@@ -384,53 +384,6 @@
         (recur)))))
 
 ;; -----------------------------------------------------------------------------
-;; Dispatch normalization
-;; -----------------------------------------------------------------------------
-
-(defn- default-dispatch
-  "Wrap the conn's writer (`d/transact!`) and conform to the
-  `{:reply :max-tx}` contract.
-
-  Each call to `d/transact!` returns its own per-call promise that
-  resolves with the tx-report for THIS specific tx — even under
-  writer batching, where the commit-loop replaces `:db-after`
-  uniformly across the batch but each tx-report keeps its own
-  `:tx-data` and `:tempids`. We cache the writer's `:tx-data` by
-  `:ov-id` here, *after* the promise resolves: that's the only spot
-  in the flow where we have both pieces of information together
-  without needing a tx-meta round-trip (which would require schema-
-  on-write to declare a special attribute)."
-  [conn tx-data ov-id]
-  (let [out (chan 1)]
-    (a/go
-      (let [report (a/<! (d/transact! conn tx-data))]
-        (if (throwable? report)
-          (put! out report)
-          (let [{:keys [writer-tx-cache]} (conn-state conn)]
-            (cache-writer-tx! writer-tx-cache ov-id (vec (:tx-data report)))
-            (put! out {:reply report
-                       :max-tx (:max-tx (:db-after report))})))))
-    out))
-
-(defn- run-user-dispatch
-  "Invoke the user's `:dispatch-fn` and route its result (or any
-  thrown/yielded error) onto a single channel. Caller reads with
-  `<?-` to unify throw and yield-an-error.
-
-  Contract: dispatch-fn returns a `core.async` channel (typically
-  a `promise-chan` or the channel of an `a/go` / `a/thread` block).
-  This includes Datahike's own `throwable-promise` returned by
-  `d/transact!`, which implements `ReadPort`."
-  [dispatch-fn]
-  (let [out (chan 1)]
-    (a/go
-      (try
-        (put! out (a/<! (dispatch-fn)))
-        (catch #?(:clj Throwable :cljs :default) e
-          (put! out e))))
-    out))
-
-;; -----------------------------------------------------------------------------
 ;; Public API
 ;; -----------------------------------------------------------------------------
 
@@ -446,9 +399,9 @@
                   Per-call override via `transact!`'s opts.
     :on-conflict  `(fn [conflicts])` — fired when the set of conflicting
                   entries changes. `conflicts` is a vector of pending
-                  entries currently un-applicable on top of @conn (see
-                  Case J in the doc). Each carries `:ov-id`, `:tx-data`,
-                  `:last-conflict-error`, etc.
+                  entries currently un-applicable on top of @conn. Each
+                  carries `:ov-id`, `:tx-data`, `:last-conflict-error`,
+                  etc.
 
   Additional on-conflict listeners can be registered later via
   `on-conflict!`."
@@ -461,7 +414,6 @@
      (when-not (conn-state conn)
        (let [overlay           (atom [])
              listeners         (atom {})
-             tx-listeners      (atom {})
              on-conflicts      (atom (if on-conflict
                                        {::default-on-conflict on-conflict}
                                        {}))
@@ -469,7 +421,7 @@
              ;; Seed `last-effective-db` with the current state so the
              ;; very first emitted tx-report has an accurate
              ;; `:db-before` even if a foreign `d/transact!` lands
-             ;; before any overlay activity has fired `fire-listeners!`.
+             ;; before any overlay activity has fired.
              last-effective-db (atom @conn)
              heartbeat-stop    (chan)
              watch-key         (keyword "datahike.optimistic"
@@ -477,18 +429,16 @@
              writer-listen-key (keyword "datahike.optimistic"
                                         (str "writer-" (random-uuid)))
              ;; Cache of writer's tx-data per `:ov-id`, populated by
-             ;; `default-dispatch` after its per-call promise resolves
-             ;; (where ov-id is in scope) and consumed by both the
-             ;; dispatch's sync-drop path and the watcher's
-             ;; `on-conn-advance` to compose correct
-             ;; `:overlay-realized` stale-retracts. Bounded naturally
-             ;; by the number of in-flight optimistic transacts —
-             ;; each ov-id is consumed exactly once on its drop.
+             ;; `transact!`'s go-block when its per-call promise
+             ;; resolves (ov-id is in scope there) and consumed by
+             ;; `emit-overlay-realized!` to compose correct
+             ;; `:overlay-realized` stale-retracts. Bounded by the
+             ;; number of in-flight optimistic transacts — each ov-id
+             ;; is consumed exactly once on its drop.
              writer-tx-cache   (atom {})]
          (swap! *state assoc conn
                 {:overlay           overlay
                  :listeners         listeners
-                 :tx-listeners      tx-listeners
                  :on-conflicts      on-conflicts
                  :last-conflict-ids last-conflict-ids
                  :last-effective-db last-effective-db
@@ -498,11 +448,10 @@
                  :watch-key         watch-key
                  :writer-listen-key writer-listen-key})
          ;; Emit :conn-advance for every successful d/transact!
-         ;; through this conn — our own AND foreign — so eff-db and
-         ;; tx-report consumers stay in sync with all durable changes.
-         ;; We don't cache here: correlation (writer-tx-data ↔ ov-id)
-         ;; happens directly in `default-dispatch`, where ov-id is
-         ;; naturally in scope when the per-call promise resolves.
+         ;; through this conn — our own AND foreign — so consumers
+         ;; stay in sync with all durable changes. The writer-tx-cache
+         ;; is populated by `transact!`'s go-block (where ov-id is in
+         ;; scope), not here.
          (d/listen conn writer-listen-key
                    (fn [tx-report]
                      (let [db-before (or @last-effective-db @conn)]
@@ -536,23 +485,6 @@
   nil)
 
 (defn listen!
-  "Register a listener `(fn [effective-db])` under key `k`. Fires
-  whenever the overlay changes or @conn advances. The argument is the
-  effective db — @conn with all currently-applicable overlay entries
-  layered on top (conflicting entries excluded; see `:on-conflict`)."
-  [conn k f]
-  (when-not (conn-state conn)
-    (throw (ex-info "Conn not registered for optimistic updates"
-                    {:conn conn})))
-  (swap! (:listeners (conn-state conn)) assoc k f)
-  nil)
-
-(defn unlisten! [conn k]
-  (when-let [{:keys [listeners]} (conn-state conn)]
-    (swap! listeners dissoc k))
-  nil)
-
-(defn listen-tx!
   "Register a tx-report listener `(fn [tx-report])` under key `k`.
   Fires once per logical change to the overlay or @conn, with a
   Datahike-style tx-report:
@@ -577,24 +509,31 @@
   as retracts so a consumer applying tx-data incrementally always
   converges to `@conn`.
 
+  For UIs that just re-render from a db value, ignore `:tx-data`
+  and use `:db-after` directly.
+
   Foreign-peer writes that bypass `d/transact!` do not currently
-  emit `:conn-advance` tx-reports (v1 limit). Standard `listen!`
-  consumers still see `effective-db` updates from foreign writes."
+  emit `:conn-advance` tx-reports (v1 limit)."
   [conn k f]
   (when-not (conn-state conn)
     (throw (ex-info "Conn not registered for optimistic updates"
                     {:conn conn})))
-  (swap! (:tx-listeners (conn-state conn)) assoc k f)
+  (swap! (:listeners (conn-state conn)) assoc k f)
   nil)
 
-(defn unlisten-tx! [conn k]
-  (when-let [{:keys [tx-listeners]} (conn-state conn)]
-    (swap! tx-listeners dissoc k))
+(defn unlisten! [conn k]
+  (when-let [{:keys [listeners]} (conn-state conn)]
+    (swap! listeners dissoc k))
   nil)
 
 (defn on-conflict!
   "Register a conflict-listener `(fn [conflicts])` under key `k`.
-  Fires whenever the set of conflicting entries changes."
+  Fires whenever the set of conflicting entries changes — useful for
+  one-off UX hooks like 'show a toast when conflicts exist'.
+
+  This is *not* a tx-report stream — for tx-data deltas on conflict
+  transitions, use `listen!` and filter for the `:overlay-conflict`
+  and `:overlay-resolve` origins."
   [conn k f]
   (when-not (conn-state conn)
     (throw (ex-info "Conn not registered for optimistic updates"
@@ -612,65 +551,55 @@
 
   Eagerly validates `tx-data` via `d/with` against the current
   effective-db; on validation failure throws synchronously and the
-  overlay is untouched. Otherwise appends a pending entry, fires
-  listeners with the optimistic effective-db, and dispatches the write
-  in the background.
+  overlay is untouched. Otherwise appends a pending entry, emits an
+  `:overlay-add` tx-report to listeners, and routes the durable write
+  through the conn's writer (`d/transact!`) in the background.
 
   Returns `{:ov-id uuid :result <chan>}`:
    - `:ov-id`  — client-minted UUID identifying this entry.
-   - `:result` — 1-buffer channel; yields the dispatch's :reply on
+   - `:result` — 1-buffer channel; yields the writer's tx-report on
                  success or a `Throwable`/`js/Error` on failure
                  (validation, server rejection, TTL timeout, or
-                 unregister! while pending).
-
-  Dispatch defaults to the conn's writer (`d/transact!`); the wrapper
-  extracts `(:max-tx (:db-after tx-report))` and uses it as the
-  watermark for dropping the entry from the overlay.
-
-  Pass `:dispatch-fn` to substitute your own RPC. Contract:
-   - takes no arguments
-   - returns a `core.async` channel that yields a single value:
-     either `{:reply X :max-tx N}` on success — where `N` is the
-     `:max-tx` of the durable commit produced by your RPC — or a
-     `Throwable` / `js/Error`. A thrown exception during the call is
-     also accepted; the wrapper normalizes throw and
-     yield-an-error onto the same failure path.
-   - `X` is what gets put on `:result`.
-   - Datahike's own `throwable-promise` returned by `d/transact!`
-     implements `ReadPort` and satisfies this contract directly.
+                 `unregister!` while pending).
 
   Pass `:ttl-ms` to override the conn's default TTL for this call;
   pass `:ttl-ms nil` to disable the TTL for this call."
   ([conn tx-data] (transact! conn tx-data {}))
-  ([conn tx-data {:keys [dispatch-fn] :as opts}]
-   (let [{:keys [overlay] :as st}
+  ([conn tx-data opts]
+   (let [{:keys [overlay writer-tx-cache] :as st}
          (or (conn-state conn)
              (throw (ex-info "Conn not registered for optimistic updates"
                              {:conn conn})))
          ;; Eager validation against the current effective-db — throws
          ;; on schema/type violations, nothing enters the overlay. Reuse
          ;; the result to cache the predicted tx-data shipped to
-         ;; tx-listeners on :overlay-add.
+         ;; listeners on :overlay-add.
          db-before-add     (effective-db conn)
          validate-report   (d/with db-before-add tx-data)
          predicted-tx-data (vec (:tx-data validate-report))
-         ov-id        (random-uuid)
-         submitted-at (now-ms)
-         ttl-ms       (if (contains? opts :ttl-ms) (:ttl-ms opts) (:ttl-ms st))
-         expires-at   (when ttl-ms (+ submitted-at ttl-ms))
-         result-ch    (chan 1)
-         entry        {:ov-id               ov-id
-                       :tx-data             tx-data
-                       :predicted-tx-data   predicted-tx-data
-                       :submitted-at        submitted-at
-                       :expires-at          expires-at
-                       :expected-max-tx     nil
-                       :conflicting?        false
-                       :last-conflict-error nil
-                       :result-ch           result-ch
-                       :result-delivered?   (atom false)}]
+         ov-id             (random-uuid)
+         submitted-at      (now-ms)
+         ttl-ms            (if (contains? opts :ttl-ms) (:ttl-ms opts) (:ttl-ms st))
+         expires-at        (when ttl-ms (+ submitted-at ttl-ms))
+         result-ch         (chan 1)
+         entry             {:ov-id               ov-id
+                            :tx-data             tx-data
+                            :predicted-tx-data   predicted-tx-data
+                            :submitted-at        submitted-at
+                            :expires-at          expires-at
+                            :expected-max-tx     nil
+                            :conflicting?        false
+                            :last-conflict-error nil
+                            :result-ch           result-ch
+                            :result-delivered?   (atom false)}
+         ;; Test-only escape hatch: a nullary fn returning a channel
+         ;; that yields either `{:reply X :max-tx N}` on success or a
+         ;; Throwable / js/Error on failure. NOT part of the public
+         ;; contract — used by the test suite to gate dispatch timing
+         ;; for race / TTL / conflict scenarios.
+         test-dispatch     (::dispatch-fn opts)]
      (swap! overlay conj entry)
-     (fire-listeners! conn)
+     (recompute-and-emit-conflicts! conn)
      ;; tx-report for the optimistic add. db-after is the new effective-db.
      ;; :tempids and :tx-meta come from the eager d/with — same shape as
      ;; a Datahike TxReport so consumers can use one code path for both
@@ -684,32 +613,31 @@
                      :ov-id     ov-id})
      (a/go
        (try
-         (let [val (<?- (if dispatch-fn
-                          (run-user-dispatch dispatch-fn)
-                          (default-dispatch conn tx-data ov-id)))]
-           (when-not (and (map? val) (contains? val :reply) (contains? val :max-tx))
-             (throw (ex-info
-                     "dispatch-fn returned an invalid shape; expected {:reply :max-tx}"
-                     {:type :optimistic/invalid-dispatch :got val})))
-           (let [{:keys [reply max-tx]} val]
-             ;; Stamp the watermark and let the single drop+emit path
-             ;; handle the rest. If @conn has already caught up (the
-             ;; default-dispatch case — writer's `reset!` ran before
-             ;; the per-call promise delivered), `try-drop-and-emit-
-             ;; realized!` drops the entry here. Otherwise it stays
-             ;; until the watcher's `on-conn-advance` triggers the
-             ;; same path on the next @conn change.
-             (swap! overlay
-                    (fn [v]
-                      (mapv (fn [e]
-                              (if (= (:ov-id e) ov-id)
-                                (assoc e :expected-max-tx max-tx)
-                                e))
-                            v)))
-             (try-drop-and-emit-realized! conn)
-             (deliver-result! entry reply)))
+         (let [[reply max-tx]
+               (if test-dispatch
+                 (let [v (<?- (test-dispatch))]
+                   [(:reply v) (:max-tx v)])
+                 (let [report (<?- (d/transact! conn tx-data))]
+                   (cache-writer-tx! writer-tx-cache ov-id (vec (:tx-data report)))
+                   [report (:max-tx (:db-after report))]))]
+           ;; Stamp the watermark and let the single drop+emit path
+           ;; handle the rest. On the happy path @conn has already
+           ;; caught up (the writer's `reset!` ran before our promise
+           ;; delivered), so `try-drop-and-emit-realized!` drops the
+           ;; entry here. Otherwise it stays until the watcher's
+           ;; `on-conn-advance` triggers the same path on the next
+           ;; @conn change.
+           (swap! overlay
+                  (fn [v]
+                    (mapv (fn [e]
+                            (if (= (:ov-id e) ov-id)
+                              (assoc e :expected-max-tx max-tx)
+                              e))
+                          v)))
+           (try-drop-and-emit-realized! conn)
+           (deliver-result! entry reply))
          (catch #?(:clj Throwable :cljs :default) e
-           ;; Drop the entry if still present; fire eff-db listeners;
+           ;; Drop the entry if still present; recompute conflicts;
            ;; emit :overlay-drop tx-report retracting predictions;
            ;; deliver the error.
            (let [db-before-drop (effective-db conn)
@@ -717,7 +645,7 @@
                                        #(filterv (fn [x] (not= (:ov-id x) ov-id)) %))
                  dropped-entry (first (filter #(= (:ov-id %) ov-id) old))]
              (when (not= (count old) (count new))
-               (fire-listeners! conn)
+               (recompute-and-emit-conflicts! conn)
                (when (and dropped-entry
                           (not (:conflicting? dropped-entry))
                           (seq (:predicted-tx-data dropped-entry)))

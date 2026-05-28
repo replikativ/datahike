@@ -2,10 +2,9 @@
   "Cross-platform tests for `datahike.optimistic`.
 
    Covers:
-     - API surface (register!, listen!, transact!, listen-tx!)
-     - Consistency invariants: default-dispatch closes the visibility
-       gap; custom dispatch with :max-tx does too; concurrent transacts
-       stay mutually visible
+     - API surface (register!, listen!, transact!, on-conflict!)
+     - Consistency invariants: durable transact closes the visibility
+       gap; concurrent transacts stay mutually visible
      - Case J (conflict): a conflicting entry hides from view, surfaces
        via :on-conflict, and drops cleanly on dispatch failure
      - TTL: expiry yields a tagged TimeoutException on :result and
@@ -57,8 +56,8 @@
   (let [conn (<! (setup))
         events (atom [])]
     (opt/register! conn)
-    (opt/listen! conn ::probe (fn [eff-db]
-                                (swap! events conj (names eff-db))))
+    (opt/listen! conn ::probe (fn [r]
+                                (swap! events conj (names (:db-after r)))))
     (testing "happy path: optimistic transact delivers tx-report on result chan"
       (let [{:keys [ov-id result]} (opt/transact! conn [{:name "bob"}])
             reply (<! result)]
@@ -69,7 +68,7 @@
         (is (= 0 (count (opt/pending conn))) "pending drained after success")
         (is (= ["alice" "bob"] (names @conn)) "base advanced")
         (is (every? #(contains? (set %) "bob") @events)
-            "all listener events include the optimistic name")
+            "every listener event's :db-after includes the optimistic name")
         (is (>= (count @events) 1) "at least one listener event fired")))
     (opt/unlisten! conn ::probe)
     (opt/unregister! conn)))
@@ -91,7 +90,7 @@
   (let [conn (<! (setup))
         events (atom [])]
     (opt/register! conn)
-    (opt/listen! conn ::probe (fn [eff-db] (swap! events conj (names eff-db))))
+    (opt/listen! conn ::probe (fn [r] (swap! events conj (names (:db-after r)))))
     (testing "manually-stacked overlay entries survive an external @conn advance"
       ;; Manual entry has no :expected-max-tx, so the watcher's
       ;; max-tx drop never removes it; it persists until unregister!.
@@ -109,11 +108,9 @@
     (opt/unregister! conn)))
 
 ;; A gate-as-dispatch lets us hold a transact!'s reply until we choose.
-;; The `:dispatch-fn` contract is "returns a `core.async` channel
-;; yielding a single value," so we use `promise-chan` on both
-;; platforms. The value is `{:reply ... :max-tx 0}` so the wrapper's
-;; sync drop check (`@conn :max-tx >= 0`) drops the entry immediately
-;; on resolution — no flapping while @conn marches on.
+;; Test-only hook (via the namespaced ::opt/dispatch-fn opt) — not part
+;; of the public API. Returns a `core.async` channel yielding a single
+;; value. `promise-chan` works on both platforms.
 (defn- make-gate []
   (a/promise-chan))
 
@@ -131,14 +128,14 @@
         gate1  (make-gate)
         gate2  (make-gate)]
     (opt/register! conn)
-    (opt/listen! conn ::probe (fn [eff-db] (swap! events conj (names eff-db))))
+    (opt/listen! conn ::probe (fn [r] (swap! events conj (names (:db-after r)))))
     (testing "an in-flight entry survives a concurrent transact!'s listener fire"
       (let [t1 (opt/transact! conn [{:name "bob"}]
-                              {:dispatch-fn (fn [] gate1)})]
+                              {::opt/dispatch-fn (fn [] gate1)})]
         (is (contains? (set (names (opt/effective-db conn))) "bob")
             "bob visible immediately after T1's optimistic transact!")
         (let [t2 (opt/transact! conn [{:name "carol"}]
-                                {:dispatch-fn (fn [] gate2)})]
+                                {::opt/dispatch-fn (fn [] gate2)})]
           (is (contains? (set (names (opt/effective-db conn))) "bob")
               "bob STILL visible after a concurrent transact!")
           (is (contains? (set (names (opt/effective-db conn))) "carol")
@@ -183,45 +180,16 @@
                  "snapshots are either pre-submit (alice-only) or post-submit (include bob)")))))
     (opt/unregister! conn)))
 
-(deftest-async custom-dispatch-with-max-tx-no-gap
-  ;; Custom dispatch-fns that honor the {:reply :max-tx} contract also
-  ;; close the gap — the watcher drops the entry only after @conn has
-  ;; demonstrably caught up.
-  (let [conn (<! (setup))]
-    (opt/register! conn {:ttl-ms nil})
-    (testing "good custom dispatch closes the gap"
-      (let [{:keys [result]}
-            (opt/transact! conn [{:name "carol"}]
-                           {:dispatch-fn
-                            (fn []
-                              (let [out (a/chan 1)]
-                                (go (let [r (<! (d/transact! conn [{:name "carol"}]))]
-                                      (a/put! out {:reply r
-                                                   :max-tx (:max-tx (:db-after r))})))
-                                out))})]
-        (<! result)
-        (is (contains? (set (names (opt/effective-db conn))) "carol"))
-        (is (= 0 (count (opt/pending conn))) "overlay drained after dispatch resolved")))
-    (opt/unregister! conn)))
-
-;; A dispatch-fn that resolves only when an external `release-ch`
+;; A dispatch hook that resolves only when an external `release-ch`
 ;; closes or yields a value. Used to hold an optimistic entry in
 ;; flight while the test asserts intermediate state.
 ;;
-;; Returns a `core.async` channel (the `:dispatch-fn` contract).
-;;
-;; `resolver` may return either:
-;;   - a plain value (placed on the channel as-is when release fires),
-;;   - or a `core.async` channel (whose value, when taken, is placed).
-;;
+;; Returns a `core.async` channel. `resolver` may return either a
+;; plain value or a `core.async` channel (whose value will be taken).
 ;; Channel-return is necessary when the resolver wants to do its own
-;; `<!` takes (e.g. waiting on `(d/transact! ...)`), because `<!` is
-;; a macro that's rewritten by the *lexically enclosing* `go` form —
-;; a thunk body containing `<!` compiled outside any `go` expands to
-;; the assert-nil fallback regardless of where it's later called.
-;; Having the resolver build its own `go` and hand back the channel
-;; sidesteps that pitfall. The plain-value form is for resolvers that
-;; have no async work to do.
+;; `<!` takes (e.g. waiting on `(d/transact! ...)`) — `<!` is a macro
+;; rewritten by the *lexically enclosing* `go`; a thunk body containing
+;; `<!` compiled outside a `go` expands to assert-nil.
 (defn- gated-dispatch [release-ch resolver]
   (fn []
     (let [out (a/chan 1)]
@@ -253,7 +221,7 @@
     (opt/register! conn {:ttl-ms 5000
                          :on-conflict (fn [cs] (swap! conflicts conj (mapv :ov-id cs)))})
     (let [opt-res (opt/transact! conn [{:slot "S" :who "alice"}]
-                                 {:dispatch-fn
+                                 {::opt/dispatch-fn
                                   (gated-dispatch
                                    release
                                    (fn []
@@ -331,7 +299,7 @@
   (let [conn (<! (setup))
         tx-events (atom [])]
     (opt/register! conn {:ttl-ms nil})
-    (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+    (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
     (testing "events fire and consumer view matches @conn"
       (let [before (user-datoms @conn #{:name})
             {:keys [result]} (opt/transact! conn [{:name "bob"}])]
@@ -348,7 +316,7 @@
               after (user-datoms @conn #{:name})]
           (is (= consumer after)
               "consumer's incremental view matches @conn"))))
-    (opt/unlisten-tx! conn ::probe)
+    (opt/unlisten! conn ::probe)
     (opt/unregister! conn)))
 
 #?(:clj
@@ -367,10 +335,10 @@
            release (a/chan)
            tx-events (atom [])]
        (opt/register! conn {:ttl-ms 5000})
-       (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+       (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
        (let [before-snap (user-datoms @conn #{:slot :who})
              opt-res (opt/transact! conn [{:slot "S" :who "alice"}]
-                                    {:dispatch-fn
+                                    {::opt/dispatch-fn
                                      (gated-dispatch
                                       release
                                       (fn []
@@ -397,7 +365,7 @@
                after (user-datoms @conn #{:slot :who})]
            (is (= consumer after)
                "consumer view converges to @conn after failure path")))
-       (opt/unlisten-tx! conn ::probe)
+       (opt/unlisten! conn ::probe)
        (opt/unregister! conn))))
 
 #?(:clj
@@ -410,16 +378,16 @@
            tx-events (atom [])
            never (a/chan)]
        (opt/register! conn {:ttl-ms 800})
-       (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+       (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
        (let [before (user-datoms @conn #{:name})
              ;; The setup helper already transacted alice. Optimistically
              ;; retract her name, then let the TTL fire (we never resolve
              ;; the dispatch).
              {:keys [result]}
              (opt/transact! conn [[:db/retract [:name "alice"] :name "alice"]]
-                            {:dispatch-fn (gated-dispatch
-                                           never
-                                           (fn [] {:reply :unused :max-tx 0}))})
+                            {::opt/dispatch-fn (gated-dispatch
+                                                never
+                                                (fn [] {:reply :unused :max-tx 0}))})
              reply (<! result)]
          (is (instance? Throwable reply))
          (is (= :optimistic/timeout (:type (ex-data reply))))
@@ -429,7 +397,7 @@
            (is (= consumer after)
                "consumer view restores alice after retract was rolled back")))
        (a/close! never)
-       (opt/unlisten-tx! conn ::probe)
+       (opt/unlisten! conn ::probe)
        (opt/unregister! conn))))
 
 #?(:clj
@@ -441,13 +409,13 @@
            never-release (a/chan)
            tx-events (atom [])]
        (opt/register! conn {:ttl-ms 1000})
-       (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+       (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
        (let [before (user-datoms @conn #{:name})
              {:keys [result]}
              (opt/transact! conn [{:name "ghost"}]
-                            {:dispatch-fn (gated-dispatch
-                                           never-release
-                                           (fn [] {:reply :unused :max-tx 0}))})
+                            {::opt/dispatch-fn (gated-dispatch
+                                                never-release
+                                                (fn [] {:reply :unused :max-tx 0}))})
              reply (<! result)]
          (is (instance? Throwable reply))
          (is (= :optimistic/timeout (:type (ex-data reply))))
@@ -459,12 +427,12 @@
            (is (= consumer after)
                "consumer view returns to baseline after TTL")))
        (a/close! never-release)
-       (opt/unlisten-tx! conn ::probe)
+       (opt/unlisten! conn ::probe)
        (opt/unregister! conn))))
 
 #?(:clj
    (deftest-async tx-report-watcher-drop-emits-overlay-realized
-     ;; Regression for the case where a custom dispatch resolves with
+     ;; Regression for the case where a dispatch resolves with
      ;; `:max-tx` ahead of `@conn` — the entry can't sync-drop at
      ;; dispatch time, so the watcher drops it later when @conn
      ;; catches up. That watcher-drop path must also emit
@@ -475,19 +443,19 @@
            tx-events (atom [])
            predicted-max-tx (inc (:max-tx @conn))]
        (opt/register! conn {:ttl-ms 60000})
-       (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+       (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
        (let [before (user-datoms @conn #{:name})
-             ;; Custom dispatch declares max-tx = (current+1) up front:
-             ;; the entry stays in overlay because @conn hasn't reached
-             ;; it. Open the gate immediately so the dispatch resolves
+             ;; Dispatch declares max-tx = (current+1) up front: the
+             ;; entry stays in overlay because @conn hasn't reached it.
+             ;; Open the gate immediately so the dispatch resolves
              ;; without doing any actual durable write.
              {:keys [result]}
              (opt/transact! conn [{:name "ghost-write"}]
-                            {:dispatch-fn (gated-dispatch
-                                           release
-                                           (fn []
-                                             {:reply :stub
-                                              :max-tx predicted-max-tx}))})]
+                            {::opt/dispatch-fn (gated-dispatch
+                                                release
+                                                (fn []
+                                                  {:reply :stub
+                                                   :max-tx predicted-max-tx}))})]
          (a/close! release)
          (<! result)
          (<! (a/timeout 30))
@@ -507,7 +475,7 @@
                after (user-datoms @conn #{:name})]
            (is (= consumer after)
                "consumer view converges to @conn after watcher-drop")))
-       (opt/unlisten-tx! conn ::probe)
+       (opt/unlisten! conn ::probe)
        (opt/unregister! conn))))
 
 #?(:clj
@@ -518,14 +486,14 @@
      ;; delivers N callbacks with N tx-reports that all share the same
      ;; `:max-tx` (it replaces `:db-after` with the batch's commit-db
      ;; on each — see writer.cljc commit-loop). Cache-keying by
-     ;; `:max-tx` would collide; we key by `:ov-id` via `::ov-id` in
-     ;; `:tx-meta`. This test pins that each batched entry's
-     ;; `:overlay-realized` follow-up still sees the right writer
-     ;; tx-data and the consumer view converges to @conn.
+     ;; `:max-tx` would collide; we key by `:ov-id` via each call's
+     ;; per-call promise resolution. This test pins that each batched
+     ;; entry's `:overlay-realized` follow-up still sees the right
+     ;; writer tx-data and the consumer view converges to @conn.
      (let [conn (<! (setup))
            tx-events (atom [])]
        (opt/register! conn {:ttl-ms nil})
-       (opt/listen-tx! conn ::probe (fn [r] (swap! tx-events conj r)))
+       (opt/listen! conn ::probe (fn [r] (swap! tx-events conj r)))
        (let [before (user-datoms @conn #{:name})
              ;; Fire several optimistic transacts with no awaits
              ;; between them so they batch in the writer's commit-loop.
@@ -541,7 +509,7 @@
            (is (= consumer after)
                (str "consumer's incremental view matches @conn under batching "
                     "(no cross-entry cache collisions)"))))
-       (opt/unlisten-tx! conn ::probe)
+       (opt/unlisten! conn ::probe)
        (opt/unregister! conn))))
 
 (deftest-async ttl-expires-then-fires-result
@@ -553,9 +521,9 @@
     (opt/register! conn {:ttl-ms 1500})
     (let [{:keys [result]}
           (opt/transact! conn [{:name "ghost"}]
-                         {:dispatch-fn (gated-dispatch
-                                        never-release
-                                        (fn [] {:reply :unused :max-tx 0}))})
+                         {::opt/dispatch-fn (gated-dispatch
+                                             never-release
+                                             (fn [] {:reply :unused :max-tx 0}))})
           reply (<! result)]
       (is (instance? #?(:clj Throwable :cljs js/Error) reply))
       (is (= :optimistic/timeout (:type (ex-data reply))) "tagged as timeout"))
