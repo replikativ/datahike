@@ -23,6 +23,10 @@
 (def ^:dynamic *default-search-cache-size* 10000)
 (def ^:dynamic *default-store-cache-size* 1000)
 (def ^:dynamic *default-crypto-hash?* false)
+;; When true, each index's root node is inlined into the db-record instead of
+;; stored as a separate konserve object — one fewer PUT and one fewer cold GET
+;; per index per commit. Experimental; see doc/index-root-fusion.md.
+(def ^:dynamic *default-fuse-index-roots?* false)
 (def ^:dynamic *default-store* :memory)                           ;; store-less = in-memory?
 (def ^:dynamic *default-db-name* nil)                         ;; when nil creates random name
 (def ^:dynamic *default-db-branch* :db)                         ;; when nil creates random name
@@ -34,6 +38,7 @@
 (s/def ::search-cache-size nat-int?)
 (s/def ::store-cache-size pos-int?)
 (s/def ::crypto-hash? boolean?)
+(s/def ::fuse-index-roots? boolean?)
 (s/def ::writer map?)
 (s/def ::branch keyword?)
 (s/def ::entity (s/or :map associative? :vec vector?))
@@ -54,6 +59,7 @@
                                          ::search-cache-size
                                          ::store-cache-size
                                          ::crypto-hash?
+                                         ::fuse-index-roots?
                                          ::initial-tx
                                          ::name
                                          ::branch
@@ -211,6 +217,7 @@
                  :index index
                  :branch *default-db-branch*
                  :crypto-hash? *default-crypto-hash?*
+                 :fuse-index-roots? *default-fuse-index-roots?*
                  :writer self-writer
                  :search-cache-size (int-from-env :datahike-search-cache-size *default-search-cache-size*)
                  :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)

@@ -212,7 +212,17 @@
   (-persistent! [^PersistentSortedSet pset]
     (persistent! pset))
   (-mark [^PersistentSortedSet pset]
-    (mark pset)))
+    (mark pset))
+  (-root-node [^PersistentSortedSet pset]
+    ;; In-memory top node; populated after -flush set _root/_address.
+    #?(:clj  (.root pset)
+       :cljs (.-root pset)))
+  (-seed-root! [^PersistentSortedSet pset root-node]
+    ;; Install an inlined (fused) root so root() returns it without a
+    ;; storage round-trip; deeper children stay lazy via the set's storage.
+    ;; clj only — root fusion is a JVM feature for now.
+    #?(:clj (set! (.-_root pset) root-node))
+    pset))
 
 (defn- gen-address [^ANode node crypto-hash?]
   (if crypto-hash?
