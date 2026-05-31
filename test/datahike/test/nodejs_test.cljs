@@ -528,6 +528,62 @@
           (finally
             (done)))))))
 
+;; OP_BUF_V5 phase-2 soundness gate: randomized insert/retract churn under a SMALL op-buf
+;; budget (more frequent buffer/write decisions, merges, borrows, splits) with periodic cold
+;; reopens, compared against a reference set. Seeded LCG ⇒ deterministic/reproducible.
+(def ^:private cljs-opbuf-gen-dir "/tmp/dh-cljs-opbuf-gen")
+
+(deftest cljs-opbuf-generative-test
+  (let [sid  #uuid "00000000-0000-0000-0000-0000000c1c5d"
+        cfg  {:store {:backend :file :path cljs-opbuf-gen-dir :id sid}
+              :schema-flexibility :write :keep-history? false
+              :index :datahike.index/persistent-set
+              :index-config {:op-buf-size 64}}
+        seed (atom 777)
+        rnd  (fn [n] (mod (swap! seed (fn [x] (mod (+ (* x 1103515245) 12345) 2147483648))) n))
+        idset (fn [c] (set (d/q '[:find [?id ...] :where [_ :id ?id]] @c)))]
+    (async done
+      (go
+        (try
+          (when (<! (d/database-exists? cfg)) (<! (d/delete-database cfg)))
+          (<! (d/create-database cfg))
+          (let [present (atom #{})
+                conn0 (d/connect cfg)]
+            (<! (d/transact! conn0 [{:db/ident :id :db/valueType :db.type/long
+                                     :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}]))
+            ;; bulk-seed >bf entities so the index has BRANCH nodes (op-buf only engages on
+            ;; branches; a sub-512 tree is a single leaf and never buffers).
+            (loop [bs (partition-all 200 (range 2000))]
+              (when (seq bs)
+                (<! (d/transact! conn0 (mapv (fn [i] {:id i}) (first bs))))
+                (recur (rest bs))))
+            (reset! present (set (range 2000)))
+            (loop [conn conn0, round 0]
+              (if (>= round 40)
+                (do (d/release conn)
+                    (let [c (d/connect cfg)]
+                      (is (= @present (idset c)) (str "final ref=" (count @present) " got=" (count (idset c))))
+                      (d/release c)))
+                (let [insert? (even? (rnd 2))
+                      cand    (vec (distinct (repeatedly 40 #(rnd 4000))))
+                      ops     (if insert? (vec (remove @present cand)) (vec (filter @present cand)))]
+                  (when (seq ops)
+                    (if insert?
+                      (do (<! (d/transact! conn (mapv (fn [i] {:id i}) ops)))
+                          (swap! present into ops))
+                      (do (<! (d/transact! conn (mapv (fn [i] [:db/retractEntity [:id i]]) ops)))
+                          (swap! present (fn [s] (reduce disj s ops))))))
+                  (if (zero? (mod (inc round) 8))
+                    (do (d/release conn)
+                        (let [c (d/connect cfg)]
+                          (is (= @present (idset c)) (str "round " round " ref=" (count @present) " got=" (count (idset c))))
+                          (recur c (inc round))))
+                    (recur conn (inc round)))))))
+          (catch js/Error e
+            (is false (str "cljs-opbuf-generative error: " (.-message e))))
+          (finally
+            (done)))))))
+
 (defn -main []
   (t/run-tests 'datahike.test.nodejs-test
                'datahike.test.cljs-pattern-scan-test
