@@ -705,4 +705,9 @@
   store)
 
 (defmethod di/default-index-config :datahike.index/persistent-set [_index-name]
-  {})
+  ;; DIFF_BUF_V5: diff-buffering ON by default for NEW stores (budget 256) — ~1 PUT/commit
+  ;; for small commits on object stores. Baked into the stored config at create time, so
+  ;; existing stores keep their own value (adopt-stored-fixed sources it from the store, and
+  ;; `diff-buf-size` defaults to 0 when absent ⇒ pre-diff-buf stores stay baseline). Set
+  ;; {:diff-buf-size 0} explicitly to disable.
+  {:diff-buf-size 256})

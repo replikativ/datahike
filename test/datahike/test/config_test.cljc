@@ -38,7 +38,7 @@
                          :keep-history? true
                          :initial-tx nil
                          :index :datahike.index/persistent-set
-                         :index-config {}
+                         :index-config {:diff-buf-size 256}  ;; DIFF_BUF_V5 default-on for new stores
                          :schema-flexibility :write
                          :crypto-hash? false
                          :branch :db
