@@ -28,14 +28,14 @@
 
 ;; OP_BUF_V5 write-optimization knob (JVM only). A non-zero op-buf-size makes a commit
 ;; buffer content-only child diffs into the rewritten ancestor instead of rewriting the
-;; whole spine — ~1 PUT/commit for small commits. Single source of truth is the JVM
-;; system property `pss.opBufSize` (matches PSS Settings.defaultOpBufSize), so it can be
-;; varied per benchmark run without touching datahike's config specs. 0 ⇒ baseline.
-;; TODO(debt): promote to a first-class store/index config key once validated.
+;; whole spine — ~1 PUT/commit for small commits. Primary source is the persisted index
+;; config key `:op-buf-size` (so it round-trips with the store and the consistency check
+;; guards it); the `pss.opBufSize` JVM sysprop is a fallback for ad-hoc experiments only.
+;; 0 ⇒ baseline (off) — the default, protecting existing persistent-sorted-set stores.
 #?(:clj
-   (defn op-buf-size ^long []
-     (try (Long/parseLong (System/getProperty "pss.opBufSize" "0"))
-          (catch Exception _ 0))))
+   (defn op-buf-size ^long [index-config]
+     (long (or (:op-buf-size index-config)
+               (try (Long/parseLong (System/getProperty "pss.opBufSize" "0")) (catch Exception _ 0))))))
 
 (def index-type->kwseq
   {:eavt [:e :a :v :tx :added]
@@ -417,17 +417,25 @@
 
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
-(defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
+;; Branching factor is create-time-fixed: a tree built at one bf must never be mutated
+;; at another (mixed node sizes break the min/max invariants). Sourced from the persisted
+;; index-config (default 512 ⇒ existing stores, built at 512, are unaffected). Must reach
+;; BOTH fresh-set creation AND the deserialization Settings, else a non-512 store would be
+;; mutated at 512 on restore. The consistency check guards against accidental change.
+(defn- branching-factor ^long [index-config]
+  (long (or (:branching-factor index-config) DEFAULT_BRANCHING_FACTOR)))
+
+(defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type index-config]
   (let [cmp (index-type->cmp-quick index-type false)
         ^PersistentSortedSet pset (psset/sorted-set* {:comparator cmp
                                                       :storage #?(:clj (with-comparator (:storage store) cmp)
                                                                   :cljs (:storage store))
-                                                      :branching-factor DEFAULT_BRANCHING_FACTOR
-                                                      :op-buf-size #?(:clj (op-buf-size) :cljs 0)})]
+                                                      :branching-factor (branching-factor index-config)
+                                                      :op-buf-size #?(:clj (op-buf-size index-config) :cljs 0)})]
     (with-meta pset
       {:index-type index-type})))
 
-(defmethod di/init-index :datahike.index/persistent-set [_index-name store datoms index-type _ {:keys [indexed]}]
+(defmethod di/init-index :datahike.index/persistent-set [_index-name store datoms index-type _ {:keys [indexed] :as index-config}]
   (let [arr (if (= index-type :avet)
               (->> datoms
                    (filter #(contains? indexed (.-a ^Datom %)))
@@ -440,8 +448,8 @@
         ^PersistentSortedSet pset (psset/from-sorted-array cmp
                                                            arr
                                                            (arrays/alength arr)
-                                                           {:branching-factor DEFAULT_BRANCHING_FACTOR
-                                                            :op-buf-size #?(:clj (op-buf-size) :cljs 0)})]
+                                                           {:branching-factor (branching-factor index-config)
+                                                            :op-buf-size #?(:clj (op-buf-size index-config) :cljs 0)})]
     (set! (.-_storage pset) #?(:clj (with-comparator (:storage store) cmp)
                                :cljs (:storage store)))
     (with-meta pset
@@ -450,10 +458,12 @@
 ;; temporary import from psset until public
 (defn- map->settings ^Settings [m]
   #?(:cljs m
+     ;; 5-arg normalizing ctor (bf, refType, measure, leaf-processor, opBufSize): defaults
+     ;; refType to SOFT when nil. OP_BUF_V5: deserialized nodes need opBufSize>0 to project.
      :clj (Settings.
            (int (or (:branching-factor m) 0))
-           nil                                             ;; weak ref default
-           )))
+           nil nil nil
+           (int (or (:op-buf-size m) 0)))))
 
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
   ;; Check if store has pre-configured handlers (e.g., LMDB with buffer encoder).
@@ -467,7 +477,8 @@
 
     ;; Standard fressian store - set up serializers
     ;; deal with circular reference between storage and store
-    (let [settings (map->settings {:branching-factor DEFAULT_BRANCHING_FACTOR})
+    (let [settings (map->settings {:branching-factor (branching-factor (:index-config config))
+                                   :op-buf-size (op-buf-size (:index-config config))})
           storage (atom nil)
           store
           (k/assoc-serializers
