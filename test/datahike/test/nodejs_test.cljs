@@ -5,7 +5,7 @@
             [datahike.index.audit :as ia]
             [datahike.online-gc :as online-gc]
             [konserve.core :as k]
-            [konserve.node-filestore] ;; Register :file backend for Node.js
+            [konserve.node-filestore :as nfs] ;; Register :file backend for Node.js
             [cljs.core.async :refer [go <!] :include-macros true]
             [cljs.nodejs :as nodejs]
             ;; Sibling test namespaces — included so `bb node-cljs-test`
@@ -624,6 +624,27 @@
             (<! (d/delete-database cfg))))
         (catch js/Error e
           (is false (str "cljs-merkle-audit error: " (.-message e))))
+        (finally
+          (done))))))
+
+;; Isolation probe: read a JVM-konserve-written map (default fressian serializer) cross-host
+;; to test fress deserialization of namespaced keywords etc. (datahike-independent).
+;; Written by /tmp/kons_probe_write.clj. Skips if absent.
+(deftest xhost-fress-probe-test
+  (async done
+    (go
+      (try
+        (if-not (fs.existsSync "/tmp/kons-probe")
+          (is true "kons-probe artifact absent — skipped")
+          (let [store (<! (nfs/connect-fs-store "/tmp/kons-probe" :opts {:sync? false}))
+                v     (<! (k/get store :probe nil {:sync? false}))]
+            (is (= :datahike.index/persistent-set (:ns-kw v)) (str ":ns-kw = " (pr-str (:ns-kw v))))
+            (is (= :db.type/long (:ns-kw2 v)) (str ":ns-kw2 = " (pr-str (:ns-kw2 v))))
+            (is (= :write (:simple-kw v)) (str ":simple-kw = " (pr-str (:simple-kw v))))
+            (is (= :x/y (get-in v [:nested :inner])) (str ":nested :inner = " (pr-str (get-in v [:nested :inner]))))
+            (is (= [:a/b :c] (:vec v)) (str ":vec = " (pr-str (:vec v))))))
+        (catch js/Error e
+          (is false (str "xhost-fress-probe error: " (.-message e))))
         (finally
           (done))))))
 
