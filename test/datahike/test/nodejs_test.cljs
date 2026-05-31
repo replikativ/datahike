@@ -354,7 +354,7 @@
              (finally
                (done))))))
 
-;; DIFF_BUF_V5 phase-1 gate: read a JVM-written diff-buf store from cljs and verify the
+;; diff-buf phase-1 gate: read a JVM-written diff-buf store from cljs and verify the
 ;; buffered-leaf projection (Branch.child) reconstructs identical datoms cross-host.
 ;; The store + reference datoms are produced by /tmp/dh_exchange_build.clj on the JVM;
 ;; this test is a no-op (passes) when that artifact is absent (e.g. normal CI).
@@ -392,7 +392,7 @@
         (finally
           (done))))))
 
-;; DIFF_BUF_V5 phase-2 gate: cljs WRITE path. Same-host (create+transact+query all in cljs,
+;; diff-buf phase-2 gate: cljs WRITE path. Same-host (create+transact+query all in cljs,
 ;; avoiding the pre-existing cross-host connect bug). Incremental commits make leaves
 ;; content-only dirty → buffered leaf slots in the root → on cold reopen they project back.
 ;; Writes to a FIXED dir (not deleted) so buffering can be confirmed externally (grep slots).
@@ -436,7 +436,7 @@
           (finally
             (done)))))))
 
-;; DIFF_BUF_V5 phase-2 gate: cljs $remove path (retractions → leaf underflow → merge/borrow,
+;; diff-buf phase-2 gate: cljs $remove path (retractions → leaf underflow → merge/borrow,
 ;; exercising the rotate/merge/merge-split slot-carry). Insert 2000, retract the even ones,
 ;; cold-reopen and verify the surviving odd set exactly.
 (def ^:private cljs-opbuf-rm-dir "/tmp/dh-cljs-opbuf-rm")
@@ -483,7 +483,7 @@
           (finally
             (done)))))))
 
-;; DIFF_BUF_V5 phase-2 gate: cljs $replace path. A cardinality-one re-assertion (upsert with an
+;; diff-buf phase-2 gate: cljs $replace path. A cardinality-one re-assertion (upsert with an
 ;; old value) routes through psset/replace → Branch.$replace for eavt/aevt. Insert 1000 ids
 ;; with :n 0, then update each :n to its id in small commits, cold-reopen and verify :n == id.
 (def ^:private cljs-opbuf-rep-dir "/tmp/dh-cljs-opbuf-rep")
@@ -530,7 +530,7 @@
           (finally
             (done)))))))
 
-;; DIFF_BUF_V5 phase-2 soundness gate: randomized insert/retract churn under a SMALL diff-buf
+;; diff-buf phase-2 soundness gate: randomized insert/retract churn under a SMALL diff-buf
 ;; budget (more frequent buffer/write decisions, merges, borrows, splits) with periodic cold
 ;; reopens, compared against a reference set. Seeded LCG ⇒ deterministic/reproducible.
 (def ^:private cljs-opbuf-gen-dir "/tmp/dh-cljs-opbuf-gen")
@@ -586,7 +586,7 @@
           (finally
             (done)))))))
 
-;; DIFF_BUF_V5 phase-3 gate: cljs MERKLE AUDIT (crypto-hash). Validates the cljs port of
+;; diff-buf phase-3 gate: cljs MERKLE AUDIT (crypto-hash). Validates the cljs port of
 ;; branch-crypto-uuid/canon/walk-pss + -recompute-merkle-root, exercised via the real
 ;; datahike.audit/verify-chain :deep? API (which re-derives every node's content hash from
 ;; storage and confirms it matches its address). Covers baseline crypto AND crypto+diff-buf

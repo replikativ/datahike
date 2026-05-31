@@ -26,7 +26,7 @@
                    [org.replikativ.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode Settings Slot]
                    [java.util List])))
 
-;; DIFF_BUF_V5 write-optimization knob (JVM only). A non-zero diff-buf-size makes a commit
+;; diff-buf write-optimization knob (JVM only). A non-zero diff-buf-size makes a commit
 ;; buffer content-only child diffs into the rewritten ancestor instead of rewriting the
 ;; whole spine — ~1 PUT/commit for small commits. Primary source is the persisted index
 ;; config key `:diff-buf-size` (so it round-trips with the store and the consistency check
@@ -248,7 +248,7 @@
     (sequential? x) (mapv canon x)
     :else           x))
 
-;; DIFF_BUF_V5 crypto address of a Branch. Baseline (no slots) hashes the child addresses —
+;; diff-buf crypto address of a Branch. Baseline (no slots) hashes the child addresses —
 ;; UNCHANGED, so existing crypto stores keep their hashes. With diff-buf the buffered diff
 ;; lives in the slots (not reflected in the anchor child-addresses), so fold the slots in:
 ;; the address then reflects the durable representation (anchors + diff) and the audit
@@ -405,7 +405,7 @@
 
 (defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freelist cost-center-fn cmp]
   IStorage
-  (comparator [_] cmp)   ;; DIFF_BUF_V5: per-index comparator for buffered-leaf projection
+  (comparator [_] cmp)   ;; diff-buf: per-index comparator for buffered-leaf projection
   (store [_ node #?(:cljs opts)]
     (@cost-center-fn :store)
     (swap! stats update :writes inc)
@@ -469,7 +469,7 @@
 
 ;; Per-index view of the (shared) storage carrying the index comparator. Returns a new
 ;; CachedStorage sharing all atoms (cache/pending-writes/stats/freed/freelist) — only the
-;; cmp field differs — so DIFF_BUF_V5 projection can read storage.comparator() per index
+;; cmp field differs — so diff-buf projection can read storage.comparator() per index
 ;; while writes/cache stay unified across indexes.
 (defn with-comparator [storage cmp]
   (if (instance? CachedStorage storage)   ;; pass through nil / non-CachedStorage (e.g. mem backend) unchanged
@@ -518,7 +518,7 @@
 (defn- map->settings ^Settings [m]
   #?(:cljs m
      ;; 5-arg normalizing ctor (bf, refType, measure, leaf-processor, diffBufSize): defaults
-     ;; refType to SOFT when nil. DIFF_BUF_V5: deserialized nodes need diffBufSize>0 to project.
+     ;; refType to SOFT when nil. diff-buf: deserialized nodes need diffBufSize>0 to project.
      :clj (Settings.
            (int (or (:branching-factor m) 0))
            nil nil nil
@@ -554,7 +554,7 @@
                                          ;; The following fields are reset as they cannot be accessed from outside:
                                          ;; - 'edit' is set to false, i.e. the set is assumed to be persistent, not transient
                                          ;; - 'version' is set back to 0
-                                         ;; DIFF_BUF_V5: give the set a storage view carrying its index comparator
+                                         ;; diff-buf: give the set a storage view carrying its index comparator
                                          ;; so buffered-leaf projection (Branch.child) can route by value on restore.
                                            (PersistentSortedSet. meta cmp address (with-comparator @storage cmp) nil count settings 0))))
                                      :cljs
@@ -562,7 +562,7 @@
                                        (let [{:keys [meta address count]} (fress/read-object reader)
                                              cmp                          (index-type->cmp-quick (:index-type meta) false)]
                                        ;; CLJS BTSet deftype: [root cnt comparator meta _hash storage address settings]
-                                       ;; DIFF_BUF_V5: give the set a storage view carrying its index comparator so
+                                       ;; diff-buf: give the set a storage view carrying its index comparator so
                                        ;; buffered-leaf projection (Branch.child) can route by value on restore.
                                          (BTSet. nil count cmp meta nil (with-comparator @storage cmp) address settings))))
                                   "datahike.index.PersistentSortedSet.Leaf"
@@ -583,7 +583,7 @@
                                          (let [{:keys [keys level addresses subtree-count slots]} (.readObject reader)
                                                addr-vec (vec addresses)
                                                ^Branch b (Branch. (int level) (count keys) (into-array Object keys) (into-array Object (seq addresses)) nil (long (or subtree-count -1)) settings)]
-                                           ;; DIFF_BUF_V5: reconstruct per-child buffered diffs (anchor = the child's
+                                           ;; diff-buf: reconstruct per-child buffered diffs (anchor = the child's
                                            ;; durable address). Branch.child projects them on descent. Absent ⇒ baseline.
                                            (when slots
                                              (let [arr (object-array (count keys))]
@@ -598,7 +598,7 @@
                                              addr-arr (clj->js addresses)
                                              ;; CLJS Branch deftype: [level keys children addresses subtree-count _measure settings _slots _rebalanced]
                                              b (Branch. (int level) (clj->js keys) nil addr-arr (or subtree-count -1) nil settings nil false)]
-                                         ;; DIFF_BUF_V5: reconstruct per-child buffered diffs (anchor = the child's
+                                         ;; diff-buf: reconstruct per-child buffered diffs (anchor = the child's
                                          ;; durable address). Branch.child projects them on descent. Absent ⇒ baseline.
                                          (when slots
                                            (let [arr (make-array (count keys))]
@@ -648,7 +648,7 @@
                                       (reify WriteHandler
                                         (write [_ writer node]
                                           (.writeTag writer "datahike.index.PersistentSortedSet.Branch" 1)
-                                          ;; DIFF_BUF_V5: emit :slots only when present (nil ⇒ byte-identical to
+                                          ;; diff-buf: emit :slots only when present (nil ⇒ byte-identical to
                                           ;; the pre-diff-buf format, so diffBufSize=0 / legacy DBs are unaffected).
                                           (let [slots (.slotsForStorage ^Branch node)]
                                             (.writeObject writer (cond-> {:level     (.level ^Branch node)
@@ -684,7 +684,7 @@
                                      Branch
                                      (fn [writer node]
                                        (fress/write-tag writer "datahike.index.PersistentSortedSet.Branch" 1)
-                                       ;; DIFF_BUF_V5: emit :slots only when present (nil ⇒ byte-identical to
+                                       ;; diff-buf: emit :slots only when present (nil ⇒ byte-identical to
                                        ;; the pre-diff-buf format, so diff-buf-size=0 / legacy DBs are unaffected).
                                        (let [slots (branch/slots-for-storage ^Branch node)]
                                          (fress/write-object writer (cond-> {:level     (.-level ^Branch node)
@@ -705,7 +705,7 @@
   store)
 
 (defmethod di/default-index-config :datahike.index/persistent-set [_index-name]
-  ;; DIFF_BUF_V5: diff-buffering ON by default for NEW stores (budget 256) — ~1 PUT/commit
+  ;; diff-buf: diff-buffering ON by default for NEW stores (budget 256) — ~1 PUT/commit
   ;; for small commits on object stores. Baked into the stored config at create time, so
   ;; existing stores keep their own value (adopt-stored-fixed sources it from the store, and
   ;; `diff-buf-size` defaults to 0 when absent ⇒ pre-diff-buf stores stay baseline). Set
