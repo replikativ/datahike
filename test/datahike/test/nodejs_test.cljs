@@ -434,6 +434,53 @@
           (finally
             (done)))))))
 
+;; OP_BUF_V5 phase-2 gate: cljs $remove path (retractions → leaf underflow → merge/borrow,
+;; exercising the rotate/merge/merge-split slot-carry). Insert 2000, retract the even ones,
+;; cold-reopen and verify the surviving odd set exactly.
+(def ^:private cljs-opbuf-rm-dir "/tmp/dh-cljs-opbuf-rm")
+
+(deftest cljs-opbuf-remove-roundtrip-test
+  (let [sid #uuid "00000000-0000-0000-0000-0000000c1c5b"
+        cfg {:store {:backend :file :path cljs-opbuf-rm-dir :id sid}
+             :schema-flexibility :write :keep-history? false
+             :index :datahike.index/persistent-set
+             :index-config {:op-buf-size 256}}]
+    (async done
+      (go
+        (try
+          (when (<! (d/database-exists? cfg)) (<! (d/delete-database cfg)))
+          (<! (d/create-database cfg))
+          (let [conn (d/connect cfg)]
+            (<! (d/transact! conn [{:db/ident :n :db/valueType :db.type/long
+                                    :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}]))
+            (loop [bs (partition-all 100 (range 2000))]
+              (when (seq bs)
+                (<! (d/transact! conn (mapv (fn [i] {:n i}) (first bs))))
+                (recur (rest bs))))
+            ;; retract even-:n entities (unique :n ⇒ lookup-ref retraction) in small commits
+            (loop [bs (partition-all 100 (filter even? (range 2000)))]
+              (when (seq bs)
+                (<! (d/transact! conn (mapv (fn [i] [:db/retractEntity [:n i]]) (first bs))))
+                (recur (rest bs))))
+            (let [db @conn
+                  vs (vec (sort (map :v (filter #(= :n (:a %)) (d/datoms db :eavt)))))]
+              (is (= 1000 (count vs)) (str "warm survivors=" (count vs)))
+              (is (= (vec (range 1 2000 2)) vs) "warm: exactly the odd :n survive"))
+            (d/release conn))
+          ;; cold reopen → projection-on-read of buffered slots after structural removes
+          (let [conn2 (d/connect cfg)
+                db2   @conn2
+                vs    (vec (sort (map :v (filter #(= :n (:a %)) (d/datoms db2 :eavt)))))
+                sum   (reduce + vs)]
+            (is (= 1000 (count vs)) (str "cold survivors=" (count vs)))
+            (is (= 1000000 sum) (str "cold sum of odds=" sum))
+            (is (= (vec (range 1 2000 2)) vs) "cold: exactly the odd :n survive (remove+merge slot-carry sound)")
+            (d/release conn2))
+          (catch js/Error e
+            (is false (str "cljs-opbuf-remove-roundtrip error: " (.-message e))))
+          (finally
+            (done)))))))
+
 (defn -main []
   (t/run-tests 'datahike.test.nodejs-test
                'datahike.test.cljs-pattern-scan-test
