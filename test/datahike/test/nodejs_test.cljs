@@ -481,6 +481,53 @@
           (finally
             (done)))))))
 
+;; OP_BUF_V5 phase-2 gate: cljs $replace path. A cardinality-one re-assertion (upsert with an
+;; old value) routes through psset/replace → Branch.$replace for eavt/aevt. Insert 1000 ids
+;; with :n 0, then update each :n to its id in small commits, cold-reopen and verify :n == id.
+(def ^:private cljs-opbuf-rep-dir "/tmp/dh-cljs-opbuf-rep")
+
+(deftest cljs-opbuf-replace-roundtrip-test
+  (let [sid #uuid "00000000-0000-0000-0000-0000000c1c5c"
+        cfg {:store {:backend :file :path cljs-opbuf-rep-dir :id sid}
+             :schema-flexibility :write :keep-history? false
+             :index :datahike.index/persistent-set
+             :index-config {:op-buf-size 256}}]
+    (async done
+      (go
+        (try
+          (when (<! (d/database-exists? cfg)) (<! (d/delete-database cfg)))
+          (<! (d/create-database cfg))
+          (let [conn (d/connect cfg)]
+            (<! (d/transact! conn [{:db/ident :id :db/valueType :db.type/long
+                                    :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
+                                   {:db/ident :n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]))
+            (loop [bs (partition-all 100 (range 1000))]
+              (when (seq bs)
+                (<! (d/transact! conn (mapv (fn [i] {:id i :n 0}) (first bs))))
+                (recur (rest bs))))
+            ;; cardinality-one update of :n in small commits → upsert → $replace (eavt/aevt)
+            (loop [bs (partition-all 100 (range 1000))]
+              (when (seq bs)
+                (<! (d/transact! conn (mapv (fn [i] [:db/add [:id i] :n i]) (first bs))))
+                (recur (rest bs))))
+            (let [db @conn
+                  pairs (d/q '[:find ?id ?n :where [?e :id ?id] [?e :n ?n]] db)]
+              (is (= 1000 (count pairs)) (str "warm pairs=" (count pairs)))
+              (is (every? (fn [[id n]] (= id n)) pairs) "warm: every :n updated to its :id"))
+            (d/release conn))
+          ;; cold reopen → projection-on-read after $replace buffering
+          (let [conn2 (d/connect cfg)
+                db2   @conn2
+                pairs (d/q '[:find ?id ?n :where [?e :id ?id] [?e :n ?n]] db2)
+                nsum  (reduce + (map second pairs))]
+            (is (= 1000 (count pairs)) (str "cold pairs=" (count pairs)))
+            (is (every? (fn [[id n]] (= id n)) pairs) "cold: every :n == its :id ($replace projection sound)")
+            (is (= 499500 nsum) (str "cold sum :n=" nsum)))
+          (catch js/Error e
+            (is false (str "cljs-opbuf-replace-roundtrip error: " (.-message e))))
+          (finally
+            (done)))))))
+
 (defn -main []
   (t/run-tests 'datahike.test.nodejs-test
                'datahike.test.cljs-pattern-scan-test
