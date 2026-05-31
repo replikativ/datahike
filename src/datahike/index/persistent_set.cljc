@@ -23,8 +23,19 @@
   #?(:cljs (:require-macros [datahike.index.persistent-set :refer [generate-slice-comparator-constructor]]))
   #?(:clj (:import [datahike.datom Datom]
                    [org.fressian.handlers WriteHandler ReadHandler]
-                   [org.replikativ.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode Settings]
+                   [org.replikativ.persistent_sorted_set PersistentSortedSet IStorage Leaf Branch ANode Settings Slot]
                    [java.util List])))
+
+;; OP_BUF_V5 write-optimization knob (JVM only). A non-zero op-buf-size makes a commit
+;; buffer content-only child diffs into the rewritten ancestor instead of rewriting the
+;; whole spine — ~1 PUT/commit for small commits. Single source of truth is the JVM
+;; system property `pss.opBufSize` (matches PSS Settings.defaultOpBufSize), so it can be
+;; varied per benchmark run without touching datahike's config specs. 0 ⇒ baseline.
+;; TODO(debt): promote to a first-class store/index config key once validated.
+#?(:clj
+   (defn op-buf-size ^long []
+     (try (Long/parseLong (System/getProperty "pss.opBufSize" "0"))
+          (catch Exception _ 0))))
 
 (def index-type->kwseq
   {:eavt [:e :a :v :tx :added]
@@ -331,8 +342,9 @@
             addr
             (recur)))))))
 
-(defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freelist cost-center-fn]
+(defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freelist cost-center-fn cmp]
   IStorage
+  #?(:clj (comparator [_] cmp))   ;; OP_BUF_V5: per-index comparator for buffered-leaf projection
   (store [_ node #?(:cljs opts)]
     (@cost-center-fn :store)
     (swap! stats update :writes inc)
@@ -391,14 +403,25 @@
                   (atom [])  ;; freed-addresses: vector of [address timestamp] pairs
                   (atom #{}) ;; freed-set: HashSet for O(1) isFreed lookups
                   (atom [])  ;; freelist: vector of reusable addresses (used as stack via peek/pop)
-                  (atom (fn [_] nil))))
+                  (atom (fn [_] nil))
+                  nil))      ;; cmp: per-index comparator, set via (with-comparator storage cmp)
+
+;; Per-index view of the (shared) storage carrying the index comparator. Returns a new
+;; CachedStorage sharing all atoms (cache/pending-writes/stats/freed/freelist) — only the
+;; cmp field differs — so OP_BUF_V5 projection can read storage.comparator() per index
+;; while writes/cache stay unified across indexes.
+(defn with-comparator [storage cmp]
+  (assoc storage :cmp cmp))
 
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type _]
-  (let [^PersistentSortedSet pset (psset/sorted-set* {:comparator (index-type->cmp-quick index-type false)
-                                                      :storage (:storage store)
-                                                      :branching-factor DEFAULT_BRANCHING_FACTOR})]
+  (let [cmp (index-type->cmp-quick index-type false)
+        ^PersistentSortedSet pset (psset/sorted-set* {:comparator cmp
+                                                      :storage #?(:clj (with-comparator (:storage store) cmp)
+                                                                  :cljs (:storage store))
+                                                      :branching-factor DEFAULT_BRANCHING_FACTOR
+                                                      :op-buf-size #?(:clj (op-buf-size) :cljs 0)})]
     (with-meta pset
       {:index-type index-type})))
 
@@ -411,11 +434,14 @@
                 (not (arrays/array? datoms))
                 (arrays/into-array)))
         _ (arrays/asort arr (index-type->cmp-quick index-type false))
-        ^PersistentSortedSet pset (psset/from-sorted-array (index-type->cmp-quick index-type false)
+        cmp (index-type->cmp-quick index-type false)
+        ^PersistentSortedSet pset (psset/from-sorted-array cmp
                                                            arr
                                                            (arrays/alength arr)
-                                                           {:branching-factor DEFAULT_BRANCHING_FACTOR})]
-    (set! (.-_storage pset) (:storage store))
+                                                           {:branching-factor DEFAULT_BRANCHING_FACTOR
+                                                            :op-buf-size #?(:clj (op-buf-size) :cljs 0)})]
+    (set! (.-_storage pset) #?(:clj (with-comparator (:storage store) cmp)
+                               :cljs (:storage store)))
     (with-meta pset
       {:index-type index-type})))
 
@@ -456,7 +482,9 @@
                                          ;; The following fields are reset as they cannot be accessed from outside:
                                          ;; - 'edit' is set to false, i.e. the set is assumed to be persistent, not transient
                                          ;; - 'version' is set back to 0
-                                           (PersistentSortedSet. meta cmp address @storage nil count settings 0))))
+                                         ;; OP_BUF_V5: give the set a storage view carrying its index comparator
+                                         ;; so buffered-leaf projection (Branch.child) can route by value on restore.
+                                           (PersistentSortedSet. meta cmp address (with-comparator @storage cmp) nil count settings 0))))
                                      :cljs
                                      (fn [reader _tag _component-count]
                                        (let [{:keys [meta address count]} (fress/read-object reader)
@@ -478,8 +506,18 @@
                                   #?(:clj
                                      (reify ReadHandler
                                        (read [_ reader _tag _component-count]
-                                         (let [{:keys [keys level addresses subtree-count]} (.readObject reader)]
-                                           (Branch. (int level) (count keys) (into-array Object keys) (into-array Object (seq addresses)) nil (long (or subtree-count -1)) settings))))
+                                         (let [{:keys [keys level addresses subtree-count slots]} (.readObject reader)
+                                               addr-vec (vec addresses)
+                                               ^Branch b (Branch. (int level) (count keys) (into-array Object keys) (into-array Object (seq addresses)) nil (long (or subtree-count -1)) settings)]
+                                           ;; OP_BUF_V5: reconstruct per-child buffered diffs (anchor = the child's
+                                           ;; durable address). Branch.child projects them on descent. Absent ⇒ baseline.
+                                           (when slots
+                                             (let [arr (object-array (count keys))]
+                                               (doseq [[idx entry] slots]
+                                                 (aset arr (int idx)
+                                                       (Slot. (:diff entry) (long (:count entry)) (:measure entry) (nth addr-vec (int idx)))))
+                                               (set! (.-_slots b) arr)))
+                                           b)))
                                      :cljs
                                      (fn [reader _tag _component-count]
                                        (let [{:keys [keys level addresses subtree-count]} (fress/read-object reader)]
@@ -523,10 +561,14 @@
                                       (reify WriteHandler
                                         (write [_ writer node]
                                           (.writeTag writer "datahike.index.PersistentSortedSet.Branch" 1)
-                                          (.writeObject writer {:level     (.level ^Branch node)
-                                                                :keys      (.keys ^Branch node)
-                                                                :addresses (.addresses ^Branch node)
-                                                                :subtree-count (.subtreeCount ^Branch node)})))}
+                                          ;; OP_BUF_V5: emit :slots only when present (nil ⇒ byte-identical to
+                                          ;; the pre-op-buf format, so opBufSize=0 / legacy DBs are unaffected).
+                                          (let [slots (.slotsForStorage ^Branch node)]
+                                            (.writeObject writer (cond-> {:level     (.level ^Branch node)
+                                                                          :keys      (.keys ^Branch node)
+                                                                          :addresses (.addresses ^Branch node)
+                                                                          :subtree-count (.subtreeCount ^Branch node)}
+                                                                   slots (assoc :slots slots))))))}
 
                                      datahike.datom.Datom
                                      {"datahike.datom.Datom"
