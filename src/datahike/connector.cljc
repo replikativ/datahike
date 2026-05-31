@@ -167,11 +167,11 @@
 ;; Listed explicitly so any future addition is a deliberate decision.
 (def create-time-fixed-keys
   #{:keep-history? :attribute-refs? :schema-flexibility :index :crypto-hash? :fuse-index-roots?
-    ;; :index-config sub-keys (PSS): :branching-factor :op-buf-size
+    ;; :index-config sub-keys (PSS): :branching-factor :diff-buf-size
     :index-config})
 
 ;; Of the fixed keys, the ones whose datahike default has changed (:fuse-index-roots?) or
-;; that were newly added (:index-config {:branching-factor :op-buf-size}) are sourced from
+;; that were newly added (:index-config {:branching-factor :diff-buf-size}) are sourced from
 ;; the STORED config on connect — adopt the stored value, or drop the key when the store
 ;; predates it. This lets existing stores connect unchanged and new stores reconnect
 ;; without re-specifying, while the strict consistency check still guards every other key.
@@ -182,7 +182,7 @@
         adopt-ic (fn [ic k] (if (contains? s-ic k) (assoc ic k (get s-ic k)) (dissoc ic k)))
         config  (adopt config :fuse-index-roots?)
         config  (update config :index-config
-                        (fn [ic] (reduce adopt-ic (or ic {}) [:branching-factor :op-buf-size])))]
+                        (fn [ic] (reduce adopt-ic (or ic {}) [:branching-factor :diff-buf-size])))]
     (if (empty? (:index-config config)) (dissoc config :index-config) config)))
 
 (defn- normalize-config [cfg]
@@ -232,7 +232,7 @@
                                  [config store stored-db]))
                              [config store stored-db]))
                          _ (version-check stored-db)
-                         ;; Source create-time-fixed settings (fuse / bf / op-buf-size) from the
+                         ;; Source create-time-fixed settings (fuse / bf / diff-buf-size) from the
                          ;; store so existing stores connect unchanged and new ones reconnect
                          ;; without re-specifying; flows into both the check and the running db.
                          config (adopt-stored-fixed config (:config stored-db))

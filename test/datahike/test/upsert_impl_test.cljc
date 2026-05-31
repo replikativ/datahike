@@ -29,7 +29,7 @@
                              projected-vec}))]
     (testing "Against an entry in the projection area,"
       (testing "we are in a projection"
-        (is (= (:key (first (:op-buf tree))) projected-vec)))
+        (is (= (:key (first (:diff-buf tree))) projected-vec)))
       (testing "basic lookup works"
         (is (= [[1 :age 44 1] nil] (first (msg/lookup-fwd-iter tree [1 :age 44 1])))))
       (testing "a totally new entry is persisted"

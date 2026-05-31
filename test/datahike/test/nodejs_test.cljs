@@ -354,7 +354,7 @@
              (finally
                (done))))))
 
-;; OP_BUF_V5 phase-1 gate: read a JVM-written op-buf store from cljs and verify the
+;; DIFF_BUF_V5 phase-1 gate: read a JVM-written diff-buf store from cljs and verify the
 ;; buffered-leaf projection (Branch.child) reconstructs identical datoms cross-host.
 ;; The store + reference datoms are produced by /tmp/dh_exchange_build.clj on the JVM;
 ;; this test is a no-op (passes) when that artifact is absent (e.g. normal CI).
@@ -365,7 +365,7 @@
     (go
       (try
         (if-not (fs.existsSync exchange-expected-file)
-          (is true "JVM op-buf exchange artifact absent — skipped")
+          (is true "JVM diff-buf exchange artifact absent — skipped")
           (let [{:keys [store-id dir n-count n-sum datom-count datoms]}
                 (cljs.reader/read-string (.readFileSync fs exchange-expected-file "utf8"))
                 cfg {:store {:backend :file :path dir :id store-id}
@@ -392,7 +392,7 @@
         (finally
           (done))))))
 
-;; OP_BUF_V5 phase-2 gate: cljs WRITE path. Same-host (create+transact+query all in cljs,
+;; DIFF_BUF_V5 phase-2 gate: cljs WRITE path. Same-host (create+transact+query all in cljs,
 ;; avoiding the pre-existing cross-host connect bug). Incremental commits make leaves
 ;; content-only dirty → buffered leaf slots in the root → on cold reopen they project back.
 ;; Writes to a FIXED dir (not deleted) so buffering can be confirmed externally (grep slots).
@@ -403,7 +403,7 @@
         cfg {:store {:backend :file :path cljs-opbuf-dir :id sid}
              :schema-flexibility :write :keep-history? false
              :index :datahike.index/persistent-set
-             :index-config {:op-buf-size 256}}]
+             :index-config {:diff-buf-size 256}}]
     (async done
       (go
         (try
@@ -436,7 +436,7 @@
           (finally
             (done)))))))
 
-;; OP_BUF_V5 phase-2 gate: cljs $remove path (retractions → leaf underflow → merge/borrow,
+;; DIFF_BUF_V5 phase-2 gate: cljs $remove path (retractions → leaf underflow → merge/borrow,
 ;; exercising the rotate/merge/merge-split slot-carry). Insert 2000, retract the even ones,
 ;; cold-reopen and verify the surviving odd set exactly.
 (def ^:private cljs-opbuf-rm-dir "/tmp/dh-cljs-opbuf-rm")
@@ -446,7 +446,7 @@
         cfg {:store {:backend :file :path cljs-opbuf-rm-dir :id sid}
              :schema-flexibility :write :keep-history? false
              :index :datahike.index/persistent-set
-             :index-config {:op-buf-size 256}}]
+             :index-config {:diff-buf-size 256}}]
     (async done
       (go
         (try
@@ -483,7 +483,7 @@
           (finally
             (done)))))))
 
-;; OP_BUF_V5 phase-2 gate: cljs $replace path. A cardinality-one re-assertion (upsert with an
+;; DIFF_BUF_V5 phase-2 gate: cljs $replace path. A cardinality-one re-assertion (upsert with an
 ;; old value) routes through psset/replace → Branch.$replace for eavt/aevt. Insert 1000 ids
 ;; with :n 0, then update each :n to its id in small commits, cold-reopen and verify :n == id.
 (def ^:private cljs-opbuf-rep-dir "/tmp/dh-cljs-opbuf-rep")
@@ -493,7 +493,7 @@
         cfg {:store {:backend :file :path cljs-opbuf-rep-dir :id sid}
              :schema-flexibility :write :keep-history? false
              :index :datahike.index/persistent-set
-             :index-config {:op-buf-size 256}}]
+             :index-config {:diff-buf-size 256}}]
     (async done
       (go
         (try
@@ -530,7 +530,7 @@
           (finally
             (done)))))))
 
-;; OP_BUF_V5 phase-2 soundness gate: randomized insert/retract churn under a SMALL op-buf
+;; DIFF_BUF_V5 phase-2 soundness gate: randomized insert/retract churn under a SMALL diff-buf
 ;; budget (more frequent buffer/write decisions, merges, borrows, splits) with periodic cold
 ;; reopens, compared against a reference set. Seeded LCG ⇒ deterministic/reproducible.
 (def ^:private cljs-opbuf-gen-dir "/tmp/dh-cljs-opbuf-gen")
@@ -540,7 +540,7 @@
         cfg  {:store {:backend :file :path cljs-opbuf-gen-dir :id sid}
               :schema-flexibility :write :keep-history? false
               :index :datahike.index/persistent-set
-              :index-config {:op-buf-size 64}}
+              :index-config {:diff-buf-size 64}}
         seed (atom 777)
         rnd  (fn [n] (mod (swap! seed (fn [x] (mod (+ (* x 1103515245) 12345) 2147483648))) n))
         idset (fn [c] (set (d/q '[:find [?id ...] :where [_ :id ?id]] @c)))]
@@ -553,7 +553,7 @@
                 conn0 (d/connect cfg)]
             (<! (d/transact! conn0 [{:db/ident :id :db/valueType :db.type/long
                                      :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}]))
-            ;; bulk-seed >bf entities so the index has BRANCH nodes (op-buf only engages on
+            ;; bulk-seed >bf entities so the index has BRANCH nodes (diff-buf only engages on
             ;; branches; a sub-512 tree is a single leaf and never buffers).
             (loop [bs (partition-all 200 (range 2000))]
               (when (seq bs)
@@ -586,10 +586,10 @@
           (finally
             (done)))))))
 
-;; OP_BUF_V5 phase-3 gate: cljs MERKLE AUDIT (crypto-hash). Validates the cljs port of
+;; DIFF_BUF_V5 phase-3 gate: cljs MERKLE AUDIT (crypto-hash). Validates the cljs port of
 ;; branch-crypto-uuid/canon/walk-pss + -recompute-merkle-root, exercised via the real
 ;; datahike.audit/verify-chain :deep? API (which re-derives every node's content hash from
-;; storage and confirms it matches its address). Covers baseline crypto AND crypto+op-buf
+;; storage and confirms it matches its address). Covers baseline crypto AND crypto+diff-buf
 ;; (branch hash folds the slots), warm and after a cold reopen (projection-on-read). Also
 ;; spot-checks the index-level protocol directly.
 (defn- audit-indices [db]
@@ -604,13 +604,13 @@
   (async done
     (go
       (try
-        (doseq [[label opbuf] [["crypto baseline" 0] ["crypto + op-buf" 256]]]
+        (doseq [[label opbuf] [["crypto baseline" 0] ["crypto + diff-buf" 256]]]
           (let [dir (tmp-dir)
                 cfg {:store {:backend :file :path dir :id (random-uuid)}
                      :schema-flexibility :write :keep-history? false
                      :crypto-hash? true
                      :index :datahike.index/persistent-set
-                     :index-config (when (pos? opbuf) {:op-buf-size opbuf})}]
+                     :index-config (when (pos? opbuf) {:diff-buf-size opbuf})}]
             (<! (d/create-database cfg))
             (let [conn (d/connect cfg)]
               (<! (d/transact! conn [{:db/ident :n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]))
@@ -623,7 +623,7 @@
                 (is (every? (fn [[_ s]] (= :ok s)) res) (str label " warm index audit: " (pr-str res)))
                 (is (and (= :ok st) (= :ok deep)) (str label " warm verify-chain deep: " st "/" deep " diffs=" (pr-str diffs))))
               (d/release conn))
-            ;; cold reopen → audit must still re-derive matching hashes (op-buf projection)
+            ;; cold reopen → audit must still re-derive matching hashes (diff-buf projection)
             (let [conn2 (d/connect cfg)
                   res   (audit-indices @conn2)
                   [st deep diffs] (deep-verify-ok? @conn2)]
