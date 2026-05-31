@@ -26,6 +26,12 @@
 ;; When true, each index's root node is inlined into the db-record instead of
 ;; stored as a separate konserve object — one fewer PUT and one fewer cold GET
 ;; per index per commit. Experimental; see doc/index-root-fusion.md.
+;; Index-root fusion (one fewer PUT + cold GET per index per commit). Kept OFF by default:
+;; turning it on globally breaks the merkle-audit walk (and GC), which read index roots as
+;; separate konserve objects — fusion inlines them into the db-record. Until audit/GC are
+;; made fusion-aware, fusion is opt-in (e.g. the SaaS template sets it true per store);
+;; connect adopts the stored value (datahike.connector/adopt-stored-fixed) so fused and
+;; non-fused stores both reconnect cleanly.
 (def ^:dynamic *default-fuse-index-roots?* false)
 (def ^:dynamic *default-store* :memory)                           ;; store-less = in-memory?
 (def ^:dynamic *default-db-name* nil)                         ;; when nil creates random name
