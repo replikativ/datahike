@@ -3,6 +3,7 @@
             [cljs.reader]
             [datahike.api :as d]
             [datahike.index.audit :as ia]
+            [datahike.audit :as audit]
             [datahike.online-gc :as online-gc]
             [konserve.core :as k]
             [konserve.node-filestore :as nfs] ;; Register :file backend for Node.js
@@ -586,14 +587,18 @@
             (done)))))))
 
 ;; OP_BUF_V5 phase-3 gate: cljs MERKLE AUDIT (crypto-hash). Validates the cljs port of
-;; branch-crypto-uuid/canon/walk-pss + -recompute-merkle-root: for each index it must
-;; re-derive every node's content hash from storage and confirm it matches its address —
-;; baseline crypto AND crypto+op-buf (branch hash folds the slots), warm and after a cold
-;; reopen (projection-on-read). Calls the index-level protocol directly (datahike.audit's
-;; verify-chain does not yet cljs-compile — separate core.async go-try- issue).
+;; branch-crypto-uuid/canon/walk-pss + -recompute-merkle-root, exercised via the real
+;; datahike.audit/verify-chain :deep? API (which re-derives every node's content hash from
+;; storage and confirms it matches its address). Covers baseline crypto AND crypto+op-buf
+;; (branch hash folds the slots), warm and after a cold reopen (projection-on-read). Also
+;; spot-checks the index-level protocol directly.
 (defn- audit-indices [db]
   (mapv (fn [k] [k (:status (ia/-recompute-merkle-root (get db k)))])
         [:eavt :aevt :avet]))
+
+(defn- deep-verify-ok? [db]
+  (let [rep (audit/verify-chain db nil {:deep? true})]
+    [(:status rep) (get-in rep [:deep :status]) (get-in rep [:deep :diffs])]))
 
 (deftest cljs-merkle-audit-test
   (async done
@@ -613,13 +618,17 @@
                 (when (seq bs)
                   (<! (d/transact! conn (mapv (fn [i] {:n i}) (first bs))))
                   (recur (rest bs))))
-              (let [res (audit-indices @conn)]
-                (is (every? (fn [[_ s]] (= :ok s)) res) (str label " warm audit: " (pr-str res))))
+              (let [res (audit-indices @conn)
+                    [st deep diffs] (deep-verify-ok? @conn)]
+                (is (every? (fn [[_ s]] (= :ok s)) res) (str label " warm index audit: " (pr-str res)))
+                (is (and (= :ok st) (= :ok deep)) (str label " warm verify-chain deep: " st "/" deep " diffs=" (pr-str diffs))))
               (d/release conn))
             ;; cold reopen → audit must still re-derive matching hashes (op-buf projection)
             (let [conn2 (d/connect cfg)
-                  res   (audit-indices @conn2)]
-              (is (every? (fn [[_ s]] (= :ok s)) res) (str label " cold audit: " (pr-str res)))
+                  res   (audit-indices @conn2)
+                  [st deep diffs] (deep-verify-ok? @conn2)]
+              (is (every? (fn [[_ s]] (= :ok s)) res) (str label " cold index audit: " (pr-str res)))
+              (is (and (= :ok st) (= :ok deep)) (str label " cold verify-chain deep: " st "/" deep " diffs=" (pr-str diffs)))
               (d/release conn2))
             (<! (d/delete-database cfg))))
         (catch js/Error e

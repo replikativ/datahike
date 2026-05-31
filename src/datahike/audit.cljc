@@ -18,7 +18,12 @@
             [konserve.core :as k]
             [superv.async #?(:clj :refer :cljs :refer-macros) [go-try- <?-]]
             [konserve.utils :refer [#?(:clj async+sync) *default-sync-translation*]
-             #?@(:cljs [:refer-macros [async+sync]])]))
+             #?@(:cljs [:refer-macros [async+sync]])]
+            ;; cljs: superv.async/go-try- expands to clojure.core.async/go, so the `go`
+            ;; MACRO must be required here or it falls back to the JVM macro and fails to
+            ;; compile (vary-meta on keyword in go-impl). Mirrors datahike.versioning.
+            #?(:cljs [clojure.core.async :refer [<!]]))
+  #?(:cljs (:require-macros [clojure.core.async :refer [go]])))
 
 (defn- audit-grade-stored?
   "Mirror of writing/audit-grade? but for already-stored commits we're
