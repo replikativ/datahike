@@ -235,10 +235,35 @@
     #?(:clj (set! (.-_root pset) root-node))
     pset))
 
+;; Normalize a value for content hashing: Datoms → vectors (mirrors the leaf hash, and
+;; makes the hash independent of the Datom type's identity), maps/seqs recursed. Used so a
+;; slot's diff hashes the same whether it's a live PersistentTreeMap (store) or a plain
+;; deserialized map (restore) — hasch already canonicalizes map key order.
+#?(:clj
+   (defn- canon [x]
+     (cond
+       (instance? Datom x)   (vec (seq x))
+       (map? x)              (persistent! (reduce-kv (fn [m k v] (assoc! m (canon k) (canon v))) (transient {}) x))
+       (sequential? x)       (mapv canon x)
+       :else                 x)))
+
+;; OP_BUF_V5 crypto address of a Branch. Baseline (no slots) hashes the child addresses —
+;; UNCHANGED, so existing crypto stores keep their hashes. With op-buf the buffered diff
+;; lives in the slots (not reflected in the anchor child-addresses), so fold the slots in:
+;; the address then reflects the durable representation (anchors + diff) and the audit
+;; recomputes the same from the stored node. (Within-store integrity; consistent with the
+;; baseline merkle already being shape/representation-dependent.)
+#?(:clj
+   (defn- branch-crypto-uuid [^Branch node]
+     (let [slots (.slotsForStorage node)]
+       (if slots
+         (uuid (canon [(vec (.addresses node)) slots]))
+         (uuid (vec (.addresses node)))))))
+
 (defn- gen-address [^ANode node crypto-hash?]
   (if crypto-hash?
     (if (instance? Branch node)
-      (uuid (vec (.addresses ^Branch node)))
+      #?(:clj (branch-crypto-uuid ^Branch node) :cljs (uuid (vec (.addresses ^Branch node))))
       (uuid (mapv (comp vec seq) (.keys node))))
     (squuid)))  ;; Sequential UUID for better index locality
 
@@ -273,7 +298,7 @@
            :else
            (let [recomputed (cond
                               (instance? Branch node)
-                              (uuid (vec (.addresses ^Branch node)))
+                              (branch-crypto-uuid ^Branch node)
                               (instance? Leaf node)
                               (uuid (mapv (comp vec seq) (.keys ^Leaf node))))]
              (cond
@@ -305,7 +330,7 @@
      [store ^ANode node address verified errors]
      (when-not (contains? @verified address)
        (let [recomputed (cond
-                          (instance? Branch node) (uuid (vec (.addresses ^Branch node)))
+                          (instance? Branch node) (branch-crypto-uuid ^Branch node)
                           (instance? Leaf node)   (uuid (mapv (comp vec seq) (.keys ^Leaf node))))]
          (cond
            (nil? recomputed)
