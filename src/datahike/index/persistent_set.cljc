@@ -411,7 +411,9 @@
 ;; cmp field differs — so OP_BUF_V5 projection can read storage.comparator() per index
 ;; while writes/cache stay unified across indexes.
 (defn with-comparator [storage cmp]
-  (assoc storage :cmp cmp))
+  (if (instance? CachedStorage storage)   ;; pass through nil / non-CachedStorage (e.g. mem backend) unchanged
+    (assoc storage :cmp cmp)
+    storage))
 
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
