@@ -2,6 +2,7 @@
   (:require [cljs.test :refer [deftest is async] :as t]
             [cljs.reader]
             [datahike.api :as d]
+            [datahike.index.audit :as ia]
             [datahike.online-gc :as online-gc]
             [konserve.core :as k]
             [konserve.node-filestore] ;; Register :file backend for Node.js
@@ -583,6 +584,48 @@
             (is false (str "cljs-opbuf-generative error: " (.-message e))))
           (finally
             (done)))))))
+
+;; OP_BUF_V5 phase-3 gate: cljs MERKLE AUDIT (crypto-hash). Validates the cljs port of
+;; branch-crypto-uuid/canon/walk-pss + -recompute-merkle-root: for each index it must
+;; re-derive every node's content hash from storage and confirm it matches its address —
+;; baseline crypto AND crypto+op-buf (branch hash folds the slots), warm and after a cold
+;; reopen (projection-on-read). Calls the index-level protocol directly (datahike.audit's
+;; verify-chain does not yet cljs-compile — separate core.async go-try- issue).
+(defn- audit-indices [db]
+  (mapv (fn [k] [k (:status (ia/-recompute-merkle-root (get db k)))])
+        [:eavt :aevt :avet]))
+
+(deftest cljs-merkle-audit-test
+  (async done
+    (go
+      (try
+        (doseq [[label opbuf] [["crypto baseline" 0] ["crypto + op-buf" 256]]]
+          (let [dir (tmp-dir)
+                cfg {:store {:backend :file :path dir :id (random-uuid)}
+                     :schema-flexibility :write :keep-history? false
+                     :crypto-hash? true
+                     :index :datahike.index/persistent-set
+                     :index-config (when (pos? opbuf) {:op-buf-size opbuf})}]
+            (<! (d/create-database cfg))
+            (let [conn (d/connect cfg)]
+              (<! (d/transact! conn [{:db/ident :n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]))
+              (loop [bs (partition-all 100 (range 2000))]
+                (when (seq bs)
+                  (<! (d/transact! conn (mapv (fn [i] {:n i}) (first bs))))
+                  (recur (rest bs))))
+              (let [res (audit-indices @conn)]
+                (is (every? (fn [[_ s]] (= :ok s)) res) (str label " warm audit: " (pr-str res))))
+              (d/release conn))
+            ;; cold reopen → audit must still re-derive matching hashes (op-buf projection)
+            (let [conn2 (d/connect cfg)
+                  res   (audit-indices @conn2)]
+              (is (every? (fn [[_ s]] (= :ok s)) res) (str label " cold audit: " (pr-str res)))
+              (d/release conn2))
+            (<! (d/delete-database cfg))))
+        (catch js/Error e
+          (is false (str "cljs-merkle-audit error: " (.-message e))))
+        (finally
+          (done))))))
 
 (defn -main []
   (t/run-tests 'datahike.test.nodejs-test
