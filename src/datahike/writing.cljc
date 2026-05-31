@@ -133,10 +133,10 @@
             (assoc :secondary sec-roots))
           ;; Root fusion: inline each flushed index's root node into the
           ;; db-record. `commit!` then skips writing those root nodes as
-          ;; separate objects (see fused-root-addresses). Disabled under
-          ;; crypto-hash? for now — the audit walk reads the root from
-          ;; storage at its address (see doc/index-root-fusion.md).
-          fuse? (and flush! (:fuse-index-roots? config) (not (:crypto-hash? config)))
+          ;; separate objects (see fused-root-addresses). Works under crypto-hash?:
+          ;; the root's address is still its content hash, and the audit walk
+          ;; verifies the inlined root (walk-pss-node!) + recurses children.
+          fuse? (and flush! (:fuse-index-roots? config))
           fused-roots (when fuse?
                         (cond-> {:eavt-root (di/-root-node eavt')
                                  :aevt-root (di/-root-node aevt')

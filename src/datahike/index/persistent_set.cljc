@@ -296,6 +296,30 @@
                      (walk-pss-address! store child-addr verified errors)))
                  (swap! verified conj address)))))))))
 
+#?(:clj
+   (defn- walk-pss-node!
+     "Like walk-pss-address! but for a node already in hand — used for a FUSED root, which
+      is inlined in the db-record and therefore not a separate konserve object. Recomputes
+      the node's content UUID, confirms it equals `address`, and recurses into its children
+      (which ARE separate objects) via walk-pss-address!."
+     [store ^ANode node address verified errors]
+     (when-not (contains? @verified address)
+       (let [recomputed (cond
+                          (instance? Branch node) (uuid (vec (.addresses ^Branch node)))
+                          (instance? Leaf node)   (uuid (mapv (comp vec seq) (.keys ^Leaf node))))]
+         (cond
+           (nil? recomputed)
+           (swap! errors conj {:type :audit/unknown-node-class :address address
+                               :node-class (some-> node class .getName)})
+           (not= address recomputed)
+           (swap! errors conj {:type :audit/merkle-mismatch :address address :expected address
+                               :recomputed recomputed :node-class (some-> node class .getName)})
+           :else
+           (do (when (instance? Branch node)
+                 (doseq [child-addr (.addresses ^Branch node)]
+                   (walk-pss-address! store child-addr verified errors)))
+               (swap! verified conj address)))))))
+
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IAuditable
   (-merkle-root [^PersistentSortedSet pset]
@@ -320,9 +344,16 @@
            (nil? store)
            {:status :unsupported :reason :no-store}
            :else
-           (let [verified (atom #{})
-                 errors   (atom [])]
-             (walk-pss-address! store address verified errors)
+           (let [verified  (atom #{})
+                 errors    (atom [])
+                 ;; Fused root: inlined in the db-record, not a separate object. Detect by a
+                 ;; direct store read; when absent, verify the seeded in-memory root instead
+                 ;; (recomputing its content hash still detects db-record tampering of the
+                 ;; root), then recurse children (separate objects) as usual.
+                 root-node (k/get store address nil {:sync? true})]
+             (if (nil? root-node)
+               (walk-pss-node! store (.root ^PersistentSortedSet pset) address verified errors)
+               (walk-pss-node! store root-node address verified errors))
              (if (seq @errors)
                {:status :mismatch :root nil :errors @errors}
                {:status :ok :root address}))))

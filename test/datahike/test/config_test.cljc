@@ -63,6 +63,7 @@
                      :schema-flexibility c/*default-schema-flexibility*
                      :index c/*default-index*
                      :crypto-hash? c/*default-crypto-hash?*
+                     :fuse-index-roots? c/*default-fuse-index-roots?*
                      :branch c/*default-db-branch*
                      :writer c/self-writer
                      :search-cache-size c/*default-search-cache-size*

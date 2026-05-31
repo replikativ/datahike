@@ -1,6 +1,6 @@
 (ns datahike.gc
   (:require [clojure.set :as set]
-            [datahike.index.interface :refer [-mark]]
+            [datahike.index.interface :refer [-mark -seed-root!]]
             [datahike.index.secondary :as sec]
             [konserve.core :as k]
             [konserve.gc :refer [sweep!]]
@@ -25,11 +25,23 @@
                   (recur r visited reachable)
                   (let [{:keys                         [eavt-key avet-key aevt-key
                                                         temporal-eavt-key temporal-avet-key temporal-aevt-key
+                                                        eavt-root aevt-root avet-root
+                                                        temporal-eavt-root temporal-aevt-root temporal-avet-root
                                                         schema-meta-key secondary-index-keys]
                          {:keys [datahike/parents
                                  datahike/created-at
                                  datahike/updated-at]} :meta}
                         (<? S (k/get store to-check))
+                        ;; Root fusion: inlined roots aren't separate konserve objects, so
+                        ;; -mark on the lazy index would try to restore the root by address
+                        ;; and fail. Seed each inlined root into its index (mirrors stored->db)
+                        ;; so walk-addresses uses it and only its children are fetched.
+                        _ (do (when eavt-root (-seed-root! eavt-key eavt-root))
+                              (when aevt-root (-seed-root! aevt-key aevt-root))
+                              (when avet-root (-seed-root! avet-key avet-root))
+                              (when temporal-eavt-root (-seed-root! temporal-eavt-key temporal-eavt-root))
+                              (when temporal-aevt-root (-seed-root! temporal-aevt-key temporal-aevt-root))
+                              (when temporal-avet-root (-seed-root! temporal-avet-key temporal-avet-root)))
                         in-range? (> (get-time (or updated-at created-at))
                                      (get-time after-date))]
                     (let [sec-reachable (when (seq secondary-index-keys)
