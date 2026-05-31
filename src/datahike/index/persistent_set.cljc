@@ -2,7 +2,7 @@
   (:require [clojure.string]
             [org.replikativ.persistent-sorted-set :as psset]
             #?(:cljs [org.replikativ.persistent-sorted-set.btset :refer [BTSet]])
-            #?(:cljs [org.replikativ.persistent-sorted-set.branch :refer [Branch]])
+            #?(:cljs [org.replikativ.persistent-sorted-set.branch :refer [Branch] :as branch])
             #?(:cljs [org.replikativ.persistent-sorted-set.leaf :refer [Leaf]])
             #?(:cljs [org.replikativ.persistent-sorted-set.impl.storage :refer [IStorage]])
             [org.replikativ.persistent-sorted-set.arrays :as arrays]
@@ -32,10 +32,11 @@
 ;; config key `:op-buf-size` (so it round-trips with the store and the consistency check
 ;; guards it); the `pss.opBufSize` JVM sysprop is a fallback for ad-hoc experiments only.
 ;; 0 ⇒ baseline (off) — the default, protecting existing persistent-sorted-set stores.
-#?(:clj
-   (defn op-buf-size ^long [index-config]
-     (long (or (:op-buf-size index-config)
-               (try (Long/parseLong (System/getProperty "pss.opBufSize" "0")) (catch Exception _ 0))))))
+(defn op-buf-size ^long [index-config]
+  (long (or (:op-buf-size index-config)
+            ;; JVM-only sysprop fallback for ad-hoc experiments; cljs has no sysprops.
+            #?(:clj  (try (Long/parseLong (System/getProperty "pss.opBufSize" "0")) (catch Exception _ 0))
+               :cljs 0))))
 
 (def index-type->kwseq
   {:eavt [:e :a :v :tx :added]
@@ -400,7 +401,7 @@
 
 (defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freelist cost-center-fn cmp]
   IStorage
-  #?(:clj (comparator [_] cmp))   ;; OP_BUF_V5: per-index comparator for buffered-leaf projection
+  (comparator [_] cmp)   ;; OP_BUF_V5: per-index comparator for buffered-leaf projection
   (store [_ node #?(:cljs opts)]
     (@cost-center-fn :store)
     (swap! stats update :writes inc)
@@ -484,10 +485,9 @@
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type index-config]
   (let [cmp (index-type->cmp-quick index-type false)
         ^PersistentSortedSet pset (psset/sorted-set* {:comparator cmp
-                                                      :storage #?(:clj (with-comparator (:storage store) cmp)
-                                                                  :cljs (:storage store))
+                                                      :storage (with-comparator (:storage store) cmp)
                                                       :branching-factor (branching-factor index-config)
-                                                      :op-buf-size #?(:clj (op-buf-size index-config) :cljs 0)})]
+                                                      :op-buf-size (op-buf-size index-config)})]
     (with-meta pset
       {:index-type index-type})))
 
@@ -505,9 +505,8 @@
                                                            arr
                                                            (arrays/alength arr)
                                                            {:branching-factor (branching-factor index-config)
-                                                            :op-buf-size #?(:clj (op-buf-size index-config) :cljs 0)})]
-    (set! (.-_storage pset) #?(:clj (with-comparator (:storage store) cmp)
-                               :cljs (:storage store)))
+                                                            :op-buf-size (op-buf-size index-config)})]
+    (set! (.-_storage pset) (with-comparator (:storage store) cmp))
     (with-meta pset
       {:index-type index-type})))
 
@@ -559,7 +558,9 @@
                                        (let [{:keys [meta address count]} (fress/read-object reader)
                                              cmp                          (index-type->cmp-quick (:index-type meta) false)]
                                        ;; CLJS BTSet deftype: [root cnt comparator meta _hash storage address settings]
-                                         (BTSet. nil count cmp meta nil @storage address settings))))
+                                       ;; OP_BUF_V5: give the set a storage view carrying its index comparator so
+                                       ;; buffered-leaf projection (Branch.child) can route by value on restore.
+                                         (BTSet. nil count cmp meta nil (with-comparator @storage cmp) address settings))))
                                   "datahike.index.PersistentSortedSet.Leaf"
                                   #?(:clj
                                      (reify ReadHandler
@@ -589,9 +590,22 @@
                                            b)))
                                      :cljs
                                      (fn [reader _tag _component-count]
-                                       (let [{:keys [keys level addresses subtree-count]} (fress/read-object reader)]
-                                       ;; CLJS Branch deftype: [level keys children addresses subtree-count _measure settings]
-                                         (Branch. (int level) (clj->js keys) nil (clj->js addresses) (or subtree-count -1) nil settings))))
+                                       (let [{:keys [keys level addresses subtree-count slots]} (fress/read-object reader)
+                                             addr-arr (clj->js addresses)
+                                             ;; CLJS Branch deftype: [level keys children addresses subtree-count _measure settings _slots _rebalanced]
+                                             b (Branch. (int level) (clj->js keys) nil addr-arr (or subtree-count -1) nil settings nil false)]
+                                         ;; OP_BUF_V5: reconstruct per-child buffered diffs (anchor = the child's
+                                         ;; durable address). Branch.child projects them on descent. Absent ⇒ baseline.
+                                         (when slots
+                                           (let [arr (make-array (count keys))]
+                                             (doseq [[idx entry] slots]
+                                               (aset arr (int idx)
+                                                     {:diff    (:diff entry)
+                                                      :count   (long (:count entry))
+                                                      :measure (:measure entry)
+                                                      :anchor  (aget addr-arr (int idx))}))
+                                             (set! (.-_slots b) arr)))
+                                         b)))
                                   "datahike.datom.Datom"
                                   #?(:clj
                                      (reify ReadHandler
@@ -666,10 +680,14 @@
                                      Branch
                                      (fn [writer node]
                                        (fress/write-tag writer "datahike.index.PersistentSortedSet.Branch" 1)
-                                       (fress/write-object writer {:level     (.-level ^Branch node)
-                                                                   :keys      (vec (.-keys ^Branch node))
-                                                                   :addresses (vec (.-addresses ^Branch node))
-                                                                   :subtree-count (.-subtree-count ^Branch node)}))
+                                       ;; OP_BUF_V5: emit :slots only when present (nil ⇒ byte-identical to
+                                       ;; the pre-op-buf format, so op-buf-size=0 / legacy DBs are unaffected).
+                                       (let [slots (branch/slots-for-storage ^Branch node)]
+                                         (fress/write-object writer (cond-> {:level     (.-level ^Branch node)
+                                                                             :keys      (vec (.-keys ^Branch node))
+                                                                             :addresses (vec (.-addresses ^Branch node))
+                                                                             :subtree-count (.-subtree-count ^Branch node)}
+                                                                      slots (assoc :slots slots)))))
 
                                      datahike.datom.Datom
                                      (fn [writer datom]

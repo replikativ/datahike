@@ -1,5 +1,6 @@
 (ns datahike.test.nodejs-test
   (:require [cljs.test :refer [deftest is async] :as t]
+            [cljs.reader]
             [datahike.api :as d]
             [datahike.online-gc :as online-gc]
             [konserve.core :as k]
@@ -350,6 +351,88 @@
                (is false (str "Error in online-gc-multi-branch-safety-test: " (.-message e))))
              (finally
                (done))))))
+
+;; OP_BUF_V5 phase-1 gate: read a JVM-written op-buf store from cljs and verify the
+;; buffered-leaf projection (Branch.child) reconstructs identical datoms cross-host.
+;; The store + reference datoms are produced by /tmp/dh_exchange_build.clj on the JVM;
+;; this test is a no-op (passes) when that artifact is absent (e.g. normal CI).
+(def ^:private exchange-expected-file "/tmp/dh-exchange-expected.edn")
+
+(deftest jvm-opbuf-exchange-test
+  (async done
+    (go
+      (try
+        (if-not (fs.existsSync exchange-expected-file)
+          (is true "JVM op-buf exchange artifact absent — skipped")
+          (let [{:keys [store-id dir n-count n-sum datom-count datoms]}
+                (cljs.reader/read-string (.readFileSync fs exchange-expected-file "utf8"))
+                cfg {:store {:backend :file :path dir :id store-id}
+                     :schema-flexibility :write :keep-history? false}
+                conn (d/connect cfg)
+                db   @conn
+                got-datoms (->> (d/datoms db :eavt)
+                                (map (fn [d] [(:e d) (name (:a d)) (str (:v d))]))
+                                (sort)
+                                (vec))
+                got-n-count (d/q '[:find (count ?e) . :where [?e :n _]] db)
+                got-n-sum   (reduce + (map :v (filter #(= :n (:a %)) (d/datoms db :eavt))))]
+            (is (= datom-count (count got-datoms))
+                (str "cljs read same datom count (jvm=" datom-count " cljs=" (count got-datoms) ")"))
+            (is (= n-count got-n-count)
+                (str ":n entity count matches (jvm=" n-count " cljs=" got-n-count ")"))
+            (is (= n-sum got-n-sum)
+                (str ":n value sum matches (projection-sound) (jvm=" n-sum " cljs=" got-n-sum ")"))
+            (is (= datoms got-datoms)
+                "cljs eavt datoms identical to JVM (full buffered-leaf projection)")
+            (d/release conn)))
+        (catch js/Error e
+          (is false (str "jvm-opbuf-exchange-test error: " (.-message e))))
+        (finally
+          (done))))))
+
+;; OP_BUF_V5 phase-2 gate: cljs WRITE path. Same-host (create+transact+query all in cljs,
+;; avoiding the pre-existing cross-host connect bug). Incremental commits make leaves
+;; content-only dirty → buffered leaf slots in the root → on cold reopen they project back.
+;; Writes to a FIXED dir (not deleted) so buffering can be confirmed externally (grep slots).
+(def ^:private cljs-opbuf-dir "/tmp/dh-cljs-opbuf")
+
+(deftest cljs-opbuf-write-roundtrip-test
+  (let [sid #uuid "00000000-0000-0000-0000-00000000c1c5"
+        cfg {:store {:backend :file :path cljs-opbuf-dir :id sid}
+             :schema-flexibility :write :keep-history? false
+             :index :datahike.index/persistent-set
+             :index-config {:op-buf-size 256}}]
+    (async done
+      (go
+        (try
+          (when (<! (d/database-exists? cfg)) (<! (d/delete-database cfg)))
+          (<! (d/create-database cfg))
+          (let [conn (d/connect cfg)]
+            (<! (d/transact! conn [{:db/ident :n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]))
+            (loop [bs (partition-all 100 (range 3000))]
+              (when (seq bs)
+                (<! (d/transact! conn (mapv (fn [i] {:n i}) (first bs))))
+                (recur (rest bs))))
+            (let [db @conn
+                  n-count (d/q '[:find (count ?e) . :where [?e :n _]] db)
+                  n-sum   (reduce + (map :v (filter #(= :n (:a %)) (d/datoms db :eavt))))]
+              (is (= 3000 n-count) (str "warm n-count=" n-count))
+              (is (= 4498500 n-sum) (str "warm n-sum=" n-sum)))
+            (d/release conn))
+          ;; cold reopen → forces projection-on-read of buffered slots
+          (let [conn2 (d/connect cfg)
+                db2   @conn2
+                n-count2 (d/q '[:find (count ?e) . :where [?e :n _]] db2)
+                n-sum2   (reduce + (map :v (filter #(= :n (:a %)) (d/datoms db2 :eavt))))
+                all-vs   (vec (sort (map :v (filter #(= :n (:a %)) (d/datoms db2 :eavt)))))]
+            (is (= 3000 n-count2) (str "cold n-count=" n-count2))
+            (is (= 4498500 n-sum2) (str "cold n-sum=" n-sum2))
+            (is (= (vec (range 3000)) all-vs) "cold :n values exact 0..2999 (buffered-leaf projection sound)")
+            (d/release conn2))
+          (catch js/Error e
+            (is false (str "cljs-opbuf-write-roundtrip error: " (.-message e))))
+          (finally
+            (done)))))))
 
 (defn -main []
   (t/run-tests 'datahike.test.nodejs-test
