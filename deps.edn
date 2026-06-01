@@ -1,14 +1,15 @@
 {:deps {org.clojure/clojure                         {:mvn/version "1.12.4"}
         org.replikativ/hasch                        {:mvn/version "0.4.98"
                                                      :exclusions [org.clojure/clojurescript]}
-        org.replikativ/konserve                     {:local/root "../konserve"  ;; dev: cljs header meta-size fix (cross-host)
+        org.replikativ/konserve                     {:mvn/version "0.9.349"  ;; includes cljs header meta-size cross-host fix (#143)
                                                      :exclusions [org.clojure/clojurescript
                                                                   org.clojars.mmb90/cljs-cache]}
                                                      
         org.replikativ/superv.async                 {:mvn/version "0.3.50"
                                                      :exclusions [org.clojure/clojurescript]}
         org.replikativ/datalog-parser               {:mvn/version "0.2.37"}
-        org.replikativ/persistent-sorted-set        {:local/root "../persistent-sorted-set"}  ;; op-buf-v5 (dev)
+        org.replikativ/persistent-sorted-set        {:git/url "https://github.com/replikativ/persistent-sorted-set.git"
+                                                     :git/sha "a36ecbe837100259d017c0ec9716ec4e42e47414"}  ;; diff-buf (feature/op-buf-v5); run `clojure -X:deps prep` to compile its Java
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
         org.replikativ/logging                      {:mvn/version "0.1.3"}

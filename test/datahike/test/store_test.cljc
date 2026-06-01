@@ -105,3 +105,34 @@
                           #"\s+:id\s+"
                           (d/database-exists?
                            {:store {:backend :memory}})))))
+
+#?(:clj
+   (deftest test-diff-buf-upsert-reopen
+     ;; Regression: diff-buf buffers a value-changing upsert as Absent(old)+Present(new) in a leaf-diff.
+     ;; The leaf-diff must serialize to the comparator-agnostic {:absent :present} form; if it were a
+     ;; map keyed by the Datom, fressian round-trip would re-key by Datom equality (e,a,v — ignores tx),
+     ;; collapsing the two entries and dropping the removal → a stale old datom survives reopen.
+     (testing "many value-changing upserts survive store→reopen with no stale/duplicate datoms (diff-buf)"
+       (let [cfg {:store {:backend :file
+                          :path (str (System/getProperty "java.io.tmpdir") "/dh-diffbuf-upsert")
+                          :id #uuid "d1ffb000-0000-0000-0000-00000000d1ff"}
+                  :schema-flexibility :write :keep-history? false
+                  :index-config {:diff-buf-size 256 :branching-factor 16}}
+             n   400]
+         (d/delete-database cfg)
+         (d/create-database cfg)
+         (let [conn (d/connect cfg)]
+           (d/transact conn [{:db/ident :name :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                             {:db/ident :age  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}])
+           (doseq [i (range n)]       (d/transact conn [{:name (str "p" i) :age (mod (* i 7) 100)}]))
+           (doseq [i (range 0 n 3)]   (d/transact conn [{:name (str "p" i) :age (+ 100 i)}]))   ; value-changing upserts
+           (d/release conn))
+         (let [conn (d/connect cfg)
+               db   @conn
+               got  (set (d/q '[:find ?n ?a :where [?e :name ?n] [?e :age ?a]] db))
+               exp  (into #{} (for [i (range n)] [(str "p" i) (if (zero? (mod i 3)) (+ 100 i) (mod (* i 7) 100))]))]
+           (is (= exp got) "name/age query exact after reopen")
+           (is (= (* 2 n) (count (filter #(#{:name :age} (:a %)) (d/datoms db :eavt))))
+               "exactly one :name + one :age datom per entity (no stale buffered-replace duplicate)")
+           (d/release conn))
+         (d/delete-database cfg)))))

@@ -274,7 +274,7 @@
   #?(:clj (some-> node class .getName) :cljs (some-> node type pr-str)))
 
 (defn- walk-pss-address!
-     "Read the node at `address` directly from konserve, recompute its
+  "Read the node at `address` directly from konserve, recompute its
       content-addressed UUID, and confirm it matches `address`. Recurses
       into Branch children, accumulating any anomalies into the
       `errors` atom (instead of throwing).
@@ -293,61 +293,61 @@
       Reads go through `k/get store` directly, bypassing the live
       `CachedStorage` LRU; otherwise a hot in-memory copy could mask a
       tampered on-disk blob."
-     [store address verified errors]
-     (when-not (contains? @verified address)
-       (let [node (k/get store address nil {:sync? true})]
-         (cond
-           (nil? node)
-           (swap! errors conj {:type :audit/node-missing :address address})
+  [store address verified errors]
+  (when-not (contains? @verified address)
+    (let [node (k/get store address nil {:sync? true})]
+      (cond
+        (nil? node)
+        (swap! errors conj {:type :audit/node-missing :address address})
 
-           :else
-           (let [recomputed (cond
-                              (instance? Branch node)
-                              (branch-crypto-uuid node)
-                              (instance? Leaf node)
-                              (uuid (mapv (comp vec seq) #?(:clj (.keys ^Leaf node) :cljs (.-keys node)))))]
-             (cond
-               (nil? recomputed)
-               (swap! errors conj {:type :audit/unknown-node-class
-                                   :address address
-                                   :node-class (node-class-name node)})
+        :else
+        (let [recomputed (cond
+                           (instance? Branch node)
+                           (branch-crypto-uuid node)
+                           (instance? Leaf node)
+                           (uuid (mapv (comp vec seq) #?(:clj (.keys ^Leaf node) :cljs (.-keys node)))))]
+          (cond
+            (nil? recomputed)
+            (swap! errors conj {:type :audit/unknown-node-class
+                                :address address
+                                :node-class (node-class-name node)})
 
-               (not= address recomputed)
-               (swap! errors conj {:type :audit/merkle-mismatch
-                                   :address address
-                                   :expected address
-                                   :recomputed recomputed
-                                   :node-class (node-class-name node)})
+            (not= address recomputed)
+            (swap! errors conj {:type :audit/merkle-mismatch
+                                :address address
+                                :expected address
+                                :recomputed recomputed
+                                :node-class (node-class-name node)})
 
-               :else
-               (do
-                 (when (instance? Branch node)
-                   (doseq [child-addr #?(:clj (.addresses ^Branch node) :cljs (.-addresses node))]
-                     (walk-pss-address! store child-addr verified errors)))
-                 (swap! verified conj address))))))))
+            :else
+            (do
+              (when (instance? Branch node)
+                (doseq [child-addr #?(:clj (.addresses ^Branch node) :cljs (.-addresses node))]
+                  (walk-pss-address! store child-addr verified errors)))
+              (swap! verified conj address))))))))
 
 (defn- walk-pss-node!
-     "Like walk-pss-address! but for a node already in hand — used for a FUSED root, which
+  "Like walk-pss-address! but for a node already in hand — used for a FUSED root, which
       is inlined in the db-record and therefore not a separate konserve object. Recomputes
       the node's content UUID, confirms it equals `address`, and recurses into its children
       (which ARE separate objects) via walk-pss-address!."
-     [store node address verified errors]
-     (when-not (contains? @verified address)
-       (let [recomputed (cond
-                          (instance? Branch node) (branch-crypto-uuid node)
-                          (instance? Leaf node)   (uuid (mapv (comp vec seq) #?(:clj (.keys ^Leaf node) :cljs (.-keys node)))))]
-         (cond
-           (nil? recomputed)
-           (swap! errors conj {:type :audit/unknown-node-class :address address
-                               :node-class (node-class-name node)})
-           (not= address recomputed)
-           (swap! errors conj {:type :audit/merkle-mismatch :address address :expected address
-                               :recomputed recomputed :node-class (node-class-name node)})
-           :else
-           (do (when (instance? Branch node)
-                 (doseq [child-addr #?(:clj (.addresses ^Branch node) :cljs (.-addresses node))]
-                   (walk-pss-address! store child-addr verified errors)))
-               (swap! verified conj address))))))
+  [store node address verified errors]
+  (when-not (contains? @verified address)
+    (let [recomputed (cond
+                       (instance? Branch node) (branch-crypto-uuid node)
+                       (instance? Leaf node)   (uuid (mapv (comp vec seq) #?(:clj (.keys ^Leaf node) :cljs (.-keys node)))))]
+      (cond
+        (nil? recomputed)
+        (swap! errors conj {:type :audit/unknown-node-class :address address
+                            :node-class (node-class-name node)})
+        (not= address recomputed)
+        (swap! errors conj {:type :audit/merkle-mismatch :address address :expected address
+                            :recomputed recomputed :node-class (node-class-name node)})
+        :else
+        (do (when (instance? Branch node)
+              (doseq [child-addr #?(:clj (.addresses ^Branch node) :cljs (.-addresses node))]
+                (walk-pss-address! store child-addr verified errors)))
+            (swap! verified conj address))))))
 
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IAuditable
@@ -403,9 +403,8 @@
             addr
             (recur)))))))
 
-(defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freelist cost-center-fn cmp]
+(defrecord CachedStorage [store config cache stats pending-writes freed-addresses freed-set freelist cost-center-fn]
   IStorage
-  (comparator [_] cmp)   ;; diff-buf: per-index comparator for buffered-leaf projection
   (store [_ node #?(:cljs opts)]
     (@cost-center-fn :store)
     (swap! stats update :writes inc)
@@ -464,17 +463,7 @@
                   (atom [])  ;; freed-addresses: vector of [address timestamp] pairs
                   (atom #{}) ;; freed-set: HashSet for O(1) isFreed lookups
                   (atom [])  ;; freelist: vector of reusable addresses (used as stack via peek/pop)
-                  (atom (fn [_] nil))
-                  nil))      ;; cmp: per-index comparator, set via (with-comparator storage cmp)
-
-;; Per-index view of the (shared) storage carrying the index comparator. Returns a new
-;; CachedStorage sharing all atoms (cache/pending-writes/stats/freed/freelist) — only the
-;; cmp field differs — so diff-buf projection can read storage.comparator() per index
-;; while writes/cache stay unified across indexes.
-(defn with-comparator [storage cmp]
-  (if (instance? CachedStorage storage)   ;; pass through nil / non-CachedStorage (e.g. mem backend) unchanged
-    (assoc storage :cmp cmp)
-    storage))
+                  (atom (fn [_] nil))))
 
 (def ^:const DEFAULT_BRANCHING_FACTOR 512)
 
@@ -489,7 +478,7 @@
 (defmethod di/empty-index :datahike.index/persistent-set [_index-name store index-type index-config]
   (let [cmp (index-type->cmp-quick index-type false)
         ^PersistentSortedSet pset (psset/sorted-set* {:comparator cmp
-                                                      :storage (with-comparator (:storage store) cmp)
+                                                      :storage (:storage store)
                                                       :branching-factor (branching-factor index-config)
                                                       :diff-buf-size (diff-buf-size index-config)})]
     (with-meta pset
@@ -510,7 +499,7 @@
                                                            (arrays/alength arr)
                                                            {:branching-factor (branching-factor index-config)
                                                             :diff-buf-size (diff-buf-size index-config)})]
-    (set! (.-_storage pset) (with-comparator (:storage store) cmp))
+    (set! (.-_storage pset) (:storage store))
     (with-meta pset
       {:index-type index-type})))
 
@@ -554,17 +543,19 @@
                                          ;; The following fields are reset as they cannot be accessed from outside:
                                          ;; - 'edit' is set to false, i.e. the set is assumed to be persistent, not transient
                                          ;; - 'version' is set back to 0
-                                         ;; diff-buf: give the set a storage view carrying its index comparator
-                                         ;; so buffered-leaf projection (Branch.child) can route by value on restore.
-                                           (PersistentSortedSet. meta cmp address (with-comparator @storage cmp) nil count settings 0))))
+                                         ;; diff-buf: the set's per-index comparator (cmp) is propagated to its
+                                         ;; Branch nodes (Branch._projCmp) for buffered-leaf projection; the
+                                         ;; shared storage carries no comparator.
+                                           (PersistentSortedSet. meta cmp address @storage nil count settings 0))))
                                      :cljs
                                      (fn [reader _tag _component-count]
                                        (let [{:keys [meta address count]} (fress/read-object reader)
                                              cmp                          (index-type->cmp-quick (:index-type meta) false)]
                                        ;; CLJS BTSet deftype: [root cnt comparator meta _hash storage address settings]
-                                       ;; diff-buf: give the set a storage view carrying its index comparator so
-                                       ;; buffered-leaf projection (Branch.child) can route by value on restore.
-                                         (BTSet. nil count cmp meta nil (with-comparator @storage cmp) address settings))))
+                                       ;; diff-buf: the set's per-index comparator (cmp) is propagated to its
+                                       ;; Branch nodes (_projCmp) for buffered-leaf projection; shared storage
+                                       ;; carries no comparator.
+                                         (BTSet. nil count cmp meta nil @storage address settings))))
                                   "datahike.index.PersistentSortedSet.Leaf"
                                   #?(:clj
                                      (reify ReadHandler
