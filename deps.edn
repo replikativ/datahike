@@ -9,7 +9,7 @@
                                                      :exclusions [org.clojure/clojurescript]}
         org.replikativ/datalog-parser               {:mvn/version "0.2.37"}
         org.replikativ/persistent-sorted-set        {:git/url "https://github.com/replikativ/persistent-sorted-set.git"
-                                                     :git/sha "a36ecbe837100259d017c0ec9716ec4e42e47414"}  ;; diff-buf (feature/op-buf-v5); run `clojure -X:deps prep` to compile its Java
+                                                     :git/sha "2063823a6fa78dcda5570906d9e7509b0394ba68"}  ;; diff-buf (feature/op-buf-v5); run `clojure -X:deps prep` to compile its Java
         environ/environ                             {:mvn/version "1.2.0"}
         nrepl/bencode                               {:mvn/version "1.2.0"}
         org.replikativ/logging                      {:mvn/version "0.1.3"}
