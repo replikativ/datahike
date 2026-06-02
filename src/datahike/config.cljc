@@ -79,6 +79,21 @@
 
 (def self-writer {:backend :self})
 
+(defn default-index-config-for-backend
+  "The default index-config for `index`, adjusted for the store `backend`.
+
+   diff-buf write-buffering (PSS `:diff-buf-size`) trades in-memory insert throughput
+   for fewer durable object PUTs — it only pays off on a request-priced object store.
+   An in-memory store has no PUTs to fold, so buffering there is pure overhead; default
+   `:diff-buf-size` to 0 for the in-memory backend. Index-agnostic: only touches the key
+   when the index's default actually carries it (PSS), and an explicit user `:index-config`
+   still wins (it is deep-merged over this default in load-config)."
+  [index backend]
+  (let [d (di/default-index-config index)]
+    (cond-> d
+      (and (contains? #{:memory :mem} backend) (contains? d :diff-buf-size))
+      (assoc :diff-buf-size 0))))
+
 (defn from-deprecated
   [{:keys [backend username password path host port id] :as _backend-cfg}
    & {:keys [schema-on-read temporal-index index initial-tx]
@@ -109,7 +124,7 @@
                                     #?(:clj (java.util.UUID/nameUUIDFromBytes (.getBytes path "UTF-8"))
                                        :cljs (uuid path))))}))
    :index index
-   :index-config (di/default-index-config index)
+   :index-config (default-index-config-for-backend index backend)
    :keep-history? temporal-index
    :attribute-refs? *default-attribute-refs?*
    :initial-tx initial-tx
@@ -161,7 +176,8 @@
    :crypto-hash? *default-crypto-hash?*
    :branch *default-db-branch*
    :writer self-writer
-   :index-config (di/default-index-config *default-index*)})
+   ;; storeless ⇒ inherently in-memory ⇒ diff-buf off (no PUTs to fold)
+   :index-config (default-index-config-for-backend *default-index* :memory)})
 
 (defn remove-nils
   "Thanks to https://stackoverflow.com/a/34221816"
@@ -230,7 +246,7 @@
                  :store-cache-size (int-from-env :datahike-store-cache-size *default-store-cache-size*)
                  :index-config (if-let [index-config (map-from-env :datahike-index-config nil)]
                                  index-config
-                                 (di/default-index-config index))}
+                                 (default-index-config-for-backend index (:backend store-config)))}
          merged-config ((comp remove-nils dt/deep-merge) config config-as-arg)
          {:keys [schema-flexibility initial-tx store attribute-refs?]} merged-config]
      ;; konserve now handles store config validation at runtime

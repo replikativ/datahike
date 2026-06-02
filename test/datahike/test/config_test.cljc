@@ -38,18 +38,21 @@
                          :keep-history? true
                          :initial-tx nil
                          :index :datahike.index/persistent-set
-                         :index-config {:diff-buf-size 256}  ;; diff-buf default-on for new stores
                          :schema-flexibility :write
                          :crypto-hash? false
                          :branch :db
                          :writer c/self-writer
                          :search-cache-size c/*default-search-cache-size*
                          :store-cache-size c/*default-store-cache-size*}]
+    ;; diff-buf defaults backend-aware: 0 in-memory (no PUTs to fold ⇒ pure overhead),
+    ;; on (256) for durable object stores like :file.
     (is (= (merge default-new-cfg
-                  {:store {:backend :memory :id #uuid "ec3537bd-3f0d-3719-acd5-40751bbb1012"}})
+                  {:index-config {:diff-buf-size 0}
+                   :store {:backend :memory :id #uuid "ec3537bd-3f0d-3719-acd5-40751bbb1012"}})
            (c/from-deprecated mem-cfg)))
     (is (= (merge default-new-cfg
-                  {:store {:backend :file
+                  {:index-config {:diff-buf-size 256}
+                   :store {:backend :file
                            :path "/deprecated/test"
                            :id #uuid "908d33ed-b562-3301-9a9f-94b961e56f05"}})
            (c/from-deprecated file-cfg)))))
@@ -68,8 +71,9 @@
                      :writer c/self-writer
                      :search-cache-size c/*default-search-cache-size*
                      :store-cache-size c/*default-store-cache-size*}
+                    ;; default store is :memory ⇒ diff-buf defaults off (backend-aware)
                     (when (seq (di/default-index-config c/*default-index*))
-                      {:index-config (di/default-index-config c/*default-index*)}))
+                      {:index-config (c/default-index-config-for-backend c/*default-index* :memory)}))
              (update config :store dissoc :id :scope))))))
 
 (deftest core-config-test
