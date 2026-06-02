@@ -3174,14 +3174,20 @@
                          target-vars)))
             (cartesian-product-seq component-tuples)))))
 
-(declare built-ins clj-core-built-ins)
-
 (defn- resolve-pred-symbol
-  "Resolve a predicate symbol used in a post-filter clause."
+  "Resolve a predicate symbol used in a post-filter clause.
+
+   In CLJ, user-defined predicates that aren't built-in are looked up
+   via runtime resolution. In CLJS, `resolve` is compile-time only, so
+   we restrict to the built-ins maps; user-defined cross-component
+   filter predicates are CLJ-only and `eval-post-filter` raises a
+   targeted error if encountered."
   [sym]
-  (or (get @(requiring-resolve 'datahike.query/built-ins) sym)
-      (get @(requiring-resolve 'datahike.query/clj-core-built-ins) sym)
-      (some-> (resolve sym) deref)))
+  (or (get built-ins sym)
+      (get clj-core-built-ins sym)
+      #?(:clj  (when (symbol? sym)
+                 (some-> (clojure.core/resolve sym) deref))
+         :cljs nil)))
 
 (defn- eval-post-filter
   "Apply a single predicate post-filter to a set of wide tuples.
@@ -3193,7 +3199,10 @@
         args    (rest call)
         pred-fn (resolve-pred-symbol fn-sym)]
     (when-not pred-fn
-      (throw (ex-info (str "Cannot resolve predicate in cross-component post-filter: " fn-sym)
+      (throw (ex-info (str "Cannot resolve predicate in cross-component post-filter: " fn-sym
+                           #?(:cljs
+                              " (CLJS-only limitation: user-defined predicate functions are not resolvable at runtime — use a built-in comparison or restructure the query to avoid the cross-component span)"
+                              :clj nil))
                       {:clause pred-clause})))
     (let [arg-readers (mapv (fn [a]
                               (if (and (symbol? a)
@@ -3399,11 +3408,13 @@
                           (not-any? #(instance? Pull %) find-elements))
                  (let [find-var-syms (mapv (fn [^Variable el] (.-symbol el))
                                            (:elements qfind))
-                       ;; Both scalar :in bindings (stored in :consts) and
-                       ;; collection/tuple bindings (stored in :rels) are
-                       ;; constants for connectivity purposes.
-                       in-bound-vars (into (set (keys (:consts context-in)))
-                                           (context-bound-vars context-in))
+                       ;; Only scalar :in bindings (stored in :consts) are
+                       ;; constants. Collection / tuple bindings end up in
+                       ;; :rels — those are JOIN dimensions across patterns,
+                       ;; not constants. Excluding them would incorrectly
+                       ;; treat e.g. `[?e ...]` as disconnecting two
+                       ;; patterns that share ?e.
+                       in-bound-vars (set (keys (:consts context-in)))
                        {:keys [components post-filters]}
                        (connected-components (:where query) in-bound-vars find-var-syms)]
                    (when (> (count components) 1)
