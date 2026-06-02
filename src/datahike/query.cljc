@@ -3075,63 +3075,63 @@
         all-vars    (into #{} cat clause-vars)
         ;; Step 1: union vars within each joiner clause.
         uf (reduce
-             (fn [uf [ci vs]]
-               (if (and (joiner-clause? ci) (> (count vs) 1))
-                 (let [[v0 & rest-vs] (vec vs)]
-                   (reduce (fn [p v] (uf-union p v0 v)) uf rest-vs))
-                 uf))
-             (into {} (map (fn [v] [v v])) all-vars)
-             (map vector classified clause-vars))
+            (fn [uf [ci vs]]
+              (if (and (joiner-clause? ci) (> (count vs) 1))
+                (let [[v0 & rest-vs] (vec vs)]
+                  (reduce (fn [p v] (uf-union p v0 v)) uf rest-vs))
+                uf))
+            (into {} (map (fn [v] [v v])) all-vars)
+            (map vector classified clause-vars))
         ;; Step 2: assign each clause a representative root (or a
         ;; sentinel for clauses with no meaningful vars — those become
         ;; global gates attached to the first component).
         no-var-root   ::no-vars
         clause-roots  (mapv
-                        (fn [vs]
-                          (if (empty? vs)
-                            no-var-root
-                            (second (uf-find uf (first vs)))))
-                        clause-vars)
+                       (fn [vs]
+                         (if (empty? vs)
+                           no-var-root
+                           (second (uf-find uf (first vs)))))
+                       clause-vars)
         ;; Step 3: identify post-filter predicates (those that touch >1 root).
         post-filter? (mapv
-                       (fn [ci vs]
-                         (and (= :predicate (:type ci))
-                              (> (count (into #{} (map #(second (uf-find uf %))) vs)) 1)))
-                       classified clause-vars)
+                      (fn [ci vs]
+                        (and (= :predicate (:type ci))
+                             (> (count (into #{} (map #(second (uf-find uf %))) vs)) 1)))
+                      classified clause-vars)
         ;; Step 4: build components in source order. Component roots are
         ;; encountered in first-clause order (skipping post-filters).
         roots-in-order (vec (distinct
-                              (keep-indexed
-                                (fn [i root]
-                                  (when-not (nth post-filter? i) root))
-                                clause-roots)))
+                             (keep-indexed
+                              (fn [i root]
+                                (when-not (nth post-filter? i) root))
+                              clause-roots)))
         ;; Special handling: no-var clauses (e.g. fully-bound patterns)
         ;; attach to the first non-sentinel component if any exist.
         primary-root  (first (remove #(= no-var-root %) roots-in-order))
         components
         (mapv
-          (fn [root]
-            (let [own-idxs (vec (keep-indexed
-                                  (fn [i r]
-                                    (when (and (not (nth post-filter? i))
-                                               (or (= r root)
-                                                   (and (= primary-root root)
-                                                        (= r no-var-root))))
-                                      i))
-                                  clause-roots))
-                  cs (mapv #(nth clauses %) own-idxs)
-                  vs (into #{} (mapcat #(nth clause-vars %)) own-idxs)
-                  fvs (vec (filter vs find-vars))]
-              {:clauses cs :vars vs :find-vars fvs}))
-          (remove #(= no-var-root %) roots-in-order))
+         (fn [root]
+           (let [own-idxs (vec (keep-indexed
+                                (fn [i r]
+                                  (when (and (not (nth post-filter? i))
+                                             (or (= r root)
+                                                 (and (= primary-root root)
+                                                      (= r no-var-root))))
+                                    i))
+                                clause-roots))
+                 cs (mapv #(nth clauses %) own-idxs)
+                 vs (into #{} (mapcat #(nth clause-vars %)) own-idxs)
+                 fvs (vec (filter vs find-vars))]
+             {:clauses cs :vars vs :find-vars fvs}))
+         (remove #(= no-var-root %) roots-in-order))
         ;; If there are ONLY no-var clauses (no real components), keep
         ;; them as one degenerate component so the user's query still runs.
         components (if (and (empty? components) (some #(= no-var-root %) roots-in-order))
                      [{:clauses clauses :vars #{} :find-vars (vec find-vars)}]
                      components)
         post-filters (vec (keep-indexed
-                            (fn [i c] (when (nth post-filter? i) c))
-                            clauses))]
+                           (fn [i c] (when (nth post-filter? i) c))
+                           clauses))]
     {:components components
      :post-filters post-filters}))
 
@@ -3453,85 +3453,85 @@
                        (apply-result-transforms projected order-spec offset limit qreturnmaps)))))]
         split-result
 
-      (if (and use-planner?
+        (if (and use-planner?
                ;; Nested temporal wrappers (e.g. (d/history (d/as-of ...))) → legacy
-               (planner-origin-db primary-db))
-        (let [db primary-db
+                 (planner-origin-db primary-db))
+          (let [db primary-db
               ;; For temporal wrappers, use origin-db for plan creation (schema, index stats)
-              plan-db (planner-origin-db db)
-              bound-vars (context-bound-vars context-in)
+                plan-db (planner-origin-db db)
+                bound-vars (context-bound-vars context-in)
               ;; Use the actual db (not origin) for lookup-ref resolution — temporal
               ;; DBs (history) can resolve retracted entities that origin-db can't.
               ;; For multi-source, pass sources so each clause resolves against its source db.
-              clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
-                                                          (when multi-source? (:sources context-in)))
-              rules (not-empty (:rules context-in))
-              plan (get-or-create-plan plan-db clauses bound-vars rules)]
+                clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
+                                                            (when multi-source? (:sources context-in)))
+                rules (not-empty (:rules context-in))
+                plan (get-or-create-plan plan-db clauses bound-vars rules)]
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
-          (if-let [direct-result (execute-planned-direct
-                                  plan db qfind find-elements context-in query stats? qreturnmaps)]
-            (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
-              #?(:clj
-                 (when *profile?*
-                   (let [t3 (System/nanoTime)]
-                     (println (format "parse=%.3f resolve=%.3f direct=%.3f total=%.3f ms"
-                                      (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
-                                      (/ (- t3 t0) 1e6))))))
-              result)
+            (if-let [direct-result (execute-planned-direct
+                                    plan db qfind find-elements context-in query stats? qreturnmaps)]
+              (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
+                #?(:clj
+                   (when *profile?*
+                     (let [t3 (System/nanoTime)]
+                       (println (format "parse=%.3f resolve=%.3f direct=%.3f total=%.3f ms"
+                                        (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
+                                        (/ (- t3 t0) 1e6))))))
+                result)
 
             ;; 2. Columnar aggregate (secondary index or PSS scan)
-            (let [ta (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
-                  has-aggs? (some #(instance? Aggregate %) find-elements)
-                  columnar-eligible? (and has-aggs?
-                                          (instance? FindRel qfind)
-                                          (not (:with query))
-                                          (not (some #(instance? Pull %) find-elements))
-                                          (empty? (:rels context-in))
-                                          (not lookup-ref-reverse-map))
-                  tb (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
-                  columnar-result
-                  (when columnar-eligible?
-                    #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
-                                (try-columnar-aggregate plan db find-elements (:cancel context-in)))
-                       :cljs nil))
-                  tc (when *profile?* #?(:clj (System/nanoTime) :cljs 0))]
-              (if columnar-result
-                (let [result (-post-process qfind columnar-result)
-                      result (apply-result-transforms result order-spec offset limit qreturnmaps)]
-                  #?(:clj
-                     (when *profile?*
-                       (let [t3 (System/nanoTime)]
-                         (println (format "parse=%.3f resolve=%.3f plan=%.3f elig=%.3f sec-idx=%.3f post=%.3f total=%.3f ms"
-                                          (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- ta t2) 1e6)
-                                          (/ (- tb ta) 1e6) (/ (- tc tb) 1e6) (/ (- t3 tc) 1e6)
-                                          (/ (- t3 t0) 1e6))))))
-                  result)
+              (let [ta (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
+                    has-aggs? (some #(instance? Aggregate %) find-elements)
+                    columnar-eligible? (and has-aggs?
+                                            (instance? FindRel qfind)
+                                            (not (:with query))
+                                            (not (some #(instance? Pull %) find-elements))
+                                            (empty? (:rels context-in))
+                                            (not lookup-ref-reverse-map))
+                    tb (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
+                    columnar-result
+                    (when columnar-eligible?
+                      #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
+                                  (try-columnar-aggregate plan db find-elements (:cancel context-in)))
+                         :cljs nil))
+                    tc (when *profile?* #?(:clj (System/nanoTime) :cljs 0))]
+                (if columnar-result
+                  (let [result (-post-process qfind columnar-result)
+                        result (apply-result-transforms result order-spec offset limit qreturnmaps)]
+                    #?(:clj
+                       (when *profile?*
+                         (let [t3 (System/nanoTime)]
+                           (println (format "parse=%.3f resolve=%.3f plan=%.3f elig=%.3f sec-idx=%.3f post=%.3f total=%.3f ms"
+                                            (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- ta t2) 1e6)
+                                            (/ (- tb ta) 1e6) (/ (- tc tb) 1e6) (/ (- t3 tc) 1e6)
+                                            (/ (- t3 t0) 1e6))))))
+                    result)
 
                 ;; 3. Standard Relation path
-                (let [result (execute-planned-relation
-                              plan db qfind find-elements context-in query all-vars
-                              result-arity lookup-ref-reverse-map order-spec offset limit
-                              stats? qreturnmaps)]
-                  #?(:clj
-                     (when *profile?*
-                       (let [t3 (System/nanoTime)]
-                         (println (format "parse=%.3f resolve=%.3f relation=%.3f total=%.3f ms"
-                                          (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
-                                          (/ (- t3 t0) 1e6))))))
-                  result)))))
+                  (let [result (execute-planned-relation
+                                plan db qfind find-elements context-in query all-vars
+                                result-arity lookup-ref-reverse-map order-spec offset limit
+                                stats? qreturnmaps)]
+                    #?(:clj
+                       (when *profile?*
+                         (let [t3 (System/nanoTime)]
+                           (println (format "parse=%.3f resolve=%.3f relation=%.3f total=%.3f ms"
+                                            (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
+                                            (/ (- t3 t0) 1e6))))))
+                    result)))))
 
         ;; Legacy engine
-        (let [result (execute-legacy context-in query qfind find-elements all-vars result-arity
-                                     order-spec offset limit stats? qreturnmaps)]
-          #?(:clj
-             (when *profile?*
-               (let [t3 (System/nanoTime)]
-                 (println (format "parse=%.3f resolve=%.3f legacy=%.3f total=%.3f ms"
-                                  (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
-                                  (/ (- t3 t0) 1e6))))))
-          result))))))
+          (let [result (execute-legacy context-in query qfind find-elements all-vars result-arity
+                                       order-spec offset limit stats? qreturnmaps)]
+            #?(:clj
+               (when *profile?*
+                 (let [t3 (System/nanoTime)]
+                   (println (format "parse=%.3f resolve=%.3f legacy=%.3f total=%.3f ms"
+                                    (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
+                                    (/ (- t3 t0) 1e6))))))
+            result))))))
 
 #?(:clj
    (defn- try-secondary-index-aggregate-fast
