@@ -2022,6 +2022,15 @@
           ;; Multi-group — hash-probe value join
           ;; Execute groups in order, build probe-sets between them.
           ;; When producer has find-vars, use probe-map to propagate values.
+          ;;
+          ;; Probe collections are keyed by [producer-idx probe-var] (not by
+          ;; producer-idx alone): a single producer can have multiple
+          ;; downstream consumers that probe on DIFFERENT variables, and
+          ;; each needs its own probe-map. The pre-fix code keyed by
+          ;; producer-idx, so the second consumer's lookup found the
+          ;; first consumer's map and silently produced wrong joins
+          ;; whenever the two probe-vars ranged over the same value
+          ;; domain. See planner-bugs/cross-product-test.cljc Bug B.
           (let [producer-idxs (into #{} (map :producer-idx) (vals group-joins))
                 extra-preds (into [] (comp (keep-indexed
                                             (fn [i g] (when (contains? producer-idxs i)
@@ -2034,8 +2043,13 @@
                                  (vec (distinct (mapcat :vars groups))))
                 emit-vars (if has-post-ops? all-group-vars find-vars)]
             (loop [gi 0
-                   probe-sets {} ;; {group-idx → HashSet of join-var values}
-                   probe-maps {}] ;; {group-idx → HashMap of probe-val → ArrayList<Object[]>}
+                   probe-sets    {} ;; {[producer-idx probe-var] → HashSet of join-var values}
+                   probe-maps    {} ;; {[producer-idx probe-var] → {:map HashMap :p-all-vars [...]}}
+                   ;; Consumer-group indices already materialized by the
+                   ;; multi-consumer producer step. Each entry's own loop
+                   ;; iteration becomes a no-op (the producer step
+                   ;; produced the joined result-list inline).
+                   consumed-cgi #{}]
               (if (>= gi n-groups)
                 nil ;; done
                 (let [g (nth groups gi)
@@ -2043,13 +2057,22 @@
                       scan-op (entity-group-scan-op g)
                       merge-ops (entity-group-merge-ops g)]
 
-                  (if join-info
-                    ;; Consumer group: use probe-set/map from producer
+                  (cond
+                    ;; Multi-consumer producer's downstream — already handled
+                    ;; inline at the producer step; nothing to do here.
+                    (contains? consumed-cgi gi)
+                    (recur (inc gi) probe-sets probe-maps consumed-cgi)
+
+                    join-info
+                    ;; Consumer group: use probe-set/map from producer keyed
+                    ;; on this consumer's own probe-var.
                     (let [{:keys [producer-idx probe-vars]} join-info
                           producer-g (nth groups producer-idx)
                           pinfo (find-probe-info g producer-g probe-vars)
-                          probe-set (get probe-sets producer-idx)
-                          pmap (get probe-maps producer-idx)
+                          probe-var (:probe-var pinfo)
+                          probe-key [producer-idx probe-var]
+                          probe-set (get probe-sets probe-key)
+                          pmap (get probe-maps probe-key)
                           c-attached (when-not (contains? producer-idxs gi)
                                        (:attached-preds g))
                           ;; Consumer emits all its vars (wide) so we can extract probe-var for map lookup
@@ -2114,48 +2137,179 @@
                                :cljs (do (.splice result-list 0)
                                          (dotimes [i (.-length combined)]
                                            (.push result-list (aget combined i))))))))
-                      (recur (inc gi) probe-sets probe-maps))
+                      (recur (inc gi) probe-sets probe-maps consumed-cgi))
 
-                  ;; Producer group: collect join-var values for downstream consumers
-                    (let [;; Check if any downstream group needs a probe from us
-                          downstream-info (some (fn [[consumer-gi info]]
-                                                  (when (= (:producer-idx info) gi)
-                                                    {:consumer-gi consumer-gi
-                                                     :probe-vars (:probe-vars info)}))
-                                                group-joins)
-                          collect-field-info (when downstream-info
-                                               (let [consumer-g (nth groups (:consumer-gi downstream-info))
-                                                     pinfo (find-probe-info consumer-g g (:probe-vars downstream-info))]
-                                                 pinfo))
-                        ;; Check if producer has find-vars not available from consumer
-                          consumer-g (when downstream-info (nth groups (:consumer-gi downstream-info)))
+                    :else
+                  ;; Producer group: collect join-var values for downstream consumers.
+                  ;;
+                  ;; A producer may have MULTIPLE downstream consumers probing
+                  ;; on different vars (e.g. an edge entity-group with both src
+                  ;; and tgt refs feeding two vertex consumers, one keyed on
+                  ;; ?v1 = :src, the other on ?v2 = :tgt). Build one probe
+                  ;; collection per unique consumer probe-var, all keyed by
+                  ;; [producer-idx probe-var] in the threaded state.
+                    (let [downstream-consumers
+                          (vec
+                           (keep (fn [[consumer-gi info]]
+                                   (when (= (:producer-idx info) gi)
+                                     (let [consumer-g (nth groups consumer-gi)
+                                           pinfo (find-probe-info consumer-g g (:probe-vars info))]
+                                       (when pinfo
+                                         {:consumer-gi consumer-gi
+                                          :probe-vars  (:probe-vars info)
+                                          :pinfo       pinfo
+                                          :consumer-g  consumer-g}))))
+                                 group-joins))
+                          ;; Deduplicate by the probe-var (a single producer/var
+                          ;; combination only needs one probe collection even
+                          ;; if multiple consumers share it).
+                          unique-probes
+                          (vec (vals
+                                (reduce (fn [m d]
+                                          (let [pv (get-in d [:pinfo :probe-var])]
+                                            (cond-> m
+                                              (not (contains? m pv)) (assoc pv d))))
+                                        {}
+                                        downstream-consumers)))
+                          ;; producer-has-find-vars? if ANY downstream consumer
+                          ;; is missing a find-var the producer supplies — we
+                          ;; need to keep the producer's tuples to combine
+                          ;; them in. If multiple probe-vars feed different
+                          ;; consumers we also need the producer tuples
+                          ;; retained to build each probe-map.
                           producer-has-find-vars?
-                          (and downstream-info
-                               (some (fn [fv]
-                                       (and (not (and consts (contains? consts fv)))
-                                            (group-provides-var? g fv)
-                                            (not (group-provides-var? consumer-g fv))))
-                                     find-vars))]
+                          (and (seq downstream-consumers)
+                               (some (fn [{c-g :consumer-g}]
+                                       (some (fn [fv]
+                                               (and (not (and consts (contains? consts fv)))
+                                                    (group-provides-var? g fv)
+                                                    (not (group-provides-var? c-g fv))))
+                                             find-vars))
+                                     downstream-consumers))
+                          use-new-path?
+                          (or producer-has-find-vars?
+                              (> (count unique-probes) 1))]
 
-                      (if producer-has-find-vars?
-                      ;; NEW PATH: emit producer tuples, build probe-map for value propagation
+                      (cond
+                        ;; MULTI-CONSUMER PATH: a single producer has two-or-more
+                        ;; distinct probe-vars flowing to downstream consumers.
+                        ;; We materialize the producer's wide tuples once,
+                        ;; compute each consumer's accepted probe-value set, then
+                        ;; filter the producer tuples by ALL constraints
+                        ;; simultaneously. Marking the consumer-gis as consumed
+                        ;; makes their main-loop iterations no-ops.
+                        (> (count unique-probes) 1)
                         (let [p-all-vars (vec (or (:output-vars g) (:vars g)))
-                              p-scan-op scan-op
-                              p-merge-ops merge-ops
-                            ;; Apply producer attached-preds (if any) by emitting wide then filtering
+                              p-attached (:attached-preds g)
+                              ;; 1. Producer wide tuples.
+                              _ (execute-group-direct db scan-op merge-ops p-all-vars consts
+                                                      result-list nil 0 nil 0 -1 nil
+                                                      :temporal temporal :pipeline (:pipeline g)
+                                                      :cancel cancel)
+                              p-var-index (into {} (map-indexed (fn [i v] [v i])) p-all-vars)
+                              _ (when (seq p-attached)
+                                  (post-filter-preds result-list (vec p-attached) p-var-index))
+                              n-producer (result-list-size result-list)
+                              ;; 2. For each unique probe-var: run the consumer scan
+                              ;; against the producer's probe-set to get accepted
+                              ;; values. We do this by reusing the producer's
+                              ;; probe-set as the filter for the consumer scan.
+                              ;; The accepted set is the set of values the
+                              ;; consumer's scan emits for the probe-var.
+                              probe-info-by-var
+                              (reduce
+                               (fn [acc {:keys [pinfo consumer-g consumer-gi]}]
+                                 (let [probe-var (:probe-var pinfo)
+                                       probe-idx (int (get p-var-index probe-var))
+                                       producer-set (let [s (make-probe-set 64)]
+                                                      (dotimes [i n-producer]
+                                                        (let [^objects t (result-list-get result-list i)]
+                                                          (probe-set-add s (aget t probe-idx))))
+                                                      s)
+                                       c-scan-op (entity-group-scan-op consumer-g)
+                                       c-merge-ops (entity-group-merge-ops consumer-g)
+                                       c-attached (when-not (contains? producer-idxs consumer-gi)
+                                                    (:attached-preds consumer-g))
+                                       c-all-vars (vec (or (:output-vars consumer-g) (:vars consumer-g)))
+                                       ;; Scratch list for consumer scan results.
+                                       c-list (make-result-list 256)]
+                                   (execute-group-direct db c-scan-op c-merge-ops c-all-vars consts
+                                                         c-list producer-set
+                                                         (int (:consumer-scan-field pinfo))
+                                                         nil 0 -1 nil
+                                                         :temporal temporal
+                                                         :scan-estimate (:estimated-card consumer-g)
+                                                         :pipeline (:pipeline consumer-g)
+                                                         :cancel cancel)
+                                   (when (seq c-attached)
+                                     (apply-attached-preds c-list c-attached c-all-vars c-all-vars consts))
+                                   ;; Extract the probe-var values that the
+                                   ;; consumer scan accepted.
+                                   (let [c-var-index (into {} (map-indexed (fn [i v] [v i])) c-all-vars)
+                                         c-probe-idx (int (get c-var-index probe-var))
+                                         accepted (make-probe-set (result-list-size c-list))]
+                                     (dotimes [i (result-list-size c-list)]
+                                       (let [^objects ct (result-list-get c-list i)]
+                                         (probe-set-add accepted (aget ct c-probe-idx))))
+                                     (assoc acc probe-var
+                                            {:probe-idx probe-idx
+                                             :accepted  accepted}))))
+                               {}
+                               unique-probes)
+                              ;; 3. Filter producer tuples: keep only those whose
+                              ;; values at each probe-var are in the corresponding
+                              ;; accepted set. Then project to emit-vars.
+                              filtered (make-result-list n-producer)
+                              probe-checks (vec (vals probe-info-by-var))
+                              target-vars  (if has-post-ops? all-group-vars find-vars)
+                              n-target     (count target-vars)
+                              combo-plan   (mapv (fn [tv]
+                                                   (cond
+                                                     (and consts (contains? consts tv)) [:const (get consts tv)]
+                                                     (contains? p-var-index tv) [:producer (get p-var-index tv)]
+                                                     :else [:const nil]))
+                                                 target-vars)
+                              _ (dotimes [i n-producer]
+                                  (let [^objects t (result-list-get result-list i)
+                                        ok? (every? (fn [{:keys [probe-idx accepted]}]
+                                                      (probe-set-contains? accepted (aget t (int probe-idx))))
+                                                    probe-checks)]
+                                    (when ok?
+                                      (let [^objects out #?(:clj (object-array n-target) :cljs (make-array n-target))]
+                                        (dotimes [ti n-target]
+                                          (let [[src idx] (nth combo-plan ti)]
+                                            (case src
+                                              :producer (aset out ti (aget t (int idx)))
+                                              :const    (aset out ti idx))))
+                                        (result-list-add filtered out)))))]
+                          ;; Replace result-list with the filtered+projected tuples.
+                          #?(:clj  (do (.clear ^java.util.ArrayList result-list)
+                                       (.addAll ^java.util.ArrayList result-list ^java.util.ArrayList filtered))
+                             :cljs (do (.splice result-list 0)
+                                       (dotimes [i (.-length filtered)]
+                                         (.push result-list (aget filtered i)))))
+                          ;; Mark all downstream consumers as consumed so the main
+                          ;; loop skips them.
+                          (recur (inc gi)
+                                 probe-sets probe-maps
+                                 (into consumed-cgi (map :consumer-gi) downstream-consumers)))
+
+                        ;; SINGLE-CONSUMER NEW PATH: producer has find-vars not
+                        ;; in the (single) consumer — keep producer tuples by
+                        ;; building a probe-map for value propagation.
+                        producer-has-find-vars?
+                        (let [p-all-vars (vec (or (:output-vars g) (:vars g)))
                               p-attached (:attached-preds g)]
-                        ;; Execute producer with all vars
-                          (execute-group-direct db p-scan-op p-merge-ops p-all-vars consts
+                          (execute-group-direct db scan-op merge-ops p-all-vars consts
                                                 result-list nil 0 nil 0 -1 nil
                                                 :temporal temporal :pipeline (:pipeline g)
                                                 :cancel cancel)
-                        ;; Apply producer attached-preds
                           (when (seq p-attached)
                             (let [var-idx (into {} (map-indexed (fn [i v] [v i])) p-all-vars)]
                               (post-filter-preds result-list (vec p-attached) var-idx)))
-                        ;; Build probe-map from producer results
                           (let [p-var-index (into {} (map-indexed (fn [i v] [v i])) p-all-vars)
-                                probe-var (:probe-var collect-field-info)
+                                {:keys [pinfo]} (first unique-probes)
+                                probe-var (:probe-var pinfo)
                                 probe-idx (int (get p-var-index probe-var))
                                 n-producer (result-list-size result-list)
                                 pmap (make-probe-map n-producer)]
@@ -2163,29 +2317,34 @@
                               (let [^objects tuple (result-list-get result-list i)
                                     probe-val (aget tuple probe-idx)]
                                 (probe-map-add pmap probe-val tuple)))
-                          ;; Clear result-list for consumer
                             #?(:clj  (.clear ^java.util.ArrayList result-list)
                                :cljs (.splice result-list 0))
                             (recur (inc gi)
-                                   (assoc probe-sets gi (probe-map->set pmap))
-                                   (assoc probe-maps gi {:map pmap :p-all-vars p-all-vars}))))
+                                   (assoc probe-sets [gi probe-var] (probe-map->set pmap))
+                                   (assoc probe-maps [gi probe-var]
+                                          {:map pmap :p-all-vars p-all-vars})
+                                   consumed-cgi)))
 
-                      ;; EXISTING PATH: collect-only, no producer find-vars
-                        (let [collect-set (when downstream-info (make-probe-set 4000))]
-                        ;; Execute producer group — empty find-vars, only collect
+                        ;; SINGLE-CONSUMER EXISTING PATH: collect-only scan;
+                        ;; producer's vars not needed in output.
+                        :else
+                        (let [{:keys [pinfo] :as one} (first downstream-consumers)
+                              probe-var (:probe-var pinfo)
+                              collect-set (when one (make-probe-set 4000))]
                           (execute-group-direct db scan-op merge-ops [] consts
                                                 result-list nil 0
                                                 collect-set
-                                                (int (or (:producer-datom-field collect-field-info) 0))
-                                                (int (or (:producer-merge-idx collect-field-info) -1))
+                                                (int (or (:producer-datom-field pinfo) 0))
+                                                (int (or (:producer-merge-idx pinfo) -1))
                                                 nil
                                                 :temporal temporal :pipeline (:pipeline g)
                                                 :cancel cancel)
                           (recur (inc gi)
                                  (if collect-set
-                                   (assoc probe-sets gi collect-set)
+                                   (assoc probe-sets [gi probe-var] collect-set)
                                    probe-sets)
-                                 probe-maps))))))))
+                                 probe-maps
+                                 consumed-cgi))))))))
             ;; Post-processing for multi-group: use potentially augmented pred-ops
             (when has-post-ops?
               (let [var-index (into {} (map-indexed (fn [i v] [v i])) all-group-vars)]
