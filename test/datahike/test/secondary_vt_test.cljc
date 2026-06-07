@@ -51,13 +51,11 @@
                        :db.secondary/attrs [:emp/salary]
                        :db.secondary/config {}
                        :db.secondary/status :ready}])
-    (d/transact conn [{:db/id "datomic.tx"
-                       :db.valid/from #inst "2024-01-01"
-                       :db.valid/to   #inst "2024-07-01"}
-                      {:db/id -1 :emp/salary 100000}])
-    (d/transact conn [{:db/id "datomic.tx"
-                       :db.valid/from #inst "2024-07-01"}
-                      {:db/id -1 :emp/salary 110000}])
+    (d/transact conn {:tx-data [{:db/id -1 :emp/salary 100000}]
+                      :tx-meta {:db.valid/from #inst "2024-01-01"
+                                :db.valid/to   #inst "2024-07-01"}})
+    (d/transact conn {:tx-data [{:db/id -1 :emp/salary 110000}]
+                      :tx-meta {:db.valid/from #inst "2024-07-01"}})
     (let [idx (get-in (d/db conn) [:secondary-indices :idx/employees])
           seen @(.-seen idx)
           ;; The transactor may invoke `-transact` more than once per
