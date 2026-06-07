@@ -1,7 +1,13 @@
-(ns datahike.test.back-correction-probe
-  "Empirical probe of the back-correction semantic gap in datahike's
-   per-tx valid-time model. Demonstrates what the current `d/valid-at`
-   predicate returns vs what an bitemporal supersession would return."
+(ns datahike.test.back-correction-test
+  "Regression for `d/valid-at` back-correction semantics — the
+   supersession contract under two overlapping vt-windowed assertions
+   for the same (e, a). When tx-2's vt-window covers `at` AND has a
+   greater tx-id than tx-1, tx-2's assertion supersedes tx-1's — the
+   bitemporal supersession at the read layer (see
+   `api/impl.cljc:269-309` for the design rationale). This test pins
+   the four cases that distinguish supersession-correct from
+   single-axis-naive: current-view, pre-correction history,
+   post-correction history, and the supersession winner."
   (:require [clojure.test :as t :refer [is deftest testing]]
             [datahike.api :as d]))
 
@@ -12,18 +18,17 @@
     (d/create-database cfg)
     (d/connect cfg)))
 
-(deftest back-correction-shows-current-semantic
+(deftest valid-at-back-correction-supersession
   ;; Scenario:
   ;;   tx-1 (vt=[Jan-01, ∞)): assert Bob.salary = 100k
   ;;   tx-2 (vt=[Apr-01, ∞)): assert Bob.salary = 90k  (back-correction)
   ;;
-  ;; Expected bitemporal supersession semantic:
-  ;;   query at vt=Feb-15 → 100k (pre-correction era)
+  ;; bitemporal supersession at the read layer:
+  ;;   query at vt=Feb-15 → 100k (pre-correction era, tx-2 excluded by vt)
   ;;   query at vt=May-15 →  90k (post-correction era, tx-2 supersedes)
   ;;
-  ;; Current datahike single-axis predicate:
-  ;;   query at vt=Feb-15 → see what happens
-  ;;   query at vt=May-15 → see what happens
+  ;; The supersession-correct `d/valid-at` implementation must produce
+  ;; the polygon shape on both branches.
   (let [conn (fresh-conn)
         _ (d/transact conn [{:db/ident :emp/name
                              :db/valueType :db.type/string
