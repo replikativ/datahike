@@ -243,112 +243,290 @@
       (is (nil? (:datahike/valid-between (meta cleared)))))))
 
 ;; ============================================================================
-;; Allen interval predicates as built-in datalog rules (DH-3)
+;; Allen interval predicates as built-in datalog rules (DH-3 + note 179 Gap 2)
 ;;
 ;; 4-arg interval-* rules take (a-from, a-to, b-from, b-to). Generic
 ;; over any orderable type — works for the bitemporal axis, but also
 ;; for application-domain date ranges (lease vs contract, etc.).
+;;
+;; The canonical 13 Allen relations (Allen 1983) are: equals,
+;; before/after, meets/met-by, overlaps/overlapped-by, during/contains,
+;; starts/started-by, finishes/finished-by. The library implements 11
+;; names + 1 alias (meets? → immediately-precedes?). The library splits
+;; "before" into precedes? (touching counts) / strictly-precedes? (no
+;; touch) and "after" into succeeds? / strictly-succeeds?, which is
+;; more granular than canonical Allen. Each named relation gets its own
+;; focused test below — each interval setup is a hand-computed oracle.
 ;; ============================================================================
 
-(defn- intervals-conn []
+(defn- install-interval-schema! [conn]
+  (d/transact conn [{:db/ident :iv/name :db/valueType :db.type/string
+                     :db/cardinality :db.cardinality/one}
+                    {:db/ident :iv/from :db/valueType :db.type/instant
+                     :db/cardinality :db.cardinality/one}
+                    {:db/ident :iv/to :db/valueType :db.type/instant
+                     :db/cardinality :db.cardinality/one}]))
+
+(defn- intervals-conn
+  "Fresh in-memory conn with `[:iv/name :iv/from :iv/to]` schema and the
+   given intervals already transacted. Each map in `intervals` has shape
+   `{:name <s> :from <inst> :to <inst>}`."
+  [intervals]
   (let [cfg {:store {:backend :memory :id (random-uuid)}
              :schema-flexibility :write
              :keep-history? false}]
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
-      (d/transact conn [{:db/ident :iv/name
-                         :db/valueType :db.type/string
-                         :db/cardinality :db.cardinality/one}
-                        {:db/ident :iv/from
-                         :db/valueType :db.type/instant
-                         :db/cardinality :db.cardinality/one}
-                        {:db/ident :iv/to
-                         :db/valueType :db.type/instant
-                         :db/cardinality :db.cardinality/one}])
-      ;; Two intervals: A=[Jan, Jul), B=[Apr, Sep)
-      (d/transact conn [{:iv/name "A" :iv/from #inst "2024-01-01" :iv/to #inst "2024-07-01"}
-                        {:iv/name "B" :iv/from #inst "2024-04-01" :iv/to #inst "2024-09-01"}])
+      (install-interval-schema! conn)
+      (d/transact conn (mapv (fn [{:keys [name from to]}]
+                               {:iv/name name :iv/from from :iv/to to})
+                             intervals))
       conn)))
 
-(deftest interval-overlaps?-detects-overlap
-  (let [conn (intervals-conn)]
-    (testing "A and B overlap"
-      (is (= #{["A" "B"]}
-             (d/q '[:find ?an ?bn
-                    :where
-                    [?a :iv/name ?an] [?a :iv/from ?af] [?a :iv/to ?at]
-                    [?b :iv/name ?bn] [?b :iv/from ?bf] [?b :iv/to ?bt]
-                    [(not= ?a ?b)]
-                    [(< ?an ?bn)]  ;; one direction only
-                    (interval-overlaps? ?af ?at ?bf ?bt)]
-                  (d/db conn)))))))
-
-(deftest interval-contains?-checks-containment
-  ;; Setup: A=[Jan, Sep) contains B=[Apr, Jul) but not C=[Jun, Oct).
-  (let [cfg {:store {:backend :memory :id (random-uuid)}
-             :schema-flexibility :write :keep-history? false}
-        _ (d/create-database cfg)
-        conn (d/connect cfg)]
-    (d/transact conn [{:db/ident :iv/name :db/valueType :db.type/string
-                       :db/cardinality :db.cardinality/one}
-                      {:db/ident :iv/from :db/valueType :db.type/instant
-                       :db/cardinality :db.cardinality/one}
-                      {:db/ident :iv/to :db/valueType :db.type/instant
-                       :db/cardinality :db.cardinality/one}])
-    (d/transact conn [{:iv/name "A" :iv/from #inst "2024-01-01" :iv/to #inst "2024-09-01"}
-                      {:iv/name "B" :iv/from #inst "2024-04-01" :iv/to #inst "2024-07-01"}
-                      {:iv/name "C" :iv/from #inst "2024-06-01" :iv/to #inst "2024-10-01"}])
-    (testing "A contains B but not C"
-      (is (= #{["A" "B"]}
-             (d/q '[:find ?an ?bn
-                    :where
-                    [?a :iv/name ?an] [?a :iv/from ?af] [?a :iv/to ?at]
-                    [?b :iv/name ?bn] [?b :iv/from ?bf] [?b :iv/to ?bt]
-                    [(not= ?a ?b)]
-                    (interval-contains? ?af ?at ?bf ?bt)]
-                  (d/db conn)))))))
-
-(deftest interval-precedes?-touching-vs-strict
-  ;; A=[Jan, Apr), B=[Apr, Jul). A.to == B.from — touching.
-  (let [cfg {:store {:backend :memory :id (random-uuid)}
-             :schema-flexibility :write :keep-history? false}
-        _ (d/create-database cfg)
-        conn (d/connect cfg)]
-    (d/transact conn [{:db/ident :iv/name :db/valueType :db.type/string
-                       :db/cardinality :db.cardinality/one}
-                      {:db/ident :iv/from :db/valueType :db.type/instant
-                       :db/cardinality :db.cardinality/one}
-                      {:db/ident :iv/to :db/valueType :db.type/instant
-                       :db/cardinality :db.cardinality/one}])
-    (d/transact conn [{:iv/name "A" :iv/from #inst "2024-01-01" :iv/to #inst "2024-04-01"}
-                      {:iv/name "B" :iv/from #inst "2024-04-01" :iv/to #inst "2024-07-01"}])
-    (testing "A precedes B (touching counts)"
-      (is (= #{["A" "B"]}
-             (d/q '[:find ?an ?bn
-                    :where
-                    [?a :iv/name ?an] [?a :iv/from ?af] [?a :iv/to ?at]
-                    [?b :iv/name ?bn] [?b :iv/from ?bf] [?b :iv/to ?bt]
-                    [(not= ?a ?b)] [(< ?an ?bn)]
-                    (interval-precedes? ?af ?at ?bf ?bt)]
-                  (d/db conn)))))
-    (testing "A strictly-precedes B fails on touching"
-      (is (empty?
-           (d/q '[:find ?an ?bn
-                  :where
+(defmacro ^:private fires-on
+  "Returns the set of `[?an ?bn]` pairs from `conn` where the named
+   Allen rule body fires. The rule is given as a literal sexp like
+   `(interval-starts? ?af ?at ?bf ?bt)` — the macro splices it into a
+   standard 2-interval datalog query. Per-relation tests use this to
+   keep the assertion line readable while reusing the shared pattern."
+  [conn rule-call]
+  `(d/q '~(into '[:find ?an ?bn :where
                   [?a :iv/name ?an] [?a :iv/from ?af] [?a :iv/to ?at]
                   [?b :iv/name ?bn] [?b :iv/from ?bf] [?b :iv/to ?bt]
-                  [(not= ?a ?b)] [(< ?an ?bn)]
-                  (interval-strictly-precedes? ?af ?at ?bf ?bt)]
-                (d/db conn)))))
-    (testing "A meets B (alias for immediately-precedes)"
-      (is (= #{["A" "B"]}
-             (d/q '[:find ?an ?bn
-                    :where
-                    [?a :iv/name ?an] [?a :iv/from ?af] [?a :iv/to ?at]
-                    [?b :iv/name ?bn] [?b :iv/from ?bf] [?b :iv/to ?bt]
-                    [(not= ?a ?b)] [(< ?an ?bn)]
-                    (interval-meets? ?af ?at ?bf ?bt)]
-                  (d/db conn)))))))
+                  [(not= ?a ?b)]]
+                [rule-call])
+        (d/db ~conn)))
+
+;; --- Symmetric: equals --------------------------------------------------
+
+(deftest interval-equals?-only-self-shaped-pair-fires
+  ;; A=[Jan,Jul), B=[Jan,Jul) — identical windows; C=[Jan,Aug) — same
+  ;; from but different to. equals? must pair (A,B) and (B,A); never
+  ;; (A,C) / (C,A).
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-07-01"}
+               {:name "B" :from #inst "2024-01-01" :to #inst "2024-07-01"}
+               {:name "C" :from #inst "2024-01-01" :to #inst "2024-08-01"}])]
+    (is (= #{["A" "B"] ["B" "A"]}
+           (fires-on conn (interval-equals? ?af ?at ?bf ?bt)))
+        "equal-shaped windows fire symmetrically; differing-to ones don't")))
+
+;; --- overlaps? --------------------------------------------------------------
+
+(deftest interval-overlaps?-detects-partial-overlap
+  ;; A=[Jan,Jul), B=[Apr,Sep). A.from < B.from < A.to < B.to → overlap.
+  ;; The rule is symmetric (both [(< ?af ?bt)] and [(< ?bf ?at)] hold
+  ;; under swap), so both (A,B) and (B,A) fire.
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-07-01"}
+               {:name "B" :from #inst "2024-04-01" :to #inst "2024-09-01"}])]
+    (is (= #{["A" "B"] ["B" "A"]}
+           (fires-on conn (interval-overlaps? ?af ?at ?bf ?bt)))
+        "partially-overlapping windows fire in both orientations")))
+
+(deftest interval-overlaps?-fails-on-disjoint
+  ;; A=[Jan,Apr), B=[Jul,Sep). A.to <= B.from → no overlap, even with
+  ;; the symmetric rule body.
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-04-01"}
+               {:name "B" :from #inst "2024-07-01" :to #inst "2024-09-01"}])]
+    (is (empty? (fires-on conn (interval-overlaps? ?af ?at ?bf ?bt)))
+        "disjoint windows never overlap")))
+
+;; --- contains? / strictly-contains? -----------------------------------------
+
+(deftest interval-contains?-allows-shared-boundaries
+  ;; A=[Jan,Sep) contains B=[Apr,Jul). C=[Jun,Oct) is NOT contained by A
+  ;; (C.to > A.to). A also contains itself trivially — the [(not= ?a ?b)]
+  ;; guard suppresses that, leaving only (A,B).
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-09-01"}
+               {:name "B" :from #inst "2024-04-01" :to #inst "2024-07-01"}
+               {:name "C" :from #inst "2024-06-01" :to #inst "2024-10-01"}])]
+    (is (= #{["A" "B"]}
+           (fires-on conn (interval-contains? ?af ?at ?bf ?bt)))
+        "non-strict contains: A contains B but not C")))
+
+(deftest interval-strictly-contains?-rejects-shared-boundaries
+  ;; A=[Jan,Sep), B=[Jan,Jul) — B shares A's from, so A does NOT strictly
+  ;; contain B (the rule demands A.from < B.from AND A.to > B.to).
+  ;; A=[Jan,Sep) DOES strictly contain D=[Apr,Jul).
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-09-01"}
+               {:name "B" :from #inst "2024-01-01" :to #inst "2024-07-01"}
+               {:name "D" :from #inst "2024-04-01" :to #inst "2024-07-01"}])]
+    (is (= #{["A" "D"]}
+           (fires-on conn (interval-strictly-contains? ?af ?at ?bf ?bt)))
+        "strict contains: only A wholly inside, no shared boundary")))
+
+;; --- precedes? / strictly-precedes? -----------------------------------------
+
+(deftest interval-precedes?-touching-fires
+  ;; A=[Jan,Apr), B=[Apr,Jul) — A.to == B.from. Touching counts for
+  ;; precedes? (rule body is [(<= ?at ?bf)]).
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-04-01"}
+               {:name "B" :from #inst "2024-04-01" :to #inst "2024-07-01"}])]
+    (is (= #{["A" "B"]}
+           (fires-on conn (interval-precedes? ?af ?at ?bf ?bt)))
+        "A precedes B with touching boundary; the reverse does not")))
+
+(deftest interval-strictly-precedes?-rejects-touching
+  ;; A=[Jan,Apr), B=[Apr,Jul) — A.to == B.from. strictly-precedes?
+  ;; demands [(< ?at ?bf)] so touching is rejected.
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-04-01"}
+               {:name "B" :from #inst "2024-04-01" :to #inst "2024-07-01"}])]
+    (is (empty?
+         (fires-on conn (interval-strictly-precedes? ?af ?at ?bf ?bt)))
+        "touching is the canonical edge case strict ordering rejects"))
+  ;; But with a real gap (A=[Jan,Mar), C=[May,Jul)) strict-precedes
+  ;; fires.
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-03-01"}
+               {:name "C" :from #inst "2024-05-01" :to #inst "2024-07-01"}])]
+    (is (= #{["A" "C"]}
+           (fires-on conn (interval-strictly-precedes? ?af ?at ?bf ?bt)))
+        "with a real gap, strict-precedes fires forward only")))
+
+;; --- immediately-precedes? = meets? -----------------------------------------
+
+(deftest interval-immediately-precedes?-fires-only-on-touch
+  ;; meets? is an alias — same rule, both must fire on the same data.
+  ;; Touching case (A.to == B.from): both fire (A,B). Gapped case
+  ;; (A=[Jan,Mar), C=[May,Jul)): neither fires.
+  (let [touching (intervals-conn
+                  [{:name "A" :from #inst "2024-01-01" :to #inst "2024-04-01"}
+                   {:name "B" :from #inst "2024-04-01" :to #inst "2024-07-01"}])
+        gapped (intervals-conn
+                [{:name "A" :from #inst "2024-01-01" :to #inst "2024-03-01"}
+                 {:name "C" :from #inst "2024-05-01" :to #inst "2024-07-01"}])]
+    (is (= #{["A" "B"]}
+           (fires-on touching (interval-immediately-precedes? ?af ?at ?bf ?bt)))
+        "immediately-precedes: A.to == B.from")
+    (is (= #{["A" "B"]}
+           (fires-on touching (interval-meets? ?af ?at ?bf ?bt)))
+        "meets? is the canonical alias — same fact pattern fires")
+    (is (empty? (fires-on gapped (interval-immediately-precedes? ?af ?at ?bf ?bt)))
+        "a real gap → no immediate-precede; meets? agrees")
+    (is (empty? (fires-on gapped (interval-meets? ?af ?at ?bf ?bt))))))
+
+;; --- succeeds? / strictly-succeeds? / immediately-succeeds? ----------------
+
+(deftest interval-succeeds?-touching-fires
+  ;; A=[Apr,Jul) succeeds B=[Jan,Apr) (A.from == B.to → touching counts).
+  ;; Symmetric to precedes?, opposite direction.
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-04-01" :to #inst "2024-07-01"}
+               {:name "B" :from #inst "2024-01-01" :to #inst "2024-04-01"}])]
+    (is (= #{["A" "B"]}
+           (fires-on conn (interval-succeeds? ?af ?at ?bf ?bt)))
+        "A succeeds B with touching boundary")))
+
+(deftest interval-strictly-succeeds?-rejects-touching
+  ;; Touching: A.from == B.to → strict succeed rejects (needs >, not >=).
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-04-01" :to #inst "2024-07-01"}
+               {:name "B" :from #inst "2024-01-01" :to #inst "2024-04-01"}])]
+    (is (empty?
+         (fires-on conn (interval-strictly-succeeds? ?af ?at ?bf ?bt)))
+        "touching boundary is rejected by strict-succeeds?"))
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-05-01" :to #inst "2024-07-01"}
+               {:name "B" :from #inst "2024-01-01" :to #inst "2024-03-01"}])]
+    (is (= #{["A" "B"]}
+           (fires-on conn (interval-strictly-succeeds? ?af ?at ?bf ?bt)))
+        "with a real gap, strict-succeeds fires")))
+
+(deftest interval-immediately-succeeds?-fires-only-on-touch
+  ;; A=[Apr,Jul), B=[Jan,Apr). A.from == B.to — fires.
+  ;; A=[May,Jul), C=[Jan,Mar) — gap. Doesn't fire.
+  (let [touching (intervals-conn
+                  [{:name "A" :from #inst "2024-04-01" :to #inst "2024-07-01"}
+                   {:name "B" :from #inst "2024-01-01" :to #inst "2024-04-01"}])
+        gapped (intervals-conn
+                [{:name "A" :from #inst "2024-05-01" :to #inst "2024-07-01"}
+                 {:name "C" :from #inst "2024-01-01" :to #inst "2024-03-01"}])]
+    (is (= #{["A" "B"]}
+           (fires-on touching (interval-immediately-succeeds? ?af ?at ?bf ?bt)))
+        "immediately-succeeds: A.from == B.to")
+    (is (empty?
+         (fires-on gapped (interval-immediately-succeeds? ?af ?at ?bf ?bt)))
+        "a real gap → no immediate-succeed")))
+
+;; --- starts? / started-by? (note 179 Gap 2 — newly added) -------------------
+
+(deftest interval-starts?-shared-from-shorter-to
+  ;; A=[Jan,Apr), B=[Jan,Jul) — same from, A.to < B.to. A "starts" B in
+  ;; Allen's sense: they begin together and A finishes first.
+  ;; Reverse direction (B starts A) does NOT fire — B.to > A.to.
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-04-01"}
+               {:name "B" :from #inst "2024-01-01" :to #inst "2024-07-01"}])]
+    (is (= #{["A" "B"]}
+           (fires-on conn (interval-starts? ?af ?at ?bf ?bt)))
+        "A starts B: shared from, A.to strictly less than B.to")))
+
+(deftest interval-starts?-rejects-equal-windows
+  ;; A=[Jan,Apr), B=[Jan,Apr) — identical. starts? demands STRICT
+  ;; A.to < B.to, so identical windows give equals?, not starts?.
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-04-01"}
+               {:name "B" :from #inst "2024-01-01" :to #inst "2024-04-01"}])]
+    (is (empty? (fires-on conn (interval-starts? ?af ?at ?bf ?bt)))
+        "identical windows are equals?, not starts?")
+    (is (= #{["A" "B"] ["B" "A"]}
+           (fires-on conn (interval-equals? ?af ?at ?bf ?bt)))
+        "and equals? confirms the relation is the right one")))
+
+(deftest interval-started-by?-is-the-inverse-of-starts?
+  ;; A=[Jan,Jul), B=[Jan,Apr). A.from == B.from, A.to > B.to → A
+  ;; "started-by" B (B starts A in the Allen sense, viewed from A).
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-07-01"}
+               {:name "B" :from #inst "2024-01-01" :to #inst "2024-04-01"}])]
+    (is (= #{["A" "B"]}
+           (fires-on conn (interval-started-by? ?af ?at ?bf ?bt)))
+        "A started-by B: shared from, A.to strictly greater than B.to")
+    ;; Cross-check: starts? fires in the opposite direction on the same
+    ;; data. The pair (B,A) for starts? must equal the pair (A,B) for
+    ;; started-by? — that's the inversion contract.
+    (is (= #{["B" "A"]}
+           (fires-on conn (interval-starts? ?af ?at ?bf ?bt)))
+        "starts? is the inverse — fires on the swapped pair")))
+
+;; --- finishes? / finished-by? (note 179 Gap 2 — newly added) ----------------
+
+(deftest interval-finishes?-shared-to-later-from
+  ;; A=[Apr,Jul), B=[Jan,Jul) — shared to, A.from > B.from. A "finishes"
+  ;; B in Allen's sense: they end together but A starts later.
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-04-01" :to #inst "2024-07-01"}
+               {:name "B" :from #inst "2024-01-01" :to #inst "2024-07-01"}])]
+    (is (= #{["A" "B"]}
+           (fires-on conn (interval-finishes? ?af ?at ?bf ?bt)))
+        "A finishes B: shared to, A.from strictly greater than B.from")))
+
+(deftest interval-finishes?-rejects-equal-windows
+  ;; Identical windows go to equals?, not finishes?.
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-04-01" :to #inst "2024-07-01"}
+               {:name "B" :from #inst "2024-04-01" :to #inst "2024-07-01"}])]
+    (is (empty? (fires-on conn (interval-finishes? ?af ?at ?bf ?bt)))
+        "identical windows are equals?, not finishes?")))
+
+(deftest interval-finished-by?-is-the-inverse-of-finishes?
+  ;; A=[Jan,Jul), B=[Apr,Jul). Shared to, A.from < B.from → A
+  ;; finished-by B.
+  (let [conn (intervals-conn
+              [{:name "A" :from #inst "2024-01-01" :to #inst "2024-07-01"}
+               {:name "B" :from #inst "2024-04-01" :to #inst "2024-07-01"}])]
+    (is (= #{["A" "B"]}
+           (fires-on conn (interval-finished-by? ?af ?at ?bf ?bt)))
+        "A finished-by B: shared to, A.from strictly less than B.from")
+    (is (= #{["B" "A"]}
+           (fires-on conn (interval-finishes? ?af ?at ?bf ?bt)))
+        "finishes? is the inverse — fires on the swapped pair")))
 
 ;; ============================================================================
 ;; Clock pinning for repeatable tests (DH-4)
