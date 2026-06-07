@@ -3,9 +3,14 @@
    into the system schema:
 
    - `:db.valid/from` and `:db.valid/to` are pre-installed system attrs.
-   - Consumers can attach them to the tx entity via the standard
-     `{:db/id \"datomic.tx\" :db.valid/from #inst ... :db.valid/to #inst ...}`
-     tx-meta map — no schema declaration required.
+   - Consumers attach them to the writing tx via the `:tx-meta` map-arg
+     form — `(d/transact conn {:tx-data [...] :tx-meta {:db.valid/from
+     #inst ... :db.valid/to #inst ...}})`. The legacy inline-tempid form
+     `{:db/id \"datomic.tx\" :db.valid/from ...}` also works (both shapes
+     normalise to the same internal `{:tx-data :tx-meta}` representation
+     at `api/impl.cljc:29-41`), but the map-arg form is idiomatic — see
+     `schema.cljc:71-74`: \":db.valid/from and :db.valid/to graduate from
+     userland tx-meta into datahike system schema.\"
    - Both attrs are `:db/index true` so they materialise into the
      temporal AVET index for range seeks by the query planner.
 
@@ -44,10 +49,10 @@
       (d/transact conn [{:db/ident :pos/x
                          :db/valueType :db.type/long
                          :db/cardinality :db.cardinality/one}])
-      (is (some? (d/transact conn [{:db/id "datomic.tx"
-                                    :db.valid/from #inst "2024-01-01"
-                                    :db.valid/to   #inst "2024-07-01"}
-                                   {:pos/x 1}]))))))
+      (is (some? (d/transact conn
+                             {:tx-data [{:pos/x 1}]
+                              :tx-meta {:db.valid/from #inst "2024-01-01"
+                                        :db.valid/to   #inst "2024-07-01"}}))))))
 
 (deftest valid-time-tx-meta-lands-on-the-tx-entity
   (let [conn (fresh-conn)]
@@ -55,14 +60,13 @@
                        :db/valueType :db.type/long
                        :db/cardinality :db.cardinality/one}])
     (let [report (d/transact conn
-                             [{:db/id "datomic.tx"
-                               :db.valid/from #inst "2024-01-01"
-                               :db.valid/to   #inst "2024-07-01"}
-                              {:pos/x 42}])
-          tx    (get-in report [:tempids "datomic.tx"])
+                             {:tx-data [{:pos/x 42}]
+                              :tx-meta {:db.valid/from #inst "2024-01-01"
+                                        :db.valid/to   #inst "2024-07-01"}})
+          tx    (get-in report [:tempids :db/current-tx])
           db    (d/db conn)
           pulled (d/pull db '[*] tx)]
-      (testing "the tempid `datomic.tx` resolves and the tx-meta attrs land"
+      (testing "the writing tx resolves via `:db/current-tx` and the tx-meta attrs land"
         (is (= #inst "2024-01-01" (:db.valid/from pulled)))
         (is (= #inst "2024-07-01" (:db.valid/to   pulled))))
       (testing "the user datom is on its own entity, not the tx"
@@ -81,10 +85,10 @@
                        :db/valueType :db.type/long
                        :db/cardinality :db.cardinality/one}])
     (dotimes [i 5]
-      (d/transact conn [{:db/id "datomic.tx"
-                         :db.valid/from (java.util.Date.
-                                         (+ 1700000000000 (* i 86400000)))}
-                        {:pos/x i}]))
+      (d/transact conn
+                  {:tx-data [{:pos/x i}]
+                   :tx-meta {:db.valid/from (java.util.Date.
+                                             (+ 1700000000000 (* i 86400000)))}}))
     (let [db   (d/db conn)
           hist (d/history db)
           all-vts (d/q '[:find [?vf ...]
@@ -112,10 +116,9 @@
                        :db/valueType :db.type/long
                        :db/cardinality :db.cardinality/one}])
     (let [report (d/transact conn
-                             [{:db/id "datomic.tx"
-                               :db.valid/from #inst "2024-01-01"}
-                              {:pos/x 1}])
-          tx    (get-in report [:tempids "datomic.tx"])
+                             {:tx-data [{:pos/x 1}]
+                              :tx-meta {:db.valid/from #inst "2024-01-01"}})
+          tx    (get-in report [:tempids :db/current-tx])
           pulled (d/pull (d/db conn) '[*] tx)]
       (testing "vt-from alone is sufficient; vt-to may be omitted"
         (is (= #inst "2024-01-01" (:db.valid/from pulled)))
@@ -156,13 +159,11 @@
                        :db/valueType :db.type/long
                        :db/cardinality :db.cardinality/one}])
     (d/transact conn [{:emp/name "Bob" :emp/salary 100000}])
-    (d/transact conn [{:db/id "datomic.tx"
-                       :db.valid/from #inst "2024-01-01"
-                       :db.valid/to   #inst "2024-07-01"}
-                      {:emp/name "Bob" :emp/salary 110000}])
-    (d/transact conn [{:db/id "datomic.tx"
-                       :db.valid/from #inst "2024-07-01"}
-                      {:emp/name "Bob" :emp/salary 120000}])
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                      :tx-meta {:db.valid/from #inst "2024-01-01"
+                                :db.valid/to   #inst "2024-07-01"}})
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 120000}]
+                      :tx-meta {:db.valid/from #inst "2024-07-01"}})
     (let [hist (d/history (d/db conn))]
       ;; NOTE: `d/history` returns BOTH added and retracted datoms. A
       ;; cardinality-one upsert (like the salary updates here) produces
