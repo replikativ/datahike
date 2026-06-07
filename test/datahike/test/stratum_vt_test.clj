@@ -79,13 +79,11 @@
 (deftest scd2-upsert-closes-old-row-and-opens-new
   (let [conn (fresh-conn)]
     (register-vt-index! conn)
-    (d/transact conn [{:db/id "datomic.tx"
-                       :db.valid/from #inst "2024-01-01"
-                       :db.valid/to   #inst "2024-07-01"}
-                      {:emp/name "Bob" :emp/salary 100000}])
-    (d/transact conn [{:db/id "datomic.tx"
-                       :db.valid/from #inst "2024-07-01"}
-                      {:emp/name "Bob" :emp/salary 110000}])
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                      :tx-meta {:db.valid/from #inst "2024-01-01"
+                                :db.valid/to   #inst "2024-07-01"}})
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                      :tx-meta {:db.valid/from #inst "2024-07-01"}})
     (let [rows (vt-rows conn :idx/employees)]
       (testing "two rows: the closed tx1 row + the open tx2 row"
         (is (= 2 (count rows))))
@@ -106,13 +104,11 @@
 (deftest search-at-vt-returns-correct-as-of-eid
   (let [conn (fresh-conn)]
     (register-vt-index! conn)
-    (d/transact conn [{:db/id "datomic.tx"
-                       :db.valid/from #inst "2024-01-01"
-                       :db.valid/to   #inst "2024-07-01"}
-                      {:emp/name "Bob" :emp/salary 100000}])
-    (d/transact conn [{:db/id "datomic.tx"
-                       :db.valid/from #inst "2024-07-01"}
-                      {:emp/name "Bob" :emp/salary 110000}])
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                      :tx-meta {:db.valid/from #inst "2024-01-01"
+                                :db.valid/to   #inst "2024-07-01"}})
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                      :tx-meta {:db.valid/from #inst "2024-07-01"}})
     (let [idx (-> (d/db conn) :secondary-indices :idx/employees)]
       (testing "vt-aware?: the StratumIndex implements IValidTimeAware"
         (is (sec/vt-aware? idx)))
@@ -171,13 +167,11 @@
         conn (d/connect cfg)]
     (try
       (register-vt-index! conn)
-      (d/transact conn [{:db/id "datomic.tx"
-                         :db.valid/from #inst "2024-01-01"
-                         :db.valid/to   #inst "2024-07-01"}
-                        {:emp/name "Bob" :emp/salary 100000}])
-      (d/transact conn [{:db/id "datomic.tx"
-                         :db.valid/from #inst "2024-07-01"}
-                        {:emp/name "Bob" :emp/salary 110000}])
+      (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                        :tx-meta {:db.valid/from #inst "2024-01-01"
+                                  :db.valid/to   #inst "2024-07-01"}})
+      (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                        :tx-meta {:db.valid/from #inst "2024-07-01"}})
       (let [pre-rows (vt-rows conn :idx/employees)]
         (testing "two rows present before release"
           (is (= 2 (count pre-rows))))
@@ -205,13 +199,11 @@
 (deftest valid-at-marker-routes-to-search-at-vt
   (let [conn (fresh-conn)]
     (register-vt-index! conn)
-    (d/transact conn [{:db/id "datomic.tx"
-                       :db.valid/from #inst "2024-01-01"
-                       :db.valid/to   #inst "2024-07-01"}
-                      {:emp/name "Bob" :emp/salary 100000}])
-    (d/transact conn [{:db/id "datomic.tx"
-                       :db.valid/from #inst "2024-07-01"}
-                      {:emp/name "Bob" :emp/salary 110000}])
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                      :tx-meta {:db.valid/from #inst "2024-01-01"
+                                :db.valid/to   #inst "2024-07-01"}})
+    (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                      :tx-meta {:db.valid/from #inst "2024-07-01"}})
     (let [db (d/db conn)
           idx (-> db :secondary-indices :idx/employees)]
       (testing "valid-at marker lands on the db's metadata"
@@ -250,10 +242,9 @@
         conn (d/connect cfg)]
     (try
       (register-vt-index! conn)
-      (d/transact conn [{:db/id "datomic.tx"
-                         :db.valid/from #inst "2024-01-01"
-                         :db.valid/to   #inst "2024-07-01"}
-                        {:emp/name "Bob" :emp/salary 100000}])
+      (d/transact conn {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                        :tx-meta {:db.valid/from #inst "2024-01-01"
+                                  :db.valid/to   #inst "2024-07-01"}})
       (let [main-rows (vt-rows conn :idx/employees)]
         (testing "main has one row"
           (is (= 1 (count main-rows))))
@@ -268,9 +259,9 @@
               (is (= (set main-rows)
                      (set (vt-rows feat-conn :idx/employees)))))
             (testing "writing to feature branch keeps main unchanged"
-              (d/transact feat-conn [{:db/id "datomic.tx"
-                                      :db.valid/from #inst "2024-07-01"}
-                                     {:emp/name "Bob" :emp/salary 200000}])
+              (d/transact feat-conn
+                          {:tx-data [{:emp/name "Bob" :emp/salary 200000}]
+                           :tx-meta {:db.valid/from #inst "2024-07-01"}})
               (is (= 2 (count (vt-rows feat-conn :idx/employees))))
               (is (= 1 (count (vt-rows conn :idx/employees)))
                   "main branch should still show only the original row"))
