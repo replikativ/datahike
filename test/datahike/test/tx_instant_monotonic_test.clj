@@ -91,13 +91,13 @@
                                    :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
                                   {:db/ident :emp/salary :db/valueType :db.type/long
                                    :db/cardinality :db.cardinality/one}])
-                   (d/transact c [{:db/id "datomic.tx" :db.valid/from #inst "2024-01-01"
-                                   :db.valid/to #inst "2024-07-01"}
-                                  {:emp/name "Bob" :emp/salary 100000}])
-                   (d/transact c [{:db/id "datomic.tx" :db.valid/from #inst "2024-07-01"}
-                                  {:emp/name "Bob" :emp/salary 110000}])
-                   (d/transact c [{:db/id "datomic.tx" :db.valid/from #inst "2024-01-01"}
-                                  {:emp/name "Alice" :emp/salary 80000}]))
+                   (d/transact c {:tx-data [{:emp/name "Bob" :emp/salary 100000}]
+                                  :tx-meta {:db.valid/from #inst "2024-01-01"
+                                            :db.valid/to   #inst "2024-07-01"}})
+                   (d/transact c {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                                  :tx-meta {:db.valid/from #inst "2024-07-01"}})
+                   (d/transact c {:tx-data [{:emp/name "Alice" :emp/salary 80000}]
+                                  :tx-meta {:db.valid/from #inst "2024-01-01"}}))
           flakes (atom [])
           n 200
           threads (doall
