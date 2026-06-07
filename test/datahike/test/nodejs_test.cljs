@@ -9,6 +9,7 @@
             ;; Sibling test namespaces — included so `bb node-cljs-test`
             ;; covers them too.
             [datahike.test.cljs-pattern-scan-test]
+            [datahike.test.optimistic-test]
             [datahike.test.valid-time-test]))
 
 ;; Hook cljs.test's end-of-run callback so the Node process exits with
@@ -354,4 +355,5 @@
 (defn -main []
   (t/run-tests 'datahike.test.nodejs-test
                'datahike.test.cljs-pattern-scan-test
+               'datahike.test.optimistic-test
                'datahike.test.valid-time-test))

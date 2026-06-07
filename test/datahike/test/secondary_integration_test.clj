@@ -450,3 +450,71 @@
         (let [all-names (d/q '[:find ?e ?n :where [?e :person/name ?n]] db)
               ml-names (filter (fn [[eid _]] (es/entity-bitset-contains? ml-entities eid)) all-names)]
           (is (= #{[1 "Alice"] [3 "Charlie"] [5 "Eve"]} (set ml-names))))))))
+
+;; ---------------------------------------------------------------------------
+;; Purge propagation — end-to-end
+;;
+;; Verifies the GDPR-relevant invariant against a real konserve-backed
+;; secondary index: after :db.purge/entity, the purged entity must no
+;; longer surface via the secondary index's own search path.
+
+(deftest test-purge-removes-from-scriptum
+  (testing "after purge the entity no longer surfaces via Scriptum fulltext"
+    (let [cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+               :keep-history? true
+               :schema-flexibility :write}
+          scriptum-path (str "/tmp/scriptum-purge-test-" (random-uuid))
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :person/name
+                           :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one
+                           :db/unique :db.unique/identity
+                           :db/index true}
+                          {:db/ident :person/bio
+                           :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}])
+        ;; Install scriptum BEFORE adding data so the index sees live add events
+        ;; (no async backfill to wait on).
+        (d/transact conn [{:db/ident :idx/fulltext
+                           :db.secondary/type :scriptum
+                           :db.secondary/attrs [:person/name :person/bio]
+                           :db.secondary/config {:path scriptum-path}}])
+        (Thread/sleep 500)
+
+        (d/transact conn [{:person/name "Alice" :person/bio "Machine learning researcher"}
+                          {:person/name "Bob" :person/bio "Database engineer"}])
+        (Thread/sleep 500)
+
+        ;; Sanity: Alice and her bio surface via fulltext before purge
+        (let [ft (get-in (d/db conn) [:secondary-indices :idx/fulltext])
+              by-name (sec/-search ft {:query "Alice" :field :value} nil)
+              by-bio  (sec/-search ft {:query "machine" :field :value} nil)]
+          (is (pos? (es/entity-bitset-cardinality by-name))
+              "Alice should be findable by name before purge")
+          (is (pos? (es/entity-bitset-cardinality by-bio))
+              "Alice's bio should be findable before purge"))
+
+        ;; Purge Alice's entity (all her datoms across covered attributes)
+        (d/transact conn [[:db.purge/entity [:person/name "Alice"]]])
+        (Thread/sleep 500)
+
+        ;; After purge: Alice no longer surfaces via either covered attribute
+        (let [ft (get-in (d/db conn) [:secondary-indices :idx/fulltext])
+              by-name (sec/-search ft {:query "Alice" :field :value} nil)
+              by-bio  (sec/-search ft {:query "machine" :field :value} nil)]
+          (is (zero? (es/entity-bitset-cardinality by-name))
+              "Alice should not be findable by name after purge")
+          (is (zero? (es/entity-bitset-cardinality by-bio))
+              "Alice's bio should not be findable after purge"))
+
+        ;; Bob is untouched
+        (let [ft (get-in (d/db conn) [:secondary-indices :idx/fulltext])
+              by-name (sec/-search ft {:query "Bob" :field :value} nil)]
+          (is (pos? (es/entity-bitset-cardinality by-name))
+              "Bob should still be findable after Alice's purge"))
+
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))

@@ -397,12 +397,17 @@
         history-datom ^Datom (first (dbs/search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
         current? (not (nil? current-datom))
         history? (not (nil? history-datom))
-        op-count (:op-count db)]
+        op-count (:op-count db)
+        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))]
     (cond-> db
       current? (update-in [:eavt] #(di/-remove % current-datom :eavt op-count))
       current? (update-in [:aevt] #(di/-remove % current-datom :aevt op-count))
       (and current? indexing?) (update-in [:avet] #(di/-remove % current-datom :avet op-count))
       current? (update :hash - (hash current-datom))
+      ;; Secondary indices represent current state only; emit a retraction
+      ;; event so they drop the purged datom. Skip when the datom was only
+      ;; in history (already retracted earlier — never reached the secondary).
+      (and current? has-secondary?) (update-secondary-indices a-ident current-datom false)
       (and current? schema?) (-> (remove-schema datom) update-rschema)
       history? (update-in [:temporal-eavt] #(di/-remove % history-datom :eavt op-count))
       history? (update-in [:temporal-aevt] #(di/-remove % history-datom :aevt op-count))

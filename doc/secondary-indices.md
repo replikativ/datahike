@@ -231,6 +231,33 @@ Each index type uses its native CoW mechanism:
 
 Index state is persisted in commits via the `IVersionedSecondaryIndex` protocol. On reconnect, indices are restored from their durable storage — no AEVT backfill needed for versioned indices.
 
+## Purge propagation
+
+`:db/purge` / `:db.purge/entity` / `:db.purge/attribute` / `:db.history.purge/before` route a retraction event (`-transact` with `:added? false`) to every secondary index covering an affected attribute, the same way `:db/retract` does. After purge:
+
+- **Scriptum** no longer returns the purged datom from full-text search.
+- **Proximum** skips it on KNN queries (HNSW mark-delete).
+- **Stratum** excludes it from columnar aggregates (columnar rewrite).
+
+Two storage-layer caveats:
+
+### Konserve-backed indices (Stratum, Proximum)
+
+Stratum and Proximum store their durable state in konserve. `d/gc-storage` reclaims their unreachable blobs alongside the primary indices the same way: unreachable storage is swept once it ages past the grace-period cutoff, reachable structure persists. No extra step beyond the standard [purge + cutoff-GC](./gc.md) recipe.
+
+### Scriptum (filesystem)
+
+Scriptum's Lucene segments live on the writer node's local disk, not in konserve. Two consequences for erasure:
+
+1. **`d/gc-storage` cannot reach Scriptum's segments.** Scriptum's `-sec-mark` returns the empty set, so the konserve sweep skips Lucene segment files.
+2. **Lucene's own delete model is tombstones-until-segment-merge.** A purge marks the document as deleted in Scriptum's index, but the bytes linger inside the segment file until Lucene merges that segment away.
+
+For full Scriptum erasure you typically need to:
+- Force a Lucene segment merge so the purged document's bytes are physically removed from segments. Scriptum exposes this via its own API; see the [Scriptum repo](https://github.com/replikativ/scriptum).
+- Confirm the writer's filesystem snapshot / backup policy doesn't pin old segment files (NFS, ZFS snapshots, filesystem-level backups all retain segments on their own terms).
+
+For the full erasure procedure across the primary store and secondary indices, see [Garbage Collection: GC and purging together](./gc.md#gc-and-purging-together) and [Time-variance: Purge and storage](./time_variance.md#purge-and-storage).
+
 ## Distributed Deployment
 
 Datahike supports distributed deployments with remote writers (`:http` or `:kabel` backends). Each secondary index type has different characteristics for distributed use:

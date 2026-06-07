@@ -25,6 +25,7 @@
    [datahike.constants :as const]
    [datahike.query.relation :as rel]
    [datahike.query.plan :as plan]
+   [datahike.query.analyze :as analyze]
    #?(:cljs [datahike.db :refer [DB AsOfDB SinceDB HistoricalDB]])
    #?(:cljs [datahike.query.execute :as execute])
    #?(:cljs [datahike.query.logical :as logical])
@@ -3165,6 +3166,233 @@
          (log/debug "columnar-aggregate not applicable:" (.getMessage e))
          nil))))
 
+;; ============================================================================
+;; Component partitioning — Cartesian-product detection
+;; ============================================================================
+;;
+;; A query whose where-clauses form two-or-more sub-sets sharing no free
+;; variables is semantically a Cartesian product of those sub-queries.
+;; The planner+executor assume a connected join graph, so we detect this
+;; case at the dispatch level and recursively delegate each component to
+;; the existing pipeline, Cartesian-merging the results.
+;;
+;; Connectivity rule
+;;   - Free vars in NON-predicate clauses are unioned together (every
+;;     free var in the clause joins every other free var).
+;;   - Pure :predicate clauses do not contribute to unions. After all
+;;     joiners are processed, a predicate whose vars span more than one
+;;     component becomes a post-Cartesian filter.
+;;   - Externally bound vars (:in bindings) are constants — they do not
+;;     connect clauses.
+;;   - Anonymous vars (symbols starting with _) are not free vars and do
+;;     not contribute.
+
+(defn- clause-meaningful-vars
+  "Free vars in a classified clause that participate in connectivity.
+   Excludes externally bound vars (treated as constants)."
+  [classified bound-vars]
+  (let [vs (:vars classified)]
+    (if (seq bound-vars)
+      (into #{} (remove bound-vars) vs)
+      vs)))
+
+(defn- joiner-clause?
+  "True if this clause contributes its free vars to the connectivity
+   union. Pure predicates do not — they apply as filters and can span
+   components without merging them."
+  [classified]
+  (not= :predicate (:type classified)))
+
+(defn- uf-find
+  "Path-compressed find on a parent map. Returns [updated-parent root]."
+  [parent x]
+  (loop [trail [] x x]
+    (let [p (get parent x x)]
+      (if (= p x)
+        [(reduce (fn [m n] (assoc m n x)) parent trail) x]
+        (recur (conj trail x) p)))))
+
+(defn- uf-union
+  "Union two elements in a parent map."
+  [parent a b]
+  (let [[p1 ra] (uf-find parent a)
+        [p2 rb] (uf-find p1 b)]
+    (if (= ra rb) p2 (assoc p2 ra rb))))
+
+(defn- connected-components
+  "Partition where-clauses into connected components by shared free vars.
+
+   Returns {:components [{:clauses [...], :find-vars [...]}, ...]
+            :post-filters [predicate-clause ...]}.
+
+   `bound-vars` is the set of externally bound vars (from :in).
+   `find-vars` is the original ordered seq of result-projection vars.
+
+   Component order is stable: components appear in the order their
+   first source clause appears. Each component's :find-vars preserves
+   the original find order, filtered to vars produced by that
+   component's clauses."
+  [clauses bound-vars find-vars]
+  (let [classified  (mapv analyze/classify-clause clauses)
+        clause-vars (mapv #(clause-meaningful-vars % bound-vars) classified)
+        all-vars    (into #{} cat clause-vars)
+        ;; Step 1: union vars within each joiner clause.
+        uf (reduce
+            (fn [uf [ci vs]]
+              (if (and (joiner-clause? ci) (> (count vs) 1))
+                (let [[v0 & rest-vs] (vec vs)]
+                  (reduce (fn [p v] (uf-union p v0 v)) uf rest-vs))
+                uf))
+            (into {} (map (fn [v] [v v])) all-vars)
+            (map vector classified clause-vars))
+        ;; Step 2: assign each clause a representative root (or a
+        ;; sentinel for clauses with no meaningful vars — those become
+        ;; global gates attached to the first component).
+        no-var-root   ::no-vars
+        clause-roots  (mapv
+                       (fn [vs]
+                         (if (empty? vs)
+                           no-var-root
+                           (second (uf-find uf (first vs)))))
+                       clause-vars)
+        ;; Step 3: identify post-filter predicates (those that touch >1 root).
+        post-filter? (mapv
+                      (fn [ci vs]
+                        (and (= :predicate (:type ci))
+                             (> (count (into #{} (map #(second (uf-find uf %))) vs)) 1)))
+                      classified clause-vars)
+        ;; Step 4: build components in source order. Component roots are
+        ;; encountered in first-clause order (skipping post-filters).
+        roots-in-order (vec (distinct
+                             (keep-indexed
+                              (fn [i root]
+                                (when-not (nth post-filter? i) root))
+                              clause-roots)))
+        ;; Special handling: no-var clauses (e.g. fully-bound patterns)
+        ;; attach to the first non-sentinel component if any exist.
+        primary-root  (first (remove #(= no-var-root %) roots-in-order))
+        components
+        (mapv
+         (fn [root]
+           (let [own-idxs (vec (keep-indexed
+                                (fn [i r]
+                                  (when (and (not (nth post-filter? i))
+                                             (or (= r root)
+                                                 (and (= primary-root root)
+                                                      (= r no-var-root))))
+                                    i))
+                                clause-roots))
+                 cs (mapv #(nth clauses %) own-idxs)
+                 vs (into #{} (mapcat #(nth clause-vars %)) own-idxs)
+                 fvs (vec (filter vs find-vars))]
+             {:clauses cs :vars vs :find-vars fvs}))
+         (remove #(= no-var-root %) roots-in-order))
+        ;; If there are ONLY no-var clauses (no real components), keep
+        ;; them as one degenerate component so the user's query still runs.
+        components (if (and (empty? components) (some #(= no-var-root %) roots-in-order))
+                     [{:clauses clauses :vars #{} :find-vars (vec find-vars)}]
+                     components)
+        post-filters (vec (keep-indexed
+                           (fn [i c] (when (nth post-filter? i) c))
+                           clauses))]
+    {:components components
+     :post-filters post-filters}))
+
+;; ============================================================================
+;; Cartesian merge and post-filter evaluation
+;; ============================================================================
+
+(defn- cartesian-product-seq
+  "Lazy seq of all combinations across N collections. Each result is a
+   vector of one element per input collection. Empty input → singleton
+   empty combination; any empty collection → empty seq."
+  [colls]
+  (if (empty? colls)
+    (list [])
+    (for [x (first colls)
+          xs (cartesian-product-seq (rest colls))]
+      (into [x] xs))))
+
+(defn- cartesian-merge
+  "Build wide result tuples in `target-vars` order from a vector of
+   `{:tuples seq-of-vectors :vars [var ...]}` component results.
+
+   For each combination of one tuple per component, project to
+   target-vars by looking up each target-var in the per-component
+   variable layout."
+  [component-results target-vars]
+  (let [;; var → [component-idx position-in-component]
+        var-locator (into {}
+                          (for [[ci {:keys [vars]}] (map-indexed vector component-results)
+                                [pos v] (map-indexed vector vars)]
+                            [v [ci pos]]))
+        component-tuples (mapv :tuples component-results)]
+    (if (some empty? component-tuples)
+      #{}
+      (into #{}
+            (map (fn [combo]
+                   (mapv (fn [v]
+                           (let [[ci pos] (var-locator v)]
+                             (nth (nth combo ci) pos)))
+                         target-vars)))
+            (cartesian-product-seq component-tuples)))))
+
+(defn- resolve-pred-symbol
+  "Resolve a predicate symbol used in a post-filter clause.
+
+   In CLJ, user-defined predicates that aren't built-in are looked up
+   via runtime resolution. In CLJS, `resolve` is compile-time only, so
+   we restrict to the built-ins maps; user-defined cross-component
+   filter predicates are CLJ-only and `eval-post-filter` raises a
+   targeted error if encountered."
+  [sym]
+  (or (get built-ins sym)
+      (get clj-core-built-ins sym)
+      #?(:clj  (when (symbol? sym)
+                 (some-> (clojure.core/resolve sym) deref))
+         :cljs nil)))
+
+(defn- eval-post-filter
+  "Apply a single predicate post-filter to a set of wide tuples.
+   `pred-clause` is [(fn-sym arg ...)]; each arg is either a free var
+   (looked up in `var->idx`) or a constant value."
+  [tuples var->idx pred-clause]
+  (let [call    (first pred-clause)
+        fn-sym  (first call)
+        args    (rest call)
+        pred-fn (resolve-pred-symbol fn-sym)]
+    (when-not pred-fn
+      (throw (ex-info (str "Cannot resolve predicate in cross-component post-filter: " fn-sym
+                           #?(:cljs
+                              " (CLJS-only limitation: user-defined predicate functions are not resolvable at runtime — use a built-in comparison or restructure the query to avoid the cross-component span)"
+                              :clj nil))
+                      {:clause pred-clause})))
+    (let [arg-readers (mapv (fn [a]
+                              (if (and (symbol? a)
+                                       (analyze/free-var? a))
+                                (let [idx (get var->idx a)]
+                                  (when (nil? idx)
+                                    (throw (ex-info (str "Post-filter references unknown var: " a)
+                                                    {:clause pred-clause})))
+                                  (fn [t] (nth t idx)))
+                                (constantly a)))
+                            args)]
+      (into #{} (filter (fn [t]
+                          (apply pred-fn (map #(% t) arg-readers))))
+            tuples))))
+
+(defn- apply-post-filters
+  "Apply each post-filter clause in sequence to the merged tuple set."
+  [tuples target-vars post-filters]
+  (if (empty? post-filters)
+    tuples
+    (let [var->idx (into {} (map-indexed (fn [i v] [v i])) target-vars)]
+      (reduce (fn [ts pf] (eval-post-filter ts var->idx pf))
+              tuples
+              post-filters))))
+
+;; ============================================================================
+
 (defn- planner-eligible-db?
   "Check if db is eligible for the query planner.
    Accepts regular DB and all temporal wrappers (AsOfDB, SinceDB, HistoricalDB).
@@ -3328,85 +3556,160 @@
     (if (and limit (zero? limit))
       #{}
 
-      (if (and use-planner?
+      ;; Cartesian-product detection: if the where-clauses split into
+      ;; two-or-more components sharing no free vars, the executor's
+      ;; assumption of a connected join graph is violated. Recursively
+      ;; run each component as its own query and Cartesian-merge.
+      ;;
+      ;; The check is gated on the planner being eligible at all — when
+      ;; we're heading for the legacy engine anyway, the existing
+      ;; relation pipeline handles disjoint components correctly via
+      ;; collapse-rels / -collect, so no special-casing needed.
+      (if-let [split-result
+               (when (and use-planner?
+                          (planner-origin-db primary-db)
+                          (instance? FindRel qfind)
+                          (not qreturnmaps)
+                          (not (:with query))
+                          (not-any? #(instance? Aggregate %) find-elements)
+                          (not-any? #(instance? Pull %) find-elements))
+                 (let [find-var-syms (mapv (fn [^Variable el] (.-symbol el))
+                                           (:elements qfind))
+                       ;; Only scalar :in bindings (stored in :consts) are
+                       ;; constants. Collection / tuple bindings end up in
+                       ;; :rels — those are JOIN dimensions across patterns,
+                       ;; not constants. Excluding them would incorrectly
+                       ;; treat e.g. `[?e ...]` as disconnecting two
+                       ;; patterns that share ?e.
+                       in-bound-vars (set (keys (:consts context-in)))
+                       {:keys [components post-filters]}
+                       (connected-components (:where query) in-bound-vars find-var-syms)]
+                   (when (> (count components) 1)
+                     ;; Recursively run each component as its own query.
+                     ;; Sub-queries with one component will fall through to
+                     ;; the existing dispatch below (no further split).
+                     ;;
+                     ;; Post-filter clauses may reference vars NOT in the
+                     ;; user's :find — we extend each sub-query's :find
+                     ;; with any post-filter vars it provides, so the
+                     ;; merged wide tuples carry every value the
+                     ;; post-filter evaluator needs. After filtering, we
+                     ;; project back down to the user's find layout.
+                     (let [post-filter-vars (into #{}
+                                                  (mapcat (comp :vars analyze/classify-clause))
+                                                  post-filters)
+                           extended-find
+                           (mapv (fn [{:keys [vars find-vars]}]
+                                   (let [pf-here (filter vars post-filter-vars)
+                                         seen (into #{} find-vars)]
+                                     (vec (concat find-vars (remove seen pf-here)))))
+                                 components)
+                           sub-results
+                           (mapv
+                            (fn [{:keys [clauses]} sub-find]
+                              (let [sub-q (-> query
+                                              (assoc :find sub-find)
+                                              (assoc :where (vec clauses)))
+                                    sub-input (-> _query-map
+                                                  (assoc :query sub-q)
+                                                  ;; offset/limit/order-by apply to
+                                                  ;; the merged result only.
+                                                  (dissoc :offset :limit :order-by)
+                                                  ;; stats? applies to the top-level
+                                                  ;; query only.
+                                                  (dissoc :stats?))]
+                                {:tuples (raw-q* sub-input)
+                                 :vars   sub-find}))
+                            components extended-find)
+                           wide-vars (vec (mapcat :vars sub-results))
+                           merged    (cartesian-merge sub-results wide-vars)
+                           filtered  (apply-post-filters merged wide-vars post-filters)
+                           ;; Project wide tuples back to the user's find-var order.
+                           wide->find-idxs (let [idx (into {} (map-indexed (fn [i v] [v i])) wide-vars)]
+                                             (mapv idx find-var-syms))
+                           projected (into #{} (map (fn [t] (mapv #(nth t %) wide->find-idxs))) filtered)]
+                       (apply-result-transforms projected order-spec offset limit qreturnmaps)))))]
+        split-result
+
+        (if (and use-planner?
                ;; Nested temporal wrappers (e.g. (d/history (d/as-of ...))) → legacy
-               (planner-origin-db primary-db))
-        (let [db primary-db
+                 (planner-origin-db primary-db))
+          (let [db primary-db
               ;; For temporal wrappers, use origin-db for plan creation (schema, index stats)
-              plan-db (planner-origin-db db)
-              bound-vars (context-bound-vars context-in)
+                plan-db (planner-origin-db db)
+                bound-vars (context-bound-vars context-in)
               ;; Use the actual db (not origin) for lookup-ref resolution — temporal
               ;; DBs (history) can resolve retracted entities that origin-db can't.
               ;; For multi-source, pass sources so each clause resolves against its source db.
-              clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
-                                                          (when multi-source? (:sources context-in)))
-              rules (not-empty (:rules context-in))
-              plan (get-or-create-plan plan-db clauses bound-vars rules)]
+                clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in)
+                                                            (when multi-source? (:sources context-in)))
+                rules (not-empty (:rules context-in))
+                plan (get-or-create-plan plan-db clauses bound-vars rules)]
 
           ;; Try paths in order of preference:
           ;; 1. Direct HashSet (non-aggregate simple queries)
-          (if-let [direct-result (execute-planned-direct
-                                  plan db qfind find-elements context-in query stats? qreturnmaps)]
-            (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
-              #?(:clj
-                 (when *profile?*
-                   (let [t3 (System/nanoTime)]
-                     (println (format "parse=%.3f resolve=%.3f direct=%.3f total=%.3f ms"
-                                      (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
-                                      (/ (- t3 t0) 1e6))))))
-              result)
+            (if-let [direct-result (execute-planned-direct
+                                    plan db qfind find-elements context-in query stats? qreturnmaps)]
+              (let [result (apply-result-transforms direct-result order-spec offset limit qreturnmaps)]
+                #?(:clj
+                   (when *profile?*
+                     (let [t3 (System/nanoTime)]
+                       (println (format "parse=%.3f resolve=%.3f direct=%.3f total=%.3f ms"
+                                        (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
+                                        (/ (- t3 t0) 1e6))))))
+                result)
 
             ;; 2. Columnar aggregate (secondary index or PSS scan)
-            (let [ta (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
-                  has-aggs? (some #(instance? Aggregate %) find-elements)
-                  columnar-eligible? (and has-aggs?
-                                          (instance? FindRel qfind)
-                                          (not (:with query))
-                                          (not (some #(instance? Pull %) find-elements))
-                                          (empty? (:rels context-in))
-                                          (not lookup-ref-reverse-map))
-                  tb (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
-                  columnar-result
-                  (when columnar-eligible?
-                    #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
-                                (try-columnar-aggregate plan db find-elements (:cancel context-in)))
-                       :cljs nil))
-                  tc (when *profile?* #?(:clj (System/nanoTime) :cljs 0))]
-              (if columnar-result
-                (let [result (-post-process qfind columnar-result)
-                      result (apply-result-transforms result order-spec offset limit qreturnmaps)]
-                  #?(:clj
-                     (when *profile?*
-                       (let [t3 (System/nanoTime)]
-                         (println (format "parse=%.3f resolve=%.3f plan=%.3f elig=%.3f sec-idx=%.3f post=%.3f total=%.3f ms"
-                                          (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- ta t2) 1e6)
-                                          (/ (- tb ta) 1e6) (/ (- tc tb) 1e6) (/ (- t3 tc) 1e6)
-                                          (/ (- t3 t0) 1e6))))))
-                  result)
+              (let [ta (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
+                    has-aggs? (some #(instance? Aggregate %) find-elements)
+                    columnar-eligible? (and has-aggs?
+                                            (instance? FindRel qfind)
+                                            (not (:with query))
+                                            (not (some #(instance? Pull %) find-elements))
+                                            (empty? (:rels context-in))
+                                            (not lookup-ref-reverse-map))
+                    tb (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
+                    columnar-result
+                    (when columnar-eligible?
+                      #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
+                                  (try-columnar-aggregate plan db find-elements (:cancel context-in)))
+                         :cljs nil))
+                    tc (when *profile?* #?(:clj (System/nanoTime) :cljs 0))]
+                (if columnar-result
+                  (let [result (-post-process qfind columnar-result)
+                        result (apply-result-transforms result order-spec offset limit qreturnmaps)]
+                    #?(:clj
+                       (when *profile?*
+                         (let [t3 (System/nanoTime)]
+                           (println (format "parse=%.3f resolve=%.3f plan=%.3f elig=%.3f sec-idx=%.3f post=%.3f total=%.3f ms"
+                                            (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- ta t2) 1e6)
+                                            (/ (- tb ta) 1e6) (/ (- tc tb) 1e6) (/ (- t3 tc) 1e6)
+                                            (/ (- t3 t0) 1e6))))))
+                    result)
 
                 ;; 3. Standard Relation path
-                (let [result (execute-planned-relation
-                              plan db qfind find-elements context-in query all-vars
-                              result-arity lookup-ref-reverse-map order-spec offset limit
-                              stats? qreturnmaps)]
-                  #?(:clj
-                     (when *profile?*
-                       (let [t3 (System/nanoTime)]
-                         (println (format "parse=%.3f resolve=%.3f relation=%.3f total=%.3f ms"
-                                          (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
-                                          (/ (- t3 t0) 1e6))))))
-                  result)))))
+                  (let [result (execute-planned-relation
+                                plan db qfind find-elements context-in query all-vars
+                                result-arity lookup-ref-reverse-map order-spec offset limit
+                                stats? qreturnmaps)]
+                    #?(:clj
+                       (when *profile?*
+                         (let [t3 (System/nanoTime)]
+                           (println (format "parse=%.3f resolve=%.3f relation=%.3f total=%.3f ms"
+                                            (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
+                                            (/ (- t3 t0) 1e6))))))
+                    result)))))
 
         ;; Legacy engine
-        (let [result (execute-legacy context-in query qfind find-elements all-vars result-arity
-                                     order-spec offset limit stats? qreturnmaps)]
-          #?(:clj
-             (when *profile?*
-               (let [t3 (System/nanoTime)]
-                 (println (format "parse=%.3f resolve=%.3f legacy=%.3f total=%.3f ms"
-                                  (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
-                                  (/ (- t3 t0) 1e6))))))
-          result)))))
+          (let [result (execute-legacy context-in query qfind find-elements all-vars result-arity
+                                       order-spec offset limit stats? qreturnmaps)]
+            #?(:clj
+               (when *profile?*
+                 (let [t3 (System/nanoTime)]
+                   (println (format "parse=%.3f resolve=%.3f legacy=%.3f total=%.3f ms"
+                                    (/ (- t1 t0) 1e6) (/ (- t2 t1) 1e6) (/ (- t3 t2) 1e6)
+                                    (/ (- t3 t0) 1e6))))))
+            result))))))
 
 #?(:clj
    (defn- try-secondary-index-aggregate-fast

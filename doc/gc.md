@@ -4,12 +4,22 @@ Datahike uses persistent data structures that enable structural sharing—each u
 
 **Garbage collection removes old database snapshots from storage while preserving current branch heads.**
 
-## GC vs Purging
+## GC and purging together
 
-Don't confuse garbage collection with data purging:
+Garbage collection and data purging are different operations:
 
-- **Garbage Collection** (this document): Removes old database *snapshots* to reclaim storage. Used for routine storage maintenance.
-- **[Data Purging](./time_variance.md#data-purging)**: Permanently deletes specific *data* for privacy compliance (GDPR, HIPAA, CCPA). Used only when legally required.
+- **Garbage Collection** (this document) reclaims storage by deleting old database *snapshots* that no branch head still points to. Routine maintenance; doesn't touch data on a live snapshot.
+- **[Data Purging](./time_variance.md#data-purging)** rewrites the indices to remove specific *data*. Used for privacy compliance (GDPR, HIPAA, CCPA).
+
+The two compose for actual erasure:
+
+1. `purge` produces a **new commit** whose indices no longer reach the targeted datoms.
+2. The **pre-purge commit** is now a live intermediate commit and still references the old nodes in storage. Until GC sweeps it, `(d/commit-as-db conn <pre-purge-uuid>)` still sees the purged data.
+3. `d/gc-storage` **with a grace-period cutoff** old enough to drop the pre-purge commit physically evicts those nodes from konserve.
+
+So the erasure recipe is **purge + cutoff-GC**, not purge alone. Plain `d/gc-storage` (no cutoff) only reclaims storage from deleted branches and leaves intermediate commits intact — useful as routine maintenance, but not as the eviction step for erasure.
+
+For multi-branch databases, purge on every branch that holds the datom; for how secondary indices participate, see [Secondary indices: purge propagation](./secondary-indices.md#purge-propagation).
 
 ## How Garbage Collection Works
 
@@ -270,4 +280,4 @@ GC preserves:
 - Snapshots created after the grace period
 - All data on retained snapshots (GC doesn't delete data, only snapshots)
 
-**Remember:** For deleting specific data (GDPR compliance), use [data purging](./time_variance.md#data-purging), not garbage collection.
+**Remember:** Actual erasure (GDPR / HIPAA / CCPA) requires [purging](./time_variance.md#data-purging) followed by a cutoff `d/gc-storage` sweep. Purge alone leaves the pre-purge commit reachable; GC alone doesn't delete data on a live snapshot.

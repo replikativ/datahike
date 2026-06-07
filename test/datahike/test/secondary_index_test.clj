@@ -5,7 +5,8 @@
    [datahike.api :as d]
    [datahike.db :as db]
    [datahike.index.secondary :as sec]
-   [datahike.index.entity-set :as es]))
+   [datahike.index.entity-set :as es]
+   [datahike.writer :as writer]))
 
 ;; ---------------------------------------------------------------------------
 ;; EntityBitSet tests
@@ -149,3 +150,107 @@
       (is (= 2 (count @received)))
       (is (every? :added? @received))
       (is (every? #(some? (:datom %)) @received)))))
+
+;; ---------------------------------------------------------------------------
+;; Purge propagation
+;;
+;; Regression test for the GDPR-relevant invariant: when a datom is purged,
+;; the secondary index covering its attribute must receive a retraction
+;; (-transact with :added? false). Prior to the with-temporal-datom fix,
+;; purge bypassed update-secondary-indices entirely, so secondary indices
+;; silently retained purged datoms.
+
+(deftest test-purge-propagates-to-secondary
+  (testing "purge routes a retraction event to covering secondary indices"
+    (let [received (atom [])
+          _ (sec/register-index-type!
+             :test/recorder-purge
+             (fn [config _db]
+               (reify sec/ISecondaryIndex
+                 (-search [_ _ _] nil)
+                 (-estimate [_ _] 0)
+                 (-can-order? [_ _ _] false)
+                 (-slice-ordered [_ _ _ _ _ _] nil)
+                 (-indexed-attrs [_] (set (:attrs config)))
+                 (-transact [this tx-report]
+                   (swap! received conj tx-report)
+                   this))))
+          cfg {:store {:backend :memory :id (java.util.UUID/randomUUID)}
+               :keep-history? true
+               :schema-flexibility :write}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :person/name
+                           :db/valueType :db.type/string
+                           :db/unique :db.unique/identity
+                           :db/index true
+                           :db/cardinality :db.cardinality/one}
+                          {:db/ident :person/age
+                           :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one}])
+        ;; Install recorder over :person/name BEFORE adding data, so the
+        ;; recorder sees the live add events directly (no async backfill).
+        (d/transact conn [{:db/ident :idx/recorder
+                           :db.secondary/type :test/recorder-purge
+                           :db.secondary/attrs [:person/name]}])
+        (d/transact conn [{:person/name "Alice" :person/age 30}
+                          {:person/name "Bob" :person/age 25}])
+        ;; Sanity: two adds for :person/name, none for :person/age (not covered)
+        (is (= 2 (count (filter :added? @received)))
+            (str "expected 2 add events on :person/name, got: " (pr-str @received)))
+
+        (reset! received [])
+        ;; Purge Alice's :person/name datom.
+        (d/transact conn [[:db/purge [:person/name "Alice"] :person/name "Alice"]])
+
+        (let [retracts (remove :added? @received)]
+          (is (= 1 (count retracts))
+              (str "expected exactly 1 retraction event after purge, "
+                   "got: " (pr-str @received)))
+          (is (= "Alice" (.-v ^datahike.datom.Datom (:datom (first retracts))))
+              "the retracted datom should be Alice's :person/name"))
+
+        (testing ":db.purge/entity also propagates"
+          (reset! received [])
+          (d/transact conn [[:db.purge/entity [:person/name "Bob"]]])
+          (let [retracts (remove :added? @received)]
+            (is (= 1 (count retracts))
+                (str "expected exactly 1 retraction event after :db.purge/entity, "
+                     "got: " (pr-str @received)))
+            (is (= "Bob" (.-v ^datahike.datom.Datom (:datom (first retracts))))
+                "the retracted datom should be Bob's :person/name")))
+
+        (finally
+          (d/release conn)
+          (d/delete-database cfg))))))
+
+;; ---------------------------------------------------------------------------
+;; Backfill dispatch — regression for double-counting
+;;
+;; A secondary index is backfilled asynchronously after the tx that creates it
+;; (status :building). The backfill skips datoms with tx > building-since-tx so
+;; live transactions applied during the build are not re-delivered. The writer
+;; must therefore dispatch the backfill *exactly once* — on the tx that first
+;; flips the index to :building. If a later tx (applied while the index is still
+;; building) also dispatched a backfill, that second build could run after the
+;; first one's install-secondary-index! has dropped :building-since-tx, losing
+;; the guard and re-delivering post-creation datoms that were already applied
+;; live — counting them twice in the index.
+
+(deftest test-backfill-dispatched-once
+  (testing "backfill is dispatched only when an index transitions into :building"
+    (let [detect @#'writer/detect-new-building-indices
+          building {:db.secondary/type :scriptum :db.secondary/status :building}
+          ready    {:db.secondary/type :scriptum :db.secondary/status :ready}]
+      (testing "nil -> :building (index just created): dispatch"
+        (is (= [:idx/a]
+               (vec (detect {:db-before {:schema {}}
+                             :db-after  {:schema {:idx/a building}}})))))
+      (testing ":building -> :building (later tx during backfill): no re-dispatch"
+        (is (empty? (detect {:db-before {:schema {:idx/a building}}
+                             :db-after  {:schema {:idx/a building}}}))))
+      (testing ":ready -> :building (index re-enabled): dispatch"
+        (is (= [:idx/a]
+               (vec (detect {:db-before {:schema {:idx/a ready}}
+                             :db-after  {:schema {:idx/a building}}}))))))))

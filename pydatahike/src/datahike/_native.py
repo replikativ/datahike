@@ -123,11 +123,23 @@ CALLBACK_FUNC = CFUNCTYPE(c_void_p, c_char_p)
 # Result Parsing
 # =============================================================================
 
-def _cbor_tag_hook(decoder, tag, shareable_index=None):
-    """Handle CBOR tags (e.g., Clojure keywords)."""
-    # Tag 39 is used for Clojure keywords - just return the value
-    if tag.tag == 39:
-        return tag.value
+def _cbor_tag_hook(*args, **kwargs):
+    """Handle CBOR tags (e.g., Clojure keywords).
+
+    Tolerates multiple cbor2 calling conventions, since the C-accelerated
+    and pure-Python decoders have shipped different signatures across 5.x
+    releases. Observed shapes:
+      - (decoder, CBORTag)               # pure-Python 5.x
+      - (CBORTag, True, None)            # some C-extension builds
+      - (decoder, CBORTag, shareable)    # pre-5.x
+    We pick the CBORTag from wherever it lands.
+    """
+    tag = next((a for a in args if isinstance(a, cbor2.CBORTag)), None)
+    if tag is None:
+        # Degrade gracefully — shouldn't happen with a real CBOR tag stream.
+        return args[0] if args else None
+    # Tag 39 is the IANA assignment for "identifier" — used here for
+    # Clojure keywords. Returning .value strips the tag wrapper.
     return tag.value
 
 

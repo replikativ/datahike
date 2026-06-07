@@ -99,6 +99,8 @@ public class LibDatahikeBase {
      * - "history" : Get full history database
      * - "since:{timestamp_ms}" : Get database since timestamp
      * - "asof:{timestamp_ms}" : Get database as-of timestamp
+     * - "branch:{name}" : Load database at the head of branch {name}
+     * - "commit:{uuid}" : Load database at the specific commit {uuid}
      * - "json" : Parse as JSON
      * - "edn" : Parse as EDN
      * - "cbor" : Parse as CBOR (base64 encoded)
@@ -106,7 +108,8 @@ public class LibDatahikeBase {
     protected static Object loadInput(@CConst CCharPointer input_format,
                                        @CConst CCharPointer raw_input) {
         String format = CTypeConversion.toJavaString(input_format);
-        String formats[] = format.split(":");
+        // split limit=2 so values containing ':' (UUIDs) are preserved.
+        String formats[] = format.split(":", 2);
         switch (formats[0]) {
         case "db":
             return Datahike.deref(Datahike.connect(readConfig(raw_input)));
@@ -118,6 +121,14 @@ public class LibDatahikeBase {
         case "asof":
             return Datahike.asOf(Datahike.deref(Datahike.connect(readConfig(raw_input))),
                                  new Date(Long.parseLong(formats[1])));
+        case "branch":
+            // Keyword.intern takes a bare name (no leading colon) and
+            // builds a Keyword without going through Clojure's reader.
+            return Datahike.branchAsDb(Datahike.connect(readConfig(raw_input)),
+                                        Keyword.intern(formats[1]));
+        case "commit":
+            return Datahike.commitAsDb(Datahike.connect(readConfig(raw_input)),
+                                        java.util.UUID.fromString(formats[1]));
         case "json":
             return libdatahike.parseJSON(CTypeConversion.toJavaString(raw_input));
         case "edn":

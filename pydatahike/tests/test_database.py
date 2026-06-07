@@ -10,30 +10,28 @@ from datahike import (
 
 
 def test_create_and_delete(mem_config):
-    """Test create and delete database."""
-    # Create
+    """Test create and delete database via the low-level functional API."""
     create_database(mem_config)
-
-    # Check exists
     assert database_exists(mem_config) is True
 
-    # Delete
     delete_database(mem_config)
-
-    # Check deleted
     assert database_exists(mem_config) is False
 
 
 def test_database_context_manager(mem_config):
-    """Test database context manager for automatic cleanup."""
+    """Test database() context manager creates on enter, deletes on exit.
+
+    The context manager yields a Database instance, not the config string.
+    Use Database methods (db.exists(), db.transact(), ...) inside the block.
+    The underlying config is available via db.config if you need to pass it
+    to the low-level functional API."""
     # Database should not exist before
     assert database_exists(mem_config) is False
 
-    # Use context manager
-    with database(mem_config) as cfg:
-        # Should exist inside context
-        assert database_exists(cfg) is True
-        assert cfg == mem_config
+    with database(mem_config) as db:
+        assert db.exists() is True
+        # The yielded Database carries the config we passed in.
+        assert db.config == mem_config
 
     # Should be deleted after context
     assert database_exists(mem_config) is False
