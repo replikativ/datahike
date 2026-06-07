@@ -1,5 +1,27 @@
 # Valid Time
 
+> ⚠️ **EXPERIMENTAL FEATURE**
+>
+> Valid-time support is currently experimental. The schema and writer
+> paths are well-tested (see `test/datahike/test/valid_time_test.cljc`,
+> `valid_at_test.clj`, `cross_tx_vt_validation_test.clj`,
+> `stratum_vt_test.clj`, and the planner-equivalence proof in
+> `query_planner_temporal_test.clj`), but the API surface (`d/valid-at`,
+> `d/valid-between`, `d/valid-during`, `d/valid-all`, the Allen rule
+> library, the `:tx-meta` shape) may evolve before stabilising. We
+> recommend:
+>
+> - Thorough testing in your specific use case before production deployment.
+> - Pin a known-good datahike sha if you build on rule names and arities.
+> - Reporting issues at https://github.com/replikativ/datahike/issues.
+>
+> The **storage-level overlay-on-tx-time invariant** is stable and
+> verified: queries that don't reference `:db.valid/*` produce
+> byte-identical plans to a non-vt database (see the
+> `zero-cost-overlay-*` tests in `query_planner_temporal_test.clj`).
+> Migrations off a vt-equipped db remain compatible with the standard
+> EAVT / AEVT / AVET indices.
+
 Datahike tracks a second time axis alongside transaction time: **valid
 time**, the time at which a fact is true in the modeled world. While
 `:db/txInstant` records *when the database learned* about a fact (see
