@@ -696,7 +696,28 @@
       [(= ?af ?bt)]]
      ;; A meets B — alias for interval-immediately-precedes?
      [(interval-meets? ?af ?at ?bf ?bt)
-      (interval-immediately-precedes? ?af ?at ?bf ?bt)]]))
+      (interval-immediately-precedes? ?af ?at ?bf ?bt)]
+     ;; ----- Allen "anchored-start" / "anchored-end" pairs --------------------
+     ;; Allen 1983 names that complete the canonical 13. The 11 above cover
+     ;; before/after, meets/met-by (via aliases), overlaps/overlapped-by,
+     ;; equals, during/contains. The four below cover starts/started-by and
+     ;; finishes/finished-by.
+     ;; A starts B: A.from == B.from AND A.to < B.to
+     [(interval-starts? ?af ?at ?bf ?bt)
+      [(= ?af ?bf)]
+      [(< ?at ?bt)]]
+     ;; A started-by B: A.from == B.from AND A.to > B.to (inverse of starts?)
+     [(interval-started-by? ?af ?at ?bf ?bt)
+      [(= ?af ?bf)]
+      [(> ?at ?bt)]]
+     ;; A finishes B: A.to == B.to AND A.from > B.from
+     [(interval-finishes? ?af ?at ?bf ?bt)
+      [(= ?at ?bt)]
+      [(> ?af ?bf)]]
+     ;; A finished-by B: A.to == B.to AND A.from < B.from (inverse of finishes?)
+     [(interval-finished-by? ?af ?at ?bf ?bt)
+      [(= ?at ?bt)]
+      [(< ?af ?bf)]]]))
 
 (def ^:private built-in-rule-names
   "Set of rule-head symbols recognised as built-ins. Used by
