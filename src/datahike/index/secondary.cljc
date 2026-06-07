@@ -3,6 +3,7 @@
    Secondary indices are declared through schema and maintained in-transaction.
    Anyone can register their own index type — the planner treats all uniformly."
   (:require [replikativ.logging :as log]
+            [datahike.bitemporal.predicate :as bp.pred]
             [datahike.db.interface :as dbi]
             [datahike.index.entity-set :as es]))
 
@@ -188,12 +189,11 @@
   "Filter a secondary's result-set to entities whose `(e, a, v)` survives
    `d/valid-at`'s supersession-aware predicate at valid-time `at`."
   [db at result]
-  (let [;; Build the same pred d/valid-at would install. mk-vt-pred is
-        ;; resolved lazily so secondary.cljc need not require api.impl
-        ;; statically (avoiding a circular-load risk).
-        mk-pred  (or (resolve 'datahike.api.impl/mk-vt-pred)
-                     (throw (ex-info "mk-vt-pred not on classpath" {})))
-        vt-pred  (@mk-pred at)
+  (let [;; Build the same pred d/valid-at would install. `mk-vt-pred`
+        ;; lives in the leaf ns `datahike.bitemporal.predicate` so that
+        ;; both `api.impl` and `secondary` can require it statically —
+        ;; no cycle, no `resolve` foot-gun.
+        vt-pred  (bp.pred/mk-vt-pred at)
         keep?    (fn [eid]
                    ;; Enumerate the entity's datoms and ask the pred.
                    ;; Any survivor → entity is visible. Caches inside

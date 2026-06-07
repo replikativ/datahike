@@ -17,7 +17,7 @@
             [datahike.db.transaction :as dbt]
             [datahike.impl.entity :as de]
             [datahike.versioning :as dv]
-            [datahike.bitemporal.platform :as bp]
+            [datahike.bitemporal.predicate :as bp.pred]
             [replikativ.logging :as log]
             #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!]]))
   #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]
@@ -170,101 +170,11 @@
     (HistoricalDB. db)
     (log/raise "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
-(defn- vt-meta-attrs [db]
-  (if (:attribute-refs? (dbi/-config db))
-    {:vf (dbi/-ref-for db :db.valid/from)
-     :vt (dbi/-ref-for db :db.valid/to)}
-    {:vf :db.valid/from
-     :vt :db.valid/to}))
-
-(defn- tx-covers-at?
-  "Does the tx-entity `tx-id`'s vt-window contain `at`? Reads
-   `:db.valid/from` / `:db.valid/to` off the tx-entity. Missing
-   `:db.valid/from` is treated as -∞; missing `:db.valid/to` as +∞,
-   so non-vt-aware data passes through unchanged. Memoized via
-   `cover-cache` (tx-id → Boolean) — a `bp/mutable-map`."
-  [db tx-id at cover-cache]
-  (let [cached (bp/mget cover-cache tx-id)]
-    (if (some? cached)
-      cached
-      (let [{:keys [vf vt]} (vt-meta-attrs db)
-            tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
-            vf-val (some (fn [^datahike.datom.Datom td]
-                           (when (= vf (.-a td)) (.-v td))) tx-datoms)
-            vt-val (some (fn [^datahike.datom.Datom td]
-                           (when (= vt (.-a td)) (.-v td))) tx-datoms)
-            ok? (and (or (nil? vf-val) (not (bp/date-after? vf-val at)))
-                     (or (nil? vt-val) (bp/date-after? vt-val at)))]
-        (bp/mput! cover-cache tx-id ok?)
-        ok?))))
-
-(defn- find-eav-winner
-  "Among all historical datoms about `(e, a, v)`, return the one whose
-   tx-id is the greatest AND whose tx-vt-window contains `at` — the
-   'supersession winner' for this fact at this valid-time. Returns
-   `nil` if no candidate. Implements bitemporal supersession at query time: the
-   topmost event at `(qvt, current-sys-time)` is the one whose tx-id
-   is highest among those covering `qvt`. Memoized via
-   `winner-cache` ([e a v] → Datom or ::miss)."
-  [db e a v at cover-cache winner-cache]
-  (let [k [e a v]
-        cached (bp/mget winner-cache k)]
-    (cond
-      (= cached ::miss) nil
-      (some? cached)    cached
-      :else
-      (let [datoms (dbi/-datoms db :eavt [e a v] (dbi/-search-context db))
-            winner (reduce
-                    (fn [w ^datahike.datom.Datom d]
-                      (if (tx-covers-at? db (datahike.datom/datom-tx d) at cover-cache)
-                        (if (or (nil? w)
-                                (> (datahike.datom/datom-tx d)
-                                   (datahike.datom/datom-tx ^datahike.datom.Datom w)))
-                          d w)
-                        w))
-                    nil datoms)]
-        (bp/mput! winner-cache k (or winner ::miss))
-        winner))))
-
-(defn mk-vt-pred
-  "Build a `d/filter` predicate `(fn [db datom])` implementing
-   supersession-aware valid-time filtering at point `at`. Algorithm
-   implements bitemporal supersession at read time:
-
-     for each datom D = (e, a, v, tx, op):
-       1. require tx's vt-window covers `at`;
-       2. among ALL historical datoms about (e, a, v), find the one
-          whose tx is the greatest AND whose tx-vt covers `at` — the
-          'winner';
-       3. admit D iff D is the winner.
-
-   On current-view (no history) the (e, a, v) scan returns the single
-   live datom; the algorithm degrades to today's single-axis
-   filter. On `(d/history db)` it gives back-correction-correct
-   semantics: a later tx with overlapping vt supersedes an earlier
-   one at the relevant vt-points.
-
-   Two caches:
-     * `cover-cache` (tx-id → Boolean): one EAVT seek per unique tx.
-     * `winner-cache` ([e a v] → Datom): one EAVT seek per unique fact.
-
-   The fast path for high-throughput vt queries is the
-   `:datahike/valid-at` meta marker → `IValidTimeAware/-search-at-vt`
-   on a vt-aware secondary index (e.g. stratum), which precomputes
-   the polygon at write time. This predicate is the
-   semantically-correct fallback for paths that don't route through
-   a secondary."
-  [at]
-  (let [cover-cache  (bp/mutable-map)
-        winner-cache (bp/mutable-map)]
-    (fn vt-pred [db ^datahike.datom.Datom d]
-      ;; (datom-tx d) is always-positive (retractions store it negated).
-      (when (tx-covers-at? db (datahike.datom/datom-tx d) at cover-cache)
-        (when-let [^datahike.datom.Datom w
-                   (find-eav-winner db (.-e d) (.-a d) (.-v d) at
-                                    cover-cache winner-cache)]
-          (= (datahike.datom/datom-tx d)
-             (datahike.datom/datom-tx w)))))))
+;; `vt-meta-attrs`, `tx-covers-at?`, `find-eav-winner`, `mk-vt-pred`,
+;; `mk-vt-overlap-pred` and `mk-vt-during-pred` live in the leaf
+;; namespace `datahike.bitemporal.predicate` so that vt-aware secondary
+;; indices can statically require them without closing a cycle back
+;; through `api.impl` → `query` → `secondary`.
 
 (defn valid-at
   "Snapshot `db` at valid-time `time-point` with **supersession**
@@ -313,54 +223,8 @@
   [db time-point]
   (if (nil? time-point)
     (vary-meta db dissoc :datahike/valid-at)
-    (-> (dcore/filter db (mk-vt-pred time-point))
+    (-> (dcore/filter db (bp.pred/mk-vt-pred time-point))
         (vary-meta assoc :datahike/valid-at time-point))))
-
-(defn- mk-vt-overlap-pred
-  "Pred that admits a datom iff its tx's vt-window *overlaps*
-   `[from, to)`. Open-ended `vt = nil` is treated as `+∞`; missing
-   `vf` is `-∞`. The overlap condition is `(vf < to) AND (vt > from)`."
-  [from to]
-  (let [cache (bp/mutable-map)]
-    (fn vt-overlap-pred [db ^datahike.datom.Datom d]
-      (let [tx-id (datahike.datom/datom-tx d)
-            cached (bp/mget cache tx-id)]
-        (if (some? cached)
-          cached
-          (let [{:keys [vf vt]} (vt-meta-attrs db)
-                tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
-                vf-val (some (fn [^datahike.datom.Datom td]
-                               (when (= vf (.-a td)) (.-v td))) tx-datoms)
-                vt-val (some (fn [^datahike.datom.Datom td]
-                               (when (= vt (.-a td)) (.-v td))) tx-datoms)
-                ok? (and (or (nil? vf-val) (bp/date-before? vf-val to))
-                         (or (nil? vt-val) (bp/date-after? vt-val from)))]
-            (bp/mput! cache tx-id ok?)
-            ok?))))))
-
-(defn- mk-vt-during-pred
-  "Pred that admits a datom iff its tx's vt-window is *fully
-   contained* in `[from, to)`. Strict containment: missing `vf` or
-   `vt` fail (an unbounded interval can't be fully contained in a
-   bounded one)."
-  [from to]
-  (let [cache (bp/mutable-map)]
-    (fn vt-during-pred [db ^datahike.datom.Datom d]
-      (let [tx-id (datahike.datom/datom-tx d)
-            cached (bp/mget cache tx-id)]
-        (if (some? cached)
-          cached
-          (let [{:keys [vf vt]} (vt-meta-attrs db)
-                tx-datoms (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db))
-                vf-val (some (fn [^datahike.datom.Datom td]
-                               (when (= vf (.-a td)) (.-v td))) tx-datoms)
-                vt-val (some (fn [^datahike.datom.Datom td]
-                               (when (= vt (.-a td)) (.-v td))) tx-datoms)
-                ok? (and (some? vf-val) (some? vt-val)
-                         (not (bp/date-before? vf-val from))
-                         (not (bp/date-after? vt-val to)))]
-            (bp/mput! cache tx-id ok?)
-            ok?))))))
 
 (defn valid-between
   "Filter `db` to datoms whose asserting tx's vt-window *overlaps*
@@ -376,7 +240,7 @@
   [db from to]
   (if (or (nil? from) (nil? to))
     (vary-meta db dissoc :datahike/valid-between)
-    (-> (dcore/filter db (mk-vt-overlap-pred from to))
+    (-> (dcore/filter db (bp.pred/mk-vt-overlap-pred from to))
         (vary-meta assoc :datahike/valid-between [from to]))))
 
 (defn valid-during
@@ -390,7 +254,7 @@
   [db from to]
   (if (or (nil? from) (nil? to))
     (vary-meta db dissoc :datahike/valid-during)
-    (-> (dcore/filter db (mk-vt-during-pred from to))
+    (-> (dcore/filter db (bp.pred/mk-vt-during-pred from to))
         (vary-meta assoc :datahike/valid-during [from to]))))
 
 (defn valid-all
