@@ -9,6 +9,13 @@
                                  {:id          :specs
                                   :skip-meta   [:no-spec]
                                   :ns-patterns ["datahike.test."]}
+                                 ;; The `:cljs` kaocha-type profile remains disabled — the
+                                 ;; canonical CLJS test workflow is `bb node-cljs-test`, which
+                                 ;; uses the shadow-cljs `:node-test` build defined in
+                                 ;; shadow-cljs.edn against `datahike.test.nodejs-test`. Wiring
+                                 ;; kaocha-cljs would duplicate that infra (karma/chrome-headless
+                                 ;; or node-runner glue + cljs.test integration), and there's no
+                                 ;; bb task that drives it today.
                                  #_{:id          :cljs
                                     :type        :kaocha.type/cljs
                                     :ns-patterns ["datahike.test."]}
