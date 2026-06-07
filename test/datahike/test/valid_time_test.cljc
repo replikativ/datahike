@@ -342,21 +342,21 @@
   ;; should be invokable in `:where` without the user declaring `%` in
   ;; `:in`. The auto-inject inside `normalize-q-input` adds `%` and
   ;; the built-in rule defs transparently.
-  (let [conn (<! (fresh-conn))]
-    (<! (d/transact! conn [{:db/ident :emp/name
-                            :db/valueType :db.type/string
-                            :db/cardinality :db.cardinality/one
-                            :db/unique :db.unique/identity}
-                           {:db/ident :emp/salary
-                            :db/valueType :db.type/long
-                            :db/cardinality :db.cardinality/one}]))
-    (<! (d/transact! conn [{:emp/name "Bob" :emp/salary 100000}]))
-    (<! (d/transact! conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
-                           :tx-meta {:db.valid/from #inst "2024-01-01"
-                                     :db.valid/to   #inst "2024-07-01"}}))
-    (<! (d/transact! conn {:tx-data [{:emp/name "Bob" :emp/salary 120000}]
-                           :tx-meta {:db.valid/from #inst "2024-07-01"}}))
-    (let [hist (d/history (d/db conn))]
+     (let [conn (<! (fresh-conn))]
+       (<! (d/transact! conn [{:db/ident :emp/name
+                               :db/valueType :db.type/string
+                               :db/cardinality :db.cardinality/one
+                               :db/unique :db.unique/identity}
+                              {:db/ident :emp/salary
+                               :db/valueType :db.type/long
+                               :db/cardinality :db.cardinality/one}]))
+       (<! (d/transact! conn [{:emp/name "Bob" :emp/salary 100000}]))
+       (<! (d/transact! conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                              :tx-meta {:db.valid/from #inst "2024-01-01"
+                                        :db.valid/to   #inst "2024-07-01"}}))
+       (<! (d/transact! conn {:tx-data [{:emp/name "Bob" :emp/salary 120000}]
+                              :tx-meta {:db.valid/from #inst "2024-07-01"}}))
+       (let [hist (d/history (d/db conn))]
       ;; NOTE: `d/history` returns BOTH added and retracted datoms. A
       ;; cardinality-one upsert (like the salary updates here) produces
       ;; one retraction + one assertion per tx. The valid-at filter
@@ -365,38 +365,38 @@
       ;; ?at returns ALL its salary datoms — both the retracted and
       ;; the newly-asserted value. Use the 5-tuple `[e a v t added?]`
       ;; pattern to filter to additions only.
-      (testing "valid-at — Bob's salary as of mid-April-2024"
-        (let [r (d/q '[:find ?s :in $ ?at :where
-                       (valid-at ?tx ?at)
-                       [?e :emp/salary ?s ?tx true]]
-                     hist #inst "2024-04-15")]
-          (is (= #{[110000]} r))))
-      (testing "valid-at — Bob's salary as of mid-August-2024"
-        (let [r (d/q '[:find ?s :in $ ?at :where
-                       (valid-at ?tx ?at)
-                       [?e :emp/salary ?s ?tx true]]
-                     hist #inst "2024-08-15")]
-          (is (= #{[120000]} r))))
-      (testing "valid-between — salaries with vt-window intersecting Q2 2024"
-        (let [r (d/q '[:find ?s :in $ ?from ?to :where
-                       (valid-between ?tx ?from ?to)
-                       [?e :emp/salary ?s ?tx true]]
-                     hist #inst "2024-04-01" #inst "2024-07-01")]
-          (is (= #{[110000]} r))))
-      (testing "user-supplied % overrides built-ins on name collision"
+         (testing "valid-at — Bob's salary as of mid-April-2024"
+           (let [r (d/q '[:find ?s :in $ ?at :where
+                          (valid-at ?tx ?at)
+                          [?e :emp/salary ?s ?tx true]]
+                        hist #inst "2024-04-15")]
+             (is (= #{[110000]} r))))
+         (testing "valid-at — Bob's salary as of mid-August-2024"
+           (let [r (d/q '[:find ?s :in $ ?at :where
+                          (valid-at ?tx ?at)
+                          [?e :emp/salary ?s ?tx true]]
+                        hist #inst "2024-08-15")]
+             (is (= #{[120000]} r))))
+         (testing "valid-between — salaries with vt-window intersecting Q2 2024"
+           (let [r (d/q '[:find ?s :in $ ?from ?to :where
+                          (valid-between ?tx ?from ?to)
+                          [?e :emp/salary ?s ?tx true]]
+                        hist #inst "2024-04-01" #inst "2024-07-01")]
+             (is (= #{[110000]} r))))
+         (testing "user-supplied % overrides built-ins on name collision"
         ;; Define a no-op `valid-at` that matches every tx; built-in
         ;; should be shadowed and the result includes all salaries.
-        (let [user-rules '[[(valid-at ?tx ?at) [?tx :db/txInstant _]]]
-              r (d/q '[:find ?s :in $ % ?at :where
-                       (valid-at ?tx ?at)
-                       [?e :emp/salary ?s ?tx true]]
-                     hist user-rules #inst "2024-04-15")]
-          (is (= #{[100000] [110000] [120000]} r))))
-      (testing "native < <= > >= work on Dates inside predicates"
+           (let [user-rules '[[(valid-at ?tx ?at) [?tx :db/txInstant _]]]
+                 r (d/q '[:find ?s :in $ % ?at :where
+                          (valid-at ?tx ?at)
+                          [?e :emp/salary ?s ?tx true]]
+                        hist user-rules #inst "2024-04-15")]
+             (is (= #{[100000] [110000] [120000]} r))))
+         (testing "native < <= > >= work on Dates inside predicates"
         ;; Regression for the planner-pushdown-on-system-attrs bug.
-        (let [r (d/q '[:find ?s :in $ ?at :where
-                       [?tx :db.valid/from ?vf]
-                       [(<= ?vf ?at)]
-                       [?e :emp/salary ?s ?tx true]]
-                     hist #inst "2024-08-15")]
-          (is (= #{[110000] [120000]} r)))))))) ;; last `)` closes `#?(:clj ...)`
+           (let [r (d/q '[:find ?s :in $ ?at :where
+                          [?tx :db.valid/from ?vf]
+                          [(<= ?vf ?at)]
+                          [?e :emp/salary ?s ?tx true]]
+                        hist #inst "2024-08-15")]
+             (is (= #{[110000] [120000]} r)))))))) ;; last `)` closes `#?(:clj ...)`
