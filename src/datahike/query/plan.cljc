@@ -516,6 +516,47 @@
   [args]
   (into #{} (mapcat analyze/extract-vars) args))
 
+(defn- external-engine-spec-vars
+  "Collect implicit input vars from a stratum-style external-engine
+   query-spec map. The engine's `aggregate` / `window` / etc. reference
+   their input columns as keywords inside :group / :agg / :order /
+   :window / :select, not as ?-vars in :args. `execute-external-engine`
+   in execute.cljc maps these keywords to ?-symbols at runtime
+   (e.g. :dept → ?dept) — this helper mirrors that mapping at plan
+   time so the binding-policy can require those vars bound before
+   running the engine. Without it, the engine schedules before its
+   producers and runs on an empty :rels.
+
+   Returns a set of '?col-name symbols. Returns #{} when the first
+   arg isn't a map (e.g. raw scalar input)."
+  [args]
+  (let [query-spec (first args)]
+    (if-not (map? query-spec)
+      #{}
+      (let [kws (concat (:group query-spec)
+                        ;; Each agg-spec last keyword is the column ref
+                        ;; (e.g. [:avg :salary] → :salary,
+                        ;; [:as :total [:sum :salary]] → :salary)
+                        (keep (fn [agg]
+                                (when (and (sequential? agg)
+                                           (> (count agg) 1))
+                                  (let [c (last agg)]
+                                    (when (keyword? c) c))))
+                              (:agg query-spec))
+                        (mapcat (fn [w]
+                                  (concat (:partition-by w)
+                                          (map first (:order-by w))
+                                          (when-let [c (:col w)]
+                                            (when (keyword? c) [c]))))
+                                (:window query-spec))
+                        (when-let [sel (:select query-spec)]
+                          (filter keyword? sel))
+                        (map first (:order query-spec)))]
+        (into #{}
+              (comp (filter keyword?)
+                    (map #(symbol (str "?" (name %)))))
+              kws)))))
+
 (defn- op-input-vars
   "Return only the *input* vars of an op — vars it consumes, not vars it produces.
    For :function ops, output vars (bound by the function) are excluded.
@@ -1078,7 +1119,16 @@
     [(args-free-vars (:args op)) :all]
 
     :external-engine
-    (let [input-args (args-free-vars (:args op))
+    (let [direct-args (args-free-vars (:args op))
+          ;; Stratum-style engines reference their input columns as
+          ;; keywords inside the query-spec (e.g. :group [:dept]
+          ;; :agg [[:avg :salary]]). The runtime in
+          ;; execute-external-engine :solver mode maps :dept → ?dept
+          ;; before projecting the input relation. The planner must
+          ;; recognise the same convention or it schedules the
+          ;; engine before its producers and runs it on an empty ctx.
+          spec-args (external-engine-spec-vars (:args op))
+          input-args (into direct-args spec-args)
           spec (:input-vars-spec op)]
       (case spec
         :any-bound [input-args :any]

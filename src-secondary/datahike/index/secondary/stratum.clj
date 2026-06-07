@@ -266,17 +266,118 @@
     ;; actual type from values via col-types pre-scan on first insert
     (long-array 0)))
 
+;; ---------------------------------------------------------------------------
+;; Valid-time (SCD2) support — opt-in via `:valid-time true` in :db.secondary/config
+;;
+;; In vt-mode, each entity update appends a new row instead of mutating the
+;; existing one. Old rows have their `:_valid_to` closed to the new tx's
+;; `:db.valid/from`. Queries push `valid-at` filters down via -search-at-vt
+;; → stratum WHERE predicates → zone-map pruning.
+
+(defn- vt-mode? [config] (boolean (:valid-time config)))
+
+(def ^:private vt-from-col :_valid_from)
+(def ^:private vt-to-col   :_valid_to)
+(def ^:private sys-from-col :_system_from)
+(def ^:private sys-to-col   :_system_to)
+(def ^:private vt-open-sentinel Long/MAX_VALUE)
+;; A vt-from that is older than any real tx-meta; rows seeded from
+;; pre-existing AEVT data in build-initial-dataset use it so they appear
+;; valid for any `valid-at` query against historical data.
+(def ^:private vt-from-floor Long/MIN_VALUE)
+
+(defn- date->micros
+  "Coerce a :db.valid/from or :db.valid/to value to long microseconds. Accepts
+   java.util.Date (millis × 1000), already-long values (passthrough), or nil
+   for which the caller supplies a default."
+  ^long [v]
+  (cond
+    (nil? v) 0
+    (instance? java.util.Date v) (* 1000 (.getTime ^java.util.Date v))
+    (number? v) (long v)
+    :else (throw (ex-info "Unsupported vt value type"
+                          {:value v :type (type v)}))))
+
+(defn- tx-meta->vf
+  "Pick the row's `_valid_from` for this tx. Prefers `:db.valid/from`;
+   falls back to `:db/txInstant` (so non-vt txes still get a meaningful
+   vf in vt-aware indices)."
+  ^long [tx-meta]
+  (date->micros (or (:db.valid/from tx-meta)
+                    (:db/txInstant tx-meta))))
+
+(defn- tx-meta->vt
+  "Pick the row's `_valid_to` for this tx. `:db.valid/to` if specified,
+   otherwise the open-ended sentinel."
+  ^long [tx-meta]
+  (if-let [v (:db.valid/to tx-meta)]
+    (date->micros v)
+    vt-open-sentinel))
+
+(defn- tx-meta->sf
+  "Pick the row's `_system_from` for this tx — the instant the DB
+   first knew about the row. Comes from `:db/txInstant` (the
+   transactor stamps it on every tx) or the legacy
+   `:datahike/created-at` fallback, or wall-clock now if neither
+   is set."
+  ^long [tx-meta]
+  (date->micros (or (:db/txInstant tx-meta)
+                    (:datahike/created-at tx-meta)
+                    (java.util.Date.))))
+
+(defn- ds-metadata
+  "Build the `:metadata` map passed to `st/make-dataset` for this
+   index. In vt-mode it carries `:bitemporal {:valid … :system …}`
+   matching stratum's current API: stratum tags all four temporal
+   columns with `:temporal-unit :micros` and round-trips the config
+   through `sync!`/`load`. Both axes are always present in vt-mode
+   so SCD2 surgery can advance the system-time axis when correcting
+   a valid-time window — the audit guarantee that backdated
+   corrections don't silently rewrite past `FOR SYSTEM_TIME` views."
+  [config]
+  (if (vt-mode? config)
+    {:bitemporal {:valid  {:from-col vt-from-col  :to-col vt-to-col   :unit :micros}
+                  :system {:from-col sys-from-col :to-col sys-to-col :unit :micros}}}
+    {}))
+
+(defn- with-vt-cols
+  "If vt-mode, attach empty `_valid_from`/`_valid_to`/`_system_from`/
+   `_system_to` columns (n long zeros) alongside the per-attribute
+   columns. The caller fills them when building rows; this helper
+   just makes sure the columns exist before `make-dataset` infers
+   the schema."
+  [col-map config n]
+  (if (vt-mode? config)
+    (assoc col-map
+           vt-from-col  (long-array n)
+           vt-to-col    (long-array n)
+           sys-from-col (long-array n)
+           sys-to-col   (long-array n))
+    col-map))
+
+(defn- make-vt-dataset
+  "Wrap st/make-dataset with the vt-aware metadata when vt-mode is on."
+  [col-map config]
+  (st/make-dataset col-map {:metadata (ds-metadata config)}))
+
 (defn- build-initial-dataset
   "Build a StratumDataset from the DB's existing data for configured attributes.
    Scans AEVT per attribute to collect entity+value pairs, then joins by entity.
-   When db is nil (during empty-db creation), returns an empty dataset."
+   When db is nil (during empty-db creation), returns an empty dataset.
+
+   In vt-mode, pre-existing rows are seeded with `_valid_from = MIN_VALUE`
+   and `_valid_to = MAX_VALUE` — they're treated as valid for any
+   `valid-at` query. Retroactive vt accuracy for pre-existing data is
+   not reconstructed here; that requires walking history and is a
+   future enhancement."
   [db attrs config]
   (if (nil? db)
     ;; No DB yet — return empty dataset with typed columns
-    (let [col-map (into {:eid (long-array 0)}
-                        (map (fn [a] [(attr-col-key a) (long-array 0)]))
-                        attrs)]
-      (sd/ensure-indexed (st/make-dataset col-map)))
+    (let [col-map (-> (into {:eid (long-array 0)}
+                            (map (fn [a] [(attr-col-key a) (long-array 0)]))
+                            attrs)
+                      (with-vt-cols config 0))]
+      (sd/ensure-indexed (make-vt-dataset col-map config)))
     (let [;; For each attr, collect {eid value} via AEVT datoms
           attr->eid-vals
           (into {}
@@ -295,10 +396,11 @@
       ;; Empty dataset — use long-array 0 for all columns since we don't know
       ;; actual value types yet. persist-transient-stratum-index will determine
       ;; real types from values via col-types pre-scan on first insert.
-        (let [col-map (into {:eid (long-array 0)}
-                            (map (fn [a] [(attr-col-key a) (long-array 0)]))
-                            attrs)]
-          (sd/ensure-indexed (st/make-dataset col-map)))
+        (let [col-map (-> (into {:eid (long-array 0)}
+                                (map (fn [a] [(attr-col-key a) (long-array 0)]))
+                                attrs)
+                          (with-vt-cols config 0))]
+          (sd/ensure-indexed (make-vt-dataset col-map config)))
       ;; Build column arrays
         (let [entity-ids (long-array n)
               _ (let [i (volatile! 0)]
@@ -338,8 +440,31 @@
                                       (aset arr row (str (.getValue e)))))
                                   arr))])))
                     attrs)
-              col-map (assoc attr-arrays :eid entity-ids)]
-          (sd/ensure-indexed (st/make-dataset col-map)))))))
+              ;; In vt-mode, seed every pre-existing row with the maximally-
+              ;; permissive vt-window [MIN, MAX). Subsequent vt-aware txes
+              ;; close these windows when the entity is updated.
+              ;; The system-time axis on seeded rows uses [MIN, MAX) too —
+              ;; we don't know when the DB first knew about pre-existing
+              ;; data; treating it as known-since-time-began matches the
+              ;; vt-axis convention.
+              vt-from-arr  (when (vt-mode? config)
+                             (let [arr (long-array n)]
+                               (java.util.Arrays/fill arr vt-from-floor) arr))
+              vt-to-arr    (when (vt-mode? config)
+                             (let [arr (long-array n)]
+                               (java.util.Arrays/fill arr vt-open-sentinel) arr))
+              sys-from-arr (when (vt-mode? config)
+                             (let [arr (long-array n)]
+                               (java.util.Arrays/fill arr vt-from-floor) arr))
+              sys-to-arr   (when (vt-mode? config)
+                             (let [arr (long-array n)]
+                               (java.util.Arrays/fill arr vt-open-sentinel) arr))
+              col-map (cond-> (assoc attr-arrays :eid entity-ids)
+                        (vt-mode? config) (assoc vt-from-col  vt-from-arr
+                                                 vt-to-col    vt-to-arr
+                                                 sys-from-col sys-from-arr
+                                                 sys-to-col   sys-to-arr))]
+          (sd/ensure-indexed (make-vt-dataset col-map config)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Persistent stratum index (declared first — TransientStratumIndex references it)
@@ -489,7 +614,40 @@
         (let [eid-pred (fn [^long eid] (es/entity-bitset-contains? entity-filter eid))
               where (conj (vec (:where query-spec)) [:fn :eid eid-pred])]
           (st/q (assoc query-spec :from dataset :where where)))
-        (st/q (assoc query-spec :from dataset))))))
+        (st/q (assoc query-spec :from dataset)))))
+
+  sec/IValidTimeAware
+  ;; Native vt-pushdown: extend the query's `:where` with predicates on
+  ;; the two vt-window columns. Stratum's zone-map pruner skips chunks
+  ;; whose [min,max] range can't intersect, and the predicate kernel
+  ;; runs the row-level check on the survivors. Open-ended rows
+  ;; (`_valid_to = Long/MAX_VALUE`) participate normally because the
+  ;; predicate uses strict-greater.
+  ;;
+  ;; Index NOT in vt-mode falls back to plain `-search` — i.e. ignores
+  ;; the valid-at argument. Such indices stay correct via the post-hoc
+  ;; AVET filter described in `secondary.cljc`'s IValidTimeAware
+  ;; docstring; this `-search-at-vt` just returns the unfiltered set,
+  ;; which the call site composes with its own filter.
+  (-search-at-vt [this query-spec entity-filter valid-at-window]
+    (if (and (vt-mode? config) dataset)
+      (let [at-micros (cond
+                        (vector? valid-at-window)
+                        (date->micros (first valid-at-window))
+                        :else
+                        (date->micros valid-at-window))
+            window-end (when (vector? valid-at-window)
+                         (date->micros (second valid-at-window)))
+            extra (if window-end
+                    ;; valid-between (interval overlap)
+                    [[:< vt-from-col window-end]
+                     [:> vt-to-col   at-micros]]
+                    ;; valid-at (point membership)
+                    [[:<= vt-from-col at-micros]
+                     [:> vt-to-col   at-micros]])
+            augmented (update query-spec :where (fnil into []) extra)]
+        (sec/-search this augmented entity-filter))
+      (sec/-search this query-spec entity-filter))))
 
 ;; ---------------------------------------------------------------------------
 ;; Transient stratum index — mutable batch mode
@@ -500,12 +658,13 @@
                                 ref->col-key   ;; map of numeric ref → keyword col-key (or nil)
                                 config
                                 ^java.util.HashMap pending-adds
-                                ^java.util.HashSet pending-retracts]
+                                ^java.util.HashSet pending-retracts
+                                ^"[Ljava.lang.Object;" tx-meta-ref] ;; 1-slot mutable cell
   sec/ITransientSecondaryIndex
   (-as-transient [this] this)
 
   (-transact! [this tx-report]
-    (let [{:keys [^Datom datom added?]} tx-report
+    (let [{:keys [^Datom datom added? tx-meta]} tx-report
           eid (.-e datom)
           a-raw (.-a datom)
           ;; In attr-refs mode, a-raw is numeric — check both attrs and attr-refs
@@ -515,6 +674,9 @@
           col-key (if (and ref->col-key (number? a-raw))
                     (get ref->col-key a-raw)
                     (attr-col-key a-raw))]
+      ;; tx-meta is the same for every datom in a batch — capture once,
+      ;; persist! reads it back.
+      (when tx-meta (aset tx-meta-ref 0 tx-meta))
       (when a-match?
         (if added?
           (let [entity-map (or (.get pending-adds eid) {})]
@@ -524,7 +686,9 @@
           (.add pending-retracts eid)))))
 
   (-persistent! [this]
-    (persist-transient-stratum-index dataset attrs attr-refs config pending-adds pending-retracts)))
+    (persist-transient-stratum-index dataset attrs attr-refs config
+                                     pending-adds pending-retracts
+                                     (aget tx-meta-ref 0))))
 
 (defn- make-transient-stratum-index [dataset attrs attr-refs config]
   (let [;; Build ref→col-key map from ident-ref-map in config
@@ -536,9 +700,22 @@
                              attrs))]
     (TransientStratumIndex. dataset attrs attr-refs ref->col-key config
                             (java.util.HashMap.)
-                            (java.util.HashSet.))))
+                            (java.util.HashSet.)
+                            (object-array 1))))
+
+(declare vt-persist-transient-stratum-index)
+(declare persist-current-state-stratum-index)
 
 (defn- persist-transient-stratum-index
+  [dataset attrs attr-refs config ^java.util.HashMap pending-adds
+   ^java.util.HashSet pending-retracts tx-meta]
+  (if (vt-mode? config)
+    (vt-persist-transient-stratum-index dataset attrs attr-refs config
+                                        pending-adds pending-retracts tx-meta)
+    (persist-current-state-stratum-index dataset attrs attr-refs config
+                                         pending-adds pending-retracts)))
+
+(defn- persist-current-state-stratum-index
   [dataset attrs attr-refs config ^java.util.HashMap pending-adds ^java.util.HashSet pending-retracts]
   (let [current-ds dataset
         has-retracts? (pos? (.size pending-retracts))
@@ -677,6 +854,188 @@
           ;; ensure-indexed converts array-backed columns to index-backed (PSS)
           ;; columns, which is required before sync! can persist.
           (StratumIndex. (sd/ensure-indexed (st/make-dataset col-map)) attrs attr-refs config))))))
+
+;; ---------------------------------------------------------------------------
+;; Valid-time (SCD2) persist path
+;;
+;; In vt-mode every batch:
+;;   - Existing rows are NEVER physically removed; they accumulate.
+;;   - For every entity touched (in pending-adds or pending-retracts), the
+;;     current OPEN row (`_valid_to = MAX_VALUE`) — if any — has its
+;;     `_valid_to` closed to the tx's `:db.valid/from`.
+;;   - For every entity in pending-adds, a new row is appended carrying
+;;     the merged-with-previous attribute values plus the new vt-window.
+;;
+;; The intermediate is a vector of row-maps (one per row): correct and
+;; readable. Hot-path optimisation can move to typed arrays later — for
+;; the first cut, correctness over speed.
+
+(defn- materialize-col-value ^Object [col-info ^long i]
+  (let [{:keys [data dict index]} col-info
+        arr (or data (when index (sidx/idx-materialize-to-array index)))]
+    (cond
+      (nil? arr) nil
+      dict (let [code (aget ^longs arr i)]
+             (when-not (= code Long/MIN_VALUE)
+               (aget ^"[Ljava.lang.String;" dict (int code))))
+      (instance? (Class/forName "[D") arr) (aget ^doubles arr i)
+      (instance? (Class/forName "[Ljava.lang.String;") arr)
+      (aget ^"[Ljava.lang.String;" arr i)
+      :else (aget ^longs arr i))))
+
+(defn- row->col-map
+  "Pivot a row-vector of maps to a column map of arrays. Type per column
+   is inferred from the first non-nil value seen — matches how stratum's
+   encode-column auto-types raw arrays."
+  [rows col-keys]
+  (let [n (count rows)]
+    (into {}
+          (map (fn [k]
+                 (let [;; Find first non-nil value to infer type
+                       sample (some #(let [v (get % k)] (when (some? v) v)) rows)
+                       t (cond
+                           (= k :eid) :long
+                           (or (= k vt-from-col) (= k vt-to-col)) :long
+                           (nil? sample) :long
+                           (or (string? sample) (keyword? sample)) :string
+                           (double? sample) :double
+                           :else :long)]
+                   [k (case t
+                        :long   (let [arr (long-array n)]
+                                  (dotimes [i n]
+                                    (when-let [v (get (nth rows i) k)]
+                                      (aset arr i (long v))))
+                                  arr)
+                        :double (let [arr (double-array n)]
+                                  (dotimes [i n]
+                                    (when-let [v (get (nth rows i) k)]
+                                      (aset arr i (double v))))
+                                  arr)
+                        :string (let [arr ^"[Ljava.lang.String;" (make-array String n)]
+                                  (dotimes [i n]
+                                    (when-let [v (get (nth rows i) k)]
+                                      (aset arr i (str v))))
+                                  arr))])))
+          col-keys)))
+
+(defn- materialize-existing-rows
+  "Walk every row in the current dataset and produce a vec of row-maps.
+   Rows whose `:eid` is in `close-eids` AND whose `_valid_to` is still
+   open (= `Long/MAX_VALUE`) get their `_valid_to` closed to `vt-close`
+   AND their `_system_to` closed to `sys-now`. Closing both axes in
+   the same step is what gives us the audit guarantee that a
+   `FOR SYSTEM_TIME AS OF <pre-correction>` query still sees the old
+   row as 'open at that instant'."
+  [current-cols current-n col-keys
+   ^java.util.HashSet close-eids vt-close sys-now]
+  (if (or (zero? (long current-n)) (nil? current-cols))
+    []
+    (let [eid-col (get current-cols :eid)
+          vto-col (get current-cols vt-to-col)
+          rows    (transient [])]
+      (dotimes [i current-n]
+        (let [row (transient {})]
+          (doseq [k col-keys]
+            (let [v (materialize-col-value (get current-cols k) i)]
+              (when (some? v) (assoc! row k v))))
+          (let [eid       (long (or (materialize-col-value eid-col i) 0))
+                vto       (long (or (materialize-col-value vto-col i)
+                                    vt-open-sentinel))
+                closing?  (and (.contains close-eids eid)
+                               (= vto vt-open-sentinel))]
+            (conj! rows
+                   (cond-> (persistent! row)
+                     closing? (assoc vt-to-col  vt-close
+                                     sys-to-col sys-now))))))
+      (persistent! rows))))
+
+(defn- snapshot-prev-open-attrs
+  "For each eid in `pending-adds`, find its currently-open row in the
+   dataset and capture the attribute values. Used to merge partial
+   updates into the new row so unchanged attributes carry over."
+  [current-cols ^long current-n ^java.util.HashMap pending-adds attr-col-keys]
+  (let [m (java.util.HashMap.)]
+    (when (and (pos? current-n) current-cols)
+      (let [eid-col (get current-cols :eid)
+            vto-col (get current-cols vt-to-col)]
+        (dotimes [i current-n]
+          (let [eid (long (materialize-col-value eid-col i))
+                vto (long (or (materialize-col-value vto-col i) vt-open-sentinel))]
+            (when (and (= vto vt-open-sentinel)
+                       (.containsKey pending-adds eid))
+              (let [prev (into {}
+                               (keep (fn [k]
+                                       (when-let [v (materialize-col-value
+                                                     (get current-cols k) i)]
+                                         [k v])))
+                               attr-col-keys)]
+                (.put m eid prev)))))))
+    m))
+
+(defn- build-new-rows
+  "For each `[eid attr-map]` in `pending-adds`, build the row to append:
+   merge `attr-map` over the prev-open snapshot (so partial updates
+   inherit unchanged attrs), then stamp the four temporal columns.
+   `sys-now` is the batch's system-time event; every new row gets
+   `_system_from = sys-now` so AS-OF queries at past system-times do
+   not see it."
+  [^java.util.HashMap pending-adds ^java.util.HashMap eid->prev-open
+   vt-from vt-to sys-now]
+  (mapv (fn [[eid em]]
+          (let [prev (.get eid->prev-open eid)]
+            (-> (merge (or prev {}) em)
+                (assoc :eid         eid
+                       vt-from-col  vt-from
+                       vt-to-col    vt-to
+                       sys-from-col sys-now
+                       sys-to-col   vt-open-sentinel))))
+        (seq pending-adds)))
+
+(defn- vt-persist-transient-stratum-index
+  "SCD2 surgery for vt-mode: materialize every current row,
+   close-on-supersession (both axes), append the new rows, and
+   rebuild the dataset. The rebuild pattern is what lets us derive
+   column types from values on first insert; subsequent txes still
+   go through the same path for consistency.
+
+   System-time symmetry: every batch shares one `sys-now`; closing
+   rows close their `_system_to` to it and new rows stamp their
+   `_system_from` with it, preserving the
+   `FOR SYSTEM_TIME AS OF <pre-correction>` audit semantic."
+  [dataset attrs attr-refs config
+   ^java.util.HashMap pending-adds ^java.util.HashSet pending-retracts tx-meta]
+  (let [has-adds?      (pos? (.size pending-adds))
+        has-retracts?  (pos? (.size pending-retracts))
+        nothing-to-do? (and (not has-adds?) (not has-retracts?))]
+    (if nothing-to-do?
+      (StratumIndex. dataset attrs attr-refs config)
+      (let [vt-from       (tx-meta->vf tx-meta)
+            vt-to         (tx-meta->vt tx-meta)
+            sys-now       (tx-meta->sf tx-meta)
+            attr-col-keys (mapv attr-col-key attrs)
+            col-keys      (into [:eid vt-from-col vt-to-col sys-from-col sys-to-col]
+                                attr-col-keys)
+            current-cols  (when dataset (st/columns dataset))
+            current-n     (if dataset (st/row-count dataset) 0)
+            close-eids    (let [s (java.util.HashSet.)]
+                            (when has-adds?     (.addAll s (.keySet pending-adds)))
+                            (when has-retracts? (.addAll s pending-retracts))
+                            s)
+            existing-rows (materialize-existing-rows
+                            current-cols current-n col-keys
+                            close-eids vt-from sys-now)
+            new-rows      (when has-adds?
+                            (let [prev-open (snapshot-prev-open-attrs
+                                              current-cols current-n
+                                              pending-adds attr-col-keys)]
+                              (build-new-rows pending-adds prev-open
+                                              vt-from vt-to sys-now)))
+            all-rows      (into existing-rows (or new-rows []))]
+        (if (empty? all-rows)
+          (StratumIndex. nil attrs attr-refs config)
+          (let [col-map (row->col-map all-rows col-keys)
+                ds      (sd/ensure-indexed (make-vt-dataset col-map config))]
+            (StratumIndex. ds attrs attr-refs config)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Registration

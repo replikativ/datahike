@@ -83,6 +83,8 @@
 
 ;; Main functions
 
+(declare built-in-rule-names auto-inject-built-in-rules)
+
 (defn normalize-q-input
   "Turns input to q into a map with :query and :args fields.
    Also normalizes the query into a map representation."
@@ -98,10 +100,11 @@
                    (:args query-input))
                arg-inputs)
         extra-ks [:offset :limit :order-by :stats? :settings :cancel]]
-    (cond-> {:query (apply dissoc query extra-ks)
-             :args args}
-      (map? query-input)
-      (merge (select-keys query-input extra-ks)))))
+    (-> (cond-> {:query (apply dissoc query extra-ks)
+                 :args args}
+          (map? query-input)
+          (merge (select-keys query-input extra-ks)))
+        auto-inject-built-in-rules)))
 
 (defn q [query & inputs]
   (raw-q (normalize-q-input query inputs)))
@@ -603,6 +606,164 @@
   (let [rules (if (string? rules) (edn/read-string rules) rules)] ;; for datahike.js interop
     (group-by ffirst rules)))
 
+;; ============================================================================
+;; Built-in bitemporal rules
+;; ============================================================================
+;;
+;; Four rules that consumers can use directly in `:where` without
+;; passing `:in $ %` rules. They operate over the system attrs
+;; `:db.valid/from` / `:db.valid/to` (commit 1 of bitemporal-v1) and
+;; degrade gracefully when `:db.valid/to` is absent (treated as +∞).
+;;
+;; The rules expand to:
+;;   1. an AVET pattern on `:db.valid/from`,
+;;   2. a `get-else` for `:db.valid/to` with a `9999-12-31` default,
+;;   3. two `.compareTo` predicates against the user-provided time-points.
+;;
+;; *Performance note*: place the rule call EARLY in `:where`. Even
+;; with the planner, clause order dominates — the rule's AVET-seek
+;; pattern needs to run before downstream patterns that join on the
+;; same ?tx. (A future planner pass will auto-reorder; today the
+;; convention is "vt-predicate first".)
+
+(def built-in-rules
+  "Bitemporal rules pre-installed on every Context. User-supplied
+   rules (via `:in $ %`) override built-ins on name collision.
+
+   The `<` `<=` `>` `>=` predicates dispatch on Date via the
+   `CollectionOrder` protocol, so the rules can use them directly —
+   no `.compareTo` boilerplate."
+  (parse-rules
+   '[;; valid-at ?tx ?at — half-open membership: vf <= at < vt
+     [(valid-at ?tx ?at)
+      [?tx :db.valid/from ?vf]
+      [(get-else $ ?tx :db.valid/to #inst "9999-12-31T23:59:59.999-00:00") ?vt]
+      [(<= ?vf ?at)]
+      [(> ?vt ?at)]]
+     ;; valid-between ?tx ?from ?to — tx's window intersects [?from, ?to)
+     ;; non-empty intersection iff vf < to AND vt > from
+     [(valid-between ?tx ?from ?to)
+      [?tx :db.valid/from ?vf]
+      [(get-else $ ?tx :db.valid/to #inst "9999-12-31T23:59:59.999-00:00") ?vt]
+      [(< ?vf ?to)]
+      [(> ?vt ?from)]]
+     ;; valid-during ?tx ?from ?to — tx's window is CONTAINED in [?from, ?to)
+     [(valid-during ?tx ?from ?to)
+      [?tx :db.valid/from ?vf]
+      [(get-else $ ?tx :db.valid/to #inst "9999-12-31T23:59:59.999-00:00") ?vt]
+      [(>= ?vf ?from)]
+      [(<= ?vt ?to)]]
+     ;; period-overlaps? — Allen-relation alias for valid-between
+     [(period-overlaps? ?tx ?from ?to)
+      (valid-between ?tx ?from ?to)]
+
+     ;; ----- Allen interval predicates (4-arg, generic) ---------------------
+     ;; Each takes two half-open intervals `[?af, ?at)` and `[?bf, ?bt)`
+     ;; and asserts the Allen relation. Generic over any orderable type
+     ;; the `<` / `<=` / `>` / `>=` predicates dispatch on (java.util.Date
+     ;; via CollectionOrder, java.lang.Long, etc.). Use for
+     ;; application-domain interval comparisons (lease vs contract dates,
+     ;; not just the bitemporal axis). Mirrors stratum's 4-arg SQL
+     ;; functions (OVERLAPS, EQUALS_PERIOD, CONTAINS_PERIOD, …).
+     [(interval-overlaps? ?af ?at ?bf ?bt)
+      [(< ?af ?bt)]
+      [(< ?bf ?at)]]
+     [(interval-equals? ?af ?at ?bf ?bt)
+      [(= ?af ?bf)]
+      [(= ?at ?bt)]]
+     ;; A contains B: A.from <= B.from AND A.to >= B.to
+     [(interval-contains? ?af ?at ?bf ?bt)
+      [(<= ?af ?bf)]
+      [(>= ?at ?bt)]]
+     ;; A strictly contains B: A.from < B.from AND A.to > B.to
+     [(interval-strictly-contains? ?af ?at ?bf ?bt)
+      [(< ?af ?bf)]
+      [(> ?at ?bt)]]
+     ;; A precedes B: A's end at-or-before B's start (touching allowed)
+     [(interval-precedes? ?af ?at ?bf ?bt)
+      [(<= ?at ?bf)]]
+     [(interval-strictly-precedes? ?af ?at ?bf ?bt)
+      [(< ?at ?bf)]]
+     ;; A immediately precedes B (A meets B): A.end == B.from
+     [(interval-immediately-precedes? ?af ?at ?bf ?bt)
+      [(= ?at ?bf)]]
+     ;; A succeeds B: A's start at-or-after B's end (touching allowed)
+     [(interval-succeeds? ?af ?at ?bf ?bt)
+      [(>= ?af ?bt)]]
+     [(interval-strictly-succeeds? ?af ?at ?bf ?bt)
+      [(> ?af ?bt)]]
+     ;; A immediately succeeds B: A.from == B.to
+     [(interval-immediately-succeeds? ?af ?at ?bf ?bt)
+      [(= ?af ?bt)]]
+     ;; A meets B — alias for interval-immediately-precedes?
+     [(interval-meets? ?af ?at ?bf ?bt)
+      (interval-immediately-precedes? ?af ?at ?bf ?bt)]
+     ;; ----- Allen "anchored-start" / "anchored-end" pairs --------------------
+     ;; Allen 1983 names that complete the canonical 13. The 11 above cover
+     ;; before/after, meets/met-by (via aliases), overlaps/overlapped-by,
+     ;; equals, during/contains. The four below cover starts/started-by and
+     ;; finishes/finished-by.
+     ;; A starts B: A.from == B.from AND A.to < B.to
+     [(interval-starts? ?af ?at ?bf ?bt)
+      [(= ?af ?bf)]
+      [(< ?at ?bt)]]
+     ;; A started-by B: A.from == B.from AND A.to > B.to (inverse of starts?)
+     [(interval-started-by? ?af ?at ?bf ?bt)
+      [(= ?af ?bf)]
+      [(> ?at ?bt)]]
+     ;; A finishes B: A.to == B.to AND A.from > B.from
+     [(interval-finishes? ?af ?at ?bf ?bt)
+      [(= ?at ?bt)]
+      [(> ?af ?bf)]]
+     ;; A finished-by B: A.to == B.to AND A.from < B.from (inverse of finishes?)
+     [(interval-finished-by? ?af ?at ?bf ?bt)
+      [(= ?at ?bt)]
+      [(< ?af ?bf)]]]))
+
+(def ^:private built-in-rule-names
+  "Set of rule-head symbols recognised as built-ins. Used by
+   `auto-inject-built-in-rules` to detect when a user's query needs
+   `%` injected into `:in`."
+  (set (keys built-in-rules)))
+
+(defn- where-uses-built-in-rule?
+  "True iff any clause in `where-clauses` is a rule invocation whose
+   head names a built-in rule. Rule invocations are SEQs (not vectors)
+   whose head is a non-special-form symbol."
+  [where-clauses]
+  (boolean
+   (some (fn [clause]
+           (and (seq? clause)
+                (not (vector? clause))
+                (symbol? (first clause))
+                (contains? built-in-rule-names (first clause))))
+         where-clauses)))
+
+(defn- auto-inject-built-in-rules
+  "If the query uses a built-in rule (`valid-at` etc.) but the user
+   did NOT declare `%` in `:in`, synthesise the `%` binding and pass
+   `[]` as the corresponding arg — `resolve-in`'s `update :rules
+   merge` then leaves built-ins available (since Context's `:rules`
+   slot is pre-seeded with `built-in-rules`). Transparent to the
+   caller."
+  [{:keys [query args] :as input}]
+  (let [where (:where query)]
+    (if (and (where-uses-built-in-rule? where)
+             ;; `%` inside `#(...)` is the anonymous fn's first param, so
+             ;; `#(= '% %)` would compare `'%` to itself on every call;
+             ;; use an explicit fn to test for the literal `%` symbol.
+             (not (some (fn [x] (= '% x)) (:in query))))
+      (let [in (or (:in query) '[$])
+            new-in (vec (conj (vec in) '%))
+            ;; Build the flat rule-defs vec from the parsed map.
+            built-in-defs (vec (mapcat val built-in-rules))]
+        (-> input
+            (assoc-in [:query :in] new-in)
+            ;; `args` may be a list (from `& varargs` in `q`); `conj` on
+            ;; a list prepends — vectorize first so we always append.
+            (update :args (fn [a] (conj (vec (or a [])) built-in-defs)))))
+      input)))
+
 (defn empty-rel [binding]
   (let [vars (->> (dpi/collect-vars-distinct binding)
                   (map :symbol))]
@@ -653,7 +814,9 @@
     (update context :sources assoc (get-in binding [:variable :symbol]) value)
     (and (instance? BindScalar binding)
          (instance? RulesVar (:variable binding)))
-    (assoc context :rules (parse-rules value))
+    ;; Merge user-supplied rules over the built-ins so consumers can
+    ;; redefine `valid-at` etc. if they need to.
+    (update context :rules merge (parse-rules value))
     (and (instance? BindScalar binding)
          (instance? Variable (:variable binding)))
     (assoc-in context [:consts (get-in binding [:variable :symbol])] value)
@@ -2697,7 +2860,7 @@
   #?(:clj
      (let [{:keys [query args]} (normalize-q-input query inputs)
            {:keys [qfind qin]} (memoized-parse-query query)
-           context-in (-> (Context. [] {} {} {} default-settings nil)
+           context-in (-> (Context. [] {} built-in-rules {} default-settings nil)
                           (resolve-ins qin args))
            db (get (:sources context-in) '$)
            bound-vars (context-bound-vars context-in)
@@ -3290,6 +3453,10 @@
                 (if (and limit (pos? limit)) (take limit) identity)))
     stats?                                        (#(-> context-out
                                                         (dissoc :rels :sources :settings :cancel)
+                                                        (update :rules
+                                                                (fn [rs]
+                                                                  ;; Subtract built-ins; stats only show user-supplied rules.
+                                                                  (apply dissoc rs (keys built-in-rules))))
                                                         (assoc :ret % :query query)))))
 
 (defn- execute-planned-relation
@@ -3354,8 +3521,8 @@
         {:keys [qfind qwith qreturnmaps qin]} (memoized-parse-query query)
         t1 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
         context-in (-> (if stats?
-                         (StatContext. [] {} {} {} [] settings cancel)
-                         (Context. [] {} {} {} settings cancel))
+                         (StatContext. [] {} built-in-rules {} [] settings cancel)
+                         (Context. [] {} built-in-rules {} settings cancel))
                        (resolve-ins qin args))
         t2 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
 
@@ -3570,7 +3737,7 @@
                (let [find-elements (dpip/find-elements qfind)]
                  (when (and (some #(instance? Aggregate %) find-elements)
                             (not (some #(instance? Pull %) find-elements)))
-                   (let [context-in (-> (Context. [] {} {} {} (merge default-settings nil) nil)
+                   (let [context-in (-> (Context. [] {} built-in-rules {} (merge default-settings nil) nil)
                                         (resolve-ins qin args))
                          clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                          bound-vars (context-bound-vars context-in)

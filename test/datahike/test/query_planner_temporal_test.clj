@@ -6,6 +6,7 @@
    should pass on both engines; the assertion form is `(= legacy planner)`
    so a future regression in either path is caught."
   (:require
+   [clojure.string :as str]
    [clojure.test :refer [deftest is testing]]
    [datahike.api :as d]
    [datahike.query :as q])
@@ -338,3 +339,115 @@
                   produces a tuple of all-nils because the optional scan
                   ran with ?r still free")))
         (finally (d/delete-database cfg))))))
+
+;; ---------------------------------------------------------------------------
+;; Note 179 §4 Gap 1 — zero-cost overlay invariant
+;;
+;; The substrate's framing in schema.cljc:71-74 — "valid-time is an
+;; overlay on tx-time" — implies that a query that does NOT reference
+;; `:db.valid/*` must produce IDENTICAL plans on a vt-equipped DB and
+;; on a plain DB. Per note 179 §6 Q1, this property has no test
+;; anywhere in the suite. The deftest below locks it in:
+;;
+;;   1. Plan the same EAV query on both a baseline DB and a DB that
+;;      contains vt-bearing transactions.
+;;   2. Assert the plans are structurally identical.
+;;
+;; A future refactor that, say, wires a vt filter "just to be safe"
+;; into the planner's default path would silently regress this
+;; invariant — and the rest of the suite would stay green because it
+;; only asserts behavioural correctness, not plan shape.
+;;
+;; The `(q/explain ...)` string-rendering is the canonical
+;; introspection hook (it folds the same plan tree the executor
+;; consumes through `format-plan-ops`). We strip the noisy `rules:`
+;; header line that lists the built-in interval rules — those are
+;; loaded into every Context regardless of whether the query uses them
+;; and aren't a per-DB property — and assert the remaining plan body
+;; matches byte-for-byte.
+
+(defn- strip-rules-line
+  "Remove the `rules: [...]` header line from a (q/explain ...) string.
+   Built-in interval rules are loaded uniformly; they are not part of the
+   per-DB plan shape we want to compare."
+  [^String s]
+  (->> (str/split-lines s)
+       (remove #(str/starts-with? % "rules:"))
+       (str/join "\n")))
+
+(deftest test-vt-schema-zero-cost-for-non-vt-query
+  (testing "a query that does NOT touch :db.valid/* must produce the
+            identical plan whether the DB has vt-bearing data or not.
+            This is the maintainer's headline overlay invariant —
+            non-vt queries pay zero plan-shape cost."
+    (let [baseline-cfg {:store {:backend :memory :id (UUID/randomUUID)}
+                        :writer {:backend :self}
+                        :schema-flexibility :write
+                        :keep-history? true}
+          vt-cfg {:store {:backend :memory :id (UUID/randomUUID)}
+                  :writer {:backend :self}
+                  :schema-flexibility :write
+                  :keep-history? true}]
+      (try
+        (d/create-database baseline-cfg)
+        (d/create-database vt-cfg)
+        (let [baseline (d/connect baseline-cfg)
+              vt (d/connect vt-cfg)
+              schema [{:db/ident :user/name
+                       :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one
+                       :db/unique :db.unique/identity}
+                      {:db/ident :user/age
+                       :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one
+                       :db/index true}]]
+          (d/transact baseline schema)
+          (d/transact vt schema)
+          ;; Baseline: write with no vt-meta.
+          (d/transact baseline [{:user/name "Alice" :user/age 30}
+                                {:user/name "Bob"   :user/age 40}])
+          ;; vt: write the SAME data but every tx carries a vt-meta
+          ;; window. The vt-bearing data must NOT perturb the plan for
+          ;; a query that doesn't reference :db.valid/*.
+          (d/transact vt {:tx-data [{:user/name "Alice" :user/age 30}]
+                          :tx-meta {:db.valid/from #inst "2024-01-01"
+                                    :db.valid/to   #inst "2024-07-01"}})
+          (d/transact vt {:tx-data [{:user/name "Bob" :user/age 40}]
+                          :tx-meta {:db.valid/from #inst "2024-01-01"}})
+
+          (testing "simple EAV scan — `[?e :user/name \"Alice\"]`"
+            (let [q '[:find ?e :where [?e :user/name "Alice"]]
+                  baseline-plan (strip-rules-line (q/explain q (d/db baseline)))
+                  vt-plan       (strip-rules-line (q/explain q (d/db vt)))]
+              (is (= baseline-plan vt-plan)
+                  (str "plans must be identical for a non-vt query.\n"
+                       "baseline:\n" baseline-plan "\n"
+                       "vt:\n" vt-plan))))
+
+          (testing "multi-clause join — entity-group with predicate"
+            (let [q '[:find ?n ?a
+                      :where
+                      [?e :user/name ?n]
+                      [?e :user/age ?a]
+                      [(> ?a 35)]]
+                  baseline-plan (strip-rules-line (q/explain q (d/db baseline)))
+                  vt-plan       (strip-rules-line (q/explain q (d/db vt)))]
+              (is (= baseline-plan vt-plan)
+                  (str "plans must be identical for a multi-clause
+                        non-vt query.\nbaseline:\n" baseline-plan
+                       "\nvt:\n" vt-plan))))
+
+          (testing "behavioural correctness — vt data answers the query"
+            ;; Sanity: the vt-equipped DB still resolves the same data
+            ;; the baseline does. Without this check, a "plans equal"
+            ;; assertion could be vacuously true if vt-data simply
+            ;; failed to land.
+            (let [q '[:find ?n :where [_ :user/name ?n]]
+                  baseline-result (set (d/q q (d/db baseline)))
+                  vt-result       (set (d/q q (d/db vt)))]
+              (is (= #{["Alice"] ["Bob"]} baseline-result))
+              (is (= baseline-result vt-result)
+                  "vt-DB answers the non-vt query identically"))))
+        (finally
+          (d/delete-database baseline-cfg)
+          (d/delete-database vt-cfg))))))

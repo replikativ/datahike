@@ -263,6 +263,41 @@ your purposes.
 ;; => #{["Alice" #inst "2019-08-16T11:40:28.794-00:00"]}
 ```
 
+### `:db/txInstant` is strictly monotonic
+
+Auto-stamped `:db/txInstant` values are guaranteed to be strictly
+increasing across a connection's tx-log — even when multiple
+transactions commit within the same wall-clock millisecond. The
+allocator returns `max(get-date, prev-tx-instant + 1ms)`; under
+write bursts the stamp advances 1ms per tx until wall-clock catches
+up. This matches Datomic's contract and removes the `d/as-of
+<Date>` tied-instant ambiguity at the source: an instant resolves
+to one unique snapshot, never two.
+
+For exact temporal cuts ("snapshot just after tx X") use the tx-id
+directly — tx-ids are the canonical precise ordering primitive,
+while wall-clock instants remain useful for human-readable queries
+("what did the world look like at 2024-12-31 23:59?").
+
+User-provided `:db/txInstant` (via `:tx-meta {:db/txInstant
+<date>}`) still wins over the allocator default. This preserves
+the historical-import pattern: writing past events with their
+original dates — and pinned-clock test fixtures — both keep
+working unchanged.
+
+A useful side-effect: a pinned wall-clock turns into a *logical
+clock* automatically. Bind `datahike.tools/get-date` to a constant
+(e.g., for replay or regulator audits on a fresh database) and the
+allocator produces deterministic `[pinned, pinned+1ms, pinned+2ms,
+…]` stamps — fully reproducible without any separate logical-clock
+machinery. (This holds when the pin dominates the prev-tx-instant,
+i.e., the pin is at or after the most recently committed tx.)
+
+The allocator (`datahike.db.transaction/next-tx-instant`) is itself
+`^:dynamic`, so a future caller that wants a different allocation
+policy (hybrid logical clock, microsecond `Instant`, …) can swap
+it in via `binding` without touching the call site.
+
 ## Data Purging
 
 **Retraction vs Purging:** Normal retractions preserve data in history. Purging permanently deletes data from both current and historical indices.

@@ -8,6 +8,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
+   [datahike.bitemporal.platform :as bp]
    [datahike.constants :refer [tx0]]
    [datahike.tools :refer [get-date]]
    [replikativ.logging :as log]
@@ -120,12 +121,92 @@
 (defn update-rschema [db]
   (assoc db :rschema (dbu/rschema (:schema db))))
 
+(defn- last-tx-instant
+  "Read the :db/txInstant value of the most-recently-committed tx
+   (`:max-tx`). Returns nil only on a truly empty DB that has not
+   even seen the bootstrap tx — in practice always returns at least
+   the epoch sentinel from `tx0`."
+  [db]
+  (let [max-tx (:max-tx db)
+        ctx    (dbi/-search-context db)
+        a      (if (:attribute-refs? (dbi/-config db))
+                 (dbi/-ref-for db :db/txInstant)
+                 :db/txInstant)]
+    (some-> #?(:clj ^Datom (first (dbi/-datoms db :eavt [max-tx a] ctx))
+               :cljs (first (dbi/-datoms db :eavt [max-tx a] ctx)))
+            .-v)))
+
+(defn ^:dynamic next-tx-instant
+  "Strictly-monotonic `:db/txInstant` allocator. Returns
+   `max(get-date, prev-tx-instant + 1ms)` so back-to-back writes
+   that share a wall-clock millisecond still get distinct,
+   strictly-ordered instants — matching Datomic's contract for
+   auto-stamped `:db/txInstant` and removing the `d/as-of <Date>`
+   tied-instant ambiguity at the source.
+
+   Reads the wall-clock via `datahike.tools/get-date`, so the
+   existing dynamic-binding clock-pinning patterns keep working.
+   A pinned constant clock turns into a *logical clock* for free:
+   the allocator advances by 1ms per tx, producing deterministic
+   monotonic stamps across the whole binding without any separate
+   logical-clock mode.
+
+   User-provided `:db/txInstant` in `:tx-meta` still wins over the
+   allocator's default; historical imports and SCD2 surgery tests
+   that intentionally back-date are unaffected.
+
+   Cost: one EAVT seek (~1µs on PSS in-memory at 10k txes; <0.3%
+   of `d/transact`). The `^:dynamic` shape leaves room for a
+   future caller-supplied allocator (e.g., HLC) without breaking
+   the default path.
+
+   See ADR for the design rationale."
+  [db-before]
+  (let [now-ms  (#?(:clj .getTime :cljs .getTime) (get-date))
+        prev-ms (some-> (last-tx-instant db-before) .getTime)
+        ms      (if (or (nil? prev-ms) (< (long prev-ms) (long now-ms)))
+                  (long now-ms)
+                  (inc (long prev-ms)))]
+    #?(:clj  (Date. ms)
+       :cljs (js/Date. ms))))
+
+#?(:clj
+   (defn- attrs-have-datoms?
+     "True iff at least one of `attrs` has any datoms in `db`'s AEVT index.
+      Used by `instantiate-secondary` to skip the async backfill path when
+      the index is being registered on an empty (or empty-for-these-attrs)
+      database — eliminating the writer race between
+      `build-secondary-index!` and subsequent user writes that would
+      otherwise clobber the live updates with an empty rebuild.
+
+      Attrs not declared in the schema have no datoms by definition;
+      `dbi/-datoms` validates the attr ident and throws otherwise. A
+      secondary-index spec can legitimately reference an attr that
+      hasn't been declared yet (schema-flexibility :read, or the index
+      is registered before any data writes touch the attr), so we
+      gate the lookup on schema membership."
+     [db attrs]
+     (let [ctx    (dbi/-search-context db)
+           schema (dbi/-schema db)]
+       (boolean
+        (some (fn [a]
+                (and (contains? schema a)
+                     (seq (dbi/-datoms db :aevt [a] ctx))))
+              attrs)))))
+
 #?(:clj
    (defn- instantiate-secondary
      "Create the secondary-index instance for `idx-ident` from a fully
       populated schema entry. Used at end-of-tx so the factory sees the
       complete config (including `:db.secondary/config`, which may have
-      been applied as a later datom within the same tx)."
+      been applied as a later datom within the same tx).
+
+      Status auto-detection: if AEVT has no datoms for any of the
+      indexed attrs, the index is ready immediately (no backfill
+      needed) and status is `:ready`. Otherwise status is `:building`
+      and the writer auto-dispatches `build-secondary-index!` to
+      backfill from AEVT. Common case (register on a fresh-or-empty
+      db) avoids the async-build race entirely."
      [db idx-ident idx-schema]
      (let [idx-type (:db.secondary/type idx-schema)
            idx-attrs (set (:db.secondary/attrs idx-schema))
@@ -133,11 +214,16 @@
                                      {:attrs idx-attrs})
                         (seq (:ident-ref-map db))
                         (assoc :ident-ref-map (:ident-ref-map db)))
-           idx (sec/create-index idx-type idx-config nil)]
-       (-> db
-           (assoc-in [:secondary-indices idx-ident] idx)
-           (assoc-in [:schema idx-ident :db.secondary/status] :building)
-           (assoc-in [:schema idx-ident :db.secondary/building-since-tx] (:max-tx db)))))
+           idx (sec/create-index idx-type idx-config nil)
+           needs-backfill? (attrs-have-datoms? db idx-attrs)
+           base (-> db
+                    (assoc-in [:secondary-indices idx-ident] idx)
+                    (assoc-in [:schema idx-ident :db.secondary/status]
+                              (if needs-backfill? :building :ready)))]
+       (if needs-backfill?
+         (assoc-in base [:schema idx-ident :db.secondary/building-since-tx]
+                   (:max-tx db))
+         base)))
    :cljs
    (defn- instantiate-secondary [db _idx-ident _idx-schema] db))
 
@@ -200,16 +286,56 @@
 ;; In context of `with-datom` we can use faster comparators which
 ;; do not check for nil (~10-15% performance gain in `transact`)
 
+(def meta-attrs-for-secondary
+  "Tx-meta attrs surfaced to secondary indices on each `-transact` call.
+   See `datahike.index.secondary/ISecondaryIndex` — adapters that want
+   vt-pushdown read these from `tx-report :tx-meta`."
+  #{:db/txInstant :db.valid/from :db.valid/to})
+
+(defn meta-for-tx-id
+  "Return the meta-attrs map for the given tx-id by EAVT-seeking the tx
+   entity. Public so writing/build-secondary-index! can reconstruct
+   tx-meta during backfill (where the writing tx is not the in-progress
+   tx). Returns nil when no meta-attrs are set on that tx."
+  [db ^long tx-id]
+  (let [config (dbi/-config db)
+        ref? (:attribute-refs? config)
+        ident (fn [a] (if (and ref? (number? a)) (dbi/-ident-for db a) a))
+        m (reduce
+           (fn [m ^Datom d]
+             (let [a-ident (ident (.-a d))]
+               (if (contains? meta-attrs-for-secondary a-ident)
+                 (assoc m a-ident (.-v d))
+                 m)))
+           {}
+           (dbi/-datoms db :eavt [tx-id] (dbi/-search-context db)))]
+    (not-empty m)))
+
+(defn- tx-meta-for-secondary
+  "Tx-meta for the *current* in-progress tx. We use `(inc max-tx)` —
+   incrementing matches the final bump in the transact loop's exit
+   branch — rather than `(dd/datom-tx datom)`. Retract datoms carry
+   the original asserting tx's id, but vt-aware adapters need the
+   writing tx's meta to close `_valid_to` correctly."
+  [db ^Datom _datom]
+  (meta-for-tx-id db (inc (long (:max-tx db)))))
+
 (defn- update-secondary-indices
   "Update all secondary indices that cover the given attribute.
    When the index supports ITransientSecondaryIndex (batch mode), uses
    -transact! (mutates in place, no assoc). Otherwise falls back to
    -transact (persistent, returns new instance).
-   Returns updated db with modified secondary-indices map."
+   Returns updated db with modified secondary-indices map.
+
+   Per bitemporal-v1, `tx-report` also carries `:tx-meta` — the
+   tx-entity's `:db/txInstant` / `:db.valid/from` / `:db.valid/to`
+   attrs — so adapters that implement `IValidTimeAware` can persist
+   the tx's valid-time window alongside their content keys."
   [db a-ident ^Datom datom added?]
   (let [sec-idx-map (get-in db [:rschema :db.secondary/index a-ident])]
     (if (seq sec-idx-map)
-      (let [tx-report {:datom datom :added? added?}]
+      (let [tx-report (cond-> {:datom datom :added? added?}
+                        true (assoc :tx-meta (tx-meta-for-secondary db datom)))]
         (reduce (fn [db' idx-ident]
                   (let [status (get-in db' [:schema idx-ident :db.secondary/status])]
                     ;; Skip disabled indices — they are no longer maintained
@@ -525,6 +651,12 @@
                               [:db.ensure/preds eid ensure preds]]))))
       entities)))
 
+(defn- vt-meta-attr?
+  "Cheap branch — true iff the resolved a-ident is one of the bitemporal
+   tx-meta attrs. Two keyword compares; called once per :db/add."
+  [a-ident]
+  (or (= a-ident :db.valid/from) (= a-ident :db.valid/to)))
+
 (defn- transact-add [{:keys [db-after] :as report} [_ e a v tx :as ent]]
   (let [a (dbu/normalize-and-validate-attr a ent db-after)
         _ (validate-val v ent db-after)
@@ -535,7 +667,21 @@
         a-ident (if attribute-refs? (dbi/ident-for db a :error-on-missing) a)
         v (if (dbu/ref? db a-ident) (dbu/entid-strict db v) v)
         new-datom (datom e a v tx)
-        upsert? (not (dbu/multival? db a))]
+        upsert? (not (dbu/multival? db a))
+        ;; Cross-tx vf<vt guard: when a :db.valid/from or :db.valid/to
+        ;; is written onto a PRIOR tx-entity, queue that tx-eid for
+        ;; end-of-loop validation. Pattern mirrors ::queued-tuples
+        ;; (composite-tuple recomputation). Validation itself is
+        ;; deferred so that the same tx writing BOTH halves on the
+        ;; same prior tx-entity is checked against the final combined
+        ;; state, not the half-way state. Retracts can only broaden
+        ;; the window so they're skipped — a retract+add in the same
+        ;; tx is caught by the add side.
+        report (cond-> report
+                 (and (vt-meta-attr? a-ident)
+                      (>= ^long e ^long tx0)
+                      (not= e (current-tx report)))
+                 (update ::pending-vt-validation (fnil conj #{}) e))]
     (transact-report report new-datom upsert?)))
 
 (defn- transact-retract-datom
@@ -887,6 +1033,40 @@
                         " (e.g. {:db/ident <keyword> :db/fn <Ifn>}, usage of :db/ident requires {:db/unique :db.unique/identity} in schema)")
                    {:error :transact/syntax, :operation op, :tx-data op-vec})))))
 
+(defn- validate-cross-tx-vt-windows!
+  "Cross-tx vf<vt guard. For each prior tx-entity that received a
+   retroactive :db.valid/from or :db.valid/to write in this tx (see
+   `transact-add` ::pending-vt-validation queue), look up the
+   resulting (vf, vt) pair on db-after and raise if vf >= vt.
+
+   Single EAVT seek per affected tx-entity (3 datoms returned —
+   txInstant + vf + vt). No-op when no such writes occurred (the
+   ::pending-vt-validation set is absent).
+
+   Mirrors the pre-loop guard at the top of `transact-tx-data` which
+   checks the *current* tx's :tx-meta; this one covers the closure
+   formed by editing a *prior* tx-entity's vt-meta.
+
+   Throws `:transact/invalid-valid-times-cross-tx` on first violation."
+  [{:keys [db-after] :as report}]
+  (when-let [pending (::pending-vt-validation report)]
+    (let [attr-refs? (:attribute-refs? (dbi/-config db-after))
+          vf-a (if attr-refs? (dbi/-ref-for db-after :db.valid/from) :db.valid/from)
+          vt-a (if attr-refs? (dbi/-ref-for db-after :db.valid/to) :db.valid/to)
+          sc (dbi/-search-context db-after)]
+      (doseq [tx-eid pending]
+        (let [datoms (dbi/-datoms db-after :eavt [tx-eid] sc)
+              vf (some (fn [^Datom d] (when (= vf-a (.-a d)) (.-v d))) datoms)
+              vt (some (fn [^Datom d] (when (= vt-a (.-a d)) (.-v d))) datoms)]
+          (when (and vf vt (not (bp/date-before? vf vt)))
+            (log/raise (str "Invalid cross-tx valid-time window: tx-entity "
+                            tx-eid " would have :db.valid/from >= :db.valid/to "
+                            "(from=" vf ", to=" vt ") after this commit")
+                       {:error :transact/invalid-valid-times-cross-tx
+                        :tx-eid tx-eid
+                        :db.valid/from vf
+                        :db.valid/to vt})))))))
+
 (defn transact-tx-data [{:keys [db-before] :as initial-report} initial-es]
   (when-not (or (nil? initial-es)
                 (sequential? initial-es))
@@ -897,7 +1077,23 @@
                       (interleave initial-es (repeat ::flush-tuples))
                       initial-es)
         initial-report (update initial-report :tx-meta
-                               #(merge {:db/txInstant (get-date)} %))
+                               #(merge {:db/txInstant (next-tx-instant db-before)} %))
+        ;; Reject zero-width or reverse valid-time windows. A tx
+        ;; with `:db.valid/from >= :db.valid/to` would produce a
+        ;; tx-entity that no `d/valid-at` query can ever match
+        ;; (the AVET predicate is `vf <= at < vt`, unsatisfiable
+        ;; when from >= to) — a silent data-quality bug. Throw at
+        ;; the transactor so it surfaces immediately.
+        _ (let [tm (:tx-meta initial-report)
+                vf (:db.valid/from tm)
+                vt (:db.valid/to tm)]
+            (when (and vf vt (not (bp/date-before? vf vt)))
+              (log/raise (str "Invalid valid-time window: :db.valid/from "
+                              "must be strictly before :db.valid/to "
+                              "(got from=" vf ", to=" vt ")")
+                         {:error :transact/invalid-valid-times
+                          :db.valid/from vf
+                          :db.valid/to vt})))
         meta-entities (flush-tx-meta initial-report)]
     (loop [report (update initial-report :db-after transient)
            es (if (dbi/-keep-history? db-before)
@@ -909,11 +1105,20 @@
             db db-after]
         (cond
           (empty? es)
-          (-> report
-              (assoc-in [:tempids :db/current-tx] (current-tx report))
-              (update-in [:db-after :max-tx] inc)
-              (update :db-after persistent!)
-              (update :db-after finalize-secondary-indices))
+          (do
+            ;; Cross-tx vf<vt validation: any prior tx-entity touched
+            ;; by this commit's vt-meta writes is checked against the
+            ;; final combined state. Throws on invalid window. The
+            ;; ::pending-vt-validation bookkeeping is stripped before
+            ;; the report exits, matching the ::queued-tuples cleanup
+            ;; discipline.
+            (validate-cross-tx-vt-windows! report)
+            (-> report
+                (dissoc ::pending-vt-validation)
+                (assoc-in [:tempids :db/current-tx] (current-tx report))
+                (update-in [:db-after :max-tx] inc)
+                (update :db-after persistent!)
+                (update :db-after finalize-secondary-indices)))
 
           (nil? entity)
           (recur report entities)

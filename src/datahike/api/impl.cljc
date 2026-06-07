@@ -17,6 +17,7 @@
             [datahike.db.transaction :as dbt]
             [datahike.impl.entity :as de]
             [datahike.versioning :as dv]
+            [datahike.bitemporal.predicate :as bp.pred]
             [replikativ.logging :as log]
             #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!]]))
   #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]
@@ -132,7 +133,29 @@
     (SinceDB. db time-point)
     (log/raise "since is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
 
-(defn as-of [db time-point]
+(defn as-of
+  "Snapshot `db` at tx-time `time-point` (a `java.util.Date` or
+   tx-id long). Returns an `AsOfDB` wrapper whose reads filter to
+   datoms asserted by txes ≤ `time-point`. Composes with
+   `d/history` and `d/valid-at`.
+
+   Composition with `d/valid-at`: wrap `d/as-of` FIRST, then
+   `d/valid-at` outermost — e.g. `(d/valid-at (d/as-of db t) v)`.
+   The supersession check inside `d/valid-at`'s predicate captures
+   whatever db it was passed; if you wrap `d/as-of` outside, the
+   captured db has no tx-time bound and the supersession scan reads
+   future txes, producing incorrect results. This wrapper throws
+   when invoked on a `d/valid-at`-wrapped db to surface the
+   inversion at call-site rather than silently."
+  [db time-point]
+  (when (some? (:datahike/valid-at (meta db)))
+    (log/raise (str "Cannot wrap d/as-of around a db already filtered by "
+                    "d/valid-at — the supersession check would not see the "
+                    "tx-time bound. Compose as (d/valid-at (d/as-of db t) v) "
+                    "instead.")
+               {:error :temporal/wrap-order
+                :inner-marker :datahike/valid-at
+                :outer-wrapper 'as-of}))
   (if (dbi/-temporal-index? db)
     (if (int? time-point)
       (if (<= const/tx0 time-point)
@@ -146,6 +169,105 @@
   (if (dbi/-temporal-index? db)
     (HistoricalDB. db)
     (log/raise "history is only allowed on temporal indexed databases." {:config (dbi/-config db)})))
+
+;; `vt-meta-attrs`, `tx-covers-at?`, `find-eav-winner`, `mk-vt-pred`,
+;; `mk-vt-overlap-pred` and `mk-vt-during-pred` live in the leaf
+;; namespace `datahike.bitemporal.predicate` so that vt-aware secondary
+;; indices can statically require them without closing a cycle back
+;; through `api.impl` → `query` → `secondary`.
+
+(defn valid-at
+  "Snapshot `db` at valid-time `time-point` with **supersession**
+   semantics: among historical events about the same `(e, a, v)`, the
+   tx with the greatest tx-id whose vt-window covers `time-point`
+   wins. Earlier assertions whose vt-window also covers
+   `time-point` are filtered out as superseded.
+
+   This implements bitemporal supersession at the read layer: a
+   back-correction that asserts a new value with an overlapping
+   vt-window supersedes the prior claim at every vt-point ≥ the
+   correction's vt-from, without rewriting history. Composes with
+   `d/history` (recommended — exposes the events the supersession
+   algorithm needs) and `d/as-of` (bounds the supersession horizon
+   to a given tx-time).
+
+   **Composition order matters.** Wrap `d/as-of` first, then
+   `d/valid-at` outermost: `(d/valid-at (d/as-of db t) v)`. The
+   supersession check captures whatever db it was passed; wrapping
+   `d/as-of` *outside* leaves the inner predicate with an unbounded
+   db and the supersession scan reads future txes. `d/as-of` will
+   throw if invoked on a vt-marked db to catch this mistake at
+   call-site.
+
+   The result is a `FilteredDB` whose predicate enforces supersession
+   per-datom on every read path (`d/q`, `d/datoms`, `d/pull`,
+   `d/entity`, `d/seek-datoms`, `d/index-range`).
+
+   Returns the unwrapped db when `time-point` is `nil`, after
+   clearing any `:datahike/valid-at` meta marker. Carries
+   `:datahike/valid-at <time-point>` on meta so vt-aware secondary
+   indices (`IValidTimeAware`) can push the filter into a native
+   `-search-at-vt` — those secondaries (e.g. stratum vt-mode) are
+   the fast path; this FilteredDB predicate is the
+   semantically-correct fallback.
+
+   Non-vt-aware data (txes without `:db.valid/from`) is treated as
+   having an open-ended `[-∞, ∞)` window — it remains visible at
+   every valid-time. Mixing vt-aware and non-vt-aware data therefore
+   degrades gracefully (the non-vt facts pass through).
+
+   Performance note: the supersession check costs one EAVT scan per
+   unique `(e, a, v)` triple in the result set, cached for the
+   lifetime of the wrapper. For high-throughput vt queries, route
+   through a vt-aware secondary index."
+  [db time-point]
+  (if (nil? time-point)
+    (vary-meta db dissoc :datahike/valid-at)
+    (-> (dcore/filter db (bp.pred/mk-vt-pred time-point))
+        (vary-meta assoc :datahike/valid-at time-point))))
+
+(defn valid-between
+  "Filter `db` to datoms whose asserting tx's vt-window *overlaps*
+   `[from, to)`. SQL:2011 `FOR VALID_TIME BETWEEN from AND to`
+   maps to this. Both endpoints are `java.util.Date`s.
+
+   Carries `:datahike/valid-between [from to]` on the returned db
+   for vt-aware secondary-index pushdown.
+
+   Passing `nil` for either endpoint clears the marker only and
+   does not narrow the FilteredDB predicate — to truly drop the
+   filter start from the unwrapped db."
+  [db from to]
+  (if (or (nil? from) (nil? to))
+    (vary-meta db dissoc :datahike/valid-between)
+    (-> (dcore/filter db (bp.pred/mk-vt-overlap-pred from to))
+        (vary-meta assoc :datahike/valid-between [from to]))))
+
+(defn valid-during
+  "Filter `db` to datoms whose asserting tx's vt-window is *fully
+   contained* in `[from, to)`. Stricter than `valid-between`:
+   tx-windows that merely overlap the query window but extend past
+   either endpoint are excluded. Useful for 'find all corrections
+   whose effective period was wholly within Q2 2024' style queries.
+
+   Carries `:datahike/valid-during [from to]` on the returned db."
+  [db from to]
+  (if (or (nil? from) (nil? to))
+    (vary-meta db dissoc :datahike/valid-during)
+    (-> (dcore/filter db (bp.pred/mk-vt-during-pred from to))
+        (vary-meta assoc :datahike/valid-during [from to]))))
+
+(defn valid-all
+  "Clear any active valid-time marker so the db sees its full
+   vt-history. Equivalent to passing `nil` to `valid-at` /
+   `valid-between` / `valid-during`: it strips the meta markers so
+   vt-aware secondary indices stop routing, but does not unwrap a
+   FilteredDB if one is already in place. Idempotent."
+  [db]
+  (vary-meta db dissoc
+             :datahike/valid-at
+             :datahike/valid-between
+             :datahike/valid-during))
 
 (defn index-range [db {:keys [attrid start end]}]
   (dbi/index-range db attrid start end))

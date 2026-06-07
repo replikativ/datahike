@@ -113,7 +113,32 @@
    {:db/id 37
     :db/ident :db/tupleAttrs}
    {:db/id 38
-    :db/ident :db.type/tuple}])
+    :db/ident :db.type/tuple}
+   ;; Bitemporal valid-time tx-meta — graduated from kontor-side
+   ;; userland into system schema. Tx-attached, half-open
+   ;; [from, to). Both AVET-indexed so the query planner can seek
+   ;; into them via the `valid-at` / `valid-between` rule rewrites.
+   {:db/id 39
+    :db/ident :db.valid/from
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc "A transaction's valid-time lower bound (inclusive).
+             Every datom in the tx inherits this vt-from. When
+             absent the transaction's `:db/txInstant` is used.
+             See `doc/valid_time.md` for usage."
+    :db/index true}
+   {:db/id 40
+    :db/ident :db.valid/to
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc "A transaction's valid-time upper bound (exclusive).
+             When absent the interval is open-ended (treated as +∞).
+             May be written retroactively on a prior tx-entity to
+             close that tx's window; the write is a normal commit,
+             the prior tx's hash is unchanged, and the transactor
+             enforces a cross-tx `vf < vt` check on the combined
+             state. See `doc/valid_time.md` for usage."
+    :db/index true}])
 
 (def ^:const system-entities
   "Holds the entity IDs of system attributes"
@@ -124,8 +149,33 @@
         system-schema)))
 
 (def ^:const non-ref-implicit-schema
-  {:db/ident {:db/unique :db.unique/identity}
-   :db/txInstant {:db/noHistory true}
+  ;; Pre-existing system attrs whose schema is "implicit" in non-attribute-
+  ;; refs mode (i.e. they're not in the user-installed schema, but the
+  ;; transactor + query planner must know their properties). Historically
+  ;; only carried the four entries below — but `:db/txInstant` was missing
+  ;; `:db/index true` even though it IS indexed both in `ref-implicit-schema`
+  ;; and in `implicit-schema-spec` (schema.cljc). The `:db/index` omission
+  ;; meant `(dbu/indexing? db :db/txInstant)` returned false, which silently
+  ;; broke the planner's AVET pushdown for predicates pivoting on these
+  ;; attrs (e.g. `[(<= ?vf ?at)]` after `[?tx :db.valid/from ?vf]` produced
+  ;; 0 results because the pushdown bounds were computed but the seek path
+  ;; treated the attr as non-indexed).
+  ;;
+  ;; The fix: declare the `:db/index true` flag here too so rschema is
+  ;; consistent across modes. Bitemporal-v1 also adds `:db.valid/from` and
+  ;; `:db.valid/to`, which join `:db/txInstant` as AVET-indexed tx-meta.
+  ;; Note: `:db/txInstant` is deliberately NOT flagged `:db/index true`
+  ;; here even though `system-schema` (above) and `implicit-schema-spec`
+  ;; (schema.cljc) declare it as such. Flipping it on would land every
+  ;; tx's `:db/txInstant` datom in AVET — a semantic change that ripples
+  ;; through existing tests + breaks the existing `:db/txInstant`-by-tx
+  ;; lookup path. Bitemporal v1 keeps that as-is and only graduates
+  ;; `:db.valid/from` / `:db.valid/to`, which are the new tx-meta attrs
+  ;; the planner needs to AVET-seek.
+  {:db/ident      {:db/unique :db.unique/identity}
+   :db/txInstant  {:db/noHistory true}
+   :db.valid/from {:db/index true}
+   :db.valid/to   {:db/index true}
    :db.entity/attrs {:db/cardinality :db.cardinality/many}
    :db.entity/preds {:db/cardinality :db.cardinality/many}})
 

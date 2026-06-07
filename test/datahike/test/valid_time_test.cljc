@@ -1,0 +1,402 @@
+(ns datahike.test.valid-time-test
+  "Tests for the bitemporal valid-time tx-meta attributes that graduated
+   into the system schema:
+
+   - `:db.valid/from` and `:db.valid/to` are pre-installed system attrs.
+   - Consumers attach them to the writing tx via the `:tx-meta` map-arg
+     form — `(d/transact conn {:tx-data [...] :tx-meta {:db.valid/from
+     #inst ... :db.valid/to #inst ...}})`. The legacy inline-tempid form
+     `{:db/id \"datomic.tx\" :db.valid/from ...}` also works (both shapes
+     normalise to the same internal `{:tx-data :tx-meta}` representation
+     at `api/impl.cljc:29-41`), but the map-arg form is idiomatic — see
+     `schema.cljc:71-74`: \":db.valid/from and :db.valid/to graduate from
+     userland tx-meta into datahike system schema.\"
+   - Both attrs are `:db/index true` so they materialise into the
+     temporal AVET index for range seeks by the query planner.
+
+   This file accompanies the system-schema graduation in commit 1 of
+   the `feature/bitemporal-v1` branch. The planner-recognised rule
+   rewrites (`valid-at`, `valid-between`, …) ship in commit 3 — this
+   file's tests cover the storage layer only.
+
+   Cross-platform: every deftest below is `deftest-async` so the body
+   runs through a `go` block on both JVM and Node. `<!` resolves both
+   real channels (CLJS) and `(go x)` (JVM); JVM sees the same `<!`-driven
+   shape with a free synchronous round-trip. `d/transact`/`d/transact!`
+   are routed through `<!` so the CLJS async writer's promise channel
+   is consumed correctly; on JVM the macro's `(go ...)` wrapper makes
+   the value a single-element channel.
+
+   Why `<! (d/transact! ...)` and not `(d/transact ...)`? `d/transact`
+   is JVM-sync only — it throws on CLJS. The async form is uniform
+   across runtimes and the test rhythm stays clean."
+  (:require #?(:cljs [cljs.test :as t :refer-macros [is testing]]
+               :clj  [clojure.test :as t :refer [is testing]])
+            [clojure.core.async :refer [<!]]
+            [datahike.api :as d]
+            [datahike.schema :as s]
+            [datahike.constants :as c]
+            [datahike.test.async #?(:clj :refer :cljs :refer-macros) [deftest-async]]))
+
+(defn- fresh-conn
+  "Create + connect to a fresh in-memory keep-history? DB.
+   Returns a channel yielding the connection."
+  ([] (fresh-conn {}))
+  ([extra-cfg]
+   (let [cfg (merge {:store {:backend :memory :id (random-uuid)}
+                     :schema-flexibility :write
+                     :keep-history? true}
+                    extra-cfg)]
+     (clojure.core.async/go
+       #?(:clj  (do (d/create-database cfg)
+                    (d/connect cfg))
+          :cljs (do (<! (d/create-database cfg))
+                    (<! (d/connect cfg {:sync? false}))))))))
+
+(deftest-async valid-time-attrs-are-system-schema
+  (testing "both attrs appear in `system-schema`"
+    (is (some #(= :db.valid/from (:db/ident %)) c/system-schema))
+    (is (some #(= :db.valid/to   (:db/ident %)) c/system-schema)))
+  (testing "schema recognises them as meta-attributes"
+    (is (s/meta-attr? :db.valid/from))
+    (is (s/meta-attr? :db.valid/to)))
+  (testing "no user-side schema install is needed — fresh DB accepts vt tx-meta"
+    ;; System attrs are recognised by the transactor via the implicit
+    ;; schema (same path `:db/txInstant` uses). They don't need a
+    ;; `[:db/add ... :db/ident ...]` install — they're built in.
+    (let [conn (<! (fresh-conn))]
+      (<! (d/transact! conn [{:db/ident :pos/x
+                              :db/valueType :db.type/long
+                              :db/cardinality :db.cardinality/one}]))
+      (is (some? (<! (d/transact! conn
+                                  {:tx-data [{:pos/x 1}]
+                                   :tx-meta {:db.valid/from #inst "2024-01-01"
+                                             :db.valid/to   #inst "2024-07-01"}})))))))
+
+(deftest-async valid-time-tx-meta-lands-on-the-tx-entity
+  (let [conn (<! (fresh-conn))]
+    (<! (d/transact! conn [{:db/ident :pos/x
+                            :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}]))
+    (let [report (<! (d/transact! conn
+                                  {:tx-data [{:pos/x 42}]
+                                   :tx-meta {:db.valid/from #inst "2024-01-01"
+                                             :db.valid/to   #inst "2024-07-01"}}))
+          tx    (get-in report [:tempids :db/current-tx])
+          db    (d/db conn)
+          pulled (d/pull db '[*] tx)]
+      (testing "the writing tx resolves via `:db/current-tx` and the tx-meta attrs land"
+        (is (= #inst "2024-01-01" (:db.valid/from pulled)))
+        (is (= #inst "2024-07-01" (:db.valid/to   pulled))))
+      (testing "the user datom is on its own entity, not the tx"
+        (is (= 42 (-> (d/q '[:find ?x . :where [_ :pos/x ?x]] db)))))
+      (testing "tx-data contains exactly the meta datoms + the user datom + :db/txInstant"
+        (is (= 4 (count (:tx-data report))))))))
+
+(deftest-async valid-time-attrs-are-indexed-and-queryable-via-history
+  ;; The tx-entity isn't a "currently asserted" entity (no eid in user
+  ;; space), so its datoms live in the temporal index. This is the same
+  ;; place auditors look for `:db/txInstant`-keyed reads. Range queries
+  ;; on `:db.valid/from` therefore run against `(d/history db)`, and
+  ;; should run fast — the planner-rule rewrite (commit 3) leans on this.
+  (let [conn (<! (fresh-conn))]
+    (<! (d/transact! conn [{:db/ident :pos/x
+                            :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}]))
+    (loop [i 0]
+      (when (< i 5)
+        (<! (d/transact! conn
+                         {:tx-data [{:pos/x i}]
+                          :tx-meta {:db.valid/from
+                                    #?(:clj  (java.util.Date.
+                                              (+ 1700000000000 (* i 86400000)))
+                                       :cljs (js/Date.
+                                              (+ 1700000000000 (* i 86400000))))}}))
+        (recur (inc i))))
+    (let [db   (d/db conn)
+          hist (d/history db)
+          all-vts (d/q '[:find [?vf ...]
+                         :where [_ :db.valid/from ?vf]]
+                       hist)]
+      (testing "all 5 vt-bearing txes are recoverable via history"
+        (is (= 5 (count all-vts))))
+      (testing "range query: find txes with vt-from in [t1, t2)"
+        ;; Use the native CollectionOrder-backed `<` / `<=` predicates —
+        ;; they're extended to both `java.util.Date` (JVM) and `js/Date`
+        ;; (CLJS) in `datahike.query`, so we don't need
+        ;; `(.compareTo ^java.util.Date ...)` which is JVM-only.
+        (let [t1 #inst "2023-11-16T00:00:00.000-00:00"
+              t2 #inst "2023-11-18T00:00:00.000-00:00"
+              n (d/q '[:find (count ?tx) .
+                       :in $ ?from ?to
+                       :where
+                       [?tx :db.valid/from ?vf]
+                       [(<= ?from ?vf)]
+                       [(< ?vf ?to)]]
+                     hist t1 t2)]
+          (is (= 2 n)))))))
+
+(deftest-async valid-to-is-optional
+  (let [conn (<! (fresh-conn))]
+    (<! (d/transact! conn [{:db/ident :pos/x
+                            :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}]))
+    (let [report (<! (d/transact! conn
+                                  {:tx-data [{:pos/x 1}]
+                                   :tx-meta {:db.valid/from #inst "2024-01-01"}}))
+          tx    (get-in report [:tempids :db/current-tx])
+          pulled (d/pull (d/db conn) '[*] tx)]
+      (testing "vt-from alone is sufficient; vt-to may be omitted"
+        (is (= #inst "2024-01-01" (:db.valid/from pulled)))
+        (is (nil? (:db.valid/to pulled)))))))
+
+(deftest-async system-attrs-show-up-as-indexed
+  ;; Regression: `:db.valid/from` / `:db.valid/to` must appear in
+  ;; rschema's `:db/index` set so `(dbu/indexing? db ...)` returns
+  ;; true and the planner's AVET pushdown for predicates pivoting on
+  ;; these attrs actually fires. Without it, `[(<= ?vf ?at)]` after
+  ;; `[?tx :db.valid/from ?vf]` silently returned 0 results (the
+  ;; planner computed pushdown bounds but the seek path treated the
+  ;; attr as non-indexed).
+  ;;
+  ;; Note: `:db/txInstant` is deliberately NOT in this set in
+  ;; non-attribute-refs mode — adding it would land every tx's
+  ;; `:db/txInstant` datom in AVET, a semantic change that breaks
+  ;; existing tests + the existing `:db/txInstant`-by-tx lookup
+  ;; path. See `non-ref-implicit-schema` in constants.cljc.
+  (let [conn (<! (fresh-conn))
+        db   (d/db conn)
+        rs   (datahike.db.interface/-rschema db)]
+    (testing ":db.valid/from and :db.valid/to are recognised as indexed"
+      (is (contains? (:db/index rs) :db.valid/from))
+      (is (contains? (:db/index rs) :db.valid/to)))))
+
+;; ============================================================================
+;; Backward-compat — inline-tempid write shape (note 179 §2 partial)
+;;
+;; The docstring at L9-13 documents that `{:db/id "datomic.tx"
+;; :db.valid/from ... :db.valid/to ...}` still works alongside the
+;; idiomatic `:tx-meta` map-arg form. Note 178's cleanup removed all
+;; inline-form writes from the test suite; this test pins the
+;; equivalence so the legacy shape doesn't silently regress.
+;; ============================================================================
+
+(deftest-async inline-tempid-form-still-works-for-vt
+  ;; Guards backward-compat for the legacy inline form documented at
+  ;; valid_time_test.cljc:L9-13 + schema.cljc:71-74. The "datomic.tx"
+  ;; tempid resolves to `:db/current-tx`; the `:db.valid/from` /
+  ;; `:db.valid/to` datoms then land on the tx-entity exactly as the
+  ;; idiomatic `:tx-meta` form would. Both shapes are normalised via
+  ;; the same `tx-id?` branch at `db/transaction.cljc:62`.
+  (let [conn (<! (fresh-conn))]
+    (<! (d/transact! conn [{:db/ident :pos/x
+                            :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}]))
+    (let [report (<! (d/transact! conn
+                                  [{:pos/x 42}
+                                   {:db/id "datomic.tx"
+                                    :db.valid/from #inst "2024-01-01"
+                                    :db.valid/to   #inst "2024-07-01"}]))
+          tx     (get-in report [:tempids :db/current-tx])
+          pulled (d/pull (d/db conn) '[*] tx)]
+      (testing "inline form lands vf/vt on the tx-entity"
+        (is (= #inst "2024-01-01" (:db.valid/from pulled)))
+        (is (= #inst "2024-07-01" (:db.valid/to   pulled))))
+      (testing "user datom lands on its own entity"
+        (is (= 42 (d/q '[:find ?x . :where [_ :pos/x ?x]] (d/db conn))))))))
+
+;; ============================================================================
+;; Tuple form — [:db/add tx-tempid :db.valid/from ...] — the doc snippet
+;;
+;; `doc/valid_time.md` L80-87 claims this low-level tuple form is
+;; equivalent to the inline-map form + the `:tx-meta` map-arg form. The
+;; tuple-form path runs through `db/transaction.cljc:1141` (`tx-id?` →
+;; allocate-eid + rewrite e to `(current-tx report)`), then
+;; `transact-add` lands the datom on the tx-entity exactly like any
+;; other `[:db/add tx-eid :attr value]`. This pins all three tempid
+;; spellings — `:db/current-tx`, `"datomic.tx"`, `"datahike.tx"` —
+;; mirroring `transact_test.cljc:377-398` (test-resolve-current-tx).
+;; ============================================================================
+
+(deftest-async tuple-form-vt-meta-attr-lands-on-tx
+  (doseq [tx-tempid [:db/current-tx "datomic.tx" "datahike.tx"]]
+    (testing (str "tx-tempid = " tx-tempid)
+      (let [conn (<! (fresh-conn))]
+        (<! (d/transact! conn [{:db/ident :emp/name
+                                :db/valueType :db.type/string
+                                :db/unique :db.unique/identity
+                                :db/cardinality :db.cardinality/one}
+                               {:db/ident :emp/salary
+                                :db/valueType :db.type/long
+                                :db/cardinality :db.cardinality/one}]))
+        ;; The exact doc snippet shape — mixed entity-map + tuple in
+        ;; one tx-data vector — with both vt-bounds via tuple.
+        (let [report (<! (d/transact! conn
+                                      [{:emp/name "Bob" :emp/salary 100000}
+                                       [:db/add tx-tempid :db.valid/from #inst "2026-01-01"]
+                                       [:db/add tx-tempid :db.valid/to   #inst "2026-12-31"]]))
+              tx     (get-in report [:tempids :db/current-tx])
+              pulled (d/pull (d/db conn) '[*] tx)]
+          (testing "tuple-form vt-meta lands on the writing tx-entity"
+            (is (= #inst "2026-01-01" (:db.valid/from pulled))
+                "tuple-form :db.valid/from must land on tx")
+            (is (= #inst "2026-12-31" (:db.valid/to   pulled))
+                "tuple-form :db.valid/to must land on tx"))
+          (testing "the user data lands on a non-tx entity"
+            (is (= 100000 (d/q '[:find ?s . :where
+                                 [?e :emp/name "Bob"]
+                                 [?e :emp/salary ?s]]
+                               (d/db conn)))
+                "Bob's salary is asserted on a normal entity")))
+        ;; valid-at semantics — the vt-from inclusive lower bound +
+        ;; vt-to exclusive upper bound apply to a query against the
+        ;; current db (not history): the user datom is visible only
+        ;; when ?at falls in [vf, vt).
+        (testing "valid-at finds user data INSIDE the window"
+          (let [r (d/q '[:find ?s . :where
+                         [?e :emp/name "Bob"]
+                         [?e :emp/salary ?s]]
+                       (d/valid-at (d/db conn) #inst "2026-06-01"))]
+            (is (= 100000 r)
+                "mid-2026 falls in the [2026-01-01, 2026-12-31) window")))
+        (testing "valid-at does NOT find user data BEFORE the window"
+          (let [r (d/q '[:find ?s . :where
+                         [?e :emp/name "Bob"]
+                         [?e :emp/salary ?s]]
+                       (d/valid-at (d/db conn) #inst "2025-01-01"))]
+            (is (nil? r)
+                "2025-01-01 is before vt-from — must not match")))
+        (testing "valid-at does NOT find user data AT/AFTER the upper bound"
+          (let [r (d/q '[:find ?s . :where
+                         [?e :emp/name "Bob"]
+                         [?e :emp/salary ?s]]
+                       (d/valid-at (d/db conn) #inst "2027-01-01"))]
+            (is (nil? r)
+                "2027-01-01 is past vt-to (half-open window) — must not match")))))))
+
+;; ============================================================================
+;; Schema enforcement — :db.valid/from rejects non-instant values
+;;
+;; Cross-platform note: on JVM the async writer wraps the raw
+;; ExceptionInfo in an ExecutionException; we walk the cause chain to
+;; find the inner data. On CLJS the writer pipeline propagates the
+;; raw ex-data via `ex-info`/`(.-message)` directly, so the same probe
+;; pattern (look for `ex-data` on the error) works without unwrapping.
+;; ============================================================================
+
+(defn- transact-ex-data
+  "Walk the cause chain (CLJ) / read the ex-data directly (CLJS) to
+   find an `ex-info`'s data map. Returns nil if none found."
+  [e]
+  #?(:clj
+     (loop [t e]
+       (cond
+         (nil? t) nil
+         (seq (ex-data t)) (ex-data t)
+         :else (recur (.getCause ^Throwable t))))
+     :cljs
+     (loop [t e]
+       (cond
+         (nil? t) nil
+         (seq (ex-data t)) (ex-data t)
+         :else (recur (.-cause t))))))
+
+(deftest-async valid-from-rejects-non-instant-value
+  (testing ":db.valid/from is :db.type/instant — the transactor must
+            reject a string (or any non-Date) value at write time."
+    (let [conn (<! (fresh-conn))]
+      (<! (d/transact! conn [{:db/ident :pos/x
+                              :db/valueType :db.type/long
+                              :db/cardinality :db.cardinality/one}]))
+      (let [thrown
+            (try
+              (let [r (<! (d/transact! conn
+                                       {:tx-data [{:pos/x 1}]
+                                        :tx-meta {:db.valid/from "not-a-date"}}))]
+                ;; On CLJS the writer pipeline may surface the
+                ;; exception as the channel value rather than via
+                ;; throw — handle both shapes.
+                (when (instance? #?(:clj Throwable :cljs js/Error) r)
+                  (transact-ex-data r)))
+              (catch #?(:clj Exception :cljs :default) e
+                (transact-ex-data e)))]
+        (is (some? thrown)
+            "non-instant :db.valid/from must throw")
+        (is (= :transact/schema (:error thrown))
+            "the throw must carry the schema-mismatch error code")
+        (is (= :db.valid/from (:attribute thrown))
+            "the throw must name the offending attribute")))))
+
+;; JVM-only: the built-in-rules query path runs against `(d/history db)`,
+;; which on CLJS returns a `HistoricalDB` wrapper whose `-lookup` raises.
+;; The query engine's plan executor calls `get` on the db (datahike.query.execute
+;; line 3301 in node-test output), which triggers `cljs.core/-lookup`. This
+;; is a pre-existing CLJS gap in the query/wrapper interop, NOT in the
+;; vt machinery — `mk-vt-pred` itself is fully cross-platform after the
+;; port (see `datahike.bitemporal.platform`). Once `HistoricalDB`/`AsOfDB`
+;; gain a CLJS `-lookup` impl, drop the `:clj` guard and this test runs
+;; on Node too.
+#?(:clj
+   (deftest-async built-in-rules-work-without-in-percent
+  ;; `valid-at` / `valid-between` / `valid-during` / `period-overlaps?`
+  ;; should be invokable in `:where` without the user declaring `%` in
+  ;; `:in`. The auto-inject inside `normalize-q-input` adds `%` and
+  ;; the built-in rule defs transparently.
+     (let [conn (<! (fresh-conn))]
+       (<! (d/transact! conn [{:db/ident :emp/name
+                               :db/valueType :db.type/string
+                               :db/cardinality :db.cardinality/one
+                               :db/unique :db.unique/identity}
+                              {:db/ident :emp/salary
+                               :db/valueType :db.type/long
+                               :db/cardinality :db.cardinality/one}]))
+       (<! (d/transact! conn [{:emp/name "Bob" :emp/salary 100000}]))
+       (<! (d/transact! conn {:tx-data [{:emp/name "Bob" :emp/salary 110000}]
+                              :tx-meta {:db.valid/from #inst "2024-01-01"
+                                        :db.valid/to   #inst "2024-07-01"}}))
+       (<! (d/transact! conn {:tx-data [{:emp/name "Bob" :emp/salary 120000}]
+                              :tx-meta {:db.valid/from #inst "2024-07-01"}}))
+       (let [hist (d/history (d/db conn))]
+      ;; NOTE: `d/history` returns BOTH added and retracted datoms. A
+      ;; cardinality-one upsert (like the salary updates here) produces
+      ;; one retraction + one assertion per tx. The valid-at filter
+      ;; runs PER-TX (it filters the tx's vt-window, not per-datom
+      ;; add/retract polarity), so a tx whose vt-window includes
+      ;; ?at returns ALL its salary datoms — both the retracted and
+      ;; the newly-asserted value. Use the 5-tuple `[e a v t added?]`
+      ;; pattern to filter to additions only.
+         (testing "valid-at — Bob's salary as of mid-April-2024"
+           (let [r (d/q '[:find ?s :in $ ?at :where
+                          (valid-at ?tx ?at)
+                          [?e :emp/salary ?s ?tx true]]
+                        hist #inst "2024-04-15")]
+             (is (= #{[110000]} r))))
+         (testing "valid-at — Bob's salary as of mid-August-2024"
+           (let [r (d/q '[:find ?s :in $ ?at :where
+                          (valid-at ?tx ?at)
+                          [?e :emp/salary ?s ?tx true]]
+                        hist #inst "2024-08-15")]
+             (is (= #{[120000]} r))))
+         (testing "valid-between — salaries with vt-window intersecting Q2 2024"
+           (let [r (d/q '[:find ?s :in $ ?from ?to :where
+                          (valid-between ?tx ?from ?to)
+                          [?e :emp/salary ?s ?tx true]]
+                        hist #inst "2024-04-01" #inst "2024-07-01")]
+             (is (= #{[110000]} r))))
+         (testing "user-supplied % overrides built-ins on name collision"
+        ;; Define a no-op `valid-at` that matches every tx; built-in
+        ;; should be shadowed and the result includes all salaries.
+           (let [user-rules '[[(valid-at ?tx ?at) [?tx :db/txInstant _]]]
+                 r (d/q '[:find ?s :in $ % ?at :where
+                          (valid-at ?tx ?at)
+                          [?e :emp/salary ?s ?tx true]]
+                        hist user-rules #inst "2024-04-15")]
+             (is (= #{[100000] [110000] [120000]} r))))
+         (testing "native < <= > >= work on Dates inside predicates"
+        ;; Regression for the planner-pushdown-on-system-attrs bug.
+           (let [r (d/q '[:find ?s :in $ ?at :where
+                          [?tx :db.valid/from ?vf]
+                          [(<= ?vf ?at)]
+                          [?e :emp/salary ?s ?tx true]]
+                        hist #inst "2024-08-15")]
+             (is (= #{[110000] [120000]} r)))))))) ;; last `)` closes `#?(:clj ...)`

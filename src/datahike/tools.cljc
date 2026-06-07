@@ -61,6 +61,22 @@
   #?(:clj (.getTime (Date.))
      :cljs (.getTime (js/Date.))))
 
+;; Clock pinning for repeatable test runs / regulator replays:
+;;
+;; The writer runs transactions on a background thread, so per-call
+;; dynamic bindings (`(binding [get-date ...] ...)`) don't propagate.
+;; Two patterns work instead:
+;;
+;; 1. **Per-tx override via tx-meta** — pass `:db/txInstant <Date>` in
+;;    your tx's `:tx-meta`; the transactor merges your value over the
+;;    `get-date` default at `transact-tx-data` (db/transaction.cljc).
+;;    Simplest for deterministic snapshots and the one we recommend
+;;    for tests.
+;;
+;; 2. **Global override via `alter-var-root`** — for whole-suite test
+;;    pinning, redefine `get-date` once at fixture setup. This is
+;;    coarser than `binding` but survives the thread hop.
+
 ;; adapted from https://clojure.atlassian.net/browse/CLJ-2766
 #?(:clj
    (defn throwable-promise
