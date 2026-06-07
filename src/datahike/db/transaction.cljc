@@ -8,6 +8,7 @@
    [datahike.db.interface :as dbi]
    [datahike.db.search :as dbs]
    [datahike.db.utils :as dbu]
+   [datahike.bitemporal.platform :as bp]
    [datahike.constants :refer [tx0]]
    [datahike.tools :refer [get-date]]
    [replikativ.logging :as log]
@@ -1052,8 +1053,7 @@
         (let [datoms (dbi/-datoms db-after :eavt [tx-eid] sc)
               vf (some (fn [^Datom d] (when (= vf-a (.-a d)) (.-v d))) datoms)
               vt (some (fn [^Datom d] (when (= vt-a (.-a d)) (.-v d))) datoms)]
-          (when (and vf vt (not (.before ^java.util.Date vf
-                                         ^java.util.Date vt)))
+          (when (and vf vt (not (bp/date-before? vf vt)))
             (log/raise (str "Invalid cross-tx valid-time window: tx-entity "
                             tx-eid " would have :db.valid/from >= :db.valid/to "
                             "(from=" vf ", to=" vt ") after this commit")
@@ -1082,8 +1082,7 @@
         _ (let [tm (:tx-meta initial-report)
                 vf (:db.valid/from tm)
                 vt (:db.valid/to tm)]
-            (when (and vf vt (not (.before ^java.util.Date vf
-                                           ^java.util.Date vt)))
+            (when (and vf vt (not (bp/date-before? vf vt)))
               (log/raise (str "Invalid valid-time window: :db.valid/from "
                               "must be strictly before :db.valid/to "
                               "(got from=" vf ", to=" vt ")")

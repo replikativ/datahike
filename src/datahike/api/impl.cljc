@@ -17,6 +17,7 @@
             [datahike.db.transaction :as dbt]
             [datahike.impl.entity :as de]
             [datahike.versioning :as dv]
+            [datahike.bitemporal.platform :as bp]
             [replikativ.logging :as log]
             #?(:cljs [clojure.core.async :as async :refer [<! >! chan put! close!]]))
   #?(:cljs (:require-macros [superv.async :refer [go-try- <?-]]
@@ -181,9 +182,9 @@
    `:db.valid/from` / `:db.valid/to` off the tx-entity. Missing
    `:db.valid/from` is treated as -∞; missing `:db.valid/to` as +∞,
    so non-vt-aware data passes through unchanged. Memoized via
-   `cover-cache` (tx-id → Boolean)."
-  [db tx-id ^java.util.Date at ^java.util.concurrent.ConcurrentHashMap cover-cache]
-  (let [cached (.get cover-cache tx-id)]
+   `cover-cache` (tx-id → Boolean) — a `bp/mutable-map`."
+  [db tx-id at cover-cache]
+  (let [cached (bp/mget cover-cache tx-id)]
     (if (some? cached)
       cached
       (let [{:keys [vf vt]} (vt-meta-attrs db)
@@ -192,9 +193,9 @@
                            (when (= vf (.-a td)) (.-v td))) tx-datoms)
             vt-val (some (fn [^datahike.datom.Datom td]
                            (when (= vt (.-a td)) (.-v td))) tx-datoms)
-            ok? (and (or (nil? vf-val) (not (.after ^java.util.Date vf-val at)))
-                     (or (nil? vt-val) (.after ^java.util.Date vt-val at)))]
-        (.put cover-cache tx-id ok?)
+            ok? (and (or (nil? vf-val) (not (bp/date-after? vf-val at)))
+                     (or (nil? vt-val) (bp/date-after? vt-val at)))]
+        (bp/mput! cover-cache tx-id ok?)
         ok?))))
 
 (defn- find-eav-winner
@@ -205,10 +206,9 @@
    topmost event at `(qvt, current-sys-time)` is the one whose tx-id
    is highest among those covering `qvt`. Memoized via
    `winner-cache` ([e a v] → Datom or ::miss)."
-  [db e a v ^java.util.Date at cover-cache
-   ^java.util.concurrent.ConcurrentHashMap winner-cache]
+  [db e a v at cover-cache winner-cache]
   (let [k [e a v]
-        cached (.get winner-cache k)]
+        cached (bp/mget winner-cache k)]
     (cond
       (= cached ::miss) nil
       (some? cached)    cached
@@ -223,7 +223,7 @@
                           d w)
                         w))
                     nil datoms)]
-        (.put winner-cache k (or winner ::miss))
+        (bp/mput! winner-cache k (or winner ::miss))
         winner))))
 
 (defn mk-vt-pred
@@ -254,9 +254,9 @@
    the polygon at write time. This predicate is the
    semantically-correct fallback for paths that don't route through
    a secondary."
-  [^java.util.Date at]
-  (let [cover-cache  (java.util.concurrent.ConcurrentHashMap.)
-        winner-cache (java.util.concurrent.ConcurrentHashMap.)]
+  [at]
+  (let [cover-cache  (bp/mutable-map)
+        winner-cache (bp/mutable-map)]
     (fn vt-pred [db ^datahike.datom.Datom d]
       ;; (datom-tx d) is always-positive (retractions store it negated).
       (when (tx-covers-at? db (datahike.datom/datom-tx d) at cover-cache)
@@ -320,11 +320,11 @@
   "Pred that admits a datom iff its tx's vt-window *overlaps*
    `[from, to)`. Open-ended `vt = nil` is treated as `+∞`; missing
    `vf` is `-∞`. The overlap condition is `(vf < to) AND (vt > from)`."
-  [^java.util.Date from ^java.util.Date to]
-  (let [cache (java.util.concurrent.ConcurrentHashMap.)]
+  [from to]
+  (let [cache (bp/mutable-map)]
     (fn vt-overlap-pred [db ^datahike.datom.Datom d]
       (let [tx-id (datahike.datom/datom-tx d)
-            cached (.get cache tx-id)]
+            cached (bp/mget cache tx-id)]
         (if (some? cached)
           cached
           (let [{:keys [vf vt]} (vt-meta-attrs db)
@@ -333,9 +333,9 @@
                                (when (= vf (.-a td)) (.-v td))) tx-datoms)
                 vt-val (some (fn [^datahike.datom.Datom td]
                                (when (= vt (.-a td)) (.-v td))) tx-datoms)
-                ok? (and (or (nil? vf-val) (.before ^java.util.Date vf-val to))
-                         (or (nil? vt-val) (.after ^java.util.Date vt-val from)))]
-            (.put cache tx-id ok?)
+                ok? (and (or (nil? vf-val) (bp/date-before? vf-val to))
+                         (or (nil? vt-val) (bp/date-after? vt-val from)))]
+            (bp/mput! cache tx-id ok?)
             ok?))))))
 
 (defn- mk-vt-during-pred
@@ -343,11 +343,11 @@
    contained* in `[from, to)`. Strict containment: missing `vf` or
    `vt` fail (an unbounded interval can't be fully contained in a
    bounded one)."
-  [^java.util.Date from ^java.util.Date to]
-  (let [cache (java.util.concurrent.ConcurrentHashMap.)]
+  [from to]
+  (let [cache (bp/mutable-map)]
     (fn vt-during-pred [db ^datahike.datom.Datom d]
       (let [tx-id (datahike.datom/datom-tx d)
-            cached (.get cache tx-id)]
+            cached (bp/mget cache tx-id)]
         (if (some? cached)
           cached
           (let [{:keys [vf vt]} (vt-meta-attrs db)
@@ -357,9 +357,9 @@
                 vt-val (some (fn [^datahike.datom.Datom td]
                                (when (= vt (.-a td)) (.-v td))) tx-datoms)
                 ok? (and (some? vf-val) (some? vt-val)
-                         (not (.before ^java.util.Date vf-val from))
-                         (not (.after ^java.util.Date vt-val to)))]
-            (.put cache tx-id ok?)
+                         (not (bp/date-before? vf-val from))
+                         (not (bp/date-after? vt-val to)))]
+            (bp/mput! cache tx-id ok?)
             ok?))))))
 
 (defn valid-between
