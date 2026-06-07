@@ -228,9 +228,11 @@
 
 (deftest current-tx-vt-meta-not-tracked
   (testing "Writes to the CURRENT tx's :db.valid/from / :db.valid/to
-            (i.e., the standard :tx-meta path via {:db/id 'datomic.tx'})
-            do NOT fire the cross-tx guard — they're handled by the
-            existing pre-loop :tx-meta validator. No bookkeeping leak."
+            (i.e., the idiomatic `:tx-meta` map-arg path; the legacy
+            `{:db/id 'datomic.tx' ...}` inline-tempid path normalises
+            to the same shape per api/impl.cljc:29-41) do NOT fire the
+            cross-tx guard — they're handled by the existing pre-loop
+            :tx-meta validator. No bookkeeping leak."
     (let [conn (fresh-conn)
           _ (install-schema! conn)
           r (d/transact conn {:tx-data [{:p/k "z" :p/n 7}]
