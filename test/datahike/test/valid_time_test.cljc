@@ -145,6 +145,79 @@
       (is (contains? (:db/index rs) :db.valid/from))
       (is (contains? (:db/index rs) :db.valid/to)))))
 
+;; ============================================================================
+;; Backward-compat — inline-tempid write shape (note 179 §2 partial)
+;;
+;; The docstring at L9-13 documents that `{:db/id "datomic.tx"
+;; :db.valid/from ... :db.valid/to ...}` still works alongside the
+;; idiomatic `:tx-meta` map-arg form. Note 178's cleanup removed all
+;; inline-form writes from the test suite; this test pins the
+;; equivalence so the legacy shape doesn't silently regress.
+;; ============================================================================
+
+(deftest inline-tempid-form-still-works-for-vt
+  ;; Guards backward-compat for the legacy inline form documented at
+  ;; valid_time_test.cljc:L9-13 + schema.cljc:71-74. The "datomic.tx"
+  ;; tempid resolves to `:db/current-tx`; the `:db.valid/from` /
+  ;; `:db.valid/to` datoms then land on the tx-entity exactly as the
+  ;; idiomatic `:tx-meta` form would. Both shapes are normalised via
+  ;; the same `tx-id?` branch at `db/transaction.cljc:62`.
+  (let [conn (fresh-conn)]
+    (d/transact conn [{:db/ident :pos/x
+                       :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one}])
+    (let [report (d/transact conn
+                             [{:pos/x 42}
+                              {:db/id "datomic.tx"
+                               :db.valid/from #inst "2024-01-01"
+                               :db.valid/to   #inst "2024-07-01"}])
+          tx     (get-in report [:tempids :db/current-tx])
+          pulled (d/pull (d/db conn) '[*] tx)]
+      (testing "inline form lands vf/vt on the tx-entity"
+        (is (= #inst "2024-01-01" (:db.valid/from pulled)))
+        (is (= #inst "2024-07-01" (:db.valid/to   pulled))))
+      (testing "user datom lands on its own entity"
+        (is (= 42 (d/q '[:find ?x . :where [_ :pos/x ?x]] (d/db conn))))))))
+
+;; ============================================================================
+;; Schema enforcement — :db.valid/from rejects non-instant values
+;; ============================================================================
+
+#?(:clj
+   (defn- transact-ex-data
+     "Walk the cause chain to find the inner ExceptionInfo's data —
+      the async writer wraps the raw ExceptionInfo in an
+      ExecutionException."
+     [^Throwable e]
+     (loop [t e]
+       (cond
+         (nil? t) nil
+         (seq (ex-data t)) (ex-data t)
+         :else (recur (.getCause t))))))
+
+#?(:clj
+   (deftest valid-from-rejects-non-instant-value
+     (testing ":db.valid/from is :db.type/instant — the transactor must
+               reject a string (or any non-Date) value at write time."
+       (let [conn (fresh-conn)]
+         (d/transact conn [{:db/ident :pos/x
+                            :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}])
+         (let [thrown
+               (try
+                 (d/transact conn
+                             {:tx-data [{:pos/x 1}]
+                              :tx-meta {:db.valid/from "not-a-date"}})
+                 nil
+                 (catch Exception e
+                   (transact-ex-data e)))]
+           (is (some? thrown)
+               "non-instant :db.valid/from must throw")
+           (is (= :transact/schema (:error thrown))
+               "the throw must carry the schema-mismatch error code")
+           (is (= :db.valid/from (:attribute thrown))
+               "the throw must name the offending attribute"))))))
+
 (deftest built-in-rules-work-without-in-percent
   ;; `valid-at` / `valid-between` / `valid-during` / `period-overlaps?`
   ;; should be invokable in `:where` without the user declaring `%` in
