@@ -89,10 +89,10 @@
               [:db/ident :db.valid/from 536870912 true]
               [:db/ident :db.valid/to 536870912 true]
               [:db/doc
-               "A transaction's valid-time lower bound (inclusive).\n             Every datom in the tx inherits this vt-from. When\n             absent the transaction's `:db/txInstant` is used."
+               "A transaction's valid-time lower bound (inclusive).\n             Every datom in the tx inherits this vt-from. When\n             absent the transaction's `:db/txInstant` is used.\n             See `doc/valid_time.md` for usage."
                536870912 true]
               [:db/doc
-               "A transaction's valid-time upper bound (exclusive).\n             When absent the interval is open-ended (treated as\n             +∞ by the bitemporal resolver)."
+               "A transaction's valid-time upper bound (exclusive).\n             When absent the interval is open-ended (treated as +∞).\n             May be written retroactively on a prior tx-entity to\n             close that tx's window; the write is a normal commit,\n             the prior tx's hash is unchanged, and the transactor\n             enforces a cross-tx `vf < vt` check on the combined\n             state. See `doc/valid_time.md` for usage."
                536870912 true]])
 
 (deftest export-import-test
